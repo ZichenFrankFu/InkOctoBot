@@ -3,192 +3,172 @@
 All data stored in {repo_root}/data/{collection}/.
 """
 from __future__ import annotations
-import json
-import time
-import uuid
+import json, time, uuid, os
 from pathlib import Path
 from typing import Any
 from fastapi import APIRouter, HTTPException, Body
-
 from ..settings import settings
 
 router = APIRouter(prefix="/data", tags=["data"])
 
 def _data_dir() -> Path:
-    d = settings.repo_root / "data"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-def _collection_dir(name: str) -> Path:
-    d = _data_dir() / name
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-def _read_json(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text("utf-8"))
-
-def _write_json(path: Path, data: Any):
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-
-def _new_id() -> str:
+    d = settings.repo_root / "data"; d.mkdir(parents=True, exist_ok=True); return d
+def _col(name: str) -> Path:
+    d = _data_dir() / name; d.mkdir(parents=True, exist_ok=True); return d
+def _rj(p: Path) -> dict:
+    return json.loads(p.read_text("utf-8")) if p.exists() else {}
+def _wj(p: Path, d: Any):
+    p.write_text(json.dumps(d, ensure_ascii=False, indent=2), "utf-8")
+def _nid() -> str:
     return f"{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
 
-# ─── Generic collection helpers ───
-
-def _list_items(collection: str) -> list[dict]:
-    d = _collection_dir(collection)
+def _list(c: str) -> list[dict]:
     items = []
-    for f in sorted(d.glob("*.json")):
-        try:
-            items.append(json.loads(f.read_text("utf-8")))
-        except Exception:
-            pass
+    for f in sorted(_col(c).glob("*.json")):
+        try: items.append(json.loads(f.read_text("utf-8")))
+        except: pass
     return items
 
-def _get_item(collection: str, item_id: str) -> dict:
-    p = _collection_dir(collection) / f"{item_id}.json"
-    if not p.exists():
-        raise HTTPException(404, f"{collection} item not found: {item_id}")
+def _get(c: str, id: str) -> dict:
+    p = _col(c) / f"{id}.json"
+    if not p.exists(): raise HTTPException(404, f"not found: {c}/{id}")
     return json.loads(p.read_text("utf-8"))
 
-def _save_item(collection: str, item_id: str, data: dict) -> dict:
-    data["id"] = item_id
-    data["updated_at"] = time.time()
-    _write_json(_collection_dir(collection) / f"{item_id}.json", data)
-    return data
+def _save(c: str, id: str, d: dict) -> dict:
+    d["id"] = id; d["updated_at"] = time.time()
+    _wj(_col(c) / f"{id}.json", d); return d
 
-def _delete_item(collection: str, item_id: str):
-    p = _collection_dir(collection) / f"{item_id}.json"
-    if p.exists():
-        p.unlink()
+def _del(c: str, id: str):
+    p = _col(c) / f"{id}.json"
+    if p.exists(): p.unlink()
 
-# ═══════════════════════════════════════════
-# Characters
-# ═══════════════════════════════════════════
+# ═══ Projects ═══
+@router.get("/projects")
+def list_projects(): return {"items": _list("projects")}
+@router.post("/projects")
+def create_project(body: dict = Body(...)):
+    pid = _nid()
+    body.update({"id": pid, "name": body.get("name", "新项目"), "genre": body.get("genre", ""), "description": body.get("description", ""), "created_at": time.time()})
+    return _save("projects", pid, body)
+@router.get("/projects/{pid}")
+def get_project(pid: str): return _get("projects", pid)
+@router.put("/projects/{pid}")
+def update_project(pid: str, body: dict = Body(...)): return _save("projects", pid, body)
+@router.delete("/projects/{pid}")
+def delete_project(pid: str): _del("projects", pid); return {"ok": True}
+
+# ═══ Characters ═══
 @router.get("/characters")
-def list_characters():
-    return {"items": _list_items("characters")}
-
+def list_characters(project_id: str | None = None):
+    items = _list("characters")
+    if project_id: items = [i for i in items if i.get("project_id") == project_id]
+    return {"items": items}
 @router.post("/characters")
 def create_character(body: dict = Body(...)):
-    cid = _new_id()
-    body["id"] = cid
-    body.setdefault("name", "新角色")
-    body.setdefault("role", "配角")
-    body.setdefault("personality", "")
-    body.setdefault("background", "")
-    body.setdefault("speech_style", "")
-    body.setdefault("tags", [])
-    body.setdefault("quant_params", {})
-    body["created_at"] = time.time()
-    return _save_item("characters", cid, body)
-
+    cid = _nid()
+    body.update({"id": cid, "name": body.get("name", "新角色"), "role": body.get("role", "配角"),
+        "project_id": body.get("project_id", ""), "personality": "", "background": "", "speech_style": "",
+        "tags": [], "quant_params": {}, "relationships": {}, "created_at": time.time()})
+    return _save("characters", cid, body)
 @router.get("/characters/{cid}")
-def get_character(cid: str):
-    return _get_item("characters", cid)
-
+def get_character(cid: str): return _get("characters", cid)
 @router.put("/characters/{cid}")
-def update_character(cid: str, body: dict = Body(...)):
-    return _save_item("characters", cid, body)
-
+def update_character(cid: str, body: dict = Body(...)): return _save("characters", cid, body)
 @router.delete("/characters/{cid}")
-def delete_character(cid: str):
-    _delete_item("characters", cid)
-    return {"ok": True}
+def delete_character(cid: str): _del("characters", cid); return {"ok": True}
 
-# ═══════════════════════════════════════════
-# World Book
-# ═══════════════════════════════════════════
+# ═══ World Book ═══
 @router.get("/worldbook")
-def list_worldbook():
-    return {"items": _list_items("worldbook")}
-
+def list_worldbook(project_id: str | None = None):
+    items = _list("worldbook")
+    if project_id: items = [i for i in items if i.get("project_id") == project_id]
+    return {"items": items}
 @router.post("/worldbook")
 def create_worldbook_entry(body: dict = Body(...)):
-    eid = _new_id()
-    body["id"] = eid
-    body.setdefault("category", "力量体系")
-    body.setdefault("title", "新条目")
-    body.setdefault("content", "")
-    body.setdefault("tags", [])
-    body["created_at"] = time.time()
-    return _save_item("worldbook", eid, body)
-
+    eid = _nid()
+    body.update({"id": eid, "category": body.get("category", "力量体系"), "title": body.get("title", "新条目"),
+        "content": "", "tags": [], "project_id": body.get("project_id", ""), "created_at": time.time()})
+    return _save("worldbook", eid, body)
 @router.get("/worldbook/{eid}")
-def get_worldbook_entry(eid: str):
-    return _get_item("worldbook", eid)
-
+def get_worldbook_entry(eid: str): return _get("worldbook", eid)
 @router.put("/worldbook/{eid}")
-def update_worldbook_entry(eid: str, body: dict = Body(...)):
-    return _save_item("worldbook", eid, body)
-
+def update_worldbook_entry(eid: str, body: dict = Body(...)): return _save("worldbook", eid, body)
 @router.delete("/worldbook/{eid}")
-def delete_worldbook_entry(eid: str):
-    _delete_item("worldbook", eid)
-    return {"ok": True}
+def delete_worldbook_entry(eid: str): _del("worldbook", eid); return {"ok": True}
 
-# ═══════════════════════════════════════════
-# Editor (volumes + chapters)
-# Single-file storage: data/editor/project.json
-# ═══════════════════════════════════════════
-def _editor_path() -> Path:
-    d = _collection_dir("editor")
-    return d / "project.json"
-
+# ═══ Editor ═══
+def _editor_path(project_id: str = "default") -> Path:
+    d = _col("editor"); return d / f"{project_id}.json"
 @router.get("/editor")
-def get_editor_data():
-    p = _editor_path()
-    if not p.exists():
-        return {"volumes": []}
-    return json.loads(p.read_text("utf-8"))
-
+def get_editor_data(project_id: str = "default"):
+    p = _editor_path(project_id)
+    return json.loads(p.read_text("utf-8")) if p.exists() else {"volumes": []}
 @router.put("/editor")
 def save_editor_data(body: dict = Body(...)):
+    pid = body.pop("project_id", "default")
     body["saved_at"] = time.time()
-    _write_json(_editor_path(), body)
-    return {"ok": True, "saved_at": body["saved_at"]}
+    _wj(_editor_path(pid), body); return {"ok": True, "saved_at": body["saved_at"]}
 
-# ═══════════════════════════════════════════
-# Settings
-# Single-file storage: data/settings.json
-# ═══════════════════════════════════════════
-def _settings_path() -> Path:
-    return _data_dir() / "settings.json"
+# ═══ Storyline ═══
+def _storyline_path(project_id: str = "default") -> Path:
+    d = _col("storylines"); return d / f"{project_id}.json"
+@router.get("/storyline")
+def get_storyline(project_id: str = "default"):
+    p = _storyline_path(project_id)
+    return json.loads(p.read_text("utf-8")) if p.exists() else {"nodes": [], "edges": []}
+@router.put("/storyline")
+def save_storyline(body: dict = Body(...)):
+    pid = body.pop("project_id", "default")
+    body["saved_at"] = time.time()
+    _wj(_storyline_path(pid), body); return {"ok": True}
 
+# ═══ Settings ═══
+def _settings_path() -> Path: return _data_dir() / "settings.json"
 @router.get("/settings")
 def get_settings():
     p = _settings_path()
-    if not p.exists():
-        return _default_settings()
-    data = json.loads(p.read_text("utf-8"))
-    # Merge defaults for any missing keys
+    data = json.loads(p.read_text("utf-8")) if p.exists() else {}
     defaults = _default_settings()
     for k, v in defaults.items():
-        if k not in data:
-            data[k] = v
+        if k not in data: data[k] = v
     return data
-
 @router.put("/settings")
 def save_settings(body: dict = Body(...)):
-    body["saved_at"] = time.time()
-    _write_json(_settings_path(), body)
-    return {"ok": True}
+    body["saved_at"] = time.time(); _wj(_settings_path(), body); return {"ok": True}
+
+# ═══ Local Models ═══
+@router.get("/local_models")
+def list_local_models():
+    mdir = settings.repo_root / "models"
+    if not mdir.exists(): return {"models": []}
+    models = []
+    for f in sorted(mdir.iterdir()):
+        if f.is_file() and f.suffix in (".gguf", ".bin", ".safetensors", ".pt"):
+            models.append({"name": f.stem, "file": f.name, "size_mb": round(f.stat().st_size / 1048576, 1)})
+        elif f.is_dir():
+            total = sum(ff.stat().st_size for ff in f.rglob("*") if ff.is_file())
+            models.append({"name": f.name, "file": f.name, "size_mb": round(total / 1048576, 1), "is_dir": True})
+    return {"models": models}
 
 def _default_settings() -> dict:
     return {
-        "theme": "light",
-        "auto_save": True,
-        "auto_save_interval": 30,
-        "cost_confirm": True,
-        "export_format": "txt",
+        "theme": "light", "auto_save": True, "auto_save_interval": 30,
+        "cost_confirm": True, "export_format": "txt",
         "providers": {
-            "openai": {"enabled": False, "api_key_set": False},
-            "anthropic": {"enabled": False, "api_key_set": False},
-            "deepseek": {"enabled": False, "api_key_set": False},
-            "ollama": {"enabled": False, "base_url": "http://localhost:11434"},
-            "vllm": {"enabled": False, "base_url": "http://localhost:8000"},
+            "openai": {"enabled": False, "api_key": "", "models": ["gpt-4o", "gpt-4o-mini"]},
+            "anthropic": {"enabled": False, "api_key": "", "models": ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]},
+            "deepseek": {"enabled": False, "api_key": "", "models": ["deepseek-chat", "deepseek-reasoner"]},
+            "ollama": {"enabled": False, "base_url": "http://localhost:11434", "models": []},
+            "vllm": {"enabled": False, "base_url": "http://localhost:8000", "models": []},
+            "local": {"enabled": False, "models": []},
         },
-        "model_preset": "balanced",
+        "pipeline": {
+            "scene_planner": {"provider": "ollama", "model": "qwen2.5:32b", "compare_models": []},
+            "scene_director": {"provider": "ollama", "model": "qwen2.5:32b", "compare_models": []},
+            "actor_default": {"provider": "ollama", "model": "qwen2.5:7b", "compare_models": []},
+            "actor_protagonist": {"provider": "ollama", "model": "qwen2.5:14b", "compare_models": []},
+            "editor_stylist": {"provider": "ollama", "model": "qwen2.5:32b", "compare_models": []},
+            "editor_agent": {"provider": "ollama", "model": "qwen2.5:32b", "compare_models": []},
+            "evaluator": {"provider": "ollama", "model": "qwen2.5:14b", "compare_models": []},
+        },
     }
