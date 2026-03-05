@@ -49,6 +49,17 @@ export default defineConfig(({ mode }) => {
       // 保险：明确入口
       rollupOptions: {
         input: path.resolve(__dirname, "index.html"),
+        output: {
+          // Keep deterministic bundle names to reduce unnecessary merge conflicts
+          // in backend-served static index.html.
+          entryFileNames: "assets/index.js",
+          chunkFileNames: "assets/[name].js",
+          assetFileNames: (assetInfo) => {
+            const ext = path.extname(assetInfo.name || "");
+            if (ext === ".css") return "assets/index.css";
+            return "assets/[name][extname]";
+          },
+        },
       },
     },
   };

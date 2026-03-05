@@ -166,6 +166,44 @@ def _defaults_from_repo(repo_cfg) -> dict:
     }
 
 
+    # runtime overrides from config/crawler.yaml + config/antiblock.yaml
+    use_proxy: bool | None = None
+    max_retries: int | None = None
+    retry_delay: float | None = None
+    consecutive_threshold: int | None = None
+    antibot_min_html_length: int | None = None
+    page_max_retries: int | None = None
+    page_retry_delay: float | None = None
+    page_default_wait_sec: int | None = None
+
+
+def _defaults_from_repo(repo_cfg) -> dict:
+    crawler = getattr(repo_cfg, "CRAWLER_CONFIG", {}) or {}
+    antibot = getattr(repo_cfg, "ANTI_BLOCK_CONFIG", {}) or {}
+    nested_ab = crawler.get("antibot", {}) or {}
+    page_fetch = crawler.get("page_fetch", {}) or {}
+
+    return {
+        "platform": "fanqie",
+        "rank_key": "",
+        "pages": None,
+        "qidian_pages": 2,
+        "chapter_count": 5,
+        "newbook_chapter_count": 2,
+        "no_detail": False,
+        "no_chapters": False,
+
+        "use_proxy": bool(crawler.get("use_proxy", False)),
+        "max_retries": int(crawler.get("max_retries", 3)),
+        "retry_delay": float(crawler.get("retry_delay", 2)),
+        "consecutive_threshold": int(nested_ab.get("consecutive_threshold", antibot.get("consecutive_threshold", 3))),
+        "antibot_min_html_length": int(nested_ab.get("min_html_length", antibot.get("min_html_length", 800))),
+        "page_max_retries": int(page_fetch.get("max_page_retries", 3)),
+        "page_retry_delay": float(page_fetch.get("page_retry_delay", 3)),
+        "page_default_wait_sec": int(page_fetch.get("default_wait_sec", 10)),
+    }
+
+
 @router.get("/schema")
 def get_schema():
     repo_cfg = load_repo_config(settings.repo_root)
