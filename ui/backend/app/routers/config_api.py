@@ -2,13 +2,20 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from ..settings import settings
 from ..utils import load_repo_config, get_output_paths, get_rank_keys
 
 router = APIRouter(prefix="/config", tags=["config"])
+
+
+def _runs_dir(repo_cfg) -> Path:
+    out = get_output_paths(repo_cfg)
+    runs_dir = Path(out.get("reports", str(settings.repo_root / "outputs" / "reports"))).parent / "config_runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    return runs_dir
 
 class ConfigOverride(BaseModel):
     platform: str | None = Field(default=None, description="qidian|fanqie")
@@ -36,11 +43,32 @@ def get_schema():
 @router.post("/runs")
 def create_run(override: ConfigOverride):
     repo_cfg = load_repo_config(settings.repo_root)
-    out = get_output_paths(repo_cfg)
-    runs_dir = Path(out.get("reports", str(settings.repo_root / "outputs" / "reports"))).parent / "config_runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir = _runs_dir(repo_cfg)
 
     run_id = f"cfg_{int(time.time()*1000)}"
     path = runs_dir / f"{run_id}.json"
     path.write_text(json.dumps(override.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
     return {"run_id": run_id, "path": str(path)}
+
+
+@router.get("/runs")
+def list_runs(limit: int = 30):
+    repo_cfg = load_repo_config(settings.repo_root)
+    runs_dir = _runs_dir(repo_cfg)
+
+    runs = []
+    for p in sorted(runs_dir.glob("cfg_*.json"), reverse=True):
+        run_id = p.stem
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        runs.append({
+            "run_id": run_id,
+            "created_at": p.stat().st_mtime,
+            "config": data,
+        })
+        if len(runs) >= max(limit, 1):
+            break
+
+    return {"runs": runs}
