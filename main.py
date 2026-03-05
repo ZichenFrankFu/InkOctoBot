@@ -393,12 +393,65 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no_detail", action="store_true", help="禁用详情页补全")
     parser.add_argument("--no_chapters", action="store_true", help="禁用章节抓取")
 
+    # Runtime crawler overrides
+    parser.add_argument("--use_proxy", action="store_true", default=None, help="临时启用代理")
+    parser.add_argument("--no_use_proxy", dest="use_proxy", action="store_false", help="临时禁用代理")
+    parser.add_argument("--max_retries", type=int, default=None, help="临时覆盖全局重试次数")
+    parser.add_argument("--retry_delay", type=float, default=None, help="临时覆盖全局重试延迟秒数")
+    parser.add_argument("--consecutive_threshold", type=int, default=None, help="临时覆盖反爬连续触发阈值")
+    parser.add_argument("--antibot_min_html_length", type=int, default=None, help="临时覆盖反爬最小HTML长度阈值")
+    parser.add_argument("--page_max_retries", type=int, default=None, help="临时覆盖页面抓取最大重试次数")
+    parser.add_argument("--page_retry_delay", type=float, default=None, help="临时覆盖页面抓取重试延迟秒数")
+    parser.add_argument("--page_default_wait_sec", type=int, default=None, help="临时覆盖页面默认等待秒数")
+
     return parser
+
+
+def _apply_runtime_overrides(args: argparse.Namespace) -> None:
+    """Apply optional runtime overrides into in-memory config module."""
+    crawler_cfg = dict(getattr(config, "CRAWLER_CONFIG", {}) or {})
+    antibot_cfg = dict(getattr(config, "ANTI_BLOCK_CONFIG", {}) or {})
+    page_fetch_cfg = dict(crawler_cfg.get("page_fetch", {}) or {})
+    nested_ab = dict(crawler_cfg.get("antibot", {}) or {})
+
+    if getattr(args, "use_proxy", None) is not None:
+        crawler_cfg["use_proxy"] = bool(args.use_proxy)
+
+    if getattr(args, "max_retries", None) is not None:
+        crawler_cfg["max_retries"] = int(args.max_retries)
+
+    if getattr(args, "retry_delay", None) is not None:
+        crawler_cfg["retry_delay"] = float(args.retry_delay)
+
+    if getattr(args, "page_max_retries", None) is not None:
+        page_fetch_cfg["max_page_retries"] = int(args.page_max_retries)
+
+    if getattr(args, "page_retry_delay", None) is not None:
+        page_fetch_cfg["page_retry_delay"] = float(args.page_retry_delay)
+
+    if getattr(args, "page_default_wait_sec", None) is not None:
+        page_fetch_cfg["default_wait_sec"] = int(args.page_default_wait_sec)
+
+    if getattr(args, "antibot_min_html_length", None) is not None:
+        v = int(args.antibot_min_html_length)
+        antibot_cfg["min_html_length"] = v
+        nested_ab["min_html_length"] = v
+
+    if getattr(args, "consecutive_threshold", None) is not None:
+        threshold = int(args.consecutive_threshold)
+        antibot_cfg["consecutive_threshold"] = threshold
+        nested_ab["consecutive_threshold"] = threshold
+
+    crawler_cfg["page_fetch"] = page_fetch_cfg
+    crawler_cfg["antibot"] = nested_ab
+    config.CRAWLER_CONFIG = crawler_cfg
+    config.ANTI_BLOCK_CONFIG = antibot_cfg
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    _apply_runtime_overrides(args)
 
     logger.info("InkOctoBot AI小说创作工作流")
     logger.info("当前时间:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

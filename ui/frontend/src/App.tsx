@@ -74,7 +74,7 @@ export default function App() {
   const page = (() => {
     switch (tab) {
       case "spider-config":  return <ConfigPage onSaved={(id) => setLastRunId(id)} />;
-      case "spider-runner":  return <RunnerPage lastRunId={lastRunId} />;
+      case "spider-runner":  return <RunnerPage lastRunId={lastRunId} onRunSelected={(id) => setLastRunId(id || null)} />;
       case "reports":        return <ReportsPage />;
       case "database":       return <DatabasePage />;
       case "analysis":       return <AnalysisDashboardPage />;
