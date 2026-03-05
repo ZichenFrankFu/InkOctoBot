@@ -1,495 +1,134 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { apiGet, apiPost } from "../api/client";
 
-/* ═══════════════════════════════════════════
-   Types
-   ═══════════════════════════════════════════ */
-interface Chapter {
-  id: string;
-  title: string;
-  content: string;
-  createdAt: number;
-  updatedAt: number;
-}
+// Inline apiPut since client.ts may not have it
+const apiPut = <T,>(url:string, body:any):Promise<T> =>
+  fetch(url, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(r=>{if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json()});
 
-interface Volume {
-  id: string;
-  title: string;
-  chapters: Chapter[];
-  collapsed: boolean;
-}
+interface Chapter { id:string; title:string; content:string; }
+interface Volume { id:string; title:string; chapters:Chapter[]; collapsed:boolean; }
+const uid=()=>`${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+const wc=(t:string)=>t?t.replace(/[\s\p{P}]/gu,"").length:0;
 
-/* ═══════════════════════════════════════════
-   Helpers
-   ═══════════════════════════════════════════ */
-const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-function countWords(text: string): number {
-  if (!text) return 0;
-  // Chinese: count characters (exclude whitespace/punctuation roughly)
-  const cjk = text.replace(/[\s\p{P}]/gu, "");
-  return cjk.length;
-}
-
-function fmtDate(ts: number): string {
-  const d = new Date(ts);
-  return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
-}
-
-/* ═══════════════════════════════════════════
-   Main Component
-   ═══════════════════════════════════════════ */
 export default function EditorPage() {
-  // ── Outline State ──
-  const [volumes, setVolumes] = useState<Volume[]>(() => [
-    {
-      id: uid(),
-      title: "第一卷",
-      collapsed: false,
-      chapters: [
-        { id: uid(), title: "第一章", content: "", createdAt: Date.now(), updatedAt: Date.now() },
-      ],
-    },
-  ]);
-  const [activeChapterId, setActiveChapterId] = useState<string>(volumes[0].chapters[0].id);
+  const [vols,setVols]=useState<Volume[]>([{id:uid(),title:"第一卷",collapsed:false,chapters:[{id:uid(),title:"第一章",content:""}]}]);
+  const [activeId,setActiveId]=useState(vols[0].chapters[0].id);
+  const [content,setContent]=useState("");
+  const [loaded,setLoaded]=useState(false);
+  const [leftW,setLeftW]=useState(220); const [rightW,setRightW]=useState(260);
+  const dragRef=useRef<{which:"left"|"right";startX:number;startW:number}|null>(null);
+  const saveTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+  const [renaming,setRenaming]=useState<string|null>(null); const [renameVal,setRenameVal]=useState("");
+  const [saved,setSaved]=useState(0);
 
-  // ── Find active chapter ──
-  const activeChapter = useMemo(() => {
-    for (const v of volumes) {
-      const ch = v.chapters.find((c) => c.id === activeChapterId);
-      if (ch) return ch;
-    }
-    return null;
-  }, [volumes, activeChapterId]);
+  // Load from API on mount
+  useEffect(()=>{apiGet<any>("/api/data/editor").then(d=>{if(d.volumes?.length){setVols(d.volumes);setActiveId(d.volumes[0]?.chapters?.[0]?.id||"");}setLoaded(true);}).catch(()=>setLoaded(true));},[]);
 
-  const activeVolume = useMemo(() => {
-    return volumes.find((v) => v.chapters.some((c) => c.id === activeChapterId)) || null;
-  }, [volumes, activeChapterId]);
+  const activeCh=useMemo(()=>{for(const v of vols){const c=v.chapters.find(c=>c.id===activeId);if(c)return c;}return null;},[vols,activeId]);
+  const activeVol=useMemo(()=>vols.find(v=>v.chapters.some(c=>c.id===activeId))||null,[vols,activeId]);
 
-  // ── Editor state ──
-  const [editorContent, setEditorContent] = useState(activeChapter?.content || "");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [lastSaved, setLastSaved] = useState<number>(Date.now());
-  const [showOutlineMenu, setShowOutlineMenu] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
+  useEffect(()=>{if(activeCh)setContent(activeCh.content);},[activeId,loaded]);
 
-  // Sync editor content when switching chapters
-  useEffect(() => {
-    if (activeChapter) {
-      setEditorContent(activeChapter.content);
-    }
-  }, [activeChapterId]);
+  // Auto-save to state + API
+  useEffect(()=>{if(!loaded)return;if(saveTimer.current)clearTimeout(saveTimer.current);
+    saveTimer.current=setTimeout(()=>{
+      const nv=vols.map(v=>({...v,chapters:v.chapters.map(c=>c.id===activeId?{...c,content}:c)}));
+      setVols(nv);setSaved(Date.now());
+      apiPut("/api/data/editor",{volumes:nv}).catch(console.error);
+    },1200);
+    return()=>{if(saveTimer.current)clearTimeout(saveTimer.current);};
+  },[content,activeId,loaded]);
 
-  // Auto-save: persist content back to volumes state (debounced)
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      setVolumes((prev) =>
-        prev.map((v) => ({
-          ...v,
-          chapters: v.chapters.map((c) =>
-            c.id === activeChapterId ? { ...c, content: editorContent, updatedAt: Date.now() } : c
-          ),
-        }))
-      );
-      setLastSaved(Date.now());
-    }, 800);
-    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
-  }, [editorContent, activeChapterId]);
+  // Resize handlers
+  useEffect(()=>{
+    const onMove=(e:MouseEvent)=>{if(!dragRef.current)return;const d=e.clientX-dragRef.current.startX;
+      if(dragRef.current.which==="left")setLeftW(Math.max(160,Math.min(360,dragRef.current.startW+d)));
+      else setRightW(Math.max(200,Math.min(400,dragRef.current.startW-d)));};
+    const onUp=()=>{dragRef.current=null;document.body.style.cursor="";document.body.style.userSelect="";};
+    window.addEventListener("mousemove",onMove);window.addEventListener("mouseup",onUp);
+    return()=>{window.removeEventListener("mousemove",onMove);window.removeEventListener("mouseup",onUp);};
+  },[]);
+  const startDrag=(which:"left"|"right",e:React.MouseEvent)=>{dragRef.current={which,startX:e.clientX,startW:which==="left"?leftW:rightW};document.body.style.cursor="col-resize";document.body.style.userSelect="none";};
 
-  // ── Outline actions ──
-  const addVolume = () => {
-    const vol: Volume = { id: uid(), title: `第${volumes.length + 1}卷`, collapsed: false, chapters: [] };
-    setVolumes([...volumes, vol]);
-  };
+  const addVol=()=>{const v:Volume={id:uid(),title:`第${vols.length+1}卷`,collapsed:false,chapters:[]};setVols([...vols,v]);};
+  const addCh=(vid:string)=>setVols(vols.map(v=>v.id===vid?{...v,chapters:[...v.chapters,{id:uid(),title:`第${v.chapters.length+1}章`,content:""}]}:v));
+  const delCh=(cid:string)=>{const all=vols.flatMap(v=>v.chapters);if(all.length<=1)return;setVols(vols.map(v=>({...v,chapters:v.chapters.filter(c=>c.id!==cid)})));if(activeId===cid){const rem=all.filter(c=>c.id!==cid);if(rem.length)setActiveId(rem[0].id);}};
+  const delVol=(vid:string)=>{if(vols.length<=1)return;const vol=vols.find(v=>v.id===vid);if(vol?.chapters.some(c=>c.id===activeId)){const o=vols.find(v=>v.id!==vid);if(o?.chapters.length)setActiveId(o.chapters[0].id);}setVols(vols.filter(v=>v.id!==vid));};
+  const startRename=(id:string,t:string)=>{setRenaming(id);setRenameVal(t);};
+  const commitRename=()=>{if(!renaming||!renameVal.trim()){setRenaming(null);return;}setVols(vols.map(v=>{if(v.id===renaming)return{...v,title:renameVal.trim()};return{...v,chapters:v.chapters.map(c=>c.id===renaming?{...c,title:renameVal.trim()}:c)};}));setRenaming(null);};
 
-  const addChapter = (volumeId: string) => {
-    setVolumes((prev) =>
-      prev.map((v) => {
-        if (v.id !== volumeId) return v;
-        const ch: Chapter = { id: uid(), title: `第${v.chapters.length + 1}章`, content: "", createdAt: Date.now(), updatedAt: Date.now() };
-        return { ...v, chapters: [...v.chapters, ch] };
-      })
-    );
-  };
+  const words=useMemo(()=>wc(content),[content]);
+  const totalW=useMemo(()=>vols.reduce((s,v)=>s+v.chapters.reduce((s2,c)=>s2+wc(c.content),0),0),[vols]);
+  const totalCh=useMemo(()=>vols.reduce((s,v)=>s+v.chapters.length,0),[vols]);
 
-  const toggleVolume = (volumeId: string) => {
-    setVolumes((prev) => prev.map((v) => (v.id === volumeId ? { ...v, collapsed: !v.collapsed } : v)));
-  };
+  const handleKey=useCallback((e:React.KeyboardEvent)=>{if((e.ctrlKey||e.metaKey)&&e.key==="s"){e.preventDefault();const nv=vols.map(v=>({...v,chapters:v.chapters.map(c=>c.id===activeId?{...c,content}:c)}));setVols(nv);setSaved(Date.now());apiPut("/api/data/editor",{volumes:nv}).catch(console.error);}},[content,activeId,vols]);
 
-  const deleteChapter = (chapterId: string) => {
-    // Find all chapters flat
-    const allChapters = volumes.flatMap((v) => v.chapters);
-    if (allChapters.length <= 1) return; // Don't delete last chapter
-    setVolumes((prev) =>
-      prev.map((v) => ({ ...v, chapters: v.chapters.filter((c) => c.id !== chapterId) }))
-    );
-    if (activeChapterId === chapterId) {
-      const remaining = allChapters.filter((c) => c.id !== chapterId);
-      if (remaining.length) setActiveChapterId(remaining[0].id);
-    }
-  };
-
-  const deleteVolume = (volumeId: string) => {
-    if (volumes.length <= 1) return;
-    const vol = volumes.find((v) => v.id === volumeId);
-    if (vol && vol.chapters.some((c) => c.id === activeChapterId)) {
-      const other = volumes.find((v) => v.id !== volumeId);
-      if (other && other.chapters.length) setActiveChapterId(other.chapters[0].id);
-    }
-    setVolumes((prev) => prev.filter((v) => v.id !== volumeId));
-  };
-
-  const startRename = (id: string, currentTitle: string) => {
-    setRenaming(id);
-    setRenameValue(currentTitle);
-    setShowOutlineMenu(null);
-  };
-
-  const commitRename = () => {
-    if (!renaming || !renameValue.trim()) { setRenaming(null); return; }
-    setVolumes((prev) =>
-      prev.map((v) => {
-        if (v.id === renaming) return { ...v, title: renameValue.trim() };
-        return { ...v, chapters: v.chapters.map((c) => (c.id === renaming ? { ...c, title: renameValue.trim() } : c)) };
-      })
-    );
-    setRenaming(null);
-  };
-
-  // ── Stats ──
-  const wordCount = useMemo(() => countWords(editorContent), [editorContent]);
-  const totalWords = useMemo(() => volumes.reduce((sum, v) => sum + v.chapters.reduce((s, c) => s + countWords(c.content), 0), 0), [volumes]);
-  const totalChapters = useMemo(() => volumes.reduce((s, v) => s + v.chapters.length, 0), [volumes]);
-
-  // ── Keyboard shortcuts ──
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-      e.preventDefault();
-      // Force save
-      setVolumes((prev) =>
-        prev.map((v) => ({ ...v, chapters: v.chapters.map((c) => (c.id === activeChapterId ? { ...c, content: editorContent, updatedAt: Date.now() } : c)) }))
-      );
-      setLastSaved(Date.now());
-    }
-  }, [editorContent, activeChapterId]);
+  if(!loaded)return<div className="loading" style={{height:"100vh"}}><div className="loading-spinner"/>加载中…</div>;
 
   return (
-    <div className="editor-layout" onKeyDown={handleKeyDown}>
-      {/* ═══ LEFT: Chapter Tree ═══ */}
-      <div className="editor-sidebar">
-        <div className="editor-sidebar-header">
-          <span style={{ fontFamily: "var(--font-serif)", fontWeight: 700, fontSize: 14 }}>📂 大纲</span>
-          <button className="editor-icon-btn" onClick={addVolume} title="新建卷">＋</button>
+    <div style={{display:"flex",height:"100vh",overflow:"hidden"}} onKeyDown={handleKey}>
+      {/* LEFT */}
+      <div style={{width:leftW,flexShrink:0,background:"var(--paper-card)",borderRight:"1px solid var(--ink-100)",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        <div style={{padding:"14px 14px 10px",borderBottom:"1px solid var(--ink-50)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <span style={{fontFamily:"var(--font-serif)",fontWeight:700,fontSize:14}}>📂 大纲</span>
+          <button onClick={addVol} style={{width:26,height:26,border:"1px solid var(--ink-200)",borderRadius:4,background:"transparent",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center"}}>＋</button>
         </div>
-        <div className="editor-tree">
-          {volumes.map((vol) => (
-            <div key={vol.id}>
-              <div
-                className={`tree-volume ${activeVolume?.id === vol.id ? "active" : ""}`}
-                onContextMenu={(e) => { e.preventDefault(); setShowOutlineMenu(vol.id); }}
-              >
-                <span className="tree-toggle" onClick={() => toggleVolume(vol.id)}>{vol.collapsed ? "▶" : "▼"}</span>
-                {renaming === vol.id ? (
-                  <input className="tree-rename-input" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={commitRename} onKeyDown={(e) => e.key === "Enter" && commitRename()} autoFocus />
-                ) : (
-                  <span className="tree-title" onDoubleClick={() => startRename(vol.id, vol.title)}>{vol.title}</span>
-                )}
-                <button className="tree-action-btn" onClick={() => addChapter(vol.id)} title="添加章节">+</button>
-                {volumes.length > 1 && <button className="tree-action-btn danger" onClick={() => deleteVolume(vol.id)} title="删除卷">×</button>}
-              </div>
-              {!vol.collapsed && vol.chapters.map((ch) => (
-                <div
-                  key={ch.id}
-                  className={`tree-chapter ${ch.id === activeChapterId ? "active" : ""}`}
-                  onClick={() => setActiveChapterId(ch.id)}
-                >
-                  {renaming === ch.id ? (
-                    <input className="tree-rename-input" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={commitRename} onKeyDown={(e) => e.key === "Enter" && commitRename()} autoFocus />
-                  ) : (
-                    <>
-                      <span className="tree-chapter-title" onDoubleClick={() => startRename(ch.id, ch.title)}>{ch.title}</span>
-                      <span className="tree-chapter-wc">{countWords(ch.content)}字</span>
-                    </>
-                  )}
-                  {volumes.flatMap((v) => v.chapters).length > 1 && (
-                    <button className="tree-action-btn danger small" onClick={(e) => { e.stopPropagation(); deleteChapter(ch.id); }} title="删除章节">×</button>
-                  )}
-                </div>
-              ))}
+        <div style={{flex:1,overflowY:"auto",padding:"8px 6px"}}>
+          {vols.map(v=><div key={v.id}>
+            <div style={{display:"flex",alignItems:"center",gap:4,padding:"6px 8px",borderRadius:4,fontSize:13,fontWeight:600,color:"var(--ink-700)",marginBottom:2,background:activeVol?.id===v.id?"var(--paper-warm)":"transparent"}}>
+              <span style={{cursor:"pointer",fontSize:10,width:14,textAlign:"center"}} onClick={()=>setVols(vols.map(x=>x.id===v.id?{...x,collapsed:!x.collapsed}:x))}>{v.collapsed?"▶":"▼"}</span>
+              {renaming===v.id?<input value={renameVal} onChange={e=>setRenameVal(e.target.value)} onBlur={commitRename} onKeyDown={e=>e.key==="Enter"&&commitRename()} autoFocus style={{flex:1,border:"1px solid var(--accent)",borderRadius:3,padding:"2px 6px",fontSize:12,outline:"none"}}/>
+              :<span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} onDoubleClick={()=>startRename(v.id,v.title)}>{v.title}</span>}
+              <button onClick={()=>addCh(v.id)} title="添加章节" style={{width:20,height:20,border:"none",borderRadius:3,background:"transparent",color:"var(--ink-400)",fontSize:14,cursor:"pointer"}}>+</button>
+              {vols.length>1&&<button onClick={()=>delVol(v.id)} style={{width:20,height:20,border:"none",borderRadius:3,background:"transparent",color:"var(--ink-400)",fontSize:12,cursor:"pointer"}}>×</button>}
             </div>
-          ))}
+            {!v.collapsed&&v.chapters.map(ch=><div key={ch.id} onClick={()=>setActiveId(ch.id)} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px 5px 28px",borderRadius:4,fontSize:12.5,color:ch.id===activeId?"var(--accent)":"var(--ink-600)",background:ch.id===activeId?"var(--accent-muted)":"transparent",fontWeight:ch.id===activeId?600:400,cursor:"pointer",marginBottom:1}}>
+              {renaming===ch.id?<input value={renameVal} onChange={e=>setRenameVal(e.target.value)} onBlur={commitRename} onKeyDown={e=>e.key==="Enter"&&commitRename()} autoFocus style={{flex:1,border:"1px solid var(--accent)",borderRadius:3,padding:"2px 6px",fontSize:12,outline:"none"}} onClick={e=>e.stopPropagation()}/>
+              :<><span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} onDoubleClick={()=>startRename(ch.id,ch.title)}>{ch.title}</span><span style={{fontSize:10,color:"var(--ink-300)",fontFamily:"var(--font-mono)"}}>{wc(ch.content)}字</span></>}
+              {totalCh>1&&<button onClick={e=>{e.stopPropagation();delCh(ch.id);}} style={{width:18,height:18,border:"none",background:"transparent",color:"var(--ink-400)",fontSize:12,cursor:"pointer"}}>×</button>}
+            </div>)}
+          </div>)}
         </div>
-        <div className="editor-sidebar-footer">
-          <div>{totalChapters} 章 · {totalWords.toLocaleString()} 字</div>
-        </div>
+        <div style={{padding:"10px 14px",borderTop:"1px solid var(--ink-50)",fontSize:11,color:"var(--ink-400)"}}>{totalCh} 章 · {totalW.toLocaleString()} 字</div>
+      </div>
+      <div style={{width:4,cursor:"col-resize",background:"transparent",flexShrink:0}} onMouseDown={e=>startDrag("left",e)}>
+        <div style={{width:2,height:"100%",margin:"0 auto",background:"var(--ink-100)",transition:"background 0.15s"}} onMouseEnter={e=>(e.currentTarget.style.background="var(--accent)")} onMouseLeave={e=>(e.currentTarget.style.background="var(--ink-100)")}/>
       </div>
 
-      {/* ═══ CENTER: Text Editor ═══ */}
-      <div className="editor-main">
-        <div className="editor-main-header">
-          <div>
-            <h3 style={{ fontFamily: "var(--font-serif)", fontSize: 18, fontWeight: 700, marginBottom: 2 }}>
-              {activeChapter?.title || "选择章节"}
-            </h3>
-            <span className="text-xs text-muted">
-              {activeVolume?.title} · {wordCount.toLocaleString()} 字 · 自动保存于 {fmtDate(lastSaved)}
-            </span>
-          </div>
+      {/* CENTER */}
+      <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",background:"var(--paper)"}}>
+        <div style={{padding:"16px 28px 12px",borderBottom:"1px solid var(--ink-50)",background:"var(--paper-card)"}}>
+          <h3 style={{fontFamily:"var(--font-serif)",fontSize:18,fontWeight:700,marginBottom:2}}>{activeCh?.title||"选择章节"}</h3>
+          <span style={{fontSize:11,color:"var(--ink-400)"}}>{activeVol?.title} · {words.toLocaleString()} 字{saved?` · 已保存`:""}</span>
         </div>
-        <div className="editor-textarea-wrap">
-          <textarea
-            ref={textareaRef}
-            className="editor-textarea"
-            value={editorContent}
-            onChange={(e) => setEditorContent(e.target.value)}
-            placeholder="在这里开始写作…&#10;&#10;提示：&#10;· Ctrl+S 手动保存&#10;· 内容会自动保存&#10;· 双击左侧目录项可重命名"
-            spellCheck={false}
-          />
-        </div>
+        <div style={{flex:1,overflow:"hidden"}}><textarea value={content} onChange={e=>setContent(e.target.value)} placeholder="在这里开始写作…" spellCheck={false}
+          style={{width:"100%",height:"100%",border:"none",outline:"none",resize:"none",padding:"28px 48px 48px",fontFamily:"var(--font-serif)",fontSize:16,lineHeight:2,color:"var(--ink-800)",background:"var(--paper)",maxWidth:780,margin:"0 auto",display:"block"}}/></div>
       </div>
 
-      {/* ═══ RIGHT: AI Panel ═══ */}
-      <div className="editor-panel">
-        <div className="editor-panel-header">
-          <span style={{ fontFamily: "var(--font-serif)", fontWeight: 700, fontSize: 14 }}>🤖 AI 助手</span>
-        </div>
-
-        {/* Chapter Stats */}
-        <div className="panel-section">
-          <div className="panel-section-title">本章统计</div>
-          <div className="panel-stat-grid">
-            <div className="panel-stat"><span className="panel-stat-value">{wordCount.toLocaleString()}</span><span className="panel-stat-label">字数</span></div>
-            <div className="panel-stat"><span className="panel-stat-value">{editorContent.split(/\n\n+/).filter(Boolean).length}</span><span className="panel-stat-label">段落</span></div>
-            <div className="panel-stat"><span className="panel-stat-value">{editorContent ? (editorContent.match(/[""「」『』]/g) || []).length / 2 | 0 : 0}</span><span className="panel-stat-label">对话</span></div>
-            <div className="panel-stat"><span className="panel-stat-value">{Math.ceil(wordCount / 500)}</span><span className="panel-stat-label">预计阅读(分)</span></div>
-          </div>
-        </div>
-
-        {/* AI Actions */}
-        <div className="panel-section">
-          <div className="panel-section-title">AI 操作</div>
-          <div className="panel-actions">
-            <button className="panel-action-btn primary" disabled>
-              <span>✨</span> 生成本章内容
-            </button>
-            <button className="panel-action-btn" disabled>
-              <span>📝</span> 续写下一段
-            </button>
-            <button className="panel-action-btn" disabled>
-              <span>🔄</span> 改写选中文本
-            </button>
-            <button className="panel-action-btn" disabled>
-              <span>📊</span> 风格分析
-            </button>
-          </div>
-          <div className="panel-ai-notice">
-            <span>🚧</span> AI 生成功能需要配置模型后启用。请前往「设置」页面配置 API Key。
-          </div>
-        </div>
-
-        {/* Pipeline Preview */}
-        <div className="panel-section">
-          <div className="panel-section-title">Film Pipeline</div>
-          <div className="pipeline-steps">
-            {[
-              { label: "Scene Planner", desc: "场景拆分", status: "idle" },
-              { label: "Scene Director", desc: "导演指令", status: "idle" },
-              { label: "Actor Agents", desc: "角色演绎", status: "idle" },
-              { label: "Editor-Stylist", desc: "剪辑风格化", status: "idle" },
-            ].map((step) => (
-              <div className="pipeline-step" key={step.label}>
-                <div className={`pipeline-step-dot ${step.status}`} />
-                <div>
-                  <div className="pipeline-step-label">{step.label}</div>
-                  <div className="pipeline-step-desc">{step.desc}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Quick Info */}
-        <div className="panel-section">
-          <div className="panel-section-title">项目总览</div>
-          <div style={{ fontSize: 12, color: "var(--ink-400)", lineHeight: 1.8 }}>
-            共 {volumes.length} 卷 · {totalChapters} 章<br />
-            总字数: {totalWords.toLocaleString()} 字<br />
-            {activeChapter && <>上次编辑: {fmtDate(activeChapter.updatedAt)}</>}
-          </div>
-        </div>
+      <div style={{width:4,cursor:"col-resize",background:"transparent",flexShrink:0}} onMouseDown={e=>startDrag("right",e)}>
+        <div style={{width:2,height:"100%",margin:"0 auto",background:"var(--ink-100)",transition:"background 0.15s"}} onMouseEnter={e=>(e.currentTarget.style.background="var(--accent)")} onMouseLeave={e=>(e.currentTarget.style.background="var(--ink-100)")}/>
       </div>
 
-      {/* ── Inline Styles (scoped to editor) ── */}
-      <style>{editorStyles}</style>
+      {/* RIGHT */}
+      <div style={{width:rightW,flexShrink:0,background:"var(--paper-card)",borderLeft:"1px solid var(--ink-100)",display:"flex",flexDirection:"column",overflowY:"auto"}}>
+        <div style={{padding:"14px 16px 10px",borderBottom:"1px solid var(--ink-50)"}}><span style={{fontFamily:"var(--font-serif)",fontWeight:700,fontSize:14}}>🤖 AI 助手</span></div>
+        <div style={{padding:"14px 16px",borderBottom:"1px solid var(--ink-50)"}}>
+          <div style={{fontSize:11,fontWeight:600,textTransform:"uppercase",letterSpacing:.5,color:"var(--ink-400)",marginBottom:10}}>本章统计</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {[{v:words.toLocaleString(),l:"字数"},{v:content.split(/\n\n+/).filter(Boolean).length,l:"段落"},{v:content?(content.match(/[""「」『』]/g)||[]).length/2|0:0,l:"对话"},{v:Math.ceil(words/500),l:"阅读(分)"}].map(s=>
+              <div key={s.l} style={{background:"var(--ink-50)",borderRadius:6,padding:10,textAlign:"center"}}><span style={{display:"block",fontFamily:"var(--font-mono)",fontSize:18,fontWeight:700,color:"var(--ink-800)"}}>{s.v}</span><span style={{display:"block",fontSize:10,color:"var(--ink-400)",marginTop:2}}>{s.l}</span></div>
+            )}
+          </div>
+        </div>
+        <div style={{padding:"14px 16px",borderBottom:"1px solid var(--ink-50)"}}>
+          <div style={{fontSize:11,fontWeight:600,textTransform:"uppercase",letterSpacing:.5,color:"var(--ink-400)",marginBottom:10}}>AI 操作</div>
+          {["✨ 生成本章","📝 续写下一段","🔄 改写选中","📊 风格分析"].map(t=><button key={t} disabled style={{display:"flex",alignItems:"center",gap:8,padding:"9px 12px",border:"1px solid var(--ink-200)",borderRadius:6,background:"transparent",color:"var(--ink-600)",fontSize:12.5,cursor:"not-allowed",opacity:.45,width:"100%",textAlign:"left",marginBottom:6,fontFamily:"var(--font-sans)"}}>{t}</button>)}
+          <div style={{marginTop:8,padding:"10px 12px",background:"var(--paper-warm)",borderRadius:6,fontSize:11,color:"var(--ink-400)",lineHeight:1.5}}>🚧 AI 功能需配置模型后启用。</div>
+        </div>
+        <div style={{padding:"14px 16px",fontSize:12,color:"var(--ink-400)",lineHeight:1.8}}>
+          共 {vols.length} 卷 · {totalCh} 章<br/>总字数: {totalW.toLocaleString()}<br/>数据自动保存至 /data/editor/
+        </div>
+      </div>
     </div>
   );
 }
-
-/* ═══════════════════════════════════════════
-   Editor-specific CSS (injected inline since
-   we can't easily append to global.css)
-   ═══════════════════════════════════════════ */
-const editorStyles = `
-.editor-layout {
-  display: flex;
-  height: calc(100vh - 0px);
-  overflow: hidden;
-}
-
-/* ── Left Sidebar ── */
-.editor-sidebar {
-  width: 220px;
-  flex-shrink: 0;
-  background: var(--paper-card);
-  border-right: 1px solid var(--ink-100);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.editor-sidebar-header {
-  padding: 14px 14px 10px;
-  border-bottom: 1px solid var(--ink-50);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.editor-icon-btn {
-  width: 26px; height: 26px; border: 1px solid var(--ink-200); border-radius: 4px;
-  background: transparent; cursor: pointer; font-size: 14px; color: var(--ink-500);
-  display: flex; align-items: center; justify-content: center;
-  transition: all 0.15s;
-}
-.editor-icon-btn:hover { background: var(--ink-50); color: var(--ink-800); }
-.editor-tree { flex: 1; overflow-y: auto; padding: 8px 6px; }
-.tree-volume {
-  display: flex; align-items: center; gap: 4px;
-  padding: 6px 8px; border-radius: 4px; font-size: 13px; font-weight: 600;
-  color: var(--ink-700); cursor: default; margin-bottom: 2px;
-}
-.tree-volume.active { background: var(--paper-warm); }
-.tree-toggle { cursor: pointer; font-size: 10px; color: var(--ink-400); width: 14px; text-align: center; flex-shrink: 0; }
-.tree-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tree-action-btn {
-  width: 20px; height: 20px; border: none; border-radius: 3px; background: transparent;
-  color: var(--ink-400); font-size: 14px; cursor: pointer; display: flex; align-items: center;
-  justify-content: center; opacity: 0; transition: opacity 0.15s, background 0.15s; flex-shrink: 0;
-}
-.tree-volume:hover .tree-action-btn,
-.tree-chapter:hover .tree-action-btn { opacity: 1; }
-.tree-action-btn:hover { background: var(--ink-100); color: var(--ink-700); }
-.tree-action-btn.danger:hover { background: var(--accent-muted); color: var(--accent); }
-.tree-action-btn.small { width: 18px; height: 18px; font-size: 12px; }
-.tree-chapter {
-  display: flex; align-items: center; gap: 6px;
-  padding: 5px 8px 5px 28px; border-radius: 4px; font-size: 12.5px;
-  color: var(--ink-600); cursor: pointer; margin-bottom: 1px; transition: background 0.15s;
-}
-.tree-chapter:hover { background: var(--paper-warm); }
-.tree-chapter.active { background: var(--accent-muted); color: var(--accent); font-weight: 600; }
-.tree-chapter-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tree-chapter-wc { font-size: 10px; color: var(--ink-300); flex-shrink: 0; font-family: var(--font-mono); }
-.tree-rename-input {
-  flex: 1; border: 1px solid var(--accent); border-radius: 3px; padding: 2px 6px;
-  font-size: 12px; font-family: var(--font-sans); outline: none; background: white;
-}
-.editor-sidebar-footer {
-  padding: 10px 14px; border-top: 1px solid var(--ink-50);
-  font-size: 11px; color: var(--ink-400);
-}
-
-/* ── Center: Main Editor ── */
-.editor-main {
-  flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--paper);
-}
-.editor-main-header {
-  padding: 16px 28px 12px;
-  border-bottom: 1px solid var(--ink-50);
-  background: var(--paper-card);
-}
-.editor-textarea-wrap {
-  flex: 1; overflow: hidden; padding: 0;
-}
-.editor-textarea {
-  width: 100%; height: 100%; border: none; outline: none; resize: none;
-  padding: 28px 48px 48px;
-  font-family: var(--font-serif);
-  font-size: 16px;
-  line-height: 2;
-  color: var(--ink-800);
-  background: var(--paper);
-  max-width: 780px;
-  margin: 0 auto;
-  display: block;
-}
-.editor-textarea::placeholder {
-  color: var(--ink-300);
-  font-style: italic;
-}
-
-/* ── Right: AI Panel ── */
-.editor-panel {
-  width: 260px; flex-shrink: 0;
-  background: var(--paper-card);
-  border-left: 1px solid var(--ink-100);
-  display: flex; flex-direction: column;
-  overflow-y: auto;
-}
-.editor-panel-header {
-  padding: 14px 16px 10px;
-  border-bottom: 1px solid var(--ink-50);
-}
-.panel-section {
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--ink-50);
-}
-.panel-section-title {
-  font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.5px; color: var(--ink-400); margin-bottom: 10px;
-}
-.panel-stat-grid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
-}
-.panel-stat {
-  background: var(--ink-50); border-radius: 6px; padding: 10px;
-  text-align: center;
-}
-.panel-stat-value {
-  display: block; font-family: var(--font-mono); font-size: 18px;
-  font-weight: 700; color: var(--ink-800); line-height: 1.2;
-}
-.panel-stat-label {
-  display: block; font-size: 10px; color: var(--ink-400); margin-top: 2px;
-}
-.panel-actions {
-  display: flex; flex-direction: column; gap: 6px;
-}
-.panel-action-btn {
-  display: flex; align-items: center; gap: 8px;
-  padding: 9px 12px; border: 1px solid var(--ink-200); border-radius: 6px;
-  background: transparent; color: var(--ink-600); font-family: var(--font-sans);
-  font-size: 12.5px; cursor: pointer; transition: all 0.15s; text-align: left;
-}
-.panel-action-btn:hover:not(:disabled) { background: var(--paper-warm); border-color: var(--ink-300); }
-.panel-action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.panel-action-btn.primary { background: var(--accent-muted); border-color: var(--accent); color: var(--accent); font-weight: 600; }
-.panel-action-btn.primary:hover:not(:disabled) { background: var(--accent); color: white; }
-.panel-ai-notice {
-  margin-top: 10px; padding: 10px 12px;
-  background: var(--paper-warm); border-radius: 6px;
-  font-size: 11px; color: var(--ink-400); line-height: 1.5;
-  display: flex; align-items: flex-start; gap: 8px;
-}
-.panel-ai-notice span { flex-shrink: 0; }
-.pipeline-steps { display: flex; flex-direction: column; gap: 8px; }
-.pipeline-step { display: flex; align-items: center; gap: 10px; }
-.pipeline-step-dot {
-  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
-  background: var(--ink-200);
-}
-.pipeline-step-dot.done { background: var(--jade); }
-.pipeline-step-dot.active { background: var(--gold); animation: pulse 1.5s infinite; }
-.pipeline-step-label { font-size: 12px; font-weight: 600; color: var(--ink-700); }
-.pipeline-step-desc { font-size: 10px; color: var(--ink-400); }
-`;

@@ -778,3 +778,361 @@ body {
 .font-mono { font-family: var(--font-mono); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .w-full { width: 100%; }
+
+/* ═══════════════════════════════════════════
+   NEW STYLES: v0.3 additions
+   Append to end of existing global.css
+   ═══════════════════════════════════════════ */
+
+/* ── Placeholder pages ── */
+.placeholder-page {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.placeholder-hero {
+  text-align: center;
+  padding: 40px 24px 32px;
+}
+
+.placeholder-hero-icon {
+  font-size: 48px;
+  display: block;
+  margin-bottom: 12px;
+}
+
+.placeholder-hero h3 {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink-900);
+  margin-bottom: 6px;
+}
+
+.placeholder-hero p {
+  color: var(--ink-400);
+  font-size: 14px;
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.placeholder-features {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  margin: 24px 0 32px;
+}
+
+.placeholder-feature-card {
+  background: var(--paper-card);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 20px;
+  text-align: center;
+  transition: transform 0.2s var(--ease-out), box-shadow 0.2s;
+}
+
+.placeholder-feature-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.placeholder-feature-icon {
+  font-size: 28px;
+  margin-bottom: 10px;
+}
+
+.placeholder-feature-card h4 {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-800);
+  margin-bottom: 6px;
+}
+
+.placeholder-feature-card p {
+  font-size: 12px;
+  color: var(--ink-400);
+  line-height: 1.5;
+}
+
+.placeholder-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--paper-warm);
+  border: 1px dashed var(--ink-200);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  margin-top: 16px;
+}
+
+.placeholder-banner span {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.placeholder-banner strong {
+  font-size: 13px;
+  color: var(--ink-700);
+  display: block;
+  margin-bottom: 2px;
+}
+
+.placeholder-banner p {
+  font-size: 12px;
+  color: var(--ink-400);
+  margin: 0;
+}
+
+/* ── DB Preview (Reference page) ── */
+.placeholder-db-preview {
+  max-width: 520px;
+  margin: 0 auto 32px;
+}
+
+.placeholder-db-preview h4 {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-700);
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.placeholder-schema {
+  background: var(--paper-card);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.schema-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--ink-50);
+}
+
+.schema-row:last-child {
+  border-bottom: none;
+}
+
+.schema-field {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink-700);
+  font-weight: 500;
+}
+
+.schema-type {
+  font-size: 11px;
+  color: var(--ink-400);
+}
+
+/* ── Editor Preview ── */
+.editor-preview {
+  display: grid;
+  grid-template-columns: 180px 1fr 200px;
+  gap: 1px;
+  background: var(--ink-100);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  margin-bottom: 32px;
+  min-height: 280px;
+  box-shadow: var(--shadow-md);
+}
+
+.editor-col {
+  background: var(--paper-card);
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-col-header {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-500);
+  border-bottom: 1px solid var(--ink-50);
+  background: var(--ink-50);
+}
+
+.editor-col-body {
+  padding: 14px;
+  flex: 1;
+  font-size: 13px;
+}
+
+.editor-tree-item {
+  padding: 5px 8px;
+  font-size: 12.5px;
+  color: var(--ink-500);
+  border-radius: 4px;
+  margin-bottom: 2px;
+}
+
+.editor-tree-item.indent {
+  padding-left: 24px;
+}
+
+.editor-tree-item.active {
+  background: var(--accent-muted);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.pipeline-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--ink-100);
+  display: inline-block;
+}
+
+.pipeline-dot.done {
+  background: var(--jade);
+}
+
+.pipeline-dot.active {
+  background: var(--gold);
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.placeholder-btn {
+  padding: 8px 12px;
+  background: var(--ink-50);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--ink-600);
+  text-align: center;
+  margin-bottom: 8px;
+  cursor: default;
+}
+
+/* ── Quant params (Character page) ── */
+.quant-param {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--ink-50);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--ink-600);
+}
+
+/* ── Placeholder toggle ── */
+.placeholder-toggle {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--ink-200);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.placeholder-toggle::after {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  top: 2px;
+  left: 2px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+}
+
+/* ── Controls (Trend Analysis) ── */
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.control-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-400);
+}
+
+.control-select {
+  padding: 7px 12px;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink-700);
+  background: var(--paper-card);
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+  min-width: 140px;
+}
+
+.control-select:focus {
+  border-color: var(--accent);
+}
+
+.btn-primary {
+  padding: 8px 20px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  align-self: flex-end;
+}
+
+.btn-primary:hover {
+  background: var(--accent-light);
+}
+
+.btn-primary:active {
+  transform: scale(0.97);
+}
+
+.btn-primary:disabled {
+  background: var(--ink-300);
+  cursor: not-allowed;
+}
+
+/* Resize handle between sidebar and main content */
+.resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0;
+  left: 1px;
+  width: 2px;
+  background: var(--ink-100);
+  transition: background 0.15s;
+}
+.resize-handle:hover::after {
+  background: var(--accent);
+}
+
+/* Fix sidebar width to be controlled by style prop */
+.sidebar {
+  width: auto !important; /* Override fixed width — now controlled by JS */
+}
