@@ -76,9 +76,6 @@ def _build_main_cmd(repo_root: Path, python_bin: str, override: dict) -> list[st
     if override.get("page_default_wait_sec") is not None:
         cmd += ["--page_default_wait_sec", str(int(override["page_default_wait_sec"]))]
 
-    if override.get("consecutive_threshold") is not None:
-        cmd += ["--consecutive_threshold", str(int(override["consecutive_threshold"]))]
-
     return cmd
 
 
