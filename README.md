@@ -269,3 +269,39 @@ git push origin main
 2. Review changed files，重点看 `ui/frontend/src/pages/ConfigPage.tsx`、`ui/frontend/src/pages/RunnerPage.tsx`、`ui/frontend/src/App.tsx`；
 3. 点击 **Squash and merge**（便于保持主干历史整洁）；
 4. 合并后本地执行 `git pull origin main` 同步。
+
+### 6.1 冲突时到底选 current / incoming / both？
+当你的冲突文件是下面这些时，按“**功能优先**”处理，不要机械点一个按钮：
+
+- `main.py`
+- `ui/backend/app/routers/config_api.py`
+- `ui/backend/app/routers/tasks_api.py`
+- `ui/backend/app/static/index.html`
+- `ui/frontend/src/App.tsx`
+- `ui/frontend/src/pages/ConfigPage.tsx`
+- `ui/frontend/src/pages/RunnerPage.tsx`
+
+建议策略（VS Code 冲突按钮对应）：
+
+1. **`ConfigPage.tsx` / `RunnerPage.tsx` / `App.tsx`：优先保留同一套调用链**  
+   - 目标是这三者 props 必须一致（`ConfigPage` 要有 `onDraftChange`，`RunnerPage` 用 `currentConfig + configVersion`）。  
+   - 通常做法是：先 `Accept Incoming`（保留修复版），再手动检查调用是否闭环。  
+   - 如果你看到两边都各有新功能，用 `Accept Both` 后手工删掉重复分支。
+
+2. **`config_api.py` / `tasks_api.py` / `main.py`：优先保留“runtime override + adhoc 启动”链路**  
+   - 这三者是联动的，不能只留其中一个文件的旧逻辑。  
+   - 如果冲突双方分别改了不同参数字段，优先 `Accept Both`，然后手动去重并确保参数名一致。
+
+3. **`ui/backend/app/static/index.html`：优先保留 deterministic 资源名**  
+   - 应该引用 `assets/index.js`、`assets/index.css`（不是 hash 名）。  
+   - 若冲突中有 hash 文件名，通常丢弃 hash 版本，保留稳定文件名版本。
+
+4. **完成冲突后必须做这两个校验**
+
+```bash
+cd ui/frontend && npm run build
+cd ../..
+python -m compileall main.py ui/backend/app
+```
+
+只要这两个命令都通过，基本就可以安全 merge 到 `main`。
