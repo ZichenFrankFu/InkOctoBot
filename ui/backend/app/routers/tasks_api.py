@@ -61,20 +61,9 @@ def _build_main_cmd(repo_root: Path, python_bin: str, override: dict) -> list[st
 
     if override.get("max_retries") is not None:
         cmd += ["--max_retries", str(int(override["max_retries"]))]
-    if override.get("retry_delay") is not None:
-        cmd += ["--retry_delay", str(float(override["retry_delay"]))]
 
     if override.get("consecutive_threshold") is not None:
         cmd += ["--consecutive_threshold", str(int(override["consecutive_threshold"]))]
-    if override.get("antibot_min_html_length") is not None:
-        cmd += ["--antibot_min_html_length", str(int(override["antibot_min_html_length"]))]
-
-    if override.get("page_max_retries") is not None:
-        cmd += ["--page_max_retries", str(int(override["page_max_retries"]))]
-    if override.get("page_retry_delay") is not None:
-        cmd += ["--page_retry_delay", str(float(override["page_retry_delay"]))]
-    if override.get("page_default_wait_sec") is not None:
-        cmd += ["--page_default_wait_sec", str(int(override["page_default_wait_sec"]))]
 
     return cmd
 
