@@ -34,7 +34,19 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
   const [schema, setSchema] = useState<ConfigSchema | null>(null);
   const [runs, setRuns] = useState<ConfigRun[]>([]);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState<any>({});
+  const [form, setForm] = useState<any>({
+    platform: "fanqie",
+    rank_key: "",
+    pages: null,
+    qidian_pages: 2,
+    chapter_count: 5,
+    newbook_chapter_count: 2,
+    no_detail: false,
+    no_chapters: false,
+    use_proxy: false,
+    max_retries: 3,
+    consecutive_threshold: 3,
+  });
 
   const rankKeys = useMemo(() => {
     if (!schema) return [];
@@ -50,20 +62,14 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
     apiGet<ConfigSchema>("/api/config/schema")
       .then((res) => {
         setSchema(res);
-        setForm(res.defaults || {});
+        setForm((f: any) => ({ ...f, ...res.defaults }));
       })
       .catch((e) => alert(String(e)));
     loadRuns().catch((e) => alert(String(e)));
   }, []);
 
-  function resetToDefaults() {
-    if (!schema) return;
-    setForm({ ...schema.defaults });
-  }
-
   function applyRunToForm(run: ConfigRun) {
-    const defaults = schema?.defaults || {};
-    setForm({ ...defaults, ...run.config });
+    setForm((f: any) => ({ ...f, ...run.config }));
     props.onSaved(run.run_id);
   }
 
@@ -84,16 +90,13 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
   return (
     <div style={{ color: "var(--text-primary)" }}>
       <h2 style={{ marginTop: 0, marginBottom: 14 }}>爬虫配置</h2>
-      <p style={{ marginBottom: 8, color: "var(--text-secondary)" }}>
-        每次运行请手动调整参数；若不调整则直接使用默认值（已显示在输入框中）。
-      </p>
-      <p style={{ marginBottom: 16, color: "var(--text-secondary)", fontSize: 12 }}>
-        只有点击「保存配置」后，当前参数才会永久保存为一个可复用 run。
+      <p style={{ marginBottom: 16, color: "var(--text-secondary)" }}>
+        保存一份可复用的采集参数，然后在「爬虫运行」页直接选择并启动。
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
         <section style={cardStyle}>
-          <h3 style={{ marginTop: 0, marginBottom: 12 }}>基础采集参数</h3>
+          <h3 style={{ marginTop: 0, marginBottom: 14 }}>运行参数</h3>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="platform">
@@ -111,7 +114,9 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
               <select style={inputStyle} value={form.rank_key ?? ""} onChange={(e) => setForm({ ...form, rank_key: e.target.value })}>
                 <option value="">(ALL ranks)</option>
                 {rankKeys.map((k) => (
-                  <option key={k} value={k}>{k}</option>
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
                 ))}
               </select>
             </Field>
@@ -130,50 +135,59 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
             )}
 
             <Field label="qidian_pages">
-              <input style={inputStyle} type="number" min={1} value={form.qidian_pages ?? ""} onChange={(e) => setForm({ ...form, qidian_pages: Math.max(1, Number(e.target.value)) })} />
+              <input
+                style={inputStyle}
+                type="number"
+                min={1}
+                value={form.qidian_pages}
+                onChange={(e) => setForm({ ...form, qidian_pages: Math.max(1, Number(e.target.value)) })}
+              />
             </Field>
 
             <Field label="chapter_count">
-              <input style={inputStyle} type="number" min={1} value={form.chapter_count ?? ""} onChange={(e) => setForm({ ...form, chapter_count: Math.max(1, Number(e.target.value)) })} />
+              <input
+                style={inputStyle}
+                type="number"
+                min={1}
+                value={form.chapter_count}
+                onChange={(e) => setForm({ ...form, chapter_count: Math.max(1, Number(e.target.value)) })}
+              />
             </Field>
 
             <Field label="newbook_chapter_count">
-              <input style={inputStyle} type="number" min={1} value={form.newbook_chapter_count ?? ""} onChange={(e) => setForm({ ...form, newbook_chapter_count: Math.max(1, Number(e.target.value)) })} />
+              <input
+                style={inputStyle}
+                type="number"
+                min={1}
+                value={form.newbook_chapter_count}
+                onChange={(e) => setForm({ ...form, newbook_chapter_count: Math.max(1, Number(e.target.value)) })}
+              />
             </Field>
-          </div>
 
-          <h3 style={{ marginTop: 18, marginBottom: 10 }}>高级运行参数（来自 config/crawler.yaml）</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="max_retries">
-              <input style={inputStyle} type="number" min={0} value={form.max_retries ?? ""} onChange={(e) => setForm({ ...form, max_retries: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) })} />
-            </Field>
-
-            <Field label="retry_delay（秒）">
-              <input style={inputStyle} type="number" min={0} step="0.1" value={form.retry_delay ?? ""} onChange={(e) => setForm({ ...form, retry_delay: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) })} />
-            </Field>
-
-            <Field label="page_max_retries">
-              <input style={inputStyle} type="number" min={0} value={form.page_max_retries ?? ""} onChange={(e) => setForm({ ...form, page_max_retries: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) })} />
-            </Field>
-
-            <Field label="page_retry_delay（秒）">
-              <input style={inputStyle} type="number" min={0} step="0.1" value={form.page_retry_delay ?? ""} onChange={(e) => setForm({ ...form, page_retry_delay: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) })} />
-            </Field>
-
-            <Field label="page_default_wait_sec">
-              <input style={inputStyle} type="number" min={1} value={form.page_default_wait_sec ?? ""} onChange={(e) => setForm({ ...form, page_default_wait_sec: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })} />
+              <input
+                style={inputStyle}
+                type="number"
+                min={0}
+                value={form.max_retries ?? ""}
+                onChange={(e) => setForm({ ...form, max_retries: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) })}
+              />
             </Field>
 
             <Field label="consecutive_threshold">
-              <input style={inputStyle} type="number" min={1} value={form.consecutive_threshold ?? ""} onChange={(e) => setForm({ ...form, consecutive_threshold: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })} />
-            </Field>
-
-            <Field label="antibot_min_html_length">
-              <input style={inputStyle} type="number" min={100} value={form.antibot_min_html_length ?? ""} onChange={(e) => setForm({ ...form, antibot_min_html_length: e.target.value === "" ? null : Math.max(100, Number(e.target.value)) })} />
+              <input
+                style={inputStyle}
+                type="number"
+                min={1}
+                value={form.consecutive_threshold ?? ""}
+                onChange={(e) =>
+                  setForm({ ...form, consecutive_threshold: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })
+                }
+              />
             </Field>
           </div>
 
-          <div style={{ display: "flex", gap: 18, marginTop: 14, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 18, marginTop: 14 }}>
             <label style={{ display: "flex", gap: 8, alignItems: "center", color: "var(--text-secondary)" }}>
               <input type="checkbox" checked={!!form.use_proxy} onChange={(e) => setForm({ ...form, use_proxy: e.target.checked })} />
               use_proxy
@@ -189,14 +203,15 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
           </div>
 
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-            <button onClick={resetToDefaults} style={buttonStyle}>恢复默认值</button>
-            <button disabled={saving} onClick={save} style={buttonStyle}>{saving ? "保存中..." : "保存配置"}</button>
+            <button disabled={saving} onClick={save} style={buttonStyle}>
+              {saving ? "保存中..." : "保存配置"}
+            </button>
           </div>
         </section>
 
         <section style={cardStyle}>
           <h3 style={{ marginTop: 0, marginBottom: 10 }}>最近配置记录</h3>
-          <div style={{ maxHeight: 460, overflow: "auto", border: "1px solid var(--border)", borderRadius: 10 }}>
+          <div style={{ maxHeight: 420, overflow: "auto", border: "1px solid var(--border)", borderRadius: 10 }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead style={{ position: "sticky", top: 0, background: "var(--bg-surface)" }}>
                 <tr>
@@ -211,7 +226,9 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
                     <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{r.run_id}</td>
                     <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{r.config.platform || "-"}</td>
                     <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>
-                      <button style={{ ...buttonStyle, padding: "6px 10px" }} onClick={() => applyRunToForm(r)}>载入</button>
+                      <button style={{ ...buttonStyle, padding: "6px 10px" }} onClick={() => applyRunToForm(r)}>
+                        载入并设为当前
+                      </button>
                     </td>
                   </tr>
                 ))}
