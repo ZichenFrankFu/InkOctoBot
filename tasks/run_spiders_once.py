@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from pathlib import Path
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent[1]
 
 import config
 print("CONFIG FILE:", config.__file__)

@@ -159,6 +159,7 @@ class DatabaseHandler:
         self.logger = logger or logging.getLogger("DatabaseHandler")
         self._lock = threading.RLock()
         self._init_db()
+        self._conn = self._connect()
 
     # ---------- connection / tx ----------
 
@@ -174,17 +175,15 @@ class DatabaseHandler:
 
     @contextmanager
     def _tx(self, *, immediate: bool = True):
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
-                yield conn
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
+        def _tx(self, *, immediate=True):
+            with self._lock:
+                self._conn.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
+                try:
+                    yield self._conn
+                    self._conn.commit()
+                except Exception:
+                    self._conn.rollback()
+                    raise
 
     def _run_with_retry(self, fn, *, max_retries: int = 5, base_sleep: float = 0.15):
         for attempt in range(max_retries):

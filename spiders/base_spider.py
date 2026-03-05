@@ -79,9 +79,6 @@ class BaseSpider(ABC):
         if self.proxy_pool:
             self.current_proxy = self.proxy_pool[0]
 
-        # 反爬检测相关
-        self.antibot_keywords = ['验证码', 'captcha', '访问限制', '安全验证']
-
         # 缓存
         self.book_cache: Dict[str, Dict[str, Any]] = {}
         self.retry_count = 0
@@ -223,90 +220,6 @@ class BaseSpider(ABC):
         self.current_proxy = self.proxy_pool[self.current_proxy_index % len(self.proxy_pool)]
         self.logger.info(f"轮换代理: {self.current_proxy}")
         return True
-
-    """检查是否被反爬虫检测到，包含空白页面检测"""
-    def _check_antibot_detected(self, soup: BeautifulSoup, html_length: int = 0) -> bool:
-        try:
-            # 1. 首先检查页面是否过短（空白页面检测）
-            min_content_length = 200
-            if html_length < min_content_length:
-                self.logger.warning(f"页面过短 ({html_length} 字符)，疑似反爬空白页面")
-                return True
-
-            # 2. 检查页面文本内容
-            page_text = str(soup).lower()
-
-            # 检查是否包含反爬关键词
-            antibot_patterns = [
-                '验证码', 'captcha', '访问限制', 'rate limit', '访问异常',
-                '安全验证', '请完成验证', 'human verification', 'robot check',
-                'security check', 'access denied', 'denied access',
-                'anti-spam', '反爬虫', '防采集'
-            ]
-
-            for pattern in antibot_patterns:
-                if pattern.lower() in page_text:
-                    self.logger.warning(f"检测到反爬关键词: {pattern}")
-                    return True
-
-            # 3. 检查页面标题
-            title = soup.title.string.lower() if soup.title else ""
-            antibot_titles = []
-            for antibot_title in antibot_titles:
-                if antibot_title in title:
-                    self.logger.warning(f"检测到反爬标题: {title}")
-                    return True
-
-            # 4. 检查是否有验证码元素
-            captcha_selectors = [
-                '.captcha', '.verification-code', '.security-check', '#captcha',
-                '.recaptcha', '.h-captcha', '.g-recaptcha', '.verify-code',
-                '.verification', '.verification-modal', '.antibot-modal',
-                '.antispam', '.human-verification', '.robot-check'
-            ]
-            for selector in captcha_selectors:
-                if soup.select_one(selector):
-                    self.logger.warning(f"检测到验证码元素: {selector}")
-                    return True
-
-            # 5. 检查页面是否只包含基础HTML结构（无实际内容）
-            body_content = soup.find('body')
-            if body_content:
-                body_text = body_content.get_text(strip=True)
-                if len(body_text) < 50:  # 页面body内容过少
-                    self.logger.warning(f"页面内容过少 ({len(body_text)} 字符)，疑似反爬")
-                    return True
-
-            # 6. 检查是否有反爬警告信息
-            warning_messages = [
-                '为了保障您的访问安全', '检测到异常访问', '请完成下方验证后继续',
-                '您的请求过于频繁', '请稍后再试', '请输入验证码继续访问'
-            ]
-            for warning in warning_messages:
-                if warning in page_text:
-                    self.logger.warning(f"检测到反爬警告: {warning}")
-                    return True
-
-            # 7. 检查是否有反爬重定向相关的meta标签
-            meta_refresh = soup.find('meta', {'http-equiv': 'refresh'})
-            if meta_refresh and ('url=' in str(meta_refresh.get('content', '')).lower()):
-                self.logger.warning("检测到页面重定向meta标签，疑似反爬")
-                return True
-
-            # 8. 检查是否有iframe指向验证码页面
-            iframes = soup.find_all('iframe')
-            for iframe in iframes:
-                src = iframe.get('src', '')
-                if any(keyword in src.lower() for keyword in ['captcha', 'verify', 'verification', 'challenge']):
-                    self.logger.warning(f"检测到验证码iframe: {src}")
-                    return True
-
-            return False
-
-        except Exception as e:
-            self.logger.debug(f"反爬检测失败: {e}")
-            # 如果反爬检测失败，保守起见认为检测到了反爬
-            return True
 
     # ------------------------------------------------------------------
     # Selenium and webdriver
@@ -1191,7 +1104,7 @@ class BaseSpider(ABC):
         """
         # 首先尝试从数据库获取归一化标题
         if not self.db_handler:
-            return None
+            return (fallback_title or f"小说ID:{novel_id}", "fallback标题")
 
         title_norm = ""
 
@@ -1401,8 +1314,9 @@ class BaseSpider(ABC):
             return False
 
         try:
+            platform = getattr(self, "site_key", None) or getattr(self, "platform", None) or "unknown"
             cnt = int(self.db_handler.get_first_n_chapter_count(
-                platform="fanqie",
+                platform=platform,
                 platform_novel_id=str(platform_novel_id).strip()
             ) or 0)
             return cnt >= int(target_chapter_count or 0)

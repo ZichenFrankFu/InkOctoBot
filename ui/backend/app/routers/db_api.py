@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
-
+import re
 from ..settings import settings
 from ..utils import load_repo_config, get_db_path
 
@@ -38,6 +38,8 @@ def read_table(name: str, limit: int = Query(default=50, ge=1, le=500), offset: 
         if not exists:
             raise HTTPException(status_code=404, detail="table not found")
 
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+            raise HTTPException(status_code=400, detail="invalid table name")
         rows = con.execute(f"SELECT * FROM {name} LIMIT ? OFFSET ?", (limit, offset)).fetchall()
         data = [dict(r) for r in rows]
     return {"rows": data, "limit": limit, "offset": offset}
@@ -102,7 +104,7 @@ def novel_detail(novel_uid: int):
             (novel_uid,),
         ).fetchall()
         chapters = con.execute(
-            "SELECT * FROM first_n_chapters WHERE novel_uid=? ORDER BY chapter_index ASC",
+            "SELECT * FROM first_n_chapters WHERE novel_uid=? ORDER BY chapter_num ASC",
             (novel_uid,),
         ).fetchall()
 

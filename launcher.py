@@ -6,11 +6,16 @@ import multiprocessing
 import sys
 from pathlib import Path
 import uvicorn
+import os
 
 import logging
 from pathlib import Path
 
-LOG_DIR = Path.home() / "AppData" / "Local" / "webnovel_trends"
+if os.name == 'nt':
+    LOG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "InkOctoBot"
+else:
+    LOG_DIR = Path.home() / ".local" / "share" / "InkOctoBot"
+
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOG_DIR / "launcher.log"
 
@@ -40,9 +45,6 @@ def wait_for_server(host, port, timeout=15):
 
 
 def run_server():
-    import sys
-    from pathlib import Path
-    import uvicorn
 
     # 确保 exe 运行时也能找到你的项目代码
     # 开发态：项目根目录

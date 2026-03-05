@@ -246,7 +246,7 @@ def _run_platform_all_ranks(
     if platform == "fanqie":
         from spiders.fanqie_spider import FanqieSpider
 
-        site_cfg: Dict[str, Any] = _get_site_cfg("fanqie")
+        site_cfg = _get_site_cfg("fanqie")
         spider = FanqieSpider(site_cfg, db)
         rank_urls = (spider.site_config.get("rank_urls") or {})
         if not rank_urls:

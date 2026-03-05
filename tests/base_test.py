@@ -18,8 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Project root is the directory containing this file (config.py should also live here).
-PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
-
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 # ------------------------------------------------------------------
 # Timing

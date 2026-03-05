@@ -4,7 +4,7 @@ import threading
 import time
 from pathlib import Path
 from typing import List, Optional
-
+from .settings import settings
 from .store import Task, TaskStore
 
 class ProcessRunner:
@@ -27,7 +27,7 @@ class ProcessRunner:
                         cmd,
                         stdout=lf,
                         stderr=subprocess.STDOUT,
-                        cwd=str(Path(cmd[0]).resolve().parent) if False else None,
+                        cwd=str(settings.repo_root),
                         text=True,
                     )
                     code = p.wait()
