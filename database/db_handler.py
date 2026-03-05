@@ -156,7 +156,7 @@ class DatabaseHandler:
     def __init__(self, db_path: str, *, is_test: bool = False, logger: Optional[logging.Logger] = None):
         self.db_path = db_path
         self.is_test = is_test
-        self.logger = logger or logging.getLogger("DatabaseHandler")
+        self.logger = logger or logging.getLogger("inkoctobot.db")
         self._lock = threading.RLock()
         self._init_db()
         self._conn = self._connect()

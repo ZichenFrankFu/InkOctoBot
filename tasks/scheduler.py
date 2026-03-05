@@ -67,32 +67,7 @@ def _sleep_until(target: datetime, *, logger: logging.Logger, jitter_sec: int = 
         time.sleep(min(jitter_sec, 5))
 
 
-def _build_logger() -> logging.Logger:
-    logs_dir = PROJECT_ROOT / "outputs" / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / "scheduler.log"
-
-    logger = logging.getLogger("webnovel_trends_scheduler")
-    logger.setLevel(logging.INFO)
-    logger.handlers.clear()
-
-    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-
-    # Console
-    sh = logging.StreamHandler()
-    sh.setFormatter(fmt)
-    logger.addHandler(sh)
-
-    # File
-    fh = logging.FileHandler(str(log_path), encoding="utf-8")
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
-
-    logger.info(f"[scheduler] log file: {log_path}")
-    logger.info(f"[scheduler] project root: {PROJECT_ROOT}")
-    logger.info(f"[scheduler] config file: {getattr(config, '__file__', '<unknown>')}")
-    return logger
-
+logger = logging.getLogger("inkoctobot.scheduler")
 
 class TaskScheduler:
     """

@@ -4,6 +4,8 @@ from __future__ import annotations
 import sqlite3
 import pandas as pd
 from typing import Optional
+import logging
+logger = logging.getLogger("inkoctobot.analysis.data_access")
 
 def connect_sqlite(db_path: str) -> sqlite3.Connection:
     return sqlite3.connect(db_path)

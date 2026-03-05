@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-
+from log_setup import setup_logging
 import uvicorn
 import webview
 
@@ -26,11 +26,12 @@ def _log_dir() -> Path:
 
 
 LOG_PATH = _log_dir() / "launcher.log"
-logging.basicConfig(
-    filename=str(LOG_PATH),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
+setup_logging(
+    log_dir=_log_dir(),
+    console_level=logging.WARNING,
+    log_filename="launcher.log",
 )
+logger = logging.getLogger("inkoctobot.launcher")
 logging.info("Launcher starting...")
 
 HOST = "127.0.0.1"

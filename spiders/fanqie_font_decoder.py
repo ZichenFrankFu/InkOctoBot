@@ -4,6 +4,9 @@ import requests
 from fontTools.ttLib import TTFont
 import base64
 from io import BytesIO
+import logging
+logger = logging.getLogger("inkoctobot.spider.font_decoder")
+
 
 dict_data2_xs = {
         '58670': '0', '58413': '1', '58678': '2', '58371': '3', '58353': '4',
@@ -149,7 +152,7 @@ class FontDecoder:
             self.font_cache[font_url] = font_data
             return font_data
         except Exception as e:
-            print(f"字体下载失败 {font_url}: {e}")
+            logger.info(f"字体下载失败 {font_url}: {e}")
             return None
 
     def decode_base64_font(self, base64_str):
@@ -164,7 +167,7 @@ class FontDecoder:
             self.font_cache[cache_key] = font_data
             return font_data
         except Exception as e:
-            print(f"Base64字体解码失败: {e}")
+            logger.info(f"Base64字体解码失败: {e}")
             return None
 
     def analyze_font(self, font_data):
@@ -192,7 +195,7 @@ class FontDecoder:
 
             return mapping
         except Exception as e:
-            print(f"字体分析失败: {e}")
+            logger.info(f"字体分析失败: {e}")
             return {}
 
     def decrypt_text(self, text, mapping):

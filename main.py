@@ -14,17 +14,19 @@
 
 from __future__ import annotations
 import argparse
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+from log_setup import setup_logging
 import config
 from tasks.run_spiders_once import run_once
 from tasks.scheduler import TaskScheduler
-from spiders.antibot import FatalAntiBotException
-import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+setup_logging(log_dir=config.OUTPUT_PATHS.get("logs", "outputs/logs"))
+logger = logging.getLogger("inkoctobot.main")
 
 def _split_csv(s: str) -> list[str]:
     s = (s or "").strip()
@@ -103,7 +105,7 @@ def _run_single_rank(
     """
     db_path = _resolve_db_path()
     db = _init_db(db_path)
-    print(f"[db] initialized: {db_path}")
+    logger.info(f"[db] initialized: {db_path}")
 
     platform = (platform or "").strip().lower()
 
@@ -124,7 +126,7 @@ def _run_single_rank(
             rank_key=rank_key, normal_count=chapter_count, newbook_count=newbook_chapter_count
         )
 
-        print(
+        logger.info(
             f"\n[{platform}] ===== Start single rank =====\n"
             f"rank_key={rank_key}\n"
             f"chapter_count={cc}\n"
@@ -138,7 +140,7 @@ def _run_single_rank(
             chapter_count=cc,
         )
         ident = f"{result.get('rank_family','')}|{result.get('rank_sub_cat','')}".strip("|")
-        print(
+        logger.info(
             f"\n[qidian] done: rank={rank_key} ({ident}) "
             f"items={len(result.get('items') or [])} snapshot_id={result.get('snapshot_id')}"
         )
@@ -162,7 +164,7 @@ def _run_single_rank(
             rank_key=rank_key, normal_count=chapter_count, newbook_count=newbook_chapter_count
         )
 
-        print(
+        logger.info(
             f"\n[{platform}] ===== Start single rank =====\n"
             f"rank_key={rank_key}\n"
             f"chapter_count={cc}\n"
@@ -177,7 +179,7 @@ def _run_single_rank(
             chapter_count=cc,
         )
         ident = f"{result.get('rank_family','')}|{result.get('rank_sub_cat','')}".strip("|")
-        print(
+        logger.info(
             f"\n[fanqie] done: rank={rank_key} ({ident}) "
             f"items={len(result.get('items') or [])} snapshot_id={result.get('snapshot_id')}"
         )
@@ -202,7 +204,7 @@ def _run_platform_all_ranks(
     """
     db_path = _resolve_db_path()
     db = _init_db(db_path)
-    print(f"[db] initialized: {db_path}")
+    logger.info(f"[db] initialized: {db_path}")
 
     platform = (platform or "").strip().lower()
 
@@ -225,7 +227,7 @@ def _run_platform_all_ranks(
                 newbook_count=newbook_chapter_count,
             )
 
-            print(
+            logger.info(
                 f"\n[qidian] ===== Switching rank ({idx}/{total}) =====\n"
                 f"rank_key={rk}\n"
                 f"pages={pages}\n"
@@ -257,13 +259,13 @@ def _run_platform_all_ranks(
         other_ranks = [k for k in rank_urls.keys() if not _is_newbook_rank(k)]
 
         if other_ranks:
-            print(f"[fanqie] other ranks: {len(other_ranks)} | chapter_count={chapter_count}")
+            logger.info(f"[fanqie] other ranks: {len(other_ranks)} | chapter_count={chapter_count}")
         if newbook_ranks:
-            print(f"[fanqie] newbook ranks: {len(newbook_ranks)} | newbook_chapter_count={newbook_chapter_count}")
+            logger.info(f"[fanqie] newbook ranks: {len(newbook_ranks)} | newbook_chapter_count={newbook_chapter_count}")
 
         # 其他榜单：使用 chapter_count
         for idx, rk in enumerate(other_ranks, 1):
-            print(
+            logger.info(
                 f"\n[fanqie] ===== Switching rank ({idx}/{len(other_ranks)}): {rk} "
                 f"(chapter_count={chapter_count}) ====="
             )
@@ -277,7 +279,7 @@ def _run_platform_all_ranks(
 
         # 新书榜：使用 newbook_chapter_count（默认 2）
         for idx, rk in enumerate(newbook_ranks, 1):
-            print(
+            logger.info(
                 f"\n[fanqie] ===== Switching rank ({idx}/{len(other_ranks)}): {rk} "
                 f"(chapter_count={chapter_count}) ====="
             )
@@ -296,7 +298,7 @@ def _run_platform_all_ranks(
 
 
 def run_scheduler() -> None:
-    print("[scheduler] starting TaskScheduler...")
+    logger.info("[scheduler] starting TaskScheduler...")
     scheduler = TaskScheduler()
     scheduler.run_forever(interval_minutes=60)
 
@@ -398,9 +400,8 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    print("WebNovel Trends 小说热点分析系统")
-    print("当前时间:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    print("=" * 70)
+    logger.info("InkOctoBot AI小说创作工作流")
+    logger.info("当前时间:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     if args.mode == "scheduler":
         run_scheduler()

@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 from dataclasses import dataclass
 from itertools import combinations
-
+import logging
+logger = logging.getLogger("inkoctobot.analysis.metrics")
 
 # ==========================
 # Category merge rules

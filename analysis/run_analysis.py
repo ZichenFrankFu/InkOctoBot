@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from analysis.trend_analyzer import TrendAnalyzer, AnalyzerArgs
-
+import logging
+logger = logging.getLogger("inkoctobot.analysis.run_analysis")
 
 def _get_db_date_range(db_path: str) -> tuple[date, date]:
     conn = sqlite3.connect(db_path)
@@ -85,8 +86,8 @@ def main():
         report_id=args.report_id,
     ))
 
-    print(f"[window] {start_date} ~ {end_date} (end_date=today, America/New_York)")
-    print(f"[final report] {report_path}")
+    logger.info(f"[window] {start_date} ~ {end_date} (end_date=today, America/New_York)")
+    logger.info(f"[final report] {report_path}")
 
 
 if __name__ == "__main__":

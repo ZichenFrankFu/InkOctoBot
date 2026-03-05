@@ -150,3 +150,8 @@ target/
 # ----------------------------------------------------------
 db.sqlite3
 db.sqlite3-journal
+
+# Database（持久化数据，不上传）
+data/*.db
+data/*.db-journal
+data/*.db-wal

@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-
+import logging
+logger = logging.getLogger("inkoctobot.analysis.report")
 
 @dataclass(frozen=True)
 class ReportConfig:

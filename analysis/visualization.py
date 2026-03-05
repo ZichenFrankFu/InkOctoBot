@@ -5,6 +5,8 @@ import os
 import re
 import matplotlib.pyplot as plt
 import pandas as pd
+import logging
+logger = logging.getLogger("inkoctobot.analysis.visualization")
 
 # 解决中文字体 warning（Windows 常见字体）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS"]

@@ -207,6 +207,22 @@ erDiagram
   }
 ```
 
+### 4.3 Logger命名规范
+```text
+inkoctobot                    # root
+inkoctobot.main               # CLI 入口
+inkoctobot.launcher           # GUI 入口
+inkoctobot.spider.起点中文网    # 起点爬虫（用 site name）
+inkoctobot.spider.番茄小说     # 番茄爬虫
+inkoctobot.db                 # DatabaseHandler
+inkoctobot.tasks.run_once     # 单次爬取任务
+inkoctobot.scheduler          # 定时调度
+inkoctobot.analysis.metrics   # 分析模块
+inkoctobot.analysis.heat
+inkoctobot.analysis.report
+inkoctobot.antibot            # 反爬检测
+inkoctobot.ui.backend         # FastAPI 后端
+```
 ---
 
 ## 5. 额外信息

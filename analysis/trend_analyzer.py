@@ -22,7 +22,8 @@ from analysis.metrics import (
 )
 from analysis.report import ReportConfig, build_final_report
 from analysis.visualization import save_bar_topk, save_line_top_tags
-
+import logging
+logger = logging.getLogger("inkoctobot.analysis.trend_analyzer")
 
 @dataclass(frozen=True)
 class AnalyzerArgs:

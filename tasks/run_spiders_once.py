@@ -1,6 +1,8 @@
 # tasks/jobs.py
 from __future__ import annotations
 from datetime import datetime
+import logging
+logger = logging.getLogger("inkoctobot.tasks.run_once")
 
 from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +27,7 @@ def run_once(
     # ------------------------------------------------------------------
     # Init DB
     # ------------------------------------------------------------------
-    print("[DEBUG] run_once started")
+    logger.debug("[DEBUG] run_once started")
 
     db_cfg_path = Path(config.DATABASE["path"])
 
@@ -37,7 +39,7 @@ def run_once(
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     db = DatabaseHandler(str(db_path))
-    print(f"[db] initialized: {db_path}")
+    logger.info(f"[db] initialized: {db_path}")
 
     # ------------------------------------------------------------------
     # Init spiders
@@ -51,7 +53,7 @@ def run_once(
     qidian_spider = QidianSpider(qidian_config, db_handler=db)
     fanqie_spider = FanqieSpider(fanqie_config, db_handler=db)
 
-    print("[spider] initialized: qidian + fanqie")
+    logger.info("[spider] initialized: qidian + fanqie")
 
     # ------------------------------------------------------------------
     # Rank types defaults: run all rank_type_map keys (as requested)
@@ -80,9 +82,9 @@ def run_once(
     # Crawl Qidian
     # Default: 2 pages ~ 40 books (20/page) + first 5 chapters
     # ------------------------------------------------------------------
-    print("\n" + "=" * 70)
-    print(f"[qidian] ranks={len(qidian_rank_types)} pages={qidian_pages} chapters={chapter_count}")
-    print("=" * 70)
+    logger.info("\n" + "=" * 70)
+    logger.info(f"[qidian] ranks={len(qidian_rank_types)} pages={qidian_pages} chapters={chapter_count}")
+    logger.info("=" * 70)
 
     qidian_ok = 0
     for rank_type in qidian_rank_types:
@@ -92,7 +94,7 @@ def run_once(
         is_new = (rank_family == "新书榜")
         effective_chapter_count = new_book_chapter_count if is_new else int(chapter_count)
 
-        print(
+        logger.info(
             f"[qidian] rank={rank_type} | "
             f"rank_family={rank_family} | "
             f"chapters={effective_chapter_count}"
@@ -109,17 +111,17 @@ def run_once(
                 max_books=int(qidian_pages) * 20,
             )
             qidian_ok += 1
-            print(f"     done: items={len(result.get('items', []))}")
+            logger.info(f"     done: items={len(result.get('items', []))}")
         except Exception as e:
-            print(f"     failed: {e}")
+            logger.info(f"     failed: {e}")
 
     # ------------------------------------------------------------------
     # Crawl Fanqie
     # Default: each rank ~ 30 books + first 5 chapters
     # ------------------------------------------------------------------
-    print("\n" + "=" * 70)
-    print(f"[fanqie] ranks={len(fanqie_rank_types)} chapters={chapter_count}")
-    print("=" * 70)
+    logger.info("\n" + "=" * 70)
+    logger.info(f"[fanqie] ranks={len(fanqie_rank_types)} chapters={chapter_count}")
+    logger.info("=" * 70)
 
     fanqie_ok = 0
     for rank_type in fanqie_rank_types:
@@ -129,7 +131,7 @@ def run_once(
         is_new = (rank_family == "新书榜")
         effective_chapter_count = new_book_chapter_count if is_new else int(chapter_count)
 
-        print(
+        logger.info(
             f"[fanqie] rank={rank_type} | "
             f"rank_family={rank_family} | "
             f"chapters={effective_chapter_count}"
@@ -146,9 +148,9 @@ def run_once(
                 max_books=30,
             )
             fanqie_ok += 1
-            print(f"     done: items={len(result.get('items', []))}")
+            logger.info(f"     done: items={len(result.get('items', []))}")
         except Exception as e:
-            print(f"     failed: {e}")
+            logger.info(f"     failed: {e}")
 
     # ------------------------------------------------------------------
     # Close spiders
@@ -166,19 +168,19 @@ def run_once(
     # Summary
     # ------------------------------------------------------------------
     today = datetime.now().strftime("%Y-%m-%d")
-    print("\n" + "=" * 70)
-    print(f"[summary] {today}")
-    print(f"  qidian ranks finished: {qidian_ok}/{len(qidian_rank_types)}")
-    print(f"  fanqie ranks finished: {fanqie_ok}/{len(fanqie_rank_types)}")
+    logger.info("\n" + "=" * 70)
+    logger.info(f"[summary] {today}")
+    logger.info(f"  qidian ranks finished: {qidian_ok}/{len(qidian_rank_types)}")
+    logger.info(f"  fanqie ranks finished: {fanqie_ok}/{len(fanqie_rank_types)}")
 
     try:
         q_today = db.get_today_rankings(platform="qidian")
         f_today = db.get_today_rankings(platform="fanqie")
-        print(f"  qidian books today: {len(q_today)}")
-        print(f"  fanqie books today: {len(f_today)}")
+        logger.info(f"  qidian books today: {len(q_today)}")
+        logger.info(f"  fanqie books today: {len(f_today)}")
     except Exception as e:
-        print(f"  db stats failed: {e}")
-    print("=" * 70)
-    print("[done] crawl finished.")
+        logger.info(f"  db stats failed: {e}")
+    logger.info("=" * 70)
+    logger.info("[done] crawl finished.")
 
-    print("[DEBUG] run_once finished")
+    logger.debug("[DEBUG] run_once finished")

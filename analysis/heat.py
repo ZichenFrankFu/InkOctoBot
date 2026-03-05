@@ -4,6 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
+import logging
+logger = logging.getLogger("inkoctobot.analysis.heat")
 
 @dataclass(frozen=True)
 class HeatConfig:

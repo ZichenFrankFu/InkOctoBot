@@ -12,6 +12,7 @@ undetected-chromedriver>=3.5.5
 pandas>=1.5.0
 numpy>=1.24.0
 sqlalchemy>=1.4.0
+PyYAML>=6.0
 
 # scheduling
 schedule>=1.2.0
