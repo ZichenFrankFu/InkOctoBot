@@ -41,31 +41,10 @@ export default function ConfigPage(props: {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<any>({});
 
-  const selectedPlatforms: string[] = useMemo(() => {
-    const platforms = Array.isArray(form.platforms) ? form.platforms : form.platform ? [form.platform] : ["fanqie"];
-    return platforms.filter((p: string) => p === "fanqie" || p === "qidian");
-  }, [form.platforms, form.platform]);
-
-  const rankOptions = useMemo(() => {
-    if (!schema) return [] as { value: string; label: string; platform: string }[];
-    const options: { value: string; label: string; platform: string }[] = [];
-    if (selectedPlatforms.includes("fanqie")) {
-      options.push(...schema.rank_keys.fanqie.map((k) => ({ value: `fanqie::${k}`, label: `番茄 | ${k}`, platform: "fanqie" })));
-    }
-    if (selectedPlatforms.includes("qidian")) {
-      options.push(...schema.rank_keys.qidian.map((k) => ({ value: `qidian::${k}`, label: `起点 | ${k}`, platform: "qidian" })));
-    }
-    return options;
-  }, [schema, selectedPlatforms]);
-
-  const selectedRankValues: string[] = useMemo(() => {
-    const rankKeys = Array.isArray(form.rank_keys) ? form.rank_keys : form.rank_key ? [form.rank_key] : [];
-    if (!rankKeys.length) return [ALL_OPTION];
-    const set = new Set(rankOptions.map((o) => o.value));
-    return rankKeys.filter((v: string) => set.has(v));
-  }, [form.rank_keys, form.rank_key, rankOptions]);
-
-  const isFanqieOnly = selectedPlatforms.length === 1 && selectedPlatforms[0] === "fanqie";
+  const rankKeys = useMemo(() => {
+    if (!schema) return [];
+    return form.platform === "qidian" ? schema.rank_keys.qidian : schema.rank_keys.fanqie;
+  }, [schema, form.platform]);
 
   async function loadRuns() {
     const res = await apiGet<{ runs: ConfigRun[] }>("/api/config/runs");
@@ -76,15 +55,7 @@ export default function ConfigPage(props: {
     apiGet<ConfigSchema>("/api/config/schema")
       .then((res) => {
         setSchema(res);
-        const defaults = { ...res.defaults };
-        defaults.platforms = Array.isArray(defaults.platforms) ? defaults.platforms : [defaults.platform || "fanqie"];
-        defaults.rank_keys = Array.isArray(defaults.rank_keys) ? defaults.rank_keys : [];
-        if (defaults.platforms.length === 1 && defaults.platforms[0] === "qidian" && (defaults.pages == null || defaults.pages < 1)) {
-          defaults.pages = 2;
-        }
-        if (defaults.platforms.length === 1 && defaults.platforms[0] === "fanqie") {
-          defaults.pages = 1;
-        }
+        const defaults = res.defaults || {};
         setForm(defaults);
         props.onDraftChange(defaults);
       })
@@ -98,63 +69,6 @@ export default function ConfigPage(props: {
       props.onDraftChange(next);
       return next;
     });
-  }
-
-  function onPlatformsChange(values: string[]) {
-    const nextPlatforms = values.length ? values : ["fanqie"];
-    const next: any = { ...form, platforms: nextPlatforms };
-    if (nextPlatforms.length === 1 && nextPlatforms[0] === "fanqie") {
-      next.pages = 1;
-    }
-    if (nextPlatforms.length === 1 && nextPlatforms[0] === "qidian" && (next.pages == null || next.pages < 1)) {
-      next.pages = 2;
-    }
-
-    const allowed = new Set<string>();
-    if (schema) {
-      if (nextPlatforms.includes("fanqie")) schema.rank_keys.fanqie.forEach((k) => allowed.add(`fanqie::${k}`));
-      if (nextPlatforms.includes("qidian")) schema.rank_keys.qidian.forEach((k) => allowed.add(`qidian::${k}`));
-    }
-    next.rank_keys = (Array.isArray(next.rank_keys) ? next.rank_keys : []).filter((v: string) => allowed.has(v));
-
-    setForm(next);
-    props.onDraftChange(next);
-  }
-
-  function onRankKeysChange(values: string[]) {
-    if (values.includes(ALL_OPTION)) {
-      updateForm({ rank_keys: [] });
-      return;
-    }
-    updateForm({ rank_keys: values });
-  }
-
-  function toPayload(source: any) {
-    const platforms = Array.isArray(source.platforms) ? source.platforms : source.platform ? [source.platform] : [];
-    const rankValues: string[] = Array.isArray(source.rank_keys) ? source.rank_keys : [];
-
-    const qidianRanks = rankValues.filter((x) => x.startsWith("qidian::")).map((x) => x.slice("qidian::".length));
-    const fanqieRanks = rankValues.filter((x) => x.startsWith("fanqie::")).map((x) => x.slice("fanqie::".length));
-
-    const payload: any = {
-      platforms,
-      platform: platforms.length === 1 ? platforms[0] : null,
-      rank_keys: rankValues,
-      rank_key: null,
-      qidian_ranks: qidianRanks,
-      fanqie_ranks: fanqieRanks,
-      pages: platforms.length === 1 && platforms[0] === "fanqie" ? 1 : source.pages,
-      qidian_pages: source.qidian_pages,
-      chapter_count: Math.min(5, Math.max(1, Number(source.chapter_count ?? 5))),
-      newbook_chapter_count: Math.min(5, Math.max(1, Number(source.newbook_chapter_count ?? 2))),
-      use_proxy: !!source.use_proxy,
-    };
-
-    if (payload.platform && payload.rank_keys.length === 1) {
-      payload.rank_key = (payload.rank_keys[0] as string).split("::")[1] || null;
-    }
-
-    return payload;
   }
 
   function applyRunToForm(run: ConfigRun) {
@@ -195,6 +109,12 @@ export default function ConfigPage(props: {
   return (
     <div style={{ color: "var(--text-primary)" }}>
       <h2 style={{ marginTop: 0, marginBottom: 14 }}>爬虫配置</h2>
+      <p style={{ marginBottom: 8, color: "var(--text-secondary)" }}>
+        每次运行可以手动调整；不调整则使用默认值（输入框已展示默认值）。
+      </p>
+      <p style={{ marginBottom: 16, color: "var(--text-secondary)", fontSize: 12 }}>
+        只有点击“保存配置”时，参数才会永久保存为可复用 run。
+      </p>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
         <section style={cardStyle}>
@@ -203,46 +123,37 @@ export default function ConfigPage(props: {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="platform（多选）">
               <select
-                multiple
-                size={2}
-                style={{ ...inputStyle, minHeight: 84 }}
-                value={selectedPlatforms}
-                onChange={(e) => onPlatformsChange(Array.from(e.target.selectedOptions).map((o) => o.value))}
+                style={inputStyle}
+                value={form.platform ?? ""}
+                onChange={(e) => updateForm({ platform: e.target.value, rank_key: "" })}
               >
-                <option value="fanqie">fanqie</option>
-                <option value="qidian">qidian</option>
+                {["fanqie", "qidian"].map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
               </select>
             </Field>
 
-            <Field label="rank_key（多选，含 ALL）">
-              <select
-                multiple
-                size={Math.min(8, Math.max(4, rankOptions.length + 1))}
-                style={{ ...inputStyle, minHeight: 160 }}
-                value={selectedRankValues}
-                onChange={(e) => onRankKeysChange(Array.from(e.target.selectedOptions).map((o) => o.value))}
-              >
-                <option value={ALL_OPTION}>(ALL)</option>
-                {rankOptions.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
+            <Field label="rank_key">
+              <select style={inputStyle} value={form.rank_key ?? ""} onChange={(e) => updateForm({ rank_key: e.target.value })}>
+                <option value="">(ALL)</option>
+                {rankKeys.map((k: string) => (
+                  <option key={k} value={k}>
+                    {k}
                   </option>
                 ))}
               </select>
             </Field>
 
             <Field label="pages">
-              {isFanqieOnly ? (
-                <input style={inputStyle} value="1 (fanqie fixed)" disabled />
-              ) : (
-                <input
-                  style={inputStyle}
-                  type="number"
-                  min={1}
-                  value={form.pages ?? 2}
-                  onChange={(e) => updateForm({ pages: e.target.value === "" ? 2 : Math.max(1, Number(e.target.value)) })}
-                />
-              )}
+              <input
+                style={inputStyle}
+                type="number"
+                min={1}
+                value={form.pages ?? ""}
+                onChange={(e) => updateForm({ pages: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })}
+              />
             </Field>
 
             <Field label="qidian_pages">
@@ -250,8 +161,18 @@ export default function ConfigPage(props: {
                 style={inputStyle}
                 type="number"
                 min={1}
-                value={form.qidian_pages ?? 2}
-                onChange={(e) => updateForm({ qidian_pages: e.target.value === "" ? 2 : Math.max(1, Number(e.target.value)) })}
+                value={form.qidian_pages ?? ""}
+                onChange={(e) => updateForm({ qidian_pages: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })}
+              />
+            </Field>
+
+            <Field label="qidian_pages">
+              <input
+                style={inputStyle}
+                type="number"
+                min={1}
+                value={form.chapter_count ?? ""}
+                onChange={(e) => updateForm({ chapter_count: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })}
               />
             </Field>
 
@@ -260,9 +181,20 @@ export default function ConfigPage(props: {
                 style={inputStyle}
                 type="number"
                 min={1}
-                max={5}
-                value={form.chapter_count ?? 5}
-                onChange={(e) => updateForm({ chapter_count: Math.min(5, Math.max(1, Number(e.target.value || 5))) })}
+                value={form.newbook_chapter_count ?? ""}
+                onChange={(e) =>
+                  updateForm({ newbook_chapter_count: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })
+                }
+              />
+            </Field>
+
+            <Field label="max_retries">
+              <input
+                style={inputStyle}
+                type="number"
+                min={0}
+                value={form.max_retries ?? ""}
+                onChange={(e) => updateForm({ max_retries: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) })}
               />
             </Field>
 
@@ -271,9 +203,10 @@ export default function ConfigPage(props: {
                 style={inputStyle}
                 type="number"
                 min={1}
-                max={5}
-                value={form.newbook_chapter_count ?? 2}
-                onChange={(e) => updateForm({ newbook_chapter_count: Math.min(5, Math.max(1, Number(e.target.value || 2))) })}
+                value={form.consecutive_threshold ?? ""}
+                onChange={(e) =>
+                  updateForm({ consecutive_threshold: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })
+                }
               />
             </Field>
           </div>
@@ -282,6 +215,14 @@ export default function ConfigPage(props: {
             <label style={{ display: "flex", gap: 8, alignItems: "center", color: "var(--text-secondary)" }}>
               <input type="checkbox" checked={!!form.use_proxy} onChange={(e) => updateForm({ use_proxy: e.target.checked })} />
               use_proxy
+            </label>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", color: "var(--text-secondary)" }}>
+              <input type="checkbox" checked={!!form.no_detail} onChange={(e) => updateForm({ no_detail: e.target.checked })} />
+              no_detail
+            </label>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", color: "var(--text-secondary)" }}>
+              <input type="checkbox" checked={!!form.no_chapters} onChange={(e) => updateForm({ no_chapters: e.target.checked })} />
+              no_chapters
             </label>
           </div>
 
@@ -298,31 +239,29 @@ export default function ConfigPage(props: {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead style={{ position: "sticky", top: 0, background: "var(--bg-surface)" }}>
                 <tr>
-                  <th align="left" style={{ padding: 8 }}>run_id</th>
-                  <th align="left" style={{ padding: 8 }}>platforms</th>
-                  <th align="left" style={{ padding: 8 }}>操作</th>
+                  <th align="left" style={{ padding: 8 }}>
+                    run_id
+                  </th>
+                  <th align="left" style={{ padding: 8 }}>
+                    platform
+                  </th>
+                  <th align="left" style={{ padding: 8 }}>
+                    操作
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {runs.map((r) => {
-                  const p = Array.isArray(r.config.platforms)
-                    ? r.config.platforms.join(",")
-                    : (r.config.platform || "-");
-                  return (
-                    <tr key={r.run_id}>
-                      <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{r.run_id}</td>
-                      <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{p}</td>
-                      <td style={{ borderTop: "1px solid var(--border)", padding: 8, display: "flex", gap: 8 }}>
-                        <button style={{ ...buttonStyle, padding: "6px 10px" }} onClick={() => applyRunToForm(r)}>
-                          载入
-                        </button>
-                        <button style={{ ...buttonStyle, padding: "6px 10px" }} onClick={() => removeRun(r.run_id)}>
-                          删除
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {runs.map((r) => (
+                  <tr key={r.run_id}>
+                    <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{r.run_id}</td>
+                    <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{r.config.platform || "-"}</td>
+                    <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>
+                      <button style={{ ...buttonStyle, padding: "6px 10px" }} onClick={() => applyRunToForm(r)}>
+                        载入并设为当前
+                      </button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
