@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../api/client";
-import type { ConfigSchema } from "../api/types";
+import type { ConfigRun, ConfigSchema } from "../api/types";
 
 export default function ConfigPage(props: { onSaved: (runId: string) => void }) {
   const [schema, setSchema] = useState<ConfigSchema | null>(null);
+  const [runs, setRuns] = useState<ConfigRun[]>([]);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<any>({
     platform: "fanqie",
     rank_key: "",
@@ -14,26 +16,39 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
     no_detail: false,
     no_chapters: false,
   });
+
   const rankKeys = useMemo(() => {
     if (!schema) return [];
     return form.platform === "qidian" ? schema.rank_keys.qidian : schema.rank_keys.fanqie;
   }, [schema, form.platform]);
 
+  async function loadRuns() {
+    const res = await apiGet<{ runs: ConfigRun[] }>("/api/config/runs");
+    setRuns(res.runs);
+  }
+
   useEffect(() => {
     apiGet<ConfigSchema>("/api/config/schema").then(setSchema).catch((e) => alert(String(e)));
+    loadRuns().catch((e) => alert(String(e)));
   }, []);
 
   async function save() {
-    const res = await apiPost<{ run_id: string; path: string }>("/api/config/runs", form);
-    props.onSaved(res.run_id);
-    alert(`Saved config run: ${res.run_id}`);
+    setSaving(true);
+    try {
+      const res = await apiPost<{ run_id: string; path: string }>("/api/config/runs", form);
+      props.onSaved(res.run_id);
+      await loadRuns();
+      alert(`保存成功: ${res.run_id}`);
+    } finally {
+      setSaving(false);
+    }
   }
 
   if (!schema) return <div>Loading schema...</div>;
 
   return (
     <div>
-      <h2 style={{ marginTop: 0 }}>Config</h2>
+      <h2 style={{ marginTop: 0 }}>爬虫配置</h2>
 
       <Row label="platform">
         <select value={form.platform ?? ""} onChange={(e) => setForm({ ...form, platform: e.target.value, rank_key: "" })}>
@@ -59,24 +74,35 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
             type="number"
             value={form.pages ?? ""}
             placeholder="(empty = use qidian_pages)"
-            onChange={(e) => setForm({ ...form, pages: e.target.value === "" ? null : Number(e.target.value) })}
+            onChange={(e) => setForm({ ...form, pages: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })}
           />
         </Row>
       )}
 
       <Row label="qidian_pages（legacy fallback）">
-        <input type="number" value={form.qidian_pages} onChange={(e) => setForm({ ...form, qidian_pages: Number(e.target.value) })} />
+        <input
+          type="number"
+          min={1}
+          value={form.qidian_pages}
+          onChange={(e) => setForm({ ...form, qidian_pages: Math.max(1, Number(e.target.value)) })}
+        />
       </Row>
 
       <Row label="chapter_count">
-        <input type="number" value={form.chapter_count} onChange={(e) => setForm({ ...form, chapter_count: Number(e.target.value) })} />
+        <input
+          type="number"
+          min={1}
+          value={form.chapter_count}
+          onChange={(e) => setForm({ ...form, chapter_count: Math.max(1, Number(e.target.value)) })}
+        />
       </Row>
 
       <Row label="newbook_chapter_count">
         <input
           type="number"
+          min={1}
           value={form.newbook_chapter_count}
-          onChange={(e) => setForm({ ...form, newbook_chapter_count: Number(e.target.value) })}
+          onChange={(e) => setForm({ ...form, newbook_chapter_count: Math.max(1, Number(e.target.value)) })}
         />
       </Row>
 
@@ -88,9 +114,39 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
         <input type="checkbox" checked={!!form.no_chapters} onChange={(e) => setForm({ ...form, no_chapters: e.target.checked })} />
       </Row>
 
-      <button onClick={save} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", cursor: "pointer" }}>
-        Save Config Run
+      <button
+        disabled={saving}
+        onClick={save}
+        style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", cursor: "pointer" }}
+      >
+        {saving ? "保存中..." : "保存配置"}
       </button>
+
+      <h3 style={{ marginTop: 22 }}>最近配置记录</h3>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr>
+            <th align="left">run_id</th>
+            <th align="left">platform</th>
+            <th align="left">rank_key</th>
+            <th align="left">created_at</th>
+            <th align="left">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((r) => (
+            <tr key={r.run_id}>
+              <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{r.run_id}</td>
+              <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{r.config.platform || "-"}</td>
+              <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{r.config.rank_key || "(ALL)"}</td>
+              <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{new Date(r.created_at * 1000).toLocaleString()}</td>
+              <td style={{ borderTop: "1px solid #eee", padding: 6 }}>
+                <button onClick={() => props.onSaved(r.run_id)}>设为当前运行配置</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
 
       <div style={{ marginTop: 16, fontSize: 12, color: "#666" }}>
         <div>Notes:</div>
