@@ -69,7 +69,6 @@ tests/test_output/
 # PyInstaller
 # ----------------------------------------------------------
 *.exe
-*.spec
 *.manifest
 build/
 dist/

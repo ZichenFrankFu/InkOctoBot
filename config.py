@@ -1,7 +1,20 @@
 import os
+import sys
 
-# Root Directory
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Root Directory — 打包态/源码态自动切换
+if hasattr(sys, "_MEIPASS"):
+    # PyInstaller 打包后：用户数据放在持久化位置
+    if os.name == "nt":
+        BASE_DIR = os.path.join(
+            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+            "InkOctoBot"
+        )
+    else:
+        BASE_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "InkOctoBot")
+    os.makedirs(BASE_DIR, exist_ok=True)
+else:
+    # 源码运行：项目根目录
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ------------------------------------------------------------------
 # Site configs

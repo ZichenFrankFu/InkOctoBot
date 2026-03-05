@@ -1,24 +1,31 @@
+# launcher.py
+import logging
+import multiprocessing
+import os
+import socket
+import sys
 import threading
 import time
-import socket
-import webview
-import multiprocessing
-import sys
 from pathlib import Path
+
 import uvicorn
-import os
+import webview
 
-import logging
-from pathlib import Path
 
-if os.name == 'nt':
-    LOG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "InkOctoBot"
-else:
-    LOG_DIR = Path.home() / ".local" / "share" / "InkOctoBot"
+# ---------- 跨平台日志目录 ----------
+def _log_dir() -> Path:
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+    elif sys.platform == "darwin":
+        base = str(Path.home() / "Library" / "Logs")
+    else:
+        base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    d = Path(base) / "InkOctoBot"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_PATH = LOG_DIR / "launcher.log"
 
+LOG_PATH = _log_dir() / "launcher.log"
 logging.basicConfig(
     filename=str(LOG_PATH),
     level=logging.INFO,
@@ -26,14 +33,18 @@ logging.basicConfig(
 )
 logging.info("Launcher starting...")
 
-
-
 HOST = "127.0.0.1"
 PORT = 8713
 
 
+def _project_root() -> Path:
+    """PyInstaller exe: _MEIPASS 内的代码根；源码: launcher.py 所在目录"""
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+
 def wait_for_server(host, port, timeout=15):
-    """等待端口可连接"""
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -45,41 +56,33 @@ def wait_for_server(host, port, timeout=15):
 
 
 def run_server():
-
-    # 确保 exe 运行时也能找到你的项目代码
-    # 开发态：项目根目录
-    root = Path(__file__).resolve().parent
+    root = _project_root()
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
-    # 关键：直接 import app，而不是用字符串 "ui.backend.app.main:app"
+    # 设置环境变量，让 settings.py 知道真正的项目根
+    os.environ.setdefault("WN_REPO_ROOT", str(root))
+
     from ui.backend.app.main import app
-
     uvicorn.run(app, host=HOST, port=PORT, reload=False, log_level="info")
-
 
 
 def main():
     multiprocessing.freeze_support()
 
-    # 后台线程启动服务器
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
 
-    # 等待服务器启动
     if not wait_for_server(HOST, PORT):
-        print("Server failed to start.")
+        logging.error("Server failed to start.")
         sys.exit(1)
 
-    # 创建桌面窗口
     webview.create_window(
         "WebNovel Trends",
         f"http://{HOST}:{PORT}",
         width=1200,
         height=800,
     )
-
-    # 启动 GUI 主循环
     webview.start(gui="edgechromium")
 
 

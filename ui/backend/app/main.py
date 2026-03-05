@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -12,7 +13,7 @@ from .routers.tasks_api import router as tasks_router
 from .routers.reports_api import router as reports_router
 from .routers.db_api import router as db_router
 
-app = FastAPI(title="WebNovel Trends UI Backend", version="0.1.0")
+app = FastAPI(title="InkOctoBot UI Backend", version="0.1.0")
 
 # ===== CORS：仅开发需要（Vite dev server -> FastAPI）=====
 # 生产（build 后由 FastAPI 同源托管）其实不需要 CORS
@@ -39,7 +40,13 @@ def health():
 
 # ===== React build 静态文件托管 =====
 # 你前端 build 输出到：ui/backend/app/static/
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+def _resolve_static_dir() -> Path:
+    """打包后 static 在 _MEIPASS/ui/backend/app/static"""
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "ui" / "backend" / "app" / "static"
+    return Path(__file__).resolve().parent / "static"
+
+STATIC_DIR = _resolve_static_dir()
 INDEX_HTML = STATIC_DIR / "index.html"
 ASSETS_DIR = STATIC_DIR / "assets"
 

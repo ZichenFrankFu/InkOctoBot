@@ -6,11 +6,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent[1]
 
 import config
-print("CONFIG FILE:", config.__file__)
-print("max_page_retries:", config.CRAWLER_CONFIG["page_fetch"].get("max_page_retries"))
-
-from spiders.qidian_spider import QidianSpider
-from spiders.fanqie_spider import FanqieSpider
 from database.db_handler import DatabaseHandler
 
 
@@ -23,6 +18,8 @@ def run_once(
     enrich_detail: bool = True,
     enrich_chapters: bool = True,
 ):
+    from spiders.qidian_spider import QidianSpider
+    from spiders.fanqie_spider import FanqieSpider
     """Run a single full crawl for Qidian + Fanqie and persist results into SQLite."""
 
     # ------------------------------------------------------------------
