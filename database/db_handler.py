@@ -175,15 +175,14 @@ class DatabaseHandler:
 
     @contextmanager
     def _tx(self, *, immediate: bool = True):
-        def _tx(self, *, immediate=True):
-            with self._lock:
-                self._conn.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
-                try:
-                    yield self._conn
-                    self._conn.commit()
-                except Exception:
-                    self._conn.rollback()
-                    raise
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
+            try:
+                yield self._conn
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def _run_with_retry(self, fn, *, max_retries: int = 5, base_sleep: float = 0.15):
         for attempt in range(max_retries):

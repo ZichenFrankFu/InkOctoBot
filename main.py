@@ -454,7 +454,7 @@ def main() -> None:
     _apply_runtime_overrides(args)
 
     logger.info("InkOctoBot AI小说创作工作流")
-    logger.info("当前时间:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    logger.info(f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     if args.mode == "scheduler":
         run_scheduler()
