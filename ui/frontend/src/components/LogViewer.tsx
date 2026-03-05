@@ -7,6 +7,7 @@ export default function LogViewer(props: { taskId: string; pollMs?: number; heig
   const [autoScroll, setAutoScroll] = useState(true);
   const [lastUpdateAt, setLastUpdateAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const preRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
@@ -50,6 +51,16 @@ export default function LogViewer(props: { taskId: string; pollMs?: number; heig
     preRef.current.scrollTop = preRef.current.scrollHeight;
   }, [text, autoScroll]);
 
+  async function copyLogs() {
+    try {
+      await navigator.clipboard.writeText(text || "");
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      alert("复制失败：浏览器权限不足");
+    }
+  }
+
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-surface)" }}>
       <div
@@ -65,10 +76,15 @@ export default function LogViewer(props: { taskId: string; pollMs?: number; heig
       >
         <div>offset: {offset}</div>
         <div>{lastUpdateAt ? `最后更新: ${new Date(lastUpdateAt).toLocaleTimeString()}` : "等待日志输出..."}</div>
-        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
-          自动滚动
-        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button onClick={copyLogs} style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-app)", color: "var(--text-primary)", cursor: "pointer", padding: "4px 8px", fontSize: 12 }}>
+            {copied ? "已复制" : "复制日志"}
+          </button>
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
+            自动滚动
+          </label>
+        </div>
       </div>
       {error && <div style={{ color: "var(--warning)", fontSize: 12, padding: "8px 10px" }}>日志拉取重试中：{error}</div>}
       <pre
