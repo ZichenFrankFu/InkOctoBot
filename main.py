@@ -403,8 +403,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--page_max_retries", type=int, default=None, help="临时覆盖页面抓取最大重试次数")
     parser.add_argument("--page_retry_delay", type=float, default=None, help="临时覆盖页面抓取重试延迟秒数")
     parser.add_argument("--page_default_wait_sec", type=int, default=None, help="临时覆盖页面默认等待秒数")
-    parser.add_argument("--max_retries", type=int, default=None, help="临时覆盖重试次数")
-    parser.add_argument("--consecutive_threshold", type=int, default=None, help="临时覆盖反爬连续触发阈值")
 
     return parser
 
@@ -446,14 +444,6 @@ def _apply_runtime_overrides(args: argparse.Namespace) -> None:
 
     crawler_cfg["page_fetch"] = page_fetch_cfg
     crawler_cfg["antibot"] = nested_ab
-    if getattr(args, "consecutive_threshold", None) is not None:
-        threshold = int(args.consecutive_threshold)
-        antibot_cfg["consecutive_threshold"] = threshold
-
-        nested_ab = dict(crawler_cfg.get("antibot", {}) or {})
-        nested_ab["consecutive_threshold"] = threshold
-        crawler_cfg["antibot"] = nested_ab
-
     config.CRAWLER_CONFIG = crawler_cfg
     config.ANTI_BLOCK_CONFIG = antibot_cfg
 
