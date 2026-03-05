@@ -26,19 +26,47 @@ class ConfigOverride(BaseModel):
     newbook_chapter_count: int = 2
     no_detail: bool = False
     no_chapters: bool = False
+    use_proxy: bool | None = None
+    max_retries: int | None = None
+    consecutive_threshold: int | None = None
+
+
+def _defaults_from_repo(repo_cfg) -> dict:
+    crawler = getattr(repo_cfg, "CRAWLER_CONFIG", {}) or {}
+    antibot = getattr(repo_cfg, "ANTI_BLOCK_CONFIG", {}) or {}
+    nested_ab = crawler.get("antibot", {}) or {}
+
+    return {
+        "platform": "fanqie",
+        "rank_key": "",
+        "pages": None,
+        "qidian_pages": 2,
+        "chapter_count": 5,
+        "newbook_chapter_count": 2,
+        "no_detail": False,
+        "no_chapters": False,
+        "use_proxy": bool(crawler.get("use_proxy", False)),
+        "max_retries": int(crawler.get("max_retries", 3)),
+        "consecutive_threshold": int(nested_ab.get("consecutive_threshold", antibot.get("consecutive_threshold", 3))),
+    }
+
 
 @router.get("/schema")
 def get_schema():
     repo_cfg = load_repo_config(settings.repo_root)
     rank_keys = get_rank_keys(repo_cfg)
     return {
-        "defaults": ConfigOverride().model_dump(),
+        "defaults": _defaults_from_repo(repo_cfg),
         "rank_keys": rank_keys,
         "notes": {
             "pages": "仅起点有效；番茄固定 1 页滚动",
             "rank_key": "必须与 config.WEBSITES[platform]['rank_urls'] key 完全一致",
+            "use_proxy": "运行时临时覆盖 crawler.use_proxy，不改写本地 YAML",
+            "max_retries": "运行时临时覆盖 crawler.max_retries",
+            "consecutive_threshold": "运行时临时覆盖 anti-bot 连续触发阈值",
         },
     }
+
 
 @router.post("/runs")
 def create_run(override: ConfigOverride):

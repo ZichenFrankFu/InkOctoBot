@@ -15,6 +15,9 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
     newbook_chapter_count: 2,
     no_detail: false,
     no_chapters: false,
+    use_proxy: false,
+    max_retries: 3,
+    consecutive_threshold: 3,
   });
 
   const rankKeys = useMemo(() => {
@@ -32,6 +35,11 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
     loadRuns().catch((e) => alert(String(e)));
   }, []);
 
+  function applyRunToForm(run: ConfigRun) {
+    setForm((f: any) => ({ ...f, ...run.config }));
+    props.onSaved(run.run_id);
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -44,7 +52,7 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
     }
   }
 
-  if (!schema) return <div>Loading schema...</div>;
+  if (!schema) return <div style={{ color: "var(--text-secondary)" }}>Loading schema...</div>;
 
   return (
     <div>
@@ -156,11 +164,11 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
   );
 }
 
-function Row(props: { label: string; children: React.ReactNode }) {
+function Field(props: { label: string; children: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 10 }}>
-      <div style={{ width: 220, color: "#333" }}>{props.label}</div>
-      <div>{props.children}</div>
+    <div>
+      <div style={{ marginBottom: 6, color: "var(--text-secondary)", fontSize: 12 }}>{props.label}</div>
+      {props.children}
     </div>
   );
 }

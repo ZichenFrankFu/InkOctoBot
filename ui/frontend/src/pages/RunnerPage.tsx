@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../api/client";
 import type { ConfigRun, Task } from "../api/types";
 import LogViewer from "../components/LogViewer";
@@ -40,6 +40,8 @@ export default function RunnerPage(props: { lastRunId: string | null; onRunSelec
       setStarting(false);
     }
   }
+
+  const selectedRun = useMemo(() => runs.find((x) => x.run_id === props.lastRunId), [runs, props.lastRunId]);
 
   return (
     <div>
@@ -99,6 +101,62 @@ export default function RunnerPage(props: { lastRunId: string | null; onRunSelec
           <h4>任务日志</h4>
           {activeTaskId ? <LogViewer taskId={activeTaskId} /> : <div>点击左侧任务查看日志</div>}
         </div>
+
+        {selectedRun && (
+          <div
+            style={{
+              marginTop: 10,
+              fontSize: 12,
+              color: "var(--text-secondary)",
+              background: "var(--bg-surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              padding: 10,
+            }}
+          >
+            当前配置：platform={selectedRun.config.platform || "-"} | rank_key={selectedRun.config.rank_key || "ALL"} | use_proxy={String(selectedRun.config.use_proxy)} | max_retries={selectedRun.config.max_retries ?? "-"} | consecutive_threshold={selectedRun.config.consecutive_threshold ?? "-"}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.05fr 1fr", gap: 14 }}>
+        <section style={boxStyle}>
+          <h3 style={{ marginTop: 0, marginBottom: 10 }}>任务列表</h3>
+          <div style={{ maxHeight: 520, overflow: "auto", border: "1px solid var(--border)", borderRadius: 10 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead style={{ position: "sticky", top: 0, background: "var(--bg-surface)" }}>
+                <tr>
+                  <th align="left" style={{ padding: 8 }}>task_id</th>
+                  <th align="left" style={{ padding: 8 }}>run_id</th>
+                  <th align="left" style={{ padding: 8 }}>status</th>
+                  <th align="left" style={{ padding: 8 }}>exit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tasks.map((t) => {
+                  const active = activeTaskId === t.task_id;
+                  return (
+                    <tr
+                      key={t.task_id}
+                      onClick={() => setActiveTaskId(t.task_id)}
+                      style={{ cursor: "pointer", background: active ? "var(--accent-subtle)" : "transparent" }}
+                    >
+                      <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{t.task_id}</td>
+                      <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{t.config_run_id || "-"}</td>
+                      <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{t.status}</td>
+                      <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{t.exit_code ?? "-"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section style={boxStyle}>
+          <h3 style={{ marginTop: 0, marginBottom: 10 }}>实时日志</h3>
+          {activeTaskId ? <LogViewer taskId={activeTaskId} pollMs={800} height={500} /> : <div style={{ color: "var(--text-secondary)" }}>点击左侧任务查看日志</div>}
+        </section>
       </div>
     </div>
   );

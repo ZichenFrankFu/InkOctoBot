@@ -52,6 +52,17 @@ def _build_main_cmd(repo_root: Path, python_bin: str, override: dict) -> list[st
     if override.get("no_chapters"):
         cmd.append("--no_chapters")
 
+    if override.get("use_proxy") is True:
+        cmd.append("--use_proxy")
+    elif override.get("use_proxy") is False:
+        cmd.append("--no_use_proxy")
+
+    if override.get("max_retries") is not None:
+        cmd += ["--max_retries", str(int(override["max_retries"]))]
+
+    if override.get("consecutive_threshold") is not None:
+        cmd += ["--consecutive_threshold", str(int(override["consecutive_threshold"]))]
+
     return cmd
 
 @router.post("/spider")
