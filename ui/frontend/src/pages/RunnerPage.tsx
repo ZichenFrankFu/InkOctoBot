@@ -3,33 +3,6 @@ import { apiGet, apiPost } from "../api/client";
 import type { ConfigRun, Task } from "../api/types";
 import LogViewer from "../components/LogViewer";
 
-const boxStyle: React.CSSProperties = {
-  background: "var(--bg-card)",
-  border: "1px solid var(--border)",
-  borderRadius: 12,
-  padding: 14,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "9px 10px",
-  borderRadius: 8,
-  border: "1px solid var(--border)",
-  background: "var(--bg-input)",
-  color: "var(--text-primary)",
-  fontFamily: "inherit",
-};
-
-const buttonStyle: React.CSSProperties = {
-  padding: "10px 14px",
-  borderRadius: 10,
-  border: "1px solid var(--border)",
-  background: "var(--bg-surface)",
-  color: "var(--text-primary)",
-  cursor: "pointer",
-  fontFamily: "inherit",
-};
-
 export default function RunnerPage(props: { lastRunId: string | null; onRunSelected: (runId: string) => void }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [runs, setRuns] = useState<ConfigRun[]>([]);
@@ -49,7 +22,7 @@ export default function RunnerPage(props: { lastRunId: string | null; onRunSelec
   useEffect(() => {
     refreshTasks();
     refreshRuns();
-    const t = window.setInterval(refreshTasks, 1200);
+    const t = window.setInterval(refreshTasks, 2000);
     return () => window.clearInterval(t);
   }, []);
 
@@ -71,28 +44,62 @@ export default function RunnerPage(props: { lastRunId: string | null; onRunSelec
   const selectedRun = useMemo(() => runs.find((x) => x.run_id === props.lastRunId), [runs, props.lastRunId]);
 
   return (
-    <div style={{ color: "var(--text-primary)" }}>
-      <h2 style={{ marginTop: 0, marginBottom: 8 }}>爬虫运行</h2>
-      <p style={{ marginBottom: 16, color: "var(--text-secondary)" }}>选择一个配置 run，启动任务后可在右侧实时查看日志滚动。</p>
+    <div>
+      <h2 style={{ marginTop: 0 }}>爬虫运行</h2>
 
-      <div style={{ ...boxStyle, marginBottom: 14 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, alignItems: "center" }}>
-          <select style={inputStyle} value={props.lastRunId ?? ""} onChange={(e) => props.onRunSelected(e.target.value)}>
-            <option value="">请选择配置</option>
-            {runs.map((r) => (
-              <option key={r.run_id} value={r.run_id}>
-                {r.run_id} | {r.config.platform || "-"} | {r.config.rank_key || "ALL"}
-              </option>
-            ))}
-          </select>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
+        <span>配置：</span>
+        <select value={props.lastRunId ?? ""} onChange={(e) => props.onRunSelected(e.target.value)}>
+          <option value="">请选择配置</option>
+          {runs.map((r) => (
+            <option key={r.run_id} value={r.run_id}>
+              {r.run_id} | {r.config.platform || "-"} | {r.config.rank_key || "ALL"}
+            </option>
+          ))}
+        </select>
+        <button onClick={refreshRuns}>刷新配置列表</button>
+      </div>
 
-          <button onClick={refreshRuns} style={buttonStyle}>
-            刷新配置
-          </button>
+      <button
+        disabled={!props.lastRunId || starting}
+        onClick={start}
+        style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", cursor: "pointer" }}
+      >
+        {starting ? "启动中..." : "启动爬虫(main.py once)"}
+      </button>
 
-          <button disabled={!props.lastRunId || starting} onClick={start} style={buttonStyle}>
-            {starting ? "启动中..." : "启动爬虫"}
-          </button>
+      <h3>任务列表</h3>
+      <div style={{ display: "flex", gap: 16 }}>
+        <div style={{ minWidth: 560 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th align="left">task_id</th>
+                <th align="left">run_id</th>
+                <th align="left">status</th>
+                <th align="left">exit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tasks.map((t) => (
+                <tr
+                  key={t.task_id}
+                  onClick={() => setActiveTaskId(t.task_id)}
+                  style={{ cursor: "pointer", background: activeTaskId === t.task_id ? "#f3f3f3" : "transparent" }}
+                >
+                  <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{t.task_id}</td>
+                  <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{t.config_run_id || "-"}</td>
+                  <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{t.status}</td>
+                  <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{t.exit_code ?? "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div style={{ flex: 1 }}>
+          <h4>任务日志</h4>
+          {activeTaskId ? <LogViewer taskId={activeTaskId} /> : <div>点击左侧任务查看日志</div>}
         </div>
 
         {selectedRun && (

@@ -2,34 +2,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../api/client";
 import type { ConfigRun, ConfigSchema } from "../api/types";
 
-const cardStyle: React.CSSProperties = {
-  background: "var(--bg-card)",
-  border: "1px solid var(--border)",
-  borderRadius: 12,
-  padding: 16,
-  boxShadow: "var(--shadow-sm)",
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "9px 10px",
-  borderRadius: 8,
-  border: "1px solid var(--border)",
-  background: "var(--bg-input)",
-  color: "var(--text-primary)",
-  fontFamily: "inherit",
-};
-
-const buttonStyle: React.CSSProperties = {
-  padding: "10px 14px",
-  borderRadius: 10,
-  border: "1px solid var(--border)",
-  background: "var(--bg-surface)",
-  color: "var(--text-primary)",
-  cursor: "pointer",
-  fontFamily: "inherit",
-};
-
 export default function ConfigPage(props: { onSaved: (runId: string) => void }) {
   const [schema, setSchema] = useState<ConfigSchema | null>(null);
   const [runs, setRuns] = useState<ConfigRun[]>([]);
@@ -59,12 +31,7 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
   }
 
   useEffect(() => {
-    apiGet<ConfigSchema>("/api/config/schema")
-      .then((res) => {
-        setSchema(res);
-        setForm((f: any) => ({ ...f, ...res.defaults }));
-      })
-      .catch((e) => alert(String(e)));
+    apiGet<ConfigSchema>("/api/config/schema").then(setSchema).catch((e) => alert(String(e)));
     loadRuns().catch((e) => alert(String(e)));
   }, []);
 
@@ -76,7 +43,7 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
   async function save() {
     setSaving(true);
     try {
-      const res = await apiPost<{ run_id: string }>("/api/config/runs", form);
+      const res = await apiPost<{ run_id: string; path: string }>("/api/config/runs", form);
       props.onSaved(res.run_id);
       await loadRuns();
       alert(`保存成功: ${res.run_id}`);
@@ -88,161 +55,110 @@ export default function ConfigPage(props: { onSaved: (runId: string) => void }) 
   if (!schema) return <div style={{ color: "var(--text-secondary)" }}>Loading schema...</div>;
 
   return (
-    <div style={{ color: "var(--text-primary)" }}>
-      <h2 style={{ marginTop: 0, marginBottom: 14 }}>爬虫配置</h2>
-      <p style={{ marginBottom: 16, color: "var(--text-secondary)" }}>
-        保存一份可复用的采集参数，然后在「爬虫运行」页直接选择并启动。
-      </p>
+    <div>
+      <h2 style={{ marginTop: 0 }}>爬虫配置</h2>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
-        <section style={cardStyle}>
-          <h3 style={{ marginTop: 0, marginBottom: 14 }}>运行参数</h3>
+      <Row label="platform">
+        <select value={form.platform ?? ""} onChange={(e) => setForm({ ...form, platform: e.target.value, rank_key: "" })}>
+          <option value="qidian">qidian</option>
+          <option value="fanqie">fanqie</option>
+        </select>
+      </Row>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="platform">
-              <select
-                style={inputStyle}
-                value={form.platform ?? ""}
-                onChange={(e) => setForm({ ...form, platform: e.target.value, rank_key: "" })}
-              >
-                <option value="qidian">qidian</option>
-                <option value="fanqie">fanqie</option>
-              </select>
-            </Field>
+      <Row label="rank_key（可选：留空=平台全榜）">
+        <select value={form.rank_key ?? ""} onChange={(e) => setForm({ ...form, rank_key: e.target.value })}>
+          <option value="">(ALL ranks)</option>
+          {rankKeys.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+      </Row>
 
-            <Field label="rank_key（空=全榜）">
-              <select style={inputStyle} value={form.rank_key ?? ""} onChange={(e) => setForm({ ...form, rank_key: e.target.value })}>
-                <option value="">(ALL ranks)</option>
-                {rankKeys.map((k) => (
-                  <option key={k} value={k}>
-                    {k}
-                  </option>
-                ))}
-              </select>
-            </Field>
+      {form.platform === "qidian" && (
+        <Row label="pages（起点单榜/全榜页数）">
+          <input
+            type="number"
+            value={form.pages ?? ""}
+            placeholder="(empty = use qidian_pages)"
+            onChange={(e) => setForm({ ...form, pages: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })}
+          />
+        </Row>
+      )}
 
-            {form.platform === "qidian" && (
-              <Field label="pages（起点专用）">
-                <input
-                  style={inputStyle}
-                  type="number"
-                  min={1}
-                  value={form.pages ?? ""}
-                  placeholder="留空时使用 qidian_pages"
-                  onChange={(e) => setForm({ ...form, pages: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })}
-                />
-              </Field>
-            )}
+      <Row label="qidian_pages（legacy fallback）">
+        <input
+          type="number"
+          min={1}
+          value={form.qidian_pages}
+          onChange={(e) => setForm({ ...form, qidian_pages: Math.max(1, Number(e.target.value)) })}
+        />
+      </Row>
 
-            <Field label="qidian_pages">
-              <input
-                style={inputStyle}
-                type="number"
-                min={1}
-                value={form.qidian_pages}
-                onChange={(e) => setForm({ ...form, qidian_pages: Math.max(1, Number(e.target.value)) })}
-              />
-            </Field>
+      <Row label="chapter_count">
+        <input
+          type="number"
+          min={1}
+          value={form.chapter_count}
+          onChange={(e) => setForm({ ...form, chapter_count: Math.max(1, Number(e.target.value)) })}
+        />
+      </Row>
 
-            <Field label="chapter_count">
-              <input
-                style={inputStyle}
-                type="number"
-                min={1}
-                value={form.chapter_count}
-                onChange={(e) => setForm({ ...form, chapter_count: Math.max(1, Number(e.target.value)) })}
-              />
-            </Field>
+      <Row label="newbook_chapter_count">
+        <input
+          type="number"
+          min={1}
+          value={form.newbook_chapter_count}
+          onChange={(e) => setForm({ ...form, newbook_chapter_count: Math.max(1, Number(e.target.value)) })}
+        />
+      </Row>
 
-            <Field label="newbook_chapter_count">
-              <input
-                style={inputStyle}
-                type="number"
-                min={1}
-                value={form.newbook_chapter_count}
-                onChange={(e) => setForm({ ...form, newbook_chapter_count: Math.max(1, Number(e.target.value)) })}
-              />
-            </Field>
+      <Row label="no_detail">
+        <input type="checkbox" checked={!!form.no_detail} onChange={(e) => setForm({ ...form, no_detail: e.target.checked })} />
+      </Row>
 
-            <Field label="max_retries">
-              <input
-                style={inputStyle}
-                type="number"
-                min={0}
-                value={form.max_retries ?? ""}
-                onChange={(e) => setForm({ ...form, max_retries: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) })}
-              />
-            </Field>
+      <Row label="no_chapters">
+        <input type="checkbox" checked={!!form.no_chapters} onChange={(e) => setForm({ ...form, no_chapters: e.target.checked })} />
+      </Row>
 
-            <Field label="consecutive_threshold">
-              <input
-                style={inputStyle}
-                type="number"
-                min={1}
-                value={form.consecutive_threshold ?? ""}
-                onChange={(e) =>
-                  setForm({ ...form, consecutive_threshold: e.target.value === "" ? null : Math.max(1, Number(e.target.value)) })
-                }
-              />
-            </Field>
-          </div>
+      <button
+        disabled={saving}
+        onClick={save}
+        style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", cursor: "pointer" }}
+      >
+        {saving ? "保存中..." : "保存配置"}
+      </button>
 
-          <div style={{ display: "flex", gap: 18, marginTop: 14 }}>
-            <label style={{ display: "flex", gap: 8, alignItems: "center", color: "var(--text-secondary)" }}>
-              <input type="checkbox" checked={!!form.use_proxy} onChange={(e) => setForm({ ...form, use_proxy: e.target.checked })} />
-              use_proxy
-            </label>
-            <label style={{ display: "flex", gap: 8, alignItems: "center", color: "var(--text-secondary)" }}>
-              <input type="checkbox" checked={!!form.no_detail} onChange={(e) => setForm({ ...form, no_detail: e.target.checked })} />
-              no_detail
-            </label>
-            <label style={{ display: "flex", gap: 8, alignItems: "center", color: "var(--text-secondary)" }}>
-              <input type="checkbox" checked={!!form.no_chapters} onChange={(e) => setForm({ ...form, no_chapters: e.target.checked })} />
-              no_chapters
-            </label>
-          </div>
+      <h3 style={{ marginTop: 22 }}>最近配置记录</h3>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr>
+            <th align="left">run_id</th>
+            <th align="left">platform</th>
+            <th align="left">rank_key</th>
+            <th align="left">created_at</th>
+            <th align="left">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((r) => (
+            <tr key={r.run_id}>
+              <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{r.run_id}</td>
+              <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{r.config.platform || "-"}</td>
+              <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{r.config.rank_key || "(ALL)"}</td>
+              <td style={{ borderTop: "1px solid #eee", padding: 6 }}>{new Date(r.created_at * 1000).toLocaleString()}</td>
+              <td style={{ borderTop: "1px solid #eee", padding: 6 }}>
+                <button onClick={() => props.onSaved(r.run_id)}>设为当前运行配置</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
 
-          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-            <button disabled={saving} onClick={save} style={buttonStyle}>
-              {saving ? "保存中..." : "保存配置"}
-            </button>
-          </div>
-        </section>
-
-        <section style={cardStyle}>
-          <h3 style={{ marginTop: 0, marginBottom: 10 }}>最近配置记录</h3>
-          <div style={{ maxHeight: 420, overflow: "auto", border: "1px solid var(--border)", borderRadius: 10 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-              <thead style={{ position: "sticky", top: 0, background: "var(--bg-surface)" }}>
-                <tr>
-                  <th align="left" style={{ padding: 8 }}>run_id</th>
-                  <th align="left" style={{ padding: 8 }}>platform</th>
-                  <th align="left" style={{ padding: 8 }}>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {runs.map((r) => (
-                  <tr key={r.run_id}>
-                    <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{r.run_id}</td>
-                    <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>{r.config.platform || "-"}</td>
-                    <td style={{ borderTop: "1px solid var(--border)", padding: 8 }}>
-                      <button style={{ ...buttonStyle, padding: "6px 10px" }} onClick={() => applyRunToForm(r)}>
-                        载入并设为当前
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-secondary)" }}>
-            <div>Notes</div>
-            <pre style={{ whiteSpace: "pre-wrap", marginTop: 8, background: "var(--bg-surface)", borderRadius: 8, padding: 10 }}>
-              {JSON.stringify(schema.notes, null, 2)}
-            </pre>
-          </div>
-        </section>
+      <div style={{ marginTop: 16, fontSize: 12, color: "#666" }}>
+        <div>Notes:</div>
+        <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(schema.notes, null, 2)}</pre>
       </div>
     </div>
   );

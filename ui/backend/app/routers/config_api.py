@@ -17,7 +17,6 @@ def _runs_dir(repo_cfg) -> Path:
     runs_dir.mkdir(parents=True, exist_ok=True)
     return runs_dir
 
-
 class ConfigOverride(BaseModel):
     platform: str | None = Field(default=None, description="qidian|fanqie")
     rank_key: str | None = None
@@ -76,9 +75,8 @@ def create_run(override: ConfigOverride):
 
     run_id = f"cfg_{int(time.time()*1000)}"
     path = runs_dir / f"{run_id}.json"
-    payload = override.model_dump()
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"run_id": run_id, "path": str(path), "config": payload}
+    path.write_text(json.dumps(override.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"run_id": run_id, "path": str(path)}
 
 
 @router.get("/runs")
