@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # WebNovel Trends - 小说热点分析系统
 （非商业用途，仅供学习以及个人使用）
 
@@ -234,3 +235,7 @@ Source: https://www.qidian.com/help/index/6
 
 排行榜每天下午3点前更新截止到上一日的排名数据
 ```
+=======
+# InkOctoBot
+An AI workflow to generate long-context stories and novels
+>>>>>>> origin/main
