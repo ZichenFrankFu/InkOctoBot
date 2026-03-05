@@ -134,7 +134,89 @@ def db_overview():
                 counts[t] = int(c["c"]) if c else 0
             except Exception:
                 counts[t] = -1
-    return {"tables": table_names, "row_counts": counts}
+        date_range = con.execute(
+            "SELECT MIN(snapshot_date) AS earliest_date, MAX(snapshot_date) AS latest_date, COUNT(*) AS snapshot_count FROM rank_snapshots"
+        ).fetchone()
+
+    hidden_tables = {"rank_entries", "rank_snapshots", "sqlite_sequence", "novel_tag_map"}
+    visible_tables = [t for t in table_names if t not in hidden_tables]
+
+    return {
+        "tables": visible_tables,
+        "row_counts": {t: counts.get(t, 0) for t in visible_tables},
+        "date_range": {
+            "earliest": date_range["earliest_date"] if date_range else None,
+            "latest": date_range["latest_date"] if date_range else None,
+            "snapshot_count": int(date_range["snapshot_count"]) if date_range else 0,
+        },
+    }
+
+
+@router.get("/rank_filter_options")
+def rank_filter_options():
+    repo_cfg = load_repo_config(settings.repo_root)
+    db_path = get_db_path(repo_cfg, settings.repo_root)
+    with _connect(db_path) as con:
+        platforms = [
+            r["platform"]
+            for r in con.execute("SELECT DISTINCT platform FROM rank_lists ORDER BY platform").fetchall()
+        ]
+        rank_lists = con.execute(
+            "SELECT rank_list_id, platform, rank_family, rank_sub_cat FROM rank_lists ORDER BY platform, rank_family, rank_sub_cat"
+        ).fetchall()
+        dates = [
+            r["snapshot_date"]
+            for r in con.execute(
+                "SELECT DISTINCT snapshot_date FROM rank_snapshots ORDER BY snapshot_date DESC"
+            ).fetchall()
+        ]
+    return {
+        "platforms": platforms,
+        "rank_lists": [dict(r) for r in rank_lists],
+        "snapshot_dates": dates,
+    }
+
+
+@router.get("/rank_novels")
+def rank_novels(
+    snapshot_date: str,
+    platform: str | None = None,
+    rank_list_id: int | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    repo_cfg = load_repo_config(settings.repo_root)
+    db_path = get_db_path(repo_cfg, settings.repo_root)
+
+    where = ["s.snapshot_date=?"]
+    params: list = [snapshot_date]
+    if platform:
+        where.append("l.platform=?")
+        params.append(platform)
+    if rank_list_id:
+        where.append("l.rank_list_id=?")
+        params.append(rank_list_id)
+
+    sql = (
+        "SELECT "
+        "l.platform, l.rank_family, l.rank_sub_cat, s.snapshot_date, e.rank, "
+        "n.novel_uid, "
+        "COALESCE(n.novel_name, (SELECT t2.title FROM novel_titles t2 WHERE t2.novel_uid=n.novel_uid ORDER BY t2.is_primary DESC, t2.last_seen_date DESC LIMIT 1), '') AS novel_name, "
+        "n.author, COALESCE(n.intro, '') AS intro, COALESCE(n.word_count, n.total_words, 0) AS word_count, COALESCE(n.rating, 0) AS rating, "
+        "(SELECT GROUP_CONCAT(t.tag_name, ', ') FROM tags t JOIN novel_tag_map m ON m.tag_id=t.tag_id WHERE m.novel_uid=n.novel_uid) AS tags "
+        "FROM rank_entries e "
+        "JOIN rank_snapshots s ON s.snapshot_id=e.snapshot_id "
+        "JOIN rank_lists l ON l.rank_list_id=s.rank_list_id "
+        "JOIN novels n ON n.novel_uid=e.novel_uid "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY e.rank ASC "
+        "LIMIT ?"
+    )
+    params.append(limit)
+
+    with _connect(db_path) as con:
+        rows = con.execute(sql, params).fetchall()
+
+    return {"rows": [dict(r) for r in rows]}
 
 
 @router.get("/novels")
