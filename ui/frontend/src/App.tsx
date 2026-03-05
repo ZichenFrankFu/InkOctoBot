@@ -1,4 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
+import { useResizable } from "./hooks/useResizable";
+import { useTheme } from "./hooks/useTheme";
+import ResizeHandle from "./components/ResizeHandle";
 
 // -- Phase 1: existing pages --
 import ConfigPage from "./pages/ConfigPage";
@@ -6,33 +9,24 @@ import RunnerPage from "./pages/RunnerPage";
 import ReportsPage from "./pages/ReportsPage";
 import DatabasePage from "./pages/DatabasePage";
 
-// -- Phase 1: new placeholder --
+// -- Phase 1: new --
 import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ReferenceLibraryPage from "./pages/ReferenceLibraryPage";
 
-// -- Phase 2: placeholder --
+// -- Phase 2-3: placeholder --
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import CharacterManagerPage from "./pages/CharacterManagerPage";
 import WorldBookEditorPage from "./pages/WorldBookEditorPage";
-
-// -- Phase 3: placeholder --
 import EditorPage from "./pages/EditorPage";
 import SettingsPage from "./pages/SettingsPage";
 
+/* ── Types ── */
 type Tab =
-  | "spider-config"
-  | "spider-runner"
-  | "reports"
-  | "analysis"
-  | "references"
-  | "database"
-  | "projects"
-  | "project-setup"
-  | "characters"
-  | "worldbook"
-  | "editor"
-  | "settings";
+  | "spider-config" | "spider-runner"
+  | "reports" | "analysis" | "references" | "database"
+  | "projects" | "project-setup" | "characters" | "worldbook"
+  | "editor" | "settings";
 
 interface NavItem { id: Tab; icon: string; label: string; }
 interface NavGroup { title: string; items: NavItem[]; }
@@ -60,10 +54,22 @@ const NAV: NavGroup[] = [
   ]},
 ];
 
+/* ── App ── */
 export default function App() {
   const [tab, setTab] = useState<Tab>("spider-config");
   const [lastRunId, setLastRunId] = useState<string | null>(null);
+  const { theme, toggleTheme } = useTheme();
+
+  const sidebar = useResizable({
+    direction: "horizontal",
+    initialSize: 220,
+    minSize: 180,
+    maxSize: 340,
+  });
+
   const [collapsed, setCollapsed] = useState(false);
+
+  const effectiveWidth = collapsed ? 56 : sidebar.size;
 
   const page = (() => {
     switch (tab) {
@@ -83,42 +89,67 @@ export default function App() {
   })();
 
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "system-ui, -apple-system, sans-serif", background: "#fafafa" }}>
-      {/* Sidebar */}
-      <aside style={{
-        width: collapsed ? 56 : 220,
-        minWidth: collapsed ? 56 : 220,
-        background: "#1a1a2e",
-        color: "#ccc",
-        display: "flex",
-        flexDirection: "column",
-        transition: "width 0.2s, min-width 0.2s",
-        overflow: "hidden",
-      }}>
-        {/* Brand */}
+    <div style={{ display: "flex", height: "100vh", width: "100vw", overflow: "hidden" }}>
+
+      {/* ══════ Sidebar ══════ */}
+      <aside
+        style={{
+          width: effectiveWidth,
+          minWidth: effectiveWidth,
+          background: "var(--bg-sidebar)",
+          display: "flex",
+          flexDirection: "column",
+          transition: collapsed ? "width 0.25s ease, min-width 0.25s ease" : (sidebar.isDragging ? "none" : "width 0.25s ease, min-width 0.25s ease"),
+          overflow: "hidden",
+          borderRight: "1px solid var(--border)",
+          zIndex: 40,
+        }}
+      >
+        {/* Brand header */}
         <div
+          onClick={() => { if (!sidebar.isDragging) setCollapsed(!collapsed); }}
           style={{
-            padding: collapsed ? "16px 8px" : "16px 16px",
-            borderBottom: "1px solid #2a2a4a",
-            display: "flex", alignItems: "center", gap: 8, cursor: "pointer",
+            padding: collapsed ? "16px 8px" : "16px",
+            borderBottom: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            cursor: "pointer",
+            userSelect: "none",
+            flexShrink: 0,
           }}
-          onClick={() => setCollapsed(!collapsed)}
-          title={collapsed ? "展开" : "收起"}
         >
-          <span style={{ fontSize: 22 }}>🐙</span>
-          {!collapsed && <span style={{ fontWeight: 700, fontSize: 14, color: "#e0e0ff", whiteSpace: "nowrap" }}>InkOctoBot</span>}
+          <span style={{ fontSize: 24, filter: "drop-shadow(0 0 6px var(--accent-glow))" }}>🐙</span>
+          {!collapsed && (
+            <span style={{
+              fontWeight: 700,
+              fontSize: 15,
+              color: "var(--text-primary)",
+              whiteSpace: "nowrap",
+              letterSpacing: 0.3,
+            }}>
+              InkOctoBot
+            </span>
+          )}
         </div>
 
-        {/* Nav */}
-        <nav style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
-          {NAV.map((g) => (
-            <div key={g.title} style={{ marginBottom: 8 }}>
+        {/* Navigation */}
+        <nav style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "8px 0" }}>
+          {NAV.map((group) => (
+            <div key={group.title} style={{ marginBottom: 4 }}>
               {!collapsed && (
-                <div style={{ padding: "6px 16px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1.2, color: "#666" }}>
-                  {g.title}
+                <div style={{
+                  padding: "8px 16px 4px",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: 1.5,
+                  color: "var(--text-tertiary)",
+                }}>
+                  {group.title}
                 </div>
               )}
-              {g.items.map((item) => {
+              {group.items.map((item) => {
                 const active = tab === item.id;
                 return (
                   <button
@@ -126,18 +157,27 @@ export default function App() {
                     onClick={() => setTab(item.id)}
                     title={collapsed ? item.label : undefined}
                     style={{
-                      display: "flex", alignItems: "center", gap: 10, width: "100%",
-                      padding: collapsed ? "9px 0" : "9px 16px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      width: "100%",
+                      padding: collapsed ? "10px 0" : "8px 16px",
                       justifyContent: collapsed ? "center" : "flex-start",
                       border: "none",
-                      background: active ? "#16213e" : "transparent",
-                      borderLeft: active ? "3px solid #4a7dff" : "3px solid transparent",
-                      color: active ? "#fff" : "#aaa",
-                      cursor: "pointer", fontSize: 13, textAlign: "left",
+                      background: active ? "var(--accent-subtle)" : "transparent",
+                      borderLeft: active ? "3px solid var(--accent)" : "3px solid transparent",
+                      color: active ? "var(--accent)" : "var(--text-secondary)",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: active ? 600 : 400,
+                      fontFamily: "inherit",
+                      textAlign: "left",
+                      transition: "background var(--transition-fast), color var(--transition-fast)",
+                      borderRadius: 0,
                     }}
                   >
-                    <span style={{ fontSize: 15, width: 20, textAlign: "center" }}>{item.icon}</span>
-                    {!collapsed && <span style={{ whiteSpace: "nowrap" }}>{item.label}</span>}
+                    <span style={{ fontSize: 15, width: 22, textAlign: "center", flexShrink: 0 }}>{item.icon}</span>
+                    {!collapsed && <span className="truncate">{item.label}</span>}
                   </button>
                 );
               })}
@@ -145,16 +185,62 @@ export default function App() {
           ))}
         </nav>
 
+        {/* Footer */}
         {!collapsed && (
-          <div style={{ padding: "12px 16px", borderTop: "1px solid #2a2a4a", fontSize: 11, color: "#555" }}>
-            run: {lastRunId ?? "—"}
+          <div style={{
+            padding: "10px 16px",
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexShrink: 0,
+          }}>
+            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+              {lastRunId ? `run: ${lastRunId.slice(-8)}` : "no run"}
+            </span>
+            <button
+              onClick={(e) => { e.stopPropagation(); toggleTheme(); }}
+              title={theme === "dark" ? "切换亮色" : "切换暗色"}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontSize: 16,
+                padding: "2px 4px",
+                borderRadius: 4,
+                color: "var(--text-secondary)",
+              }}
+            >
+              {theme === "dark" ? "☀️" : "🌙"}
+            </button>
           </div>
         )}
       </aside>
 
-      {/* Main */}
-      <main style={{ flex: 1, overflow: "auto" }}>
-        <div style={{ maxWidth: 1400, margin: "0 auto", padding: "24px 32px" }}>{page}</div>
+      {/* ══════ Resize Handle ══════ */}
+      {!collapsed && (
+        <ResizeHandle
+          direction="horizontal"
+          isDragging={sidebar.isDragging}
+          onMouseDown={sidebar.handleProps.onMouseDown}
+          onTouchStart={sidebar.handleProps.onTouchStart}
+        />
+      )}
+
+      {/* ══════ Main Content ══════ */}
+      <main style={{
+        flex: 1,
+        overflow: "auto",
+        background: "var(--bg-app)",
+        minWidth: 0,
+      }}>
+        <div style={{
+          maxWidth: 1440,
+          margin: "0 auto",
+          padding: "28px 36px",
+        }}>
+          {page}
+        </div>
       </main>
     </div>
   );
