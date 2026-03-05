@@ -4,6 +4,12 @@ export type ConfigSchema = {
   notes: Record<string, string>;
 };
 
+export type ConfigRun = {
+  run_id: string;
+  created_at: number;
+  config: any;
+};
+
 export type Task = {
   task_id: string;
   task_type: string;

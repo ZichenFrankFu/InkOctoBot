@@ -248,3 +248,24 @@ Source: https://www.qidian.com/help/index/6
 
 排行榜每天下午3点前更新截止到上一日的排名数据
 ```
+
+---
+
+## 6. 将 UI 修复分支合并到 `main`
+如果你已经在工作分支拿到 Codex 提交（例如修复 `ConfigPage` / `RunnerPage` 编译问题），推荐按下面流程合并：
+
+```bash
+git checkout main
+git pull origin main
+git merge --no-ff <your-fix-branch>
+# 解决冲突后：
+#   git add <resolved-files>
+#   git commit
+git push origin main
+```
+
+如果你是通过 GitHub PR 合并，建议：
+1. 打开 PR，确认 Checks（例如 `npm run build`）通过；
+2. Review changed files，重点看 `ui/frontend/src/pages/ConfigPage.tsx`、`ui/frontend/src/pages/RunnerPage.tsx`、`ui/frontend/src/App.tsx`；
+3. 点击 **Squash and merge**（便于保持主干历史整洁）；
+4. 合并后本地执行 `git pull origin main` 同步。
