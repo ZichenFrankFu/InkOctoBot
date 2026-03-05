@@ -116,6 +116,54 @@ def novel_detail(novel_uid: int):
         "chapters": [dict(r) for r in chapters],
     }
 
+
+
+@router.get("/overview")
+def db_overview():
+    repo_cfg = load_repo_config(settings.repo_root)
+    db_path = get_db_path(repo_cfg, settings.repo_root)
+    with _connect(db_path) as con:
+        tables = con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+        table_names = [r["name"] for r in tables]
+        counts = {}
+        for t in table_names:
+            if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', t):
+                continue
+            try:
+                c = con.execute(f"SELECT COUNT(*) AS c FROM {t}").fetchone()
+                counts[t] = int(c["c"]) if c else 0
+            except Exception:
+                counts[t] = -1
+    return {"tables": table_names, "row_counts": counts}
+
+
+@router.get("/novels")
+def novels(limit: int = Query(default=30, ge=1, le=200), offset: int = Query(default=0, ge=0), keyword: str | None = None):
+    repo_cfg = load_repo_config(settings.repo_root)
+    db_path = get_db_path(repo_cfg, settings.repo_root)
+
+    with _connect(db_path) as con:
+        where = ""
+        params: list = []
+        if keyword:
+            where = " WHERE (n.novel_name LIKE ? OR n.author LIKE ?)"
+            kw = f"%{keyword}%"
+            params.extend([kw, kw])
+
+        total = con.execute(
+            "SELECT COUNT(*) AS c FROM novels n" + where,
+            params,
+        ).fetchone()
+
+        rows = con.execute(
+            "SELECT n.novel_uid, n.novel_name, n.author, n.platform, n.word_count, n.rating, n.last_updated, "
+            "(SELECT GROUP_CONCAT(t.tag_name, ', ') FROM tags t JOIN novel_tag_map m ON m.tag_id=t.tag_id WHERE m.novel_uid=n.novel_uid) AS tags "
+            "FROM novels n" + where + " ORDER BY n.novel_uid DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+
+    return {"total": int(total["c"]) if total else 0, "rows": [dict(r) for r in rows], "limit": limit, "offset": offset}
+
 @router.get("/diagnostics/item_count_mismatch")
 def diag_item_count_mismatch(limit: int = Query(default=100, ge=1, le=500)):
     repo_cfg = load_repo_config(settings.repo_root)
