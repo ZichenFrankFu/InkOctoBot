@@ -2,9 +2,6 @@ import React, { useState } from "react";
 import { useResizable } from "./hooks/useResizable";
 import { useTheme } from "./hooks/useTheme";
 import ResizeHandle from "./components/ResizeHandle";
-import ConfigPage from "./pages/ConfigPage";
-import RunnerPage from "./pages/RunnerPage";
-import ReportsPage from "./pages/ReportsPage";
 import DatabasePage from "./pages/DatabasePage";
 import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ReferenceLibraryPage from "./pages/ReferenceLibraryPage";
@@ -16,9 +13,6 @@ import EditorPage from "./pages/EditorPage";
 import SettingsPage from "./pages/SettingsPage";
 
 type Tab =
-  | "spider-config"
-  | "spider-runner"
-  | "reports"
   | "analysis"
   | "references"
   | "database"
@@ -42,16 +36,8 @@ interface NavGroup {
 
 const NAV: NavGroup[] = [
   {
-    title: "数据采集",
-    items: [
-      { id: "spider-config", icon: "📡", label: "爬虫配置" },
-      { id: "spider-runner", icon: "▶️", label: "爬虫运行" },
-    ],
-  },
-  {
     title: "市场分析",
     items: [
-      { id: "reports", icon: "📊", label: "趋势报告" },
       { id: "analysis", icon: "📈", label: "分析面板" },
       { id: "references", icon: "📚", label: "参考作品库" },
       { id: "database", icon: "🗄️", label: "数据库" },
@@ -71,10 +57,7 @@ const NAV: NavGroup[] = [
 ];
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("spider-config");
-  const [lastRunId, setLastRunId] = useState<string | null>(null);
-  const [currentConfig, setCurrentConfig] = useState<any>({});
-  const [configVersion, setConfigVersion] = useState(0);
+  const [tab, setTab] = useState<Tab>("analysis");
   const { theme, toggleTheme } = useTheme();
 
   const sidebar = useResizable({
@@ -89,20 +72,6 @@ export default function App() {
 
   const page = (() => {
     switch (tab) {
-      case "spider-config":
-        return (
-          <ConfigPage
-            onSaved={(id) => setLastRunId(id)}
-            onDraftChange={(cfg) => {
-              setCurrentConfig(cfg);
-              setConfigVersion((v) => v + 1);
-            }}
-          />
-        );
-      case "spider-runner":
-        return <RunnerPage lastRunId={lastRunId} currentConfig={currentConfig} configVersion={configVersion} />;
-      case "reports":
-        return <ReportsPage />;
       case "database":
         return <DatabasePage />;
       case "analysis":
@@ -239,7 +208,7 @@ export default function App() {
             }}
           >
             <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-              {lastRunId ? `run: ${lastRunId.slice(-8)}` : "no run"}
+              user mode
             </span>
             <button
               onClick={(e) => {
