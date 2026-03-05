@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState } from "react";
 import { useResizable } from "./hooks/useResizable";
 import { useTheme } from "./hooks/useTheme";
 import ResizeHandle from "./components/ResizeHandle";
@@ -58,6 +58,8 @@ const NAV: NavGroup[] = [
 export default function App() {
   const [tab, setTab] = useState<Tab>("spider-config");
   const [lastRunId, setLastRunId] = useState<string | null>(null);
+  const [currentConfig, setCurrentConfig] = useState<any>({});
+  const [configVersion, setConfigVersion] = useState(0);
   const { theme, toggleTheme } = useTheme();
 
   const sidebar = useResizable({

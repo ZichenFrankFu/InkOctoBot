@@ -39,6 +39,9 @@ export default function RunnerPage(props: { lastRunId: string | null; onRunSelec
   async function refreshTasks() {
     const res = await apiGet<{ tasks: Task[] }>("/api/tasks");
     setTasks(res.tasks);
+    if (!activeTaskId && res.tasks.length) {
+      setActiveTaskId(res.tasks[0].task_id);
+    }
   }
 
   async function refreshRuns() {
@@ -51,7 +54,14 @@ export default function RunnerPage(props: { lastRunId: string | null; onRunSelec
     refreshRuns();
     const t = window.setInterval(refreshTasks, 1200);
     return () => window.clearInterval(t);
-  }, []);
+  }, [activeTaskId]);
+
+  useEffect(() => {
+    setMetaLogs((logs) => [
+      `${new Date().toLocaleTimeString()} [config] 配置已更新，可直接一键启动（未保存也可运行）`,
+      ...logs,
+    ].slice(0, 200));
+  }, [props.configVersion]);
 
   async function start() {
     if (!props.lastRunId) {
