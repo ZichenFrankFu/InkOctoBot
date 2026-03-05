@@ -1,0 +1,12 @@
+ 
+# 路径配置 — 所有路径相对于项目根目录（BASE_DIR）
+# PyInstaller 打包态下 BASE_DIR 会自动切换到 LOCALAPPDATA/InkOctoBot
+
+database:
+  path: "data/novels.db"       # ← 新位置：独立于 outputs
+
+output_paths:
+  data_raw: "outputs/data/raw"
+  logs: "outputs/logs"
+  reports: "outputs/reports"
+  visualizations: "outputs/reports/visualizations"

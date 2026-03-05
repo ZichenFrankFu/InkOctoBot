@@ -1,0 +1,55 @@
+# 爬虫全局配置
+
+max_retries: 4
+retry_delay: 2
+log_level: INFO
+cache_enabled: true
+cache_expiry: 3600
+
+use_proxy: false
+proxy_pool:
+  - "http://103.156.17.69:8080"
+  - "http://45.182.115.148:999"
+  - "http://177.87.168.6:53281"
+  - "http://103.155.54.245:83"
+  - "http://45.77.56.113:3128"
+
+proxy_settings:
+  rotate_after_failures: 2
+  test_url: "http://httpbin.org/ip"
+  timeout: 10
+  retry_on_proxy_fail: true
+
+page_fetch:
+  max_page_retries: 5
+  page_retry_delay: 2
+  default_wait_sec: 12
+  post_load_delay_range: [ 0.8, 1.6 ]
+  bad_title_keywords: [ "404", "无法访问", "出错了" ]
+  min_html_length: 1000
+  page_load_sec: 10
+  ready_state_sec: 8
+  wait_css_sec: 8
+  stop_loading_on_timeout: true
+  wait_css_required: true
+  antibot_consecutive_threshold: 3
+  antibot_cooldown_range: [ 60, 180 ]
+
+chapter_fetch:
+  max_retries: 3
+  delay_between_chapters: [ 1.0, 3.0 ]
+  wait_for_content_sec: 15
+
+chapter_policy:
+  default: 5
+  new_book_chapter_count: 2
+
+page_fetch_overrides:
+  restart_driver_every_n_get: 200
+  restart_driver_each_rank: false
+
+antibot:
+  mode: fatal
+  min_html_length: 800
+  consecutive_threshold: 3
+  cooldown_range: [ 60, 180 ]
