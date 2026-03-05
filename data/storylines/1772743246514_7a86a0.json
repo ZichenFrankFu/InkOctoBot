@@ -4,8 +4,8 @@
       "id": "n_1772743295056_1s8k",
       "title": "第二章·试炼",
       "summary": "宗门试炼开始",
-      "x": 237,
-      "y": 34,
+      "x": 210,
+      "y": 203,
       "color": "#2d8c5a",
       "chapter": 2,
       "characters": [
@@ -16,8 +16,8 @@
       "id": "n_1772743295056_ge8l",
       "title": "第二章·暗线",
       "summary": "反派在暗中观察",
-      "x": 230,
-      "y": 244,
+      "x": 213,
+      "y": 402,
       "color": "#8e44ad",
       "chapter": 2,
       "characters": [
@@ -28,8 +28,8 @@
       "id": "n_1772743295056_r6pf",
       "title": "第三章·对决",
       "summary": "试炼中遭遇危机",
-      "x": 445,
-      "y": 46,
+      "x": 473,
+      "y": 281,
       "color": "#3b5998",
       "chapter": 3,
       "characters": [
@@ -82,19 +82,60 @@
       "color": "#e74c3c",
       "characters": [],
       "chapter": 1
+    },
+    {
+      "id": "n_1772744816937_cdyv",
+      "title": "测试",
+      "summary": "2",
+      "x": 1980,
+      "y": 60,
+      "color": "#c0392b",
+      "characters": [],
+      "chapter": 1
+    },
+    {
+      "id": "n_1772744826138_4429",
+      "title": "新节点",
+      "summary": "",
+      "x": 2240,
+      "y": 60,
+      "color": "#2d8c5a",
+      "characters": []
+    },
+    {
+      "id": "n_1772744847510_relz",
+      "title": "新节点",
+      "summary": "",
+      "x": 2500,
+      "y": 60,
+      "color": "#3b5998",
+      "characters": []
+    },
+    {
+      "id": "n_1772744847991_lem5",
+      "title": "新节点",
+      "summary": "",
+      "x": 2760,
+      "y": 60,
+      "color": "#d4a853",
+      "characters": []
+    },
+    {
+      "id": "n_1772744848137_d64r",
+      "title": "新节点",
+      "summary": "",
+      "x": 3020,
+      "y": 60,
+      "color": "#8e44ad",
+      "characters": []
     }
   ],
   "edges": [
-    {
-      "from": "n_1772743295056_1s8k",
-      "to": "n_1772743295056_r6pf",
-      "label": "汇合"
-    },
     {
       "from": "n_1772743295056_ge8l",
       "to": "n_1772743295056_r6pf",
       "label": "暗线汇入"
     }
   ],
-  "saved_at": 1772743361.5671396
+  "saved_at": 1772744875.9139633
 }
