@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from pathlib import Path
-PROJECT_ROOT = Path(__file__).resolve().parent[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 import config
 from database.db_handler import DatabaseHandler
