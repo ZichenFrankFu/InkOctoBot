@@ -1,5 +1,6 @@
 export type ConfigSchema = {
   defaults: any;
+  platforms?: string[];
   rank_keys: { qidian: string[]; fanqie: string[] };
   notes: Record<string, string>;
 };

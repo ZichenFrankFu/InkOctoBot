@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost } from "../api/client";
+import { apiDelete, apiGet, apiPost } from "../api/client";
 import type { ConfigRun, ConfigSchema } from "../api/types";
 
 const cardStyle: React.CSSProperties = {
@@ -29,6 +29,8 @@ const buttonStyle: React.CSSProperties = {
   cursor: "pointer",
   fontFamily: "inherit",
 };
+
+const ALL_OPTION = "__ALL__";
 
 export default function ConfigPage(props: {
   onSaved: (runId: string) => void;
@@ -72,6 +74,12 @@ export default function ConfigPage(props: {
   function applyRunToForm(run: ConfigRun) {
     const defaults = schema?.defaults || {};
     const next = { ...defaults, ...run.config };
+    next.platforms = Array.isArray(next.platforms) ? next.platforms : next.platform ? [next.platform] : ["fanqie"];
+    next.rank_keys = Array.isArray(next.rank_keys)
+      ? next.rank_keys
+      : next.rank_key && next.platform
+        ? [`${next.platform}::${next.rank_key}`]
+        : [];
     setForm(next);
     props.onSaved(run.run_id);
     props.onDraftChange(next);
@@ -80,13 +88,20 @@ export default function ConfigPage(props: {
   async function save() {
     setSaving(true);
     try {
-      const res = await apiPost<{ run_id: string }>("/api/config/runs", form);
+      const payload = toPayload(form);
+      const res = await apiPost<{ run_id: string }>("/api/config/runs", payload);
       props.onSaved(res.run_id);
       await loadRuns();
       alert(`保存成功: ${res.run_id}`);
     } finally {
       setSaving(false);
     }
+  }
+
+  async function removeRun(runId: string) {
+    if (!window.confirm(`确认删除配置 ${runId} ?`)) return;
+    await apiDelete<{ ok: boolean }>(`/api/config/runs/${encodeURIComponent(runId)}`);
+    await loadRuns();
   }
 
   if (!schema) return <div style={{ color: "var(--text-secondary)" }}>Loading schema...</div>;
@@ -106,7 +121,7 @@ export default function ConfigPage(props: {
           <h3 style={{ marginTop: 0, marginBottom: 14 }}>运行参数</h3>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="platform">
+            <Field label="platform（多选）">
               <select
                 style={inputStyle}
                 value={form.platform ?? ""}
@@ -151,7 +166,7 @@ export default function ConfigPage(props: {
               />
             </Field>
 
-            <Field label="chapter_count">
+            <Field label="qidian_pages">
               <input
                 style={inputStyle}
                 type="number"
@@ -161,7 +176,7 @@ export default function ConfigPage(props: {
               />
             </Field>
 
-            <Field label="newbook_chapter_count">
+            <Field label="chapter_count (1-5)">
               <input
                 style={inputStyle}
                 type="number"
@@ -183,7 +198,7 @@ export default function ConfigPage(props: {
               />
             </Field>
 
-            <Field label="consecutive_threshold">
+            <Field label="newbook_chapter_count (1-5)">
               <input
                 style={inputStyle}
                 type="number"
@@ -249,13 +264,6 @@ export default function ConfigPage(props: {
                 ))}
               </tbody>
             </table>
-          </div>
-
-          <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-secondary)" }}>
-            <div>Notes</div>
-            <pre style={{ whiteSpace: "pre-wrap", marginTop: 8, background: "var(--bg-surface)", borderRadius: 8, padding: 10 }}>
-              {JSON.stringify(schema.notes, null, 2)}
-            </pre>
           </div>
         </section>
       </div>

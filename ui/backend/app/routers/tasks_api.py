@@ -35,16 +35,35 @@ def _ui_tasks_dir(repo_cfg) -> Path:
 def _build_main_cmd(repo_root: Path, python_bin: str, override: dict) -> list[str]:
     cmd = [python_bin, str(repo_root / "main.py"), "once"]
 
-    if override.get("platform"):
-        cmd += ["--platform", override["platform"]]
-    if override.get("rank_key"):
-        cmd += ["--rank_key", override["rank_key"]]
+    platforms = override.get("platforms") or ([] if not override.get("platform") else [override["platform"]])
+    platforms = [p for p in platforms if p in {"qidian", "fanqie"}]
 
-    if override.get("platform") == "qidian" and override.get("pages") is not None:
-        cmd += ["--pages", str(int(override["pages"]))]
+    rank_keys = override.get("rank_keys") or ([] if not override.get("rank_key") else [override["rank_key"]])
+    qidian_ranks = [r.split("::", 1)[1] if "::" in r else r for r in (override.get("qidian_ranks") or [])]
+    fanqie_ranks = [r.split("::", 1)[1] if "::" in r else r for r in (override.get("fanqie_ranks") or [])]
 
-    if override.get("qidian_pages") is not None:
-        cmd += ["--qidian_pages", str(int(override["qidian_pages"]))]
+    if len(platforms) == 1:
+        platform = platforms[0]
+        cmd += ["--platform", platform]
+
+        scoped_ranks = qidian_ranks if platform == "qidian" else fanqie_ranks
+        if not scoped_ranks:
+            scoped_ranks = [r.split("::", 1)[1] if "::" in r else r for r in rank_keys]
+        if len(scoped_ranks) == 1:
+            cmd += ["--rank_key", scoped_ranks[0]]
+
+        if platform == "qidian":
+            pages = override.get("pages")
+            if pages is None:
+                pages = override.get("qidian_pages", 2)
+            cmd += ["--pages", str(int(pages))]
+    else:
+        if qidian_ranks:
+            cmd += ["--qidian_ranks", ",".join(qidian_ranks)]
+        if fanqie_ranks:
+            cmd += ["--fanqie_ranks", ",".join(fanqie_ranks)]
+        if override.get("qidian_pages") is not None:
+            cmd += ["--qidian_pages", str(int(override["qidian_pages"]))]
 
     cmd += ["--chapter_count", str(int(override.get("chapter_count", 5)))]
     cmd += ["--newbook_chapter_count", str(int(override.get("newbook_chapter_count", 2)))]
