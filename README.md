@@ -1,5 +1,4 @@
-<<<<<<< HEAD
-# WebNovel Trends - 小说热点分析系统
+# InkOctoBot - AI小说创作工作流
 （非商业用途，仅供学习以及个人使用）
 
 ## 1. Project Planning
@@ -19,27 +18,36 @@
  - 将fine-tune好的本地小模型与大模型（如ChatGPT，DeepSeek，Gemini）结合生成质量更高的长篇小说文本
   
 ---
+## 2. 快捷方式
+### 2.1 切换环境
+```bash
+conda activate InkOctoBot
+```
+### 2.2. 安装依赖
+```bash
+pip install -r requirements.txt
+```
 
-## 2. Spider
-### 2.1. 一键启动，爬取起点 + 番茄，全部榜单
+## 3. Spider
+### 3.1. 一键启动，爬取起点 + 番茄，全部榜单
 ```bash
 python main.py once
 ```
-### 2.2. 只抓取某个平台 + 某个榜单
+### 3.2. 只抓取某个平台 + 某个榜单
 ```bash
 python main.py once --platform qidian --rank_key 月票榜 --qidian_pages 5 --chapter_count 5
 python main.py once --platform fanqie --rank_key 新书榜科幻末世 --newbook_chapter_count 2
 python main.py once --platform fanqie --rank_key 阅读榜玄幻脑洞 --chapter_count 5
 
 ```
-### 2.3. 只抓某个平台（跑该平台所有榜单）
+### 3.3. 只抓某个平台（跑该平台所有榜单）
 ```bash
 python main.py once --platform qidian --qidian_pages 2
 python main.py once --platform fanqie --chapter_count 5 --newbook_chapter_count 2
 ```
 
-## 3. Structure
-### 3.1 Project Directory Structure
+## 4. Structure
+### 4.1 Project Directory Structure
 ```text
 webnovel_trends/
 ├── analysis/
@@ -111,7 +119,7 @@ webnovel_trends/
 └── DB_Doc.md                       # 数据库说明
 ```
 
-### 3.2 Database Structure (ER-Diagram)
+### 4.2 Database Structure (ER-Diagram)
 ```mermaid
 erDiagram
   NOVELS ||--o{ NOVEL_TITLES : "novel_uid"
@@ -199,18 +207,7 @@ erDiagram
   }
 ```
 
-#### 3.2.1 数据库详细信息
-[详细数据库信息](database/DATABASE.md)
-
 ---
-
-## 4. 快捷方式
-### 4.1. 安装依赖
-```bash
-pip install -r requirements.txt
-```
-### 4.2. 运行测试
-[详细测试信息](tests/TEST.md)
 
 ## 5. 额外信息
 ### 5.1 起点榜单信息
@@ -235,7 +232,3 @@ Source: https://www.qidian.com/help/index/6
 
 排行榜每天下午3点前更新截止到上一日的排名数据
 ```
-=======
-# InkOctoBot
-An AI workflow to generate long-context stories and novels
->>>>>>> origin/main
