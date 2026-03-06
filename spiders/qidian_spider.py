@@ -765,7 +765,6 @@ class QidianSpider(BaseSpider):
                     text = self._normalize_text(elem.get_text(" ", strip=True))
                     self.logger.debug(f"Checking word count block [{sel}]: {text}")
 
-                    # 例如：534.58万字 581.15万总推荐 3.55万周推荐
                     m = re.search(r"([0-9]+(?:\.[0-9]+)?[万亿]?)字\b", text)
                     if m:
                         word_count = self._parse_cn_number(m.group(1))
