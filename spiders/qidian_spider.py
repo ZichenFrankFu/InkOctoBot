@@ -719,7 +719,9 @@ class QidianSpider(BaseSpider):
             self.logger.info(f"Parsing status and word count from detail page: {page_url}")
 
         try:
-            # 方法1: 精确提取状态信息
+            # -------------------------
+            # 1) 提取状态
+            # -------------------------
             author_p = soup.select_one("p.author")
             if author_p:
                 status_span = author_p.select_one("span")
@@ -736,7 +738,6 @@ class QidianSpider(BaseSpider):
                     elif "完本" in status_text or "完结" in status_text:
                         detail["status"] = "完本"
 
-            # 如果通过span没有找到状态，回退到正则搜索整个页面
             if not detail.get("status"):
                 page_text = self._normalize_text(soup.get_text(" ", strip=True))
                 if re.search(r"\b完本\b|\b完结\b", page_text):
@@ -744,46 +745,82 @@ class QidianSpider(BaseSpider):
                 elif re.search(r"\b连载\b", page_text):
                     detail["status"] = "连载"
 
-            # 提取字数信息
+            # -------------------------
+            # 2) 提取小说字数
+            # 只抓“534.58万字”这种小说本身字数
+            # 不抓作者区“累计字数 1995万”
+            # -------------------------
             word_count = None
-            intro_p = soup.select_one("p.intro")
-            if intro_p:
-                intro_text = intro_p.get_text(" ", strip=True)
-                self.logger.debug(f"Looking for word count in intro: {intro_text[:100]}...")
 
-                # 尝试匹配 "字数 365.76万" 或 "总字数 123.45万"
-                m = re.search(r"(?:字数|总字数)\s*([0-9]+(?:\.[0-9]+)?[万亿]?)", intro_text)
-                if m:
-                    word_count = self._parse_cn_number(m.group(1))
+            # 方法1：优先从顶部统计区提取“数字+字”
+            count_selectors = [
+                "p.count",
+                ".book-info p.count",
+                ".book-information p.count",
+                ".info p.count",
+            ]
 
-            # 如果intro段落没有，尝试其他常见位置
+            for sel in count_selectors:
+                for elem in soup.select(sel):
+                    text = self._normalize_text(elem.get_text(" ", strip=True))
+                    self.logger.debug(f"Checking word count block [{sel}]: {text}")
+
+                    # 例如：534.58万字 581.15万总推荐 3.55万周推荐
+                    m = re.search(r"([0-9]+(?:\.[0-9]+)?[万亿]?)字\b", text)
+                    if m:
+                        word_count = self._parse_cn_number(m.group(1))
+                        if word_count is not None:
+                            self.logger.info(f"从统计区提取小说字数: {m.group(1)}字 -> {word_count}")
+                            break
+                if word_count is not None:
+                    break
+
+            # 方法2：从书籍信息区域兜底，但排除“累计字数”
             if word_count is None:
-                # 查找所有包含"字数"的元素
-                word_elements = soup.find_all(text=re.compile(r"字数"))
-                for elem in word_elements:
-                    if isinstance(elem, str):
-                        self.logger.debug(f"Found word count element: {elem[:50]}")
-                        parent_text = self._normalize_text(elem)
-                        m = re.search(r"(?:字数|总字数)\s*([0-9]+(?:\.[0-9]+)?[万亿]?)", parent_text)
-                        if m:
-                            word_count = self._parse_cn_number(m.group(1))
+                info_selectors = [
+                    ".book-info",
+                    ".book-information",
+                    ".book-detail",
+                    ".book-attribute",
+                ]
+                for sel in info_selectors:
+                    elem = soup.select_one(sel)
+                    if not elem:
+                        continue
+
+                    text = self._normalize_text(elem.get_text(" ", strip=True))
+                    self.logger.debug(f"Fallback checking [{sel}]: {text[:200]}")
+
+                    # 只接受“xxx字”格式
+                    m = re.search(r"([0-9]+(?:\.[0-9]+)?[万亿]?)字\b", text)
+                    if m:
+                        word_count = self._parse_cn_number(m.group(1))
+                        if word_count is not None:
+                            self.logger.info(f"从书籍信息区提取小说字数: {m.group(1)}字 -> {word_count}")
                             break
 
-            # 如果以上方法都没有找到，使用正则搜索整个页面文本
+            # 方法3：最后兜底，整页搜索“数字+字”，但明确排除“累计字数”
             if word_count is None:
                 page_text = self._normalize_text(soup.get_text(" ", strip=True))
-                m = re.search(r"(?:字数|总字数)\s*([0-9]+(?:\.[0-9]+)?[万亿]?)", page_text)
+
+                # 先删掉作者累计字数字样附近内容，降低误匹配概率
+                page_text = re.sub(r"累计字数\s*[0-9]+(?:\.[0-9]+)?[万亿]?", "", page_text)
+
+                m = re.search(r"([0-9]+(?:\.[0-9]+)?[万亿]?)字\b", page_text)
                 if m:
                     word_count = self._parse_cn_number(m.group(1))
+                    if word_count is not None:
+                        self.logger.info(f"从整页兜底提取小说字数: {m.group(1)}字 -> {word_count}")
 
             if word_count is not None:
                 detail["total_words"] = word_count
                 self.logger.debug(f"Extracted 小说总字数: {word_count}")
             else:
-                self.logger.warning("Could not extract word count from page")
+                self.logger.warning("Could not extract novel word count from page")
 
-            # 记录提取结果
-            self.logger.info(f"[详情页补充] 小说状态: '{detail.get('status')}', 小说总字数: {detail.get('total_words')}")
+            self.logger.info(
+                f"[详情页补充] 小说状态: '{detail.get('status')}', 小说总字数: {detail.get('total_words')}'"
+            )
 
         except Exception as e:
             self.logger.error(f"Error extracting status and word count from page: {e}")
