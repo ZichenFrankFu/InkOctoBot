@@ -1,118 +1,493 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
-import { apiGet } from "../api/client";
-const put=(u:string,b:any)=>fetch(u,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json());
-const post=(u:string,b:any)=>fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json());
-const del=(u:string)=>fetch(u,{method:"DELETE"}).then(r=>r.json());
+import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
+import { useResizable } from "../hooks/useResizable";
+import type { Character, CharacterLayerB, CharacterRelationship } from "../api/types";
 
-interface Char { id:string; name:string; role:string; project_id:string; personality:string; background:string; speech_style:string; tags:string[]; quant_params:Record<string,number>; relationships:Record<string,{trust_alpha:number;trust_beta:number;loyalty:number;note:string}>; [k:string]:any; }
-interface Project { id:string; name:string; }
+interface Props {
+  projectId: string;
+  projects: any[];
+}
 
-export default function CharacterManagerPage({projectId,projects}:{projectId:string;projects:Project[]}) {
-  const [items,setItems]=useState<Char[]>([]); const [loading,setLoading]=useState(true);
-  const [editing,setEditing]=useState<Char|null>(null); const [dirty,setDirty]=useState(false);
-  const [relTarget,setRelTarget]=useState("");
+const ROLES = ["主角", "重要配角", "配角", "反派", "导师", "路人"];
 
-  const load=useCallback(()=>{setLoading(true);
-    apiGet<{items:Char[]}>(`/api/data/characters${projectId?`?project_id=${projectId}`:""}`).then(r=>setItems(r.items||[])).catch(console.error).finally(()=>setLoading(false));
-  },[projectId]);
-  useEffect(()=>{load();},[projectId]);
+const DEFAULT_LAYER_B: CharacterLayerB = {
+  loss_aversion: 2.5,
+  risk_aversion_gain: 0.5,
+  risk_aversion_loss: 0.5,
+  impulse_probability: 0.3,
+  social_frequency: 5,
+  time_discount: 0.9,
+  value_weights: {},
+};
 
-  const create=async()=>{const c=await post("/api/data/characters",{name:"新角色",role:"配角",project_id:projectId});setItems([...items,c]);setEditing(c);setDirty(false);};
-  const save=async()=>{if(!editing)return;await put(`/api/data/characters/${editing.id}`,editing);setDirty(false);load();};
-  const remove=async(id:string)=>{if(!confirm("确定删除？"))return;await del(`/api/data/characters/${id}`);if(editing?.id===id)setEditing(null);load();};
-  const u=(k:string,v:any)=>{if(!editing)return;setEditing({...editing,[k]:v});setDirty(true);};
-  const uq=(k:string,v:number)=>{if(!editing)return;setEditing({...editing,quant_params:{...editing.quant_params,[k]:v}});setDirty(true);};
+export default function CharacterManagerPage({ projectId, projects }: Props) {
+  const [items, setItems] = useState<Character[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<Character | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [search, setSearch] = useState("");
+  const [relTarget, setRelTarget] = useState("");
 
-  // Other characters in same project for relationships
-  const others=useMemo(()=>items.filter(c=>editing&&c.id!==editing.id),[items,editing]);
-  const addRel=(targetId:string)=>{if(!editing||!targetId)return;const t=items.find(c=>c.id===targetId);if(!t)return;
-    setEditing({...editing,relationships:{...editing.relationships,[targetId]:{trust_alpha:5,trust_beta:2,loyalty:0.7,note:""}}});setDirty(true);setRelTarget("");};
-  const urel=(tid:string,k:string,v:any)=>{if(!editing)return;setEditing({...editing,relationships:{...editing.relationships,[tid]:{...editing.relationships[tid],[k]:v}}});setDirty(true);};
-  const delRel=(tid:string)=>{if(!editing)return;const r={...editing.relationships};delete r[tid];setEditing({...editing,relationships:r});setDirty(true);};
+  const leftPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 220, maxSize: 420 });
 
-  const roles=["主角","重要配角","配角","反派","导师","路人"];
-  const projName=projects.find(p=>p.id===projectId)?.name||"未选择项目";
+  const projName = projects.find(p => p.id === projectId)?.name || "未选择项目";
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await apiGet<{ items: Character[] }>(`/api/data/projects/${projectId}/characters`);
+      setItems(r.items || []);
+    } catch (e) {
+      console.error(e);
+    }
+    setLoading(false);
+  }, [projectId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return items;
+    const q = search.toLowerCase();
+    return items.filter(c => c.name.toLowerCase().includes(q) || c.role?.toLowerCase().includes(q));
+  }, [items, search]);
+
+  const create = async () => {
+    try {
+      const c = await apiPost<Character>(`/api/data/projects/${projectId}/characters`, {
+        name: "新角色",
+        role: "配角",
+        project_id: projectId,
+        tags: [],
+        personality: "",
+        background: "",
+        speech_style: "",
+        layer_b: DEFAULT_LAYER_B,
+        relationships: [],
+      });
+      setItems([...items, c]);
+      setEditing(c);
+      setDirty(false);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const save = async () => {
+    if (!editing) return;
+    try {
+      await apiPut(`/api/data/projects/${projectId}/characters/${editing.id}`, editing);
+      setDirty(false);
+      load();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const remove = async (id: string) => {
+    if (!confirm("确定删除该角色？")) return;
+    try {
+      await apiDelete(`/api/data/projects/${projectId}/characters/${id}`);
+      if (editing?.id === id) setEditing(null);
+      load();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const u = (key: string, val: any) => {
+    if (!editing) return;
+    setEditing({ ...editing, [key]: val });
+    setDirty(true);
+  };
+
+  const uLayerB = (key: keyof CharacterLayerB, val: number) => {
+    if (!editing) return;
+    setEditing({
+      ...editing,
+      layer_b: { ...(editing.layer_b || DEFAULT_LAYER_B), [key]: val },
+    });
+    setDirty(true);
+  };
+
+  // Relationships
+  const others = useMemo(() => items.filter(c => editing && c.id !== editing.id), [items, editing]);
+
+  const addRelationship = (targetId: string) => {
+    if (!editing || !targetId) return;
+    const target = items.find(c => c.id === targetId);
+    if (!target) return;
+    const rels = editing.relationships || [];
+    if (rels.some(r => r.target_id === targetId)) return;
+    const newRel: CharacterRelationship = {
+      target_id: targetId,
+      target_name: target.name,
+      trust_alpha: 5,
+      trust_beta: 2,
+      loyalty: 0.7,
+      notes: "",
+    };
+    setEditing({ ...editing, relationships: [...rels, newRel] });
+    setDirty(true);
+    setRelTarget("");
+  };
+
+  const updateRel = (targetId: string, key: string, val: any) => {
+    if (!editing) return;
+    setEditing({
+      ...editing,
+      relationships: (editing.relationships || []).map(r =>
+        r.target_id === targetId ? { ...r, [key]: val } : r
+      ),
+    });
+    setDirty(true);
+  };
+
+  const removeRel = (targetId: string) => {
+    if (!editing) return;
+    setEditing({
+      ...editing,
+      relationships: (editing.relationships || []).filter(r => r.target_id !== targetId),
+    });
+    setDirty(true);
+  };
 
   return (
-    <div style={{display:"flex",height:"100vh",overflow:"hidden"}}>
-      <div style={{width:300,flexShrink:0,background:"var(--paper-card)",borderRight:"1px solid var(--ink-100)",display:"flex",flexDirection:"column"}}>
-        <div style={{padding:"16px 16px 12px",borderBottom:"1px solid var(--ink-50)"}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
-            <h3 style={{fontFamily:"var(--font-serif)",fontSize:16,fontWeight:700}}>👤 角色管理</h3>
-            <button className="btn-primary" style={{padding:"6px 14px",fontSize:12}} onClick={create}>+ 新角色</button>
+    <div className="page-full">
+      <div className="panel-layout">
+        {/* ======== LEFT PANEL: Character List ======== */}
+        <div className="panel" style={{ width: leftPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)" }}>
+          <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+            <div className="flex items-center justify-between">
+              <h3>角色管理</h3>
+              <button className="btn-primary" style={{ padding: "5px 12px", fontSize: 12 }} onClick={create}>
+                + 新建角色
+              </button>
+            </div>
+            <div className="text-xs text-muted">{projName}</div>
           </div>
-          <div style={{fontSize:11,color:"var(--ink-400)"}}>📖 {projName}</div>
-        </div>
-        <div style={{flex:1,overflowY:"auto"}}>
-          {loading?<div className="loading"><div className="loading-spinner"/></div>:items.length===0?
-            <div className="empty-state" style={{padding:32}}><p>该项目暂无角色</p></div>:
-            items.map(c=><div key={c.id} onClick={()=>{setEditing(c);setDirty(false);}} style={{padding:"12px 16px",borderBottom:"1px solid var(--ink-50)",cursor:"pointer",background:editing?.id===c.id?"var(--accent-muted)":"transparent",display:"flex",alignItems:"center",gap:12}}>
-              <div style={{width:40,height:40,borderRadius:"50%",background:c.role==="主角"?"var(--accent-muted)":c.role==="反派"?"var(--ink-100)":"var(--jade-light)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>{c.role==="主角"?"⭐":c.role==="反派"?"👿":"👤"}</div>
-              <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600}}>{c.name}</div><div style={{fontSize:11,color:"var(--ink-400)"}}>{c.role}{Object.keys(c.relationships||{}).length>0?` · ${Object.keys(c.relationships).length}段关系`:""}</div></div>
-              <button onClick={e=>{e.stopPropagation();remove(c.id);}} style={{border:"none",background:"transparent",color:"var(--ink-300)",cursor:"pointer"}}>×</button>
-            </div>)
-          }
-        </div>
-      </div>
-      <div style={{flex:1,overflowY:"auto",background:"var(--paper)"}}>
-        {!editing?<div className="empty-state" style={{paddingTop:120}}><h4>选择或创建一个角色</h4></div>:
-        <div style={{maxWidth:700,margin:"0 auto",padding:"28px 32px 48px"}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24}}>
-            <h2 style={{fontFamily:"var(--font-serif)",fontSize:22,fontWeight:700}}>{editing.name}</h2>
-            <button className="btn-primary" onClick={save} disabled={!dirty} style={{opacity:dirty?1:.5}}>{dirty?"保存":"已保存"}</button>
+
+          {/* Search */}
+          <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
+            <input
+              className="input"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="搜索角色..."
+            />
           </div>
-          {/* Basic Info */}
-          <div className="card" style={{marginBottom:20}}><div className="card-header"><h3>基本信息</h3></div><div className="card-body">
-            <F label="姓名" value={editing.name} onChange={v=>u("name",v)}/>
-            <div style={{marginBottom:12}}><label style={{fontSize:12,fontWeight:600,color:"var(--ink-500)",display:"block",marginBottom:4}}>角色定位</label>
-              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{roles.map(r=><button key={r} onClick={()=>u("role",r)} style={{padding:"5px 14px",borderRadius:20,border:editing.role===r?"2px solid var(--accent)":"1px solid var(--ink-200)",background:editing.role===r?"var(--accent-muted)":"transparent",color:editing.role===r?"var(--accent)":"var(--ink-600)",fontSize:12,cursor:"pointer"}}>{r}</button>)}</div></div>
-            <F label="标签" value={(editing.tags||[]).join(", ")} onChange={v=>u("tags",v.split(",").map(s=>s.trim()).filter(Boolean))}/>
-          </div></div>
-          {/* Layer A */}
-          <div className="card" style={{marginBottom:20}}><div className="card-header"><h3>Layer A: 自然语言描述</h3></div><div className="card-body">
-            <A label="性格描述" value={editing.personality} onChange={v=>u("personality",v)} rows={3}/>
-            <A label="背景故事" value={editing.background} onChange={v=>u("background",v)} rows={4}/>
-            <A label="说话风格" value={editing.speech_style} onChange={v=>u("speech_style",v)} rows={2}/>
-          </div></div>
-          {/* Layer B */}
-          <div className="card" style={{marginBottom:20}}><div className="card-header"><h3>Layer B: 量化决策参数</h3></div><div className="card-body">
-            {[{k:"loss_aversion",l:"损失厌恶",min:1,max:5,step:.1},{k:"risk_aversion",l:"风险厌恶",min:0,max:1,step:.05},{k:"impulsive_p",l:"冲动概率",min:0,max:1,step:.05}].map(p=>
-              <Slider key={p.k} {...p} value={editing.quant_params?.[p.k]} onChange={v=>uq(p.k,v)}/>)}
-          </div></div>
-          {/* Relationships */}
-          <div className="card"><div className="card-header"><h3>🤝 角色关系</h3><p>对不同角色的信任度和忠诚度</p></div><div className="card-body">
-            {Object.entries(editing.relationships||{}).map(([tid,rel])=>{const t=items.find(c=>c.id===tid);return(
-              <div key={tid} style={{padding:"12px",background:"var(--ink-50)",borderRadius:8,marginBottom:10}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-                  <span style={{fontWeight:600,fontSize:13}}>→ {t?.name||tid}</span>
-                  <button onClick={()=>delRel(tid)} style={{border:"none",background:"transparent",color:"var(--ink-400)",cursor:"pointer",fontSize:12}}>移除</button>
-                </div>
-                <Slider k="trust_alpha" l={`信任 α（当前: ${((rel.trust_alpha)/(rel.trust_alpha+rel.trust_beta)*100).toFixed(0)}%）`} min={1} max={20} step={1} value={rel.trust_alpha} onChange={v=>urel(tid,"trust_alpha",v)}/>
-                <Slider k="trust_beta" l="信任 β" min={1} max={20} step={1} value={rel.trust_beta} onChange={v=>urel(tid,"trust_beta",v)}/>
-                <Slider k="loyalty" l="忠诚度" min={0} max={1} step={.05} value={rel.loyalty} onChange={v=>urel(tid,"loyalty",v)}/>
-                <F label="关系备注" value={rel.note||""} onChange={v=>urel(tid,"note",v)}/>
+
+          {/* List */}
+          <div className="panel-body">
+            {loading ? (
+              <div className="loading"><div className="loading-spinner" /></div>
+            ) : filtered.length === 0 ? (
+              <div className="empty-state" style={{ padding: 32 }}>
+                <p>{search ? "没有匹配的角色" : "该项目暂无角色"}</p>
               </div>
-            );})}
-            {others.length>0&&<div style={{display:"flex",gap:8,marginTop:8}}>
-              <select value={relTarget} onChange={e=>setRelTarget(e.target.value)} style={{flex:1,padding:"6px 10px",border:"1px solid var(--ink-200)",borderRadius:6,fontSize:12,outline:"none"}}>
-                <option value="">选择角色…</option>
-                {others.filter(o=>!editing.relationships?.[o.id]).map(o=><option key={o.id} value={o.id}>{o.name}</option>)}
-              </select>
-              <button onClick={()=>addRel(relTarget)} disabled={!relTarget} style={{padding:"6px 14px",background:"var(--jade)",color:"white",border:"none",borderRadius:6,fontSize:12,cursor:"pointer",opacity:relTarget?1:.5}}>+ 添加关系</button>
-            </div>}
-          </div></div>
-        </div>}
+            ) : (
+              filtered.map(c => (
+                <div
+                  key={c.id}
+                  className={`report-list-item ${editing?.id === c.id ? "active" : ""}`}
+                  onClick={() => { setEditing(c); setDirty(false); }}
+                >
+                  <div
+                    className="char-avatar"
+                    style={{
+                      background: c.role === "主角" ? "var(--accent-subtle)" : c.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)",
+                      color: c.role === "主角" ? "var(--accent)" : c.role === "反派" ? "var(--purple)" : "var(--jade)",
+                    }}
+                  >
+                    {c.name.charAt(0)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="truncate" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
+                      {c.name}
+                    </div>
+                    <div className="text-xs text-muted">
+                      {c.role || "角色"}
+                      {(c.relationships?.length || 0) > 0 ? ` \u00B7 ${c.relationships!.length}段关系` : ""}
+                    </div>
+                  </div>
+                  <button
+                    className="btn-icon"
+                    style={{ fontSize: 14 }}
+                    onClick={e => { e.stopPropagation(); remove(c.id); }}
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Resize handle */}
+        <div className="panel-resize-h" {...leftPanel.handleProps} />
+
+        {/* ======== RIGHT PANEL: Character Detail ======== */}
+        <div className="panel flex-1" style={{ background: "var(--bg-app)", overflowY: "auto" }}>
+          {!editing ? (
+            <div className="empty-state" style={{ paddingTop: 120 }}>
+              <h4>选择或创建一个角色</h4>
+              <p>在左侧列表中选择角色，或点击「新建角色」</p>
+            </div>
+          ) : (
+            <div style={{ maxWidth: 720, margin: "0 auto", padding: "28px 32px 48px" }}>
+              {/* Header */}
+              <div className="flex items-center justify-between mb-24">
+                <h2 className="font-serif" style={{ fontSize: 22, fontWeight: 700 }}>
+                  {editing.name}
+                </h2>
+                <button
+                  className="btn-primary"
+                  onClick={save}
+                  disabled={!dirty}
+                  style={{ opacity: dirty ? 1 : 0.5 }}
+                >
+                  {dirty ? "保存" : "已保存"}
+                </button>
+              </div>
+
+              {/* Basic Info */}
+              <div className="card mb-20">
+                <div className="card-header"><h3>基本信息</h3></div>
+                <div className="card-body">
+                  <div className="field mb-12">
+                    <label className="label">姓名</label>
+                    <input className="input" value={editing.name} onChange={e => u("name", e.target.value)} />
+                  </div>
+                  <div className="field mb-12">
+                    <label className="label">角色定位</label>
+                    <div className="flex gap-6" style={{ flexWrap: "wrap" }}>
+                      {ROLES.map(r => (
+                        <button
+                          key={r}
+                          className={editing.role === r ? "btn-primary" : "btn"}
+                          style={{ padding: "5px 14px", fontSize: 12, borderRadius: 20 }}
+                          onClick={() => u("role", r)}
+                        >
+                          {r}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label className="label">标签（逗号分隔）</label>
+                    <input
+                      className="input"
+                      value={(editing.tags || []).join(", ")}
+                      onChange={e => u("tags", e.target.value.split(",").map(s => s.trim()).filter(Boolean))}
+                      placeholder="例：剑修, 冷酷, 天才"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Layer A: Qualitative */}
+              <div className="card mb-20">
+                <div className="card-header"><h3>Layer A: 定性描述</h3></div>
+                <div className="card-body">
+                  <div className="field mb-12">
+                    <label className="label">性格描述</label>
+                    <textarea
+                      className="input"
+                      value={editing.personality || ""}
+                      onChange={e => u("personality", e.target.value)}
+                      rows={3}
+                      placeholder="描述角色的核心性格特质..."
+                    />
+                  </div>
+                  <div className="field mb-12">
+                    <label className="label">背景故事</label>
+                    <textarea
+                      className="input"
+                      value={editing.background || ""}
+                      onChange={e => u("background", e.target.value)}
+                      rows={4}
+                      placeholder="角色的过往经历、成长环境、关键转折..."
+                    />
+                  </div>
+                  <div className="field">
+                    <label className="label">说话风格</label>
+                    <textarea
+                      className="input"
+                      value={editing.speech_style || ""}
+                      onChange={e => u("speech_style", e.target.value)}
+                      rows={2}
+                      placeholder="口头禅、语气特点、用词偏好..."
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Layer B: Quantitative */}
+              <div className="card mb-20">
+                <div className="card-header"><h3>Layer B: 量化决策参数</h3></div>
+                <div className="card-body">
+                  <ParamSlider
+                    name="损失厌恶"
+                    value={editing.layer_b?.loss_aversion ?? DEFAULT_LAYER_B.loss_aversion}
+                    min={0} max={5} step={0.1}
+                    onChange={v => uLayerB("loss_aversion", v)}
+                  />
+                  <ParamSlider
+                    name="风险厌恶(收益)"
+                    value={editing.layer_b?.risk_aversion_gain ?? DEFAULT_LAYER_B.risk_aversion_gain}
+                    min={0} max={1} step={0.05}
+                    onChange={v => uLayerB("risk_aversion_gain", v)}
+                  />
+                  <ParamSlider
+                    name="风险厌恶(损失)"
+                    value={editing.layer_b?.risk_aversion_loss ?? DEFAULT_LAYER_B.risk_aversion_loss}
+                    min={0} max={1} step={0.05}
+                    onChange={v => uLayerB("risk_aversion_loss", v)}
+                  />
+                  <ParamSlider
+                    name="冲动概率"
+                    value={editing.layer_b?.impulse_probability ?? DEFAULT_LAYER_B.impulse_probability}
+                    min={0} max={1} step={0.05}
+                    onChange={v => uLayerB("impulse_probability", v)}
+                  />
+                  <ParamSlider
+                    name="社交频率"
+                    value={editing.layer_b?.social_frequency ?? DEFAULT_LAYER_B.social_frequency}
+                    min={0} max={10} step={0.5}
+                    onChange={v => uLayerB("social_frequency", v)}
+                  />
+                </div>
+              </div>
+
+              {/* Relationships */}
+              <div className="card">
+                <div className="card-header">
+                  <h3>角色关系</h3>
+                  <p className="text-xs text-muted">对不同角色的信任度和忠诚度</p>
+                </div>
+                <div className="card-body">
+                  {(editing.relationships || []).map(rel => {
+                    const trustPct = ((rel.trust_alpha / (rel.trust_alpha + rel.trust_beta)) * 100).toFixed(0);
+                    return (
+                      <div
+                        key={rel.target_id}
+                        style={{
+                          padding: 12,
+                          background: "var(--bg-surface-2)",
+                          borderRadius: "var(--radius-md)",
+                          marginBottom: 10,
+                          border: "1px solid var(--border)",
+                        }}
+                      >
+                        <div className="flex items-center justify-between mb-8">
+                          <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>
+                            &rarr; {rel.target_name || rel.target_id}
+                          </span>
+                          <button
+                            className="btn-ghost"
+                            style={{ fontSize: 12, padding: "2px 8px" }}
+                            onClick={() => removeRel(rel.target_id)}
+                          >
+                            移除
+                          </button>
+                        </div>
+                        <ParamSlider
+                          name={`信任 \u03B1 (${trustPct}%)`}
+                          value={rel.trust_alpha}
+                          min={1} max={20} step={1}
+                          onChange={v => updateRel(rel.target_id, "trust_alpha", v)}
+                        />
+                        <ParamSlider
+                          name="信任 \u03B2"
+                          value={rel.trust_beta}
+                          min={1} max={20} step={1}
+                          onChange={v => updateRel(rel.target_id, "trust_beta", v)}
+                        />
+                        <ParamSlider
+                          name="忠诚度"
+                          value={rel.loyalty}
+                          min={0} max={1} step={0.05}
+                          onChange={v => updateRel(rel.target_id, "loyalty", v)}
+                        />
+                        <div className="field mt-8">
+                          <label className="label">关系备注</label>
+                          <input
+                            className="input"
+                            value={rel.notes || ""}
+                            onChange={e => updateRel(rel.target_id, "notes", e.target.value)}
+                            placeholder="描述两人的关系..."
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Add relationship */}
+                  {others.length > 0 && (
+                    <div className="flex gap-8 mt-8">
+                      <select
+                        className="select"
+                        style={{ flex: 1 }}
+                        value={relTarget}
+                        onChange={e => setRelTarget(e.target.value)}
+                      >
+                        <option value="">选择角色...</option>
+                        {others
+                          .filter(o => !(editing.relationships || []).some(r => r.target_id === o.id))
+                          .map(o => (
+                            <option key={o.id} value={o.id}>{o.name}</option>
+                          ))
+                        }
+                      </select>
+                      <button
+                        className="btn-primary"
+                        style={{ fontSize: 12 }}
+                        onClick={() => addRelationship(relTarget)}
+                        disabled={!relTarget}
+                      >
+                        + 添加关系
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
-function F({label,value,onChange}:{label:string;value:string;onChange:(v:string)=>void}) {
-  return <div style={{marginBottom:12}}><label style={{fontSize:12,fontWeight:600,color:"var(--ink-500)",display:"block",marginBottom:4}}>{label}</label><input value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"8px 12px",border:"1px solid var(--ink-200)",borderRadius:6,fontSize:13,outline:"none"}}/></div>;
-}
-function A({label,value,onChange,rows=3}:{label:string;value:string;onChange:(v:string)=>void;rows?:number}) {
-  return <div style={{marginBottom:12}}><label style={{fontSize:12,fontWeight:600,color:"var(--ink-500)",display:"block",marginBottom:4}}>{label}</label><textarea value={value} onChange={e=>onChange(e.target.value)} rows={rows} style={{width:"100%",padding:"8px 12px",border:"1px solid var(--ink-200)",borderRadius:6,fontSize:13,outline:"none",resize:"vertical",lineHeight:1.6}}/></div>;
-}
-function Slider({k,l,min,max,step,value,onChange}:{k:string;l:string;min:number;max:number;step:number;value?:number;onChange:(v:number)=>void}) {
-  const v=value??((min+max)/2);
-  return <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8}}><span style={{width:90,fontSize:12,color:"var(--ink-500)",textAlign:"right"}}>{l}</span><input type="range" min={min} max={max} step={step} value={v} onChange={e=>onChange(+e.target.value)} style={{flex:1}}/><span style={{width:48,fontFamily:"var(--font-mono)",fontSize:12,textAlign:"right"}}>{v.toFixed(step<1?2:0)}</span></div>;
+
+/* ---- Param Slider ---- */
+function ParamSlider({
+  name,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  name: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="param-slider">
+      <span className="param-name">{name}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={e => onChange(+e.target.value)}
+      />
+      <span className="param-value">{value.toFixed(step < 1 ? 2 : 0)}</span>
+    </div>
+  );
 }
