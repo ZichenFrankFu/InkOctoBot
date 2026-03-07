@@ -10,20 +10,65 @@ import CharacterManagerPage from "./pages/CharacterManagerPage";
 import WorldBookPage from "./pages/WorldBookPage";
 import StorylinePage from "./pages/StorylinePage";
 import SettingsPage from "./pages/SettingsPage";
+import DatabasePage from "./pages/DatabasePage";
+import ReportsPage from "./pages/ReportsPage";
+import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
+import ProjectListPage from "./pages/ProjectListPage";
+import ProjectSetupPage from "./pages/ProjectSetupPage";
 
-type Tab = "dashboard"|"rankings"|"references"|"trends"|"editor"|"characters"|"worldbook"|"storyline"|"settings";
+type Tab =
+  | "dashboard" | "rankings" | "references" | "trends" | "database" | "reports" | "analysis"
+  | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
+  | "settings";
+
 interface Project { id: string; name: string; genre?: string; }
+
+const NAV: { section: string; items: { key: Tab; icon: string; label: string }[] }[] = [
+  {
+    section: "概览",
+    items: [
+      { key: "dashboard", icon: "📊", label: "首页" },
+    ],
+  },
+  {
+    section: "数据",
+    items: [
+      { key: "database", icon: "🗄️", label: "数据浏览" },
+      { key: "rankings", icon: "📋", label: "榜单浏览" },
+      { key: "references", icon: "📚", label: "参考作品库" },
+      { key: "analysis", icon: "📈", label: "分析面板" },
+      { key: "trends", icon: "📉", label: "趋势分析" },
+      { key: "reports", icon: "📄", label: "分析报告" },
+    ],
+  },
+  {
+    section: "创作",
+    items: [
+      { key: "projects", icon: "📁", label: "项目管理" },
+      { key: "editor", icon: "✏️", label: "编辑器" },
+      { key: "characters", icon: "👤", label: "角色管理" },
+      { key: "worldbook", icon: "🌍", label: "世界书" },
+      { key: "storyline", icon: "🗺️", label: "剧情线" },
+    ],
+  },
+  {
+    section: "系统",
+    items: [
+      { key: "settings", icon: "⚙️", label: "设置" },
+    ],
+  },
+];
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
-  const [sidebarW, setSidebarW] = useState(240);
+  const [sidebarW, setSidebarW] = useState(220);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<string>("");
   const [showProjMenu, setShowProjMenu] = useState(false);
   const dragging = useRef(false);
 
   useEffect(() => {
-    apiGet<{items: Project[]}>("/api/data/projects")
+    apiGet<{ items: Project[] }>("/api/data/projects")
       .then(r => {
         const items = r.items || [];
         setProjects(items);
@@ -36,18 +81,20 @@ export default function App() {
     const name = prompt("新项目名称：");
     if (!name) return;
     try {
-      const res: any = await fetch("/api/data/projects", {
+      const res: Project = await fetch("/api/data/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
       }).then(r => r.json());
       setProjects(prev => [...prev, res]);
       setActiveProject(res.id);
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
     setShowProjMenu(false);
   };
 
-  const activeProjectName = projects.find(p => p.id === activeProject)?.name || "未选择项目";
+  const activeProjectName = projects.find(p => p.id === activeProject)?.name || "未选择";
 
   // Sidebar resize
   const onMouseDown = useCallback(() => {
@@ -58,7 +105,7 @@ export default function App() {
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (dragging.current) setSidebarW(Math.max(180, Math.min(360, e.clientX)));
+      if (dragging.current) setSidebarW(Math.max(180, Math.min(340, e.clientX)));
     };
     const onUp = () => {
       dragging.current = false;
@@ -77,58 +124,78 @@ export default function App() {
     <div className="app-layout">
       <aside className="sidebar" style={{ width: sidebarW }}>
         <div className="sidebar-brand">
-          <h1>🐙 InkOctoBot</h1>
-          <p>小说AI智能体工作台</p>
+          <h1>
+            <span style={{ fontSize: 22 }}>🐙</span>
+            InkOctoBot
+          </h1>
+          <p>AI 小说智能体工作台</p>
         </div>
+
         <nav className="sidebar-nav">
-          <div className="sidebar-section-label">概览</div>
-          <NB icon="📊" label="首页" active={tab === "dashboard"} onClick={() => setTab("dashboard")} />
-
-          <div className="sidebar-section-label">数据</div>
-          <NB icon="📋" label="榜单浏览" active={tab === "rankings"} onClick={() => setTab("rankings")} />
-          <NB icon="📚" label="参考作品库" active={tab === "references"} onClick={() => setTab("references")} />
-          <NB icon="📈" label="趋势分析" active={tab === "trends"} onClick={() => setTab("trends")} />
-
-          <div className="sidebar-section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingRight: 10 }}>
-            <span>创作</span>
-            <div style={{ position: "relative" }}>
-              <button
-                onClick={() => setShowProjMenu(!showProjMenu)}
-                style={{ background: "none", border: "1px solid var(--ink-500)", borderRadius: 4, color: "var(--ink-300)", fontSize: 9, padding: "2px 6px", cursor: "pointer", letterSpacing: 0 }}
-              >
-                {activeProjectName.length > 8 ? activeProjectName.slice(0, 8) + "…" : activeProjectName} ▾
-              </button>
-              {showProjMenu && (
-                <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: "var(--ink-800)", border: "1px solid var(--ink-600)", borderRadius: 6, padding: 4, zIndex: 100, minWidth: 160, boxShadow: "var(--shadow-lg)" }}>
-                  {projects.map(p => (
-                    <div key={p.id} onClick={() => { setActiveProject(p.id); setShowProjMenu(false); }}
-                      style={{ padding: "6px 10px", fontSize: 12, color: p.id === activeProject ? "var(--accent-light)" : "var(--ink-200)", cursor: "pointer", borderRadius: 4, background: p.id === activeProject ? "rgba(192,57,43,0.15)" : "transparent" }}>
-                      {p.name}
-                    </div>
-                  ))}
-                  <div style={{ borderTop: "1px solid var(--ink-600)", marginTop: 4, paddingTop: 4 }}>
-                    <div onClick={createProject} style={{ padding: "6px 10px", fontSize: 12, color: "var(--jade)", cursor: "pointer", borderRadius: 4 }}>+ 新建项目</div>
+          {NAV.map(group => (
+            <React.Fragment key={group.section}>
+              {group.section === "创作" ? (
+                <div className="sidebar-section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingRight: 8 }}>
+                  <span>{group.section}</span>
+                  <div style={{ position: "relative" }}>
+                    <button
+                      onClick={() => setShowProjMenu(!showProjMenu)}
+                      className="btn-ghost"
+                      style={{ padding: "2px 8px", fontSize: 10, letterSpacing: 0, textTransform: "none" }}
+                    >
+                      {activeProjectName.length > 8 ? activeProjectName.slice(0, 8) + "…" : activeProjectName} ▾
+                    </button>
+                    {showProjMenu && (
+                      <div className="dropdown" style={{ top: "100%", right: 0, marginTop: 4 }}>
+                        {projects.map(p => (
+                          <button
+                            key={p.id}
+                            className={`dropdown-item${p.id === activeProject ? " active" : ""}`}
+                            onClick={() => { setActiveProject(p.id); setShowProjMenu(false); }}
+                          >
+                            {p.name}
+                          </button>
+                        ))}
+                        <div className="dropdown-divider" />
+                        <button className="dropdown-item" onClick={createProject} style={{ color: "var(--jade)" }}>
+                          + 新建项目
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
+              ) : (
+                <div className="sidebar-section-label">{group.section}</div>
               )}
-            </div>
-          </div>
-          <NB icon="✏️" label="编辑器" active={tab === "editor"} onClick={() => setTab("editor")} />
-          <NB icon="👤" label="角色管理" active={tab === "characters"} onClick={() => setTab("characters")} />
-          <NB icon="🌍" label="世界书" active={tab === "worldbook"} onClick={() => setTab("worldbook")} />
-          <NB icon="🗺️" label="剧情线" active={tab === "storyline"} onClick={() => setTab("storyline")} />
-
-          <div className="sidebar-section-label">系统</div>
-          <NB icon="⚙️" label="设置" active={tab === "settings"} onClick={() => setTab("settings")} />
+              {group.items.map(item => (
+                <button
+                  key={item.key}
+                  className={`nav-btn${tab === item.key ? " active" : ""}`}
+                  onClick={() => setTab(item.key)}
+                >
+                  <span className="nav-icon">{item.icon}</span>
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </React.Fragment>
+          ))}
         </nav>
-        <div className="sidebar-footer">InkOctoBot v0.7</div>
+
+        <div className="sidebar-footer">InkOctoBot v2.1</div>
       </aside>
+
       <div className="resize-handle" onMouseDown={onMouseDown} />
+
       <main className="main-content">
         {tab === "dashboard" && <DashboardPage />}
+        {tab === "database" && <DatabasePage />}
         {tab === "rankings" && <RankingsPage />}
         {tab === "references" && <ReferenceLibraryPage />}
+        {tab === "analysis" && <AnalysisDashboardPage />}
         {tab === "trends" && <TrendAnalysisPage />}
+        {tab === "reports" && <ReportsPage />}
+        {tab === "projects" && <ProjectListPage />}
+        {tab === "project-setup" && <ProjectSetupPage projectId={activeProject} />}
         {tab === "editor" && <EditorPage projectId={activeProject} />}
         {tab === "characters" && <CharacterManagerPage projectId={activeProject} projects={projects} />}
         {tab === "worldbook" && <WorldBookPage projectId={activeProject} projects={projects} />}
@@ -136,14 +203,5 @@ export default function App() {
         {tab === "settings" && <SettingsPage />}
       </main>
     </div>
-  );
-}
-
-function NB(props: { icon: string; label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button className={`nav-btn${props.active ? " active" : ""}`} onClick={props.onClick}>
-      <span className="nav-icon">{props.icon}</span>
-      <span>{props.label}</span>
-    </button>
   );
 }

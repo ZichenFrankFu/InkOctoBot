@@ -1,25 +1,29 @@
-import React from "react";
+import React, { useState } from "react";
 
-interface ResizeHandleProps {
+interface Props {
   direction: "horizontal" | "vertical";
-  isDragging: boolean;
   onMouseDown: (e: React.MouseEvent) => void;
-  onTouchStart: (e: React.TouchEvent) => void;
+  onTouchStart?: (e: React.TouchEvent) => void;
+  isDragging?: boolean;
 }
 
-export default function ResizeHandle({ direction, isDragging, onMouseDown, onTouchStart }: ResizeHandleProps) {
+export default function ResizeHandle({ direction, onMouseDown, onTouchStart, isDragging }: Props) {
+  const [hovered, setHovered] = useState(false);
   const isH = direction === "horizontal";
+  const active = isDragging || hovered;
 
   return (
     <div
       onMouseDown={onMouseDown}
       onTouchStart={onTouchStart}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         position: "relative",
         zIndex: 50,
         flexShrink: 0,
-        width: isH ? 5 : "100%",
-        height: isH ? "100%" : 5,
+        width: isH ? 6 : "100%",
+        height: isH ? "100%" : 6,
         cursor: isH ? "col-resize" : "row-resize",
         background: "transparent",
         display: "flex",
@@ -27,15 +31,16 @@ export default function ResizeHandle({ direction, isDragging, onMouseDown, onTou
         justifyContent: "center",
       }}
     >
-      {/* Visual indicator line */}
+      {/* Visible bar */}
       <div
         style={{
-          width: isH ? 1 : "40%",
-          height: isH ? "40%" : 1,
+          width: isH ? 2 : "40%",
+          height: isH ? "40%" : 2,
           borderRadius: 1,
-          background: isDragging ? "var(--accent)" : "var(--border)",
-          transition: isDragging ? "none" : "background 0.2s",
-          opacity: isDragging ? 1 : 0.6,
+          background: active ? "var(--accent)" : "var(--border)",
+          boxShadow: active ? "0 0 6px var(--accent)" : "none",
+          transition: isDragging ? "none" : "background 0.2s, box-shadow 0.2s",
+          opacity: active ? 1 : 0.5,
         }}
       />
       {/* Wider invisible hit area */}
@@ -44,8 +49,8 @@ export default function ResizeHandle({ direction, isDragging, onMouseDown, onTou
           position: "absolute",
           top: isH ? 0 : -4,
           left: isH ? -4 : 0,
-          width: isH ? 13 : "100%",
-          height: isH ? "100%" : 13,
+          width: isH ? 14 : "100%",
+          height: isH ? "100%" : 14,
         }}
       />
     </div>

@@ -1,200 +1,262 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { apiGet } from "../api/client";
+import ResizeHandle from "../components/ResizeHandle";
+import { useResizable } from "../hooks/useResizable";
 
-interface ReportItem {
-  path: string;
+interface ReportFile {
+  name: string;
   size: number;
 }
 
+interface ReportGroup {
+  name: string;
+  files: ReportFile[];
+}
+
+interface ReportsResponse {
+  groups: ReportGroup[];
+}
+
 export default function ReportsPage() {
-  const [items, setItems] = useState<ReportItem[]>([]);
-  const [active, setActive] = useState<string | null>(null);
+  const [groups, setGroups] = useState<ReportGroup[]>([]);
+  const [activeReport, setActiveReport] = useState<string | null>(null);
   const [content, setContent] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [contentLoading, setContentLoading] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
+  const { size: panelWidth, isDragging, handleProps } = useResizable({
+    direction: "horizontal",
+    initialSize: 250,
+    minSize: 180,
+    maxSize: 500,
+  });
 
   useEffect(() => {
-    apiGet<{ items: ReportItem[] }>("/api/reports")
+    apiGet<ReportsResponse>("/api/reports")
       .then((res) => {
-        const filtered = res.items.filter(
-          (x) =>
-            x.path.endsWith(".md") ||
-            x.path.endsWith(".html") ||
-            x.path.endsWith(".txt")
-        );
-        setItems(filtered);
-        // Auto-open the first report
-        if (filtered.length > 0 && !active) {
-          openReport(filtered[0].path);
+        setGroups(res.groups || []);
+        // Auto-open first report
+        if (res.groups && res.groups.length > 0) {
+          const firstGroup = res.groups[0];
+          if (firstGroup.files && firstGroup.files.length > 0) {
+            openReport(firstGroup.files[0].name);
+          }
         }
       })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
 
-  async function openReport(path: string) {
-    setActive(path);
+  const openReport = async (name: string) => {
+    setActiveReport(name);
     setContentLoading(true);
     try {
-      const res = await apiGet<{ content: string }>(
-        `/api/reports/read?path=${encodeURIComponent(path)}`
-      );
+      const res = await apiGet<{ content: string }>(`/api/reports/${encodeURIComponent(name)}`);
       setContent(res.content);
     } catch (e) {
-      setContent("加载失败: " + String(e));
+      setContent("Failed to load report: " + String(e));
     } finally {
       setContentLoading(false);
     }
-  }
+  };
 
-  function formatSize(bytes: number): string {
+  const toggleGroup = (groupName: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupName)) {
+        next.delete(groupName);
+      } else {
+        next.add(groupName);
+      }
+      return next;
+    });
+  };
+
+  const formatSize = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const getIcon = (name: string): string => {
+    if (name.endsWith(".md")) return "\u{1F4C4}";
+    if (name.endsWith(".html")) return "\u{1F310}";
+    if (name.endsWith(".txt")) return "\u{1F4DD}";
+    if (name.endsWith(".json")) return "\u{1F4CB}";
+    return "\u{1F4CE}";
+  };
+
+  const totalFiles = useMemo(() => groups.reduce((sum, g) => sum + g.files.length, 0), [groups]);
+
+  if (loading) {
+    return (
+      <div className="loading" style={{ paddingTop: 120 }}>
+        <div className="loading-spinner" />
+        Loading reports...
+      </div>
+    );
   }
 
-  function getIcon(path: string): string {
-    if (path.endsWith(".md")) return "📄";
-    if (path.endsWith(".html")) return "🌐";
-    if (path.endsWith(".txt")) return "📝";
-    return "📎";
+  if (totalFiles === 0) {
+    return (
+      <div className="page-container">
+        <div className="page-header">
+          <h2>Reports</h2>
+          <p>View generated analysis reports</p>
+        </div>
+        <div className="empty-state">
+          <div className="empty-icon">{"\u{1F4ED}"}</div>
+          <h4>No Reports</h4>
+          <p>No analysis reports have been generated yet.</p>
+        </div>
+      </div>
+    );
   }
-
-  function getFileName(path: string): string {
-    return path.split("/").pop() || path;
-  }
-
-  function getFolder(path: string): string {
-    const parts = path.split("/");
-    if (parts.length > 1) {
-      return parts.slice(0, -1).join("/");
-    }
-    return "";
-  }
-
-  // Group items by folder
-  const grouped = React.useMemo(() => {
-    const groups: Record<string, ReportItem[]> = {};
-    for (const item of items) {
-      const folder = getFolder(item.path) || "(根目录)";
-      if (!groups[folder]) groups[folder] = [];
-      groups[folder].push(item);
-    }
-    return groups;
-  }, [items]);
 
   return (
     <div className="page-container">
       <div className="page-header">
-        <h2>趋势报告</h2>
-        <p>查看已生成的数据分析报告</p>
+        <h2>Reports</h2>
+        <p>{totalFiles} report files</p>
       </div>
 
-      {loading ? (
-        <div className="loading">
-          <div className="loading-spinner" />
-          加载报告列表…
-        </div>
-      ) : items.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-icon">📭</div>
-          <h4>暂无报告</h4>
-          <p>
-            还没有生成任何分析报告。请在命令行运行分析脚本生成报告后刷新此页面。
-          </p>
-        </div>
-      ) : (
-        <div style={{ display: "flex", gap: 20, minHeight: 600 }}>
-          {/* ── File List ── */}
-          <div
-            className="card"
-            style={{
-              width: 320,
-              flexShrink: 0,
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            <div className="card-header">
-              <h3>报告文件</h3>
-              <p>{items.length} 个文件</p>
-            </div>
-            <div
-              style={{
-                flex: 1,
-                overflowY: "auto",
-              }}
-            >
-              {Object.entries(grouped).map(([folder, files]) => (
-                <div key={folder}>
-                  {Object.keys(grouped).length > 1 && (
+      <div style={{ display: "flex", minHeight: 600 }}>
+        {/* Left panel - file list */}
+        <div
+          className="card"
+          style={{
+            width: panelWidth,
+            flexShrink: 0,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          <div className="card-header">
+            <h3>Files</h3>
+          </div>
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            {groups.map((group) => (
+              <div key={group.name}>
+                <div
+                  onClick={() => toggleGroup(group.name)}
+                  style={{
+                    padding: "8px 14px",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: "var(--text-secondary)",
+                    background: "var(--bg-tertiary)",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    userSelect: "none",
+                    letterSpacing: "0.3px",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "inline-block",
+                      transition: "transform 0.15s",
+                      transform: collapsedGroups.has(group.name) ? "rotate(-90deg)" : "rotate(0deg)",
+                      fontSize: 10,
+                    }}
+                  >
+                    {"\u25BC"}
+                  </span>
+                  {group.name}
+                  <span style={{ marginLeft: "auto", fontSize: 10, opacity: 0.6 }}>
+                    {group.files.length}
+                  </span>
+                </div>
+
+                {!collapsedGroups.has(group.name) &&
+                  group.files.map((file) => (
                     <div
+                      key={`${group.name}/${file.name}`}
+                      className={`report-list-item${activeReport === file.name ? " active" : ""}`}
+                      onClick={() => openReport(file.name)}
                       style={{
-                        padding: "8px 16px 4px",
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: "var(--ink-400)",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.5px",
-                        background: "var(--ink-50)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "8px 14px 8px 24px",
+                        cursor: "pointer",
+                        fontSize: 13,
+                        color: activeReport === file.name ? "var(--accent)" : "var(--text-primary)",
+                        background: activeReport === file.name ? "var(--accent-muted)" : "transparent",
+                        borderLeft: activeReport === file.name ? "2px solid var(--accent)" : "2px solid transparent",
+                        transition: "background 0.15s, border-color 0.15s",
                       }}
                     >
-                      📁 {folder}
-                    </div>
-                  )}
-                  {files.map((item) => (
-                    <div
-                      key={item.path}
-                      className={`report-list-item${
-                        active === item.path ? " active" : ""
-                      }`}
-                      onClick={() => openReport(item.path)}
-                    >
-                      <span className="report-icon">{getIcon(item.path)}</span>
-                      <span className="report-name" title={item.path}>
-                        {getFileName(item.path)}
+                      <span style={{ flexShrink: 0 }}>{getIcon(file.name)}</span>
+                      <span
+                        style={{
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={file.name}
+                      >
+                        {file.name}
                       </span>
-                      <span className="report-size">{formatSize(item.size)}</span>
+                      <span style={{ fontSize: 10, color: "var(--text-secondary)", flexShrink: 0 }}>
+                        {formatSize(file.size)}
+                      </span>
                     </div>
                   ))}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* ── Content Viewer ── */}
-          <div className="card" style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-            <div className="card-header">
-              <h3>{active ? getFileName(active) : "选择一个报告"}</h3>
-              {active && (
-                <p style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{active}</p>
-              )}
-            </div>
-            <div
-              className="card-body"
-              style={{
-                flex: 1,
-                overflowY: "auto",
-                maxHeight: "calc(100vh - 200px)",
-              }}
-            >
-              {contentLoading ? (
-                <div className="loading">
-                  <div className="loading-spinner" />
-                  加载中…
-                </div>
-              ) : !active ? (
-                <div className="empty-state">
-                  <div className="empty-icon">👈</div>
-                  <h4>选择左侧报告查看内容</h4>
-                </div>
-              ) : (
-                <pre className="report-content">{content}</pre>
-              )}
-            </div>
+              </div>
+            ))}
           </div>
         </div>
-      )}
+
+        {/* Resize handle */}
+        <ResizeHandle direction="horizontal" isDragging={isDragging} {...handleProps} />
+
+        {/* Right panel - content viewer */}
+        <div className="card" style={{ flex: 1, display: "flex", flexDirection: "column", marginLeft: 0 }}>
+          <div className="card-header">
+            <h3>{activeReport || "Select a report"}</h3>
+          </div>
+          <div
+            className="card-body"
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              maxHeight: "calc(100vh - 220px)",
+            }}
+          >
+            {contentLoading ? (
+              <div className="loading">
+                <div className="loading-spinner" />
+                Loading...
+              </div>
+            ) : !activeReport ? (
+              <div className="empty-state">
+                <h4>Select a report from the file list</h4>
+              </div>
+            ) : (
+              <pre
+                className="report-content"
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  color: "var(--text-primary)",
+                  margin: 0,
+                }}
+              >
+                {content}
+              </pre>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
