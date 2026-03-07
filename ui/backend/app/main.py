@@ -9,6 +9,8 @@ from .routers.reports_api import router as reports_router
 from .routers.db_api import router as db_router
 from .routers.analysis_api import router as analysis_router
 from .routers.data_api import router as data_router
+from .routers.reference_api import router as reference_router      # ← NEW
+from .routers.marketing_api import router as marketing_router      # ← NEW
 
 app = FastAPI(title="InkOctoBot", version="0.5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173","http://127.0.0.1:5173"],
@@ -18,6 +20,8 @@ app.include_router(reports_router, prefix="/api")
 app.include_router(db_router, prefix="/api")
 app.include_router(analysis_router, prefix="/api")
 app.include_router(data_router, prefix="/api")
+app.include_router(reference_router, prefix="/api")                # ← NEW
+app.include_router(marketing_router, prefix="/api")                # ← NEW
 
 @app.get("/health")
 def health(): return {"ok": True}
