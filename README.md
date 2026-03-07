@@ -325,269 +325,266 @@ LLM 对每处修改进行分类标注：
 ```text
 InkOctoBot/
 │
-├── main.py                              # CLI 主入口 (爬虫 + 分析 + 创作子命令)
-├── launcher.py                          # GUI 桌面入口
 ├── config.py                            # 配置薄读取层 (读取 config/ 目录)
+├── InkOctoBot.spec                      # PyInstaller 打包配置
+├── launcher.py                          # GUI 桌面入口
 ├── log_setup.py                         # 全局日志配置
-├── requirements.txt                     # Python 依赖
-├── README.md                            # 项目说明
+├── main.py                              # CLI 主入口 (爬虫 + 分析 + 创作子命令)
 ├── QUICKSTART.md                        # 快速启动指南
-│
-├── config/                              # 配置文件目录
-│   ├── app_config.yaml                  # 全局应用配置
-│   ├── analysis.yaml                    # 分析模块配置
-│   ├── antibot.yaml                     # 反爬策略配置
-│   ├── crawler.yaml                     # 爬虫通用配置
-│   ├── paths.yaml                       # 路径配置
-│   ├── scheduler.yaml                   # 定时任务配置
-│   ├── selenium.yaml                    # Selenium 驱动配置
-│   ├── websites.yaml                    # 平台站点配置 (起点/番茄 URL + 选择器)
-│   ├── models.yaml                      # 模型路由 + 预设方案
-│   ├── model_providers.json             # LLM 提供商注册 + 定价表
-│   ├── slop_patterns.json               # AI 味检测模式库
-│   ├── model_presets/                   # 模型预设方案
-│   │   ├── cost_optimal.json            # 全本地方案
-│   │   ├── balanced.json                # 混合方案
-│   │   └── quality_first.json           # 商业 API 优先方案
-│   ├── constraint_presets/              # 约束预设模板
-│   ├── style_profiles/                  # 风格配置档案
-│   ├── character_templates/             # 角色卡模板
-│   └── prompts/                         # Agent prompt 模板
-│       ├── marketing_agent.yaml
-│       ├── story_architect.yaml
-│       ├── scene_director.yaml
-│       ├── actor_agent.yaml
-│       ├── narrator_agent.yaml          # 旁白 Actor 专用
-│       ├── editor_writer.yaml
-│       ├── evaluator.yaml
-│       └── edit_analyzer.yaml
-│
-├── spiders/                             # 网站爬虫模块(后续拆封成另外一个project)
-│   ├── base_spider.py                   # 爬虫基类 (Selenium/requests 封装)
-│   ├── qidian_spider.py                 # 起点中文网爬虫
-│   ├── fanqie_spider.py                 # 番茄小说爬虫
-│   ├── fanqie_font_decoder.py           # 番茄字体解密模块
-│   └── antibot.py                       # 反爬检测与规避控制
-│
-├── database/                            # 数据库核心
-│   ├── DATABASE.md                      # 数据库文档
-│   ├── db_schema.py                     # DDL 定义 (市场表 + 创作表 + 记忆表)
-│   └── db_handler.py                    # 数据库 CRUD 操作封装
-│
-├── tasks/                               # 任务调度
-│   ├── scheduler.py                     # 定时任务调度器
-│   └── run_spiders_once.py              # 单次全平台爬取任务
-│
-├── analysis/                            # 市场数据分析
-│   ├── ANALYSIS.md                      # 分析模块文档
-│   ├── run_analysis.py                  # 分析 CLI 入口
-│   ├── trend_analyzer.py                # 分析主编排器
-│   ├── data_access.py                   # SQL / DataFrame 数据读取
-│   ├── heat.py                          # 热度指标计算
-│   ├── metrics.py                       # 综合指标计算
-│   ├── visualization.py                 # 可视化图表生成
-│   ├── report.py                        # Markdown 报告生成
-│   ├── feature_extraction/              # 作品特征提取
-│   │   ├── pipeline.py                  # 特征提取主编排
-│   │   ├── nlp_stats.py                 # jieba + SnowNLP 文本统计
-│   │   ├── embedding_cluster.py         # text2vec + KMeans 聚类
-│   │   ├── narrative_extractor.py       # 叙事结构标注
-│   │   ├── rhetoric_classifier.py       # 修辞手法分类
-│   │   └── shuangdian_templates.py      # 爽点模板提取
-│   └── formula_engine/                  # 公式化特征聚合
-│       ├── aggregator.py                # 多维特征聚合
-│       ├── constraint_converter.py      # 特征→约束转换
-│       └── presets.py                   # 题材预设公式
-│
-├── preprocessing/                       # 参考作品预处理 Pipeline
-│   ├── pipeline.py                      # 5步预处理主入口
-│   ├── chapter_splitter.py              # 章节分割
-│   ├── style_extractor.py               # PROSE 迭代风格收敛提取
-│   ├── character_profiler.py            # 角色画像自动提取
-│   ├── rhythm_analyzer.py               # 节奏/张力曲线分析
-│   ├── fragment_selector.py             # ZeroStylus 句级/段级模板选取
-│   └── lora/                            # LoRA 风格微调
-│       ├── data_constructor.py          # 训练数据构造
-│       ├── quality_filter.py            # 训练样本质量过滤
-│       └── trainer.py                   # SFT + Constitutional DPO 训练
-│
-├── rag/                                 # RAG 知识库层
-│   ├── world_book.py                    # 世界书管理 + 一致性检查
-│   ├── character_cards.py               # 角色卡 Layer A (自然语言描述) 管理
-│   ├── decision_engine.py               # 角色卡 Layer B (量化决策引擎)
-│   ├── constraint_store.py              # 约束规则存储与检索
-│   ├── reference_db.py                  # 参考作品数据库管理
-│   ├── vector_store.py                  # ChromaDB 统一封装
-│   └── memory/                          # 四层记忆系统
-│       ├── manager.py                   # 记忆总控 (协调四层读写)
-│       ├── immediate.py                 # Layer 1: Immediate Context
-│       ├── chapter_buffer.py            # Layer 2: Chapter Buffer
-│       ├── semantic_store.py            # Layer 3: Semantic Memory (ChromaDB)
-│       ├── episodic_timeline.py         # Layer 4: Episodic Timeline (SQLite)
-│       ├── knowledge_isolation.py       # KnowledgeIsolationEngine
-│       └── consolidator.py              # Layer 2 → Layer 3/4 压缩降级
+├── README.md                            # 项目说明
+├── requirements.txt                     # Python 依赖
 │
 ├── agents/                              # 多 Agent 创作层
-│   ├── base_agent.py                    # Agent 基类 (prompt 模板 + 输出解析)
-│   ├── model_router.py                  # 统一模型路由 (按 agent role 分发)
-│   ├── cost_estimator.py                # 商业 API 成本预估 + 确认流程
 │   ├── ab_compare.py                    # 多模型 A/B 对比引擎
-│   ├── model_providers/                 # LLM 提供商适配层
-│   │   ├── base.py                      # Provider 抽象接口
-│   │   ├── openai_provider.py           # OpenAI API
-│   │   ├── anthropic_provider.py        # Anthropic API
-│   │   ├── deepseek_provider.py         # DeepSeek API
-│   │   ├── ollama_provider.py           # Ollama 本地模型
-│   │   ├── vllm_provider.py             # vLLM 本地推理
-│   │   └── lora_provider.py             # LoRA 模型加载
+│   ├── base_agent.py                    # Agent 基类 (prompt 模板 + 输出解析)
+│   ├── constraints/                     # 约束系统
+│   │   ├── assembler.py                 # 约束优先级组装 (5级)
+│   │   ├── disambiguator.py             # 交互式 Prompt 消歧
+│   │   └── violation_detector.py        # ChromaDB 语义违规检测
+│   ├── cost_estimator.py                # 商业 API 成本预估 + 确认流程
+│   ├── evaluation/                      # 评估与反馈层
+│   │   ├── consistency_checker.py       # 设定一致性校验
+│   │   ├── cross_chapter_checker.py     # 跨章连续性检测 (伏笔审计/角色漂移)
+│   │   ├── edit_analyzer.py             # User 编辑偏好分析
+│   │   ├── evaluator.py                 # 综合评估 (约束/一致性/隔离/重复/slop)
+│   │   ├── quality_scorer.py            # 质量评分
+│   │   ├── repetition_detector.py       # 重复检测
+│   │   ├── slop_detector.py             # AI 味检测
+│   │   └── style_drift_detector.py      # 风格漂移检测
 │   ├── events/                          # 事件驱动主动介入系统
 │   │   ├── event_bus.py                 # 内存级事件发布/订阅总线
 │   │   ├── event_types.py               # 事件类型枚举 + Event 数据类
 │   │   └── triggers.py                  # AgentTrigger 注册 + 条件判断 + 冷却机制
-│   │
+│   ├── model_providers/                 # LLM 提供商适配层
+│   │   ├── anthropic_provider.py        # Anthropic API
+│   │   ├── base.py                      # Provider 抽象接口
+│   │   ├── deepseek_provider.py         # DeepSeek API
+│   │   ├── lora_provider.py             # LoRA 模型加载
+│   │   ├── ollama_provider.py           # Ollama 本地模型
+│   │   ├── openai_provider.py           # OpenAI API
+│   │   └── vllm_provider.py             # vLLM 本地推理
+│   ├── model_router.py                  # 统一模型路由 (按 agent role 分发)
 │   ├── planner/                         # 规划层 Agent
+│   │   ├── calibration.py               # 风格校准 (短样本试笔)
+│   │   ├── chapter_planner.py           # 章节细纲规划
 │   │   ├── marketing_agent.py           # 市场顾问 (选题/书名/简介建议)
 │   │   ├── story_architect.py           # 故事架构师 (细化世界书/人物卡/大纲)
-│   │   ├── volume_planner.py            # 分卷规划
-│   │   ├── chapter_planner.py           # 章节细纲规划
-│   │   └── calibration.py              # 风格校准 (短样本试笔)
-│   │
-│   ├── production/                      # Film Pipeline 执行层
-│   │   ├── scene_director.py            # 导演 (分镜 + 导演指令生成)
-│   │   ├── actor_agent.py               # 角色扮演 (单角色 instance)
-│   │   ├── narrator_agent.py            # 旁白 (环境描写/氛围渲染)
-│   │   ├── scene_simulator.py           # 多角色交互编排 (turn-based / parallel)
-│   │   └── editor_writer.py             # 剪辑 + 文学转化
-│   │
-│   ├── constraints/                     # 约束系统
-│   │   ├── disambiguator.py             # 交互式 Prompt 消歧
-│   │   ├── assembler.py                 # 约束优先级组装 (5级)
-│   │   └── violation_detector.py        # ChromaDB 语义违规检测
-│   │
-│   └── evaluation/                      # 评估与反馈层
-│       ├── evaluator.py                 # 综合评估 (约束/一致性/隔离/重复/slop)
-│       ├── cross_chapter_checker.py     # 跨章连续性检测 (伏笔审计/角色漂移)
-│       ├── quality_scorer.py            # 质量评分
-│       ├── repetition_detector.py       # 重复检测
-│       ├── consistency_checker.py       # 设定一致性校验
-│       ├── slop_detector.py             # AI 味检测
-│       ├── edit_analyzer.py             # User 编辑偏好分析
-│       └── style_drift_detector.py      # 风格漂移检测
+│   │   └── volume_planner.py            # 分卷规划
+│   └── production/                      # Film Pipeline 执行层
+│       ├── actor_agent.py               # 角色扮演 (单角色 instance)
+│       ├── editor_writer.py             # 剪辑 + 文学转化
+│       ├── narrator_agent.py            # 旁白 (环境描写/氛围渲染)
+│       ├── scene_director.py            # 导演 (分镜 + 导演指令生成)
+│       └── scene_simulator.py           # 多角色交互编排 (turn-based / parallel)
+│
+├── analysis/                            # 市场数据分析
+│   ├── ANALYSIS.md                      # 分析模块文档
+│   ├── data_access.py                   # SQL / DataFrame 数据读取
+│   ├── feature_extraction/              # 作品特征提取
+│   │   ├── embedding_cluster.py         # text2vec + KMeans 聚类
+│   │   ├── narrative_extractor.py       # 叙事结构标注
+│   │   ├── nlp_stats.py                 # jieba + SnowNLP 文本统计
+│   │   ├── pipeline.py                  # 特征提取主编排
+│   │   ├── rhetoric_classifier.py       # 修辞手法分类
+│   │   └── shuangdian_templates.py      # 爽点模板提取
+│   ├── formula_engine/                  # 公式化特征聚合
+│   │   ├── aggregator.py                # 多维特征聚合
+│   │   ├── constraint_converter.py      # 特征→约束转换
+│   │   └── presets.py                   # 题材预设公式
+│   ├── heat.py                          # 热度指标计算
+│   ├── metrics.py                       # 综合指标计算
+│   ├── report.py                        # Markdown 报告生成
+│   ├── run_analysis.py                  # 分析 CLI 入口
+│   ├── trend_analyzer.py                # 分析主编排器
+│   └── visualization.py                 # 可视化图表生成
+│
+├── config/                              # 配置文件目录
+│   ├── analysis.yaml                    # 分析模块配置
+│   ├── antibot.yaml                     # 反爬策略配置
+│   ├── app_config.yaml                  # 全局应用配置
+│   ├── character_templates/             # 角色卡模板
+│   ├── constraint_presets/              # 约束预设模板
+│   ├── crawler.yaml                     # 爬虫通用配置
+│   ├── model_presets/                   # 模型预设方案
+│   │   ├── balanced.json                # 混合方案
+│   │   ├── cost_optimal.json            # 全本地方案
+│   │   └── quality_first.json           # 商业 API 优先方案
+│   ├── model_providers.json             # LLM 提供商注册 + 定价表
+│   ├── models.yaml                      # 模型路由 + 预设方案
+│   ├── paths.yaml                       # 路径配置
+│   ├── prompts/                         # Agent prompt 模板
+│   │   ├── actor_agent.yaml
+│   │   ├── edit_analyzer.yaml
+│   │   ├── editor_writer.yaml
+│   │   ├── evaluator.yaml
+│   │   ├── marketing_agent.yaml
+│   │   ├── narrator_agent.yaml          # 旁白 Actor 专用
+│   │   ├── scene_director.yaml
+│   │   └── story_architect.yaml
+│   ├── scheduler.yaml                   # 定时任务配置
+│   ├── selenium.yaml                    # Selenium 驱动配置
+│   ├── slop_patterns.json               # AI 味检测模式库
+│   ├── style_profiles/                  # 风格配置档案
+│   └── websites.yaml                    # 平台站点配置 (起点/番茄 URL + 选择器)
+│
+├── data/                                # 数据存储根目录
+│   ├── chromadb/                        # ChromaDB 向量数据库
+│   ├── projects/                        # 项目数据 (每项目独立目录)
+│   │   └── {project_id}/
+│   │       ├── chapters/                # 章节细纲 + 生成内容
+│   │       ├── characters/              # 角色卡 YAML 文件
+│   │       ├── exports/                 # 导出文件 (TXT/DOCX/EPUB)
+│   │       ├── lora/                    # 项目专属 LoRA 权重
+│   │       ├── volumes/                 # 分卷大纲
+│   │       └── world_book.yaml          # 世界书
+│   ├── references/                      # 参考作品上传文件
+│   └── webnovel.db                      # SQLite 主库 (市场 + 创作 + 记忆)
+│
+├── database/                            # 数据库核心
+│   ├── DATABASE.md                      # 数据库文档
+│   ├── db_handler.py                    # 数据库 CRUD 操作封装
+│   └── db_schema.py                     # DDL 定义 (市场表 + 创作表 + 记忆表)
+│
+├── outputs/                             # 运行时输出
+│   ├── config_runs/                     # 配置运行快照
+│   ├── data/                            # 中间数据
+│   ├── logs/                            # 运行日志
+│   ├── reports/                         # 分析报告 (Markdown + 图表)
+│   └── ui_tasks/                        # UI 任务记录
+│
+├── preprocessing/                       # 参考作品预处理 Pipeline
+│   ├── chapter_splitter.py              # 章节分割
+│   ├── character_profiler.py            # 角色画像自动提取
+│   ├── fragment_selector.py             # ZeroStylus 句级/段级模板选取
+│   ├── lora/                            # LoRA 风格微调
+│   │   ├── data_constructor.py          # 训练数据构造
+│   │   ├── quality_filter.py            # 训练样本质量过滤
+│   │   └── trainer.py                   # SFT + Constitutional DPO 训练
+│   ├── pipeline.py                      # 5步预处理主入口
+│   ├── rhythm_analyzer.py               # 节奏/张力曲线分析
+│   └── style_extractor.py               # PROSE 迭代风格收敛提取
+│
+├── rag/                                 # RAG 知识库层
+│   ├── character_cards.py               # 角色卡 Layer A (自然语言描述) 管理
+│   ├── constraint_store.py              # 约束规则存储与检索
+│   ├── decision_engine.py               # 角色卡 Layer B (量化决策引擎)
+│   ├── memory/                          # 四层记忆系统
+│   │   ├── chapter_buffer.py            # Layer 2: Chapter Buffer
+│   │   ├── consolidator.py              # Layer 2 → Layer 3/4 压缩降级
+│   │   ├── episodic_timeline.py         # Layer 4: Episodic Timeline (SQLite)
+│   │   ├── immediate.py                 # Layer 1: Immediate Context
+│   │   ├── knowledge_isolation.py       # KnowledgeIsolationEngine
+│   │   ├── manager.py                   # 记忆总控 (协调四层读写)
+│   │   └── semantic_store.py            # Layer 3: Semantic Memory (ChromaDB)
+│   ├── reference_db.py                  # 参考作品数据库管理
+│   ├── vector_store.py                  # ChromaDB 统一封装
+│   └── world_book.py                    # 世界书管理 + 一致性检查
 │
 ├── security/                            # 安全与隐私
 │   ├── api_key_manager.py               # API key 加密存储 (OS keyring + Fernet)
 │   └── data_isolation.py                # 项目级数据隔离 + 一键清理
 │
-├── data/                                # 数据存储根目录
-│   ├── webnovel.db                      # SQLite 主库 (市场 + 创作 + 记忆)
-│   ├── chromadb/                        # ChromaDB 向量数据库
-│   ├── references/                      # 参考作品上传文件
-│   └── projects/                        # 项目数据 (每项目独立目录)
-│       └── {project_id}/
-│           ├── world_book.yaml          # 世界书
-│           ├── characters/              # 角色卡 YAML 文件
-│           ├── volumes/                 # 分卷大纲
-│           ├── chapters/                # 章节细纲 + 生成内容
-│           ├── lora/                    # 项目专属 LoRA 权重
-│           └── exports/                 # 导出文件 (TXT/DOCX/EPUB)
+├── spiders/                             # 网站爬虫模块(后续拆封成另外一个project)
+│   ├── antibot.py                       # 反爬检测与规避控制
+│   ├── base_spider.py                   # 爬虫基类 (Selenium/requests 封装)
+│   ├── fanqie_font_decoder.py           # 番茄字体解密模块
+│   ├── fanqie_spider.py                 # 番茄小说爬虫
+│   └── qidian_spider.py                 # 起点中文网爬虫
+│
+├── tasks/                               # 任务调度
+│   ├── run_spiders_once.py              # 单次全平台爬取任务
+│   └── scheduler.py                     # 定时任务调度器
 │
 ├── tests/                               # 测试套件
-│   ├── TEST.md                          # 测试文档
 │   ├── base_test.py                     # 测试基类 + 通用工具
+│   ├── fanqie_test.py                   # 番茄爬虫测试
 │   ├── qidian_test.py                   # 起点爬虫测试
-│   └── fanqie_test.py                   # 番茄爬虫测试
-│
-├── outputs/                             # 运行时输出
-│   ├── logs/                            # 运行日志
-│   ├── data/                            # 中间数据
-│   ├── ui_tasks/                        # UI 任务记录
-│   ├── config_runs/                     # 配置运行快照
-│   └── reports/                         # 分析报告 (Markdown + 图表)
+│   └── TEST.md                          # 测试文档
 │
 └── ui/                                  # 用户界面
     ├── backend/                         # FastAPI 后端
-    │   ├── requirements.txt             # 后端依赖
-    │   └── app/
-    │       ├── __init__.py
-    │       ├── main.py                  # FastAPI 入口 + CORS + WebSocket
-    │       ├── settings.py              # 路径 / 环境配置
-    │       ├── store.py                 # UI TaskStore (jsonl 持久化)
-    │       ├── runner.py                # subprocess 启动爬虫 + 写日志
-    │       ├── utils.py                 # 读取 repo config / paths / rank_keys
-    │       └── routers/
-    │           ├── events_api.py        # /api/events (Agent事件流 WebSocket)
-    │           ├── config_api.py        # /api/config (爬虫配置 schema + 保存)
-    │           ├── tasks_api.py         # /api/tasks (启动爬虫任务 + 读日志)
-    │           ├── reports_api.py       # /api/reports (分析报告索引 + 预览)
-    │           ├── db_api.py            # /api/db (市场数据库只读查询 + 诊断)
-    │           ├── analysis_api.py      # /api/analysis (特征提取 + 趋势分析)
-    │           ├── formula_api.py       # /api/formula (公式引擎查询)
-    │           ├── prompt_api.py        # /api/prompt (交互式消歧接口)
-    │           ├── project_api.py       # /api/project (项目 CRUD + 导出)
-    │           ├── worldbook_api.py     # /api/worldbook (世界书管理)
-    │           ├── characters_api.py    # /api/characters (角色卡 + 决策模型)
-    │           ├── planner_api.py       # /api/planner (大纲 + 分卷 + 章节规划)
-    │           ├── reference_api.py     # /api/reference (参考作品库管理)
-    │           ├── generation_api.py    # /api/generation (Film Pipeline 执行)
-    │           ├── editor_api.py        # /api/editor (Editor-Writer 接口)
-    │           ├── eval_api.py          # /api/eval (评估 + EditAnalyzer)
-    │           ├── version_api.py       # /api/version (版本管理 + diff)
-    │           ├── model_api.py         # /api/model (模型管理 + 成本追踪)
-    │           └── security_api.py      # /api/security (API key 加密管理)
+    │   ├── app/
+    │   │   ├── __init__.py
+    │   │   ├── main.py                  # FastAPI 入口 + CORS + WebSocket
+    │   │   ├── routers/
+    │   │   │   ├── analysis_api.py      # /api/analysis (特征提取 + 趋势分析)
+    │   │   │   ├── characters_api.py    # /api/characters (角色卡 + 决策模型)
+    │   │   │   ├── config_api.py        # /api/config (爬虫配置 schema + 保存)
+    │   │   │   ├── db_api.py            # /api/db (市场数据库只读查询 + 诊断)
+    │   │   │   ├── editor_api.py        # /api/editor (Editor-Writer 接口)
+    │   │   │   ├── eval_api.py          # /api/eval (评估 + EditAnalyzer)
+    │   │   │   ├── events_api.py        # /api/events (Agent事件流 WebSocket)
+    │   │   │   ├── formula_api.py       # /api/formula (公式引擎查询)
+    │   │   │   ├── generation_api.py    # /api/generation (Film Pipeline 执行)
+    │   │   │   ├── model_api.py         # /api/model (模型管理 + 成本追踪)
+    │   │   │   ├── planner_api.py       # /api/planner (大纲 + 分卷 + 章节规划)
+    │   │   │   ├── project_api.py       # /api/project (项目 CRUD + 导出)
+    │   │   │   ├── prompt_api.py        # /api/prompt (交互式消歧接口)
+    │   │   │   ├── reference_api.py     # /api/reference (参考作品库管理)
+    │   │   │   ├── reports_api.py       # /api/reports (分析报告索引 + 预览)
+    │   │   │   ├── security_api.py      # /api/security (API key 加密管理)
+    │   │   │   ├── tasks_api.py         # /api/tasks (启动爬虫任务 + 读日志)
+    │   │   │   ├── version_api.py       # /api/version (版本管理 + diff)
+    │   │   │   └── worldbook_api.py     # /api/worldbook (世界书管理)
+    │   │   ├── runner.py                # subprocess 启动爬虫 + 写日志
+    │   │   ├── settings.py              # 路径 / 环境配置
+    │   │   ├── store.py                 # UI TaskStore (jsonl 持久化)
+    │   │   └── utils.py                 # 读取 repo config / paths / rank_keys
+    │   └── requirements.txt             # 后端依赖
     │
     └── frontend/                        # React 前端
         ├── package.json
-        ├── vite.config.ts
+        ├── src/
+        │   ├── App.tsx                  # 全局 Layout + 路由 + 暗色主题
+        │   ├── components/
+        │   │   ├── analysis/
+        │   │   │   ├── ShuangdianRank.tsx    # 爽点排行可视化
+        │   │   │   └── TrendChart.tsx        # 市场趋势图表
+        │   │   ├── characters/
+        │   │   │   ├── CharacterCard.tsx     # 角色卡展示/编辑
+        │   │   │   ├── DecisionModelPanel.tsx# 量化决策模型参数面板
+        │   │   │   └── RelationshipGraph.tsx # 角色关系网络图
+        │   │   ├── editor/
+        │   │   │   ├── AgentChat.tsx         # 群聊风格 Agent 建议面板
+        │   │   │   ├── AIPanel.tsx           # 右栏: AI 生成控制 + pipeline 状态
+        │   │   │   ├── ChapterTree.tsx       # 左栏: 分卷/章节目录树
+        │   │   │   ├── EditorAdvice.tsx      # Marketing Agent 建议卡片
+        │   │   │   ├── ModelCompare.tsx      # 多模型输出并排对比
+        │   │   │   ├── TextEditor.tsx        # 中栏: TipTap 富文本编辑器
+        │   │   │   └── VersionHistory.tsx    # 版本历史列表 + diff 对比
+        │   │   ├── LogViewer.tsx             # 增量日志查看器
+        │   │   ├── memory/
+        │   │   │   └── EpisodicTimeline.tsx  # Layer 4 事件时间线可视化
+        │   │   ├── reference/
+        │   │   │   ├── EntryEditor.tsx       # 参考条目编辑器
+        │   │   │   ├── NarrativeTimeline.tsx # 叙事结构时间线图
+        │   │   │   ├── ReferenceCard.tsx     # 参考作品卡片
+        │   │   │   └── StyleRadar.tsx        # 风格雷达图
+        │   │   └── shared/
+        │   │       ├── CostConfirmDialog.tsx # 商业 API 成本确认弹窗
+        │   │       ├── DisambiguationCard.tsx# 消歧选择卡片
+        │   │       ├── ModelSelector.tsx     # 模型选择器 (单选/多选)
+        │   │       └── StyleSliders.tsx      # 风格参数滑块
+        │   ├── lib/
+        │   │   ├── api.ts               # API client 封装
+        │   │   ├── theme.ts             # 暗色/亮色主题配置
+        │   │   └── types.ts             # TypeScript 类型定义
+        │   ├── main.tsx                 # React 入口
+        │   └── pages/
+        │       ├── AnalysisDashboard.tsx# 市场分析可视化面板
+        │       ├── CharacterManager.tsx # 人物卡管理 (含决策模型面板)
+        │       ├── ConfigPage.tsx       # 爬虫配置生成 / 保存
+        │       ├── DatabasePage.tsx     # 市场数据库浏览 / 诊断
+        │       ├── EditorPage.tsx       # 三栏编辑器 (目录树 / TipTap / AI面板)
+        │       ├── ProjectListPage.tsx  # 项目列表 + 创建 / 删除
+        │       ├── ProjectSetupPage.tsx # 项目设置 (世界书/人物卡/大纲/约束)
+        │       ├── ReferenceLibrary.tsx # 参考作品库 (多媒体类型)
+        │       ├── ReportsPage.tsx      # 分析报告预览
+        │       ├── RunnerPage.tsx       # 爬虫任务启动 / 日志查看
+        │       ├── SettingsPage.tsx     # 设置 (模型配置/约束管理/系统)
+        │       └── WorldBook.tsx        # 世界书编辑 + 一致性检查
         ├── tsconfig.json
-        └── src/
-            ├── main.tsx                 # React 入口
-            ├── App.tsx                  # 全局 Layout + 路由 + 暗色主题
-            ├── pages/
-            │   ├── ConfigPage.tsx       # 爬虫配置生成 / 保存
-            │   ├── RunnerPage.tsx       # 爬虫任务启动 / 日志查看
-            │   ├── ReportsPage.tsx      # 分析报告预览
-            │   ├── DatabasePage.tsx     # 市场数据库浏览 / 诊断
-            │   ├── EditorPage.tsx       # 三栏编辑器 (目录树 / TipTap / AI面板)
-            │   ├── ProjectListPage.tsx  # 项目列表 + 创建 / 删除
-            │   ├── ProjectSetupPage.tsx # 项目设置 (世界书/人物卡/大纲/约束)
-            │   ├── CharacterManager.tsx # 人物卡管理 (含决策模型面板)
-            │   ├── WorldBook.tsx        # 世界书编辑 + 一致性检查
-            │   ├── AnalysisDashboard.tsx# 市场分析可视化面板
-            │   ├── ReferenceLibrary.tsx # 参考作品库 (多媒体类型)
-            │   └── SettingsPage.tsx     # 设置 (模型配置/约束管理/系统)
-            ├── components/
-            │   ├── LogViewer.tsx        # 增量日志查看器
-            │   ├── editor/
-            │   │   ├── ChapterTree.tsx  # 左栏: 分卷/章节目录树
-            │   │   ├── TextEditor.tsx   # 中栏: TipTap 富文本编辑器
-            │   │   ├── AIPanel.tsx      # 右栏: AI 生成控制 + pipeline 状态
-            │   │   ├── VersionHistory.tsx   # 版本历史列表 + diff 对比
-            │   │   ├── ModelCompare.tsx     # 多模型输出并排对比
-            │   │   ├── AgentChat.tsx        # 群聊风格 Agent 建议面板
-            │   │   └── EditorAdvice.tsx     # Marketing Agent 建议卡片
-            │   ├── shared/
-            │   │   ├── CostConfirmDialog.tsx # 商业 API 成本确认弹窗
-            │   │   ├── ModelSelector.tsx     # 模型选择器 (单选/多选)
-            │   │   ├── DisambiguationCard.tsx# 消歧选择卡片
-            │   │   └── StyleSliders.tsx      # 风格参数滑块
-            │   ├── characters/
-            │   │   ├── CharacterCard.tsx     # 角色卡展示/编辑
-            │   │   ├── DecisionModelPanel.tsx# 量化决策模型参数面板
-            │   │   └── RelationshipGraph.tsx # 角色关系网络图
-            │   ├── reference/
-            │   │   ├── ReferenceCard.tsx     # 参考作品卡片
-            │   │   ├── EntryEditor.tsx       # 参考条目编辑器
-            │   │   ├── StyleRadar.tsx        # 风格雷达图
-            │   │   └── NarrativeTimeline.tsx # 叙事结构时间线图
-            │   ├── memory/
-            │   │   └── EpisodicTimeline.tsx  # Layer 4 事件时间线可视化
-            │   └── analysis/
-            │       ├── TrendChart.tsx        # 市场趋势图表
-            │       └── ShuangdianRank.tsx    # 爽点排行可视化
-            └── lib/
-                ├── api.ts               # API client 封装
-                ├── types.ts             # TypeScript 类型定义
-                └── theme.ts             # 暗色/亮色主题配置
+        └── vite.config.ts
 ```
 
 ### 5.2 数据库ER Diagram
