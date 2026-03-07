@@ -242,6 +242,9 @@ export interface StoryNode {
   color?: string;
   x: number;
   y: number;
+  time?: string;
+  location?: string;
+  week?: number;
 }
 
 export interface StoryEdge {

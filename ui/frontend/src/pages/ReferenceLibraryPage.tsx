@@ -305,14 +305,31 @@ export default function ReferenceLibraryPage() {
         >
           批量管理
         </button>
-        {batchMode && selectedIds.size > 0 && (
-          <button
-            className="btn"
-            style={{ fontSize: 12, padding: "4px 12px", color: "var(--error)" }}
-            onClick={batchDelete}
-          >
-            删除选中 ({selectedIds.size})
-          </button>
+        {batchMode && (
+          <>
+            <button
+              className="btn"
+              style={{ fontSize: 12, padding: "4px 12px" }}
+              onClick={() => {
+                if (selectedIds.size === works.length) {
+                  setSelectedIds(new Set());
+                } else {
+                  setSelectedIds(new Set(works.map(w => w.ref_id)));
+                }
+              }}
+            >
+              {selectedIds.size === works.length ? "取消全选" : "全选"}
+            </button>
+            {selectedIds.size > 0 && (
+              <button
+                className="btn"
+                style={{ fontSize: 12, padding: "4px 12px", color: "var(--error)" }}
+                onClick={batchDelete}
+              >
+                删除选中 ({selectedIds.size})
+              </button>
+            )}
+          </>
         )}
         <span className="text-xs text-muted" style={{ marginLeft: "auto" }}>
           {loading ? "加载中..." : `${total} 部作品`}

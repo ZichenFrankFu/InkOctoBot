@@ -4,7 +4,7 @@ import { apiGet } from "./api/client";
 import DashboardPage from "./pages/DashboardPage";
 import RankingsPage from "./pages/RankingsPage";
 import ReferenceLibraryPage from "./pages/ReferenceLibraryPage";
-import TrendAnalysisPage from "./pages/TrendAnalysisPage";
+// TrendAnalysisPage merged into AnalysisDashboardPage
 import EditorPage from "./pages/EditorPage";
 import CharacterManagerPage from "./pages/CharacterManagerPage";
 import WorldBookPage from "./pages/WorldBookPage";
@@ -15,7 +15,7 @@ import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 
 type Tab =
-  | "dashboard" | "rankings" | "references" | "trends" | "analysis"
+  | "dashboard" | "rankings" | "references" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
   | "settings";
 
@@ -34,7 +34,6 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "rankings", icon: "📋", label: "市场数据库" },
       { key: "references", icon: "📚", label: "参考作品库" },
       { key: "analysis", icon: "📈", label: "分析面板" },
-      { key: "trends", icon: "📉", label: "趋势分析" },
     ],
   },
   {
@@ -187,7 +186,6 @@ export default function App() {
         {tab === "rankings" && <RankingsPage />}
         {tab === "references" && <ReferenceLibraryPage />}
         {tab === "analysis" && <AnalysisDashboardPage />}
-        {tab === "trends" && <TrendAnalysisPage />}
         {tab === "projects" && <ProjectListPage />}
         {tab === "project-setup" && <ProjectSetupPage projectId={activeProject} />}
         {tab === "editor" && <EditorPage projectId={activeProject} />}

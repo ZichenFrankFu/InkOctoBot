@@ -1,13 +1,14 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
+import { apiGet, apiPut } from "../api/client";
 import type { StoryNode, StoryEdge, ChapterOutline, Volume } from "../api/types";
 
 const uid = () => `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 const COLORS = ["#c0392b", "#2d8c5a", "#3b5998", "#d4a853", "#8e44ad", "#e67e22", "#1abc9c", "#e74c3c"];
-const NODE_W = 180;
-const NODE_H = 100;
+const NODE_W = 200;
+const NODE_H = 120;
 const GAP_X = 80;
 const HEADER_H = 56;
+const TIMELINE_H = 64;
 
 export default function StorylinePage({ projectId }: { projectId: string }) {
   const [nodes, setNodes] = useState<StoryNode[]>([]);
@@ -29,8 +30,8 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
           setNodes(nodeList);
           setEdges(data.edges || []);
         } else {
-          const n1: StoryNode = { id: uid(), title: "第一章\u00B7开篇", summary: "故事的起点", x: 60, y: 60, color: COLORS[0], chapter_num: 1, characters: [] };
-          const n2: StoryNode = { id: uid(), title: "第二章\u00B7发展", summary: "矛盾初显", x: 60 + NODE_W + GAP_X, y: 60, color: COLORS[1], chapter_num: 2, characters: [] };
+          const n1: StoryNode = { id: uid(), title: "第一章·开篇", summary: "故事的起点", x: 60, y: 60, color: COLORS[0], chapter_num: 1, characters: [], week: 1, time: "第1天·清晨", location: "起始之地" };
+          const n2: StoryNode = { id: uid(), title: "第二章·发展", summary: "矛盾初显", x: 60 + NODE_W + GAP_X, y: 60, color: COLORS[1], chapter_num: 2, characters: [], week: 1, time: "第2天·午后", location: "城镇" };
           setNodes([n1, n2]);
           setEdges([{ id: uid(), from: n1.id, to: n2.id, label: "" }]);
         }
@@ -53,6 +54,7 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
   // --- Add node ---
   const addNode = useCallback(() => {
     const maxX = nodes.length > 0 ? Math.max(...nodes.map(n => n.x)) : 0;
+    const maxWeek = nodes.length > 0 ? Math.max(...nodes.map(n => n.week || 1)) : 1;
     const n: StoryNode = {
       id: uid(),
       title: "新节点",
@@ -61,6 +63,9 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
       y: 60,
       color: COLORS[nodes.length % COLORS.length],
       characters: [],
+      week: maxWeek,
+      time: "",
+      location: "",
     };
     setNodes(prev => [...prev, n]);
     setSelected(n.id);
@@ -104,13 +109,13 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
             color: COLORS[(chNum - 1) % COLORS.length],
             chapter_num: chNum,
             characters: [],
+            week: Math.ceil(chNum / 3),
           });
         }
       });
 
       if (newNodes.length > 0) {
         setNodes(prev => [...prev, ...newNodes]);
-        // Auto-connect sequential
         const allNodes = [...nodes, ...newNodes].sort((a, b) => (a.chapter_num || 0) - (b.chapter_num || 0));
         const newEdges: StoryEdge[] = [];
         for (let i = 1; i < allNodes.length; i++) {
@@ -191,6 +196,23 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
   const canvasW = Math.max(1200, (nodes.length > 0 ? Math.max(...nodes.map(n => n.x)) : 0) + NODE_W + 200);
   const canvasH = Math.max(600, (nodes.length > 0 ? Math.max(...nodes.map(n => n.y)) : 0) + NODE_H + 200);
 
+  // --- Week timeline data ---
+  const weeks = useMemo(() => {
+    const weekMap = new Map<number, StoryNode[]>();
+    nodes.forEach(n => {
+      const w = n.week || 1;
+      if (!weekMap.has(w)) weekMap.set(w, []);
+      weekMap.get(w)!.push(n);
+    });
+    return Array.from(weekMap.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([week, wNodes]) => ({
+        week,
+        count: wNodes.length,
+        nodeIds: wNodes.map(n => n.id),
+      }));
+  }, [nodes]);
+
   // --- Edge paths (bezier) ---
   const edgePaths = useMemo(() => {
     return edges.map((edge, idx) => {
@@ -227,234 +249,345 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div className="page-full" style={{ flexDirection: "row", display: "flex", height: "100%", overflow: "hidden" }}>
-      {/* ======== Canvas ======== */}
-      <div ref={canvasRef} style={{ flex: 1, minWidth: 0, overflow: "auto", background: "var(--bg-app)", position: "relative" }}>
-        {/* Toolbar */}
-        <div
-          className="panel-header"
-          style={{
-            position: "sticky",
-            top: 0,
-            zIndex: 10,
-            height: HEADER_H,
-            gap: 10,
-            display: "flex",
-            alignItems: "center",
-            padding: "0 16px",
-            background: "var(--bg-surface)",
-            borderBottom: "1px solid var(--border)",
-          }}
-        >
-          <h3>剧情线</h3>
-          <div className="flex gap-8">
-            <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }} onClick={addNode}>
-              + 添加节点
-            </button>
-            <button
-              className="btn"
-              style={{
-                fontSize: 12,
-                padding: "5px 14px",
-                background: connecting ? "var(--jade-subtle)" : undefined,
-                color: connecting ? "var(--jade)" : undefined,
-                borderColor: connecting ? "var(--jade)" : undefined,
-              }}
-              onClick={() => setConnecting(connecting ? null : (selected || null))}
-              disabled={!selected}
-            >
-              {connecting ? "点击目标..." : "添加连线"}
-            </button>
-            <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={syncFromEditor}>
-              同步大纲
-            </button>
-            <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={autoLayout}>
-              自动布局
-            </button>
+    <div className="page-full" style={{ flexDirection: "column", display: "flex", height: "100%", overflow: "hidden" }}>
+      <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
+        {/* ======== Canvas ======== */}
+        <div ref={canvasRef} style={{ flex: 1, minWidth: 0, overflow: "auto", background: "var(--bg-app)", position: "relative" }}>
+          {/* Toolbar */}
+          <div
+            className="panel-header"
+            style={{
+              position: "sticky",
+              top: 0,
+              zIndex: 10,
+              height: HEADER_H,
+              gap: 10,
+              display: "flex",
+              alignItems: "center",
+              padding: "0 16px",
+              background: "var(--bg-surface)",
+              borderBottom: "1px solid var(--border)",
+            }}
+          >
+            <h3>剧情线</h3>
+            <div className="flex gap-8">
+              <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }} onClick={addNode}>
+                + 添加节点
+              </button>
+              <button
+                className="btn"
+                style={{
+                  fontSize: 12,
+                  padding: "5px 14px",
+                  background: connecting ? "var(--jade-subtle)" : undefined,
+                  color: connecting ? "var(--jade)" : undefined,
+                  borderColor: connecting ? "var(--jade)" : undefined,
+                }}
+                onClick={() => setConnecting(connecting ? null : (selected || null))}
+                disabled={!selected}
+              >
+                {connecting ? "点击目标..." : "添加连线"}
+              </button>
+              <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={syncFromEditor}>
+                同步大纲
+              </button>
+              <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={autoLayout}>
+                自动布局
+              </button>
+            </div>
+            <span className="text-xs text-muted" style={{ marginLeft: "auto" }}>
+              ← 早 &middot; 时间线 &middot; 晚 → &nbsp;|&nbsp; 纵向并排 = 同时发生
+            </span>
           </div>
-          <span className="text-xs text-muted" style={{ marginLeft: "auto" }}>
-            ← 早 &middot; 时间线 &middot; 晚 → &nbsp;|&nbsp; 纵向并排 = 同时发生
-          </span>
+
+          {/* SVG edges */}
+          <svg
+            style={{ position: "absolute", top: HEADER_H, left: 0, width: canvasW, height: canvasH, pointerEvents: "none", zIndex: 1 }}
+          >
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+                <path d="M0,0 L10,5 L0,10 Z" fill="var(--text-tertiary)" />
+              </marker>
+            </defs>
+            {edgePaths.map(ep => (
+              <g key={ep.idx}>
+                <path d={ep.path} fill="none" stroke="var(--text-tertiary)" strokeWidth={2} markerEnd="url(#arrow)" opacity={0.6} />
+                {ep.label && (
+                  <text x={ep.mx} y={ep.my} textAnchor="middle" fontSize={10} fill="var(--text-tertiary)">
+                    {ep.label}
+                  </text>
+                )}
+              </g>
+            ))}
+          </svg>
+
+          {/* Nodes */}
+          <div style={{ position: "relative", width: canvasW, height: canvasH, zIndex: 2, padding: "20px" }}>
+            {nodes.map(n => (
+              <div
+                key={n.id}
+                className={`timeline-node ${selected === n.id ? "selected" : ""}`}
+                onMouseDown={e => onNodeMouseDown(n.id, e)}
+                style={{
+                  left: n.x,
+                  top: n.y,
+                  width: NODE_W,
+                  minHeight: NODE_H,
+                  borderTop: `4px solid ${n.color || "var(--accent)"}`,
+                  cursor: dragging?.id === n.id ? "grabbing" : connecting ? "crosshair" : "grab",
+                  transition: dragging ? "none" : "box-shadow 0.15s",
+                }}
+              >
+                <div className="timeline-node-title">
+                  {n.chapter_num != null && (
+                    <span style={{ color: n.color || "var(--accent)", marginRight: 4 }}>Ch{n.chapter_num}</span>
+                  )}
+                  {n.title}
+                </div>
+                {/* Time & Location badges */}
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4 }}>
+                  {n.time && (
+                    <span style={{
+                      fontSize: 9, padding: "1px 6px", borderRadius: 8,
+                      background: "var(--accent-subtle)", color: "var(--accent)",
+                    }}>
+                      {n.time}
+                    </span>
+                  )}
+                  {n.location && (
+                    <span style={{
+                      fontSize: 9, padding: "1px 6px", borderRadius: 8,
+                      background: "var(--jade-subtle)", color: "var(--jade)",
+                    }}>
+                      {n.location}
+                    </span>
+                  )}
+                </div>
+                <div className="timeline-node-meta" style={{ lineHeight: 1.4, height: 28, overflow: "hidden" }}>
+                  {n.summary || "(空)"}
+                </div>
+                {(n.characters?.length || 0) > 0 && (
+                  <div style={{ fontSize: 10, color: "var(--text-disabled)", marginTop: 2, display: "flex", gap: 3, flexWrap: "wrap" }}>
+                    {n.characters!.map((ch, i) => (
+                      <span key={i} style={{
+                        background: "var(--purple-subtle)", color: "var(--purple)",
+                        padding: "0 5px", borderRadius: 6, fontSize: 9,
+                      }}>{ch}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* SVG edges */}
-        <svg
-          style={{ position: "absolute", top: HEADER_H, left: 0, width: canvasW, height: canvasH, pointerEvents: "none", zIndex: 1 }}
+        {/* ======== Detail Panel ======== */}
+        <div
+          className="panel"
+          style={{
+            width: 280,
+            minWidth: 280,
+            flexShrink: 0,
+            background: "var(--bg-surface)",
+            borderLeft: "1px solid var(--border)",
+            overflowY: "auto",
+            height: "100%",
+          }}
         >
-          <defs>
-            <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto">
-              <path d="M0,0 L10,5 L0,10 Z" fill="var(--text-tertiary)" />
-            </marker>
-          </defs>
-          {edgePaths.map(ep => (
-            <g key={ep.idx}>
-              <path d={ep.path} fill="none" stroke="var(--text-tertiary)" strokeWidth={2} markerEnd="url(#arrow)" opacity={0.6} />
-              {ep.label && (
-                <text x={ep.mx} y={ep.my} textAnchor="middle" fontSize={10} fill="var(--text-tertiary)">
-                  {ep.label}
-                </text>
-              )}
-            </g>
-          ))}
-        </svg>
-
-        {/* Nodes */}
-        <div style={{ position: "relative", width: canvasW, height: canvasH, zIndex: 2, padding: "20px" }}>
-          {nodes.map(n => (
-            <div
-              key={n.id}
-              className={`timeline-node ${selected === n.id ? "selected" : ""}`}
-              onMouseDown={e => onNodeMouseDown(n.id, e)}
-              style={{
-                left: n.x,
-                top: n.y,
-                width: NODE_W,
-                minHeight: NODE_H,
-                borderTop: `4px solid ${n.color || "var(--accent)"}`,
-                cursor: dragging?.id === n.id ? "grabbing" : connecting ? "crosshair" : "grab",
-                transition: dragging ? "none" : "box-shadow 0.15s",
-              }}
-            >
-              <div className="timeline-node-title">
-                {n.chapter_num != null && (
-                  <span style={{ color: n.color || "var(--accent)", marginRight: 4 }}>Ch{n.chapter_num}</span>
-                )}
-                {n.title}
-              </div>
-              <div className="timeline-node-meta" style={{ lineHeight: 1.4, height: 32, overflow: "hidden" }}>
-                {n.summary || "(空)"}
-              </div>
-              {(n.characters?.length || 0) > 0 && (
-                <div style={{ fontSize: 10, color: "var(--text-disabled)", marginTop: 4 }}>
-                  {n.characters!.join(" \u00B7 ")}
+          <div className="panel-header">
+            <h3>节点详情</h3>
+          </div>
+          <div className="panel-body" style={{ padding: 16 }}>
+            {sel ? (
+              <>
+                <div className="field mb-12">
+                  <label className="label">标题</label>
+                  <input
+                    className="input"
+                    value={sel.title}
+                    onChange={e => updateNode(sel.id, "title", e.target.value)}
+                  />
                 </div>
-              )}
-            </div>
-          ))}
+                <div className="field mb-12">
+                  <label className="label">章节号</label>
+                  <input
+                    className="input"
+                    type="number"
+                    value={sel.chapter_num ?? ""}
+                    onChange={e => updateNode(sel.id, "chapter_num", e.target.value ? +e.target.value : undefined)}
+                    style={{ width: 100 }}
+                  />
+                </div>
+                <div className="field mb-12">
+                  <label className="label">时间</label>
+                  <input
+                    className="input"
+                    value={sel.time || ""}
+                    onChange={e => updateNode(sel.id, "time", e.target.value)}
+                    placeholder="例：第3天·黄昏"
+                  />
+                </div>
+                <div className="field mb-12">
+                  <label className="label">地点</label>
+                  <input
+                    className="input"
+                    value={sel.location || ""}
+                    onChange={e => updateNode(sel.id, "location", e.target.value)}
+                    placeholder="例：云隐山·剑庐"
+                  />
+                </div>
+                <div className="field mb-12">
+                  <label className="label">所属周</label>
+                  <input
+                    className="input"
+                    type="number"
+                    value={sel.week ?? 1}
+                    onChange={e => updateNode(sel.id, "week", e.target.value ? +e.target.value : 1)}
+                    min={1}
+                    style={{ width: 100 }}
+                  />
+                </div>
+                <div className="field mb-12">
+                  <label className="label">摘要</label>
+                  <textarea
+                    className="input"
+                    value={sel.summary || ""}
+                    onChange={e => updateNode(sel.id, "summary", e.target.value)}
+                    rows={3}
+                  />
+                </div>
+                <div className="field mb-12">
+                  <label className="label">出场角色（逗号分隔）</label>
+                  <input
+                    className="input"
+                    value={(sel.characters || []).join(", ")}
+                    onChange={e => updateNode(sel.id, "characters", e.target.value.split(",").map(s => s.trim()).filter(Boolean))}
+                  />
+                </div>
+                <div className="field mb-12">
+                  <label className="label">颜色</label>
+                  <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
+                    {COLORS.map(c => (
+                      <div
+                        key={c}
+                        onClick={() => updateNode(sel.id, "color", c)}
+                        style={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: 12,
+                          background: c,
+                          cursor: "pointer",
+                          border: sel.color === c ? "3px solid var(--text-primary)" : "2px solid transparent",
+                          transition: "border-color 0.15s",
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  className="btn w-full mt-12"
+                  style={{ justifyContent: "center", color: "var(--error)" }}
+                  onClick={() => delNode(sel.id)}
+                >
+                  删除节点
+                </button>
+
+                {/* Edge list */}
+                <div className="mt-24">
+                  <div className="label mb-8">连线</div>
+                  {edges.filter(e => e.from === sel.id || e.to === sel.id).map((edge) => {
+                    const other = edge.from === sel.id
+                      ? nodes.find(n => n.id === edge.to)
+                      : nodes.find(n => n.id === edge.from);
+                    return (
+                      <div
+                        key={edge.id}
+                        className="flex items-center gap-6"
+                        style={{ padding: "4px 0", borderBottom: "1px solid var(--border-subtle)", fontSize: 12 }}
+                      >
+                        <span className="text-muted">{edge.from === sel.id ? "\u2192" : "\u2190"}</span>
+                        <span style={{ flex: 1, color: "var(--text-secondary)" }}>{other?.title || "?"}</span>
+                        <button
+                          className="btn-icon"
+                          style={{ width: 18, height: 18, fontSize: 10 }}
+                          onClick={() => {
+                            setEdges(prev => prev.filter(e => e.id !== edge.id));
+                            setDirty(true);
+                          }}
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <div className="empty-state" style={{ padding: "24px 0" }}>
+                <p>点击节点查看详情</p>
+                <p className="text-xs mt-4">拖拽移动 &middot; 「添加连线」创建关系</p>
+                <p className="text-xs mt-4">「同步大纲」可自动从章节大纲生成节点</p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* ======== Detail Panel ======== */}
+      {/* ======== Week Timeline Bar (bottom) ======== */}
       <div
-        className="panel"
         style={{
-          width: 280,
-          minWidth: 280,
+          height: TIMELINE_H,
           flexShrink: 0,
           background: "var(--bg-surface)",
-          borderLeft: "1px solid var(--border)",
-          overflowY: "auto",
-          height: "100%",
+          borderTop: "1px solid var(--border)",
+          display: "flex",
+          alignItems: "center",
+          gap: 0,
+          padding: "0 16px",
+          overflowX: "auto",
         }}
       >
-        <div className="panel-header">
-          <h3>节点详情</h3>
-        </div>
-        <div className="panel-body" style={{ padding: 16 }}>
-          {sel ? (
-            <>
-              <div className="field mb-12">
-                <label className="label">标题</label>
-                <input
-                  className="input"
-                  value={sel.title}
-                  onChange={e => updateNode(sel.id, "title", e.target.value)}
-                />
-              </div>
-              <div className="field mb-12">
-                <label className="label">章节号</label>
-                <input
-                  className="input"
-                  type="number"
-                  value={sel.chapter_num ?? ""}
-                  onChange={e => updateNode(sel.id, "chapter_num", e.target.value ? +e.target.value : undefined)}
-                  style={{ width: 100 }}
-                />
-              </div>
-              <div className="field mb-12">
-                <label className="label">摘要</label>
-                <textarea
-                  className="input"
-                  value={sel.summary || ""}
-                  onChange={e => updateNode(sel.id, "summary", e.target.value)}
-                  rows={3}
-                />
-              </div>
-              <div className="field mb-12">
-                <label className="label">出场角色（逗号分隔）</label>
-                <input
-                  className="input"
-                  value={(sel.characters || []).join(", ")}
-                  onChange={e => updateNode(sel.id, "characters", e.target.value.split(",").map(s => s.trim()).filter(Boolean))}
-                />
-              </div>
-              <div className="field mb-12">
-                <label className="label">颜色</label>
-                <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
-                  {COLORS.map(c => (
-                    <div
-                      key={c}
-                      onClick={() => updateNode(sel.id, "color", c)}
-                      style={{
-                        width: 24,
-                        height: 24,
-                        borderRadius: 12,
-                        background: c,
-                        cursor: "pointer",
-                        border: sel.color === c ? "3px solid var(--text-primary)" : "2px solid transparent",
-                        transition: "border-color 0.15s",
-                      }}
-                    />
-                  ))}
+        <span style={{ fontSize: 11, color: "var(--text-secondary)", marginRight: 12, whiteSpace: "nowrap", fontWeight: 600 }}>
+          时间周
+        </span>
+        {weeks.length === 0 ? (
+          <span style={{ fontSize: 11, color: "var(--text-disabled)" }}>暂无周数据，在节点详情中设置「所属周」</span>
+        ) : (
+          <div style={{ display: "flex", gap: 2, flex: 1, alignItems: "stretch", height: 40 }}>
+            {weeks.map(({ week, count, nodeIds }) => {
+              const isActive = sel ? nodeIds.includes(sel.id) : false;
+              return (
+                <div
+                  key={week}
+                  onClick={() => {
+                    if (nodeIds.length > 0) setSelected(nodeIds[0]);
+                  }}
+                  style={{
+                    flex: count,
+                    minWidth: 48,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: isActive ? "var(--accent-subtle)" : "var(--bg-secondary)",
+                    border: isActive ? "1px solid var(--accent)" : "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    transition: "all 0.15s",
+                  }}
+                >
+                  <span style={{ fontSize: 12, fontWeight: 700, color: isActive ? "var(--accent)" : "var(--text-primary)" }}>
+                    W{week}
+                  </span>
+                  <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>
+                    {count}节点
+                  </span>
                 </div>
-              </div>
-
-              <button
-                className="btn w-full mt-12"
-                style={{ justifyContent: "center", color: "var(--error)" }}
-                onClick={() => delNode(sel.id)}
-              >
-                删除节点
-              </button>
-
-              {/* Edge list */}
-              <div className="mt-24">
-                <div className="label mb-8">连线</div>
-                {edges.filter(e => e.from === sel.id || e.to === sel.id).map((edge) => {
-                  const other = edge.from === sel.id
-                    ? nodes.find(n => n.id === edge.to)
-                    : nodes.find(n => n.id === edge.from);
-                  return (
-                    <div
-                      key={edge.id}
-                      className="flex items-center gap-6"
-                      style={{ padding: "4px 0", borderBottom: "1px solid var(--border-subtle)", fontSize: 12 }}
-                    >
-                      <span className="text-muted">{edge.from === sel.id ? "\u2192" : "\u2190"}</span>
-                      <span style={{ flex: 1, color: "var(--text-secondary)" }}>{other?.title || "?"}</span>
-                      <button
-                        className="btn-icon"
-                        style={{ width: 18, height: 18, fontSize: 10 }}
-                        onClick={() => {
-                          setEdges(prev => prev.filter(e => e.id !== edge.id));
-                          setDirty(true);
-                        }}
-                      >
-                        &times;
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          ) : (
-            <div className="empty-state" style={{ padding: "24px 0" }}>
-              <p>点击节点查看详情</p>
-              <p className="text-xs mt-4">拖拽移动 &middot; 「添加连线」创建关系</p>
-              <p className="text-xs mt-4">「同步大纲」可自动从章节大纲生成节点</p>
-            </div>
-          )}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

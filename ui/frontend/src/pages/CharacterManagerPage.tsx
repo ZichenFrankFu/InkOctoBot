@@ -36,7 +36,12 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     setLoading(true);
     try {
       const r = await apiGet<{ items: Character[] }>(`/api/data/characters?project_id=${projectId}`);
-      setItems(r.items || []);
+      // Defensive: ensure relationships is always an array (backend may return {} for legacy data)
+      const fixed = (r.items || []).map(c => ({
+        ...c,
+        relationships: Array.isArray(c.relationships) ? c.relationships : [],
+      }));
+      setItems(fixed);
     } catch (e) {
       console.error(e);
     }

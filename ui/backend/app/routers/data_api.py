@@ -66,9 +66,11 @@ def list_characters(project_id: str | None = None):
 @router.post("/characters")
 def create_character(body: dict = Body(...)):
     cid = _nid()
-    body.update({"id": cid, "name": body.get("name", "新角色"), "role": body.get("role", "配角"),
-        "project_id": body.get("project_id", ""), "personality": "", "background": "", "speech_style": "",
-        "tags": [], "quant_params": {}, "relationships": {}, "created_at": time.time()})
+    defaults = {"id": cid, "name": "新角色", "role": "配角",
+        "project_id": "", "personality": "", "background": "", "speech_style": "",
+        "tags": [], "layer_b": {}, "relationships": [], "created_at": time.time()}
+    for k, v in defaults.items():
+        body.setdefault(k, v)
     return _save("characters", cid, body)
 @router.get("/characters/{cid}")
 def get_character(cid: str): return _get("characters", cid)
