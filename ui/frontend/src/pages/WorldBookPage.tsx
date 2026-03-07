@@ -40,7 +40,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await apiGet<{ items: WorldBookEntry[] }>(`/api/data/projects/${projectId}/worldbook`);
+      const r = await apiGet<{ items: WorldBookEntry[] }>(`/api/data/worldbook?project_id=${projectId}`);
       setItems(r.items || []);
     } catch (e) {
       console.error(e);
@@ -67,7 +67,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
 
   const create = async () => {
     try {
-      const entry = await apiPost<WorldBookEntry>(`/api/data/projects/${projectId}/worldbook`, {
+      const entry = await apiPost<WorldBookEntry>(`/api/data/worldbook`, {
         category: (filterCat as WorldBookCategory) || "power_system",
         title: "新条目",
         content: "",
@@ -85,7 +85,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   const save = async () => {
     if (!editing) return;
     try {
-      await apiPut(`/api/data/projects/${projectId}/worldbook/${editing.id}`, editing);
+      await apiPut(`/api/data/worldbook/${editing.id}`, editing);
       setDirty(false);
       load();
     } catch (e) {
@@ -96,7 +96,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   const remove = async (id: string) => {
     if (!confirm("确定删除该条目？")) return;
     try {
-      await apiDelete(`/api/data/projects/${projectId}/worldbook/${id}`);
+      await apiDelete(`/api/data/worldbook/${id}`);
       if (editing?.id === id) setEditing(null);
       load();
     } catch (e) {
@@ -113,14 +113,8 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   const runConsistencyCheck = async () => {
     setChecking(true);
     setCheckResult(null);
-    try {
-      const result = await apiPost<{ report: string }>(`/api/data/projects/${projectId}/worldbook`, {
-        action: "consistency_check",
-      });
-      setCheckResult(result.report || "检查完成，未发现明显矛盾。");
-    } catch (e) {
-      setCheckResult("一致性检查暂不可用，请确认已连接 AI 模型。");
-    }
+    // TODO: consistency check API not yet implemented
+    setCheckResult("一致性检查功能尚未实装，敬请期待。");
     setChecking(false);
   };
 

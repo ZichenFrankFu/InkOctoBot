@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback } from "react";
-import { apiGet, apiPost, apiDelete } from "../api/client";
+import React, { useEffect, useState, useCallback, useRef } from "react";
+import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import type { ReferenceWork, ReferenceEntry, MediaType } from "../api/types";
 
@@ -33,6 +33,33 @@ function stars(n: number | null | undefined): string {
   return "\u2605".repeat(n) + "\u2606".repeat(5 - n);
 }
 
+/* ---- Clickable star rating component ---- */
+function StarRating({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+  const [hover, setHover] = useState(0);
+  return (
+    <div className="flex gap-4" style={{ display: "inline-flex" }}>
+      {[1, 2, 3, 4, 5].map(n => (
+        <button
+          key={n}
+          className="btn-ghost"
+          style={{
+            fontSize: 20,
+            padding: "2px 4px",
+            color: n <= (hover || value) ? "var(--gold)" : "var(--text-disabled)",
+            cursor: "pointer",
+            lineHeight: 1,
+          }}
+          onMouseEnter={() => setHover(n)}
+          onMouseLeave={() => setHover(0)}
+          onClick={() => onChange(value === n ? 0 : n)}
+        >
+          &#x2605;
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function ReferenceLibraryPage() {
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [total, setTotal] = useState(0);
@@ -51,6 +78,16 @@ export default function ReferenceLibraryPage() {
   const [nWhy, setNWhy] = useState("");
   const [nRating, setNRating] = useState(0);
 
+  // Upload novel text modal
+  const [showUpload, setShowUpload] = useState(false);
+  const [uTitle, setUTitle] = useState("");
+  const [uCreator, setUCreator] = useState("");
+  const [uGenre, setUGenre] = useState("");
+  const [uMedia, setUMedia] = useState<MediaType>("web_novel");
+  const [uFile, setUFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Add entry inline form
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [eType, setEType] = useState("scene");
@@ -58,6 +95,10 @@ export default function ReferenceLibraryPage() {
   const [eCont, setECont] = useState("");
   const [ePos, setEPos] = useState("");
   const [eNotes, setENotes] = useState("");
+
+  // Batch management
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 360, minSize: 260, maxSize: 560 });
 
@@ -107,12 +148,77 @@ export default function ReferenceLibraryPage() {
     load();
   }
 
+  async function uploadNovelText() {
+    if (!uTitle.trim() || !uFile) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("title", uTitle.trim());
+      if (uCreator.trim()) fd.append("creator", uCreator.trim());
+      if (uGenre.trim()) fd.append("genre", uGenre.trim());
+      fd.append("media_type", uMedia);
+      fd.append("file", uFile);
+      const resp = await fetch("/api/references/works/upload", { method: "POST", body: fd });
+      if (!resp.ok) {
+        const err = await resp.text();
+        throw new Error(err || resp.statusText);
+      }
+      setShowUpload(false);
+      setUTitle(""); setUCreator(""); setUGenre(""); setUFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      load();
+    } catch (e: any) {
+      alert(`上传失败: ${e.message}`);
+    }
+    setUploading(false);
+  }
+
   async function delWork(id: string) {
     if (!confirm("确定删除这部参考作品及其所有条目？")) return;
     await apiDelete(`/api/references/works/${id}`);
     setSel(null);
     setEntries([]);
     load();
+  }
+
+  async function batchDelete() {
+    if (!selectedIds.size) return;
+    if (!confirm(`确定删除选中的 ${selectedIds.size} 部作品？`)) return;
+    for (const id of selectedIds) {
+      try {
+        await apiDelete(`/api/references/works/${id}`);
+      } catch (e) {
+        console.error("Failed to delete", id, e);
+      }
+    }
+    if (sel && selectedIds.has(sel.ref_id)) {
+      setSel(null);
+      setEntries([]);
+    }
+    setSelectedIds(new Set());
+    setBatchMode(false);
+    load();
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function updateRating(rating: number) {
+    if (!sel) return;
+    try {
+      await apiPut(`/api/references/works/${sel.ref_id}`, { user_rating: rating || null });
+      const updated = { ...sel, user_rating: rating || null } as ReferenceWork;
+      setSel(updated);
+      setWorks(prev => prev.map(w => w.ref_id === sel.ref_id ? updated : w));
+    } catch (e: any) {
+      alert(`评分更新失败: ${e.message}`);
+    }
   }
 
   async function runPreprocess(id: string) {
@@ -166,18 +272,21 @@ export default function ReferenceLibraryPage() {
   return (
     <div className="page-full">
       {/* Header */}
-      <div className="page-header" style={{ paddingBottom: 16 }}>
+      <div className="page-header" style={{ paddingBottom: 8 }}>
         <div className="page-header-row">
           <div>
             <h2>参考作品库</h2>
             <p>录入你喜欢的作品 &mdash; 网文、文学、电影、动漫均可 &middot; 记录审美倾向 &middot; 自动提取风格特征</p>
           </div>
-          <button className="btn-primary" onClick={() => setShowAddWork(true)}>+ 添加作品</button>
+          <div className="flex gap-8">
+            <button className="btn" onClick={() => setShowUpload(true)}>上传小说文本</button>
+            <button className="btn-primary" onClick={() => setShowAddWork(true)}>+ 添加作品</button>
+          </div>
         </div>
       </div>
 
       {/* Toolbar */}
-      <div className="flex gap-8 items-center" style={{ padding: "0 28px 14px", flexWrap: "wrap" }}>
+      <div className="flex gap-8 items-center" style={{ padding: "0 0 14px", flexWrap: "wrap" }}>
         <input
           className="input"
           placeholder="搜索标题 / 创作者..."
@@ -189,13 +298,29 @@ export default function ReferenceLibraryPage() {
           <option value="">全部类型</option>
           {MEDIA_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
+        <button
+          className={batchMode ? "btn-primary" : "btn"}
+          style={{ fontSize: 12, padding: "4px 12px" }}
+          onClick={() => { setBatchMode(!batchMode); setSelectedIds(new Set()); }}
+        >
+          批量管理
+        </button>
+        {batchMode && selectedIds.size > 0 && (
+          <button
+            className="btn"
+            style={{ fontSize: 12, padding: "4px 12px", color: "var(--error)" }}
+            onClick={batchDelete}
+          >
+            删除选中 ({selectedIds.size})
+          </button>
+        )}
         <span className="text-xs text-muted" style={{ marginLeft: "auto" }}>
           {loading ? "加载中..." : `${total} 部作品`}
         </span>
       </div>
 
       {/* Main two-panel layout */}
-      <div className="panel-layout" style={{ margin: "0 28px", borderTop: "1px solid var(--border)" }}>
+      <div className="panel-layout" style={{ borderTop: "1px solid var(--border)" }}>
         {/* ======== LEFT: Work List ======== */}
         <div className="panel" style={{ width: leftPanel.size, flexShrink: 0 }}>
           <div className="panel-body" style={{ padding: "8px 0" }}>
@@ -206,6 +331,15 @@ export default function ReferenceLibraryPage() {
                 onClick={() => selectWork(w)}
                 style={{ padding: "12px 14px", gap: 10 }}
               >
+                {batchMode && (
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(w.ref_id)}
+                    onChange={(e) => { e.stopPropagation(); toggleSelected(w.ref_id); }}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ flexShrink: 0, cursor: "pointer", width: 16, height: 16 }}
+                  />
+                )}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div className="flex items-center justify-between mb-4">
                     <span className="truncate" style={{ fontWeight: 600, fontSize: 14, color: "var(--text-primary)" }}>
@@ -267,22 +401,20 @@ export default function ReferenceLibraryPage() {
                   </div>
                 </div>
 
-                {/* User annotations */}
-                {(sel.user_why_i_like || sel.user_rating) && (
-                  <div className="card mb-16">
-                    <div className="card-body">
-                      <div className="label" style={{ color: "var(--accent)", marginBottom: 6 }}>我的审美笔记</div>
-                      {sel.user_rating && (
-                        <div style={{ color: "var(--gold)", marginBottom: 4, fontSize: 16 }}>{stars(sel.user_rating)}</div>
-                      )}
-                      {sel.user_why_i_like && (
-                        <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                          {sel.user_why_i_like}
-                        </div>
-                      )}
+                {/* User annotations / rating */}
+                <div className="card mb-16">
+                  <div className="card-body">
+                    <div className="label" style={{ color: "var(--accent)", marginBottom: 6 }}>我的审美笔记</div>
+                    <div style={{ marginBottom: 4 }}>
+                      <StarRating value={sel.user_rating || 0} onChange={updateRating} />
                     </div>
+                    {sel.user_why_i_like && (
+                      <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                        {sel.user_why_i_like}
+                      </div>
+                    )}
                   </div>
-                )}
+                </div>
 
                 {/* Analysis results */}
                 {sel.preprocessing_status === "done" && (
@@ -481,6 +613,82 @@ export default function ReferenceLibraryPage() {
                 <div className="flex gap-8 mt-24" style={{ justifyContent: "flex-end" }}>
                   <button className="btn" onClick={() => setShowAddWork(false)}>取消</button>
                   <button className="btn-primary" onClick={addWork} disabled={!nTitle.trim()}>保存</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ======== Upload Novel Text Modal ======== */}
+      {showUpload && (
+        <>
+          <div className="side-panel-overlay" onClick={() => setShowUpload(false)} />
+          <div style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+          }}>
+            <div className="card" style={{
+              width: 480,
+              maxHeight: "80vh",
+              overflow: "auto",
+              pointerEvents: "auto",
+              boxShadow: "var(--shadow-lg)",
+              animation: "slideUp 0.2s var(--ease-out)",
+            }}>
+              <div className="card-header">
+                <h3>上传小说文本</h3>
+                <button className="side-panel-close" onClick={() => setShowUpload(false)}>&times;</button>
+              </div>
+              <div className="card-body">
+                <div className="flex flex-col gap-12">
+                  <div className="field">
+                    <label className="label">标题 *</label>
+                    <input className="input" value={uTitle} onChange={e => setUTitle(e.target.value)} placeholder="作品名称" />
+                  </div>
+                  <div className="field">
+                    <label className="label">创作者</label>
+                    <input className="input" value={uCreator} onChange={e => setUCreator(e.target.value)} placeholder="作者" />
+                  </div>
+                  <div className="field-row">
+                    <div className="field" style={{ flex: 1 }}>
+                      <label className="label">媒体类型</label>
+                      <select className="select w-full" value={uMedia} onChange={e => setUMedia(e.target.value as MediaType)}>
+                        {MEDIA_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                      </select>
+                    </div>
+                    <div className="field" style={{ flex: 1 }}>
+                      <label className="label">题材</label>
+                      <input className="input" value={uGenre} onChange={e => setUGenre(e.target.value)} placeholder="仙侠 / 悬疑 / 科幻..." />
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label className="label">文本文件 *</label>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".txt"
+                      className="input"
+                      style={{ padding: "8px 10px" }}
+                      onChange={e => setUFile(e.target.files?.[0] || null)}
+                    />
+                    <span className="text-xs text-muted" style={{ marginTop: 4 }}>支持 .txt 格式</span>
+                  </div>
+                </div>
+                <div className="flex gap-8 mt-24" style={{ justifyContent: "flex-end" }}>
+                  <button className="btn" onClick={() => setShowUpload(false)}>取消</button>
+                  <button
+                    className="btn-primary"
+                    onClick={uploadNovelText}
+                    disabled={!uTitle.trim() || !uFile || uploading}
+                  >
+                    {uploading ? "上传中..." : "上传"}
+                  </button>
                 </div>
               </div>
             </div>

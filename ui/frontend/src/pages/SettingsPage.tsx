@@ -1,32 +1,25 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState } from "react";
 import { apiGet, apiPut } from "../api/client";
-import type { ModelProvider, ModelAssignment, AppSettings } from "../api/types";
-import ModelSelector from "../components/shared/ModelSelector";
+import type { AppSettings } from "../api/types";
 
-const AGENT_ROLES = [
+const PIPELINE_ROLES: { key: string; label: string; desc: string }[] = [
+  { key: "scene_planner", label: "Scene Planner", desc: "场景规划 - 场景结构设计" },
   { key: "scene_director", label: "Scene Director", desc: "场景导演 - 生成导演指令" },
-  { key: "actor", label: "Actor", desc: "角色扮演 - 对话与行为生成" },
-  { key: "editor_writer", label: "Editor-Writer", desc: "剪辑写手 - 文学风格化" },
+  { key: "actor_default", label: "Actor (Default)", desc: "默认角色 - 通用对话与行为" },
+  { key: "actor_protagonist", label: "Actor (Protagonist)", desc: "主角扮演 - 主角专用生成" },
+  { key: "editor_stylist", label: "Editor-Stylist", desc: "风格编辑 - 文学风格化" },
+  { key: "editor_agent", label: "Editor Agent", desc: "编辑代理 - 自动修改与润色" },
   { key: "evaluator", label: "Evaluator", desc: "评估器 - 一致性与约束检测" },
-  { key: "marketing", label: "Marketing", desc: "市场分析 - 爽点与数据优化" },
-  { key: "story_architect", label: "Story Architect", desc: "故事建筑师 - 大纲与结构设计" },
 ];
 
-const PROVIDER_TEMPLATES: {
-  key: string;
-  name: string;
-  type: ModelProvider["type"];
-  hasKey: boolean;
-  hasUrl: boolean;
-  defaultModels: string[];
-}[] = [
-  { key: "openai", name: "OpenAI", type: "openai", hasKey: true, hasUrl: false, defaultModels: ["gpt-4o", "gpt-4o-mini", "o4-mini"] },
-  { key: "anthropic", name: "Anthropic", type: "anthropic", hasKey: true, hasUrl: false, defaultModels: ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"] },
-  { key: "deepseek", name: "DeepSeek", type: "deepseek", hasKey: true, hasUrl: false, defaultModels: ["deepseek-chat", "deepseek-reasoner"] },
-  { key: "ollama", name: "Ollama", type: "ollama", hasKey: false, hasUrl: true, defaultModels: ["qwen2.5:7b", "qwen2.5:14b", "llama3:8b"] },
-  { key: "vllm", name: "vLLM", type: "vllm", hasKey: false, hasUrl: true, defaultModels: [] },
-  { key: "local", name: "Local", type: "local", hasKey: false, hasUrl: false, defaultModels: [] },
-];
+const PROVIDER_META: Record<string, { label: string; hasKey: boolean; hasUrl: boolean }> = {
+  openai: { label: "OpenAI", hasKey: true, hasUrl: false },
+  anthropic: { label: "Anthropic", hasKey: true, hasUrl: false },
+  deepseek: { label: "DeepSeek", hasKey: true, hasUrl: false },
+  ollama: { label: "Ollama", hasKey: false, hasUrl: true },
+  vllm: { label: "vLLM", hasKey: false, hasUrl: true },
+  local: { label: "Local", hasKey: false, hasUrl: false },
+};
 
 type Tab = "pipeline" | "providers" | "system";
 
@@ -35,101 +28,52 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-
-  const [providers, setProviders] = useState<ModelProvider[]>([]);
-  const [assignments, setAssignments] = useState<ModelAssignment[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
 
-  // Provider edit state (local copy with api_key input)
-  const [providerEdits, setProviderEdits] = useState<
-    Record<string, { api_key: string; base_url: string; models: string[] }>
-  >({});
-  const [testResults, setTestResults] = useState<Record<string, "ok" | "fail" | "testing">>({});
-
   useEffect(() => {
-    Promise.all([
-      apiGet<ModelProvider[]>("/api/data/model-providers"),
-      apiGet<ModelAssignment[]>("/api/data/model-assignments"),
-      apiGet<AppSettings>("/api/data/settings"),
-    ])
-      .then(([prov, assign, sett]) => {
-        setProviders(prov);
-        setAssignments(assign);
-        setSettings(sett);
-
-        const edits: typeof providerEdits = {};
-        for (const p of prov) {
-          edits[p.id] = {
-            api_key: "",
-            base_url: p.base_url || "",
-            models: p.models || [],
-          };
-        }
-        setProviderEdits(edits);
+    apiGet<AppSettings>("/api/data/settings")
+      .then((data) => {
+        setSettings(data);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
 
-  const getAssignment = (role: string): { provider: string; model: string } => {
-    const found = assignments.find((a) => a.role === role);
-    return found ? { provider: found.provider, model: found.model } : { provider: "", model: "" };
+  const update = (patch: Partial<AppSettings>) => {
+    if (!settings) return;
+    setSettings({ ...settings, ...patch });
+    setDirty(true);
   };
 
-  const updateAssignment = (role: string, value: { provider: string; model: string }) => {
-    setAssignments((prev) => {
-      const filtered = prev.filter((a) => a.role !== role);
-      return [...filtered, { role, provider: value.provider, model: value.model }];
+  const updateProvider = (name: string, field: string, value: unknown) => {
+    if (!settings) return;
+    const prev = settings.providers[name];
+    setSettings({
+      ...settings,
+      providers: {
+        ...settings.providers,
+        [name]: { ...prev, [field]: value },
+      },
     });
     setDirty(true);
   };
 
-  const updateProviderEdit = (id: string, field: string, value: string | string[]) => {
-    setProviderEdits((prev) => ({
-      ...prev,
-      [id]: { ...prev[id], [field]: value },
-    }));
-    setDirty(true);
-  };
-
-  const addProvider = () => {
-    const id = `provider_${Date.now()}`;
-    const newProv: ModelProvider = {
-      id,
-      name: "New Provider",
-      type: "openai",
-      api_key_set: false,
-      base_url: "",
-      models: [],
-    };
-    setProviders((prev) => [...prev, newProv]);
-    setProviderEdits((prev) => ({
-      ...prev,
-      [id]: { api_key: "", base_url: "", models: [] },
-    }));
-    setDirty(true);
-  };
-
-  const testConnection = async (providerId: string) => {
-    setTestResults((prev) => ({ ...prev, [providerId]: "testing" }));
-    try {
-      await apiGet(`/api/data/model-providers/${providerId}/test`);
-      setTestResults((prev) => ({ ...prev, [providerId]: "ok" }));
-    } catch {
-      setTestResults((prev) => ({ ...prev, [providerId]: "fail" }));
-    }
-  };
-
-  const updateSettings = (key: keyof AppSettings, value: unknown) => {
+  const updatePipeline = (role: string, field: string, value: string) => {
     if (!settings) return;
-    setSettings({ ...settings, [key]: value } as AppSettings);
+    const prev = settings.pipeline[role] || { provider: "", model: "", compare_models: [] };
+    setSettings({
+      ...settings,
+      pipeline: {
+        ...settings.pipeline,
+        [role]: { ...prev, [field]: value },
+      },
+    });
     setDirty(true);
   };
 
   const save = async () => {
     setSaving(true);
     try {
-      await apiPut("/api/data/model-assignments", assignments);
       await apiPut("/api/data/settings", settings);
       setDirty(false);
     } catch (e) {
@@ -137,6 +81,21 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Collect all available models for a given provider name
+  const modelsForProvider = (providerName: string): string[] => {
+    if (!settings) return [];
+    const prov = settings.providers[providerName];
+    return prov?.models ?? [];
+  };
+
+  // Enabled provider names for pipeline dropdowns
+  const enabledProviders = (): string[] => {
+    if (!settings) return [];
+    return Object.entries(settings.providers)
+      .filter(([, cfg]) => cfg.enabled)
+      .map(([name]) => name);
   };
 
   if (loading || !settings) {
@@ -147,6 +106,30 @@ export default function SettingsPage() {
       </div>
     );
   }
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    padding: "6px 10px",
+    border: "1px solid var(--border)",
+    borderRadius: 4,
+    fontSize: 12,
+    fontFamily: "var(--font-mono)",
+    background: "var(--bg-secondary)",
+    color: "var(--text-primary)",
+    outline: "none",
+    boxSizing: "border-box",
+  };
+
+  const selectStyle: React.CSSProperties = {
+    padding: "6px 10px",
+    border: "1px solid var(--border)",
+    borderRadius: 4,
+    fontSize: 12,
+    background: "var(--bg-secondary)",
+    color: "var(--text-primary)",
+    outline: "none",
+    minWidth: 140,
+  };
 
   return (
     <div className="page-container" style={{ maxWidth: 1000 }}>
@@ -193,26 +176,62 @@ export default function SettingsPage() {
                       Agent Role
                     </th>
                     <th style={{ textAlign: "left", padding: "12px 20px", fontSize: 12, color: "var(--text-secondary)", fontWeight: 600 }}>
-                      Provider / Model
+                      Provider
+                    </th>
+                    <th style={{ textAlign: "left", padding: "12px 20px", fontSize: 12, color: "var(--text-secondary)", fontWeight: 600 }}>
+                      Model
                     </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {AGENT_ROLES.map((role) => (
-                    <tr key={role.key} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={{ padding: "14px 20px", verticalAlign: "middle" }}>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{role.label}</div>
-                        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>{role.desc}</div>
-                      </td>
-                      <td style={{ padding: "14px 20px", verticalAlign: "middle" }}>
-                        <ModelSelector
-                          value={getAssignment(role.key)}
-                          onChange={(v) => updateAssignment(role.key, v)}
-                          providers={providers}
-                        />
-                      </td>
-                    </tr>
-                  ))}
+                  {PIPELINE_ROLES.map((role) => {
+                    const assignment = settings.pipeline[role.key] || { provider: "", model: "", compare_models: [] };
+                    const models = modelsForProvider(assignment.provider);
+                    const providers = enabledProviders();
+
+                    return (
+                      <tr key={role.key} style={{ borderBottom: "1px solid var(--border)" }}>
+                        <td style={{ padding: "14px 20px", verticalAlign: "middle" }}>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{role.label}</div>
+                          <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>{role.desc}</div>
+                        </td>
+                        <td style={{ padding: "14px 20px", verticalAlign: "middle" }}>
+                          <select
+                            value={assignment.provider}
+                            onChange={(e) => {
+                              updatePipeline(role.key, "provider", e.target.value);
+                              // Reset model when provider changes
+                              const newModels = modelsForProvider(e.target.value);
+                              updatePipeline(role.key, "model", newModels[0] || "");
+                            }}
+                            style={selectStyle}
+                          >
+                            <option value="">-- select --</option>
+                            {providers.map((p) => (
+                              <option key={p} value={p}>
+                                {PROVIDER_META[p]?.label || p}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td style={{ padding: "14px 20px", verticalAlign: "middle" }}>
+                          <select
+                            value={assignment.model}
+                            onChange={(e) => updatePipeline(role.key, "model", e.target.value)}
+                            style={selectStyle}
+                            disabled={!assignment.provider}
+                          >
+                            <option value="">-- select --</option>
+                            {models.map((m) => (
+                              <option key={m} value={m}>
+                                {m}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -224,79 +243,54 @@ export default function SettingsPage() {
       {tab === "providers" && (
         <div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-            {providers.map((prov) => {
-              const tmpl = PROVIDER_TEMPLATES.find((t) => t.type === prov.type);
-              const edit = providerEdits[prov.id] || { api_key: "", base_url: "", models: [] };
-              const hasKey = tmpl?.hasKey ?? true;
-              const hasUrl = tmpl?.hasUrl ?? false;
-              const testStatus = testResults[prov.id];
+            {Object.entries(settings.providers).map(([name, prov]) => {
+              const meta = PROVIDER_META[name] || { label: name, hasKey: false, hasUrl: false };
 
               return (
-                <div key={prov.id} className="card">
+                <div key={name} className="card">
                   <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <div>
-                      <h3 style={{ margin: 0 }}>{prov.name}</h3>
-                      <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{prov.type}</span>
+                      <h3 style={{ margin: 0 }}>{meta.label}</h3>
+                      <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{name}</span>
                     </div>
-                    <span
-                      style={{
-                        fontSize: 10,
-                        padding: "2px 8px",
-                        borderRadius: 8,
-                        background: prov.api_key_set ? "var(--accent-muted)" : "var(--bg-tertiary)",
-                        color: prov.api_key_set ? "var(--accent)" : "var(--text-secondary)",
-                      }}
-                    >
-                      {prov.api_key_set ? "Key Set" : "No Key"}
-                    </span>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={prov.enabled}
+                        onChange={(e) => updateProvider(name, "enabled", e.target.checked)}
+                        style={{ accentColor: "var(--accent)" }}
+                      />
+                      <span style={{ color: prov.enabled ? "var(--accent)" : "var(--text-secondary)" }}>
+                        {prov.enabled ? "Enabled" : "Disabled"}
+                      </span>
+                    </label>
                   </div>
                   <div className="card-body">
-                    {hasKey && (
+                    {meta.hasKey && (
                       <div style={{ marginBottom: 12 }}>
                         <label style={{ fontSize: 11, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>
                           API Key
                         </label>
                         <input
                           type="password"
-                          value={edit.api_key}
-                          onChange={(e) => updateProviderEdit(prov.id, "api_key", e.target.value)}
-                          placeholder={prov.api_key_set ? "********" : "sk-..."}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            border: "1px solid var(--border)",
-                            borderRadius: 4,
-                            fontSize: 12,
-                            fontFamily: "var(--font-mono)",
-                            background: "var(--bg-secondary)",
-                            color: "var(--text-primary)",
-                            outline: "none",
-                            boxSizing: "border-box",
-                          }}
+                          value={prov.api_key || ""}
+                          onChange={(e) => updateProvider(name, "api_key", e.target.value)}
+                          placeholder="sk-..."
+                          style={inputStyle}
                         />
                       </div>
                     )}
 
-                    {hasUrl && (
+                    {meta.hasUrl && (
                       <div style={{ marginBottom: 12 }}>
                         <label style={{ fontSize: 11, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>
                           Base URL
                         </label>
                         <input
-                          value={edit.base_url}
-                          onChange={(e) => updateProviderEdit(prov.id, "base_url", e.target.value)}
+                          value={prov.base_url || ""}
+                          onChange={(e) => updateProvider(name, "base_url", e.target.value)}
                           placeholder="http://localhost:11434"
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            border: "1px solid var(--border)",
-                            borderRadius: 4,
-                            fontSize: 12,
-                            background: "var(--bg-secondary)",
-                            color: "var(--text-primary)",
-                            outline: "none",
-                            boxSizing: "border-box",
-                          }}
+                          style={inputStyle}
                         />
                       </div>
                     )}
@@ -306,63 +300,21 @@ export default function SettingsPage() {
                         Models (comma-separated)
                       </label>
                       <input
-                        value={(edit.models || []).join(", ")}
+                        value={(prov.models || []).join(", ")}
                         onChange={(e) =>
-                          updateProviderEdit(
-                            prov.id,
+                          updateProvider(
+                            name,
                             "models",
                             e.target.value.split(",").map((s) => s.trim()).filter(Boolean)
                           )
                         }
-                        style={{
-                          width: "100%",
-                          padding: "6px 10px",
-                          border: "1px solid var(--border)",
-                          borderRadius: 4,
-                          fontSize: 12,
-                          background: "var(--bg-secondary)",
-                          color: "var(--text-primary)",
-                          outline: "none",
-                          boxSizing: "border-box",
-                        }}
+                        style={inputStyle}
                       />
-                      {tmpl && tmpl.defaultModels.length > 0 && (
-                        <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-secondary)" }}>
-                          Defaults: {tmpl.defaultModels.join(", ")}
-                        </div>
-                      )}
                     </div>
-
-                    <button
-                      className="btn-secondary"
-                      onClick={() => testConnection(prov.id)}
-                      disabled={testStatus === "testing"}
-                      style={{ fontSize: 12, padding: "5px 14px" }}
-                    >
-                      {testStatus === "testing"
-                        ? "Testing..."
-                        : testStatus === "ok"
-                        ? "Connected"
-                        : testStatus === "fail"
-                        ? "Failed - Retry"
-                        : "Test Connection"}
-                    </button>
-                    {testStatus === "ok" && (
-                      <span style={{ marginLeft: 8, fontSize: 11, color: "var(--accent)" }}>OK</span>
-                    )}
-                    {testStatus === "fail" && (
-                      <span style={{ marginLeft: 8, fontSize: 11, color: "var(--danger)" }}>Connection failed</span>
-                    )}
                   </div>
                 </div>
               );
             })}
-          </div>
-
-          <div style={{ marginTop: 20, textAlign: "center" }}>
-            <button className="btn-secondary" onClick={addProvider} style={{ padding: "8px 24px" }}>
-              + Add Provider
-            </button>
           </div>
         </div>
       )}
@@ -375,6 +327,15 @@ export default function SettingsPage() {
               <h3>Auto-Save</h3>
             </div>
             <div className="card-body">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, cursor: "pointer", fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.auto_save}
+                  onChange={(e) => update({ auto_save: e.target.checked })}
+                  style={{ accentColor: "var(--accent)" }}
+                />
+                <span style={{ color: "var(--text-primary)" }}>Enable auto-save</span>
+              </label>
               <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "block", marginBottom: 8 }}>
                 Interval (seconds): <strong style={{ color: "var(--text-primary)" }}>{settings.auto_save_interval}s</strong>
               </label>
@@ -384,7 +345,7 @@ export default function SettingsPage() {
                 max={300}
                 step={5}
                 value={settings.auto_save_interval}
-                onChange={(e) => updateSettings("auto_save_interval", Number(e.target.value))}
+                onChange={(e) => update({ auto_save_interval: Number(e.target.value) })}
                 style={{ width: "100%", accentColor: "var(--accent)" }}
               />
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-secondary)" }}>
@@ -399,21 +360,19 @@ export default function SettingsPage() {
               <h3>Cost Confirmation</h3>
             </div>
             <div className="card-body">
-              <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "block", marginBottom: 8 }}>
-                Threshold (USD): <strong style={{ color: "var(--text-primary)" }}>${settings.cost_confirmation_threshold.toFixed(2)}</strong>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.cost_confirm}
+                  onChange={(e) => update({ cost_confirm: e.target.checked })}
+                  style={{ accentColor: "var(--accent)" }}
+                />
+                <span style={{ color: "var(--text-primary)" }}>
+                  Confirm before incurring costs
+                </span>
               </label>
-              <input
-                type="range"
-                min={0}
-                max={10}
-                step={0.1}
-                value={settings.cost_confirmation_threshold}
-                onChange={(e) => updateSettings("cost_confirmation_threshold", Number(e.target.value))}
-                style={{ width: "100%", accentColor: "var(--accent)" }}
-              />
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-secondary)" }}>
-                <span>$0.00</span>
-                <span>$10.00</span>
+              <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-secondary)" }}>
+                When enabled, the system will ask for confirmation before running operations that incur API costs.
               </div>
             </div>
           </div>
@@ -427,7 +386,7 @@ export default function SettingsPage() {
                 {(["txt", "docx", "epub"] as const).map((fmt) => (
                   <button
                     key={fmt}
-                    onClick={() => updateSettings("export_format", fmt)}
+                    onClick={() => update({ export_format: fmt })}
                     style={{
                       padding: "6px 20px",
                       borderRadius: 16,

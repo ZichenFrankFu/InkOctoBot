@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
-import type { StoryNode, StoryEdge, ChapterOutline } from "../api/types";
+import type { StoryNode, StoryEdge, ChapterOutline, Volume } from "../api/types";
 
 const uid = () => `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 const COLORS = ["#c0392b", "#2d8c5a", "#3b5998", "#d4a853", "#8e44ad", "#e67e22", "#1abc9c", "#e74c3c"];
@@ -22,15 +22,12 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
   // --- Load ---
   useEffect(() => {
     const pid = projectId || "default";
-    apiGet<{ items: StoryNode[] }>(`/api/data/projects/${pid}/storyline/nodes`)
+    apiGet<{ nodes: StoryNode[]; edges: StoryEdge[] }>(`/api/data/storyline?project_id=${pid}`)
       .then(data => {
-        const nodeList = data.items || [];
+        const nodeList = data.nodes || [];
         if (nodeList.length > 0) {
           setNodes(nodeList);
-          // Load edges
-          apiGet<{ items: StoryEdge[] }>(`/api/data/projects/${pid}/storyline/edges`)
-            .then(ed => setEdges(ed.items || []))
-            .catch(() => {});
+          setEdges(data.edges || []);
         } else {
           const n1: StoryNode = { id: uid(), title: "第一章\u00B7开篇", summary: "故事的起点", x: 60, y: 60, color: COLORS[0], chapter_num: 1, characters: [] };
           const n2: StoryNode = { id: uid(), title: "第二章\u00B7发展", summary: "矛盾初显", x: 60 + NODE_W + GAP_X, y: 60, color: COLORS[1], chapter_num: 2, characters: [] };
@@ -47,7 +44,7 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
     if (!loaded || !dirty) return;
     const t = setTimeout(() => {
       const pid = projectId || "default";
-      apiPut(`/api/data/projects/${pid}/storyline/nodes`, { items: nodes }).catch(console.error);
+      apiPut(`/api/data/storyline`, { project_id: pid, nodes, edges }).catch(console.error);
       setDirty(false);
     }, 2000);
     return () => clearTimeout(t);
@@ -85,8 +82,8 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
   const syncFromEditor = useCallback(async () => {
     try {
       const pid = projectId || "default";
-      const data = await apiGet<{ items: ChapterOutline[] }>(`/api/data/projects/${pid}/chapters`);
-      const chapters = data.items || [];
+      const data = await apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${pid}`);
+      const chapters: ChapterOutline[] = (data.volumes || []).flatMap(v => v.chapters || []);
       if (!chapters.length) return;
 
       const newNodes: StoryNode[] = [];
@@ -230,9 +227,9 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div className="page-full" style={{ flexDirection: "row" }}>
+    <div className="page-full" style={{ flexDirection: "row", display: "flex", height: "100%", overflow: "hidden" }}>
       {/* ======== Canvas ======== */}
-      <div ref={canvasRef} style={{ flex: 1, overflow: "auto", background: "var(--bg-app)", position: "relative" }}>
+      <div ref={canvasRef} style={{ flex: 1, minWidth: 0, overflow: "auto", background: "var(--bg-app)", position: "relative" }}>
         {/* Toolbar */}
         <div
           className="panel-header"
@@ -242,6 +239,9 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
             zIndex: 10,
             height: HEADER_H,
             gap: 10,
+            display: "flex",
+            alignItems: "center",
+            padding: "0 16px",
             background: "var(--bg-surface)",
             borderBottom: "1px solid var(--border)",
           }}
@@ -299,7 +299,7 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
         </svg>
 
         {/* Nodes */}
-        <div style={{ position: "relative", width: canvasW, height: canvasH, zIndex: 2 }}>
+        <div style={{ position: "relative", width: canvasW, height: canvasH, zIndex: 2, padding: "20px" }}>
           {nodes.map(n => (
             <div
               key={n.id}
@@ -339,10 +339,12 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
         className="panel"
         style={{
           width: 280,
+          minWidth: 280,
           flexShrink: 0,
           background: "var(--bg-surface)",
           borderLeft: "1px solid var(--border)",
           overflowY: "auto",
+          height: "100%",
         }}
       >
         <div className="panel-header">

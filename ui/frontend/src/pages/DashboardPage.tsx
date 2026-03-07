@@ -18,9 +18,12 @@ interface HighFreqNovel {
   author: string;
   platform: string;
   main_category: string;
+  status: string;
+  total_words: number;
   appearances: number;
   best_rank: number;
   avg_rank: number;
+  last_seen: string;
 }
 
 interface HotTag {
@@ -41,7 +44,7 @@ type PlatformFilter = "" | "qidian" | "fanqie";
 const platformLabel = (p: string) =>
   p === "qidian" ? "起点" : p === "fanqie" ? "番茄" : p || "未知";
 
-export default function DashboardPage() {
+export default function DashboardPage({ projects, onNavigate }: { projects: { id: string; name: string; genre?: string }[]; onNavigate: (tab: string) => void }) {
   const [platform, setPlatform] = useState<PlatformFilter>("");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [highFreq, setHighFreq] = useState<HighFreqNovel[]>([]);
@@ -58,14 +61,14 @@ export default function DashboardPage() {
     setLoading(true);
     const qs = platform ? `?platform=${platform}` : "";
     Promise.all([
-      apiGet<Overview>(`/api/data/overview${qs}`),
-      apiGet<HighFreqNovel[]>(`/api/data/high-frequency-novels${qs}`),
-      apiGet<HotTag[]>(`/api/data/tags${qs}`),
+      apiGet<Overview>(`/api/db/overview${qs}`),
+      apiGet<{ rows: HighFreqNovel[] }>(`/api/db/top_novels${qs}`),
+      apiGet<{ rows: HotTag[] }>(`/api/db/tag_stats${qs}`),
     ])
       .then(([ov, hf, tg]) => {
         setOverview(ov);
-        setHighFreq(Array.isArray(hf) ? hf : []);
-        setHotTags(Array.isArray(tg) ? tg : []);
+        setHighFreq(Array.isArray(hf.rows) ? hf.rows : []);
+        setHotTags(Array.isArray(tg.rows) ? tg.rows : []);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -87,7 +90,7 @@ export default function DashboardPage() {
     setPanelLoading(true);
     setPanelData(null);
     try {
-      const d = await apiGet<NovelDetail>(`/api/data/novels/${uid}`);
+      const d = await apiGet<NovelDetail>(`/api/db/novel/${uid}`);
       setPanelData(d);
     } catch (e) {
       console.error(e);
@@ -122,6 +125,36 @@ export default function DashboardPage() {
               ),
             )}
           </div>
+        </div>
+      </div>
+
+      {/* ══ 我的创作 ══ */}
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card-header">
+          <h3>我的创作</h3>
+        </div>
+        <div className="card-body">
+          {projects.length === 0 ? (
+            <div className="empty-state">
+              <p>暂无项目</p>
+            </div>
+          ) : (
+            <div className="stats-grid">
+              {projects.map((proj) => (
+                <div className="stat-card" key={proj.id}>
+                  <div className="stat-value" style={{ fontSize: 16 }}>{proj.name}</div>
+                  <div className="stat-label">{proj.genre || "未设置类型"}</div>
+                  <button
+                    className="tab-item active"
+                    style={{ marginTop: 12 }}
+                    onClick={() => onNavigate("editor")}
+                  >
+                    进入项目
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

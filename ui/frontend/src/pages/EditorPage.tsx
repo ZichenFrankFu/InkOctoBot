@@ -17,6 +17,22 @@ interface LocalVolume extends Volume {
   collapsed?: boolean;
 }
 
+/* ====== Agent colors for groupchat ====== */
+const AGENT_COLORS: Record<string, { bg: string; border: string; name: string }> = {
+  "Scene Director": { bg: "#e8f0fe", border: "#4285f4", name: "Scene Director" },
+  "Actor Agents": { bg: "#fef7e0", border: "#f9ab00", name: "Actor Agents" },
+  "Editor-Writer": { bg: "#e6f4ea", border: "#34a853", name: "Editor-Writer" },
+  "Evaluator": { bg: "#fce8e6", border: "#ea4335", name: "Evaluator" },
+  "User": { bg: "#f3e8fd", border: "#9334e6", name: "用户" },
+};
+
+interface ChatMessage {
+  agent: string;
+  content: string;
+  status?: "thinking" | "speaking" | "done";
+  timestamp: number;
+}
+
 export default function EditorPage({ projectId }: { projectId: string }) {
   // --- State ---
   const [volumes, setVolumes] = useState<LocalVolume[]>([]);
@@ -27,6 +43,9 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
+
+  // Search
+  const [searchTerm, setSearchTerm] = useState("");
 
   // Rename
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -45,6 +64,10 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const [generating, setGenerating] = useState(false);
   const [evalResult, setEvalResult] = useState<EvalResult | null>(null);
 
+  // Groupchat messages
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+
   const textRef = useRef<HTMLTextAreaElement>(null);
 
   // --- Resizable panels ---
@@ -54,23 +77,24 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   // --- Load data ---
   useEffect(() => {
     const pid = projectId || "default";
-    Promise.all([
-      apiGet<{ items: LocalVolume[] }>(`/api/data/projects/${pid}/volumes`).catch(() => ({ items: [] })),
-    ]).then(([volData]) => {
-      let vols = volData.items || [];
-      if (vols.length === 0) {
-        const ch: ChapterOutline = { id: uid(), volume_id: "v1", title: "第一章", order: 1, synopsis: "", content: "", word_count: 0 };
-        vols = [{ id: "v1", project_id: pid, title: "第一卷", order: 1, chapters: [ch] }];
-      }
-      setVolumes(vols);
-      const firstCh = vols[0]?.chapters?.[0];
-      if (firstCh) {
-        setActiveChId(firstCh.id);
-        setContent(firstCh.content || "");
-        setTitleVal(firstCh.title);
-      }
-      setLoaded(true);
-    }).catch(() => setLoaded(true));
+    apiGet<{ volumes: LocalVolume[] }>(`/api/data/editor?project_id=${pid}`)
+      .catch(() => ({ volumes: [] as LocalVolume[] }))
+      .then((data) => {
+        let vols = data.volumes || [];
+        if (vols.length === 0) {
+          const ch: ChapterOutline = { id: uid(), volume_id: "v1", title: "第一章", order: 1, synopsis: "", content: "", word_count: 0 };
+          vols = [{ id: "v1", project_id: pid, title: "第一卷", order: 1, chapters: [ch] }];
+        }
+        setVolumes(vols);
+        const firstCh = vols[0]?.chapters?.[0];
+        if (firstCh) {
+          setActiveChId(firstCh.id);
+          setContent(firstCh.content || "");
+          setTitleVal(firstCh.title);
+        }
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
   }, [projectId]);
 
   // --- Elapsed timer ---
@@ -110,18 +134,17 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSaveStatus("saving");
-      const updated = volumes.map(v => ({
+      const updatedVolumes = volumes.map(v => ({
         ...v,
         chapters: v.chapters.map(c =>
           c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c
         ),
       }));
-      setVolumes(updated);
+      setVolumes(updatedVolumes);
       try {
-        await apiPut(`/api/data/projects/${projectId || "default"}/chapters/${activeChId}`, {
-          content,
-          title: titleVal || activeCh?.title,
-          word_count: wc(content),
+        await apiPut("/api/data/editor", {
+          project_id: projectId || "default",
+          volumes: updatedVolumes,
         });
         setSaveStatus("saved");
       } catch {
@@ -158,7 +181,6 @@ export default function EditorPage({ projectId }: { projectId: string }) {
       order: volumes.length + 1, chapters: [], collapsed: false,
     };
     setVolumes([...volumes, vol]);
-    apiPost(`/api/data/projects/${projectId}/volumes`, { title: vol.title, order: vol.order }).catch(console.error);
   };
 
   const addChapter = (volId: string) => {
@@ -169,6 +191,11 @@ export default function EditorPage({ projectId }: { projectId: string }) {
       order: vol.chapters.length + 1, synopsis: "", content: "", word_count: 0,
     };
     setVolumes(volumes.map(v => v.id === volId ? { ...v, chapters: [...v.chapters, ch] } : v));
+  };
+
+  const addChapterToFirstVolume = () => {
+    if (volumes.length === 0) return;
+    addChapter(volumes[0].id);
   };
 
   const deleteChapter = (chId: string) => {
@@ -208,11 +235,68 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     })));
   };
 
+  // --- Search filter ---
+  const filteredVolumes = useMemo(() => {
+    if (!searchTerm.trim()) return volumes;
+    const term = searchTerm.trim().toLowerCase();
+    return volumes.map(v => ({
+      ...v,
+      chapters: v.chapters.filter(c =>
+        c.title.toLowerCase().includes(term) ||
+        (c.content || "").toLowerCase().includes(term) ||
+        (c.synopsis || "").toLowerCase().includes(term)
+      ),
+    })).filter(v => v.chapters.length > 0 || v.title.toLowerCase().includes(term));
+  }, [volumes, searchTerm]);
+
+  // --- Batch export ---
+  const handleExport = () => {
+    const lines: string[] = [];
+    for (const v of volumes) {
+      lines.push(`===== ${v.title} =====\n`);
+      for (const c of v.chapters) {
+        lines.push(`--- ${c.title} ---\n`);
+        lines.push((c.content || "") + "\n\n");
+      }
+    }
+    const text = lines.join("\n");
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `export_${Date.now()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // --- Save outline explicitly ---
+  const handleSaveOutline = async () => {
+    setSaveStatus("saving");
+    const updatedVolumes = volumes.map(v => ({
+      ...v,
+      chapters: v.chapters.map(c =>
+        c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c
+      ),
+    }));
+    try {
+      await apiPut("/api/data/editor", {
+        project_id: projectId || "default",
+        volumes: updatedVolumes,
+      });
+      setSaveStatus("saved");
+    } catch {
+      setSaveStatus("unsaved");
+    }
+  };
+
   // --- Pipeline / Generation ---
   const startGeneration = async () => {
     if (!activeCh) return;
     setGenerating(true);
     setPipelineSteps(PIPELINE_STEPS.map(s => ({ ...s, status: "pending" })));
+    setChatMessages([]);
     try {
       await apiPost("/api/generation/start", {
         project_id: projectId,
@@ -223,7 +307,35 @@ export default function EditorPage({ projectId }: { projectId: string }) {
       const poll = setInterval(async () => {
         try {
           const st = await apiGet<{ steps: PipelineStatus[] }>("/api/generation/status");
-          if (st.steps) setPipelineSteps(st.steps);
+          if (st.steps) {
+            setPipelineSteps(st.steps);
+            // Convert pipeline steps to chat messages
+            const newMessages: ChatMessage[] = [];
+            for (const step of st.steps) {
+              if (step.status === "running") {
+                newMessages.push({
+                  agent: step.step,
+                  content: step.detail || "处理中...",
+                  status: "speaking",
+                  timestamp: Date.now(),
+                });
+              } else if (step.status === "done") {
+                newMessages.push({
+                  agent: step.step,
+                  content: step.detail || "已完成",
+                  status: "done",
+                  timestamp: Date.now(),
+                });
+              }
+            }
+            if (newMessages.length > 0) {
+              setChatMessages(prev => {
+                const existingAgents = new Set(prev.map(m => m.agent + m.status));
+                const truly = newMessages.filter(m => !existingAgents.has(m.agent + m.status));
+                return truly.length > 0 ? [...prev, ...truly] : prev;
+              });
+            }
+          }
           if (st.steps?.every(s => s.status === "done" || s.status === "error")) {
             clearInterval(poll);
             setGenerating(false);
@@ -236,6 +348,16 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     } catch {
       setGenerating(false);
     }
+  };
+
+  // --- Send user message in groupchat ---
+  const sendChatMessage = () => {
+    if (!chatInput.trim()) return;
+    setChatMessages(prev => [
+      ...prev,
+      { agent: "User", content: chatInput.trim(), status: "done", timestamp: Date.now() },
+    ]);
+    setChatInput("");
   };
 
   // --- Computed ---
@@ -258,13 +380,52 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         {/* ======== LEFT PANEL: Volume/Chapter Tree ======== */}
         <div className="panel" style={{ width: leftPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)" }}>
           <div className="panel-header">
-            <h3>大纲</h3>
             <div className="flex gap-4">
-              <button className="btn-icon" title="添加卷" onClick={addVolume} style={{ fontSize: 14 }}>+&#x5377;</button>
             </div>
           </div>
+
+          {/* Search bar */}
+          <div style={{ padding: "8px 10px 4px" }}>
+            <input
+              className="input"
+              type="text"
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              placeholder="搜索章节..."
+              style={{ fontSize: 12, padding: "5px 10px", width: "100%", boxSizing: "border-box" }}
+            />
+          </div>
+
+          {/* Action buttons */}
+          <div style={{ padding: "4px 10px 6px", display: "flex", gap: 6 }}>
+            <button
+              className="btn-icon"
+              title="新建卷"
+              onClick={addVolume}
+              style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
+            >
+              +卷
+            </button>
+            <button
+              className="btn-icon"
+              title="新建章"
+              onClick={addChapterToFirstVolume}
+              style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
+            >
+              +章
+            </button>
+            <button
+              className="btn-icon"
+              title="导出"
+              onClick={handleExport}
+              style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
+            >
+              导出
+            </button>
+          </div>
+
           <div className="panel-body" style={{ padding: "8px 6px" }}>
-            {volumes.map(v => (
+            {filteredVolumes.map(v => (
               <div key={v.id}>
                 {/* Volume header */}
                 <div
@@ -312,6 +473,11 @@ export default function EditorPage({ projectId }: { projectId: string }) {
                     key={c.id}
                     className={`chapter-tree-item indent ${c.id === activeChId ? "active" : ""}`}
                     onClick={() => setActiveChId(c.id)}
+                    style={
+                      searchTerm.trim() && (c.content || "").toLowerCase().includes(searchTerm.trim().toLowerCase())
+                        ? { background: "var(--accent-subtle, rgba(255,200,0,0.15))" }
+                        : undefined
+                    }
                   >
                     {renamingId === c.id ? (
                       <input
@@ -461,13 +627,22 @@ export default function EditorPage({ projectId }: { projectId: string }) {
           {/* Tab content */}
           <div className="panel-body" style={{ padding: "14px 16px" }}>
             {aiTab === "outline" && (
-              <OutlineTab synopsis={activeCh?.synopsis || ""} onChange={updateSynopsis} />
+              <OutlineTab
+                synopsis={activeCh?.synopsis || ""}
+                onChange={updateSynopsis}
+                onSave={handleSaveOutline}
+                onStartGeneration={() => { setAiTab("inspire"); }}
+              />
             )}
             {aiTab === "inspire" && (
               <InspireTab
                 steps={pipelineSteps}
                 generating={generating}
                 onStart={startGeneration}
+                chatMessages={chatMessages}
+                chatInput={chatInput}
+                onChatInputChange={setChatInput}
+                onSendMessage={sendChatMessage}
               />
             )}
             {aiTab === "rewrite" && (
@@ -490,7 +665,17 @@ export default function EditorPage({ projectId }: { projectId: string }) {
 }
 
 /* ====== Outline Tab ====== */
-function OutlineTab({ synopsis, onChange }: { synopsis: string; onChange: (v: string) => void }) {
+function OutlineTab({
+  synopsis,
+  onChange,
+  onSave,
+  onStartGeneration,
+}: {
+  synopsis: string;
+  onChange: (v: string) => void;
+  onSave: () => void;
+  onStartGeneration: () => void;
+}) {
   return (
     <div>
       <div className="label mb-8">章节剧情大纲</div>
@@ -502,6 +687,18 @@ function OutlineTab({ synopsis, onChange }: { synopsis: string; onChange: (v: st
         placeholder={"在这里写这一章的剧情要点...\n\n例如：\n  主角初入宗门\n  与师兄发生冲突\n  发现隐藏洞穴"}
         style={{ lineHeight: 1.8, fontFamily: "var(--font-sans)" }}
       />
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button className="btn-primary" style={{ flex: 1 }} onClick={onSave}>
+          保存
+        </button>
+        <button
+          className="btn-primary"
+          style={{ flex: 1, background: "var(--jade, #34a853)", border: "none" }}
+          onClick={onStartGeneration}
+        >
+          开始生成
+        </button>
+      </div>
       <p className="text-xs text-muted mt-12" style={{ lineHeight: 1.6 }}>
         大纲将作为 Scene Planner 的输入，AI 根据大纲拆分场景并生成内容。也会自动同步到「剧情线」页面。
       </p>
@@ -509,60 +706,180 @@ function OutlineTab({ synopsis, onChange }: { synopsis: string; onChange: (v: st
   );
 }
 
-/* ====== Inspire Tab (Film Pipeline) ====== */
+/* ====== Inspire Tab (Groupchat) ====== */
 function InspireTab({
   steps,
   generating,
   onStart,
+  chatMessages,
+  chatInput,
+  onChatInputChange,
+  onSendMessage,
 }: {
   steps: PipelineStatus[];
   generating: boolean;
   onStart: () => void;
+  chatMessages: ChatMessage[];
+  chatInput: string;
+  onChatInputChange: (v: string) => void;
+  onSendMessage: () => void;
 }) {
-  const [expandedStep, setExpandedStep] = useState<number | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
+
+  const getAgentStyle = (agent: string) => {
+    return AGENT_COLORS[agent] || { bg: "#f0f0f0", border: "#999", name: agent };
+  };
+
+  const getStatusIndicator = (status?: "thinking" | "speaking" | "done") => {
+    if (status === "thinking") return { text: "思考中...", color: "#f9ab00" };
+    if (status === "speaking") return { text: "输出中...", color: "#4285f4" };
+    if (status === "done") return { text: "", color: "#34a853" };
+    return { text: "", color: "#999" };
+  };
+
+  const getAgentAvatar = (agent: string) => {
+    if (agent === "Scene Director") return "🎬";
+    if (agent === "Actor Agents") return "🎭";
+    if (agent === "Editor-Writer") return "✍️";
+    if (agent === "Evaluator") return "📋";
+    if (agent === "User") return "👤";
+    return "🤖";
+  };
 
   return (
-    <div>
-      <div className="label mb-12">Film Pipeline</div>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div className="label mb-8">Film Pipeline - 群聊模式</div>
 
-      {steps.map((step, i) => {
-        const dotClass = step.status === "done" ? "done" : step.status === "running" ? "active" : step.status === "error" ? "error" : "";
-        return (
-          <div key={i} style={{ marginBottom: 6 }}>
+      {/* Groupchat message area */}
+      <div
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-sm, 6px)",
+          padding: 8,
+          marginBottom: 10,
+          minHeight: 200,
+          maxHeight: 400,
+          background: "var(--bg-app, #fff)",
+        }}
+      >
+        {chatMessages.length === 0 && !generating && (
+          <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
+            点击「开始生成」启动 Pipeline，各 Agent 将在此对话
+          </div>
+        )}
+
+        {chatMessages.map((msg, i) => {
+          const style = getAgentStyle(msg.agent);
+          const statusInfo = getStatusIndicator(msg.status);
+          const isUser = msg.agent === "User";
+
+          return (
             <div
-              className="pipeline-step"
-              style={{ cursor: "pointer" }}
-              onClick={() => setExpandedStep(expandedStep === i ? null : i)}
+              key={i}
+              style={{
+                display: "flex",
+                flexDirection: isUser ? "row-reverse" : "row",
+                alignItems: "flex-start",
+                marginBottom: 10,
+                gap: 8,
+              }}
             >
-              <div className={`pipeline-dot ${dotClass}`} />
-              <div style={{ flex: 1 }}>
-                <div className="pipeline-step-label" style={{ fontWeight: 600 }}>{step.step}</div>
-                <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{step.detail}</div>
+              {/* Avatar */}
+              <div
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: "50%",
+                  background: style.bg,
+                  border: `2px solid ${style.border}`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 16,
+                  flexShrink: 0,
+                }}
+              >
+                {getAgentAvatar(msg.agent)}
               </div>
-              <span className="pipeline-step-status">
-                {step.status === "done" ? "完成" : step.status === "running" ? "运行中" : step.status === "error" ? "错误" : "等待"}
-              </span>
-            </div>
-            {expandedStep === i && step.progress !== undefined && (
-              <div style={{ padding: "8px 12px 8px 32px" }}>
-                <div className="bar-track" style={{ height: 6 }}>
-                  <div className="bar-fill red" style={{ width: `${(step.progress || 0) * 100}%`, height: 6 }} />
+
+              {/* Message bubble */}
+              <div style={{ maxWidth: "80%", minWidth: 0 }}>
+                <div style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: style.border,
+                  marginBottom: 2,
+                  textAlign: isUser ? "right" : "left",
+                }}>
+                  {style.name}
+                  {statusInfo.text && (
+                    <span style={{
+                      marginLeft: 6,
+                      fontSize: 10,
+                      fontWeight: 400,
+                      color: statusInfo.color,
+                    }}>
+                      {statusInfo.text}
+                    </span>
+                  )}
+                </div>
+                <div
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 10,
+                    background: style.bg,
+                    borderLeft: isUser ? "none" : `3px solid ${style.border}`,
+                    borderRight: isUser ? `3px solid ${style.border}` : "none",
+                    fontSize: 13,
+                    lineHeight: 1.6,
+                    color: "var(--text-primary, #222)",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {msg.content}
                 </div>
               </div>
-            )}
-          </div>
-        );
-      })}
+            </div>
+          );
+        })}
+        <div ref={chatEndRef} />
+      </div>
+
+      {/* User input area */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        <input
+          className="input"
+          value={chatInput}
+          onChange={e => onChatInputChange(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSendMessage(); } }}
+          placeholder="输入消息与 Agent 对话..."
+          style={{ flex: 1, fontSize: 12, padding: "6px 10px" }}
+        />
+        <button
+          className="btn-primary"
+          onClick={onSendMessage}
+          disabled={!chatInput.trim()}
+          style={{ fontSize: 12, padding: "6px 12px", flexShrink: 0 }}
+        >
+          发送
+        </button>
+      </div>
 
       <button
-        className="btn-primary w-full mt-16"
+        className="btn-primary w-full"
         onClick={onStart}
         disabled={generating}
       >
         {generating ? "生成中..." : "开始生成"}
       </button>
 
-      <p className="text-xs text-muted mt-12" style={{ lineHeight: 1.6 }}>
+      <p className="text-xs text-muted mt-8" style={{ lineHeight: 1.6 }}>
         每章不少于 2000 字，按 ~600 字/段分段生成。连接模型后此面板将展示实时 Pipeline 进度。
       </p>
     </div>

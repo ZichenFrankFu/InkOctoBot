@@ -35,7 +35,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await apiGet<{ items: Character[] }>(`/api/data/projects/${projectId}/characters`);
+      const r = await apiGet<{ items: Character[] }>(`/api/data/characters?project_id=${projectId}`);
       setItems(r.items || []);
     } catch (e) {
       console.error(e);
@@ -55,7 +55,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 
   const create = async () => {
     try {
-      const c = await apiPost<Character>(`/api/data/projects/${projectId}/characters`, {
+      const c = await apiPost<Character>(`/api/data/characters`, {
         name: "新角色",
         role: "配角",
         project_id: projectId,
@@ -77,7 +77,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const save = async () => {
     if (!editing) return;
     try {
-      await apiPut(`/api/data/projects/${projectId}/characters/${editing.id}`, editing);
+      await apiPut(`/api/data/characters/${editing.id}`, editing);
       setDirty(false);
       load();
     } catch (e) {
@@ -88,7 +88,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const remove = async (id: string) => {
     if (!confirm("确定删除该角色？")) return;
     try {
-      await apiDelete(`/api/data/projects/${projectId}/characters/${id}`);
+      await apiDelete(`/api/data/characters/${id}`);
       if (editing?.id === id) setEditing(null);
       load();
     } catch (e) {

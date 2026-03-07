@@ -10,14 +10,12 @@ import CharacterManagerPage from "./pages/CharacterManagerPage";
 import WorldBookPage from "./pages/WorldBookPage";
 import StorylinePage from "./pages/StorylinePage";
 import SettingsPage from "./pages/SettingsPage";
-import DatabasePage from "./pages/DatabasePage";
-import ReportsPage from "./pages/ReportsPage";
 import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 
 type Tab =
-  | "dashboard" | "rankings" | "references" | "trends" | "database" | "reports" | "analysis"
+  | "dashboard" | "rankings" | "references" | "trends" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
   | "settings";
 
@@ -33,12 +31,10 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   {
     section: "数据",
     items: [
-      { key: "database", icon: "🗄️", label: "数据浏览" },
-      { key: "rankings", icon: "📋", label: "榜单浏览" },
+      { key: "rankings", icon: "📋", label: "市场数据库" },
       { key: "references", icon: "📚", label: "参考作品库" },
       { key: "analysis", icon: "📈", label: "分析面板" },
       { key: "trends", icon: "📉", label: "趋势分析" },
-      { key: "reports", icon: "📄", label: "分析报告" },
     ],
   },
   {
@@ -187,13 +183,11 @@ export default function App() {
       <div className="resize-handle" onMouseDown={onMouseDown} />
 
       <main className="main-content">
-        {tab === "dashboard" && <DashboardPage />}
-        {tab === "database" && <DatabasePage />}
+        {tab === "dashboard" && <DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} />}
         {tab === "rankings" && <RankingsPage />}
         {tab === "references" && <ReferenceLibraryPage />}
         {tab === "analysis" && <AnalysisDashboardPage />}
         {tab === "trends" && <TrendAnalysisPage />}
-        {tab === "reports" && <ReportsPage />}
         {tab === "projects" && <ProjectListPage />}
         {tab === "project-setup" && <ProjectSetupPage projectId={activeProject} />}
         {tab === "editor" && <EditorPage projectId={activeProject} />}
