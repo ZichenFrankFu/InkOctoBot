@@ -3,7 +3,7 @@
 # PyInstaller 打包态下 BASE_DIR 会自动切换到 LOCALAPPDATA/InkOctoBot
 
 database:
-  path: "data/novels.db"       # ← 新位置：独立于 outputs
+  path: "data/novels.db"
 
 output_paths:
   data_raw: "outputs/data/raw"
