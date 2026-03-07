@@ -1,0 +1,1 @@
+﻿"""Shuangdian template extraction."""

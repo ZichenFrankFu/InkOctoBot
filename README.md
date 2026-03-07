@@ -114,9 +114,35 @@ EditAnalyzer 分析用户修改，总结修改类型，并记录以优化后续�
 
 #### 2.2.7 EditAnalyzer
 - 目标：分析用户对生成文本的修改，识别修改类型（如情节调整、角色行为修改、语言风格调整等），并总结以优化后续生成
-- 输入：原始生成文本，用户修改后的文本
-- 输出：修改分析报告（修改类型分布，常见修改模式等）
-- 技术实现：基于文本差异分析 + LLM生成修改类型标签和总结报告
+- 输入：AI 生成的原始文本 + 用户编辑后的最终文本
+- 输出：修改分析报告 + 写入 user_style_preferences 表的结构化偏好记录
+工作流程：
+```
+用户在 Editor 中编辑完成并保存
+  ↓
+Diff 引擎逐段对比原始文本与用户修改后文本
+  ↓
+LLM 对每处修改进行分类标注：
+  - deletion:    用户删除了什么类型的内容（如"删除了过多的心理描写"）
+  - rewrite:     用户改写了什么（如"把书面语改成了口语化对话"）
+  - addition:    用户补充了什么（如"加入了环境细节描写"）
+  - structural:  用户调整了段落顺序或节奏
+  ↓
+聚合为偏好信号（跨多次编辑累积统计）：
+  - style_preferences:    "偏好短句""对话占比高""少用排比"
+  - content_preferences:  "删除冗余心理独白""保留动作描写"
+  - pacing_preferences:   "压缩过渡段落""展开打斗场景"
+  ↓
+写入 user_style_preferences 表（project 级别）
+```
+偏好信号的消费方式（闭环注入）：
+| 消费者            | 注入方式                                                            |
+| -------------- | --------------------------------------------------------------- |
+| Editor-Writer  | 累积偏好作为 system prompt 附加段落注入：“根据用户历史编辑习惯，本项目偏好短句、高对话占比、少心理独白”    |
+| Actor Agents   | 高频 deletion 模式转化为约束：“用户反复删除角色独白超过 3 句的段落 → 新增软约束：单次内心独白不超过 2 句” |
+| Evaluator      | 将 deletion 模式注册为检测规则：如果生成文本中出现用户反复删除的模式，预先标记为“可能需要修改”           |
+| Scene Director | pacing 偏好影响节拍分配：“用户倾向展开打斗、压缩过渡 → 打斗场景分配更多节拍”                    |
+
 
 ### 2.3 数据库设计
 > 存储永久化市场信息以及User提供的带有个人审美取向的参考作品信息
@@ -176,9 +202,69 @@ EditAnalyzer 分析用户修改，总结修改类型，并记录以优化后续�
     4. 将 explicitly_unknown 以否定指令注入 prompt:
       "你（张远）目前不知道以下信息，在表演中不得暗示或提及：..."
 
-#### 2.5 Prompt设计
-1. 约束优先级：硬约束 (世界观/逻辑) > 2. 知识隔离 > 3. 情绪弧线 > 4. 叙事风格 > 5. 修辞风格
+### 2.5 Prompt约束系统设计
+- 目标：确保所有 Agent 的输出严格遵守世界观规则、知识隔离边界、用户自定义禁忌等约束条件。采用语义级检测而非 token ban，因为中文的多义性和 LLM tokenizer 的不一致性使得 token 级封禁不可靠（如禁"龙"会同时禁掉"龙卷风""龙套"等无关词）。
 
+约束来源（四类）：
+
+| 约束来源（四类） | 示例                               | 优先级            |
+| -------- | -------------------------------- | -------------- |
+| 世界观硬规则   | “本世界没有枪械” “筑基期无法飞行”              | 最高 — 违反即逻辑错误   |
+| 知识隔离指令   | “张远不知道李清漪是卧底”                    | 高 — 违反即角色穿帮    |
+| 情节约束     | Scene Director 的 must / must_not | 中 — 违反会偏离剧情走向  |
+| 风格约束     | “不使用现代网络用语” “对话不超过三句连续”          | 低 — 违反影响质感但不致命 |
+
+三层执行机制：
+
+| 阶段                      | 机制             | 说明                                                                                       |
+| ----------------------- | -------------- | ---------------------------------------------------------------------------------------- |
+| 生成前 (Pre-Generation)    | 正向重述           | 将反向约束转化为正向指令注入 prompt，例如“不要写飞行场景” → “角色只能步行或骑乘，请在移动描写中体现”                                |
+| 生成前 (Pre-Generation)    | 交互式消歧          | 模糊约束经 Disambiguator 生成候选解读，再由 User 确认                                                    |
+| 生成前 (Pre-Generation)    | Good / Bad 示例对 | 每条约束附带一个符合示例和一个违反示例文本片段                                                                  |
+| 生成时 (During Generation) | ChromaDB 语义检测  | 将约束规则 embedding 化存入向量库；生成过程中对输出片段做语义相似度检查，及时发现偏移                                         |
+| 生成时 (During Generation) | 约束优先级组装        | 按“硬规则 > 隔离 > 情节 > 叙事风格 > 修辞风格”的顺序组装进 system prompt，确保高优先级约束位于注意力窗口前部                     |
+| 生成后 (Post-Generation)   | Evaluator 违规检测 | 对完整章节做语义扫描；将每条 must_not 约束与正文段落做 embedding 余弦相似度匹配，超过阈值后标记具体段落与违规类型，并进入 targeted rewrite |
+| 生成后 (Post-Generation)   | 知识隔离验证         | 对比 Actor 输出与 explicitly_unknown 列表，检测是否有角色泄露了不该知道的信息                                     |
+
+> 约束规则随项目演进持续积累：User 每次添加世界观设定或 Scene Director 每次生成导演指令时，新约束自动入库并 embedding 化，供后续所有章节使用。
+
+### 2.6 Agent事件监听系统及主动性设计
+目标：让 Agent 从"被 pipeline 调用才工作"变为"监听项目状态变化，满足条件时主动向用户提供建议"，使系统表现出创作伙伴级别的智能感。
+
+#### 2.6.1 架构：EventBus + AgentTrigger
+
+在现有线性 pipeline 之上叠加一层事件驱动的主动介入机制：
+
+```
+系统内任何状态变化（章节完成、用户编辑、设定修改...）
+  → 发布 Event 到 EventBus（内存级发布/订阅）
+    → 每个 Agent 注册 AgentTrigger（监听事件 + 触发条件 + 冷却间隔）
+      → 条件满足 → Agent 生成建议
+        → 通过 WebSocket 推送到前端 Agent Chat Panel
+```
+
+核心事件类型：
+
+| 事件 | 触发时机 |
+|------|---------|
+| `CHAPTER_COMPLETED` | 一章生成完成或用户确认定稿 |
+| `USER_EDIT_SAVED` | 用户在 Editor 中保存修改 |
+| `WORLDBOOK_UPDATED` | 世界书新增/修改条目 |
+| `CHARACTER_UPDATED` | 角色卡变更 |
+| `CHAPTER_PLAN_SUBMITTED` | 用户提交新章节细纲 |
+| `GENERATION_STEP_COMPLETED` | Pipeline 单步完成（用于思考过程展示） |
+
+#### 2.6.2 各 Agent 的主动介入规则
+
+| Agent | 监听事件 | 触发条件 | 主动行为 |
+|-------|---------|---------|---------|
+| Marketing Agent | `CHAPTER_COMPLETED` | 每 5 章 / 每卷结束 | 对比市场指标，提示节奏/hook密度偏差 |
+| Story Architect | `WORLDBOOK_UPDATED` / `CHARACTER_UPDATED` | 每次修改 | 新条目与已有设定的一致性矛盾检测 |
+| Scene Director | `CHAPTER_PLAN_SUBMITTED` | 每次提交 | 检索角色关系状态（信任值/冲突临界点），提示剧情机会 |
+| Evaluator | `CHAPTER_COMPLETED` | 伏笔超期 / 节奏重复 / 角色漂移 | 悬挂伏笔提醒、节奏单调化警告、角色行为偏移告警 |
+| EditAnalyzer | `USER_EDIT_SAVED` | 偏好信号 confidence 首次达到阈值 | 通知用户系统学到的新偏好，请求确认 |
+
+每个 Trigger 设有 `cooldown`（同类建议最少间隔章数，防止骚扰），用户可在 Settings 中按 Agent 粒度开关主动通知。
 ---
 
 ## 3. RAG设计
@@ -354,6 +440,10 @@ InkOctoBot/
 │   │   ├── ollama_provider.py           # Ollama 本地模型
 │   │   ├── vllm_provider.py             # vLLM 本地推理
 │   │   └── lora_provider.py             # LoRA 模型加载
+│   ├── events/                          # 事件驱动主动介入系统
+│   │   ├── event_bus.py                 # 内存级事件发布/订阅总线
+│   │   ├── event_types.py               # 事件类型枚举 + Event 数据类
+│   │   └── triggers.py                  # AgentTrigger 注册 + 条件判断 + 冷却机制
 │   │
 │   ├── planner/                         # 规划层 Agent
 │   │   ├── marketing_agent.py           # 市场顾问 (选题/书名/简介建议)
@@ -425,6 +515,7 @@ InkOctoBot/
     │       ├── runner.py                # subprocess 启动爬虫 + 写日志
     │       ├── utils.py                 # 读取 repo config / paths / rank_keys
     │       └── routers/
+    │           ├── events_api.py        # /api/events (Agent事件流 WebSocket)
     │           ├── config_api.py        # /api/config (爬虫配置 schema + 保存)
     │           ├── tasks_api.py         # /api/tasks (启动爬虫任务 + 读日志)
     │           ├── reports_api.py       # /api/reports (分析报告索引 + 预览)
@@ -472,6 +563,7 @@ InkOctoBot/
             │   │   ├── AIPanel.tsx      # 右栏: AI 生成控制 + pipeline 状态
             │   │   ├── VersionHistory.tsx   # 版本历史列表 + diff 对比
             │   │   ├── ModelCompare.tsx     # 多模型输出并排对比
+            │   │   ├── AgentChat.tsx        # 群聊风格 Agent 建议面板
             │   │   └── EditorAdvice.tsx     # Marketing Agent 建议卡片
             │   ├── shared/
             │   │   ├── CostConfirmDialog.tsx # 商业 API 成本确认弹窗

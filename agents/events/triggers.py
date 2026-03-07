@@ -1,0 +1,1 @@
+﻿"""Agent trigger registry and cooldown logic."""
