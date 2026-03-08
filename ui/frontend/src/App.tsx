@@ -137,8 +137,9 @@ export default function App() {
                       onClick={() => setShowProjMenu(!showProjMenu)}
                       className="btn-ghost"
                       style={{ padding: "2px 8px", fontSize: 10, letterSpacing: 0, textTransform: "none" }}
+                      title={`当前项目：${activeProjectName}`}
                     >
-                      {activeProjectName.length > 8 ? activeProjectName.slice(0, 8) + "…" : activeProjectName} ▾
+                      当前：{activeProjectName.length > 6 ? activeProjectName.slice(0, 6) + "…" : activeProjectName} ▾
                     </button>
                     {showProjMenu && (
                       <div className="dropdown" style={{ top: "100%", right: 0, marginTop: 4 }}>

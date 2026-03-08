@@ -204,9 +204,18 @@ export default function SettingsPage() {
                         className="select"
                         value={assignment.provider}
                         onChange={(e) => {
-                          updatePipeline(role.key, "provider", e.target.value);
-                          const newModels = modelsForProvider(e.target.value);
-                          updatePipeline(role.key, "model", newModels[0] || "");
+                          const newProvider = e.target.value;
+                          const newModels = modelsForProvider(newProvider);
+                          if (!settings) return;
+                          const prev = settings.pipeline[role.key] || { provider: "", model: "", compare_models: [] };
+                          setSettings({
+                            ...settings,
+                            pipeline: {
+                              ...settings.pipeline,
+                              [role.key]: { ...prev, provider: newProvider, model: newModels[0] || "" },
+                            },
+                          });
+                          setDirty(true);
                         }}
                         style={{ flex: 1 }}
                       >

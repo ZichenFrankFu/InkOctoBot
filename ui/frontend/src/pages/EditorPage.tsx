@@ -16,12 +16,12 @@ const PIPELINE_STEPS: PipelineStatus[] = [
 interface LocalVolume extends Volume { collapsed?: boolean; }
 
 const AGENT_COLORS: Record<string, { bg: string; border: string; name: string }> = {
-  "Scene Director": { bg: "#e8f0fe", border: "#4285f4", name: "Scene Director" },
-  "Actor Agents": { bg: "#fef7e0", border: "#f9ab00", name: "Actor Agents" },
-  "Editor-Writer": { bg: "#e6f4ea", border: "#34a853", name: "Editor-Writer" },
-  "Evaluator": { bg: "#fce8e6", border: "#ea4335", name: "Evaluator" },
-  "User": { bg: "#f3e8fd", border: "#9334e6", name: "用户" },
-  "System": { bg: "#f0f0f0", border: "#999", name: "系统" },
+  "Scene Director": { bg: "var(--indigo-subtle)", border: "var(--indigo)", name: "Scene Director" },
+  "Actor Agents": { bg: "var(--gold-subtle)", border: "var(--gold)", name: "Actor Agents" },
+  "Editor-Writer": { bg: "var(--jade-subtle)", border: "var(--jade)", name: "Editor-Writer" },
+  "Evaluator": { bg: "var(--accent-subtle)", border: "var(--accent)", name: "Evaluator" },
+  "User": { bg: "var(--purple-subtle)", border: "var(--purple)", name: "用户" },
+  "System": { bg: "var(--bg-surface-2)", border: "var(--text-tertiary)", name: "系统" },
 };
 
 interface ChatMessage {
@@ -155,7 +155,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
 
   const getAgentQuestion = (agent: string): string => {
     const q: Record<string, string> = {
-      "Scene Director": "场景拆分完成。请确认以下场景划分是否满意：\n1. 开场 - 主角入场\n2. 冲突 - 与对手对峙\n3. 转折 - 发现隐藏线索\n\n满意请点击「确认继续」，或输入修改意见。",
+      "Scene Director": "场景拆分完成。请确认以下场景划分是否满意：\n\n**方案 A：三幕式**\n1. 开场 - 主角入场（200字）\n2. 冲突 - 与对手对峙（350字）\n3. 转折 - 发现隐藏线索（250字）\n\n**方案 B：渐进式**\n1. 日常描写 - 铺垫氛围（150字）\n2. 伏笔 - 异常迹象（200字）\n3. 触发 - 冲突爆发（300字）\n4. 余波 - 信息揭示（150字）\n\n请选择方案或输入修改意见：",
       "Actor Agents": "角色对话已生成。请检查角色的说话风格是否符合预期。\n\n满意请点击「确认继续」，或说明需要调整的部分。",
       "Editor-Writer": "文学润色完成。当前风格偏向「冷峻简约」，如需调整风格倾向请说明。\n\n满意请点击「确认继续」进入最终评估。",
     };
@@ -303,11 +303,23 @@ export default function EditorPage({ projectId }: { projectId: string }) {
 }
 
 function OutlineTab({ synopsis, onChange, onSave, onStartGeneration }: { synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; }) {
+  const [time, setTime] = useState("");
+  const [location, setLocation] = useState("");
   return (
     <div>
       <div className="label mb-8">章节剧情大纲</div>
       <textarea className="input" value={synopsis} onChange={e => onChange(e.target.value)} rows={10}
         placeholder={"在这里写这一章的剧情要点...\n\n例如：\n  主角初入宗门\n  与师兄发生冲突\n  发现隐藏洞穴"} style={{ lineHeight: 1.8, fontFamily: "var(--font-sans)" }} />
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <div className="field" style={{ flex: 1 }}>
+          <label className="label">时间</label>
+          <input className="input" value={time} onChange={e => setTime(e.target.value)} placeholder="例：第3天·黄昏" style={{ fontSize: 12 }} />
+        </div>
+        <div className="field" style={{ flex: 1 }}>
+          <label className="label">地点</label>
+          <input className="input" value={location} onChange={e => setLocation(e.target.value)} placeholder="例：云隐山·剑庐" style={{ fontSize: 12 }} />
+        </div>
+      </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button className="btn-primary" style={{ flex: 1 }} onClick={onSave}>保存</button>
         <button className="btn-primary" style={{ flex: 1, background: "var(--jade, #34a853)", border: "none" }} onClick={onStartGeneration}>开始生成</button>
@@ -343,7 +355,7 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
         ))}
       </div>
       {/* Chat area */}
-      <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app, #fff)" }}>
+      <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
           <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>在「大纲」中点击「开始生成」启动 Pipeline</div>
         )}
@@ -356,7 +368,13 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
                 <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
                   {style.name}{msg.status === "thinking" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "#f9ab00" }}>思考中...</span>}
                 </div>
-                <div style={{ padding: "8px 12px", borderRadius: 10, background: style.bg, borderLeft: isUser ? "none" : `3px solid ${style.border}`, borderRight: isUser ? `3px solid ${style.border}` : "none", fontSize: 13, lineHeight: 1.6, color: "var(--text-primary, #222)", wordBreak: "break-word", whiteSpace: "pre-wrap" }}>{msg.content}</div>
+                <div style={{ padding: "8px 12px", borderRadius: 10, background: style.bg, borderLeft: isUser ? "none" : `3px solid ${style.border}`, borderRight: isUser ? `3px solid ${style.border}` : "none", fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", wordBreak: "break-word", whiteSpace: "pre-wrap" }}>{msg.content}</div>
+                {msg.agent !== "User" && msg.agent !== "System" && msg.status === "done" && (
+                  <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", marginTop: 4, color: "var(--text-tertiary)" }}
+                    onClick={() => {}}>
+                    ↻ 重新生成
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -365,6 +383,16 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
           <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "12px 0", borderTop: "1px dashed var(--border)", marginTop: 8 }}>
             <button className="btn-primary" style={{ padding: "8px 24px", fontSize: 13, borderRadius: 20, background: "var(--jade)", border: "none" }} onClick={onConfirmContinue}>
               确认满意，继续下一步 →
+            </button>
+          </div>
+        )}
+        {!generating && chatMessages.length > 0 && chatMessages[chatMessages.length - 1]?.agent === "System" && (
+          <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "12px 0", borderTop: "1px dashed var(--border)", marginTop: 8 }}>
+            <button className="btn-primary" style={{ padding: "8px 20px", fontSize: 13, borderRadius: 20 }} onClick={() => {}}>
+              确认完成，写入编辑器
+            </button>
+            <button className="btn" style={{ padding: "8px 16px", fontSize: 12, borderRadius: 20 }} onClick={() => {}}>
+              回退上一步
             </button>
           </div>
         )}

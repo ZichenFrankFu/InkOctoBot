@@ -1,30 +1,7 @@
-import React, { useEffect, useState, useMemo, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { apiGet } from "../api/client";
 
-/* ── response types ── */
-interface Overview {
-  novel_count: number;
-  rank_list_count: number;
-  snapshot_count: number;
-  chapter_count: number;
-  platform_breakdown: { platform: string; count: number }[];
-  categories: { main_category: string; count: number }[];
-}
-
-interface HotTag { tag_name: string; novel_count: number; }
-
-interface HighFreqNovel {
-  novel_uid: number;
-  title: string;
-  author: string;
-  platform: string;
-  main_category: string;
-  appearances: number;
-  best_rank: number;
-  avg_rank: number;
-}
-
-/* ── trend analysis types (merged from TrendAnalysisPage) ── */
+/* ── trend analysis types ── */
 interface TrendResult {
   start_date: string;
   end_date: string;
@@ -100,7 +77,7 @@ interface CrossPlatform {
 type SortDir = "asc" | "desc";
 interface SortConfig { key: string; dir: SortDir; }
 
-type MainTab = "overview" | "trends";
+type MainTab = "trends";
 type SubTab = "tags" | "categories" | "opportunities" | "cooccurrence" | "cross";
 
 const platformLabel = (p: string) =>
@@ -156,13 +133,7 @@ function sortBy<T>(arr: T[], key: string, dir: SortDir): T[] {
 }
 
 export default function AnalysisDashboardPage() {
-  const [mainTab, setMainTab] = useState<MainTab>("overview");
-
-  /* ── Overview state ── */
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [hotTags, setHotTags] = useState<HotTag[]>([]);
-  const [topNovels, setTopNovels] = useState<HighFreqNovel[]>([]);
-  const [loadingOverview, setLoadingOverview] = useState(true);
+  const [mainTab, setMainTab] = useState<MainTab>("trends");
 
   /* ── Trend analysis state ── */
   const [trendPlatform, setTrendPlatform] = useState("both");
@@ -185,30 +156,13 @@ export default function AnalysisDashboardPage() {
     setter(prev => prev.key === field ? { key: field, dir: prev.dir === "asc" ? "desc" : "asc" } : { key: field, dir: "desc" });
   };
 
-  /* ── Load overview data from /api/db/* ── */
+  /* ── Auto-run trend analysis on mount ── */
   useEffect(() => {
-    setLoadingOverview(true);
-    Promise.all([
-      apiGet<Overview>("/api/db/overview"),
-      apiGet<{ rows: HotTag[] }>("/api/db/tag_stats"),
-      apiGet<{ rows: HighFreqNovel[] }>("/api/db/top_novels?limit=15"),
-    ])
-      .then(([ov, tg, tn]) => {
-        setOverview(ov);
-        setHotTags(Array.isArray(tg.rows) ? tg.rows : []);
-        setTopNovels(Array.isArray(tn.rows) ? tn.rows : []);
-      })
-      .catch(console.error)
-      .finally(() => setLoadingOverview(false));
-  }, []);
-
-  /* ── Auto-run trend analysis with defaults when switching to trends tab ── */
-  useEffect(() => {
-    if (mainTab === "trends" && !autoRan && !trendData && !loadingTrend) {
+    if (!autoRan && !trendData && !loadingTrend) {
       setAutoRan(true);
       runTrendAnalysis();
     }
-  }, [mainTab]);
+  }, []);
 
   /* ── Run trend analysis (GET /api/analysis/run) ── */
   const runTrendAnalysis = useCallback(() => {
@@ -235,11 +189,6 @@ export default function AnalysisDashboardPage() {
       .finally(() => setLoadingTrend(false));
   }, [trendPlatform, lookback, topK]);
 
-  /* derived */
-  const maxTag = useMemo(() => Math.max(1, ...hotTags.map(t => t.novel_count)), [hotTags]);
-  const maxCat = useMemo(() => Math.max(1, ...(overview?.categories?.map(c => c.count) ?? [1])), [overview]);
-  const barColors = ["red", "indigo", "gold", "jade", "purple"];
-
   const trendSubTabs: { key: SubTab; label: string; show?: boolean }[] = [
     { key: "tags", label: "标签趋势" },
     { key: "categories", label: "类目趋势" },
@@ -259,125 +208,6 @@ export default function AnalysisDashboardPage() {
           </div>
         </div>
       </div>
-
-      {/* Main tabs: Overview / Trends */}
-      <div className="tab-bar" style={{ marginBottom: 24 }}>
-        <button className={`tab-item${mainTab === "overview" ? " active" : ""}`} onClick={() => setMainTab("overview")}>
-          市场概览
-        </button>
-        <button className={`tab-item${mainTab === "trends" ? " active" : ""}`} onClick={() => setMainTab("trends")}>
-          趋势分析
-        </button>
-      </div>
-
-      {/* ═══════ OVERVIEW TAB ═══════ */}
-      {mainTab === "overview" && (
-        <>
-          {loadingOverview ? (
-            <div className="loading"><div className="loading-spinner" />加载分析数据...</div>
-          ) : !overview ? (
-            <div className="empty-state"><div className="empty-icon">📭</div><h4>暂无数据</h4><p>数据库中尚无市场数据。</p></div>
-          ) : (
-            <>
-              {/* Stats */}
-              <div className="stats-grid">
-                {[
-                  { icon: "📚", color: "red", value: overview.novel_count, label: "小说总数" },
-                  { icon: "🏆", color: "gold", value: overview.rank_list_count, label: "榜单类型" },
-                  { icon: "📸", color: "jade", value: overview.snapshot_count, label: "快照天数" },
-                  { icon: "📖", color: "indigo", value: overview.chapter_count, label: "采集章节" },
-                ].map(s => (
-                  <div className="stat-card" key={s.label}>
-                    <div className={`stat-icon ${s.color}`}>{s.icon}</div>
-                    <div className="stat-value">{typeof s.value === "number" ? s.value.toLocaleString() : "—"}</div>
-                    <div className="stat-label">{s.label}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Charts row */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 24 }}>
-                {/* Category distribution */}
-                <div className="card">
-                  <div className="card-header"><h3>题材分布</h3></div>
-                  <div className="card-body">
-                    <div className="bar-chart">
-                      {(overview.categories || []).slice(0, 12).map((c, idx) => (
-                        <div className="bar-row" key={c.main_category || "_"}>
-                          <div className="bar-label">{c.main_category || "未分类"}</div>
-                          <div className="bar-track">
-                            <div className={`bar-fill ${barColors[idx % barColors.length]}`} style={{ width: `${Math.max(4, (c.count / maxCat) * 100)}%` }}>{c.count}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Hot tags */}
-                <div className="card">
-                  <div className="card-header"><h3>热门标签 Top 12</h3></div>
-                  <div className="card-body">
-                    {hotTags.length === 0 ? <div className="empty-state"><p>暂无标签数据</p></div> : (
-                      <div className="bar-chart">
-                        {hotTags.slice(0, 12).map((t, idx) => (
-                          <div className="bar-row" key={t.tag_name}>
-                            <div className="bar-label">{t.tag_name}</div>
-                            <div className="bar-track">
-                              <div className={`bar-fill ${barColors[idx % barColors.length]}`} style={{ width: `${Math.max(4, (t.novel_count / maxTag) * 100)}%` }}>{t.novel_count}</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Platform breakdown */}
-              {overview.platform_breakdown && overview.platform_breakdown.length > 0 && (
-                <div className="card" style={{ marginBottom: 24 }}>
-                  <div className="card-header"><h3>平台分布</h3></div>
-                  <div className="card-body">
-                    <div style={{ display: "flex", gap: 16 }}>
-                      {overview.platform_breakdown.map(pb => (
-                        <div key={pb.platform} style={{ flex: 1, padding: "20px 24px", background: "var(--bg-surface)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)", textAlign: "center" }}>
-                          <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginBottom: 6 }}>{platformLabel(pb.platform)}</div>
-                          <div style={{ fontFamily: "var(--font-mono)", fontSize: 28, fontWeight: 700, color: "var(--text-primary)" }}>{pb.count.toLocaleString()}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Top novels */}
-              <div className="card">
-                <div className="card-header"><h3>稳定上榜作品</h3><span className="text-xs text-muted">{topNovels.length} 部</span></div>
-                <div style={{ maxHeight: 420, overflowY: "auto" }}>
-                  {topNovels.length === 0 ? <div className="empty-state"><p>暂无数据</p></div> : (
-                    <table className="data-table">
-                      <thead><tr><th>书名</th><th>作者</th><th>平台</th><th style={{ textAlign: "right" }}>上榜次数</th><th style={{ textAlign: "right" }}>最佳排名</th><th style={{ textAlign: "right" }}>平均排名</th></tr></thead>
-                      <tbody>
-                        {topNovels.map(n => (
-                          <tr key={n.novel_uid}>
-                            <td style={{ fontWeight: 500, color: "var(--text-primary)" }}>{n.title || "-"}</td>
-                            <td className="text-muted">{n.author || "-"}</td>
-                            <td><span className={`tag ${n.platform}`}>{platformLabel(n.platform)}</span></td>
-                            <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{n.appearances}</td>
-                            <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{n.best_rank}</td>
-                            <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{Number(n.avg_rank || 0).toFixed(1)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-        </>
-      )}
 
       {/* ═══════ TRENDS TAB ═══════ */}
       {mainTab === "trends" && (

@@ -185,19 +185,6 @@ export default function DashboardPage({ projects, onNavigate }: { projects: { id
             <h2>首页</h2>
             <p>创作概览与市场数据速览</p>
           </div>
-          <div className="tab-bar">
-            {([["", "全部"], ["qidian", "起点"], ["fanqie", "番茄"]] as const).map(
-              ([val, label]) => (
-                <button
-                  key={val}
-                  className={`tab-item${platform === val ? " active" : ""}`}
-                  onClick={() => setPlatform(val as PlatformFilter)}
-                >
-                  {label}
-                </button>
-              ),
-            )}
-          </div>
         </div>
       </div>
 
@@ -292,6 +279,26 @@ export default function DashboardPage({ projects, onNavigate }: { projects: { id
                 </div>
               )}
             </>
+          )}
+        </div>
+      </div>
+
+      {/* ══ 市场数据速览 ══ */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <h3 style={{ fontFamily: "var(--font-serif)", fontSize: 18, fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
+          市场数据速览
+        </h3>
+        <div className="tab-bar">
+          {([["", "全部"], ["qidian", "起点"], ["fanqie", "番茄"]] as const).map(
+            ([val, label]) => (
+              <button
+                key={val}
+                className={`tab-item${platform === val ? " active" : ""}`}
+                onClick={() => setPlatform(val as PlatformFilter)}
+              >
+                {label}
+              </button>
+            ),
           )}
         </div>
       </div>
