@@ -410,6 +410,18 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     setCurrentAgent(agentName);
   }, [chatMessages, SESS_KEY]);
 
+  const handleStopPipeline = useCallback(() => {
+    if (sessionIdRef.current) {
+      apiPost(`/api/generation/stop/${sessionIdRef.current}`, {}).catch(() => {});
+    }
+    stopPolling();
+    sessionStorage.removeItem(SESS_KEY);
+    setGenerating(false);
+    setWaitingForConfirm(false);
+    setCurrentAgent(null);
+    setChatMessages(prev => [...prev, { agent: "System", content: "Pipeline 已被手动终止。", status: "done", timestamp: Date.now() }]);
+  }, [SESS_KEY]);
+
   const handleWriteToEditor = useCallback(() => {
     const text = generatedTextRef.current;
     if (text && text.length > 10) {
@@ -529,7 +541,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
                 setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
               }} />}
             {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} chatMessages={chatMessages} chatInput={chatInput}
-              onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} />}
+              onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} />}
           </div>
@@ -669,9 +681,9 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
-function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor }: {
+function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline }: {
   steps: PipelineStatus[]; generating: boolean; onStart: () => void; chatMessages: ChatMessage[]; chatInput: string;
-  onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void;
+  onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
 }) {
   const chatEndRef = useRef<HTMLDivElement>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
@@ -765,6 +777,14 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
         )}
         <div ref={chatEndRef} />
       </div>
+      {/* Stop / Control bar */}
+      {generating && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+          <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)", borderColor: "var(--error)", flex: 1 }} onClick={onStopPipeline}>
+            ⏹ 终止 Pipeline
+          </button>
+        </div>
+      )}
       {/* Input */}
       <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
         <input className="input" value={chatInput} onChange={e => onChatInputChange(e.target.value)}

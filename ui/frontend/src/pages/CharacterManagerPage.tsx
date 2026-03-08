@@ -1,7 +1,13 @@
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import type { Character, CharacterLayerB, CharacterRelationship } from "../api/types";
+
+interface CharChatMsg {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+}
 
 interface Props {
   projectId: string;
@@ -29,6 +35,88 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const [relTarget, setRelTarget] = useState("");
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 220, maxSize: 420 });
+
+  // AI Chat state for character generation
+  const [charChatMessages, setCharChatMessages] = useState<CharChatMsg[]>([]);
+  const [charChatInput, setCharChatInput] = useState("");
+  const [charChatLoading, setCharChatLoading] = useState(false);
+  const [showCharChat, setShowCharChat] = useState(false);
+  const charChatEndRef = useRef<HTMLDivElement>(null);
+  const charAbortRef = useRef<AbortController | null>(null);
+
+  // Scroll to bottom on new messages
+  useEffect(() => { charChatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [charChatMessages]);
+
+  // Reset chat when switching characters
+  useEffect(() => { setCharChatMessages([]); setShowCharChat(false); }, [editing?.id]);
+
+  const sendCharChatMessage = async (inputOverride?: string) => {
+    const msg = (inputOverride || charChatInput).trim();
+    if (!msg || charChatLoading || !editing) return;
+    setCharChatMessages(prev => [...prev, { role: "user", content: msg, timestamp: Date.now() }]);
+    setCharChatInput("");
+    setCharChatLoading(true);
+
+    const controller = new AbortController();
+    charAbortRef.current = controller;
+
+    try {
+      const resp = await fetch("/api/generation/quick-generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId || "default",
+          chapter_id: "char_chat",
+          synopsis: msg,
+          system_hint: `你是一个专业的小说角色设计师。当前正在设计角色「${editing.name}」（定位：${editing.role || "配角"}）。\n已有信息：\n- 性格：${editing.personality || "未设定"}\n- 背景：${editing.background || "未设定"}\n- 说话风格：${editing.speech_style || "未设定"}\n\n请根据用户的需求提供角色设计建议、润色人设、或生成新的角色信息。如果用户要求生成完整人设，请以 JSON 格式输出：{"personality":"...","background":"...","speech_style":"..."}。否则用自然语言回答。`,
+        }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        let detail = "";
+        try { detail = JSON.parse(text).detail || text; } catch { detail = text; }
+        throw new Error(detail || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      const aiContent = data.text || "生成完成。";
+      setCharChatMessages(prev => [...prev, { role: "assistant", content: aiContent, timestamp: Date.now() }]);
+
+      // Try to auto-apply JSON profile if present
+      try {
+        let jsonStr = aiContent;
+        if (jsonStr.includes("```")) {
+          jsonStr = jsonStr.split("```")[1]?.replace(/^json\s*\n?/, "") || jsonStr;
+        }
+        const profile = JSON.parse(jsonStr);
+        if (profile.personality) u("personality", profile.personality);
+        if (profile.background) u("background", profile.background);
+        if (profile.speech_style) u("speech_style", profile.speech_style);
+      } catch { /* not JSON, that's fine */ }
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        setCharChatMessages(prev => [...prev, { role: "assistant", content: "（已终止生成）", timestamp: Date.now() }]);
+      } else {
+        setCharChatMessages(prev => [...prev, { role: "assistant", content: `生成失败: ${(e?.message || "请检查模型连接").slice(0, 300)}`, timestamp: Date.now() }]);
+      }
+    }
+    charAbortRef.current = null;
+    setCharChatLoading(false);
+  };
+
+  const stopCharChat = () => { if (charAbortRef.current) { charAbortRef.current.abort(); charAbortRef.current = null; } };
+
+  const regenerateCharChat = () => {
+    const lastUser = [...charChatMessages].reverse().find(m => m.role === "user");
+    if (!lastUser) return;
+    setCharChatMessages(prev => {
+      const reversed = [...prev].reverse();
+      const idx = reversed.findIndex(m => m.role === "assistant");
+      if (idx >= 0) { const n = [...prev]; n.splice(prev.length - 1 - idx, 1); return n; }
+      return prev;
+    });
+    sendCharChatMessage(lastUser.content);
+  };
 
   const projName = projects.find(p => p.id === projectId)?.name || "未选择项目";
 
@@ -248,26 +336,11 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </h2>
                 <div className="flex gap-6">
                   <button
-                    className="btn"
+                    className={showCharChat ? "btn-primary" : "btn"}
                     style={{ fontSize: 12 }}
-                    onClick={async () => {
-                      try {
-                        const resp = await apiPost<{ profile: any }>("/api/characters/generate-profile", {
-                          name: editing.name,
-                          role: editing.role || "配角",
-                          project_id: projectId,
-                          existing_personality: editing.personality || "",
-                        });
-                        const p = resp.profile || {};
-                        if (p.personality) u("personality", p.personality);
-                        if (p.background) u("background", p.background);
-                        if (p.speech_style) u("speech_style", p.speech_style);
-                      } catch (e: any) {
-                        alert("AI 生成失败: " + (e?.message || "请检查模型连接"));
-                      }
-                    }}
+                    onClick={() => setShowCharChat(!showCharChat)}
                   >
-                    AI 生成人设
+                    {showCharChat ? "收起 AI 对话" : "AI 角色助手"}
                   </button>
                   <button
                     className="btn-primary"
@@ -279,6 +352,91 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   </button>
                 </div>
               </div>
+
+              {/* AI Character Chat Panel */}
+              {showCharChat && (
+                <div className="card mb-20" style={{ overflow: "hidden" }}>
+                  <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <h3>AI 角色助手</h3>
+                    <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => { setCharChatMessages([]); }}>清空对话</button>
+                  </div>
+                  <div className="card-body" style={{ padding: 0 }}>
+                    {/* Chat messages */}
+                    <div style={{ maxHeight: 320, overflowY: "auto", padding: "12px 14px" }}>
+                      {charChatMessages.length === 0 && (
+                        <div style={{ padding: "24px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13, lineHeight: 1.8 }}>
+                          与 AI 讨论角色设计，或直接要求生成完整人设。
+                          <br />例：「帮我生成完整人设」「让这个角色更有深度」「加入悲惨的背景故事」
+                        </div>
+                      )}
+                      {charChatMessages.map((msg, i) => (
+                        <div key={i} style={{ display: "flex", flexDirection: msg.role === "user" ? "row-reverse" : "row", alignItems: "flex-start", marginBottom: 10, gap: 8 }}>
+                          <div style={{
+                            width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
+                            background: msg.role === "user" ? "var(--purple-subtle)" : "var(--accent-subtle)",
+                            border: `2px solid ${msg.role === "user" ? "var(--purple)" : "var(--accent)"}`,
+                            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13,
+                          }}>
+                            {msg.role === "user" ? "👤" : "🤖"}
+                          </div>
+                          <div style={{
+                            maxWidth: "80%", padding: "8px 12px", borderRadius: 10,
+                            background: msg.role === "user" ? "var(--purple-subtle)" : "var(--bg-surface-2)",
+                            borderLeft: msg.role === "user" ? "none" : "3px solid var(--accent)",
+                            borderRight: msg.role === "user" ? "3px solid var(--purple)" : "none",
+                            fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
+                          }}>
+                            {msg.content}
+                          </div>
+                        </div>
+                      ))}
+                      {charChatLoading && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px" }}>
+                          <div style={{ width: 28, height: 28, borderRadius: "50%", background: "var(--accent-subtle)", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>🤖</div>
+                          <div style={{ padding: "8px 12px", borderRadius: 10, background: "var(--bg-surface-2)", borderLeft: "3px solid var(--accent)", fontSize: 13, color: "var(--text-tertiary)" }}>
+                            AI 正在思考中...
+                          </div>
+                        </div>
+                      )}
+                      <div ref={charChatEndRef} />
+                    </div>
+                    {/* Controls */}
+                    <div style={{ padding: "8px 14px 12px", borderTop: "1px solid var(--border)" }}>
+                      {(charChatLoading || charChatMessages.some(m => m.role === "assistant")) && (
+                        <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                          {charChatLoading && (
+                            <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)", borderColor: "var(--error)" }} onClick={stopCharChat}>
+                              ⏹ 终止生成
+                            </button>
+                          )}
+                          {!charChatLoading && charChatMessages.length > 0 && charChatMessages[charChatMessages.length - 1].role === "assistant" && (
+                            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={regenerateCharChat}>
+                              ↻ 重新生成
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input className="input" value={charChatInput} onChange={e => setCharChatInput(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendCharChatMessage(); } }}
+                          placeholder="描述你想要的角色特征..." style={{ flex: 1, fontSize: 12 }} />
+                        <button className="btn-primary" onClick={() => sendCharChatMessage()} disabled={!charChatInput.trim() || charChatLoading} style={{ fontSize: 12, padding: "6px 14px" }}>
+                          {charChatLoading ? "生成中..." : "发送"}
+                        </button>
+                      </div>
+                      {/* Quick actions */}
+                      <div style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
+                        {["生成完整人设", "丰富背景故事", "设计说话风格", "增加性格矛盾点"].map(hint => (
+                          <button key={hint} className="btn" style={{ fontSize: 10, padding: "2px 8px", borderRadius: 12 }}
+                            onClick={() => sendCharChatMessage(hint)} disabled={charChatLoading}>
+                            {hint}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <RelationshipGraph characters={items} currentId={editing.id} />
 

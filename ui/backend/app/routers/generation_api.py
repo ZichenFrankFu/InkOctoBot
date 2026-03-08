@@ -285,6 +285,26 @@ async def confirm_session(session_id: str, body: dict):
     return {"status": "ok"}
 
 
+@router.post("/stop/{session_id}")
+async def stop_session(session_id: str):
+    """Stop/abort a running pipeline session."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    # Signal abort via confirm mechanism
+    session["confirm_data"] = {"action": "abort"}
+    evt = session.get("confirm_event")
+    if evt:
+        evt.set()
+    # Cancel the background task
+    task = session.get("task")
+    if task and not task.done():
+        task.cancel()
+    session["status"] = "complete"
+    _emit(session_id, {"type": "complete", "text": session.get("text", ""), "aborted": True})
+    return {"status": "ok", "message": "Pipeline stopped"}
+
+
 @router.post("/scene-plan")
 async def generate_scene_plan(req: GenerateRequest):
     try:
@@ -488,16 +508,33 @@ async def _run_pipeline_background(session_id: str):
         full_text = ""
         try:
             from agents.model_providers.base import LLMMessage as Msg
+
+            # Build scene context from director output
+            scene_desc = ""
+            if isinstance(scene_result, dict):
+                scene_desc = scene_result.get("summary", scene_result.get("raw", ""))
+                if not scene_desc:
+                    scene_desc = json.dumps(scene_result, ensure_ascii=False, indent=2)[:1000]
+
             system = (
-                "你是一个专业的小说写作AI。根据提供的大纲和设定，"
-                "写出高质量的章节内容。文字生动，对话自然，情节紧凑。"
+                "你是一组专业的小说角色扮演AI（Actor Agents）。\n"
+                "你的任务是根据场景大纲和导演指令，以小说正文的形式写出角色对话、"
+                "动作描写和内心活动。\n\n"
+                "输出要求：\n"
+                "1. 直接输出小说正文，不要输出JSON或结构化数据\n"
+                "2. 对话使用中文引号「」\n"
+                "3. 每个角色的对话和动作自然衔接\n"
+                "4. 适当加入内心独白和环境描写\n"
+                "5. 保持800-1500字的长度"
             )
             user_content = f"## 章节大纲\n{req_data.get('synopsis', '')}"
+            if scene_desc:
+                user_content += f"\n\n## 场景导演指令\n{scene_desc}"
             if req_data.get("world_rules"):
                 user_content += f"\n\n## 世界观\n{req_data['world_rules']}"
             if req_data.get("style_notes"):
                 user_content += f"\n\n## 风格\n{req_data['style_notes']}"
-            user_content += "\n\n请写出完整章节内容（800-1500字）："
+            user_content += "\n\n请根据以上信息，以小说正文的形式写出完整章节内容："
 
             async for token in router_inst.generate_stream(
                 agent_role="actor_default",

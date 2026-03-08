@@ -39,7 +39,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   {
     section: "创作",
     items: [
-      { key: "projects", icon: "📁", label: "项目管理" },
+      { key: "projects", icon: "📁", label: "开书" },
       { key: "characters", icon: "👤", label: "角色管理" },
       { key: "worldbook", icon: "🌍", label: "世界书" },
       { key: "editor", icon: "✏️", label: "编辑器" },

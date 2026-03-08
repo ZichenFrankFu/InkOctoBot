@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import type { Project } from "../api/types";
@@ -71,21 +71,31 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const [formName, setFormName] = useState("");
   const [formGenre, setFormGenre] = useState("");
 
-  // Studio state
-  const [studioTab, setStudioTab] = useState<StudioTab>("outline");
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  // Studio state — restore from sessionStorage on mount
+  const STUDIO_SESS_KEY = "inkocto_studio_state";
+  const _savedStudio = (() => {
+    try { const raw = sessionStorage.getItem(STUDIO_SESS_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  })();
+  const [studioTab, setStudioTab] = useState<StudioTab>(_savedStudio?.studioTab || "outline");
+  const [messages, setMessages] = useState<ChatMsg[]>(_savedStudio?.messages || []);
   const [input, setInput] = useState("");
-  const [calibration, setCalibration] = useState<CalibrationState>({
-    tone: 50, pacing: 50, perspective: "third", audience: "general",
-  });
+  const [calibration, setCalibration] = useState<CalibrationState>(
+    _savedStudio?.calibration || { tone: 50, pacing: 50, perspective: "third", audience: "general" },
+  );
 
   const [aiLoading, setAiLoading] = useState(false);
 
   // Snapshots
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [snapshots, setSnapshots] = useState<Snapshot[]>(_savedStudio?.snapshots || []);
   const [showSnapshots, setShowSnapshots] = useState(false);
 
+  // Persist studio state to sessionStorage on changes
+  useEffect(() => {
+    sessionStorage.setItem(STUDIO_SESS_KEY, JSON.stringify({ studioTab, messages, calibration, snapshots }));
+  }, [studioTab, messages, calibration, snapshots]);
+
   const rightPanel = useResizable({ direction: "horizontal", initialSize: 420, minSize: 320, maxSize: 700 });
+  const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -138,31 +148,81 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     setInput("");
     setAiLoading(true);
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const systemHints: Record<string, string> = {
         outline: "你是一个专业的网文大纲策划专家。请根据用户的描述，提供具体、可操作的大纲策划建议。用中文回答，语气专业友好。",
         characters: "你是一个专业的角色设计专家。请根据用户的描述，提供详细的角色设计建议，包括性格、外貌、背景等。用中文回答，语气专业友好。",
         world: "你是一个专业的世界观构建专家。请根据用户的描述，提供系统的世界观设定建议，包括力量体系、社会结构等。用中文回答，语气专业友好。",
       };
-      const resp = await apiPost<{ text: string }>("/api/generation/quick-generate", {
-        project_id: activeProject || "default",
-        chapter_id: "studio_chat",
-        synopsis: userInput,
-        system_hint: systemHints[studioTab] || systemHints.outline,
+      const resp = await fetch("/api/generation/quick-generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: activeProject || "default",
+          chapter_id: "studio_chat",
+          synopsis: userInput,
+          system_hint: systemHints[studioTab] || systemHints.outline,
+        }),
+        signal: controller.signal,
       });
-      const aiMsg: ChatMsg = { role: "assistant", content: resp.text || "生成完成。", tab: studioTab, timestamp: Date.now() };
+      if (!resp.ok) {
+        const text = await resp.text();
+        let detail = "";
+        try { detail = JSON.parse(text).detail || text; } catch { detail = text; }
+        throw new Error(detail || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      const aiMsg: ChatMsg = { role: "assistant", content: data.text || "生成完成。", tab: studioTab, timestamp: Date.now() };
       setMessages(prev => [...prev, aiMsg]);
     } catch (e: any) {
-      const errMsg = e?.message || "请求失败";
-      const aiMsg: ChatMsg = {
-        role: "assistant",
-        content: `抱歉，AI 暂时无法响应。\n\n${errMsg.slice(0, 500)}`,
-        tab: studioTab,
-        timestamp: Date.now(),
-      };
-      setMessages(prev => [...prev, aiMsg]);
+      if (e?.name === "AbortError") {
+        setMessages(prev => [...prev, { role: "assistant", content: "（已终止生成）", tab: studioTab, timestamp: Date.now() }]);
+      } else {
+        const errMsg = e?.message || "请求失败";
+        setMessages(prev => [...prev, {
+          role: "assistant",
+          content: `抱歉，AI 暂时无法响应。\n\n${errMsg.slice(0, 500)}`,
+          tab: studioTab,
+          timestamp: Date.now(),
+        }]);
+      }
     }
+    abortRef.current = null;
     setAiLoading(false);
+  };
+
+  const stopGeneration = () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  };
+
+  const regenerateLastMessage = () => {
+    // Find the last user message in the current tab and resend it
+    const tabMsgs = messages.filter(m => m.tab === studioTab);
+    const lastUserMsg = [...tabMsgs].reverse().find(m => m.role === "user");
+    if (!lastUserMsg) return;
+    // Remove the last assistant message for this tab
+    setMessages(prev => {
+      const reversed = [...prev].reverse();
+      const idx = reversed.findIndex(m => m.tab === studioTab && m.role === "assistant");
+      if (idx >= 0) {
+        const newMsgs = [...prev];
+        newMsgs.splice(prev.length - 1 - idx, 1);
+        return newMsgs;
+      }
+      return prev;
+    });
+    setInput(lastUserMsg.content);
+    // Auto-send after a tick
+    setTimeout(() => {
+      const el = document.querySelector(".studio-send-btn") as HTMLButtonElement;
+      if (el) el.click();
+    }, 100);
   };
 
   const saveSnapshot = () => {
@@ -204,7 +264,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
               <div>
                 <h2 style={{ fontFamily: "var(--font-serif)", fontSize: 22, fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
-                  项目管理
+                  开书
                 </h2>
                 <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
                   创建和管理你的网文创作项目 · 点击卡片切换当前项目
@@ -420,11 +480,26 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                   ))}
                 </div>
                 <div style={{ padding: "8px 14px 12px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
+                  {/* Stop / Regenerate bar */}
+                  {(aiLoading || tabMessages.length > 0) && (
+                    <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                      {aiLoading && (
+                        <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)", borderColor: "var(--error)" }} onClick={stopGeneration}>
+                          ⏹ 终止生成
+                        </button>
+                      )}
+                      {!aiLoading && tabMessages.length > 0 && tabMessages[tabMessages.length - 1].role === "assistant" && (
+                        <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={regenerateLastMessage}>
+                          ↻ 重新生成
+                        </button>
+                      )}
+                    </div>
+                  )}
                   <div className="flex gap-6">
                     <input className="input" value={input} onChange={e => setInput(e.target.value)}
                       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
                       placeholder={PLACEHOLDERS[studioTab]?.split("\n")[0] || "输入你的想法..."} style={{ flex: 1, fontSize: 12 }} />
-                    <button className="btn-primary" onClick={sendMessage} disabled={!input.trim() || aiLoading} style={{ fontSize: 12, padding: "6px 14px" }}>
+                    <button className="btn-primary studio-send-btn" onClick={sendMessage} disabled={!input.trim() || aiLoading} style={{ fontSize: 12, padding: "6px 14px" }}>
                       {aiLoading ? "思考中..." : "发送"}
                     </button>
                   </div>
