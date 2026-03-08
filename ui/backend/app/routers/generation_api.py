@@ -78,123 +78,141 @@ def _get_user_settings() -> dict:
 
 
 class _SimpleRouter:
-    """Lightweight router that directly instantiates provider from user settings."""
+    """Router that resolves provider+model per agent role from user settings."""
 
-    def __init__(self, provider_type: str, model_name: str, base_url: str = "", api_key: str = ""):
+    def __init__(self, user_settings: dict, fallback_provider: str = "", fallback_model: str = ""):
+        self._settings = user_settings
+        self._providers_cfg = user_settings.get("providers", {})
+        self._pipeline = user_settings.get("pipeline", {})
+        self._fallback_provider = fallback_provider
+        self._fallback_model = fallback_model
+        self._provider_cache: dict[str, Any] = {}  # keyed by "provider:model"
+
+    def _resolve(self, agent_role: str) -> tuple[str, str, dict]:
+        """Return (provider, model, prov_cfg) for the given agent role."""
+        role_cfg = self._pipeline.get(agent_role, {})
+        provider = role_cfg.get("provider", "") or self._fallback_provider
+        model = role_cfg.get("model", "") or self._fallback_model
+        prov_cfg = self._providers_cfg.get(provider, {})
+        # If model still empty, try the provider's model list
+        if provider and not model:
+            models = prov_cfg.get("models", [])
+            if models:
+                model = models[0]
+        return provider, model, prov_cfg
+
+    def _get_provider(self, provider: str, model: str, prov_cfg: dict):
+        cache_key = f"{provider}:{model}"
+        if cache_key in self._provider_cache:
+            return self._provider_cache[cache_key]
         from agents.model_providers.base import ProviderConfig
-        self._cfg = ProviderConfig(
-            provider_type=provider_type,
-            model_name=model_name,
-            base_url=base_url or None,
-            api_key=api_key or None,
+        cfg = ProviderConfig(
+            provider_type=provider,
+            model_name=model,
+            base_url=prov_cfg.get("base_url") or None,
+            api_key=prov_cfg.get("api_key") or None,
         )
-        self._provider = self._make_provider()
-
-    def _make_provider(self):
-        from agents.model_providers.base import BaseLLMProvider
-        ptype = self._cfg.provider_type
-        if ptype == "ollama":
-            from agents.model_providers.ollama_provider import OllamaProvider
-            return OllamaProvider(self._cfg)
-        elif ptype == "deepseek":
-            from agents.model_providers.deepseek_provider import DeepSeekProvider
-            return DeepSeekProvider(self._cfg)
-        elif ptype == "openai":
-            from agents.model_providers.openai_provider import OpenAIProvider
-            return OpenAIProvider(self._cfg)
-        elif ptype == "anthropic":
-            from agents.model_providers.anthropic_provider import AnthropicProvider
-            return AnthropicProvider(self._cfg)
-        elif ptype == "gemini":
-            from agents.model_providers.gemini_provider import GeminiProvider
-            return GeminiProvider(self._cfg)
-        elif ptype == "vllm":
-            from agents.model_providers.vllm_provider import VLLMProvider
-            return VLLMProvider(self._cfg)
-        else:
-            from agents.model_providers.ollama_provider import OllamaProvider
-            return OllamaProvider(self._cfg)
+        inst = _make_provider_instance(cfg)
+        self._provider_cache[cache_key] = inst
+        return inst
 
     async def generate(self, *, agent_role: str, messages, temperature=None, max_tokens=None, **kw):
-        return await self._provider.generate(messages, temperature=temperature, max_tokens=max_tokens, **kw)
+        provider, model, prov_cfg = self._resolve(agent_role)
+        if not model:
+            raise ValueError(f"角色 '{agent_role}' 未配置模型。请在「设置→Pipeline 配置」中分配。")
+        inst = self._get_provider(provider, model, prov_cfg)
+        return await inst.generate(messages, temperature=temperature, max_tokens=max_tokens, **kw)
 
     async def generate_stream(self, *, agent_role: str, messages, temperature=None, max_tokens=None, **kw):
-        async for token in self._provider.generate_stream(messages, temperature=temperature, max_tokens=max_tokens, **kw):
+        provider, model, prov_cfg = self._resolve(agent_role)
+        if not model:
+            raise ValueError(f"角色 '{agent_role}' 未配置模型。请在「设置→Pipeline 配置」中分配。")
+        inst = self._get_provider(provider, model, prov_cfg)
+        async for token in inst.generate_stream(messages, temperature=temperature, max_tokens=max_tokens, **kw):
             yield token
 
 
-def _build_router(provider: str = "", model: str = ""):
-    """Build a simple router from user settings.
+def _make_provider_instance(cfg):
+    """Instantiate a provider from a ProviderConfig."""
+    ptype = cfg.provider_type
+    if ptype == "ollama":
+        from agents.model_providers.ollama_provider import OllamaProvider
+        return OllamaProvider(cfg)
+    elif ptype == "deepseek":
+        from agents.model_providers.deepseek_provider import DeepSeekProvider
+        return DeepSeekProvider(cfg)
+    elif ptype == "openai":
+        from agents.model_providers.openai_provider import OpenAIProvider
+        return OpenAIProvider(cfg)
+    elif ptype == "anthropic":
+        from agents.model_providers.anthropic_provider import AnthropicProvider
+        return AnthropicProvider(cfg)
+    elif ptype == "gemini":
+        from agents.model_providers.gemini_provider import GeminiProvider
+        return GeminiProvider(cfg)
+    elif ptype == "vllm":
+        from agents.model_providers.vllm_provider import VLLMProvider
+        return VLLMProvider(cfg)
+    else:
+        from agents.model_providers.ollama_provider import OllamaProvider
+        return OllamaProvider(cfg)
 
-    Resolution order:
-    1. Explicit provider+model from caller
-    2. Pipeline config (try multiple roles)
-    3. Any enabled provider with models
-    4. Auto-detect Ollama as last resort
+
+def _build_router(provider: str = "", model: str = ""):
+    """Build a router from user settings.
+
+    If explicit provider+model given, uses that as fallback.
+    Otherwise resolves a fallback from the first configured enabled provider.
+    Each agent_role call will look up its own pipeline assignment first.
     """
     user_settings = _get_user_settings()
     providers_cfg = user_settings.get("providers", {})
     pipeline = user_settings.get("pipeline", {})
 
-    # Step 1: If no provider given, try pipeline config
-    if not provider:
+    # Find a fallback provider+model (used only when a role has no assignment)
+    fb_provider = provider
+    fb_model = model
+
+    if not fb_provider or not fb_model:
+        # Try pipeline config
         for role_key in ("scene_director", "editor_stylist", "actor_default"):
             role_cfg = pipeline.get(role_key, {})
             p = role_cfg.get("provider", "")
             m = role_cfg.get("model", "")
             if p and m:
-                provider = p
-                model = m
-                break
-            elif p and not provider:
-                provider = p
-
-    # Step 2: If provider set but no model, check pipeline for a model with that provider
-    if provider and not model:
-        for _role_key, role_cfg in pipeline.items():
-            if role_cfg.get("provider") == provider and role_cfg.get("model"):
-                model = role_cfg["model"]
+                fb_provider = fb_provider or p
+                fb_model = fb_model or m
                 break
 
-    # Step 3: Try models list from provider config
-    prov_cfg = providers_cfg.get(provider, {})
-    if provider and not model:
-        models = prov_cfg.get("models", [])
-        model = models[0] if models else ""
-
-    # Step 4: Scan all enabled providers for a usable one
-    if not provider or not model:
+    if not fb_provider or not fb_model:
+        # Scan enabled providers
         for pname, pcfg in providers_cfg.items():
             if pcfg.get("enabled") and pcfg.get("models"):
-                provider = pname
-                model = pcfg["models"][0]
-                prov_cfg = pcfg
+                fb_provider = fb_provider or pname
+                fb_model = fb_model or pcfg["models"][0]
                 break
 
-    # Step 5: Auto-detect Ollama as last resort
-    if not model and (not provider or provider == "ollama"):
-        provider = "ollama"
-        prov_cfg = providers_cfg.get("ollama", {})
+    if not fb_provider or not fb_model:
+        # Auto-detect Ollama as last resort
+        ollama_cfg = providers_cfg.get("ollama", {})
         try:
             import httpx
-            base = prov_cfg.get("base_url", "http://localhost:11434")
+            base = ollama_cfg.get("base_url", "http://localhost:11434")
             resp = httpx.get(f"{base}/api/tags", timeout=5)
             if resp.status_code == 200:
                 ollama_models = [m["name"] for m in resp.json().get("models", [])]
                 if ollama_models:
-                    model = ollama_models[0]
+                    fb_provider = "ollama"
+                    fb_model = ollama_models[0]
         except Exception:
             pass
 
-    base_url = prov_cfg.get("base_url", "")
-    api_key = prov_cfg.get("api_key", "")
-
-    if not model:
+    if not fb_model:
         raise ValueError(
             "未找到可用的 AI 模型。请在「设置」页面中启用一个模型供应商并配置模型。"
         )
 
-    return _SimpleRouter(provider, model, base_url, api_key)
+    return _SimpleRouter(user_settings, fb_provider, fb_model)
 
 
 @router.get("/health")
@@ -206,12 +224,21 @@ def health():
 async def start_generation(req: GenerateRequest):
     session_id = f"gen_{uuid.uuid4().hex[:12]}"
     _active_sessions[session_id] = {
-        "status": "pending",
+        "status": "running",
         "request": req.model_dump(),
         "created_at": time.time(),
-        "steps": [],
+        "events": [],           # list of dicts — full event log
         "result": None,
+        "text": "",             # accumulated generated text
+        "current_step": "",
+        "waiting_confirm": False,
+        "confirm_event": None,  # asyncio.Event for confirm signal
+        "confirm_data": None,   # data from user confirm
+        "task": None,           # background asyncio.Task
     }
+    # Start pipeline as background task
+    task = asyncio.create_task(_run_pipeline_background(session_id))
+    _active_sessions[session_id]["task"] = task
     return {"status": "ok", "session_id": session_id}
 
 
@@ -222,9 +249,40 @@ def get_session_status(session_id: str):
         raise HTTPException(404, "Session not found")
     return {
         "status": session["status"],
-        "steps": session["steps"],
+        "current_step": session.get("current_step", ""),
+        "waiting_confirm": session.get("waiting_confirm", False),
+        "event_count": len(session.get("events", [])),
         "result": session.get("result"),
     }
+
+
+@router.get("/events/{session_id}")
+def get_session_events(session_id: str, after: int = 0):
+    """Get events after a given index. Used for polling."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    events = session.get("events", [])
+    return {
+        "status": session["status"],
+        "events": events[after:],
+        "total": len(events),
+    }
+
+
+@router.post("/confirm/{session_id}")
+async def confirm_session(session_id: str, body: dict):
+    """Send a confirm/abort signal to a waiting pipeline."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if not session.get("waiting_confirm"):
+        return {"status": "ok", "message": "not waiting"}
+    session["confirm_data"] = body
+    evt = session.get("confirm_event")
+    if evt:
+        evt.set()
+    return {"status": "ok"}
 
 
 @router.post("/scene-plan")
@@ -351,41 +409,56 @@ async def quick_generate(req: GenerateRequest):
         raise HTTPException(500, detail=detail)
 
 
-async def _wait_for_confirm(websocket: WebSocket, step: str, message: str, timeout_s: int = 300):
-    """Send need_confirm and wait for user response. Returns user message or None if aborted."""
-    await websocket.send_json({
-        "type": "need_confirm", "step": step, "message": message,
-    })
-    try:
-        msg = await asyncio.wait_for(websocket.receive_json(), timeout=timeout_s)
-    except asyncio.TimeoutError:
-        await websocket.send_json({"type": "error", "message": "等待超时"})
-        return None
-    if msg.get("action") == "abort":
-        await websocket.send_json({"type": "complete", "text": "", "aborted": True})
-        return None
-    return msg
+def _emit(session_id: str, event: dict):
+    """Append an event to the session log."""
+    session = _active_sessions.get(session_id)
+    if session:
+        event["ts"] = time.time()
+        session["events"].append(event)
 
 
-@router.websocket("/ws/{session_id}")
-async def generation_websocket(websocket: WebSocket, session_id: str):
-    """WebSocket for real-time pipeline streaming — sequential with confirms."""
-    await websocket.accept()
+async def _wait_for_confirm_bg(session_id: str, step: str, message: str, timeout_s: int = 600):
+    """Emit need_confirm and block until user responds (or auto-continue after timeout)."""
     session = _active_sessions.get(session_id)
     if not session:
-        await websocket.send_json({"type": "error", "message": "Session not found"})
-        await websocket.close()
-        return
+        return None
+    evt = asyncio.Event()
+    session["confirm_event"] = evt
+    session["confirm_data"] = None
+    session["waiting_confirm"] = True
+    session["current_step"] = step
+    _emit(session_id, {"type": "need_confirm", "step": step, "message": message})
+    try:
+        await asyncio.wait_for(evt.wait(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        # Auto-continue on timeout
+        session["confirm_data"] = {"action": "continue"}
+    session["waiting_confirm"] = False
+    session["confirm_event"] = None
+    data = session.get("confirm_data", {})
+    if data and data.get("action") == "abort":
+        _emit(session_id, {"type": "complete", "text": "", "aborted": True})
+        session["status"] = "complete"
+        return None
+    return data or {"action": "continue"}
 
+
+async def _run_pipeline_background(session_id: str):
+    """Run the full pipeline as a background task. Events are logged to the session."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        return
     req_data = session["request"]
+
     try:
         router_inst = _build_router(req_data.get("provider", ""), req_data.get("model", ""))
-        await websocket.send_json({"type": "pipeline_start", "session_id": session_id})
+        _emit(session_id, {"type": "pipeline_start", "session_id": session_id})
 
         # ── Step 1: Scene Director ──────────────────────────
-        await websocket.send_json({
+        session["current_step"] = "scene_director"
+        _emit(session_id, {
             "type": "step_start", "step": "scene_director",
-            "label": "Scene Director", "detail": "正在拆分场景..."
+            "label": "Scene Director", "detail": "正在拆分场景...",
         })
         scene_result = {}
         try:
@@ -400,19 +473,17 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
         except Exception as e:
             logger.error("Scene director error: %s", e, exc_info=True)
             scene_result = {"summary": f"场景规划失败：{str(e)[:200]}", "error": str(e)[:200]}
-        await websocket.send_json({
-            "type": "step_done", "step": "scene_director", "result": scene_result,
-        })
+        _emit(session_id, {"type": "step_done", "step": "scene_director", "result": scene_result})
 
-        # Wait for user confirm before proceeding to Actor Agents
-        confirm = await _wait_for_confirm(websocket, "scene_director", "场景拆分完成，是否继续生成？")
+        confirm = await _wait_for_confirm_bg(session_id, "scene_director", "场景拆分完成，是否继续生成？")
         if confirm is None:
             return
 
         # ── Step 2: Actor Agents ────────────────────────────
-        await websocket.send_json({
+        session["current_step"] = "actor_agents"
+        _emit(session_id, {
             "type": "step_start", "step": "actor_agents",
-            "label": "Actor Agents", "detail": "正在生成角色对话与内心活动..."
+            "label": "Actor Agents", "detail": "正在生成角色对话与内心活动...",
         })
         full_text = ""
         try:
@@ -434,28 +505,28 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
                 temperature=0.8, max_tokens=4096,
             ):
                 full_text += token
-                await websocket.send_json({"type": "token", "step": "actor_agents", "content": token})
+                _emit(session_id, {"type": "token", "step": "actor_agents", "content": token})
 
-            await websocket.send_json({
+            _emit(session_id, {
                 "type": "step_done", "step": "actor_agents",
                 "result": {"text": full_text, "word_count": len(full_text)},
             })
         except Exception as e:
             full_text = f"（生成失败：{str(e)[:200]}）"
-            await websocket.send_json({
+            _emit(session_id, {
                 "type": "step_done", "step": "actor_agents",
                 "result": {"text": full_text, "error": str(e)[:200]},
             })
 
-        # Wait for user confirm before proceeding to Editor-Writer
-        confirm = await _wait_for_confirm(websocket, "actor_agents", "角色对话生成完成，是否继续编辑润色？")
+        confirm = await _wait_for_confirm_bg(session_id, "actor_agents", "角色对话生成完成，是否继续编辑润色？")
         if confirm is None:
             return
 
         # ── Step 3: Editor-Writer ───────────────────────────
-        await websocket.send_json({
+        session["current_step"] = "editor_writer"
+        _emit(session_id, {
             "type": "step_start", "step": "editor_writer",
-            "label": "Editor-Writer", "detail": "正在进行文学风格化与润色..."
+            "label": "Editor-Writer", "detail": "正在进行文学风格化与润色...",
         })
         edited_text = full_text
         try:
@@ -477,25 +548,25 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
                 temperature=0.6, max_tokens=4096,
             )
             edited_text = edit_resp.content or full_text
-            await websocket.send_json({
+            _emit(session_id, {
                 "type": "step_done", "step": "editor_writer",
                 "result": {"text": edited_text, "word_count": len(edited_text)},
             })
         except Exception as e:
-            await websocket.send_json({
+            _emit(session_id, {
                 "type": "step_done", "step": "editor_writer",
                 "result": {"text": edited_text, "error": str(e)[:200]},
             })
 
-        # Wait for user confirm before proceeding to Evaluator
-        confirm = await _wait_for_confirm(websocket, "editor_writer", "编辑润色完成，是否继续质量评估？")
+        confirm = await _wait_for_confirm_bg(session_id, "editor_writer", "编辑润色完成，是否继续质量评估？")
         if confirm is None:
             return
 
         # ── Step 4: Evaluator ───────────────────────────────
-        await websocket.send_json({
+        session["current_step"] = "evaluator"
+        _emit(session_id, {
             "type": "step_start", "step": "evaluator",
-            "label": "Evaluator", "detail": "正在评估质量..."
+            "label": "Evaluator", "detail": "正在评估质量...",
         })
         eval_result = {"score": 80, "passed": True, "issues": []}
         try:
@@ -521,17 +592,63 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
         except Exception:
             pass
 
-        await websocket.send_json({"type": "step_done", "step": "evaluator", "result": eval_result})
-        await websocket.send_json({"type": "complete", "text": edited_text, "evaluation": eval_result})
+        _emit(session_id, {"type": "step_done", "step": "evaluator", "result": eval_result})
+        _emit(session_id, {"type": "complete", "text": edited_text, "evaluation": eval_result})
 
         session["status"] = "complete"
+        session["text"] = edited_text
         session["result"] = {"text": edited_text, "evaluation": eval_result}
 
-    except WebSocketDisconnect:
-        logger.info("Generation WS client disconnected: %s", session_id)
     except Exception as e:
-        logger.error("Generation WS error: %s", e, exc_info=True)
+        logger.error("Pipeline background error: %s", e, exc_info=True)
+        _emit(session_id, {"type": "error", "message": str(e)[:300]})
+        session["status"] = "error"
+
+
+@router.websocket("/ws/{session_id}")
+async def generation_websocket(websocket: WebSocket, session_id: str):
+    """WebSocket that streams events from a running background pipeline.
+
+    Clients can disconnect and reconnect — the pipeline keeps running.
+    On connect, all past events are replayed, then new events are streamed live.
+    """
+    await websocket.accept()
+    session = _active_sessions.get(session_id)
+    if not session:
+        await websocket.send_json({"type": "error", "message": "Session not found"})
+        await websocket.close()
+        return
+
+    cursor = 0  # index into session["events"]
+    try:
+        while True:
+            events = session.get("events", [])
+            # Send any new events
+            while cursor < len(events):
+                await websocket.send_json(events[cursor])
+                cursor += 1
+
+            # Check if pipeline is done
+            if session["status"] in ("complete", "error"):
+                break
+
+            # Check for incoming messages (confirm/abort)
+            try:
+                msg = await asyncio.wait_for(websocket.receive_json(), timeout=0.3)
+                if msg:
+                    # Forward confirm to background task
+                    session["confirm_data"] = msg
+                    evt = session.get("confirm_event")
+                    if evt:
+                        evt.set()
+            except asyncio.TimeoutError:
+                pass
+    except WebSocketDisconnect:
+        logger.info("WS client disconnected from %s (pipeline continues)", session_id)
+    except Exception as e:
+        logger.error("WS relay error: %s", e)
+    finally:
         try:
-            await websocket.send_json({"type": "error", "message": str(e)})
+            await websocket.close()
         except Exception:
             pass

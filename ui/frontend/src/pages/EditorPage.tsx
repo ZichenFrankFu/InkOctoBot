@@ -144,152 +144,171 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   };
 
   const generatedTextRef = useRef<string>("");
-  const wsRef = useRef<WebSocket | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const eventCursorRef = useRef(0);
+  const sessionIdRef = useRef<string | null>(null);
 
-  const runRealPipeline = useCallback(async (sessionId: string) => {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.host || "localhost:8000";
-    const ws = new WebSocket(`${proto}//${host}/api/generation/ws/${sessionId}`);
-    wsRef.current = ws;
-    generatedTextRef.current = "";
+  // Persist active session across page navigation
+  const SESS_KEY = `inkocto_pipeline_${projectId}`;
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      switch (data.type) {
-        case "pipeline_start":
-          setChatMessages(prev => [...prev, {
-            agent: "System", content: "Pipeline 连接成功，开始生成...",
-            status: "done", timestamp: Date.now(),
-          }]);
-          break;
-        case "step_start":
-          setPipelineSteps(prev => prev.map(s =>
-            s.step === data.label ? { ...s, status: "running" as const, detail: data.detail } : s
-          ));
-          setCurrentAgent(data.label);
-          setChatMessages(prev => [...prev, {
-            agent: data.label, content: data.detail || "正在处理中...",
-            status: "thinking", timestamp: Date.now(),
-          }]);
-          break;
-        case "token":
-          generatedTextRef.current += data.content;
-          // Update the last thinking message with streaming content
-          setChatMessages(prev => {
-            const last = prev[prev.length - 1];
-            if (last && last.status === "thinking") {
-              const updated = [...prev];
-              updated[updated.length - 1] = {
-                ...last,
-                content: generatedTextRef.current.slice(-300) + (generatedTextRef.current.length > 300 ? "\n..." : ""),
-                status: "speaking",
-              };
-              return updated;
-            }
-            return prev;
-          });
-          break;
-        case "step_done":
-          setPipelineSteps(prev => prev.map(s =>
-            s.step === (data.step === "scene_director" ? "Scene Director" :
-              data.step === "actor_agents" ? "Actor Agents" :
-              data.step === "evaluator" ? "Evaluator" :
-              data.step === "editor_writer" ? "Editor-Writer" : s.step)
-            ? { ...s, status: "done" as const, detail: "已完成" } : s
-          ));
-          setChatMessages(prev => {
-            const filtered = prev.filter(m => m.status !== "thinking" && m.status !== "speaking");
-            const agentName = data.step === "scene_director" ? "Scene Director" :
-              data.step === "actor_agents" ? "Actor Agents" :
-              data.step === "evaluator" ? "Evaluator" : "Editor-Writer";
-            const resultText = data.result?.text
-              ? (data.result.error ? `生成出错：${data.result.error}` : `生成完成！共 ${data.result.text.length} 字。`)
-              : data.result?.error
-              ? `出错：${data.result.error}`
-              : (data.result?.score !== undefined)
-              ? `评估完成。得分：${data.result.score}/100`
-              : data.result?.summary
-              ? data.result.summary
-              : JSON.stringify(data.result || {}).slice(0, 200);
-            return [...filtered, {
-              agent: agentName, content: resultText,
-              status: "done", timestamp: Date.now(),
-            }];
-          });
-          // Store eval result if available
-          if (data.step === "evaluator" && data.result) {
-            setEvalResult({
-              chapter_id: activeChId,
-              passed: data.result.passed ?? true,
-              score: data.result.score ?? 80,
-              issues: (data.result.issues || []).map((i: any) => ({
-                type: i.type || "unknown",
-                severity: i.severity || "low",
-                description: i.description || "",
-                suggestion: i.suggestion,
-              })),
-            });
-          }
-          break;
-        case "need_confirm": {
-          const confirmAgent = data.step === "scene_director" ? "Scene Director"
-            : data.step === "actor_agents" ? "Actor Agents"
-            : data.step === "editor_writer" ? "Editor-Writer"
-            : data.step === "evaluator" ? "Evaluator" : "System";
-          setChatMessages(prev => [...prev, {
-            agent: confirmAgent,
-            content: data.message || "是否继续？",
-            status: "waiting_confirm", timestamp: Date.now(), isQuestion: true,
-          }]);
-          setWaitingForConfirm(true);
-          break;
+  // On mount: check for a running pipeline session to resume
+  useEffect(() => {
+    const saved = sessionStorage.getItem(SESS_KEY);
+    if (saved) {
+      try {
+        const { sessionId } = JSON.parse(saved);
+        if (sessionId) {
+          // Resume polling
+          sessionIdRef.current = sessionId;
+          setGenerating(true);
+          eventCursorRef.current = 0;
+          startPolling(sessionId);
         }
-        case "complete":
-          setGenerating(false);
-          setCurrentAgent(null);
-          if (data.text) generatedTextRef.current = data.text;
-          setChatMessages(prev => [...prev, {
-            agent: "System",
-            content: `Pipeline 全部完成！生成了 ${(data.text || "").length} 字。可在「评估」标签查看结果，或点击「写入编辑器」。`,
-            status: "done", timestamp: Date.now(),
-          }]);
-          if (data.evaluation) {
-            setEvalResult({
-              chapter_id: activeChId,
-              passed: data.evaluation.passed ?? true,
-              score: data.evaluation.score ?? 80,
-              issues: (data.evaluation.issues || []).map((i: any) => ({
-                type: i.type || "unknown",
-                severity: i.severity || "low",
-                description: i.description || "",
-              })),
-            });
+      } catch { /* ignore */ }
+    }
+    return () => stopPolling();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  };
+
+  const handleEvent = useCallback((data: any) => {
+    const stepToLabel = (s: string) =>
+      s === "scene_director" ? "Scene Director"
+      : s === "actor_agents" ? "Actor Agents"
+      : s === "editor_writer" ? "Editor-Writer"
+      : s === "evaluator" ? "Evaluator" : "System";
+
+    switch (data.type) {
+      case "pipeline_start":
+        setChatMessages(prev => {
+          if (prev.some(m => m.content.includes("Pipeline") && m.content.includes("开始"))) return prev;
+          return [...prev, { agent: "System", content: "Pipeline 开始生成...", status: "done", timestamp: Date.now() }];
+        });
+        break;
+      case "step_start":
+        setPipelineSteps(prev => prev.map(s =>
+          s.step === data.label ? { ...s, status: "running" as const, detail: data.detail } : s
+        ));
+        setCurrentAgent(data.label);
+        setChatMessages(prev => [...prev, {
+          agent: data.label, content: data.detail || "正在处理中...",
+          status: "thinking", timestamp: Date.now(),
+        }]);
+        break;
+      case "token":
+        generatedTextRef.current += data.content;
+        setChatMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last && (last.status === "thinking" || last.status === "speaking")) {
+            const updated = [...prev];
+            updated[updated.length - 1] = {
+              ...last,
+              content: generatedTextRef.current.slice(-400) + (generatedTextRef.current.length > 400 ? "\n..." : ""),
+              status: "speaking",
+            };
+            return updated;
           }
-          break;
-        case "error":
-          setGenerating(false);
-          setCurrentAgent(null);
-          setChatMessages(prev => [...prev, {
-            agent: "System", content: `错误: ${data.message}`,
-            status: "done", timestamp: Date.now(),
-          }]);
-          break;
+          return prev;
+        });
+        break;
+      case "step_done": {
+        const label = stepToLabel(data.step);
+        setPipelineSteps(prev => prev.map(s =>
+          s.step === label ? { ...s, status: "done" as const, detail: "已完成" } : s
+        ));
+        setChatMessages(prev => {
+          const filtered = prev.filter(m => m.status !== "thinking" && m.status !== "speaking");
+          const resultText = data.result?.text
+            ? (data.result.error ? `生成出错：${data.result.error}` : `生成完成！共 ${data.result.text.length} 字。`)
+            : data.result?.error
+            ? `出错：${data.result.error}`
+            : (data.result?.score !== undefined)
+            ? `评估完成。得分：${data.result.score}/100`
+            : data.result?.summary
+            ? data.result.summary
+            : JSON.stringify(data.result || {}).slice(0, 200);
+          return [...filtered, { agent: label, content: resultText, status: "done", timestamp: Date.now() }];
+        });
+        if (data.step === "evaluator" && data.result) {
+          setEvalResult({
+            chapter_id: activeChId,
+            passed: data.result.passed ?? true,
+            score: data.result.score ?? 80,
+            issues: (data.result.issues || []).map((i: any) => ({
+              type: i.type || "unknown", severity: i.severity || "low",
+              description: i.description || "", suggestion: i.suggestion,
+            })),
+          });
+        }
+        break;
       }
-    };
+      case "need_confirm": {
+        const agent = stepToLabel(data.step);
+        setChatMessages(prev => [...prev, {
+          agent, content: data.message || "是否继续？",
+          status: "waiting_confirm", timestamp: Date.now(), isQuestion: true,
+        }]);
+        setWaitingForConfirm(true);
+        break;
+      }
+      case "complete":
+        setGenerating(false);
+        setCurrentAgent(null);
+        stopPolling();
+        sessionStorage.removeItem(SESS_KEY);
+        if (data.text) generatedTextRef.current = data.text;
+        setChatMessages(prev => [...prev, {
+          agent: "System",
+          content: `Pipeline 全部完成！生成了 ${(data.text || "").length} 字。可点击「写入编辑器」。`,
+          status: "done", timestamp: Date.now(),
+        }]);
+        if (data.evaluation) {
+          setEvalResult({
+            chapter_id: activeChId,
+            passed: data.evaluation.passed ?? true,
+            score: data.evaluation.score ?? 80,
+            issues: (data.evaluation.issues || []).map((i: any) => ({
+              type: i.type || "unknown", severity: i.severity || "low", description: i.description || "",
+            })),
+          });
+        }
+        break;
+      case "error":
+        setGenerating(false);
+        setCurrentAgent(null);
+        stopPolling();
+        sessionStorage.removeItem(SESS_KEY);
+        setChatMessages(prev => [...prev, {
+          agent: "System", content: `错误: ${data.message}`, status: "done", timestamp: Date.now(),
+        }]);
+        break;
+    }
+  }, [activeChId, SESS_KEY]);
 
-    ws.onerror = () => {
-      setChatMessages(prev => [...prev, {
-        agent: "System", content: "WebSocket 连接失败，切换到快速生成模式...",
-        status: "done", timestamp: Date.now(),
-      }]);
-      // Fallback to quick-generate
-      runQuickGenerate();
-    };
-
-    ws.onclose = () => {
-      wsRef.current = null;
-    };
-  }, [activeChId]);
+  const startPolling = useCallback((sessionId: string) => {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const resp = await apiGet<{ status: string; events: any[]; total: number }>(
+          `/api/generation/events/${sessionId}?after=${eventCursorRef.current}`
+        );
+        for (const evt of resp.events) {
+          handleEvent(evt);
+          eventCursorRef.current += 1;
+        }
+        if (resp.status === "complete" || resp.status === "error") {
+          stopPolling();
+        }
+      } catch {
+        // Session gone — stop polling
+        stopPolling();
+        sessionStorage.removeItem(SESS_KEY);
+      }
+    }, 500);
+  }, [handleEvent, SESS_KEY]);
 
   const runQuickGenerate = useCallback(async () => {
     if (!activeCh) return;
@@ -337,6 +356,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     setPipelineSteps(PIPELINE_STEPS.map(s => ({ ...s, status: "pending" })));
     setChatMessages([]); setWaitingForConfirm(false);
     generatedTextRef.current = "";
+    eventCursorRef.current = 0;
 
     const synopsis = activeCh.synopsis || "";
     setChatMessages([{
@@ -351,51 +371,44 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         chapter_id: activeChId,
         synopsis,
       });
-      // Try WebSocket pipeline
-      runRealPipeline(resp.session_id);
+      sessionIdRef.current = resp.session_id;
+      // Persist session so it survives page navigation
+      sessionStorage.setItem(SESS_KEY, JSON.stringify({ sessionId: resp.session_id }));
+      startPolling(resp.session_id);
     } catch {
-      // Fallback to quick generate
       runQuickGenerate();
     }
-  }, [activeCh, projectId, activeChId, runRealPipeline, runQuickGenerate]);
+  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY]);
 
   const handleConfirmContinue = () => {
     setWaitingForConfirm(false);
     setChatMessages(prev => [...prev, { agent: "User", content: "确认满意，继续下一步。", status: "done", timestamp: Date.now() }]);
-    // Send continue message through WebSocket
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ action: "continue" }));
+    if (sessionIdRef.current) {
+      apiPost(`/api/generation/confirm/${sessionIdRef.current}`, { action: "continue" }).catch(() => {});
     }
   };
 
   const handleRollback = useCallback((stepIndex: number) => {
     const agentName = PIPELINE_STEPS[stepIndex].step;
-    // Reset steps from this index onwards
     setPipelineSteps(prev => prev.map((s, i) => i >= stepIndex ? { ...s, status: "pending", detail: PIPELINE_STEPS[i].detail } : s));
-    // Truncate chat messages from first message of this agent
     const firstMsgIdx = chatMessages.findIndex(m => m.agent === agentName);
     if (firstMsgIdx >= 0) {
       setChatMessages([...chatMessages.slice(0, firstMsgIdx), {
         agent: "System",
-        content: `已回退到「${agentName}」阶段。请在下方输入消息与 ${agentName} 对话，或点击「开始生成」重新运行。`,
-        status: "done", timestamp: Date.now(),
-      }]);
-    } else {
-      setChatMessages(prev => [...prev, {
-        agent: "System",
-        content: `已回退到「${agentName}」阶段。请在下方输入消息与 ${agentName} 对话，或点击「开始生成」重新运行。`,
+        content: `已回退到「${agentName}」阶段。点击「开始生成」重新运行。`,
         status: "done", timestamp: Date.now(),
       }]);
     }
-    // Close existing WebSocket to stop current pipeline
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
+    // Abort the current pipeline
+    if (sessionIdRef.current) {
+      apiPost(`/api/generation/confirm/${sessionIdRef.current}`, { action: "abort" }).catch(() => {});
     }
+    stopPolling();
+    sessionStorage.removeItem(SESS_KEY);
     setWaitingForConfirm(false);
     setGenerating(false);
     setCurrentAgent(agentName);
-  }, [chatMessages]);
+  }, [chatMessages, SESS_KEY]);
 
   const handleWriteToEditor = useCallback(() => {
     const text = generatedTextRef.current;
@@ -419,17 +432,9 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     const msg = chatInput.trim();
     setChatMessages(prev => [...prev, { agent: "User", content: msg, status: "done", timestamp: Date.now() }]);
     setChatInput("");
-    if (waitingForConfirm) {
+    if (waitingForConfirm && sessionIdRef.current) {
       setWaitingForConfirm(false);
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ action: "feedback", message: msg }));
-      } else {
-        // Fallback: show feedback received
-        setTimeout(() => {
-          setChatMessages(prev => [...prev, { agent: currentAgent || "System", content: `收到反馈：「${msg}」。已根据你的意见调整，请再次确认。`, status: "waiting_confirm", timestamp: Date.now(), isQuestion: true }]);
-          setWaitingForConfirm(true);
-        }, 1000);
-      }
+      apiPost(`/api/generation/confirm/${sessionIdRef.current}`, { action: "continue", message: msg }).catch(() => {});
     }
   };
 

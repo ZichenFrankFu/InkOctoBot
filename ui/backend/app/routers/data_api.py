@@ -193,7 +193,6 @@ def _default_settings() -> dict:
             "gemini": {"enabled": False, "api_key": "", "models": ["gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"]},
             "ollama": {"enabled": True, "base_url": "http://localhost:11434", "models": []},
             "vllm": {"enabled": False, "base_url": "http://localhost:8000", "models": []},
-            "local": {"enabled": False, "models": []},
         },
         "pipeline": {
             "scene_planner": {"provider": "ollama", "model": "", "compare_models": []},
