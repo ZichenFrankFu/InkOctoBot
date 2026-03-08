@@ -19,6 +19,10 @@
     "deepseek": {
       "type": "commercial",
       "pricing_per_1k_input": 0.001
+    },
+    "gemini": {
+      "type": "commercial",
+      "pricing_per_1k_input": 0.0001
     }
   }
 }

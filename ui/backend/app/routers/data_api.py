@@ -175,23 +175,24 @@ def list_local_models():
 
 def _default_settings() -> dict:
     return {
-        "theme": "light", "auto_save": True, "auto_save_interval": 30,
+        "theme": "dark", "auto_save": True, "auto_save_interval": 30,
         "cost_confirm": True, "export_format": "txt",
         "providers": {
             "openai": {"enabled": False, "api_key": "", "models": ["gpt-4o", "gpt-4o-mini"]},
             "anthropic": {"enabled": False, "api_key": "", "models": ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]},
             "deepseek": {"enabled": False, "api_key": "", "models": ["deepseek-chat", "deepseek-reasoner"]},
-            "ollama": {"enabled": False, "base_url": "http://localhost:11434", "models": []},
+            "gemini": {"enabled": False, "api_key": "", "models": ["gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"]},
+            "ollama": {"enabled": True, "base_url": "http://localhost:11434", "models": []},
             "vllm": {"enabled": False, "base_url": "http://localhost:8000", "models": []},
             "local": {"enabled": False, "models": []},
         },
         "pipeline": {
-            "scene_planner": {"provider": "ollama", "model": "qwen2.5:32b", "compare_models": []},
-            "scene_director": {"provider": "ollama", "model": "qwen2.5:32b", "compare_models": []},
-            "actor_default": {"provider": "ollama", "model": "qwen2.5:7b", "compare_models": []},
-            "actor_protagonist": {"provider": "ollama", "model": "qwen2.5:14b", "compare_models": []},
-            "editor_stylist": {"provider": "ollama", "model": "qwen2.5:32b", "compare_models": []},
-            "editor_agent": {"provider": "ollama", "model": "qwen2.5:32b", "compare_models": []},
-            "evaluator": {"provider": "ollama", "model": "qwen2.5:14b", "compare_models": []},
+            "scene_planner": {"provider": "ollama", "model": "", "compare_models": []},
+            "scene_director": {"provider": "ollama", "model": "", "compare_models": []},
+            "actor_default": {"provider": "ollama", "model": "", "compare_models": []},
+            "actor_protagonist": {"provider": "ollama", "model": "", "compare_models": []},
+            "editor_stylist": {"provider": "ollama", "model": "", "compare_models": []},
+            "editor_agent": {"provider": "ollama", "model": "", "compare_models": []},
+            "evaluator": {"provider": "ollama", "model": "", "compare_models": []},
         },
     }

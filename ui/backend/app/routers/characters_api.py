@@ -21,7 +21,7 @@ class GenerateProfileRequest(BaseModel):
     project_id: str = ""
     existing_personality: str = ""
     context: str = ""
-    provider: str = "ollama"
+    provider: str = ""
     model: str = ""
 
 

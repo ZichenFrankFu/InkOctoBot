@@ -44,6 +44,7 @@ const PROVIDER_META: Record<string, { label: string; icon: string; hasKey: boole
   openai: { label: "OpenAI", icon: "O", hasKey: true, hasUrl: false },
   anthropic: { label: "Anthropic", icon: "A", hasKey: true, hasUrl: false },
   deepseek: { label: "DeepSeek", icon: "D", hasKey: true, hasUrl: false },
+  gemini: { label: "Google Gemini", icon: "G", hasKey: true, hasUrl: false },
   ollama: { label: "Ollama", icon: "L", hasKey: false, hasUrl: true },
   vllm: { label: "vLLM", icon: "V", hasKey: false, hasUrl: true },
   local: { label: "本地模型", icon: "M", hasKey: false, hasUrl: false },

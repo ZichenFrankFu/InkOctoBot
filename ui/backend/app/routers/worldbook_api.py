@@ -19,7 +19,7 @@ class ConsistencyRequest(BaseModel):
     project_id: str = ""
     entries_text: str = ""
     entries: list[dict] = []
-    provider: str = "ollama"
+    provider: str = ""
     model: str = ""
 
 

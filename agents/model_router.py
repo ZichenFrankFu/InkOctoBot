@@ -25,6 +25,7 @@ _PROVIDER_CLS: dict[str, str] = {
     "openai":    "agents.model_providers.openai_provider.OpenAIProvider",
     "anthropic": "agents.model_providers.anthropic_provider.AnthropicProvider",
     "deepseek":  "agents.model_providers.deepseek_provider.DeepSeekProvider",
+    "gemini":    "agents.model_providers.gemini_provider.GeminiProvider",
     "ollama":    "agents.model_providers.ollama_provider.OllamaProvider",
     "vllm":      "agents.model_providers.vllm_provider.VLLMProvider",
     "lora":      "agents.model_providers.lora_provider.LoRAProvider",

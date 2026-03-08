@@ -32,21 +32,21 @@ class GenerateRequest(BaseModel):
     world_rules: str = ""
     style_notes: str = ""
     system_hint: str = ""
-    provider: str = "ollama"
+    provider: str = ""
     model: str = ""
 
 
 class RewriteRequest(BaseModel):
     text: str
     instruction: str = ""
-    provider: str = "ollama"
+    provider: str = ""
     model: str = ""
 
 
 class EvalRequest(BaseModel):
     text: str
     chapter_num: int = 1
-    provider: str = "ollama"
+    provider: str = ""
     model: str = ""
 
 
@@ -88,6 +88,9 @@ class _SimpleRouter:
         elif ptype == "anthropic":
             from agents.model_providers.anthropic_provider import AnthropicProvider
             return AnthropicProvider(self._cfg)
+        elif ptype == "gemini":
+            from agents.model_providers.gemini_provider import GeminiProvider
+            return GeminiProvider(self._cfg)
         elif ptype == "vllm":
             from agents.model_providers.vllm_provider import VLLMProvider
             return VLLMProvider(self._cfg)
@@ -104,23 +107,45 @@ class _SimpleRouter:
 
 
 def _build_router(provider: str = "", model: str = ""):
-    """Build a simple router from user settings."""
+    """Build a simple router from user settings.
+
+    Resolution order:
+    1. Explicit provider+model from caller
+    2. Pipeline config (try multiple roles)
+    3. Any enabled provider with models
+    4. Auto-detect Ollama as last resort
+    """
     user_settings = _get_user_settings()
     providers_cfg = user_settings.get("providers", {})
     pipeline = user_settings.get("pipeline", {})
 
+    # Step 1: If no provider given, try pipeline config
     if not provider:
-        # Try pipeline config first
-        sc = pipeline.get("scene_director", {})
-        provider = sc.get("provider", "")
-        model = sc.get("model", "")
+        for role_key in ("scene_director", "editor_stylist", "actor_default"):
+            role_cfg = pipeline.get(role_key, {})
+            p = role_cfg.get("provider", "")
+            m = role_cfg.get("model", "")
+            if p and m:
+                provider = p
+                model = m
+                break
+            elif p and not provider:
+                provider = p
 
+    # Step 2: If provider set but no model, check pipeline for a model with that provider
+    if provider and not model:
+        for _role_key, role_cfg in pipeline.items():
+            if role_cfg.get("provider") == provider and role_cfg.get("model"):
+                model = role_cfg["model"]
+                break
+
+    # Step 3: Try models list from provider config
     prov_cfg = providers_cfg.get(provider, {})
-    if not model:
+    if provider and not model:
         models = prov_cfg.get("models", [])
         model = models[0] if models else ""
 
-    # If still no valid provider+model, scan all enabled providers for a usable one
+    # Step 4: Scan all enabled providers for a usable one
     if not provider or not model:
         for pname, pcfg in providers_cfg.items():
             if pcfg.get("enabled") and pcfg.get("models"):
@@ -129,11 +154,10 @@ def _build_router(provider: str = "", model: str = ""):
                 prov_cfg = pcfg
                 break
 
-    # Auto-detect Ollama as last resort
+    # Step 5: Auto-detect Ollama as last resort
     if not model and (not provider or provider == "ollama"):
         provider = "ollama"
         prov_cfg = providers_cfg.get("ollama", {})
-        # Try to detect models from running Ollama instance
         try:
             import httpx
             base = prov_cfg.get("base_url", "http://localhost:11434")
@@ -320,7 +344,7 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
 
     req_data = session["request"]
     try:
-        router_inst = _build_router(req_data.get("provider", "ollama"), req_data.get("model", ""))
+        router_inst = _build_router(req_data.get("provider", ""), req_data.get("model", ""))
         await websocket.send_json({"type": "pipeline_start", "session_id": session_id})
 
         # ── Step 1: Scene Director ──────────────────────────

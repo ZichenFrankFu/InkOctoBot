@@ -48,6 +48,7 @@ def _defaults() -> dict:
             "openai": {"enabled": False, "api_key": "", "models": ["gpt-4o", "gpt-4o-mini"]},
             "anthropic": {"enabled": False, "api_key": "", "models": ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]},
             "deepseek": {"enabled": False, "api_key": "", "models": ["deepseek-chat", "deepseek-reasoner"]},
+            "gemini": {"enabled": False, "api_key": "", "models": ["gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"]},
             "ollama": {"enabled": True, "base_url": "http://localhost:11434", "models": []},
             "vllm": {"enabled": False, "base_url": "http://localhost:8000", "models": []},
             "local": {"enabled": False, "models": []},

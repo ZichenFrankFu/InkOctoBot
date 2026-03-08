@@ -273,7 +273,7 @@ export interface EpisodicEvent {
 export interface ModelProvider {
   id: string;
   name: string;
-  type: "openai" | "anthropic" | "deepseek" | "ollama" | "vllm" | "local";
+  type: "openai" | "anthropic" | "deepseek" | "gemini" | "ollama" | "vllm" | "local";
   api_key_set?: boolean;
   base_url?: string;
   models?: string[];

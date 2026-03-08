@@ -104,6 +104,32 @@ async def test_connection(req: TestConnectionRequest):
             "models": ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"],
             "message": "API Key 已配置",
         }
+    elif req.provider == "gemini":
+        if not req.api_key:
+            return {"status": "error", "connected": False, "models": [], "message": "需要 API Key"}
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    "https://generativelanguage.googleapis.com/v1beta/openai/models",
+                    headers={"Authorization": f"Bearer {req.api_key}"},
+                )
+                r.raise_for_status()
+                data = r.json()
+                models = [m["id"] for m in data.get("data", [])][:20]
+                return {
+                    "status": "ok",
+                    "connected": True,
+                    "models": models,
+                    "message": f"连接成功，发现 {len(models)} 个模型",
+                }
+        except Exception as e:
+            return {
+                "status": "error",
+                "connected": False,
+                "models": [],
+                "message": f"连接失败: {str(e)[:200]}",
+            }
     elif req.provider == "vllm":
         import httpx
         base = req.base_url or "http://localhost:8000"
