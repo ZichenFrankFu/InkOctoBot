@@ -156,7 +156,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
       const errMsg = e?.message || "请求失败";
       const aiMsg: ChatMsg = {
         role: "assistant",
-        content: `抱歉，AI 暂时无法响应（${errMsg.slice(0, 100)}）。请检查「设置」页面的模型连接配置。`,
+        content: `抱歉，AI 暂时无法响应。\n\n${errMsg.slice(0, 500)}`,
         tab: studioTab,
         timestamp: Date.now(),
       };

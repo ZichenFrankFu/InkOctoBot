@@ -51,13 +51,30 @@ class EvalRequest(BaseModel):
 
 
 def _get_user_settings() -> dict:
+    """Load user settings with full defaults for missing keys."""
     import json as _json
     from pathlib import Path
     from ui.backend.app.settings import settings as app_settings
+    from ui.backend.app.routers.data_api import _default_settings
     p = app_settings.repo_root / "data" / "settings.json"
     if p.exists():
-        return _json.loads(p.read_text("utf-8"))
-    return {}
+        data = _json.loads(p.read_text("utf-8"))
+    else:
+        data = {}
+    # Deep-merge defaults so new providers/pipeline roles always appear
+    defaults = _default_settings()
+    for k, v in defaults.items():
+        if k not in data:
+            data[k] = v
+    # Ensure all default providers exist
+    for pname, pdef in defaults.get("providers", {}).items():
+        if pname not in data.get("providers", {}):
+            data.setdefault("providers", {})[pname] = pdef
+    # Ensure all default pipeline roles exist
+    for rname, rdef in defaults.get("pipeline", {}).items():
+        if rname not in data.get("pipeline", {}):
+            data.setdefault("pipeline", {})[rname] = rdef
+    return data
 
 
 class _SimpleRouter:
@@ -311,9 +328,27 @@ async def quick_generate(req: GenerateRequest):
                 "output": response.output_tokens,
             },
         }
-    except Exception as e:
-        logger.error("Quick generate error: %s", e, exc_info=True)
+    except ValueError as e:
+        logger.error("Quick generate config error: %s", e)
         raise HTTPException(500, detail=str(e))
+    except Exception as e:
+        msg = str(e)
+        logger.error("Quick generate error: %s", e, exc_info=True)
+        if "404" in msg and "localhost:11434" in msg:
+            detail = (
+                "Ollama 模型未找到。请确认：\n"
+                "1. Ollama 服务正在运行（ollama serve）\n"
+                "2. 在「设置→模型供应商」中点击「自动检测」以发现可用模型\n"
+                "3. 在「设置→Pipeline 配置」中为各角色分配模型\n"
+                f"原始错误：{msg[:200]}"
+            )
+        elif "Connect" in msg or "refused" in msg.lower():
+            detail = (
+                "无法连接到模型服务。请在「设置→模型供应商」中配置并启用一个可用的供应商（Ollama / OpenAI / Gemini 等）。"
+            )
+        else:
+            detail = msg
+        raise HTTPException(500, detail=detail)
 
 
 async def _wait_for_confirm(websocket: WebSocket, step: str, message: str, timeout_s: int = 300):
@@ -363,7 +398,8 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
             )
             scene_result = scenes if isinstance(scenes, dict) else {"raw": str(scenes)}
         except Exception as e:
-            scene_result = {"summary": f"场景规划完成 (fallback: {str(e)[:100]})"}
+            logger.error("Scene director error: %s", e, exc_info=True)
+            scene_result = {"summary": f"场景规划失败：{str(e)[:200]}", "error": str(e)[:200]}
         await websocket.send_json({
             "type": "step_done", "step": "scene_director", "result": scene_result,
         })

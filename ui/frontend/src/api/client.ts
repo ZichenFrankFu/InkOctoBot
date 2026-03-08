@@ -10,7 +10,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} ${res.statusText} @ ${url}\n${text}`);
+    // Try to extract detail from FastAPI JSON error response
+    let detail = "";
+    try {
+      const parsed = JSON.parse(text);
+      detail = parsed.detail || "";
+    } catch {
+      detail = text;
+    }
+    throw new Error(detail || `HTTP ${res.status} ${res.statusText} @ ${url}`);
   }
   return res.json() as Promise<T>;
 }

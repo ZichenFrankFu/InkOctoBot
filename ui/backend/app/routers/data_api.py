@@ -153,7 +153,16 @@ def get_settings():
     data = json.loads(p.read_text("utf-8")) if p.exists() else {}
     defaults = _default_settings()
     for k, v in defaults.items():
-        if k not in data: data[k] = v
+        if k not in data:
+            data[k] = v
+    # Deep-merge providers so new ones (e.g. gemini) always appear
+    for pname, pdef in defaults.get("providers", {}).items():
+        if pname not in data.get("providers", {}):
+            data.setdefault("providers", {})[pname] = pdef
+    # Deep-merge pipeline roles
+    for rname, rdef in defaults.get("pipeline", {}).items():
+        if rname not in data.get("pipeline", {}):
+            data.setdefault("pipeline", {})[rname] = rdef
     return data
 @router.put("/settings")
 def save_settings(body: dict = Body(...)):

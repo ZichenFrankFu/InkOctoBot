@@ -203,9 +203,13 @@ export default function EditorPage({ projectId }: { projectId: string }) {
               data.step === "actor_agents" ? "Actor Agents" :
               data.step === "evaluator" ? "Evaluator" : "Editor-Writer";
             const resultText = data.result?.text
-              ? `生成完成！共 ${data.result.text.length} 字。`
-              : data.result?.summary || data.result?.score !== undefined
+              ? (data.result.error ? `生成出错：${data.result.error}` : `生成完成！共 ${data.result.text.length} 字。`)
+              : data.result?.error
+              ? `出错：${data.result.error}`
+              : (data.result?.score !== undefined)
               ? `评估完成。得分：${data.result.score}/100`
+              : data.result?.summary
+              ? data.result.summary
               : JSON.stringify(data.result || {}).slice(0, 200);
             return [...filtered, {
               agent: agentName, content: resultText,
