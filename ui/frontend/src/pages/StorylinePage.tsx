@@ -198,21 +198,20 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
   const canvasW = Math.max(1200, (nodes.length > 0 ? Math.max(...nodes.map(n => n.x)) : 0) + NODE_W + 200);
   const canvasH = Math.max(600, (nodes.length > 0 ? Math.max(...nodes.map(n => n.y)) : 0) + NODE_H + 200);
 
-  // --- Week timeline data ---
-  const weeks = useMemo(() => {
-    const weekMap = new Map<number, StoryNode[]>();
-    nodes.forEach(n => {
-      const w = n.week || 1;
-      if (!weekMap.has(w)) weekMap.set(w, []);
-      weekMap.get(w)!.push(n);
+  // --- Timeline data (grouped by time text) ---
+  const timeSegments = useMemo(() => {
+    const timeMap = new Map<string, StoryNode[]>();
+    const sorted = [...nodes].sort((a, b) => (a.chapter_num || 0) - (b.chapter_num || 0));
+    sorted.forEach(n => {
+      const key = n.time || `章节 ${n.chapter_num || "?"}`;
+      if (!timeMap.has(key)) timeMap.set(key, []);
+      timeMap.get(key)!.push(n);
     });
-    return Array.from(weekMap.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([week, wNodes]) => ({
-        week,
-        count: wNodes.length,
-        nodeIds: wNodes.map(n => n.id),
-      }));
+    return Array.from(timeMap.entries()).map(([label, tNodes]) => ({
+      label,
+      count: tNodes.length,
+      nodeIds: tNodes.map(n => n.id),
+    }));
   }, [nodes]);
 
   // --- Edge paths (bezier) ---
@@ -306,28 +305,30 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
           <div style={{ padding: "24px 20px", minHeight: "100%" }}>
             {(() => {
               // Group nodes by week
-              const weekGroups = new Map<number, StoryNode[]>();
-              const sorted = [...nodes].sort((a, b) => (a.week || 1) - (b.week || 1) || (a.chapter_num || 0) - (b.chapter_num || 0));
+              // Group by time period (use time field or fall back to chapter order)
+              const timeGroups = new Map<string, StoryNode[]>();
+              const sorted = [...nodes].sort((a, b) => (a.chapter_num || 0) - (b.chapter_num || 0));
               sorted.forEach(n => {
-                const w = n.week || 1;
-                if (!weekGroups.has(w)) weekGroups.set(w, []);
-                weekGroups.get(w)!.push(n);
+                const key = n.time || `章节 ${n.chapter_num || "?"}`;
+                if (!timeGroups.has(key)) timeGroups.set(key, []);
+                timeGroups.get(key)!.push(n);
               });
-              const weekEntries = Array.from(weekGroups.entries()).sort((a, b) => a[0] - b[0]);
+              const weekEntries = Array.from(timeGroups.entries());
 
-              return weekEntries.map(([week, weekNodes], wi) => (
-                <div key={week} style={{ position: "relative", marginBottom: 8 }}>
-                  {/* Week label + vertical line */}
+              return weekEntries.map(([timeLabel, weekNodes], wi) => (
+                <div key={timeLabel} style={{ position: "relative", marginBottom: 8 }}>
+                  {/* Time label + vertical line */}
                   <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
                     {/* Timeline spine */}
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 48, flexShrink: 0 }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 80, flexShrink: 0 }}>
                       <div style={{
-                        width: 32, height: 32, borderRadius: "50%",
+                        minWidth: 64, padding: "4px 10px", borderRadius: 16,
                         background: "var(--accent-subtle)", border: "2px solid var(--accent)",
                         display: "flex", alignItems: "center", justifyContent: "center",
-                        fontSize: 11, fontWeight: 700, color: "var(--accent)", zIndex: 2,
+                        fontSize: 10, fontWeight: 700, color: "var(--accent)", zIndex: 2,
+                        textAlign: "center", lineHeight: 1.3, whiteSpace: "nowrap",
                       }}>
-                        W{week}
+                        {timeLabel.length > 8 ? timeLabel.slice(0, 8) + "…" : timeLabel}
                       </div>
                       {wi < weekEntries.length - 1 && (
                         <div style={{ width: 2, flex: 1, minHeight: 20, background: "var(--border)", marginTop: 4 }} />
@@ -430,12 +431,12 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
                   />
                 </div>
                 <div className="field mb-12">
-                  <label className="label">时间</label>
+                  <label className="label">时间段</label>
                   <input
                     className="input"
                     value={sel.time || ""}
                     onChange={e => updateNode(sel.id, "time", e.target.value)}
-                    placeholder="例：第3天·黄昏"
+                    placeholder="例：第一纪元 121年·秋"
                   />
                 </div>
                 <div className="field mb-12">
@@ -445,17 +446,6 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
                     value={sel.location || ""}
                     onChange={e => updateNode(sel.id, "location", e.target.value)}
                     placeholder="例：云隐山·剑庐"
-                  />
-                </div>
-                <div className="field mb-12">
-                  <label className="label">所属周</label>
-                  <input
-                    className="input"
-                    type="number"
-                    value={sel.week ?? 1}
-                    onChange={e => updateNode(sel.id, "week", e.target.value ? +e.target.value : 1)}
-                    min={1}
-                    style={{ width: 100 }}
                   />
                 </div>
                 <div className="field mb-12">
@@ -560,17 +550,17 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
         }}
       >
         <span style={{ fontSize: 11, color: "var(--text-secondary)", marginRight: 12, whiteSpace: "nowrap", fontWeight: 600 }}>
-          时间周
+          时间线
         </span>
-        {weeks.length === 0 ? (
-          <span style={{ fontSize: 11, color: "var(--text-disabled)" }}>暂无周数据，在节点详情中设置「所属周」</span>
+        {timeSegments.length === 0 ? (
+          <span style={{ fontSize: 11, color: "var(--text-disabled)" }}>暂无时间数据，在节点详情中设置「时间段」</span>
         ) : (
           <div style={{ display: "flex", gap: 2, flex: 1, alignItems: "stretch", height: 40 }}>
-            {weeks.map(({ week, count, nodeIds }) => {
+            {timeSegments.map(({ label, count, nodeIds }, idx) => {
               const isActive = sel ? nodeIds.includes(sel.id) : false;
               return (
                 <div
-                  key={week}
+                  key={`${label}-${idx}`}
                   onClick={() => {
                     if (nodeIds.length > 0) setSelected(nodeIds[0]);
                   }}
@@ -586,10 +576,11 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
                     borderRadius: 6,
                     cursor: "pointer",
                     transition: "all 0.15s",
+                    padding: "0 4px",
                   }}
                 >
-                  <span style={{ fontSize: 12, fontWeight: 700, color: isActive ? "var(--accent)" : "var(--text-primary)" }}>
-                    W{week}
+                  <span style={{ fontSize: 10, fontWeight: 700, color: isActive ? "var(--accent)" : "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
+                    {label.length > 6 ? label.slice(0, 6) + "…" : label}
                   </span>
                   <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>
                     {count}节点

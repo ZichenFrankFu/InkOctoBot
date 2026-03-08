@@ -59,7 +59,6 @@ export default function App() {
   const [sidebarW, setSidebarW] = useState(220);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<string>("");
-  const [showProjMenu, setShowProjMenu] = useState(false);
   const dragging = useRef(false);
 
   useEffect(() => {
@@ -71,23 +70,6 @@ export default function App() {
       })
       .catch(() => {});
   }, []);
-
-  const createProject = async () => {
-    const name = prompt("新项目名称：");
-    if (!name) return;
-    try {
-      const res: Project = await fetch("/api/data/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      }).then(r => r.json());
-      setProjects(prev => [...prev, res]);
-      setActiveProject(res.id);
-    } catch (e) {
-      console.error(e);
-    }
-    setShowProjMenu(false);
-  };
 
   const activeProjectName = projects.find(p => p.id === activeProject)?.name || "未选择";
 
@@ -132,33 +114,12 @@ export default function App() {
               {group.section === "创作" ? (
                 <div className="sidebar-section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingRight: 8 }}>
                   <span>{group.section}</span>
-                  <div style={{ position: "relative" }}>
-                    <button
-                      onClick={() => setShowProjMenu(!showProjMenu)}
-                      className="btn-ghost"
-                      style={{ padding: "2px 8px", fontSize: 10, letterSpacing: 0, textTransform: "none" }}
-                      title={`当前项目：${activeProjectName}`}
-                    >
-                      当前：{activeProjectName.length > 6 ? activeProjectName.slice(0, 6) + "…" : activeProjectName} ▾
-                    </button>
-                    {showProjMenu && (
-                      <div className="dropdown" style={{ top: "100%", right: 0, marginTop: 4 }}>
-                        {projects.map(p => (
-                          <button
-                            key={p.id}
-                            className={`dropdown-item${p.id === activeProject ? " active" : ""}`}
-                            onClick={() => { setActiveProject(p.id); setShowProjMenu(false); }}
-                          >
-                            {p.name}
-                          </button>
-                        ))}
-                        <div className="dropdown-divider" />
-                        <button className="dropdown-item" onClick={createProject} style={{ color: "var(--jade)" }}>
-                          + 新建项目
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  <span
+                    style={{ padding: "2px 8px", fontSize: 10, letterSpacing: 0, color: "var(--text-secondary)" }}
+                    title={`当前项目：${activeProjectName}`}
+                  >
+                    当前：{activeProjectName.length > 6 ? activeProjectName.slice(0, 6) + "…" : activeProjectName}
+                  </span>
                 </div>
               ) : (
                 <div className="sidebar-section-label">{group.section}</div>
@@ -187,7 +148,7 @@ export default function App() {
         {tab === "rankings" && <RankingsPage />}
         {tab === "references" && <ReferenceLibraryPage />}
         {tab === "analysis" && <AnalysisDashboardPage />}
-        {tab === "projects" && <ProjectListPage />}
+        {tab === "projects" && <ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} />}
         {tab === "project-setup" && <ProjectSetupPage projectId={activeProject} />}
         {tab === "editor" && <EditorPage projectId={activeProject} />}
         {tab === "characters" && <CharacterManagerPage projectId={activeProject} projects={projects} />}

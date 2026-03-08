@@ -279,7 +279,6 @@ export default function ReferenceLibraryPage() {
             <p>录入你喜欢的作品 &mdash; 网文、文学、电影、动漫均可 &middot; 记录审美倾向 &middot; 自动提取风格特征</p>
           </div>
           <div className="flex gap-8">
-            <button className="btn" onClick={() => setShowUpload(true)}>上传正文文本</button>
             <button className="btn-primary" onClick={() => setShowAddWork(true)}>+ 添加作品</button>
           </div>
         </div>
@@ -411,7 +410,7 @@ export default function ReferenceLibraryPage() {
                     </div>
                   </div>
                   <div className="flex gap-6" style={{ flexShrink: 0 }}>
-                    {["web_novel", "literature", "poetry"].includes(sel.media_type) && !sel.has_full_text && (
+                    {!sel.has_full_text && (
                       <button className="btn" onClick={() => { setUTitle(sel.title); setUCreator(sel.creator || ""); setUMedia(sel.media_type); setUGenre(sel.genre || ""); setShowUpload(true); }}>
                         上传正文文本
                       </button>

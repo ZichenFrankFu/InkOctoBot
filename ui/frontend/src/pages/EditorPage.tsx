@@ -203,6 +203,31 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     }
   };
 
+  const handleRollback = useCallback((stepIndex: number) => {
+    // Reset pipeline steps from stepIndex onward
+    setPipelineSteps(prev => prev.map((s, i) => i >= stepIndex ? { ...s, status: "pending", detail: PIPELINE_STEPS[i].detail } : s));
+    // Find messages from this agent onward and remove them
+    const agentName = PIPELINE_STEPS[stepIndex].step;
+    const firstMsgIdx = chatMessages.findIndex(m => m.agent === agentName);
+    if (firstMsgIdx >= 0) {
+      setChatMessages(prev => prev.slice(0, firstMsgIdx));
+    }
+    setWaitingForConfirm(false);
+    setGenerating(false);
+    setCurrentAgent(null);
+    // Add system message
+    setChatMessages(prev => [...prev, { agent: "System", content: `已回退到「${agentName}」阶段。你可以重新开始此步骤。`, status: "done", timestamp: Date.now() }]);
+    // Restart from this step
+    setTimeout(() => simulateAgentWork(agentName, stepIndex), 500);
+  }, [chatMessages, simulateAgentWork]);
+
+  const handleWriteToEditor = useCallback(() => {
+    // Mock: write the generated content to the editor
+    const generatedText = "【AI 生成内容】\n\n" + (activeCh?.synopsis || "章节内容") + "\n\n（此处为 Pipeline 生成的完整章节内容，连接真实模型后将替换为实际生成结果。）";
+    setContent(prev => prev + "\n\n" + generatedText);
+    setChatMessages(prev => [...prev, { agent: "System", content: "已将生成内容写入编辑器！", status: "done", timestamp: Date.now() }]);
+  }, [activeCh]);
+
   const sendChatMessage = () => {
     if (!chatInput.trim()) return;
     const msg = chatInput.trim();
@@ -257,6 +282,19 @@ export default function EditorPage({ projectId }: { projectId: string }) {
               </div>
             ))}
           </div>
+          <div style={{ padding: "8px 10px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
+            <div className="label mb-4" style={{ fontSize: 10 }}>版本记录</div>
+            <div style={{ maxHeight: 100, overflowY: "auto" }}>
+              <div className="text-xs text-muted" style={{ padding: "4px 6px", cursor: "pointer", borderRadius: 4 }}
+                onMouseEnter={e => e.currentTarget.style.background = "var(--bg-surface-hover)"}
+                onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                当前版本 · {new Date().toLocaleDateString("zh-CN")}
+              </div>
+              <div className="text-xs text-muted" style={{ padding: "4px 6px", opacity: 0.6 }}>
+                连接模型后自动生成版本历史
+              </div>
+            </div>
+          </div>
           <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)", fontSize: 11, color: "var(--text-tertiary)", flexShrink: 0 }}>{totalCh} 章 &middot; {totalW.toLocaleString()} 字</div>
         </div>
         <div className="panel-resize-h" {...leftPanel.handleProps} />
@@ -292,7 +330,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
             {aiTab === "outline" && <OutlineTab synopsis={activeCh?.synopsis || ""} onChange={updateSynopsis} onSave={handleSaveOutline}
               onStartGeneration={() => { setAiTab("inspire"); setTimeout(() => { if (!generating) startGeneration(); }, 300); }} />}
             {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} chatMessages={chatMessages} chatInput={chatInput}
-              onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} />}
+              onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} />}
           </div>
@@ -329,9 +367,9 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration }: { synopsi
   );
 }
 
-function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue }: {
+function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor }: {
   steps: PipelineStatus[]; generating: boolean; onStart: () => void; chatMessages: ChatMessage[]; chatInput: string;
-  onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void;
+  onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void;
 }) {
   const chatEndRef = useRef<HTMLDivElement>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
@@ -348,7 +386,13 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
       {/* Progress bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 10, padding: "6px 0" }}>
         {steps.map((s, i) => (
-          <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+          <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, cursor: s.status === "done" ? "pointer" : "default" }}
+            onClick={() => {
+              if (s.status !== "done") return;
+              if (onRollback) onRollback(i);
+            }}
+            title={s.status === "done" ? `点击回退到「${s.step}」` : undefined}
+          >
             <div style={{ width: "100%", height: 4, borderRadius: 2, background: s.status === "done" ? "var(--jade)" : s.status === "running" ? "var(--gold)" : "var(--border)", transition: "background 0.3s" }} />
             <span style={{ fontSize: 9, color: s.status === "done" ? "var(--jade)" : s.status === "running" ? "var(--gold)" : "var(--text-disabled)" }}>{s.step.split(" ")[0]}</span>
           </div>
@@ -368,7 +412,13 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
                 <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
                   {style.name}{msg.status === "thinking" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "#f9ab00" }}>思考中...</span>}
                 </div>
-                <div style={{ padding: "8px 12px", borderRadius: 10, background: style.bg, borderLeft: isUser ? "none" : `3px solid ${style.border}`, borderRight: isUser ? `3px solid ${style.border}` : "none", fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", wordBreak: "break-word", whiteSpace: "pre-wrap" }}>{msg.content}</div>
+                <div style={{ padding: "8px 12px", borderRadius: 10, background: style.bg, borderLeft: isUser ? "none" : `3px solid ${style.border}`, borderRight: isUser ? `3px solid ${style.border}` : "none", fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", wordBreak: "break-word", whiteSpace: "pre-wrap" }}>
+                  {msg.isQuestion ? (
+                    <QuestionChoices content={msg.content} onChoose={(choice) => {
+                      onChatInputChange(choice);
+                    }} />
+                  ) : msg.content}
+                </div>
                 {msg.agent !== "User" && msg.agent !== "System" && msg.status === "done" && (
                   <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", marginTop: 4, color: "var(--text-tertiary)" }}
                     onClick={() => {}}>
@@ -388,10 +438,18 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
         )}
         {!generating && chatMessages.length > 0 && chatMessages[chatMessages.length - 1]?.agent === "System" && (
           <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "12px 0", borderTop: "1px dashed var(--border)", marginTop: 8 }}>
-            <button className="btn-primary" style={{ padding: "8px 20px", fontSize: 13, borderRadius: 20 }} onClick={() => {}}>
+            <button className="btn-primary" style={{ padding: "8px 20px", fontSize: 13, borderRadius: 20 }} onClick={() => {
+              if (onWriteToEditor) onWriteToEditor();
+            }}>
               确认完成，写入编辑器
             </button>
-            <button className="btn" style={{ padding: "8px 16px", fontSize: 12, borderRadius: 20 }} onClick={() => {}}>
+            <button className="btn" style={{ padding: "8px 16px", fontSize: 12, borderRadius: 20 }} onClick={() => {
+              // Rollback to last completed step
+              const lastDone = [...steps].reverse().findIndex(s => s.status === "done");
+              if (lastDone >= 0 && onRollback) {
+                onRollback(steps.length - 1 - lastDone);
+              }
+            }}>
               回退上一步
             </button>
           </div>
@@ -422,6 +480,69 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange }:
         <div className="field mb-12"><label className="label">重写指令（可选）</label><textarea className="input" value={prompt} onChange={e => onPromptChange(e.target.value)} rows={3} placeholder={"告诉 AI 你想怎么改...\n例如：更紧张、加入内心描写、换成第一人称"} /></div>
         <button className="btn-primary w-full" disabled>AI 重写此段落</button><p className="text-xs text-muted mt-8">连接模型后可用。</p>
       </>) : (<div className="empty-state" style={{ padding: "32px 16px" }}><h4>选中文本以重写</h4><p>在编辑器中选中文本，将出现「AI重写」按钮</p></div>)}
+    </div>
+  );
+}
+
+function QuestionChoices({ content, onChoose }: { content: string; onChoose: (choice: string) => void }) {
+  const [page, setPage] = useState(0);
+  // Parse choices from content: look for **方案 X：...** patterns
+  const parts = content.split(/(\*\*方案 [A-Z]：[^*]+\*\*)/g);
+  const intro = parts[0] || "";
+  const choices: { label: string; detail: string }[] = [];
+  let current = "";
+  for (const line of content.split("\n")) {
+    const match = line.match(/^\*\*方案 ([A-Z])：(.+)\*\*$/);
+    if (match) {
+      if (current) choices.push({ label: current, detail: "" });
+      current = `方案 ${match[1]}：${match[2]}`;
+    } else if (current && line.match(/^\d+\./)) {
+      choices[choices.length] = choices[choices.length] || { label: current, detail: "" };
+      if (!choices[choices.length - 1]) choices.push({ label: current, detail: line });
+      else choices[choices.length - 1] = { ...choices[choices.length - 1], detail: (choices[choices.length - 1].detail ? choices[choices.length - 1].detail + "\n" : "") + line };
+    }
+  }
+  // Simpler approach: split into sections by **方案
+  const sections = content.split(/(?=\*\*方案 [A-Z])/);
+  const headerText = sections[0] || "";
+  const choiceSections = sections.slice(1);
+  const ITEMS_PER_PAGE = 2;
+  const totalPages = Math.ceil(choiceSections.length / ITEMS_PER_PAGE);
+  const pageChoices = choiceSections.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 10, whiteSpace: "pre-wrap" }}>{headerText.trim()}</div>
+      {pageChoices.map((section, i) => {
+        const lines = section.trim().split("\n");
+        const title = lines[0].replace(/\*\*/g, "").trim();
+        const details = lines.slice(1).join("\n").trim();
+        return (
+          <button key={i + page * ITEMS_PER_PAGE} onClick={() => onChoose(`选择${title}`)}
+            style={{
+              display: "block", width: "100%", textAlign: "left", padding: "10px 14px",
+              marginBottom: 8, borderRadius: 8, border: "1px solid var(--border-hover)",
+              background: "var(--bg-surface)", cursor: "pointer", transition: "all 0.15s",
+              color: "var(--text-primary)", fontSize: 13,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--accent-subtle)"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border-hover)"; e.currentTarget.style.background = "var(--bg-surface)"; }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--accent)" }}>{title}</div>
+            {details && <div style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{details}</div>}
+          </button>
+        );
+      })}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-8" style={{ marginTop: 6 }}>
+          <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>← 上一页</button>
+          <span className="text-xs text-muted">{page + 1}/{totalPages}</span>
+          <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>下一页 →</button>
+        </div>
+      )}
+      <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}>
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>或直接输入修改意见</span>
+      </div>
     </div>
   );
 }

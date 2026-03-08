@@ -348,11 +348,7 @@ export default function RankingsPage() {
                     </thead>
                     <tbody>
                       {entries.map((e) => {
-                        const nov = e.novel as any;
-                        const title =
-                          nov?.titles?.find((t: any) => t.is_primary)?.title ||
-                          nov?.title ||
-                          `(uid: ${e.novel_uid})`;
+                        const row = e as any;
                         return (
                           <tr
                             key={`${e.snapshot_id}-${e.novel_uid}`}
@@ -370,12 +366,12 @@ export default function RankingsPage() {
                               style={{ fontWeight: 500, maxWidth: 280, color: "var(--accent)" }}
                               className="truncate"
                             >
-                              {title}
+                              {row.title || `(uid: ${e.novel_uid})`}
                             </td>
-                            <td className="text-muted">{nov?.author || "—"}</td>
+                            <td className="text-muted">{row.author || "—"}</td>
                             <td>
-                              {nov?.main_category && (
-                                <span className="tag category">{nov.main_category}</span>
+                              {row.main_category && (
+                                <span className="tag category">{row.main_category}</span>
                               )}
                             </td>
                             <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>
@@ -392,8 +388,8 @@ export default function RankingsPage() {
                                 color: "var(--text-tertiary)",
                               }}
                             >
-                              {nov?.total_words
-                                ? `${(nov.total_words / 10000).toFixed(1)}万`
+                              {row.total_words
+                                ? `${(row.total_words / 10000).toFixed(1)}万`
                                 : "—"}
                             </td>
                           </tr>
