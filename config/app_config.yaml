@@ -1,0 +1,23 @@
+# InkOctoBot Application Configuration
+
+project:
+  default_data_dir: "data/projects"
+  max_chapter_retries: 3
+
+memory:
+  layer2_max_chapters: 10
+  layer2_max_tokens: 3000
+  layer1_max_tokens: 6000
+  consolidation_auto: true
+
+evaluation:
+  pass_threshold: 60
+  max_targeted_rewrites: 3
+
+events:
+  enable_proactive: true
+  suggestion_queue_size: 100
+
+cost:
+  default_budget_usd: 5.0
+  confirm_threshold_usd: 0.50

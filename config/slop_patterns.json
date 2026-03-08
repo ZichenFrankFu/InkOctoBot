@@ -1,4 +1,30 @@
-﻿{
-  "description": "AI flavor detection patterns",
-  "patterns": []
+{
+  "description": "AI flavor (slop) detection patterns for Chinese creative writing",
+  "patterns": [
+    {"pattern": "不禁", "weight": 0.3, "category": "cliche_phrase"},
+    {"pattern": "嘴角.*上扬", "weight": 0.5, "category": "cliche_action"},
+    {"pattern": "眼中闪过.*光芒", "weight": 0.5, "category": "cliche_action"},
+    {"pattern": "深吸一口气", "weight": 0.3, "category": "cliche_action"},
+    {"pattern": "心中一凛", "weight": 0.3, "category": "cliche_phrase"},
+    {"pattern": "宛如.*般", "weight": 0.2, "category": "cliche_simile"},
+    {"pattern": "如同.*一般", "weight": 0.2, "category": "cliche_simile"},
+    {"pattern": "紧紧握住.*拳头", "weight": 0.4, "category": "cliche_action"},
+    {"pattern": "值得注意的是", "weight": 0.6, "category": "ai_tell"},
+    {"pattern": "总而言之", "weight": 0.5, "category": "ai_tell"},
+    {"pattern": "综上所述", "weight": 0.7, "category": "ai_tell"},
+    {"pattern": "让我们", "weight": 0.4, "category": "ai_tell"},
+    {"pattern": "不由自主", "weight": 0.3, "category": "cliche_phrase"},
+    {"pattern": "一股.*涌上心头", "weight": 0.4, "category": "cliche_emotion"},
+    {"pattern": "嘴角勾起.*弧度", "weight": 0.5, "category": "cliche_action"},
+    {"pattern": "瞳孔.*缩", "weight": 0.4, "category": "cliche_action"},
+    {"pattern": "心中暗道", "weight": 0.3, "category": "cliche_phrase"},
+    {"pattern": "一抹.*笑意", "weight": 0.3, "category": "cliche_expression"},
+    {"pattern": "目光.*交汇", "weight": 0.3, "category": "cliche_action"},
+    {"pattern": "空气仿佛.*凝固", "weight": 0.5, "category": "cliche_atmosphere"},
+    {"pattern": "浑身一震", "weight": 0.3, "category": "cliche_action"},
+    {"pattern": "面色一变", "weight": 0.2, "category": "cliche_expression"},
+    {"pattern": "需要注意的是", "weight": 0.6, "category": "ai_tell"},
+    {"pattern": "首先.*其次.*最后", "weight": 0.5, "category": "ai_structure"},
+    {"pattern": "一言以蔽之", "weight": 0.4, "category": "ai_tell"}
+  ]
 }

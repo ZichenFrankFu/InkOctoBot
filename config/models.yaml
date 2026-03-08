@@ -1,0 +1,65 @@
+# Model routing configuration
+# Each agent role can be assigned a specific provider + model
+
+default_provider: ollama
+default_model: "qwen2.5:14b"
+
+role_overrides:
+  # Planning agents — benefit from stronger models
+  scene_director:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.6
+    max_tokens: 4000
+
+  story_architect:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.5
+    max_tokens: 6000
+
+  # Production agents
+  actor_agent:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.8
+    max_tokens: 3000
+
+  narrator_agent:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.8
+    max_tokens: 2000
+
+  editor_writer:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.7
+    max_tokens: 8000
+
+  # Evaluation — lower temperature for precision
+  evaluator:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.3
+    max_tokens: 4000
+
+  edit_analyzer:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.3
+    max_tokens: 3000
+
+  # Memory consolidation
+  consolidator:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.3
+    max_tokens: 2000
+
+  # Disambiguation
+  disambiguator:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.5
+    max_tokens: 2000
