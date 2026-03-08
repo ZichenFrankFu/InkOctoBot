@@ -46,20 +46,41 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const [renameVal, setRenameVal] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleVal, setTitleVal] = useState("");
-  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval">("outline");
+  // Restore aiTab from session if pipeline was running
+  const _savedEditorState = (() => {
+    try { const raw = sessionStorage.getItem(`inkocto_editor_chat_${projectId}`); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  })();
+  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval">(_savedEditorState?.aiTab || "outline");
   const [selection, setSelection] = useState<{ start: number; end: number; text: string } | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [rewriteModel, setRewriteModel] = useState("default");
   const [pipelineSteps, setPipelineSteps] = useState<PipelineStatus[]>(PIPELINE_STEPS);
   const [generating, setGenerating] = useState(false);
   const [evalResult, setEvalResult] = useState<EvalResult | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(_savedEditorState?.chatMessages || []);
   const [chatInput, setChatInput] = useState("");
   const [currentAgent, setCurrentAgent] = useState<string | null>(null);
   const [waitingForConfirm, setWaitingForConfirm] = useState(false);
+  const [mergePreview, setMergePreview] = useState<{ original: string; generated: string } | null>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 160, maxSize: 350 });
   const rightPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 200, maxSize: 500 });
+
+  // Persist editor chat state to sessionStorage
+  const EDITOR_CHAT_KEY = `inkocto_editor_chat_${projectId}`;
+  useEffect(() => {
+    // Only persist "done" messages to avoid saving stale thinking/speaking states
+    const persistable = chatMessages.filter(m => m.status === "done");
+    sessionStorage.setItem(EDITOR_CHAT_KEY, JSON.stringify({ aiTab, chatMessages: persistable }));
+  }, [aiTab, chatMessages, EDITOR_CHAT_KEY]);
+
+  // Auto-switch to inspire tab when pipeline is running on mount
+  useEffect(() => {
+    if (generating && aiTab !== "inspire") {
+      setAiTab("inspire");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generating]);
 
   useEffect(() => {
     const pid = projectId || "default";
@@ -144,6 +165,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   };
 
   const generatedTextRef = useRef<string>("");
+  const stepTextRef = useRef<string>("");  // text for current step only
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const eventCursorRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
@@ -193,6 +215,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
           s.step === data.label ? { ...s, status: "running" as const, detail: data.detail } : s
         ));
         setCurrentAgent(data.label);
+        stepTextRef.current = "";
         setChatMessages(prev => [...prev, {
           agent: data.label, content: data.detail || "正在处理中...",
           status: "thinking", timestamp: Date.now(),
@@ -200,13 +223,18 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         break;
       case "token":
         generatedTextRef.current += data.content;
+        stepTextRef.current += data.content;
         setChatMessages(prev => {
           const last = prev[prev.length - 1];
           if (last && (last.status === "thinking" || last.status === "speaking")) {
             const updated = [...prev];
+            // Show last 600 chars of current step text as preview
+            const preview = stepTextRef.current.length > 600
+              ? "...\n" + stepTextRef.current.slice(-600)
+              : stepTextRef.current;
             updated[updated.length - 1] = {
               ...last,
-              content: generatedTextRef.current.slice(-400) + (generatedTextRef.current.length > 400 ? "\n..." : ""),
+              content: preview,
               status: "speaking",
             };
             return updated;
@@ -214,23 +242,41 @@ export default function EditorPage({ projectId }: { projectId: string }) {
           return prev;
         });
         break;
+      case "handoff":
+        // Show agent I/O transitions as system messages
+        setChatMessages(prev => [...prev, {
+          agent: "System",
+          content: `[${data.from} → ${data.to}] ${data.content}`,
+          status: "done", timestamp: Date.now(),
+        }]);
+        break;
       case "step_done": {
         const label = stepToLabel(data.step);
         setPipelineSteps(prev => prev.map(s =>
           s.step === label ? { ...s, status: "done" as const, detail: "已完成" } : s
         ));
+        // Replace thinking/speaking message with full generated content
         setChatMessages(prev => {
           const filtered = prev.filter(m => m.status !== "thinking" && m.status !== "speaking");
-          const resultText = data.result?.text
-            ? (data.result.error ? `生成出错：${data.result.error}` : `生成完成！共 ${data.result.text.length} 字。`)
-            : data.result?.error
-            ? `出错：${data.result.error}`
-            : (data.result?.score !== undefined)
-            ? `评估完成。得分：${data.result.score}/100`
-            : data.result?.summary
-            ? data.result.summary
-            : JSON.stringify(data.result || {}).slice(0, 200);
-          return [...filtered, { agent: label, content: resultText, status: "done", timestamp: Date.now() }];
+          let resultContent: string;
+          if (data.result?.text && !data.result?.error) {
+            // Show full text as the agent's output message
+            resultContent = data.result.text;
+          } else if (data.result?.error) {
+            resultContent = `生成出错：${data.result.error}`;
+          } else if (data.result?.score !== undefined) {
+            resultContent = `评估完成。得分：${data.result.score}/100`;
+            if (data.result.issues?.length) {
+              resultContent += "\n\n问题：\n" + data.result.issues.map((i: any) =>
+                `- [${i.severity}] ${i.type}: ${i.description}`
+              ).join("\n");
+            }
+          } else if (data.result?.summary) {
+            resultContent = data.result.summary;
+          } else {
+            resultContent = JSON.stringify(data.result || {}, null, 2).slice(0, 1000);
+          }
+          return [...filtered, { agent: label, content: resultContent, status: "done", timestamp: Date.now() }];
         });
         if (data.step === "evaluator" && data.result) {
           setEvalResult({
@@ -425,19 +471,31 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const handleWriteToEditor = useCallback(() => {
     const text = generatedTextRef.current;
     if (text && text.length > 10) {
-      setContent(prev => prev ? prev + "\n\n" + text : text);
-      setChatMessages(prev => [...prev, { agent: "System", content: `已将 ${text.length} 字生成内容写入编辑器！`, status: "done", timestamp: Date.now() }]);
-      // Save version
-      apiPost("/api/editor/save-version", {
-        project_id: projectId || "default",
-        chapter_id: activeChId,
-        text,
-        source: "ai_generated",
-      }).catch(() => {});
+      // Show merge preview instead of directly inserting
+      setMergePreview({ original: content, generated: text });
+      setChatMessages(prev => [...prev, { agent: "System", content: `已准备 ${text.length} 字生成内容，请在编辑器中查看差异并确认写入方式。`, status: "done", timestamp: Date.now() }]);
     } else {
       setChatMessages(prev => [...prev, { agent: "System", content: "没有可写入的生成内容。请先运行 Pipeline。", status: "done", timestamp: Date.now() }]);
     }
-  }, [projectId, activeChId]);
+  }, [projectId, activeChId, content]);
+
+  const handleMergeAccept = useCallback((mode: "append" | "replace") => {
+    if (!mergePreview) return;
+    const text = mergePreview.generated;
+    if (mode === "replace") {
+      setContent(text);
+    } else {
+      setContent(prev => prev ? prev + "\n\n" + text : text);
+    }
+    setChatMessages(prev => [...prev, { agent: "System", content: `已${mode === "replace" ? "替换" : "追加"}写入 ${text.length} 字到编辑器！`, status: "done", timestamp: Date.now() }]);
+    apiPost("/api/editor/save-version", {
+      project_id: projectId || "default",
+      chapter_id: activeChId,
+      text,
+      source: "ai_generated",
+    }).catch(() => {});
+    setMergePreview(null);
+  }, [mergePreview, projectId, activeChId]);
 
   const sendChatMessage = () => {
     if (!chatInput.trim()) return;
@@ -515,9 +573,65 @@ export default function EditorPage({ projectId }: { projectId: string }) {
             <div className="text-xs text-muted mt-4">{activeVol?.title} &middot; {words.toLocaleString()} 字 &middot; 写作 {elapsed} 分钟</div>
           </div>
           <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-            <textarea ref={textRef} className="text-editor-area" value={content} onChange={e => { setContent(e.target.value); setSelection(null); }} onMouseUp={handleMouseUp} onKeyUp={handleMouseUp}
-              placeholder={"在这里开始写作...\n\n提示：\n  双击左侧章节名可重命名\n  选中文本可触发「AI重写」\n  内容会自动保存"} spellCheck={false} style={{ maxWidth: 800, margin: "0 auto", display: "block" }} />
-            {selection && <div style={{ position: "absolute", top: 16, right: 16, zIndex: 50 }}><button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px", borderRadius: 16 }} onClick={() => setAiTab("rewrite")}>AI 重写 ({selection.text.length}字)</button></div>}
+            {mergePreview ? (
+              /* Diff-style merge preview */
+              <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+                <div style={{ padding: "8px 28px", background: "var(--bg-surface-2)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)" }}>AI 生成内容预览 — 请选择写入方式</span>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button className="btn-primary" style={{ fontSize: 12, padding: "6px 16px", background: "var(--jade)", border: "none" }} onClick={() => handleMergeAccept("replace")}>
+                      替换全部
+                    </button>
+                    <button className="btn-primary" style={{ fontSize: 12, padding: "6px 16px" }} onClick={() => handleMergeAccept("append")}>
+                      追加到末尾
+                    </button>
+                    <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => setMergePreview(null)}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+                <div style={{ flex: 1, overflowY: "auto", padding: "16px 28px", maxWidth: 800, margin: "0 auto", width: "100%" }}>
+                  {/* Show existing content as "old" */}
+                  {mergePreview.original && (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--error)", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ display: "inline-block", width: 12, height: 12, background: "var(--error)", opacity: 0.15, borderRadius: 2 }} />
+                        当前内容（{mergePreview.original.length}字）
+                      </div>
+                      <div style={{
+                        padding: "12px 16px", borderRadius: 6, fontSize: 14, lineHeight: 1.8,
+                        fontFamily: "var(--font-serif)", whiteSpace: "pre-wrap", wordBreak: "break-word",
+                        background: "rgba(255,100,100,0.05)", borderLeft: "4px solid var(--error)",
+                        color: "var(--text-secondary)", maxHeight: 200, overflowY: "auto",
+                      }}>
+                        {mergePreview.original}
+                      </div>
+                    </div>
+                  )}
+                  {/* Show generated content as "new" */}
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "var(--jade)", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ display: "inline-block", width: 12, height: 12, background: "var(--jade)", opacity: 0.15, borderRadius: 2 }} />
+                      AI 生成内容（{mergePreview.generated.length}字）
+                    </div>
+                    <div style={{
+                      padding: "12px 16px", borderRadius: 6, fontSize: 14, lineHeight: 1.8,
+                      fontFamily: "var(--font-serif)", whiteSpace: "pre-wrap", wordBreak: "break-word",
+                      background: "rgba(52,168,83,0.05)", borderLeft: "4px solid var(--jade)",
+                      color: "var(--text-primary)",
+                    }}>
+                      {mergePreview.generated}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <textarea ref={textRef} className="text-editor-area" value={content} onChange={e => { setContent(e.target.value); setSelection(null); }} onMouseUp={handleMouseUp} onKeyUp={handleMouseUp}
+                  placeholder={"在这里开始写作...\n\n提示：\n  双击左侧章节名可重命名\n  选中文本可触发「AI重写」\n  内容会自动保存"} spellCheck={false} style={{ maxWidth: 800, margin: "0 auto", display: "block" }} />
+                {selection && <div style={{ position: "absolute", top: 16, right: 16, zIndex: 50 }}><button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px", borderRadius: 16 }} onClick={() => setAiTab("rewrite")}>AI 重写 ({selection.text.length}字)</button></div>}
+              </>
+            )}
           </div>
           <div className="flex items-center justify-between" style={{ padding: "6px 28px", borderTop: "1px solid var(--border)", background: "var(--bg-surface)", flexShrink: 0 }}>
             <div className="flex items-center gap-12 text-xs text-muted"><span>{words.toLocaleString()} 字</span><span>写作 {elapsed} 分钟</span></div>
@@ -726,25 +840,33 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
                 <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
                   {style.name}{msg.status === "thinking" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "#f9ab00" }}>思考中...</span>}
                 </div>
-                <div style={{ padding: "8px 12px", borderRadius: 10, background: style.bg, borderLeft: isUser ? "none" : `3px solid ${style.border}`, borderRight: isUser ? `3px solid ${style.border}` : "none", fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", wordBreak: "break-word", whiteSpace: "pre-wrap" }}>
+                <div style={{ padding: "8px 12px", borderRadius: 10, background: style.bg, borderLeft: isUser ? "none" : `3px solid ${style.border}`, borderRight: isUser ? `3px solid ${style.border}` : "none", fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", wordBreak: "break-word", whiteSpace: "pre-wrap", maxHeight: msg.content.length > 800 ? 300 : undefined, overflowY: msg.content.length > 800 ? "auto" : undefined }}>
                   {msg.isQuestion ? (
                     <QuestionChoices content={msg.content} onChoose={(choice) => {
                       onChatInputChange(choice);
                     }} />
                   ) : msg.content}
                 </div>
-                {msg.agent !== "User" && msg.agent !== "System" && msg.status === "done" && !generating && (
-                  <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", marginTop: 4, color: "var(--text-tertiary)" }}
-                    onClick={() => {
-                      const stepIdx = steps.findIndex(s => s.step === msg.agent);
-                      if (stepIdx >= 0 && onRollback) {
-                        onRollback(stepIdx);
-                      } else {
-                        onStart();
-                      }
-                    }}>
-                    ↻ 重新生成此步骤
-                  </button>
+                {msg.status === "done" && (
+                  <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                    <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
+                      onClick={() => { navigator.clipboard.writeText(msg.content); }}>
+                      复制
+                    </button>
+                    {msg.agent !== "User" && msg.agent !== "System" && !generating && (
+                      <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
+                        onClick={() => {
+                          const stepIdx = steps.findIndex(s => s.step === msg.agent);
+                          if (stepIdx >= 0 && onRollback) {
+                            onRollback(stepIdx);
+                          } else {
+                            onStart();
+                          }
+                        }}>
+                        ↻ 重新生成
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             </div>

@@ -495,6 +495,17 @@ async def _run_pipeline_background(session_id: str):
             scene_result = {"summary": f"场景规划失败：{str(e)[:200]}", "error": str(e)[:200]}
         _emit(session_id, {"type": "step_done", "step": "scene_director", "result": scene_result})
 
+        # Emit handoff: show what Scene Director outputs → Actor Agents receives
+        scene_summary = ""
+        if isinstance(scene_result, dict):
+            scene_summary = scene_result.get("summary", scene_result.get("raw", ""))
+            if not scene_summary:
+                scene_summary = json.dumps(scene_result, ensure_ascii=False, indent=2)[:800]
+        _emit(session_id, {
+            "type": "handoff", "from": "Scene Director", "to": "Actor Agents",
+            "content": f"场景指令已生成：\n{scene_summary[:500]}",
+        })
+
         confirm = await _wait_for_confirm_bg(session_id, "scene_director", "场景拆分完成，是否继续生成？")
         if confirm is None:
             return
@@ -555,6 +566,12 @@ async def _run_pipeline_background(session_id: str):
                 "result": {"text": full_text, "error": str(e)[:200]},
             })
 
+        # Emit handoff: Actor Agents → Editor-Writer
+        _emit(session_id, {
+            "type": "handoff", "from": "Actor Agents", "to": "Editor-Writer",
+            "content": f"角色对话草稿已生成（{len(full_text)}字），将传递给编辑进行润色。",
+        })
+
         confirm = await _wait_for_confirm_bg(session_id, "actor_agents", "角色对话生成完成，是否继续编辑润色？")
         if confirm is None:
             return
@@ -594,6 +611,12 @@ async def _run_pipeline_background(session_id: str):
                 "type": "step_done", "step": "editor_writer",
                 "result": {"text": edited_text, "error": str(e)[:200]},
             })
+
+        # Emit handoff: Editor-Writer → Evaluator
+        _emit(session_id, {
+            "type": "handoff", "from": "Editor-Writer", "to": "Evaluator",
+            "content": f"润色后的文稿（{len(edited_text)}字）已传递给评估器进行质量检查。",
+        })
 
         confirm = await _wait_for_confirm_bg(session_id, "editor_writer", "编辑润色完成，是否继续质量评估？")
         if confirm is None:

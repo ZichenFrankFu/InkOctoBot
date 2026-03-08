@@ -36,19 +36,35 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 220, maxSize: 420 });
 
-  // AI Chat state for character generation
-  const [charChatMessages, setCharChatMessages] = useState<CharChatMsg[]>([]);
+  // AI Chat state for character generation — restore from sessionStorage
+  const CHAR_CHAT_KEY = `inkocto_char_chat_${projectId}`;
+  const _savedCharChat = (() => {
+    try { const raw = sessionStorage.getItem(CHAR_CHAT_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  })();
+  const [charChatMessages, setCharChatMessages] = useState<CharChatMsg[]>(_savedCharChat?.messages || []);
   const [charChatInput, setCharChatInput] = useState("");
   const [charChatLoading, setCharChatLoading] = useState(false);
-  const [showCharChat, setShowCharChat] = useState(false);
+  const [showCharChat, setShowCharChat] = useState(_savedCharChat?.show || false);
+  const [charChatCharId, setCharChatCharId] = useState<string>(_savedCharChat?.charId || "");
   const charChatEndRef = useRef<HTMLDivElement>(null);
   const charAbortRef = useRef<AbortController | null>(null);
 
   // Scroll to bottom on new messages
   useEffect(() => { charChatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [charChatMessages]);
 
-  // Reset chat when switching characters
-  useEffect(() => { setCharChatMessages([]); setShowCharChat(false); }, [editing?.id]);
+  // Persist char chat state
+  useEffect(() => {
+    sessionStorage.setItem(CHAR_CHAT_KEY, JSON.stringify({
+      messages: charChatMessages, show: showCharChat, charId: editing?.id || "",
+    }));
+  }, [charChatMessages, showCharChat, editing?.id, CHAR_CHAT_KEY]);
+
+  // Reset chat when switching to a different character (but not on remount with same char)
+  useEffect(() => {
+    if (editing?.id && editing.id !== charChatCharId) {
+      setCharChatMessages([]); setShowCharChat(false); setCharChatCharId(editing.id);
+    }
+  }, [editing?.id]);
 
   const sendCharChatMessage = async (inputOverride?: string) => {
     const msg = (inputOverride || charChatInput).trim();
@@ -379,14 +395,22 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                           }}>
                             {msg.role === "user" ? "👤" : "🤖"}
                           </div>
-                          <div style={{
-                            maxWidth: "80%", padding: "8px 12px", borderRadius: 10,
-                            background: msg.role === "user" ? "var(--purple-subtle)" : "var(--bg-surface-2)",
-                            borderLeft: msg.role === "user" ? "none" : "3px solid var(--accent)",
-                            borderRight: msg.role === "user" ? "3px solid var(--purple)" : "none",
-                            fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-                          }}>
-                            {msg.content}
+                          <div style={{ maxWidth: "80%" }}>
+                            <div style={{
+                              padding: "8px 12px", borderRadius: 10,
+                              background: msg.role === "user" ? "var(--purple-subtle)" : "var(--bg-surface-2)",
+                              borderLeft: msg.role === "user" ? "none" : "3px solid var(--accent)",
+                              borderRight: msg.role === "user" ? "3px solid var(--purple)" : "none",
+                              fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
+                              maxHeight: msg.content.length > 600 ? 250 : undefined,
+                              overflowY: msg.content.length > 600 ? "auto" : undefined,
+                            }}>
+                              {msg.content}
+                            </div>
+                            <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", marginTop: 2, color: "var(--text-tertiary)" }}
+                              onClick={() => navigator.clipboard.writeText(msg.content)}>
+                              复制
+                            </button>
                           </div>
                         </div>
                       ))}

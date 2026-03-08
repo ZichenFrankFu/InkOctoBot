@@ -467,14 +467,22 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                       }}>
                         {msg.role === "user" ? "👤" : "🤖"}
                       </div>
-                      <div style={{
-                        maxWidth: "80%", padding: "8px 12px", borderRadius: 10,
-                        background: msg.role === "user" ? "var(--purple-subtle)" : "var(--bg-surface-2)",
-                        borderLeft: msg.role === "user" ? "none" : "3px solid var(--accent)",
-                        borderRight: msg.role === "user" ? "3px solid var(--purple)" : "none",
-                        fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", whiteSpace: "pre-wrap",
-                      }}>
-                        {msg.content}
+                      <div style={{ maxWidth: "80%" }}>
+                        <div style={{
+                          padding: "8px 12px", borderRadius: 10,
+                          background: msg.role === "user" ? "var(--purple-subtle)" : "var(--bg-surface-2)",
+                          borderLeft: msg.role === "user" ? "none" : "3px solid var(--accent)",
+                          borderRight: msg.role === "user" ? "3px solid var(--purple)" : "none",
+                          fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", whiteSpace: "pre-wrap",
+                          maxHeight: msg.content.length > 600 ? 250 : undefined,
+                          overflowY: msg.content.length > 600 ? "auto" : undefined,
+                        }}>
+                          {msg.content}
+                        </div>
+                        <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", marginTop: 2, color: "var(--text-tertiary)" }}
+                          onClick={() => navigator.clipboard.writeText(msg.content)}>
+                          复制
+                        </button>
                       </div>
                     </div>
                   ))}
