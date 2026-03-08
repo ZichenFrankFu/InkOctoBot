@@ -79,6 +79,8 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     tone: 50, pacing: 50, perspective: "third", audience: "general",
   });
 
+  const [aiLoading, setAiLoading] = useState(false);
+
   // Snapshots
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [showSnapshots, setShowSnapshots] = useState(false);
@@ -129,31 +131,38 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   };
 
   const sendMessage = async () => {
-    if (!input.trim() || studioTab === "calibration") return;
+    if (!input.trim() || studioTab === "calibration" || aiLoading) return;
     const userMsg: ChatMsg = { role: "user", content: input.trim(), tab: studioTab, timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg]);
     const userInput = input.trim();
     setInput("");
+    setAiLoading(true);
 
-    // Try real AI, fallback to mock
     try {
-      const systemHint = studioTab === "outline" ? "你是网文大纲策划专家。" :
-        studioTab === "characters" ? "你是角色设计专家。" : "你是世界观构建专家。";
+      const systemHints: Record<string, string> = {
+        outline: "你是一个专业的网文大纲策划专家。请根据用户的描述，提供具体、可操作的大纲策划建议。用中文回答，语气专业友好。",
+        characters: "你是一个专业的角色设计专家。请根据用户的描述，提供详细的角色设计建议，包括性格、外貌、背景等。用中文回答，语气专业友好。",
+        world: "你是一个专业的世界观构建专家。请根据用户的描述，提供系统的世界观设定建议，包括力量体系、社会结构等。用中文回答，语气专业友好。",
+      };
       const resp = await apiPost<{ text: string }>("/api/generation/quick-generate", {
         project_id: activeProject || "default",
         chapter_id: "studio_chat",
         synopsis: userInput,
-        system_hint: systemHint,
+        system_hint: systemHints[studioTab] || systemHints.outline,
       });
       const aiMsg: ChatMsg = { role: "assistant", content: resp.text || "生成完成。", tab: studioTab, timestamp: Date.now() };
       setMessages(prev => [...prev, aiMsg]);
-    } catch {
-      // Fallback to mock responses
-      const responses = AI_RESPONSES[studioTab] || [];
-      const aiContent = responses[Math.floor(Math.random() * responses.length)] || "收到！让我思考一下这个方向...";
-      const aiMsg: ChatMsg = { role: "assistant", content: aiContent, tab: studioTab, timestamp: Date.now() };
+    } catch (e: any) {
+      const errMsg = e?.message || "请求失败";
+      const aiMsg: ChatMsg = {
+        role: "assistant",
+        content: `抱歉，AI 暂时无法响应（${errMsg.slice(0, 100)}）。请检查「设置」页面的模型连接配置。`,
+        tab: studioTab,
+        timestamp: Date.now(),
+      };
       setMessages(prev => [...prev, aiMsg]);
     }
+    setAiLoading(false);
   };
 
   const saveSnapshot = () => {
@@ -393,6 +402,14 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                       {PLACEHOLDERS[studioTab]}
                     </div>
                   )}
+                  {aiLoading && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", marginBottom: 8 }}>
+                      <div style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--accent-subtle)", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>🤖</div>
+                      <div style={{ padding: "8px 12px", borderRadius: 10, background: "var(--bg-surface-2)", borderLeft: "3px solid var(--accent)", fontSize: 13, color: "var(--text-tertiary)" }}>
+                        AI 正在思考中...
+                      </div>
+                    </div>
+                  )}
                   {tabMessages.map((msg, i) => (
                     <div key={i} style={{ display: "flex", flexDirection: msg.role === "user" ? "row-reverse" : "row", alignItems: "flex-start", marginBottom: 12, gap: 8 }}>
                       <div style={{
@@ -420,7 +437,9 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                     <input className="input" value={input} onChange={e => setInput(e.target.value)}
                       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
                       placeholder={PLACEHOLDERS[studioTab]?.split("\n")[0] || "输入你的想法..."} style={{ flex: 1, fontSize: 12 }} />
-                    <button className="btn-primary" onClick={sendMessage} disabled={!input.trim()} style={{ fontSize: 12, padding: "6px 14px" }}>发送</button>
+                    <button className="btn-primary" onClick={sendMessage} disabled={!input.trim() || aiLoading} style={{ fontSize: 12, padding: "6px 14px" }}>
+                      {aiLoading ? "思考中..." : "发送"}
+                    </button>
                   </div>
                 </div>
               </>

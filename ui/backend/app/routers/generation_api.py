@@ -31,6 +31,7 @@ class GenerateRequest(BaseModel):
     characters: list[str] = []
     world_rules: str = ""
     style_notes: str = ""
+    system_hint: str = ""
     provider: str = "ollama"
     model: str = ""
 
@@ -59,25 +60,69 @@ def _get_user_settings() -> dict:
     return {}
 
 
+class _SimpleRouter:
+    """Lightweight router that directly instantiates provider from user settings."""
+
+    def __init__(self, provider_type: str, model_name: str, base_url: str = "", api_key: str = ""):
+        from agents.model_providers.base import ProviderConfig
+        self._cfg = ProviderConfig(
+            provider_type=provider_type,
+            model_name=model_name,
+            base_url=base_url or None,
+            api_key=api_key or None,
+        )
+        self._provider = self._make_provider()
+
+    def _make_provider(self):
+        from agents.model_providers.base import BaseLLMProvider
+        ptype = self._cfg.provider_type
+        if ptype == "ollama":
+            from agents.model_providers.ollama_provider import OllamaProvider
+            return OllamaProvider(self._cfg)
+        elif ptype == "deepseek":
+            from agents.model_providers.deepseek_provider import DeepSeekProvider
+            return DeepSeekProvider(self._cfg)
+        elif ptype == "openai":
+            from agents.model_providers.openai_provider import OpenAIProvider
+            return OpenAIProvider(self._cfg)
+        elif ptype == "anthropic":
+            from agents.model_providers.anthropic_provider import AnthropicProvider
+            return AnthropicProvider(self._cfg)
+        elif ptype == "vllm":
+            from agents.model_providers.vllm_provider import VLLMProvider
+            return VLLMProvider(self._cfg)
+        else:
+            from agents.model_providers.ollama_provider import OllamaProvider
+            return OllamaProvider(self._cfg)
+
+    async def generate(self, *, agent_role: str, messages, temperature=None, max_tokens=None, **kw):
+        return await self._provider.generate(messages, temperature=temperature, max_tokens=max_tokens, **kw)
+
+    async def generate_stream(self, *, agent_role: str, messages, temperature=None, max_tokens=None, **kw):
+        async for token in self._provider.generate_stream(messages, temperature=temperature, max_tokens=max_tokens, **kw):
+            yield token
+
+
 def _build_router(provider: str = "", model: str = ""):
-    from agents.model_router import ModelRouter
+    """Build a simple router from user settings."""
     user_settings = _get_user_settings()
-    providers = user_settings.get("providers", {})
+    providers_cfg = user_settings.get("providers", {})
+    pipeline = user_settings.get("pipeline", {})
 
     if not provider:
-        pipeline = user_settings.get("pipeline", {})
         sc = pipeline.get("scene_director", {})
         provider = sc.get("provider", "ollama")
         model = sc.get("model", "")
 
-    prov_cfg = providers.get(provider, {})
+    prov_cfg = providers_cfg.get(provider, {})
+    if not model:
+        models = prov_cfg.get("models", [])
+        model = models[0] if models else ""
+
+    base_url = prov_cfg.get("base_url", "")
     api_key = prov_cfg.get("api_key", "")
 
-    api_keys = {}
-    if api_key:
-        api_keys[provider] = api_key
-
-    return ModelRouter(api_keys=api_keys)
+    return _SimpleRouter(provider, model, base_url, api_key)
 
 
 @router.get("/health")
@@ -164,7 +209,7 @@ async def quick_generate(req: GenerateRequest):
         from agents.model_providers.base import LLMMessage
         router_inst = _build_router(req.provider, req.model)
 
-        system_prompt = (
+        system_prompt = req.system_hint if req.system_hint else (
             "你是一个专业的小说写作AI。根据提供的大纲和设定，"
             "写出高质量的章节内容。要求：\n"
             "1. 文字生动，有画面感\n"
@@ -173,18 +218,22 @@ async def quick_generate(req: GenerateRequest):
             "4. 保持叙事视角一致"
         )
 
-        parts = [f"## 章节大纲\n{req.synopsis}"]
-        if req.time_setting:
-            parts.append(f"## 时间\n{req.time_setting}")
-        if req.location:
-            parts.append(f"## 地点\n{req.location}")
-        if req.characters:
-            parts.append(f"## 出场角色\n{', '.join(req.characters)}")
-        if req.world_rules:
-            parts.append(f"## 世界观设定\n{req.world_rules}")
-        if req.style_notes:
-            parts.append(f"## 风格要求\n{req.style_notes}")
-        parts.append("\n请根据以上信息，写出完整的章节内容（800-1500字）：")
+        # When system_hint is set, it's a conversational/studio mode
+        if req.system_hint:
+            parts = [req.synopsis]
+        else:
+            parts = [f"## 章节大纲\n{req.synopsis}"]
+            if req.time_setting:
+                parts.append(f"## 时间\n{req.time_setting}")
+            if req.location:
+                parts.append(f"## 地点\n{req.location}")
+            if req.characters:
+                parts.append(f"## 出场角色\n{', '.join(req.characters)}")
+            if req.world_rules:
+                parts.append(f"## 世界观设定\n{req.world_rules}")
+            if req.style_notes:
+                parts.append(f"## 风格要求\n{req.style_notes}")
+            parts.append("\n请根据以上信息，写出完整的章节内容（800-1500字）：")
 
         messages = [
             LLMMessage(role="system", content=system_prompt),
@@ -224,6 +273,7 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
 
     req_data = session["request"]
     try:
+        router_inst = _build_router(req_data.get("provider", "ollama"), req_data.get("model", ""))
         await websocket.send_json({"type": "pipeline_start", "session_id": session_id})
 
         # Step 1: Scene Director
@@ -232,7 +282,6 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
             "label": "Scene Director", "detail": "正在拆分场景..."
         })
         try:
-            router_inst = _build_router(req_data.get("provider", "ollama"), req_data.get("model", ""))
             from agents.production.scene_director import SceneDirector
             director = SceneDirector(router_inst, project_id=req_data.get("project_id", ""))
             scenes = await director.plan_scenes(

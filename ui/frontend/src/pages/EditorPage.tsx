@@ -494,7 +494,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
           </div>
           <div className="panel-body" style={{ padding: "14px 16px" }}>
             {aiTab === "outline" && <OutlineTab synopsis={activeCh?.synopsis || ""} onChange={updateSynopsis} onSave={handleSaveOutline}
-              onStartGeneration={() => { setAiTab("inspire"); setTimeout(() => { if (!generating) startGeneration(); }, 300); }} />}
+              onStartGeneration={() => { setAiTab("inspire"); setTimeout(() => { if (!generating) startGeneration(); }, 300); }} projectId={projectId} />}
             {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
@@ -506,14 +506,107 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   );
 }
 
-function OutlineTab({ synopsis, onChange, onSave, onStartGeneration }: { synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; }) {
+function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId }: {
+  synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; projectId: string;
+}) {
   const [time, setTime] = useState("");
   const [location, setLocation] = useState("");
+  const [characters, setCharacters] = useState<{ id: string; name: string; selected: boolean }[]>([]);
+  const [references, setReferences] = useState<{ id: string; title: string; selected: boolean }[]>([]);
+  const [showLinker, setShowLinker] = useState(false);
+
+  useEffect(() => {
+    const pid = projectId || "default";
+    apiGet<{ items: any[] }>(`/api/data/characters?project_id=${pid}`)
+      .then(r => setCharacters((r.items || []).map((c: any) => ({ id: c.id, name: c.name, selected: false }))))
+      .catch(() => {});
+    apiGet<{ works: any[] }>("/api/reference/works")
+      .then(r => setReferences((r.works || []).map((w: any) => ({ id: w.id, title: w.title || w.name || "未命名", selected: false }))))
+      .catch(() => setReferences([]));
+  }, [projectId]);
+
+  const toggleChar = (id: string) => setCharacters(prev => prev.map(c => c.id === id ? { ...c, selected: !c.selected } : c));
+  const toggleRef = (id: string) => setReferences(prev => prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r));
+  const selectedChars = characters.filter(c => c.selected);
+  const selectedRefs = references.filter(r => r.selected);
+
   return (
     <div>
       <div className="label mb-8">章节剧情大纲</div>
-      <textarea className="input" value={synopsis} onChange={e => onChange(e.target.value)} rows={10}
+      <textarea className="input" value={synopsis} onChange={e => onChange(e.target.value)} rows={8}
         placeholder={"在这里写这一章的剧情要点...\n\n例如：\n  主角初入宗门\n  与师兄发生冲突\n  发现隐藏洞穴"} style={{ lineHeight: 1.8, fontFamily: "var(--font-sans)" }} />
+
+      {/* Character & Reference Linker */}
+      <div style={{ marginTop: 10 }}>
+        <button className="btn" style={{ fontSize: 11, padding: "4px 12px", width: "100%" }} onClick={() => setShowLinker(!showLinker)}>
+          {showLinker ? "收起" : "关联角色 & 参考作品"} {selectedChars.length + selectedRefs.length > 0 ? `(已选 ${selectedChars.length + selectedRefs.length})` : ""}
+        </button>
+        {showLinker && (
+          <div style={{ marginTop: 8, padding: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
+            {characters.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--purple)" }}>出场角色</div>
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  {characters.map(c => (
+                    <button key={c.id} onClick={() => toggleChar(c.id)}
+                      style={{
+                        fontSize: 11, padding: "3px 10px", borderRadius: 14, border: "1px solid",
+                        borderColor: c.selected ? "var(--purple)" : "var(--border)",
+                        background: c.selected ? "var(--purple-subtle)" : "transparent",
+                        color: c.selected ? "var(--purple)" : "var(--text-secondary)",
+                        cursor: "pointer",
+                      }}>
+                      {c.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {characters.length === 0 && (
+              <div className="text-xs text-muted" style={{ marginBottom: 8 }}>暂无角色，请在「角色管理」中创建</div>
+            )}
+            {references.length > 0 && (
+              <div>
+                <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--jade)" }}>参考作品</div>
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  {references.map(r => (
+                    <button key={r.id} onClick={() => toggleRef(r.id)}
+                      style={{
+                        fontSize: 11, padding: "3px 10px", borderRadius: 14, border: "1px solid",
+                        borderColor: r.selected ? "var(--jade)" : "var(--border)",
+                        background: r.selected ? "var(--jade-subtle)" : "transparent",
+                        color: r.selected ? "var(--jade)" : "var(--text-secondary)",
+                        cursor: "pointer",
+                      }}>
+                      {r.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {references.length === 0 && (
+              <div className="text-xs text-muted">暂无参考作品，请在「参考文库」中导入</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Selected items display */}
+      {(selectedChars.length > 0 || selectedRefs.length > 0) && (
+        <div style={{ marginTop: 8, display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {selectedChars.map(c => (
+            <span key={c.id} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--purple-subtle)", color: "var(--purple)" }}>
+              {c.name}
+            </span>
+          ))}
+          {selectedRefs.map(r => (
+            <span key={r.id} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--jade-subtle)", color: "var(--jade)" }}>
+              {r.title}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <div className="field" style={{ flex: 1 }}>
           <label className="label">时间</label>
@@ -528,7 +621,9 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration }: { synopsi
         <button className="btn-primary" style={{ flex: 1 }} onClick={onSave}>保存</button>
         <button className="btn-primary" style={{ flex: 1, background: "var(--jade, #34a853)", border: "none" }} onClick={onStartGeneration}>开始生成</button>
       </div>
-      <p className="text-xs text-muted mt-12" style={{ lineHeight: 1.6 }}>点击「开始生成」将自动跳转到灵感面板并启动 Pipeline。每步完成后 Agent 会询问你的意见。</p>
+      <p className="text-xs text-muted mt-12" style={{ lineHeight: 1.6 }}>
+        关联角色和参考作品后，Pipeline 生成时 AI 将参考相关信息。点击「开始生成」启动 Pipeline。
+      </p>
     </div>
   );
 }
@@ -649,6 +744,7 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange }:
       const resp = await apiPost<{ rewritten: string }>("/api/generation/rewrite", {
         text: selection.text,
         instruction: prompt || "润色并提升文学质量",
+        model: model || undefined,
       });
       setRewriteResult(typeof resp.rewritten === "string" ? resp.rewritten : JSON.stringify(resp.rewritten));
     } catch (e: any) {
@@ -668,11 +764,16 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange }:
           {rewriting ? "重写中..." : "AI 重写此段落"}
         </button>
         {rewriteError && <p className="text-xs mt-8" style={{ color: "var(--error)" }}>{rewriteError}</p>}
-        {rewriteResult && (
+        {rewriteResult && (<>
           <div style={{ marginTop: 12, padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", fontSize: 13, lineHeight: 1.7, fontFamily: "var(--font-serif)", borderLeft: "3px solid var(--jade)", maxHeight: 200, overflowY: "auto", color: "var(--text-primary)" }}>
             {rewriteResult}
           </div>
-        )}
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            <button className="btn" style={{ flex: 1, fontSize: 11 }} onClick={() => navigator.clipboard.writeText(rewriteResult)}>
+              复制结果
+            </button>
+          </div>
+        </>)}
       </>) : (<div className="empty-state" style={{ padding: "32px 16px" }}><h4>选中文本以重写</h4><p>在编辑器中选中文本，将出现「AI重写」按钮</p></div>)}
     </div>
   );

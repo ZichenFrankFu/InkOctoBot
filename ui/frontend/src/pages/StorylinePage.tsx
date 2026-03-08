@@ -91,49 +91,62 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
       const chapters: ChapterOutline[] = (data.volumes || []).flatMap(v => v.chapters || []);
       if (!chapters.length) return;
 
-      const newNodes: StoryNode[] = [];
-      chapters.forEach((ch, idx) => {
-        const chNum = idx + 1;
-        const existing = nodes.find(n => n.chapter_num === chNum);
-        if (existing) {
-          if (ch.synopsis && ch.synopsis !== existing.summary) {
-            setNodes(prev => prev.map(n => n.id === existing.id ? { ...n, summary: ch.synopsis || "", title: ch.title } : n));
-          }
-        } else {
-          newNodes.push({
-            id: uid(),
-            title: ch.title || `第${chNum}章`,
-            summary: ch.synopsis || "",
-            x: 60 + (chNum - 1) * (NODE_W + GAP_X),
-            y: 60,
-            color: COLORS[(chNum - 1) % COLORS.length],
-            chapter_num: chNum,
-            characters: (ch as any).characters || [],
-            week: Math.ceil(chNum / 3),
-            time: (ch as any).time || "",
-            location: (ch as any).location || "",
-          });
-        }
-      });
+      setNodes(prev => {
+        const updated = [...prev];
+        const newNodes: StoryNode[] = [];
 
-      if (newNodes.length > 0) {
-        setNodes(prev => [...prev, ...newNodes]);
-        const allNodes = [...nodes, ...newNodes].sort((a, b) => (a.chapter_num || 0) - (b.chapter_num || 0));
-        const newEdges: StoryEdge[] = [];
-        for (let i = 1; i < allNodes.length; i++) {
-          const from = allNodes[i - 1].id;
-          const to = allNodes[i].id;
-          if (!edges.some(e => e.from === from && e.to === to)) {
-            newEdges.push({ id: uid(), from, to, label: "" });
+        chapters.forEach((ch, idx) => {
+          const chNum = idx + 1;
+          const existingIdx = updated.findIndex(n => n.chapter_num === chNum);
+          if (existingIdx >= 0) {
+            // Update ALL fields from editor data
+            updated[existingIdx] = {
+              ...updated[existingIdx],
+              title: ch.title || updated[existingIdx].title,
+              summary: ch.synopsis || updated[existingIdx].summary,
+              time: (ch as any).time || updated[existingIdx].time,
+              location: (ch as any).location || updated[existingIdx].location,
+              characters: (ch as any).characters?.length ? (ch as any).characters : updated[existingIdx].characters,
+            };
+          } else {
+            newNodes.push({
+              id: uid(),
+              title: ch.title || `第${chNum}章`,
+              summary: ch.synopsis || "",
+              x: 60 + (chNum - 1) * (NODE_W + GAP_X),
+              y: 60,
+              color: COLORS[(chNum - 1) % COLORS.length],
+              chapter_num: chNum,
+              characters: (ch as any).characters || [],
+              week: Math.ceil(chNum / 3),
+              time: (ch as any).time || "",
+              location: (ch as any).location || "",
+            });
           }
+        });
+
+        const allNodes = [...updated, ...newNodes].sort((a, b) => (a.chapter_num || 0) - (b.chapter_num || 0));
+
+        // Create edges for new sequential connections
+        if (newNodes.length > 0) {
+          const newEdges: StoryEdge[] = [];
+          for (let i = 1; i < allNodes.length; i++) {
+            const from = allNodes[i - 1].id;
+            const to = allNodes[i].id;
+            if (!edges.some(e => e.from === from && e.to === to)) {
+              newEdges.push({ id: uid(), from, to, label: "" });
+            }
+          }
+          if (newEdges.length) setEdges(prevEdges => [...prevEdges, ...newEdges]);
         }
-        if (newEdges.length) setEdges(prev => [...prev, ...newEdges]);
-        setDirty(true);
-      }
+
+        return allNodes;
+      });
+      setDirty(true);
     } catch (e) {
       console.error(e);
     }
-  }, [nodes, edges, projectId]);
+  }, [edges, projectId]);
 
   // --- Delete node ---
   const delNode = (id: string) => {

@@ -246,14 +246,38 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 <h2 className="font-serif" style={{ fontSize: 22, fontWeight: 700 }}>
                   {editing.name}
                 </h2>
-                <button
-                  className="btn-primary"
-                  onClick={save}
-                  disabled={!dirty}
-                  style={{ opacity: dirty ? 1 : 0.5 }}
-                >
-                  {dirty ? "保存" : "已保存"}
-                </button>
+                <div className="flex gap-6">
+                  <button
+                    className="btn"
+                    style={{ fontSize: 12 }}
+                    onClick={async () => {
+                      try {
+                        const resp = await apiPost<{ profile: any }>("/api/characters/generate-profile", {
+                          name: editing.name,
+                          role: editing.role || "配角",
+                          project_id: projectId,
+                          existing_personality: editing.personality || "",
+                        });
+                        const p = resp.profile || {};
+                        if (p.personality) u("personality", p.personality);
+                        if (p.background) u("background", p.background);
+                        if (p.speech_style) u("speech_style", p.speech_style);
+                      } catch (e: any) {
+                        alert("AI 生成失败: " + (e?.message || "请检查模型连接"));
+                      }
+                    }}
+                  >
+                    AI 生成人设
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={save}
+                    disabled={!dirty}
+                    style={{ opacity: dirty ? 1 : 0.5 }}
+                  >
+                    {dirty ? "保存" : "已保存"}
+                  </button>
+                </div>
               </div>
 
               <RelationshipGraph characters={items} currentId={editing.id} />
