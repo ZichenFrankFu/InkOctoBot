@@ -62,7 +62,35 @@ export default function SettingsPage() {
 
   useEffect(() => {
     apiGet<AppSettings>("/api/data/settings")
-      .then(setSettings)
+      .then((s) => {
+        // Auto-fill empty pipeline roles with the first enabled provider that has models
+        let needsSave = false;
+        const providers = s.providers || {};
+        // Find the first enabled provider with models
+        let autoProvider = "";
+        let autoModel = "";
+        for (const [pname, pcfg] of Object.entries(providers)) {
+          if (pcfg.enabled && pcfg.models && pcfg.models.length > 0) {
+            autoProvider = pname;
+            autoModel = pcfg.models[0];
+            break;
+          }
+        }
+        if (autoProvider && autoModel && s.pipeline) {
+          const newPipeline = { ...s.pipeline };
+          for (const [role, cfg] of Object.entries(newPipeline)) {
+            if (!cfg.model) {
+              newPipeline[role] = { ...cfg, provider: autoProvider, model: autoModel };
+              needsSave = true;
+            }
+          }
+          if (needsSave) {
+            s = { ...s, pipeline: newPipeline };
+          }
+        }
+        setSettings(s);
+        if (needsSave) setDirty(true);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);

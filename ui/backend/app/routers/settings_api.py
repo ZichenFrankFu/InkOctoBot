@@ -28,8 +28,21 @@ def _settings_path() -> Path:
 def _load() -> dict:
     p = _settings_path()
     if p.exists():
-        return json.loads(p.read_text("utf-8"))
-    return _defaults()
+        data = json.loads(p.read_text("utf-8"))
+    else:
+        data = {}
+    defaults = _defaults()
+    for k, v in defaults.items():
+        if k not in data:
+            data[k] = v
+    # Deep-merge providers and pipeline
+    for pname, pdef in defaults.get("providers", {}).items():
+        if pname not in data.get("providers", {}):
+            data.setdefault("providers", {})[pname] = pdef
+    for rname, rdef in defaults.get("pipeline", {}).items():
+        if rname not in data.get("pipeline", {}):
+            data.setdefault("pipeline", {})[rname] = rdef
+    return data
 
 
 def _save(data: dict):
