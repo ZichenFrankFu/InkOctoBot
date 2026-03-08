@@ -244,9 +244,10 @@ export default function DashboardPage({ projects, onNavigate }: { projects: { id
                           {proj.chapterCount} 章
                         </span>
                       </div>
-                      {/* AI todo placeholder */}
                       <div style={{ marginTop: 10, padding: "6px 10px", background: "var(--accent-subtle)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--accent)" }}>
-                        AI 待办：继续创作下一章节
+                        {proj.chapterCount > 0
+                          ? `AI 建议：继续创作第 ${proj.chapterCount + 1} 章`
+                          : "AI 建议：开始创建第一章大纲"}
                       </div>
                     </div>
                   </div>

@@ -128,18 +128,32 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     setShowForm(false); setEditingId(null); setFormName(""); setFormGenre("");
   };
 
-  const sendMessage = () => {
+  const sendMessage = async () => {
     if (!input.trim() || studioTab === "calibration") return;
     const userMsg: ChatMsg = { role: "user", content: input.trim(), tab: studioTab, timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg]);
+    const userInput = input.trim();
     setInput("");
-    // Mock AI response
-    setTimeout(() => {
+
+    // Try real AI, fallback to mock
+    try {
+      const systemHint = studioTab === "outline" ? "你是网文大纲策划专家。" :
+        studioTab === "characters" ? "你是角色设计专家。" : "你是世界观构建专家。";
+      const resp = await apiPost<{ text: string }>("/api/generation/quick-generate", {
+        project_id: activeProject || "default",
+        chapter_id: "studio_chat",
+        synopsis: userInput,
+        system_hint: systemHint,
+      });
+      const aiMsg: ChatMsg = { role: "assistant", content: resp.text || "生成完成。", tab: studioTab, timestamp: Date.now() };
+      setMessages(prev => [...prev, aiMsg]);
+    } catch {
+      // Fallback to mock responses
       const responses = AI_RESPONSES[studioTab] || [];
       const aiContent = responses[Math.floor(Math.random() * responses.length)] || "收到！让我思考一下这个方向...";
       const aiMsg: ChatMsg = { role: "assistant", content: aiContent, tab: studioTab, timestamp: Date.now() };
       setMessages(prev => [...prev, aiMsg]);
-    }, 800);
+    }
   };
 
   const saveSnapshot = () => {

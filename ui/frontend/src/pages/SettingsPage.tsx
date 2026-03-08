@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { apiGet, apiPut } from "../api/client";
+import { apiGet, apiPost, apiPut } from "../api/client";
 import type { AppSettings } from "../api/types";
 
 const PIPELINE_ROLES: { key: string; label: string; desc: string }[] = [
@@ -253,92 +253,11 @@ export default function SettingsPage() {
 
       {/* ===== Providers Tab ===== */}
       {tab === "providers" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          {Object.entries(settings.providers).map(([name, prov]) => {
-            const meta = PROVIDER_META[name] || { label: name, icon: "?", hasKey: false, hasUrl: false };
-
-            return (
-              <div key={name} className="card" style={{
-                borderColor: prov.enabled ? "var(--accent)" : "var(--border)",
-                borderWidth: prov.enabled ? 1 : 1,
-                opacity: prov.enabled ? 1 : 0.7,
-                transition: "all 0.2s",
-              }}>
-                <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{
-                      width: 32, height: 32, borderRadius: 8,
-                      background: prov.enabled ? "var(--accent-subtle)" : "var(--bg-secondary)",
-                      color: prov.enabled ? "var(--accent)" : "var(--text-disabled)",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      fontSize: 14, fontWeight: 700, fontFamily: "var(--font-mono)",
-                    }}>
-                      {meta.icon}
-                    </div>
-                    <div>
-                      <h3 style={{ margin: 0, fontSize: 14 }}>{meta.label}</h3>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => updateProvider(name, "enabled", !prov.enabled)}
-                    style={{
-                      padding: "4px 12px",
-                      borderRadius: 12,
-                      border: "1px solid",
-                      borderColor: prov.enabled ? "var(--jade)" : "var(--border)",
-                      background: prov.enabled ? "var(--jade-subtle)" : "transparent",
-                      color: prov.enabled ? "var(--jade)" : "var(--text-secondary)",
-                      fontSize: 11,
-                      cursor: "pointer",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {prov.enabled ? "已启用" : "未启用"}
-                  </button>
-                </div>
-                <div className="card-body">
-                  {meta.hasKey && (
-                    <div style={{ marginBottom: 12 }}>
-                      <label className="label">API Key</label>
-                      <input
-                        className="input"
-                        type="password"
-                        value={prov.api_key || ""}
-                        onChange={(e) => updateProvider(name, "api_key", e.target.value)}
-                        placeholder="sk-..."
-                        style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
-                      />
-                    </div>
-                  )}
-                  {meta.hasUrl && (
-                    <div style={{ marginBottom: 12 }}>
-                      <label className="label">Base URL</label>
-                      <input
-                        className="input"
-                        value={prov.base_url || ""}
-                        onChange={(e) => updateProvider(name, "base_url", e.target.value)}
-                        placeholder="http://localhost:11434"
-                        style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
-                      />
-                    </div>
-                  )}
-                  <div>
-                    <label className="label">模型列表（逗号分隔）</label>
-                    <input
-                      className="input"
-                      value={(prov.models || []).join(", ")}
-                      onChange={(e) =>
-                        updateProvider(name, "models", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))
-                      }
-                      placeholder="gpt-4o, gpt-4o-mini, ..."
-                      style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
-                    />
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <ProviderGrid
+          settings={settings}
+          onUpdateProvider={updateProvider}
+          onSettingsChange={(s) => { setSettings(s); setDirty(true); }}
+        />
       )}
 
       {/* ===== System Tab ===== */}
@@ -468,6 +387,203 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---- Provider Grid with test connection ---- */
+function ProviderGrid({
+  settings,
+  onUpdateProvider,
+  onSettingsChange,
+}: {
+  settings: AppSettings;
+  onUpdateProvider: (name: string, field: string, value: unknown) => void;
+  onSettingsChange: (s: AppSettings) => void;
+}) {
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; message: string; models?: string[] }>>({});
+
+  const testConnection = async (name: string) => {
+    setTesting(prev => ({ ...prev, [name]: true }));
+    setTestResults(prev => ({ ...prev, [name]: undefined as any }));
+    try {
+      const prov = settings.providers[name];
+      const resp = await apiPost<{ connected: boolean; message: string; models?: string[] }>("/api/models/test", {
+        provider: name,
+        base_url: prov?.base_url || "",
+        api_key: prov?.api_key || "",
+        model: (prov?.models || [])[0] || "",
+      });
+      setTestResults(prev => ({
+        ...prev,
+        [name]: { ok: resp.connected, message: resp.message, models: resp.models },
+      }));
+      // Auto-fill detected models
+      if (resp.connected && resp.models && resp.models.length > 0) {
+        onUpdateProvider(name, "models", resp.models);
+      }
+    } catch (e: any) {
+      setTestResults(prev => ({
+        ...prev,
+        [name]: { ok: false, message: e?.message || "连接失败" },
+      }));
+    }
+    setTesting(prev => ({ ...prev, [name]: false }));
+  };
+
+  const autoDetectOllama = async () => {
+    setTesting(prev => ({ ...prev, ollama: true }));
+    try {
+      const resp = await apiPost<{ connected: boolean; models: string[]; message: string }>("/api/settings/detect-ollama", {});
+      setTestResults(prev => ({
+        ...prev,
+        ollama: { ok: resp.connected, message: resp.message, models: resp.models },
+      }));
+      if (resp.connected && resp.models?.length > 0) {
+        // Reload settings to pick up auto-assigned models
+        const newSettings = await apiGet<AppSettings>("/api/data/settings");
+        onSettingsChange(newSettings);
+      }
+    } catch (e: any) {
+      setTestResults(prev => ({
+        ...prev,
+        ollama: { ok: false, message: e?.message || "检测失败" },
+      }));
+    }
+    setTesting(prev => ({ ...prev, ollama: false }));
+  };
+
+  return (
+    <div>
+      {/* Auto-detect banner */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "12px 16px", marginBottom: 16, background: "var(--bg-surface-2)",
+        borderRadius: 8, border: "1px solid var(--border)",
+      }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+            Ollama 自动检测
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>
+            自动检测本地 Ollama 服务和已安装的模型
+          </div>
+        </div>
+        <button
+          className="btn-primary"
+          onClick={autoDetectOllama}
+          disabled={testing.ollama}
+          style={{ padding: "6px 16px", fontSize: 12 }}
+        >
+          {testing.ollama ? "检测中..." : "自动检测"}
+        </button>
+      </div>
+      {testResults.ollama && (
+        <div style={{
+          padding: "8px 16px", marginBottom: 16, borderRadius: 6,
+          background: testResults.ollama.ok ? "var(--jade-subtle)" : "var(--accent-subtle)",
+          color: testResults.ollama.ok ? "var(--jade)" : "var(--accent)",
+          fontSize: 12,
+        }}>
+          {testResults.ollama.message}
+          {testResults.ollama.models && testResults.ollama.models.length > 0 && (
+            <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>
+              模型: {testResults.ollama.models.join(", ")}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        {Object.entries(settings.providers).map(([name, prov]) => {
+          const meta = PROVIDER_META[name] || { label: name, icon: "?", hasKey: false, hasUrl: false };
+          const testResult = testResults[name];
+
+          return (
+            <div key={name} className="card" style={{
+              borderColor: prov.enabled ? "var(--accent)" : "var(--border)",
+              opacity: prov.enabled ? 1 : 0.7,
+              transition: "all 0.2s",
+            }}>
+              <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{
+                    width: 32, height: 32, borderRadius: 8,
+                    background: prov.enabled ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+                    color: prov.enabled ? "var(--accent)" : "var(--text-disabled)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 14, fontWeight: 700, fontFamily: "var(--font-mono)",
+                  }}>
+                    {meta.icon}
+                  </div>
+                  <h3 style={{ margin: 0, fontSize: 14 }}>{meta.label}</h3>
+                </div>
+                <button
+                  onClick={() => onUpdateProvider(name, "enabled", !prov.enabled)}
+                  style={{
+                    padding: "4px 12px", borderRadius: 12, border: "1px solid",
+                    borderColor: prov.enabled ? "var(--jade)" : "var(--border)",
+                    background: prov.enabled ? "var(--jade-subtle)" : "transparent",
+                    color: prov.enabled ? "var(--jade)" : "var(--text-secondary)",
+                    fontSize: 11, cursor: "pointer", fontWeight: 600,
+                  }}
+                >
+                  {prov.enabled ? "已启用" : "未启用"}
+                </button>
+              </div>
+              <div className="card-body">
+                {meta.hasKey && (
+                  <div style={{ marginBottom: 12 }}>
+                    <label className="label">API Key</label>
+                    <input className="input" type="password"
+                      value={prov.api_key || ""} onChange={(e) => onUpdateProvider(name, "api_key", e.target.value)}
+                      placeholder="sk-..." style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
+                  </div>
+                )}
+                {meta.hasUrl && (
+                  <div style={{ marginBottom: 12 }}>
+                    <label className="label">Base URL</label>
+                    <input className="input"
+                      value={prov.base_url || ""} onChange={(e) => onUpdateProvider(name, "base_url", e.target.value)}
+                      placeholder="http://localhost:11434" style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
+                  </div>
+                )}
+                <div style={{ marginBottom: 12 }}>
+                  <label className="label">模型列表（逗号分隔）</label>
+                  <input className="input"
+                    value={(prov.models || []).join(", ")}
+                    onChange={(e) => onUpdateProvider(name, "models", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+                    placeholder="model-name, ..." style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <button
+                    className="btn"
+                    onClick={() => testConnection(name)}
+                    disabled={testing[name]}
+                    style={{ fontSize: 11, padding: "4px 12px" }}
+                  >
+                    {testing[name] ? "测试中..." : "测试连接"}
+                  </button>
+                  {testResult && (
+                    <span style={{
+                      fontSize: 11,
+                      color: testResult.ok ? "var(--jade)" : "var(--error)",
+                    }}>
+                      {testResult.ok ? "连接成功" : "连接失败"}
+                    </span>
+                  )}
+                </div>
+                {testResult && !testResult.ok && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: "var(--error)", lineHeight: 1.5 }}>
+                    {testResult.message}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

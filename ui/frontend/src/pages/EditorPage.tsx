@@ -143,70 +143,224 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv }); setSaveStatus("saved"); } catch { setSaveStatus("unsaved"); }
   };
 
-  const getAgentCompletionMessage = (agent: string): string => {
-    const msgs: Record<string, string> = {
-      "Scene Director": "已完成场景拆分，共生成 3 个场景，包含导演指令和镜头节奏标记。",
-      "Actor Agents": "角色对话与内心独白已生成。主角情感弧线从困惑到决心，配角形成明确对立关系。",
-      "Editor-Writer": "文学风格化完成。已按 ~600 字/段分段，融入了你的风格偏好和节奏模板。",
-      "Evaluator": "评估完成。一致性得分 87/100，发现 2 个轻微问题。",
-    };
-    return msgs[agent] || "处理完成。";
-  };
+  const generatedTextRef = useRef<string>("");
+  const wsRef = useRef<WebSocket | null>(null);
 
-  const getAgentQuestion = (agent: string): string => {
-    const q: Record<string, string> = {
-      "Scene Director": "场景拆分完成。请确认以下场景划分是否满意：\n\n**方案 A：三幕式**\n1. 开场 - 主角入场（200字）\n2. 冲突 - 与对手对峙（350字）\n3. 转折 - 发现隐藏线索（250字）\n\n**方案 B：渐进式**\n1. 日常描写 - 铺垫氛围（150字）\n2. 伏笔 - 异常迹象（200字）\n3. 触发 - 冲突爆发（300字）\n4. 余波 - 信息揭示（150字）\n\n请选择方案或输入修改意见：",
-      "Actor Agents": "角色对话已生成。请检查角色的说话风格是否符合预期。\n\n满意请点击「确认继续」，或说明需要调整的部分。",
-      "Editor-Writer": "文学润色完成。当前风格偏向「冷峻简约」，如需调整风格倾向请说明。\n\n满意请点击「确认继续」进入最终评估。",
-    };
-    return q[agent] || "处理完成，请确认是否继续。";
-  };
+  const runRealPipeline = useCallback(async (sessionId: string) => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host || "localhost:8000";
+    const ws = new WebSocket(`${proto}//${host}/api/generation/ws/${sessionId}`);
+    wsRef.current = ws;
+    generatedTextRef.current = "";
 
-  const simulateAgentWork = useCallback((agentName: string, stepIndex: number) => {
-    setPipelineSteps(prev => prev.map((s, i) => i === stepIndex ? { ...s, status: "running" } : s));
-    setCurrentAgent(agentName);
-    setChatMessages(prev => [...prev, { agent: agentName, content: "正在处理中...", status: "thinking", timestamp: Date.now() }]);
-    setTimeout(() => {
-      setPipelineSteps(prev => prev.map((s, i) => i === stepIndex ? { ...s, status: "done", detail: "已完成" } : s));
-      setChatMessages(prev => {
-        const filtered = prev.filter(m => !(m.agent === agentName && m.status === "thinking"));
-        return [...filtered, { agent: agentName, content: getAgentCompletionMessage(agentName), status: "done", timestamp: Date.now() }];
-      });
-      if (stepIndex < PIPELINE_STEPS.length - 1) {
-        setTimeout(() => {
-          setChatMessages(prev => [...prev, { agent: agentName, content: getAgentQuestion(agentName), status: "waiting_confirm", timestamp: Date.now(), isQuestion: true }]);
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      switch (data.type) {
+        case "pipeline_start":
+          setChatMessages(prev => [...prev, {
+            agent: "System", content: "Pipeline 连接成功，开始生成...",
+            status: "done", timestamp: Date.now(),
+          }]);
+          break;
+        case "step_start":
+          setPipelineSteps(prev => prev.map(s =>
+            s.step === data.label ? { ...s, status: "running" as const, detail: data.detail } : s
+          ));
+          setCurrentAgent(data.label);
+          setChatMessages(prev => [...prev, {
+            agent: data.label, content: data.detail || "正在处理中...",
+            status: "thinking", timestamp: Date.now(),
+          }]);
+          break;
+        case "token":
+          generatedTextRef.current += data.content;
+          // Update the last thinking message with streaming content
+          setChatMessages(prev => {
+            const last = prev[prev.length - 1];
+            if (last && last.status === "thinking") {
+              const updated = [...prev];
+              updated[updated.length - 1] = {
+                ...last,
+                content: generatedTextRef.current.slice(-300) + (generatedTextRef.current.length > 300 ? "\n..." : ""),
+                status: "speaking",
+              };
+              return updated;
+            }
+            return prev;
+          });
+          break;
+        case "step_done":
+          setPipelineSteps(prev => prev.map(s =>
+            s.step === (data.step === "scene_director" ? "Scene Director" :
+              data.step === "actor_agents" ? "Actor Agents" :
+              data.step === "evaluator" ? "Evaluator" :
+              data.step === "editor_writer" ? "Editor-Writer" : s.step)
+            ? { ...s, status: "done" as const, detail: "已完成" } : s
+          ));
+          setChatMessages(prev => {
+            const filtered = prev.filter(m => m.status !== "thinking" && m.status !== "speaking");
+            const agentName = data.step === "scene_director" ? "Scene Director" :
+              data.step === "actor_agents" ? "Actor Agents" :
+              data.step === "evaluator" ? "Evaluator" : "Editor-Writer";
+            const resultText = data.result?.text
+              ? `生成完成！共 ${data.result.text.length} 字。`
+              : data.result?.summary || data.result?.score !== undefined
+              ? `评估完成。得分：${data.result.score}/100`
+              : JSON.stringify(data.result || {}).slice(0, 200);
+            return [...filtered, {
+              agent: agentName, content: resultText,
+              status: "done", timestamp: Date.now(),
+            }];
+          });
+          // Store eval result if available
+          if (data.step === "evaluator" && data.result) {
+            setEvalResult({
+              chapter_id: activeChId,
+              passed: data.result.passed ?? true,
+              score: data.result.score ?? 80,
+              issues: (data.result.issues || []).map((i: any) => ({
+                type: i.type || "unknown",
+                severity: i.severity || "low",
+                description: i.description || "",
+                suggestion: i.suggestion,
+              })),
+            });
+          }
+          break;
+        case "need_confirm":
+          setChatMessages(prev => [...prev, {
+            agent: "Scene Director",
+            content: data.message || "是否继续？",
+            status: "waiting_confirm", timestamp: Date.now(), isQuestion: true,
+          }]);
           setWaitingForConfirm(true);
-        }, 500);
-      } else {
-        setGenerating(false); setCurrentAgent(null);
-        setChatMessages(prev => [...prev, { agent: "System", content: "Pipeline 全部完成！可在「评估」标签查看结果。", status: "done", timestamp: Date.now() }]);
+          break;
+        case "complete":
+          setGenerating(false);
+          setCurrentAgent(null);
+          if (data.text) generatedTextRef.current = data.text;
+          setChatMessages(prev => [...prev, {
+            agent: "System",
+            content: `Pipeline 全部完成！生成了 ${(data.text || "").length} 字。可在「评估」标签查看结果，或点击「写入编辑器」。`,
+            status: "done", timestamp: Date.now(),
+          }]);
+          if (data.evaluation) {
+            setEvalResult({
+              chapter_id: activeChId,
+              passed: data.evaluation.passed ?? true,
+              score: data.evaluation.score ?? 80,
+              issues: (data.evaluation.issues || []).map((i: any) => ({
+                type: i.type || "unknown",
+                severity: i.severity || "low",
+                description: i.description || "",
+              })),
+            });
+          }
+          break;
+        case "error":
+          setGenerating(false);
+          setCurrentAgent(null);
+          setChatMessages(prev => [...prev, {
+            agent: "System", content: `错误: ${data.message}`,
+            status: "done", timestamp: Date.now(),
+          }]);
+          break;
       }
-    }, 2000);
-  }, []);
+    };
+
+    ws.onerror = () => {
+      setChatMessages(prev => [...prev, {
+        agent: "System", content: "WebSocket 连接失败，切换到快速生成模式...",
+        status: "done", timestamp: Date.now(),
+      }]);
+      // Fallback to quick-generate
+      runQuickGenerate();
+    };
+
+    ws.onclose = () => {
+      wsRef.current = null;
+    };
+  }, [activeChId]);
+
+  const runQuickGenerate = useCallback(async () => {
+    if (!activeCh) return;
+    setPipelineSteps(prev => prev.map((s, i) =>
+      i === 0 ? { ...s, status: "running" as const } : s
+    ));
+    setChatMessages(prev => [...prev, {
+      agent: "Actor Agents", content: "正在生成章节内容（快速模式）...",
+      status: "thinking", timestamp: Date.now(),
+    }]);
+
+    try {
+      const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
+        project_id: projectId,
+        chapter_id: activeChId,
+        synopsis: activeCh.synopsis || "",
+      });
+
+      generatedTextRef.current = resp.text;
+      setPipelineSteps(prev => prev.map(s => ({ ...s, status: "done" as const, detail: "已完成" })));
+      setChatMessages(prev => {
+        const filtered = prev.filter(m => m.status !== "thinking");
+        return [...filtered,
+          { agent: "Actor Agents", content: `生成完成！共 ${resp.text.length} 字。使用模型: ${resp.model}`, status: "done" as const, timestamp: Date.now() },
+          { agent: "System", content: "快速生成完成！点击「写入编辑器」将内容插入。", status: "done" as const, timestamp: Date.now() },
+        ];
+      });
+    } catch (e: any) {
+      setChatMessages(prev => {
+        const filtered = prev.filter(m => m.status !== "thinking");
+        return [...filtered, {
+          agent: "System",
+          content: `生成失败: ${e?.message || "未知错误"}。请检查模型连接设置。`,
+          status: "done", timestamp: Date.now(),
+        }];
+      });
+    }
+    setGenerating(false);
+    setCurrentAgent(null);
+  }, [activeCh, projectId, activeChId]);
 
   const startGeneration = useCallback(async () => {
     if (!activeCh) return;
     setGenerating(true);
     setPipelineSteps(PIPELINE_STEPS.map(s => ({ ...s, status: "pending" })));
     setChatMessages([]); setWaitingForConfirm(false);
-    try { await apiPost("/api/generation/start", { project_id: projectId, chapter_id: activeChId, synopsis: activeCh.synopsis || "" }); } catch {}
-    setChatMessages([{ agent: "System", content: `Pipeline 启动！基于大纲「${(activeCh.synopsis || "").slice(0, 50)}${(activeCh.synopsis || "").length > 50 ? "..." : ""}」开始生成。`, status: "done", timestamp: Date.now() }]);
-    setTimeout(() => simulateAgentWork("Scene Director", 0), 800);
-  }, [activeCh, projectId, activeChId, simulateAgentWork]);
+    generatedTextRef.current = "";
+
+    const synopsis = activeCh.synopsis || "";
+    setChatMessages([{
+      agent: "System",
+      content: `Pipeline 启动！基于大纲「${synopsis.slice(0, 50)}${synopsis.length > 50 ? "..." : ""}」开始生成。`,
+      status: "done", timestamp: Date.now(),
+    }]);
+
+    try {
+      const resp = await apiPost<{ session_id: string }>("/api/generation/start", {
+        project_id: projectId,
+        chapter_id: activeChId,
+        synopsis,
+      });
+      // Try WebSocket pipeline
+      runRealPipeline(resp.session_id);
+    } catch {
+      // Fallback to quick generate
+      runQuickGenerate();
+    }
+  }, [activeCh, projectId, activeChId, runRealPipeline, runQuickGenerate]);
 
   const handleConfirmContinue = () => {
     setWaitingForConfirm(false);
     setChatMessages(prev => [...prev, { agent: "User", content: "确认满意，继续下一步。", status: "done", timestamp: Date.now() }]);
-    const currentIdx = PIPELINE_STEPS.findIndex(s => s.step === currentAgent);
-    if (currentIdx >= 0 && currentIdx < PIPELINE_STEPS.length - 1) {
-      setTimeout(() => simulateAgentWork(PIPELINE_STEPS[currentIdx + 1].step, currentIdx + 1), 500);
+    // Send continue message through WebSocket
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ action: "continue" }));
     }
   };
 
   const handleRollback = useCallback((stepIndex: number) => {
-    // Reset pipeline steps from stepIndex onward
     setPipelineSteps(prev => prev.map((s, i) => i >= stepIndex ? { ...s, status: "pending", detail: PIPELINE_STEPS[i].detail } : s));
-    // Find messages from this agent onward and remove them
     const agentName = PIPELINE_STEPS[stepIndex].step;
     const firstMsgIdx = chatMessages.findIndex(m => m.agent === agentName);
     if (firstMsgIdx >= 0) {
@@ -215,18 +369,25 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     setWaitingForConfirm(false);
     setGenerating(false);
     setCurrentAgent(null);
-    // Add system message
-    setChatMessages(prev => [...prev, { agent: "System", content: `已回退到「${agentName}」阶段。你可以重新开始此步骤。`, status: "done", timestamp: Date.now() }]);
-    // Restart from this step
-    setTimeout(() => simulateAgentWork(agentName, stepIndex), 500);
-  }, [chatMessages, simulateAgentWork]);
+    setChatMessages(prev => [...prev, { agent: "System", content: `已回退到「${agentName}」阶段。点击「开始生成」重新运行 Pipeline。`, status: "done", timestamp: Date.now() }]);
+  }, [chatMessages]);
 
   const handleWriteToEditor = useCallback(() => {
-    // Mock: write the generated content to the editor
-    const generatedText = "【AI 生成内容】\n\n" + (activeCh?.synopsis || "章节内容") + "\n\n（此处为 Pipeline 生成的完整章节内容，连接真实模型后将替换为实际生成结果。）";
-    setContent(prev => prev + "\n\n" + generatedText);
-    setChatMessages(prev => [...prev, { agent: "System", content: "已将生成内容写入编辑器！", status: "done", timestamp: Date.now() }]);
-  }, [activeCh]);
+    const text = generatedTextRef.current;
+    if (text && text.length > 10) {
+      setContent(prev => prev ? prev + "\n\n" + text : text);
+      setChatMessages(prev => [...prev, { agent: "System", content: `已将 ${text.length} 字生成内容写入编辑器！`, status: "done", timestamp: Date.now() }]);
+      // Save version
+      apiPost("/api/editor/save-version", {
+        project_id: projectId || "default",
+        chapter_id: activeChId,
+        text,
+        source: "ai_generated",
+      }).catch(() => {});
+    } else {
+      setChatMessages(prev => [...prev, { agent: "System", content: "没有可写入的生成内容。请先运行 Pipeline。", status: "done", timestamp: Date.now() }]);
+    }
+  }, [projectId, activeChId]);
 
   const sendChatMessage = () => {
     if (!chatInput.trim()) return;
@@ -235,10 +396,15 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     setChatInput("");
     if (waitingForConfirm) {
       setWaitingForConfirm(false);
-      setTimeout(() => {
-        setChatMessages(prev => [...prev, { agent: currentAgent || "System", content: `收到反馈：「${msg}」。已根据你的意见调整，请再次确认。`, status: "waiting_confirm", timestamp: Date.now(), isQuestion: true }]);
-        setWaitingForConfirm(true);
-      }, 1000);
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ action: "feedback", message: msg }));
+      } else {
+        // Fallback: show feedback received
+        setTimeout(() => {
+          setChatMessages(prev => [...prev, { agent: currentAgent || "System", content: `收到反馈：「${msg}」。已根据你的意见调整，请再次确认。`, status: "waiting_confirm", timestamp: Date.now(), isQuestion: true }]);
+          setWaitingForConfirm(true);
+        }, 1000);
+      }
     }
   };
 
@@ -419,9 +585,9 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
                     }} />
                   ) : msg.content}
                 </div>
-                {msg.agent !== "User" && msg.agent !== "System" && msg.status === "done" && (
+                {msg.agent !== "User" && msg.agent !== "System" && msg.status === "done" && !generating && (
                   <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", marginTop: 4, color: "var(--text-tertiary)" }}
-                    onClick={() => {}}>
+                    onClick={() => onStart()}>
                     ↻ 重新生成
                   </button>
                 )}
@@ -470,15 +636,43 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
 }
 
 function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange }: { selection: { start: number; end: number; text: string } | null; prompt: string; onPromptChange: (v: string) => void; model: string; onModelChange: (v: string) => void; }) {
+  const [rewriting, setRewriting] = useState(false);
+  const [rewriteResult, setRewriteResult] = useState<string | null>(null);
+  const [rewriteError, setRewriteError] = useState<string | null>(null);
+
+  const handleRewrite = async () => {
+    if (!selection) return;
+    setRewriting(true);
+    setRewriteResult(null);
+    setRewriteError(null);
+    try {
+      const resp = await apiPost<{ rewritten: string }>("/api/generation/rewrite", {
+        text: selection.text,
+        instruction: prompt || "润色并提升文学质量",
+      });
+      setRewriteResult(typeof resp.rewritten === "string" ? resp.rewritten : JSON.stringify(resp.rewritten));
+    } catch (e: any) {
+      setRewriteError(e?.message || "重写失败，请检查模型连接");
+    }
+    setRewriting(false);
+  };
+
   return (
     <div>
       <div className="label mb-8">AI 重写选中文本</div>
       {selection ? (<>
         <div style={{ padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 12, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7, maxHeight: 120, overflowY: "auto", fontFamily: "var(--font-serif)", borderLeft: "3px solid var(--accent)" }}>&ldquo;{selection.text.length > 200 ? selection.text.slice(0, 200) + "..." : selection.text}&rdquo;</div>
         <div className="text-xs text-muted mb-12">选中了 {selection.text.length} 字（位置 {selection.start}-{selection.end}）</div>
-        <div className="field mb-12"><label className="label">模型选择</label><select className="select w-full" value={model} onChange={e => onModelChange(e.target.value)}><option value="default">默认模型</option><option value="deepseek-chat">DeepSeek Chat</option><option value="gpt-4o">GPT-4o</option><option value="claude-sonnet">Claude Sonnet</option></select></div>
         <div className="field mb-12"><label className="label">重写指令（可选）</label><textarea className="input" value={prompt} onChange={e => onPromptChange(e.target.value)} rows={3} placeholder={"告诉 AI 你想怎么改...\n例如：更紧张、加入内心描写、换成第一人称"} /></div>
-        <button className="btn-primary w-full" disabled>AI 重写此段落</button><p className="text-xs text-muted mt-8">连接模型后可用。</p>
+        <button className="btn-primary w-full" onClick={handleRewrite} disabled={rewriting}>
+          {rewriting ? "重写中..." : "AI 重写此段落"}
+        </button>
+        {rewriteError && <p className="text-xs mt-8" style={{ color: "var(--error)" }}>{rewriteError}</p>}
+        {rewriteResult && (
+          <div style={{ marginTop: 12, padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", fontSize: 13, lineHeight: 1.7, fontFamily: "var(--font-serif)", borderLeft: "3px solid var(--jade)", maxHeight: 200, overflowY: "auto", color: "var(--text-primary)" }}>
+            {rewriteResult}
+          </div>
+        )}
       </>) : (<div className="empty-state" style={{ padding: "32px 16px" }}><h4>选中文本以重写</h4><p>在编辑器中选中文本，将出现「AI重写」按钮</p></div>)}
     </div>
   );
@@ -548,14 +742,23 @@ function QuestionChoices({ content, onChoose }: { content: string; onChoose: (ch
 }
 
 function EvalTab({ result }: { result: EvalResult | null }) {
-  if (!result) return <div className="empty-state" style={{ padding: "32px 16px" }}><h4>暂无评估结果</h4><p>在「灵感」面板完成一次生成后，评估结果将显示在这里</p></div>;
+  const [evaluating, setEvaluating] = useState(false);
+  const [manualResult, setManualResult] = useState<EvalResult | null>(null);
+  const displayResult = manualResult || result;
+
+  if (!displayResult) return (
+    <div className="empty-state" style={{ padding: "32px 16px" }}>
+      <h4>暂无评估结果</h4>
+      <p>在「灵感」面板完成一次生成后，评估结果将显示在这里</p>
+    </div>
+  );
   return (
     <div>
       <div className="flex items-center gap-10 mb-16">
-        <div style={{ width: 48, height: 48, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono)", background: result.passed ? "var(--jade-subtle)" : "var(--accent-subtle)", color: result.passed ? "var(--jade)" : "var(--accent)" }}>{result.score}</div>
-        <div><div style={{ fontWeight: 600, color: "var(--text-primary)" }}>{result.passed ? "通过评估" : "需要修改"}</div><div className="text-xs text-muted">发现 {result.issues.length} 个问题</div></div>
+        <div style={{ width: 48, height: 48, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono)", background: displayResult.passed ? "var(--jade-subtle)" : "var(--accent-subtle)", color: displayResult.passed ? "var(--jade)" : "var(--accent)" }}>{displayResult.score}</div>
+        <div><div style={{ fontWeight: 600, color: "var(--text-primary)" }}>{displayResult.passed ? "通过评估" : "需要修改"}</div><div className="text-xs text-muted">发现 {displayResult.issues.length} 个问题</div></div>
       </div>
-      {result.issues.map((issue, i) => (
+      {displayResult.issues.map((issue, i) => (
         <div key={i} style={{ padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 8, borderLeft: `3px solid ${issue.severity === "high" ? "var(--error)" : issue.severity === "medium" ? "var(--warning)" : "var(--info)"}` }}>
           <div className="flex items-center gap-6 mb-4"><span className={`tag ${issue.severity === "high" ? "accent" : issue.severity === "medium" ? "qidian" : "category"}`}>{issue.severity === "high" ? "严重" : issue.severity === "medium" ? "中等" : "轻微"}</span><span className="text-xs text-muted">{issue.type}</span></div>
           <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>{issue.description}</div>

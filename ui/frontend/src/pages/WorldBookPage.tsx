@@ -113,8 +113,20 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   const runConsistencyCheck = async () => {
     setChecking(true);
     setCheckResult(null);
-    // TODO: consistency check API not yet implemented
-    setCheckResult("一致性检查功能尚未实装，敬请期待。");
+    try {
+      const entries = items.map((e: any) => `[${e.category || "通用"}] ${e.name}: ${e.content || ""}`).join("\n");
+      const resp = await apiPost<{ result: string; issues?: string[] }>("/api/worldbook/consistency-check", {
+        project_id: projectId,
+        entries_text: entries,
+      });
+      if (resp.issues && resp.issues.length > 0) {
+        setCheckResult("发现以下潜在矛盾：\n" + resp.issues.map((s: string, i: number) => `${i + 1}. ${s}`).join("\n"));
+      } else {
+        setCheckResult(resp.result || "未发现明显矛盾，世界观设定一致性良好。");
+      }
+    } catch (e: any) {
+      setCheckResult("一致性检查失败：" + (e?.message || "请检查模型连接设置。"));
+    }
     setChecking(false);
   };
 
