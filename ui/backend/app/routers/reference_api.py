@@ -15,8 +15,12 @@ router = APIRouter(prefix="/references", tags=["references"])
 
 def _db():
     from rag.reference_db import ReferenceDB
-    repo_cfg = load_repo_config(settings.repo_root)
-    return ReferenceDB(get_db_path(repo_cfg, settings.repo_root))
+    try:
+        repo_cfg = load_repo_config(settings.repo_root)
+        db_path = get_db_path(repo_cfg, settings.repo_root)
+    except FileNotFoundError:
+        db_path = str(settings.repo_root / "data" / "novels.db")
+    return ReferenceDB(db_path)
 
 
 # ═══ Works ═══════════════════════════════════════════════
@@ -234,21 +238,31 @@ def genres():
 
 @router.post("/preprocess/{ref_id}")
 def trigger_preprocess(ref_id: str):
-    from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
-    repo_cfg = load_repo_config(settings.repo_root)
-    return FeatureExtractionPipeline(
-        get_db_path(repo_cfg, settings.repo_root)
-    ).run(ref_id)
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        try:
+            repo_cfg = load_repo_config(settings.repo_root)
+            db_path = get_db_path(repo_cfg, settings.repo_root)
+        except FileNotFoundError:
+            db_path = str(settings.repo_root / "data" / "novels.db")
+        return FeatureExtractionPipeline(db_path).run(ref_id)
+    except Exception as e:
+        raise HTTPException(500, f"特征提取失败: {e}")
 
 
 @router.post("/preprocess/batch")
 def trigger_batch():
-    from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
-    repo_cfg = load_repo_config(settings.repo_root)
-    results = FeatureExtractionPipeline(
-        get_db_path(repo_cfg, settings.repo_root)
-    ).run_all_pending()
-    return {"processed": len(results), "results": results}
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        try:
+            repo_cfg = load_repo_config(settings.repo_root)
+            db_path = get_db_path(repo_cfg, settings.repo_root)
+        except FileNotFoundError:
+            db_path = str(settings.repo_root / "data" / "novels.db")
+        results = FeatureExtractionPipeline(db_path).run_all_pending()
+        return {"processed": len(results), "results": results}
+    except Exception as e:
+        raise HTTPException(500, f"批量提取失败: {e}")
 
 
 @router.get("/preprocess/status")

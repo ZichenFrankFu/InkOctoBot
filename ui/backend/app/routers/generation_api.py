@@ -261,9 +261,25 @@ async def quick_generate(req: GenerateRequest):
         raise HTTPException(500, detail=str(e))
 
 
+async def _wait_for_confirm(websocket: WebSocket, step: str, message: str, timeout_s: int = 300):
+    """Send need_confirm and wait for user response. Returns user message or None if aborted."""
+    await websocket.send_json({
+        "type": "need_confirm", "step": step, "message": message,
+    })
+    try:
+        msg = await asyncio.wait_for(websocket.receive_json(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        await websocket.send_json({"type": "error", "message": "等待超时"})
+        return None
+    if msg.get("action") == "abort":
+        await websocket.send_json({"type": "complete", "text": "", "aborted": True})
+        return None
+    return msg
+
+
 @router.websocket("/ws/{session_id}")
 async def generation_websocket(websocket: WebSocket, session_id: str):
-    """WebSocket for real-time pipeline streaming."""
+    """WebSocket for real-time pipeline streaming — sequential with confirms."""
     await websocket.accept()
     session = _active_sessions.get(session_id)
     if not session:
@@ -276,11 +292,12 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
         router_inst = _build_router(req_data.get("provider", "ollama"), req_data.get("model", ""))
         await websocket.send_json({"type": "pipeline_start", "session_id": session_id})
 
-        # Step 1: Scene Director
+        # ── Step 1: Scene Director ──────────────────────────
         await websocket.send_json({
             "type": "step_start", "step": "scene_director",
             "label": "Scene Director", "detail": "正在拆分场景..."
         })
+        scene_result = {}
         try:
             from agents.production.scene_director import SceneDirector
             director = SceneDirector(router_inst, project_id=req_data.get("project_id", ""))
@@ -289,33 +306,22 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
                 chapter_num=1,
                 world_rules=req_data.get("world_rules", ""),
             )
-            await websocket.send_json({
-                "type": "step_done", "step": "scene_director",
-                "result": scenes if isinstance(scenes, dict) else {"raw": str(scenes)},
-            })
+            scene_result = scenes if isinstance(scenes, dict) else {"raw": str(scenes)}
         except Exception as e:
-            await websocket.send_json({
-                "type": "step_done", "step": "scene_director",
-                "result": {"summary": f"场景规划完成 (fallback: {str(e)[:100]})"},
-            })
-
+            scene_result = {"summary": f"场景规划完成 (fallback: {str(e)[:100]})"}
         await websocket.send_json({
-            "type": "need_confirm", "step": "scene_director",
-            "message": "场景拆分完成，是否继续生成？",
+            "type": "step_done", "step": "scene_director", "result": scene_result,
         })
-        try:
-            msg = await asyncio.wait_for(websocket.receive_json(), timeout=300)
-        except asyncio.TimeoutError:
-            await websocket.send_json({"type": "error", "message": "等待超时"})
-            return
-        if msg.get("action") == "abort":
-            await websocket.send_json({"type": "complete", "text": "", "aborted": True})
+
+        # Wait for user confirm before proceeding to Actor Agents
+        confirm = await _wait_for_confirm(websocket, "scene_director", "场景拆分完成，是否继续生成？")
+        if confirm is None:
             return
 
-        # Step 2: Generate content
+        # ── Step 2: Actor Agents ────────────────────────────
         await websocket.send_json({
             "type": "step_start", "step": "actor_agents",
-            "label": "Actor Agents + Editor", "detail": "正在生成章节内容..."
+            "label": "Actor Agents", "detail": "正在生成角色对话与内心活动..."
         })
         full_text = ""
         try:
@@ -332,7 +338,7 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
             user_content += "\n\n请写出完整章节内容（800-1500字）："
 
             async for token in router_inst.generate_stream(
-                agent_role="editor_stylist",
+                agent_role="actor_default",
                 messages=[Msg(role="system", content=system), Msg(role="user", content=user_content)],
                 temperature=0.8, max_tokens=4096,
             ):
@@ -350,7 +356,52 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
                 "result": {"text": full_text, "error": str(e)[:200]},
             })
 
-        # Step 3: Evaluation
+        # Wait for user confirm before proceeding to Editor-Writer
+        confirm = await _wait_for_confirm(websocket, "actor_agents", "角色对话生成完成，是否继续编辑润色？")
+        if confirm is None:
+            return
+
+        # ── Step 3: Editor-Writer ───────────────────────────
+        await websocket.send_json({
+            "type": "step_start", "step": "editor_writer",
+            "label": "Editor-Writer", "detail": "正在进行文学风格化与润色..."
+        })
+        edited_text = full_text
+        try:
+            from agents.model_providers.base import LLMMessage as Msg
+            edit_system = (
+                "你是一个专业的小说编辑。请对以下草稿进行文学润色：\n"
+                "1. 提升文学性和画面感\n"
+                "2. 优化对话的自然度\n"
+                "3. 调整节奏和叙事张力\n"
+                "4. 保持原文的核心情节和角色不变\n"
+                "直接输出润色后的全文，不要加任何说明。"
+            )
+            edit_resp = await router_inst.generate(
+                agent_role="editor_stylist",
+                messages=[
+                    Msg(role="system", content=edit_system),
+                    Msg(role="user", content=f"请润色以下草稿：\n\n{full_text}"),
+                ],
+                temperature=0.6, max_tokens=4096,
+            )
+            edited_text = edit_resp.content or full_text
+            await websocket.send_json({
+                "type": "step_done", "step": "editor_writer",
+                "result": {"text": edited_text, "word_count": len(edited_text)},
+            })
+        except Exception as e:
+            await websocket.send_json({
+                "type": "step_done", "step": "editor_writer",
+                "result": {"text": edited_text, "error": str(e)[:200]},
+            })
+
+        # Wait for user confirm before proceeding to Evaluator
+        confirm = await _wait_for_confirm(websocket, "editor_writer", "编辑润色完成，是否继续质量评估？")
+        if confirm is None:
+            return
+
+        # ── Step 4: Evaluator ───────────────────────────────
         await websocket.send_json({
             "type": "step_start", "step": "evaluator",
             "label": "Evaluator", "detail": "正在评估质量..."
@@ -360,9 +411,9 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
             from agents.evaluation.repetition_detector import RepetitionDetector
             from agents.evaluation.slop_detector import SlopDetector
             rep = RepetitionDetector()
-            rep_issues = rep.detect(full_text)
+            rep_issues = rep.detect(edited_text)
             slop = SlopDetector()
-            slop_issues = slop.detect(full_text)
+            slop_issues = slop.detect(edited_text)
             issues = []
             for ri in (rep_issues or [])[:3]:
                 issues.append({
@@ -380,10 +431,10 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
             pass
 
         await websocket.send_json({"type": "step_done", "step": "evaluator", "result": eval_result})
-        await websocket.send_json({"type": "complete", "text": full_text, "evaluation": eval_result})
+        await websocket.send_json({"type": "complete", "text": edited_text, "evaluation": eval_result})
 
         session["status"] = "complete"
-        session["result"] = {"text": full_text, "evaluation": eval_result}
+        session["result"] = {"text": edited_text, "evaluation": eval_result}
 
     except WebSocketDisconnect:
         logger.info("Generation WS client disconnected: %s", session_id)

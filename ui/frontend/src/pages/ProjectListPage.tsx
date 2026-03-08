@@ -184,9 +184,13 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
   const tabMessages = messages.filter(m => m.tab === studioTab);
 
-  const formatDate = (dateStr?: string) => {
-    if (!dateStr) return "--";
-    const d = new Date(dateStr);
+  const formatDate = (dateVal?: string | number) => {
+    if (!dateVal) return "--";
+    // Handle Unix timestamp (number or numeric string)
+    const d = typeof dateVal === "number" || (typeof dateVal === "string" && /^\d+(\.\d+)?$/.test(dateVal))
+      ? new Date(Number(dateVal) * 1000)
+      : new Date(dateVal);
+    if (isNaN(d.getTime())) return "--";
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   };
 
@@ -304,26 +308,9 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
           <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
             <div className="flex items-center justify-between">
               <h3>创作工作室</h3>
-              <div className="flex gap-4">
-                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={saveSnapshot} disabled={messages.length === 0}>
-                  保存快照
-                </button>
-                <div style={{ position: "relative" }}>
-                  <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => setShowSnapshots(!showSnapshots)} disabled={snapshots.length === 0}>
-                    历史 ({snapshots.length})
-                  </button>
-                  {showSnapshots && snapshots.length > 0 && (
-                    <div className="dropdown" style={{ top: "100%", right: 0, marginTop: 4, maxHeight: 300, overflowY: "auto", width: 220 }}>
-                      {snapshots.map(s => (
-                        <button key={s.id} className="dropdown-item" onClick={() => restoreSnapshot(s)} style={{ fontSize: 12 }}>
-                          {s.label}
-                          <span className="text-xs text-muted" style={{ display: "block" }}>{s.messages.length} 条消息</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
+              <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => { setMessages([]); }}>
+                清空对话
+              </button>
             </div>
             <div className="text-xs text-muted">
               {projects.find(p => p.id === activeProject)?.name || "未选择项目"} — 在这里构思你的小说
@@ -370,7 +357,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                       </div>
                     </div>
                     <div style={{ marginBottom: 20 }}>
-                      <span className="label">叙事视角</span>
+                      <span className="label" style={{ marginBottom: 6, display: "block" }}>叙事视角</span>
                       <div className="flex gap-6">
                         {([["first", "第一人称"], ["third", "第三人称"], ["omniscient", "全知视角"]] as const).map(([val, label]) => (
                           <button key={val} className={calibration.perspective === val ? "btn-primary" : "btn"} style={{ flex: 1, fontSize: 12, padding: "6px 0", borderRadius: 20 }}
@@ -379,7 +366,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                       </div>
                     </div>
                     <div>
-                      <span className="label">目标受众</span>
+                      <span className="label" style={{ marginBottom: 6, display: "block" }}>目标受众</span>
                       <div className="flex gap-6">
                         {([["male", "男频"], ["female", "女频"], ["general", "大众"]] as const).map(([val, label]) => (
                           <button key={val} className={calibration.audience === val ? "btn-primary" : "btn"} style={{ flex: 1, fontSize: 12, padding: "6px 0", borderRadius: 20 }}

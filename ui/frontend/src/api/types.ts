@@ -8,8 +8,8 @@ export interface Project {
   name: string;
   genre?: string;
   status?: string;
-  created_at?: string;
-  updated_at?: string;
+  created_at?: string | number;
+  updated_at?: string | number;
   word_count?: number;
   chapter_count?: number;
 }

@@ -227,14 +227,19 @@ export default function EditorPage({ projectId }: { projectId: string }) {
             });
           }
           break;
-        case "need_confirm":
+        case "need_confirm": {
+          const confirmAgent = data.step === "scene_director" ? "Scene Director"
+            : data.step === "actor_agents" ? "Actor Agents"
+            : data.step === "editor_writer" ? "Editor-Writer"
+            : data.step === "evaluator" ? "Evaluator" : "System";
           setChatMessages(prev => [...prev, {
-            agent: "Scene Director",
+            agent: confirmAgent,
             content: data.message || "是否继续？",
             status: "waiting_confirm", timestamp: Date.now(), isQuestion: true,
           }]);
           setWaitingForConfirm(true);
           break;
+        }
         case "complete":
           setGenerating(false);
           setCurrentAgent(null);
@@ -520,8 +525,8 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId }
     apiGet<{ items: any[] }>(`/api/data/characters?project_id=${pid}`)
       .then(r => setCharacters((r.items || []).map((c: any) => ({ id: c.id, name: c.name, selected: false }))))
       .catch(() => {});
-    apiGet<{ works: any[] }>("/api/reference/works")
-      .then(r => setReferences((r.works || []).map((w: any) => ({ id: w.id, title: w.title || w.name || "未命名", selected: false }))))
+    apiGet<{ items: any[] }>("/api/references/works")
+      .then(r => setReferences((r.items || []).map((w: any) => ({ id: w.id, title: w.title || w.name || "未命名", selected: false }))))
       .catch(() => setReferences([]));
   }, [projectId]);
 
@@ -662,7 +667,7 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
       {/* Chat area */}
       <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
-          <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>在「大纲」中点击「开始生成」启动 Pipeline</div>
+          <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>在「大纲」标签中点击「开始生成」启动 Pipeline，或直接在下方输入消息</div>
         )}
         {chatMessages.map((msg, i) => {
           const style = getAgentStyle(msg.agent); const isUser = msg.agent === "User";

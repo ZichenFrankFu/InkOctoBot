@@ -28,8 +28,14 @@ def _safe_records(df, max_rows=200):
     return [{k: _clean(v) for k, v in row.items()} for row in records]
 
 def _db_date_range(db_path):
+    if not Path(db_path).exists():
+        return ("", "")
     con = sqlite3.connect(db_path)
-    r = pd.read_sql_query("SELECT MIN(snapshot_date) AS mn, MAX(snapshot_date) AS mx FROM rank_snapshots", con).iloc[0]
+    try:
+        r = pd.read_sql_query("SELECT MIN(snapshot_date) AS mn, MAX(snapshot_date) AS mx FROM rank_snapshots", con).iloc[0]
+    except Exception:
+        con.close()
+        return ("", "")
     con.close()
     return (str(r["mn"]) if pd.notna(r["mn"]) else "", str(r["mx"]) if pd.notna(r["mx"]) else "")
 

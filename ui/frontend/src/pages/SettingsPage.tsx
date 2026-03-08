@@ -2,15 +2,43 @@ import React, { useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut } from "../api/client";
 import type { AppSettings } from "../api/types";
 
-const PIPELINE_ROLES: { key: string; label: string; desc: string }[] = [
-  { key: "scene_planner", label: "场景规划器", desc: "设计场景结构与节奏" },
-  { key: "scene_director", label: "场景导演", desc: "生成导演指令与镜头感" },
-  { key: "actor_default", label: "默认角色", desc: "通用角色对话与行为" },
-  { key: "actor_protagonist", label: "主角专属", desc: "主角视角的深度演绎" },
-  { key: "editor_stylist", label: "风格编辑", desc: "文学风格化与润色" },
-  { key: "editor_agent", label: "编辑代理", desc: "自动修改与质量提升" },
-  { key: "evaluator", label: "评估器", desc: "一致性与约束检测" },
+const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string; desc: string }[] }[] = [
+  {
+    group: "创作工作室（Marketing）",
+    roles: [
+      { key: "marketing_outline", label: "大纲策划", desc: "全书大纲构思与讨论" },
+      { key: "marketing_characters", label: "角色设计", desc: "角色人设创意与讨论" },
+      { key: "marketing_world", label: "世界观构建", desc: "世界观设定与讨论" },
+    ],
+  },
+  {
+    group: "Film Pipeline（编辑器）",
+    roles: [
+      { key: "scene_planner", label: "场景规划器", desc: "设计场景结构与节奏" },
+      { key: "scene_director", label: "场景导演", desc: "生成导演指令与镜头感" },
+      { key: "actor_default", label: "默认角色", desc: "通用角色对话与行为" },
+      { key: "actor_protagonist", label: "主角专属", desc: "主角视角的深度演绎" },
+      { key: "editor_stylist", label: "风格编辑", desc: "文学风格化与润色" },
+      { key: "editor_agent", label: "编辑代理", desc: "自动修改与质量提升" },
+      { key: "evaluator", label: "评估器", desc: "一致性与约束检测" },
+    ],
+  },
+  {
+    group: "角色管理",
+    roles: [
+      { key: "character_profile_gen", label: "AI 生成人设", desc: "根据名字和定位生成角色档案" },
+    ],
+  },
+  {
+    group: "世界书",
+    roles: [
+      { key: "worldbook_consistency", label: "一致性检查", desc: "检测世界观设定矛盾与冲突" },
+    ],
+  },
 ];
+
+// Flat list for backward compat
+const PIPELINE_ROLES = PIPELINE_ROLE_GROUPS.flatMap(g => g.roles);
 
 const PROVIDER_META: Record<string, { label: string; icon: string; hasKey: boolean; hasUrl: boolean }> = {
   openai: { label: "OpenAI", icon: "O", hasKey: true, hasUrl: false },
@@ -175,79 +203,84 @@ export default function SettingsPage() {
       {tab === "pipeline" && (
         <div>
           <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
-            为 Film Pipeline 中的每个 Agent 角色分配模型供应商和具体模型。请先在「模型供应商」中启用并配置供应商。
+            为所有 AI Agent 分配模型供应商和具体模型。请先在「模型供应商」中启用并配置供应商。
           </div>
-          <div className="card">
-            <div className="card-body" style={{ padding: 0 }}>
-              {PIPELINE_ROLES.map((role, idx) => {
-                const assignment = settings.pipeline[role.key] || { provider: "", model: "", compare_models: [] };
-                const models = modelsForProvider(assignment.provider);
-                const providers = enabledProviders();
+          {PIPELINE_ROLE_GROUPS.map((group) => (
+            <div key={group.group} className="card" style={{ marginBottom: 16 }}>
+              <div className="card-header">
+                <h3 style={{ fontSize: 14, margin: 0 }}>{group.group}</h3>
+              </div>
+              <div className="card-body" style={{ padding: 0 }}>
+                {group.roles.map((role, idx) => {
+                  const assignment = settings.pipeline[role.key] || { provider: "", model: "", compare_models: [] };
+                  const models = modelsForProvider(assignment.provider);
+                  const providers = enabledProviders();
 
-                return (
-                  <div
-                    key={role.key}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 16,
-                      padding: "16px 20px",
-                      borderBottom: idx < PIPELINE_ROLES.length - 1 ? "1px solid var(--border-subtle)" : "none",
-                    }}
-                  >
-                    <div style={{ flex: "0 0 180px" }}>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{role.label}</div>
-                      <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>{role.desc}</div>
+                  return (
+                    <div
+                      key={role.key}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 16,
+                        padding: "16px 20px",
+                        borderBottom: idx < group.roles.length - 1 ? "1px solid var(--border-subtle)" : "none",
+                      }}
+                    >
+                      <div style={{ flex: "0 0 180px" }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{role.label}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>{role.desc}</div>
+                      </div>
+                      <div style={{ flex: 1, display: "flex", gap: 12 }}>
+                        <select
+                          className="select"
+                          value={assignment.provider}
+                          onChange={(e) => {
+                            const newProvider = e.target.value;
+                            const newModels = modelsForProvider(newProvider);
+                            if (!settings) return;
+                            const prev = settings.pipeline[role.key] || { provider: "", model: "", compare_models: [] };
+                            setSettings({
+                              ...settings,
+                              pipeline: {
+                                ...settings.pipeline,
+                                [role.key]: { ...prev, provider: newProvider, model: newModels[0] || "" },
+                              },
+                            });
+                            setDirty(true);
+                          }}
+                          style={{ flex: 1 }}
+                        >
+                          <option value="">-- 选择供应商 --</option>
+                          {providers.map((p) => (
+                            <option key={p} value={p}>
+                              {PROVIDER_META[p]?.label || p}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          className="select"
+                          value={assignment.model}
+                          onChange={(e) => updatePipeline(role.key, "model", e.target.value)}
+                          disabled={!assignment.provider}
+                          style={{ flex: 1, opacity: assignment.provider ? 1 : 0.4 }}
+                        >
+                          <option value="">-- 选择模型 --</option>
+                          {models.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div style={{
+                        width: 8, height: 8, borderRadius: 4, flexShrink: 0,
+                        background: assignment.provider && assignment.model ? "var(--jade)" : "var(--text-disabled)",
+                      }} />
                     </div>
-                    <div style={{ flex: 1, display: "flex", gap: 12 }}>
-                      <select
-                        className="select"
-                        value={assignment.provider}
-                        onChange={(e) => {
-                          const newProvider = e.target.value;
-                          const newModels = modelsForProvider(newProvider);
-                          if (!settings) return;
-                          const prev = settings.pipeline[role.key] || { provider: "", model: "", compare_models: [] };
-                          setSettings({
-                            ...settings,
-                            pipeline: {
-                              ...settings.pipeline,
-                              [role.key]: { ...prev, provider: newProvider, model: newModels[0] || "" },
-                            },
-                          });
-                          setDirty(true);
-                        }}
-                        style={{ flex: 1 }}
-                      >
-                        <option value="">-- 选择供应商 --</option>
-                        {providers.map((p) => (
-                          <option key={p} value={p}>
-                            {PROVIDER_META[p]?.label || p}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        className="select"
-                        value={assignment.model}
-                        onChange={(e) => updatePipeline(role.key, "model", e.target.value)}
-                        disabled={!assignment.provider}
-                        style={{ flex: 1, opacity: assignment.provider ? 1 : 0.4 }}
-                      >
-                        <option value="">-- 选择模型 --</option>
-                        {models.map((m) => (
-                          <option key={m} value={m}>{m}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div style={{
-                      width: 8, height: 8, borderRadius: 4, flexShrink: 0,
-                      background: assignment.provider && assignment.model ? "var(--jade)" : "var(--text-disabled)",
-                    }} />
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          ))}
         </div>
       )}
 
