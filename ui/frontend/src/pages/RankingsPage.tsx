@@ -54,8 +54,8 @@ export default function RankingsPage() {
     setSnapshots([]);
     setEntries([]);
     const qs = platform ? `?platform=${platform}` : "";
-    apiGet<RankList[]>(`/api/data/rank-lists${qs}`)
-      .then((r) => setRankLists(Array.isArray(r) ? r : []))
+    apiGet<{ rows: RankList[] }>(`/api/db/rank_lists${qs}`)
+      .then((r) => setRankLists(Array.isArray(r.rows) ? r.rows : []))
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [platform]);
@@ -68,10 +68,10 @@ export default function RankingsPage() {
     setStep("snapshots");
     setLoading(true);
     try {
-      const r = await apiGet<RankSnapshot[]>(
-        `/api/data/rank-snapshots?rank_list_id=${list.rank_list_id}`,
+      const r = await apiGet<{ rows: RankSnapshot[] }>(
+        `/api/db/snapshots?rank_list_id=${list.rank_list_id}`,
       );
-      setSnapshots(Array.isArray(r) ? r : []);
+      setSnapshots(Array.isArray(r.rows) ? r.rows : []);
     } catch (e) {
       console.error(e);
     } finally {
@@ -85,8 +85,8 @@ export default function RankingsPage() {
     setStep("entries");
     setLoading(true);
     try {
-      const r = await apiGet<RankEntry[]>(`/api/data/rank-entries?snapshot_id=${snap.snapshot_id}`);
-      setEntries(Array.isArray(r) ? r : []);
+      const r = await apiGet<{ rows: RankEntry[] }>(`/api/db/entries?snapshot_id=${snap.snapshot_id}`);
+      setEntries(Array.isArray(r.rows) ? r.rows : []);
     } catch (e) {
       console.error(e);
     } finally {
@@ -100,7 +100,7 @@ export default function RankingsPage() {
     setPanelLoading(true);
     setPanelData(null);
     try {
-      setPanelData(await apiGet<NovelDetail>(`/api/data/novels/${uid}`));
+      setPanelData(await apiGet<NovelDetail>(`/api/db/novel/${uid}`));
     } catch (e) {
       console.error(e);
     } finally {
@@ -348,11 +348,7 @@ export default function RankingsPage() {
                     </thead>
                     <tbody>
                       {entries.map((e) => {
-                        const nov = e.novel as any;
-                        const title =
-                          nov?.titles?.find((t: any) => t.is_primary)?.title ||
-                          nov?.title ||
-                          `(uid: ${e.novel_uid})`;
+                        const row = e as any;
                         return (
                           <tr
                             key={`${e.snapshot_id}-${e.novel_uid}`}
@@ -370,12 +366,12 @@ export default function RankingsPage() {
                               style={{ fontWeight: 500, maxWidth: 280, color: "var(--accent)" }}
                               className="truncate"
                             >
-                              {title}
+                              {row.title || `(uid: ${e.novel_uid})`}
                             </td>
-                            <td className="text-muted">{nov?.author || "—"}</td>
+                            <td className="text-muted">{row.author || "—"}</td>
                             <td>
-                              {nov?.main_category && (
-                                <span className="tag category">{nov.main_category}</span>
+                              {row.main_category && (
+                                <span className="tag category">{row.main_category}</span>
                               )}
                             </td>
                             <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>
@@ -392,8 +388,8 @@ export default function RankingsPage() {
                                 color: "var(--text-tertiary)",
                               }}
                             >
-                              {nov?.total_words
-                                ? `${(nov.total_words / 10000).toFixed(1)}万`
+                              {row.total_words
+                                ? `${(row.total_words / 10000).toFixed(1)}万`
                                 : "—"}
                             </td>
                           </tr>

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Reference database manager.
 
 Manages reference_works + reference_entries tables (SQLite).
@@ -111,7 +111,7 @@ class ReferenceDB:
             "learning_dimensions_json", "has_full_text",
             "preprocessing_status", "style_fingerprint_json",
             "narrative_structure_json", "extracted_characters_json",
-            "rhythm_template_json",
+            "rhythm_template_json", "file_path",
         }
         sets = ["updated_at=CURRENT_TIMESTAMP"]
         params: list[Any] = []

@@ -35,8 +35,13 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await apiGet<{ items: Character[] }>(`/api/data/projects/${projectId}/characters`);
-      setItems(r.items || []);
+      const r = await apiGet<{ items: Character[] }>(`/api/data/characters?project_id=${projectId}`);
+      // Defensive: ensure relationships is always an array (backend may return {} for legacy data)
+      const fixed = (r.items || []).map(c => ({
+        ...c,
+        relationships: Array.isArray(c.relationships) ? c.relationships : [],
+      }));
+      setItems(fixed);
     } catch (e) {
       console.error(e);
     }
@@ -55,7 +60,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 
   const create = async () => {
     try {
-      const c = await apiPost<Character>(`/api/data/projects/${projectId}/characters`, {
+      const c = await apiPost<Character>(`/api/data/characters`, {
         name: "新角色",
         role: "配角",
         project_id: projectId,
@@ -77,7 +82,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const save = async () => {
     if (!editing) return;
     try {
-      await apiPut(`/api/data/projects/${projectId}/characters/${editing.id}`, editing);
+      await apiPut(`/api/data/characters/${editing.id}`, editing);
       setDirty(false);
       load();
     } catch (e) {
@@ -88,7 +93,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const remove = async (id: string) => {
     if (!confirm("确定删除该角色？")) return;
     try {
-      await apiDelete(`/api/data/projects/${projectId}/characters/${id}`);
+      await apiDelete(`/api/data/characters/${id}`);
       if (editing?.id === id) setEditing(null);
       load();
     } catch (e) {
@@ -250,6 +255,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   {dirty ? "保存" : "已保存"}
                 </button>
               </div>
+
+              <RelationshipGraph characters={items} currentId={editing.id} />
 
               {/* Basic Info */}
               <div className="card mb-20">
@@ -424,8 +431,10 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   })}
 
                   {/* Add relationship */}
-                  {others.length > 0 && (
-                    <div className="flex gap-8 mt-8">
+                  <div style={{ marginTop: 12 }}>
+                    <div className="label mb-8">快速添加关系</div>
+                    {others.filter(o => !(editing.relationships || []).some(r => r.target_id === o.id)).length > 0 ? (
+                    <div className="flex gap-8">
                       <select
                         className="select"
                         style={{ flex: 1 }}
@@ -449,12 +458,81 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                         + 添加关系
                       </button>
                     </div>
-                  )}
+                    ) : (
+                      <div className="text-xs text-muted">所有角色已添加关系</div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---- Relationship Graph ---- */
+function RelationshipGraph({ characters, currentId }: { characters: Character[]; currentId: string }) {
+  const current = characters.find(c => c.id === currentId);
+  if (!current) return null;
+
+  const relatedIds = new Set((current.relationships || []).map(r => r.target_id));
+  const visibleChars = characters.filter(c => c.id === currentId || relatedIds.has(c.id));
+  if (visibleChars.length <= 1) return null;
+
+  const W = 600, H = 200;
+  const cx = W / 2, cy = H / 2;
+  const others = visibleChars.filter(c => c.id !== currentId);
+  const angleStep = (2 * Math.PI) / Math.max(others.length, 1);
+  const radius = Math.min(W, H) * 0.35;
+
+  const positions: Record<string, { x: number; y: number }> = { [currentId]: { x: cx, y: cy } };
+  others.forEach((c, i) => {
+    const angle = -Math.PI / 2 + i * angleStep;
+    positions[c.id] = { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
+  });
+
+  return (
+    <div className="card mb-20">
+      <div className="card-header"><h3>关系图谱</h3></div>
+      <div className="card-body" style={{ padding: 8 }}>
+        <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+          {(current.relationships || []).map(rel => {
+            const from = positions[currentId];
+            const to = positions[rel.target_id];
+            if (!from || !to) return null;
+            const trustPct = rel.trust_alpha / (rel.trust_alpha + rel.trust_beta);
+            const color = trustPct > 0.6 ? "var(--jade)" : trustPct > 0.4 ? "var(--gold)" : "var(--accent)";
+            return (
+              <g key={rel.target_id}>
+                <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={color} strokeWidth={2} opacity={0.5} />
+                <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 6} textAnchor="middle" fontSize={9} fill="var(--text-tertiary)">
+                  {rel.notes ? rel.notes.slice(0, 8) : `信任${(trustPct * 100).toFixed(0)}%`}
+                </text>
+              </g>
+            );
+          })}
+          {visibleChars.map(c => {
+            const pos = positions[c.id];
+            if (!pos) return null;
+            const isCurrent = c.id === currentId;
+            const r = isCurrent ? 24 : 18;
+            const fillColor = c.role === "主角" ? "var(--accent-subtle)" : c.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)";
+            const strokeColor = isCurrent ? "var(--accent)" : "var(--border-hover)";
+            return (
+              <g key={c.id}>
+                <circle cx={pos.x} cy={pos.y} r={r} fill={fillColor} stroke={strokeColor} strokeWidth={isCurrent ? 2 : 1} />
+                <text x={pos.x} y={pos.y + 4} textAnchor="middle" fontSize={isCurrent ? 12 : 10} fontWeight={isCurrent ? 700 : 500} fill="var(--text-primary)">
+                  {c.name.slice(0, 2)}
+                </text>
+                <text x={pos.x} y={pos.y + r + 14} textAnchor="middle" fontSize={9} fill="var(--text-tertiary)">
+                  {c.name}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
       </div>
     </div>
   );

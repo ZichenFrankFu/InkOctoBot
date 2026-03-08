@@ -4,20 +4,18 @@ import { apiGet } from "./api/client";
 import DashboardPage from "./pages/DashboardPage";
 import RankingsPage from "./pages/RankingsPage";
 import ReferenceLibraryPage from "./pages/ReferenceLibraryPage";
-import TrendAnalysisPage from "./pages/TrendAnalysisPage";
+// TrendAnalysisPage merged into AnalysisDashboardPage
 import EditorPage from "./pages/EditorPage";
 import CharacterManagerPage from "./pages/CharacterManagerPage";
 import WorldBookPage from "./pages/WorldBookPage";
 import StorylinePage from "./pages/StorylinePage";
 import SettingsPage from "./pages/SettingsPage";
-import DatabasePage from "./pages/DatabasePage";
-import ReportsPage from "./pages/ReportsPage";
 import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 
 type Tab =
-  | "dashboard" | "rankings" | "references" | "trends" | "database" | "reports" | "analysis"
+  | "dashboard" | "rankings" | "references" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
   | "settings";
 
@@ -33,12 +31,9 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   {
     section: "数据",
     items: [
-      { key: "database", icon: "🗄️", label: "数据浏览" },
-      { key: "rankings", icon: "📋", label: "榜单浏览" },
+      { key: "rankings", icon: "📋", label: "市场数据库" },
       { key: "references", icon: "📚", label: "参考作品库" },
       { key: "analysis", icon: "📈", label: "分析面板" },
-      { key: "trends", icon: "📉", label: "趋势分析" },
-      { key: "reports", icon: "📄", label: "分析报告" },
     ],
   },
   {
@@ -64,7 +59,6 @@ export default function App() {
   const [sidebarW, setSidebarW] = useState(220);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<string>("");
-  const [showProjMenu, setShowProjMenu] = useState(false);
   const dragging = useRef(false);
 
   useEffect(() => {
@@ -76,23 +70,6 @@ export default function App() {
       })
       .catch(() => {});
   }, []);
-
-  const createProject = async () => {
-    const name = prompt("新项目名称：");
-    if (!name) return;
-    try {
-      const res: Project = await fetch("/api/data/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      }).then(r => r.json());
-      setProjects(prev => [...prev, res]);
-      setActiveProject(res.id);
-    } catch (e) {
-      console.error(e);
-    }
-    setShowProjMenu(false);
-  };
 
   const activeProjectName = projects.find(p => p.id === activeProject)?.name || "未选择";
 
@@ -137,32 +114,12 @@ export default function App() {
               {group.section === "创作" ? (
                 <div className="sidebar-section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingRight: 8 }}>
                   <span>{group.section}</span>
-                  <div style={{ position: "relative" }}>
-                    <button
-                      onClick={() => setShowProjMenu(!showProjMenu)}
-                      className="btn-ghost"
-                      style={{ padding: "2px 8px", fontSize: 10, letterSpacing: 0, textTransform: "none" }}
-                    >
-                      {activeProjectName.length > 8 ? activeProjectName.slice(0, 8) + "…" : activeProjectName} ▾
-                    </button>
-                    {showProjMenu && (
-                      <div className="dropdown" style={{ top: "100%", right: 0, marginTop: 4 }}>
-                        {projects.map(p => (
-                          <button
-                            key={p.id}
-                            className={`dropdown-item${p.id === activeProject ? " active" : ""}`}
-                            onClick={() => { setActiveProject(p.id); setShowProjMenu(false); }}
-                          >
-                            {p.name}
-                          </button>
-                        ))}
-                        <div className="dropdown-divider" />
-                        <button className="dropdown-item" onClick={createProject} style={{ color: "var(--jade)" }}>
-                          + 新建项目
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  <span
+                    style={{ padding: "2px 8px", fontSize: 10, letterSpacing: 0, color: "var(--text-secondary)" }}
+                    title={`当前项目：${activeProjectName}`}
+                  >
+                    当前：{activeProjectName.length > 6 ? activeProjectName.slice(0, 6) + "…" : activeProjectName}
+                  </span>
                 </div>
               ) : (
                 <div className="sidebar-section-label">{group.section}</div>
@@ -187,14 +144,11 @@ export default function App() {
       <div className="resize-handle" onMouseDown={onMouseDown} />
 
       <main className="main-content">
-        {tab === "dashboard" && <DashboardPage />}
-        {tab === "database" && <DatabasePage />}
+        {tab === "dashboard" && <DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} />}
         {tab === "rankings" && <RankingsPage />}
         {tab === "references" && <ReferenceLibraryPage />}
         {tab === "analysis" && <AnalysisDashboardPage />}
-        {tab === "trends" && <TrendAnalysisPage />}
-        {tab === "reports" && <ReportsPage />}
-        {tab === "projects" && <ProjectListPage />}
+        {tab === "projects" && <ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} />}
         {tab === "project-setup" && <ProjectSetupPage projectId={activeProject} />}
         {tab === "editor" && <EditorPage projectId={activeProject} />}
         {tab === "characters" && <CharacterManagerPage projectId={activeProject} projects={projects} />}

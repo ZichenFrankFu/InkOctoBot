@@ -242,6 +242,9 @@ export interface StoryNode {
   color?: string;
   x: number;
   y: number;
+  time?: string;
+  location?: string;
+  week?: number;
 }
 
 export interface StoryEdge {
@@ -290,12 +293,27 @@ export interface AgentEvent {
 }
 
 // ── Settings ──
+export interface ProviderConfig {
+  enabled: boolean;
+  api_key?: string;
+  base_url?: string;
+  models: string[];
+}
+
+export interface PipelineRole {
+  provider: string;
+  model: string;
+  compare_models: string[];
+}
+
 export interface AppSettings {
+  theme: string;
+  auto_save: boolean;
   auto_save_interval: number;
-  cost_confirmation_threshold: number;
+  cost_confirm: boolean;
   export_format: "txt" | "docx" | "epub";
-  model_assignments: ModelAssignment[];
-  providers: ModelProvider[];
+  providers: Record<string, ProviderConfig>;
+  pipeline: Record<string, PipelineRole>;
 }
 
 // ── Analysis ──

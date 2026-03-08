@@ -109,9 +109,18 @@ def run_analysis(
         if platform == "both" and roll_cat is not None and not roll_cat.empty:
             try:
                 from analysis.report import build_cross_platform_diff_by_category
-                cross_platform = _safe_records(build_cross_platform_diff_by_category(roll_cat), 100)
+                cp_df = build_cross_platform_diff_by_category(roll_cat)
+                if cp_df is not None and not cp_df.empty:
+                    cp_df = cp_df.rename(columns={"cat_u": "category"})
+                cross_platform = _safe_records(cp_df, 100)
             except Exception:
                 pass
+        if roll is not None and not roll.empty:
+            roll = roll.rename(columns={"tag_u": "tag", "mean_share": "latest_share"})
+        if roll_cat is not None and not roll_cat.empty:
+            roll_cat = roll_cat.rename(columns={"cat_u": "category", "mean_share": "latest_share"})
+        if opportunities is not None and not opportunities.empty:
+            opportunities = opportunities.rename(columns={"tag_u": "tag", "cat_u": "category"})
 
         return {
             "start_date": start_date, "end_date": end_date, "platform": platform,
