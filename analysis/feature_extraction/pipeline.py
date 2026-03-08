@@ -106,11 +106,12 @@ class FeatureExtractionPipeline:
     # ── internal ──
 
     def _load_text(self, work: dict) -> str:
-        if work["source"] == "file_upload" and work.get("file_path"):
+        # Try file_path first regardless of source type
+        if work.get("file_path"):
             fp = Path(work["file_path"])
             if fp.exists():
                 return fp.read_text(encoding="utf-8", errors="replace")
-        if work["source"] == "platform_crawl" and work.get("novel_uid"):
+        if work.get("source") == "platform_crawl" and work.get("novel_uid"):
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             rows = conn.execute(

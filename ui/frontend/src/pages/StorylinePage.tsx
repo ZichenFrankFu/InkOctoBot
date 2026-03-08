@@ -104,9 +104,9 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
               ...updated[existingIdx],
               title: ch.title || updated[existingIdx].title,
               summary: ch.synopsis || updated[existingIdx].summary,
-              time: (ch as any).time || updated[existingIdx].time,
-              location: (ch as any).location || updated[existingIdx].location,
-              characters: (ch as any).characters?.length ? (ch as any).characters : updated[existingIdx].characters,
+              time: ch.time || updated[existingIdx].time,
+              location: ch.location || updated[existingIdx].location,
+              characters: ch.characters?.length ? ch.characters : updated[existingIdx].characters,
             };
           } else {
             newNodes.push({
@@ -117,10 +117,10 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
               y: 60,
               color: COLORS[(chNum - 1) % COLORS.length],
               chapter_num: chNum,
-              characters: (ch as any).characters || [],
+              characters: ch.characters || [],
               week: Math.ceil(chNum / 3),
-              time: (ch as any).time || "",
-              location: (ch as any).location || "",
+              time: ch.time || "",
+              location: ch.location || "",
             });
           }
         });

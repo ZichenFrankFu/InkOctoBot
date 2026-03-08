@@ -365,16 +365,32 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   };
 
   const handleRollback = useCallback((stepIndex: number) => {
-    setPipelineSteps(prev => prev.map((s, i) => i >= stepIndex ? { ...s, status: "pending", detail: PIPELINE_STEPS[i].detail } : s));
     const agentName = PIPELINE_STEPS[stepIndex].step;
+    // Reset steps from this index onwards
+    setPipelineSteps(prev => prev.map((s, i) => i >= stepIndex ? { ...s, status: "pending", detail: PIPELINE_STEPS[i].detail } : s));
+    // Truncate chat messages from first message of this agent
     const firstMsgIdx = chatMessages.findIndex(m => m.agent === agentName);
     if (firstMsgIdx >= 0) {
-      setChatMessages(prev => prev.slice(0, firstMsgIdx));
+      setChatMessages([...chatMessages.slice(0, firstMsgIdx), {
+        agent: "System",
+        content: `已回退到「${agentName}」阶段。请在下方输入消息与 ${agentName} 对话，或点击「开始生成」重新运行。`,
+        status: "done", timestamp: Date.now(),
+      }]);
+    } else {
+      setChatMessages(prev => [...prev, {
+        agent: "System",
+        content: `已回退到「${agentName}」阶段。请在下方输入消息与 ${agentName} 对话，或点击「开始生成」重新运行。`,
+        status: "done", timestamp: Date.now(),
+      }]);
+    }
+    // Close existing WebSocket to stop current pipeline
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
     }
     setWaitingForConfirm(false);
     setGenerating(false);
-    setCurrentAgent(null);
-    setChatMessages(prev => [...prev, { agent: "System", content: `已回退到「${agentName}」阶段。点击「开始生成」重新运行 Pipeline。`, status: "done", timestamp: Date.now() }]);
+    setCurrentAgent(agentName);
   }, [chatMessages]);
 
   const handleWriteToEditor = useCallback(() => {
@@ -499,7 +515,10 @@ export default function EditorPage({ projectId }: { projectId: string }) {
           </div>
           <div className="panel-body" style={{ padding: "14px 16px" }}>
             {aiTab === "outline" && <OutlineTab synopsis={activeCh?.synopsis || ""} onChange={updateSynopsis} onSave={handleSaveOutline}
-              onStartGeneration={() => { setAiTab("inspire"); setTimeout(() => { if (!generating) startGeneration(); }, 300); }} projectId={projectId} />}
+              onStartGeneration={() => { setAiTab("inspire"); setTimeout(() => { if (!generating) startGeneration(); }, 300); }} projectId={projectId}
+              chapter={activeCh} onUpdateChapter={(field, value) => {
+                setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
+              }} />}
             {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
@@ -511,11 +530,19 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   );
 }
 
-function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId }: {
+function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, onUpdateChapter }: {
   synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; projectId: string;
+  chapter?: ChapterOutline | null; onUpdateChapter?: (field: string, value: any) => void;
 }) {
-  const [time, setTime] = useState("");
-  const [location, setLocation] = useState("");
+  const [time, setTime] = useState(chapter?.time || "");
+  const [location, setLocation] = useState(chapter?.location || "");
+
+  // Sync when chapter changes (user switches active chapter)
+  useEffect(() => {
+    setTime(chapter?.time || "");
+    setLocation(chapter?.location || "");
+  }, [chapter?.id]);
+
   const [characters, setCharacters] = useState<{ id: string; name: string; selected: boolean }[]>([]);
   const [references, setReferences] = useState<{ id: string; title: string; selected: boolean }[]>([]);
   const [showLinker, setShowLinker] = useState(false);
@@ -526,7 +553,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId }
       .then(r => setCharacters((r.items || []).map((c: any) => ({ id: c.id, name: c.name, selected: false }))))
       .catch(() => {});
     apiGet<{ items: any[] }>("/api/references/works")
-      .then(r => setReferences((r.items || []).map((w: any) => ({ id: w.id, title: w.title || w.name || "未命名", selected: false }))))
+      .then(r => setReferences((r.items || []).map((w: any) => ({ id: w.ref_id || w.id, title: w.title || w.name || "未命名", selected: false }))))
       .catch(() => setReferences([]));
   }, [projectId]);
 
@@ -615,11 +642,11 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId }
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <div className="field" style={{ flex: 1 }}>
           <label className="label">时间</label>
-          <input className="input" value={time} onChange={e => setTime(e.target.value)} placeholder="例：第3天·黄昏" style={{ fontSize: 12 }} />
+          <input className="input" value={time} onChange={e => { setTime(e.target.value); onUpdateChapter?.("time", e.target.value); }} placeholder="例：第3天·黄昏" style={{ fontSize: 12 }} />
         </div>
         <div className="field" style={{ flex: 1 }}>
           <label className="label">地点</label>
-          <input className="input" value={location} onChange={e => setLocation(e.target.value)} placeholder="例：云隐山·剑庐" style={{ fontSize: 12 }} />
+          <input className="input" value={location} onChange={e => { setLocation(e.target.value); onUpdateChapter?.("location", e.target.value); }} placeholder="例：云隐山·剑庐" style={{ fontSize: 12 }} />
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
@@ -687,8 +714,15 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
                 </div>
                 {msg.agent !== "User" && msg.agent !== "System" && msg.status === "done" && !generating && (
                   <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", marginTop: 4, color: "var(--text-tertiary)" }}
-                    onClick={() => onStart()}>
-                    ↻ 重新生成
+                    onClick={() => {
+                      const stepIdx = steps.findIndex(s => s.step === msg.agent);
+                      if (stepIdx >= 0 && onRollback) {
+                        onRollback(stepIdx);
+                      } else {
+                        onStart();
+                      }
+                    }}>
+                    ↻ 重新生成此步骤
                   </button>
                 )}
               </div>

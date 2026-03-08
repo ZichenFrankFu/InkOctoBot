@@ -110,8 +110,9 @@ def _build_router(provider: str = "", model: str = ""):
     pipeline = user_settings.get("pipeline", {})
 
     if not provider:
+        # Try pipeline config first
         sc = pipeline.get("scene_director", {})
-        provider = sc.get("provider", "ollama")
+        provider = sc.get("provider", "")
         model = sc.get("model", "")
 
     prov_cfg = providers_cfg.get(provider, {})
@@ -119,8 +120,38 @@ def _build_router(provider: str = "", model: str = ""):
         models = prov_cfg.get("models", [])
         model = models[0] if models else ""
 
+    # If still no valid provider+model, scan all enabled providers for a usable one
+    if not provider or not model:
+        for pname, pcfg in providers_cfg.items():
+            if pcfg.get("enabled") and pcfg.get("models"):
+                provider = pname
+                model = pcfg["models"][0]
+                prov_cfg = pcfg
+                break
+
+    # Auto-detect Ollama as last resort
+    if not model and (not provider or provider == "ollama"):
+        provider = "ollama"
+        prov_cfg = providers_cfg.get("ollama", {})
+        # Try to detect models from running Ollama instance
+        try:
+            import httpx
+            base = prov_cfg.get("base_url", "http://localhost:11434")
+            resp = httpx.get(f"{base}/api/tags", timeout=5)
+            if resp.status_code == 200:
+                ollama_models = [m["name"] for m in resp.json().get("models", [])]
+                if ollama_models:
+                    model = ollama_models[0]
+        except Exception:
+            pass
+
     base_url = prov_cfg.get("base_url", "")
     api_key = prov_cfg.get("api_key", "")
+
+    if not model:
+        raise ValueError(
+            "未找到可用的 AI 模型。请在「设置」页面中启用一个模型供应商并配置模型。"
+        )
 
     return _SimpleRouter(provider, model, base_url, api_key)
 

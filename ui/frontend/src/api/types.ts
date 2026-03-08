@@ -186,6 +186,9 @@ export interface ChapterOutline {
   content?: string;
   word_count?: number;
   status?: "draft" | "generating" | "review" | "final";
+  time?: string;
+  location?: string;
+  characters?: string[];
 }
 
 // ── Pipeline / Generation ──

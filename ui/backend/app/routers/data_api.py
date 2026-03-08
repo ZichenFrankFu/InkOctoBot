@@ -43,8 +43,29 @@ def _del(c: str, id: str):
     if p.exists(): p.unlink()
 
 # ═══ Projects ═══
+def _enrich_project(proj: dict) -> dict:
+    """Compute word_count and chapter_count from editor data."""
+    pid = proj.get("id", "default")
+    ep = _col("editor") / f"{pid}.json"
+    if ep.exists():
+        try:
+            ed = json.loads(ep.read_text("utf-8"))
+            total_words = 0
+            total_chapters = 0
+            for v in ed.get("volumes", []):
+                for ch in v.get("chapters", []):
+                    total_chapters += 1
+                    content = ch.get("content", "")
+                    total_words += ch.get("word_count", 0) or len(content.replace(" ", "").replace("\n", ""))
+            proj["word_count"] = total_words
+            proj["chapter_count"] = total_chapters
+        except Exception:
+            pass
+    return proj
+
 @router.get("/projects")
-def list_projects(): return {"items": _list("projects")}
+def list_projects():
+    return {"items": [_enrich_project(p) for p in _list("projects")]}
 @router.post("/projects")
 def create_project(body: dict = Body(...)):
     pid = _nid()

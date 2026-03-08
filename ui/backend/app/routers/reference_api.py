@@ -239,13 +239,20 @@ def genres():
 @router.post("/preprocess/{ref_id}")
 def trigger_preprocess(ref_id: str):
     try:
+        db = _db()
+        work = db.get_work(ref_id)
+        if not work:
+            raise HTTPException(404, "参考作品不存在")
+        # Ensure text is available: if work has file_path but source isn't file_upload, fix it
+        if work.get("file_path") and work.get("source") not in ("file_upload", "platform_crawl"):
+            db.update_work(ref_id, preprocessing_status="pending")
         from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
-        try:
-            repo_cfg = load_repo_config(settings.repo_root)
-            db_path = get_db_path(repo_cfg, settings.repo_root)
-        except FileNotFoundError:
-            db_path = str(settings.repo_root / "data" / "novels.db")
-        return FeatureExtractionPipeline(db_path).run(ref_id)
+        result = FeatureExtractionPipeline(db.db_path).run(ref_id)
+        if result.get("error"):
+            raise HTTPException(400, f"特征提取失败: {result['error']}")
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"特征提取失败: {e}")
 
