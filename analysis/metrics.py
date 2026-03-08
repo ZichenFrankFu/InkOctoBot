@@ -86,16 +86,18 @@ def unify_category(row) -> str:
 
 
 def linear_slope(y: np.ndarray) -> float:
-    if len(y) < 2:
+    # Remove NaNs from y before calculating slope
+    mask = ~np.isnan(y.astype(float))
+    y_valid = y[mask].astype(float)
+    x_valid = np.arange(len(y))[mask].astype(float)
+    
+    if len(y_valid) < 2:
         return np.nan
-    x = np.arange(len(y), dtype=float)
-    y = y.astype(float)
-    if np.all(np.isnan(y)):
-        return np.nan
-    xm = x.mean()
-    ym = np.nanmean(y)
-    num = np.nansum((x - xm) * (y - ym))
-    den = np.nansum((x - xm) ** 2)
+        
+    xm = x_valid.mean()
+    ym = y_valid.mean()
+    num = np.sum((x_valid - xm) * (y_valid - ym))
+    den = np.sum((x_valid - xm) ** 2)
     return float(num / den) if den != 0 else np.nan
 
 
@@ -304,6 +306,10 @@ def compute_timewindow_category_rollup(weekly_cat: pd.DataFrame, cfg: MetricConf
     )
     roll = roll.merge(
         d.groupby(keys, dropna=False).apply(slope_of("cat_share")).reset_index(name="share_slope"),
+        on=keys, how="left"
+    )
+    roll = roll.merge(
+        d.groupby(keys, dropna=False).apply(slope_of("book_count")).reset_index(name="count_slope"),
         on=keys, how="left"
     )
     return roll

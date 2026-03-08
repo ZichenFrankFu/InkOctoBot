@@ -285,12 +285,11 @@ export default function AnalysisDashboardPage() {
                     {(trendData.tag_rollup || []).length === 0 ? <div className="empty-state"><p>暂无标签趋势数据</p></div> : (
                       <table className="data-table">
                         <thead><tr>
-                          <th>平台</th><th>榜单</th>
+                          <th>平台</th>
                           <SortableHeader label="标签" field="tag" sort={tagSort} onSort={toggleSort(setTagSort)} />
                           <th>阶段</th>
                           <SortableHeader label="份额" field="latest_share" sort={tagSort} onSort={toggleSort(setTagSort)} align="right" />
                           <SortableHeader label="热度" field="avg_heat" sort={tagSort} onSort={toggleSort(setTagSort)} align="right" />
-                          <SortableHeader label="均排名" field="avg_rank" sort={tagSort} onSort={toggleSort(setTagSort)} align="right" />
                           <SortableHeader label="热度趋势" field="heat_slope" sort={tagSort} onSort={toggleSort(setTagSort)} align="right" />
                           <SortableHeader label="份额趋势" field="share_slope" sort={tagSort} onSort={toggleSort(setTagSort)} align="right" />
                         </tr></thead>
@@ -298,12 +297,10 @@ export default function AnalysisDashboardPage() {
                           {sortBy(trendData.tag_rollup, tagSort.key, tagSort.dir).map((r, i) => (
                             <tr key={i}>
                               <td><span className={`tag ${r.platform}`}>{platformLabel(r.platform)}</span></td>
-                              <td className="text-xs text-muted">{r.rank_family || ""}{r.rank_sub_cat ? ` · ${r.rank_sub_cat}` : ""}</td>
-                              <td style={{ fontWeight: 500 }}>{r.tag}</td>
+                              <td><span className="tag category">{r.tag}</span></td>
                               <td><StageBadge stage={r.stage} /></td>
                               <td style={{ textAlign: "right" }} className="font-mono">{fmt(r.latest_share, 3)}</td>
                               <td style={{ textAlign: "right" }} className="font-mono">{fmt(r.avg_heat, 0)}</td>
-                              <td style={{ textAlign: "right" }} className="font-mono">{fmt(r.avg_rank, 1)}</td>
                               <td style={{ textAlign: "right" }}><SlopeCell value={r.heat_slope} /></td>
                               <td style={{ textAlign: "right" }}><SlopeCell value={r.share_slope} /></td>
                             </tr>
@@ -327,7 +324,6 @@ export default function AnalysisDashboardPage() {
                           <SortableHeader label="分类" field="category" sort={catSort} onSort={toggleSort(setCatSort)} />
                           <SortableHeader label="份额" field="share_slope" sort={catSort} onSort={toggleSort(setCatSort)} align="right" />
                           <SortableHeader label="热度" field="avg_heat" sort={catSort} onSort={toggleSort(setCatSort)} align="right" />
-                          <SortableHeader label="均排名" field="avg_rank" sort={catSort} onSort={toggleSort(setCatSort)} align="right" />
                           <SortableHeader label="热度趋势" field="heat_slope" sort={catSort} onSort={toggleSort(setCatSort)} align="right" />
                           <SortableHeader label="数量趋势" field="count_slope" sort={catSort} onSort={toggleSort(setCatSort)} align="right" />
                         </tr></thead>
@@ -335,10 +331,9 @@ export default function AnalysisDashboardPage() {
                           {sortBy(trendData.cat_rollup, catSort.key, catSort.dir).map((r, i) => (
                             <tr key={i}>
                               <td><span className={`tag ${r.platform}`}>{platformLabel(r.platform)}</span></td>
-                              <td style={{ fontWeight: 500 }}>{r.category}</td>
+                              <td><span className="tag category">{r.category}</span></td>
                               <td style={{ textAlign: "right" }}><SlopeCell value={r.share_slope} /></td>
                               <td style={{ textAlign: "right" }} className="font-mono">{fmt(r.avg_heat, 0)}</td>
-                              <td style={{ textAlign: "right" }} className="font-mono">{fmt(r.avg_rank, 1)}</td>
                               <td style={{ textAlign: "right" }}><SlopeCell value={r.heat_slope} /></td>
                               <td style={{ textAlign: "right" }}><SlopeCell value={r.count_slope} /></td>
                             </tr>
@@ -370,7 +365,7 @@ export default function AnalysisDashboardPage() {
                             <tr key={i}>
                               <td><span className={`tag ${r.platform}`}>{platformLabel(r.platform)}</span></td>
                               <td className="text-muted">{r.category}</td>
-                              <td style={{ fontWeight: 500 }}>{r.tag}</td>
+                              <td><span className="tag category">{r.tag}</span></td>
                               <td style={{ textAlign: "right" }}><DeltaCell value={r.share_delta} pct /></td>
                               <td style={{ textAlign: "right" }}><DeltaCell value={r.heat_delta} /></td>
                               <td style={{ textAlign: "right" }} className="font-mono">{fmt(r.new_entry_ratio, 2)}</td>
@@ -437,17 +432,15 @@ export default function AnalysisDashboardPage() {
                           <SortableHeader label="番茄份额" field="share_fanqie" sort={crossSort} onSort={toggleSort(setCrossSort)} align="right" />
                           <SortableHeader label="份额差" field="share_diff" sort={crossSort} onSort={toggleSort(setCrossSort)} align="right" />
                           <SortableHeader label="热度差" field="heat_diff" sort={crossSort} onSort={toggleSort(setCrossSort)} align="right" />
-                          <SortableHeader label="排名差" field="rank_diff" sort={crossSort} onSort={toggleSort(setCrossSort)} align="right" />
                         </tr></thead>
                         <tbody>
                           {sortBy((trendData.cross_platform || []).filter(d => d.presence === "both"), crossSort.key, crossSort.dir).map((r, i) => (
                             <tr key={i}>
-                              <td style={{ fontWeight: 500 }}>{r.category}</td>
+                              <td><span className="tag category">{r.category}</span></td>
                               <td style={{ textAlign: "right" }} className="font-mono">{fmt(r.share_qidian, 3)}</td>
                               <td style={{ textAlign: "right" }} className="font-mono">{fmt(r.share_fanqie, 3)}</td>
                               <td style={{ textAlign: "right" }}><DeltaCell value={r.share_diff} pct /></td>
                               <td style={{ textAlign: "right" }}><DeltaCell value={r.heat_diff} /></td>
-                              <td style={{ textAlign: "right" }} className="font-mono">{fmt(r.rank_diff, 1)}</td>
                             </tr>
                           ))}
                         </tbody>

@@ -149,7 +149,35 @@ export default function ReferenceLibraryPage() {
   }
 
   async function uploadNovelText() {
-    if (!uTitle.trim() || !uFile) return;
+    if (!uFile) return;
+    
+    // Upload for existing work
+    if (sel) {
+      setUploading(true);
+      try {
+        const fd = new FormData();
+        fd.append("file", uFile);
+        const resp = await fetch(`/api/references/works/${sel.ref_id}/upload`, { method: "POST", body: fd });
+        if (!resp.ok) {
+          const err = await resp.text();
+          throw new Error(err || resp.statusText);
+        }
+        setShowUpload(false);
+        setUFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        
+        const updated = await resp.json();
+        setSel(updated);
+        setWorks(prev => prev.map(w => w.ref_id === updated.ref_id ? updated : w));
+      } catch (e: any) {
+        alert(`上传失败: ${e.message}`);
+      }
+      setUploading(false);
+      return;
+    }
+
+    // Upload new work from scratch
+    if (!uTitle.trim()) return;
     setUploading(true);
     try {
       const fd = new FormData();
@@ -407,6 +435,9 @@ export default function ReferenceLibraryPage() {
                       {sel.creator && <span>&#x270D;&#xFE0F; {sel.creator}</span>}
                       {sel.genre && <span>{sel.genre}</span>}
                       <span>{sel.created_at?.split("T")[0] || "\u2014"}</span>
+                      {Boolean(sel.has_full_text) && (
+                        <span style={{ color: "var(--jade)", fontWeight: 500 }}>&#x2705; 已上传正文</span>
+                      )}
                     </div>
                   </div>
                   <div className="flex gap-6" style={{ flexShrink: 0 }}>
@@ -415,12 +446,12 @@ export default function ReferenceLibraryPage() {
                         上传正文文本
                       </button>
                     )}
-                    {sel.has_full_text && sel.preprocessing_status !== "done" && (
+                    {Boolean(sel.has_full_text) && sel.preprocessing_status !== "done" && (
                       <button className="btn" onClick={() => runPreprocess(sel.ref_id)} style={{ color: "var(--jade)", borderColor: "var(--jade)" }}>
                         提取特征
                       </button>
                     )}
-                    {sel.has_full_text && sel.preprocessing_status === "done" && (
+                    {Boolean(sel.has_full_text) && sel.preprocessing_status === "done" && (
                       <button className="btn" onClick={() => runPreprocess(sel.ref_id)} style={{ fontSize: 12 }}>
                         重新提取
                       </button>
@@ -675,26 +706,30 @@ export default function ReferenceLibraryPage() {
               </div>
               <div className="card-body">
                 <div className="flex flex-col gap-12">
-                  <div className="field">
-                    <label className="label">标题 *</label>
-                    <input className="input" value={uTitle} onChange={e => setUTitle(e.target.value)} placeholder="作品名称" />
-                  </div>
-                  <div className="field">
-                    <label className="label">创作者</label>
-                    <input className="input" value={uCreator} onChange={e => setUCreator(e.target.value)} placeholder="作者" />
-                  </div>
-                  <div className="field-row">
-                    <div className="field" style={{ flex: 1 }}>
-                      <label className="label">媒体类型</label>
-                      <select className="select w-full" value={uMedia} onChange={e => setUMedia(e.target.value as MediaType)}>
-                        {MEDIA_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                      </select>
-                    </div>
-                    <div className="field" style={{ flex: 1 }}>
-                      <label className="label">题材</label>
-                      <input className="input" value={uGenre} onChange={e => setUGenre(e.target.value)} placeholder="仙侠 / 悬疑 / 科幻..." />
-                    </div>
-                  </div>
+                  {!sel && (
+                    <>
+                      <div className="field">
+                        <label className="label">标题 *</label>
+                        <input className="input" value={uTitle} onChange={e => setUTitle(e.target.value)} placeholder="作品名称" />
+                      </div>
+                      <div className="field">
+                        <label className="label">创作者</label>
+                        <input className="input" value={uCreator} onChange={e => setUCreator(e.target.value)} placeholder="作者" />
+                      </div>
+                      <div className="field-row">
+                        <div className="field" style={{ flex: 1 }}>
+                          <label className="label">媒体类型</label>
+                          <select className="select w-full" value={uMedia} onChange={e => setUMedia(e.target.value as MediaType)}>
+                            {MEDIA_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                          </select>
+                        </div>
+                        <div className="field" style={{ flex: 1 }}>
+                          <label className="label">题材</label>
+                          <input className="input" value={uGenre} onChange={e => setUGenre(e.target.value)} placeholder="仙侠 / 悬疑 / 科幻..." />
+                        </div>
+                      </div>
+                    </>
+                  )}
                   <div className="field">
                     <label className="label">文本文件 *</label>
                     <input
@@ -713,7 +748,7 @@ export default function ReferenceLibraryPage() {
                   <button
                     className="btn-primary"
                     onClick={uploadNovelText}
-                    disabled={!uTitle.trim() || !uFile || uploading}
+                    disabled={(!sel && !uTitle.trim()) || !uFile || uploading}
                   >
                     {uploading ? "上传中..." : "上传"}
                   </button>

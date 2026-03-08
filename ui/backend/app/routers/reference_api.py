@@ -111,6 +111,26 @@ async def upload_work(
     )
 
 
+@router.post("/works/{ref_id}/upload")
+async def upload_text_for_work(ref_id: str, file: UploadFile = File(...)):
+    w = _db().get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "not found")
+    
+    refs_dir = settings.repo_root / "data" / "references"
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    dest = refs_dir / f"{ref_id}_{file.filename or 'upload.txt'}"
+    dest.write_bytes(await file.read())
+    
+    w = _db().update_work(
+        ref_id,
+        file_path=str(dest),
+        has_full_text=True,
+        preprocessing_status="pending"
+    )
+    return w
+
+
 @router.put("/works/{ref_id}")
 def update_work(ref_id: str, body: WorkUpdate):
     fields: dict = {}
