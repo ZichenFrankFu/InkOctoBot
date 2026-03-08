@@ -1,0 +1,15 @@
+# Concise writing style profile
+name: "简洁利落"
+description: "短句为主，节奏明快，少用修辞"
+
+targets:
+  avg_sentence_length: 15.0
+  dialogue_ratio: 0.35
+  avg_paragraph_length: 80.0
+  inner_monologue_density: 0.1
+
+guidelines:
+  - "句子简短有力，少用长句和复合句"
+  - "对话占比高，推动情节和揭示角色"
+  - "减少心理描写，通过行为和对话表现角色"
+  - "场景描写精简，聚焦关键细节"

@@ -1,0 +1,15 @@
+# Literary writing style profile
+name: "文学典雅"
+description: "句式丰富，注重修辞，注重氛围营造"
+
+targets:
+  avg_sentence_length: 25.0
+  dialogue_ratio: 0.20
+  avg_paragraph_length: 150.0
+  inner_monologue_density: 0.3
+
+guidelines:
+  - "句式多变，长短交错，注重节奏感"
+  - "适度使用比喻、排比等修辞手法"
+  - "注重环境氛围的营造和细节描写"
+  - "内心独白深入角色心理"

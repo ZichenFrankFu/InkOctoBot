@@ -1,0 +1,30 @@
+# Supporting character card template
+name: ""
+role: supporting
+
+layer_a:
+  personality: ""
+  speech_style: ""
+  appearance: ""
+  background: ""
+  motivation: ""
+  relationships: []
+  canonical_responses: []
+
+layer_b:
+  values:
+    survival: 0.25
+    power: 0.1
+    love: 0.25
+    loyalty: 0.25
+    justice: 0.1
+    freedom: 0.05
+    time_discount: 0.95
+  prospect:
+    loss_aversion: 2.5
+    risk_aversion_gain: 0.9
+    risk_aversion_loss: 0.85
+  stochastic:
+    talk_frequency: 1.5
+    impulse_probability: 0.05
+    emotion_volatility: 0.3

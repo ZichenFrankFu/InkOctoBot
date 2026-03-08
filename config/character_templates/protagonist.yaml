@@ -1,0 +1,35 @@
+# Protagonist character card template
+name: ""
+role: protagonist
+
+layer_a:
+  personality: ""
+  speech_style: ""
+  appearance: ""
+  background: ""
+  motivation: ""
+  growth_trajectory: ""
+  relationships: []
+  canonical_responses:
+    - scenario: "面对危险时"
+      response: ""
+    - scenario: "与朋友相处时"
+      response: ""
+
+layer_b:
+  values:
+    survival: 0.3
+    power: 0.2
+    love: 0.15
+    loyalty: 0.15
+    justice: 0.1
+    freedom: 0.1
+    time_discount: 0.95
+  prospect:
+    loss_aversion: 2.0
+    risk_aversion_gain: 0.88
+    risk_aversion_loss: 0.88
+  stochastic:
+    talk_frequency: 1.0
+    impulse_probability: 0.1
+    emotion_volatility: 0.5

@@ -1,0 +1,13 @@
+# Urban genre constraint preset
+name: "都市/现实"
+description: "都市现实题材约束预设"
+
+world_rules:
+  - description: "遵循现实世界物理规律，无超自然力量"
+    positive_restatement: "所有事件和行为必须符合现实世界的物理规律和社会常识"
+    good_example: "他开车穿过拥堵的早高峰"
+    bad_example: "他一跃而起跳上了十楼阳台"
+
+style_constraints:
+  - description: "对话自然口语化，符合角色年龄和社会阶层"
+    positive_restatement: "对话使用自然口语，语气和用词要匹配角色的身份特征"

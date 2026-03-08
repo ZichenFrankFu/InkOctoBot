@@ -69,7 +69,7 @@ class ModelRouter:
         providers_json = _CONFIG_DIR / "model_providers.json"
         provider_defs: dict[str, Any] = {}
         if providers_json.exists():
-            with open(providers_json, "r", encoding="utf-8") as f:
+            with open(providers_json, "r", encoding="utf-8-sig") as f:
                 provider_defs = json.load(f).get("providers", {})
 
         default_type = self._config.get("default_provider", "ollama")

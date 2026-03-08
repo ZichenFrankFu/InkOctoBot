@@ -1,0 +1,20 @@
+# Xianxia genre constraint preset
+name: "仙侠/玄幻"
+description: "修仙题材世界观约束预设"
+
+world_rules:
+  - description: "修炼者必须按照修炼体系（练气→筑基→金丹→元婴→化神）逐步突破"
+    positive_restatement: "角色的修为必须遵循修炼体系的等级顺序，不可跨阶突破"
+    good_example: "张远苦修三年终于从练气九层突破至筑基期"
+    bad_example: "张远从练气期直接飞升为元婴期强者"
+
+  - description: "筑基期及以下修炼者无法飞行"
+    positive_restatement: "筑基期及以下的角色在移动时只能步行、骑乘或使用传送阵"
+    good_example: "他骑着灵鹤赶往青云峰"
+    bad_example: "筑基期的他飞身而起，掠过山谷"
+
+style_constraints:
+  - description: "不使用现代网络用语和现代科技词汇"
+    positive_restatement: "对话和叙述使用古风或半古风语言，避免现代用语"
+    good_example: "道友请留步"
+    bad_example: "兄弟你这也太牛了吧"

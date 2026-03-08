@@ -1,0 +1,35 @@
+# Antagonist character card template
+name: ""
+role: antagonist
+
+layer_a:
+  personality: ""
+  speech_style: ""
+  appearance: ""
+  background: ""
+  motivation: ""
+  growth_trajectory: ""
+  relationships: []
+  canonical_responses:
+    - scenario: "面对挑战时"
+      response: ""
+    - scenario: "展示力量时"
+      response: ""
+
+layer_b:
+  values:
+    survival: 0.2
+    power: 0.35
+    love: 0.05
+    loyalty: 0.1
+    justice: 0.05
+    freedom: 0.25
+    time_discount: 0.9
+  prospect:
+    loss_aversion: 1.5
+    risk_aversion_gain: 0.7
+    risk_aversion_loss: 0.95
+  stochastic:
+    talk_frequency: 0.8
+    impulse_probability: 0.2
+    emotion_volatility: 0.7
