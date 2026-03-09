@@ -298,6 +298,9 @@ export default function EditorPage({ projectId }: { projectId: string }) {
               type: i.type || "unknown", severity: i.severity || "low",
               description: i.description || "", suggestion: i.suggestion,
             })),
+            process: data.result.process || [],
+            strengths: data.result.strengths || [],
+            summary: data.result.summary || "",
           });
         }
         break;
@@ -435,9 +438,10 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     } catch { modelSnapshotRef.current = null; }
 
     const synopsis = activeCh.synopsis || "";
+    const chapterCharacters = activeCh.characters || [];
     setChatMessages([{
       agent: "System",
-      content: `Pipeline 启动！基于大纲「${synopsis.slice(0, 50)}${synopsis.length > 50 ? "..." : ""}」开始生成。`,
+      content: `Pipeline 启动！基于大纲「${synopsis.slice(0, 50)}${synopsis.length > 50 ? "..." : ""}」开始生成。${chapterCharacters.length > 0 ? `\n关联角色：${chapterCharacters.join("、")}` : ""}`,
       status: "done", timestamp: Date.now(),
     }]);
 
@@ -446,6 +450,9 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         project_id: projectId,
         chapter_id: activeChId,
         synopsis,
+        characters: chapterCharacters,
+        time_setting: activeCh.time || "",
+        location: activeCh.location || "",
       });
       sessionIdRef.current = resp.session_id;
       // Persist session so it survives page navigation
@@ -665,15 +672,23 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
 
   useEffect(() => {
     const pid = projectId || "default";
+    const chapterChars = chapter?.characters || [];
     apiGet<{ items: any[] }>(`/api/data/characters?project_id=${pid}`)
-      .then(r => setCharacters((r.items || []).map((c: any) => ({ id: c.id, name: c.name, selected: false }))))
+      .then(r => setCharacters((r.items || []).map((c: any) => ({ id: c.id, name: c.name, selected: chapterChars.includes(c.name) }))))
       .catch(() => {});
     apiGet<{ items: any[] }>("/api/references/works")
       .then(r => setReferences((r.items || []).map((w: any) => ({ id: w.ref_id || w.id, title: w.title || w.name || "未命名", selected: false }))))
       .catch(() => setReferences([]));
-  }, [projectId]);
+  }, [projectId, chapter?.id]);
 
-  const toggleChar = (id: string) => setCharacters(prev => prev.map(c => c.id === id ? { ...c, selected: !c.selected } : c));
+  const toggleChar = (id: string) => {
+    setCharacters(prev => {
+      const next = prev.map(c => c.id === id ? { ...c, selected: !c.selected } : c);
+      const selectedNames = next.filter(c => c.selected).map(c => c.name);
+      onUpdateChapter?.("characters", selectedNames);
+      return next;
+    });
+  };
   const toggleRef = (id: string) => setReferences(prev => prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r));
   const selectedChars = characters.filter(c => c.selected);
   const selectedRefs = references.filter(r => r.selected);
@@ -1160,6 +1175,7 @@ function DiffView({ oldText, newText, onAccept, onCancel }: {
 function EvalTab({ result }: { result: EvalResult | null }) {
   const [evaluating, setEvaluating] = useState(false);
   const [manualResult, setManualResult] = useState<EvalResult | null>(null);
+  const [showProcess, setShowProcess] = useState(true);
   const displayResult = manualResult || result;
 
   if (!displayResult) return (
@@ -1168,12 +1184,74 @@ function EvalTab({ result }: { result: EvalResult | null }) {
       <p>在「灵感」面板完成一次生成后，评估结果将显示在这里</p>
     </div>
   );
+
+  const processSteps = displayResult.process || [];
+  const strengths = displayResult.strengths || [];
+  const summary = displayResult.summary || "";
+
   return (
     <div>
+      {/* Score header */}
       <div className="flex items-center gap-10 mb-16">
         <div style={{ width: 48, height: 48, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono)", background: displayResult.passed ? "var(--jade-subtle)" : "var(--accent-subtle)", color: displayResult.passed ? "var(--jade)" : "var(--accent)" }}>{displayResult.score}</div>
         <div><div style={{ fontWeight: 600, color: "var(--text-primary)" }}>{displayResult.passed ? "通过评估" : "需要修改"}</div><div className="text-xs text-muted">发现 {displayResult.issues.length} 个问题</div></div>
       </div>
+
+      {/* Summary */}
+      {summary && (
+        <div style={{ padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 12, borderLeft: "3px solid var(--indigo)" }}>
+          <div className="text-xs text-muted mb-4" style={{ fontWeight: 600 }}>总体评价</div>
+          <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>{summary}</div>
+        </div>
+      )}
+
+      {/* Strengths */}
+      {strengths.length > 0 && (
+        <div style={{ padding: "10px 12px", background: "var(--jade-subtle)", borderRadius: "var(--radius-sm)", marginBottom: 12 }}>
+          <div className="text-xs mb-4" style={{ fontWeight: 600, color: "var(--jade)" }}>优点</div>
+          {strengths.map((s, i) => (
+            <div key={i} className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6, paddingLeft: 8 }}>+ {s}</div>
+          ))}
+        </div>
+      )}
+
+      {/* Process details (collapsible) */}
+      {processSteps.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <button onClick={() => setShowProcess(!showProcess)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 12, padding: "4px 0", display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ transform: showProcess ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s", display: "inline-block" }}>&#9654;</span>
+            评估过程详情 ({processSteps.length} 个检测器)
+          </button>
+          {showProcess && (
+            <div style={{ marginTop: 6 }}>
+              {processSteps.map((step, i) => (
+                <div key={i} style={{ padding: "8px 10px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 6, borderLeft: `3px solid ${step.status === "done" ? "var(--jade)" : step.status === "skipped" ? "var(--warning)" : step.status === "error" ? "var(--error)" : "var(--indigo)"}` }}>
+                  <div className="flex items-center gap-6 mb-2">
+                    <span className="text-xs" style={{ fontWeight: 600, color: "var(--text-primary)" }}>{step.detector}</span>
+                    <span className={`tag ${step.status === "done" ? "category" : step.status === "skipped" ? "qidian" : step.status === "error" ? "accent" : "category"}`} style={{ fontSize: 10 }}>
+                      {step.status === "done" ? "完成" : step.status === "skipped" ? "跳过" : step.status === "error" ? "错误" : "运行中"}
+                    </span>
+                    {step.llm_score !== undefined && <span className="text-xs" style={{ color: "var(--indigo)", fontWeight: 600 }}>LLM评分: {step.llm_score}</span>}
+                  </div>
+                  <div className="text-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.5 }}>{step.detail}</div>
+                  {step.findings && step.findings.length > 0 && (
+                    <div style={{ marginTop: 4, paddingLeft: 8 }}>
+                      {step.findings.map((f, fi) => (
+                        <div key={fi} className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.5 }}>- {f}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Issues */}
+      {displayResult.issues.length > 0 && (
+        <div className="text-xs text-muted mb-6" style={{ fontWeight: 600 }}>问题详情</div>
+      )}
       {displayResult.issues.map((issue, i) => (
         <div key={i} style={{ padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 8, borderLeft: `3px solid ${issue.severity === "high" ? "var(--error)" : issue.severity === "medium" ? "var(--warning)" : "var(--info)"}` }}>
           <div className="flex items-center gap-6 mb-4"><span className={`tag ${issue.severity === "high" ? "accent" : issue.severity === "medium" ? "qidian" : "category"}`}>{issue.severity === "high" ? "严重" : issue.severity === "medium" ? "中等" : "轻微"}</span><span className="text-xs text-muted">{issue.type}</span></div>

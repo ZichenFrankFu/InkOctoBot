@@ -484,10 +484,21 @@ async def _run_pipeline_background(session_id: str):
         try:
             from agents.production.scene_director import SceneDirector
             director = SceneDirector(router_inst, project_id=req_data.get("project_id", ""))
+            # Build character info string for scene planning
+            _chars = req_data.get("characters", [])
+            _char_cards_str = "\n".join(f"- {c}" for c in _chars) if _chars else ""
+            _location = req_data.get("location", "")
+            _time_setting = req_data.get("time_setting", "")
+            _outline = req_data.get("synopsis", "")
+            if _location:
+                _outline += f"\n场景地点：{_location}"
+            if _time_setting:
+                _outline += f"\n时间设定：{_time_setting}"
             scenes = await director.plan_scenes(
-                chapter_outline=req_data.get("synopsis", ""),
+                chapter_outline=_outline,
                 chapter_num=1,
                 world_rules=req_data.get("world_rules", ""),
+                character_cards=_char_cards_str,
             )
             scene_result = scenes if isinstance(scenes, dict) else {"raw": str(scenes)}
         except Exception as e:
@@ -664,29 +675,101 @@ async def _run_pipeline_background(session_id: str):
             "type": "step_start", "step": "evaluator",
             "label": "Evaluator", "detail": "正在评估质量...",
         })
-        eval_result = {"score": 80, "passed": True, "issues": []}
+        eval_result = {"score": 80, "passed": True, "issues": [], "process": []}
         try:
             from agents.evaluation.repetition_detector import RepetitionDetector
             from agents.evaluation.slop_detector import SlopDetector
+            process_log = []
+            issues = []
+
+            # --- Detector 1: Repetition ---
+            process_log.append({"detector": "RepetitionDetector", "status": "running", "detail": "检测句首重复、短语重复、结构重复..."})
             rep = RepetitionDetector()
             rep_issues = rep.detect(edited_text)
-            slop = SlopDetector()
-            slop_issues = slop.detect(edited_text)
-            issues = []
-            for ri in (rep_issues or [])[:3]:
+            rep_found = []
+            for ri in (rep_issues or [])[:5]:
+                desc = str(ri.get("phrase", "重复")) + f" (出现{ri.get('count', 0)}次)"
+                rep_found.append(desc)
                 issues.append({
                     "type": "repetition", "severity": "medium",
-                    "description": str(ri.get("phrase", "重复")) + f" (出现{ri.get('count', 0)}次)",
+                    "description": desc,
+                    "location": ri.get("location", ""),
                 })
-            for si in (slop_issues or [])[:3]:
+            process_log.append({
+                "detector": "RepetitionDetector", "status": "done",
+                "detail": f"发现 {len(rep_found)} 处重复" if rep_found else "未发现明显重复",
+                "findings": rep_found,
+            })
+
+            # --- Detector 2: Slop ---
+            process_log.append({"detector": "SlopDetector", "status": "running", "detail": "检测AI生成痕迹（固定句式、空洞修饰、过度比喻等）..."})
+            slop = SlopDetector()
+            slop_issues = slop.detect(edited_text)
+            slop_found = []
+            for si in (slop_issues or [])[:5]:
+                desc = str(si.get("pattern", "AI味")) + f": {si.get('match', '')}"
+                slop_found.append(desc)
                 issues.append({
                     "type": "ai_flavor", "severity": "medium",
-                    "description": str(si.get("pattern", "AI味")) + f": {si.get('match', '')}",
+                    "description": desc,
+                    "location": si.get("match", ""),
                 })
-            score = max(0, 100 - len(issues) * 8)
-            eval_result = {"score": score, "passed": score >= 60, "issues": issues}
-        except Exception:
-            pass
+            process_log.append({
+                "detector": "SlopDetector", "status": "done",
+                "detail": f"发现 {len(slop_found)} 处AI味表达" if slop_found else "未发现明显AI痕迹",
+                "findings": slop_found,
+            })
+
+            # --- Detector 3: LLM-based comprehensive evaluation ---
+            llm_eval = None
+            try:
+                process_log.append({"detector": "LLM Evaluator", "status": "running", "detail": "使用LLM进行6维度深度评估..."})
+                from agents.evaluation.evaluator import Evaluator
+                evaluator = Evaluator(router_inst, project_id=req_data.get("project_id", ""))
+                llm_eval = await evaluator.evaluate_chapter(
+                    edited_text,
+                    chapter_num=1,
+                    scene_plan=scene_result if isinstance(scene_result, dict) else None,
+                    constraints=req_data.get("world_rules", ""),
+                )
+                # Merge LLM issues
+                for li in (llm_eval.get("issues") or [])[:8]:
+                    issues.append({
+                        "type": li.get("dimension", "llm_eval"),
+                        "severity": li.get("severity", "low"),
+                        "description": li.get("description", ""),
+                        "location": li.get("location", ""),
+                        "suggestion": li.get("suggestion", ""),
+                    })
+                process_log.append({
+                    "detector": "LLM Evaluator", "status": "done",
+                    "detail": llm_eval.get("summary", f"LLM评分: {llm_eval.get('score', '?')}"),
+                    "findings": llm_eval.get("strengths", []),
+                    "llm_score": llm_eval.get("score"),
+                })
+            except Exception as eval_err:
+                logger.warning("LLM evaluator failed, using detector-only scores: %s", eval_err)
+                process_log.append({"detector": "LLM Evaluator", "status": "skipped", "detail": f"LLM评估跳过: {str(eval_err)[:100]}"})
+
+            # --- Compute final score ---
+            detector_score = max(0, 100 - len([i for i in issues if i.get("type") in ("repetition", "ai_flavor")]) * 8)
+            if llm_eval and llm_eval.get("score") is not None:
+                # Weighted: 40% detector, 60% LLM
+                final_score = int(detector_score * 0.4 + llm_eval["score"] * 0.6)
+            else:
+                final_score = detector_score
+
+            eval_result = {
+                "score": final_score,
+                "passed": final_score >= 60,
+                "issues": issues,
+                "process": process_log,
+                "strengths": llm_eval.get("strengths", []) if llm_eval else [],
+                "summary": llm_eval.get("summary", "") if llm_eval else "",
+            }
+        except Exception as e:
+            logger.error("Evaluation error: %s", e, exc_info=True)
+            eval_result["process"] = [{"detector": "error", "status": "error", "detail": str(e)[:200]}]
 
         _emit(session_id, {"type": "step_done", "step": "evaluator", "result": eval_result})
         _emit(session_id, {"type": "complete", "text": edited_text, "evaluation": eval_result})

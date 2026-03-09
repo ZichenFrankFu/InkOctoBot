@@ -225,6 +225,17 @@ export interface EvalResult {
   passed: boolean;
   score: number;
   issues: EvalIssue[];
+  process?: EvalProcessStep[];
+  strengths?: string[];
+  summary?: string;
+}
+
+export interface EvalProcessStep {
+  detector: string;
+  status: "running" | "done" | "skipped" | "error";
+  detail: string;
+  findings?: string[];
+  llm_score?: number;
 }
 
 export interface EvalIssue {
