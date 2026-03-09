@@ -53,7 +53,8 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const _savedEditorState = (() => {
     try { const raw = sessionStorage.getItem(`inkocto_editor_chat_${projectId}`); return raw ? JSON.parse(raw) : null; } catch { return null; }
   })();
-  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval">(_savedEditorState?.aiTab || "outline");
+  const [chatLoaded, setChatLoaded] = useState(false);
+  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval" | "ab">(_savedEditorState?.aiTab || "outline");
   const [selection, setSelection] = useState<{ start: number; end: number; text: string } | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [rewriteModel, setRewriteModel] = useState("default");
@@ -69,13 +70,37 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 160, maxSize: 350 });
   const rightPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 200, maxSize: 500, invert: true });
 
-  // Persist editor chat state to sessionStorage
+  // Persist editor chat state to sessionStorage + backend
   const EDITOR_CHAT_KEY = `inkocto_editor_chat_${projectId}`;
+  const chatSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    // Only persist "done" messages to avoid saving stale thinking/speaking states
     const persistable = chatMessages.filter(m => m.status === "done");
     sessionStorage.setItem(EDITOR_CHAT_KEY, JSON.stringify({ aiTab, chatMessages: persistable }));
-  }, [aiTab, chatMessages, EDITOR_CHAT_KEY]);
+    // Debounced save to backend for permanent persistence
+    if (chatLoaded && persistable.length > 0) {
+      if (chatSaveTimer.current) clearTimeout(chatSaveTimer.current);
+      chatSaveTimer.current = setTimeout(() => {
+        apiPut("/api/data/chat_history", {
+          project_id: projectId || "default", scope: "pipeline",
+          messages: persistable.slice(-200),  // keep last 200 messages
+        }).catch(() => {});
+      }, 2000);
+    }
+  }, [aiTab, chatMessages, EDITOR_CHAT_KEY, chatLoaded, projectId]);
+
+  // Load chat history from backend on mount
+  useEffect(() => {
+    const pid = projectId || "default";
+    apiGet<{ messages: ChatMessage[] }>(`/api/data/chat_history?project_id=${pid}&scope=pipeline`)
+      .then(r => {
+        if (r.messages && r.messages.length > 0 && chatMessages.length === 0) {
+          setChatMessages(r.messages);
+        }
+        setChatLoaded(true);
+      })
+      .catch(() => setChatLoaded(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   // Auto-switch to inspire tab when pipeline is running on mount
   useEffect(() => {
@@ -439,9 +464,10 @@ export default function EditorPage({ projectId }: { projectId: string }) {
 
     const synopsis = activeCh.synopsis || "";
     const chapterCharacters = activeCh.characters || [];
+    const chapterReferences = activeCh.references || [];
     setChatMessages([{
       agent: "System",
-      content: `Pipeline 启动！基于大纲「${synopsis.slice(0, 50)}${synopsis.length > 50 ? "..." : ""}」开始生成。${chapterCharacters.length > 0 ? `\n关联角色：${chapterCharacters.join("、")}` : ""}`,
+      content: `Pipeline 启动！基于大纲「${synopsis.slice(0, 50)}${synopsis.length > 50 ? "..." : ""}」开始生成。${chapterCharacters.length > 0 ? `\n关联角色：${chapterCharacters.join("、")}` : ""}${chapterReferences.length > 0 ? `\n参考作品：${chapterReferences.length}部` : ""}`,
       status: "done", timestamp: Date.now(),
     }]);
 
@@ -451,6 +477,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         chapter_id: activeChId,
         synopsis,
         characters: chapterCharacters,
+        references: chapterReferences,
         time_setting: activeCh.time || "",
         location: activeCh.location || "",
       });
@@ -631,7 +658,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         <div className="panel" style={{ width: rightPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderLeft: "1px solid var(--border)" }}>
           <div className="panel-header"><h3>AI 助手</h3></div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
-            {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
+            {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"], ["ab", "A/B"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
             ))}
           </div>
@@ -646,6 +673,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} />}
+            {aiTab === "ab" && <ABCompareTab projectId={projectId} />}
           </div>
         </div>
       </div>
@@ -676,8 +704,9 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
     apiGet<{ items: any[] }>(`/api/data/characters?project_id=${pid}`)
       .then(r => setCharacters((r.items || []).map((c: any) => ({ id: c.id, name: c.name, selected: chapterChars.includes(c.name) }))))
       .catch(() => {});
+    const chapterRefs = chapter?.references || [];
     apiGet<{ items: any[] }>("/api/references/works")
-      .then(r => setReferences((r.items || []).map((w: any) => ({ id: w.ref_id || w.id, title: w.title || w.name || "未命名", selected: false }))))
+      .then(r => setReferences((r.items || []).map((w: any) => ({ id: w.ref_id || w.id, title: w.title || w.name || "未命名", selected: chapterRefs.includes(w.ref_id || w.id) }))))
       .catch(() => setReferences([]));
   }, [projectId, chapter?.id]);
 
@@ -689,7 +718,14 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       return next;
     });
   };
-  const toggleRef = (id: string) => setReferences(prev => prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r));
+  const toggleRef = (id: string) => {
+    setReferences(prev => {
+      const next = prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r);
+      const selectedIds = next.filter(r => r.selected).map(r => r.id);
+      onUpdateChapter?.("references", selectedIds);
+      return next;
+    });
+  };
   const selectedChars = characters.filter(c => c.selected);
   const selectedRefs = references.filter(r => r.selected);
 
@@ -1259,6 +1295,163 @@ function EvalTab({ result }: { result: EvalResult | null }) {
           {issue.suggestion && <div className="text-xs mt-4" style={{ color: "var(--jade)", lineHeight: 1.5 }}>建议：{issue.suggestion}</div>}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── A/B Compare Tab ──
+interface ABModel { provider: string; model: string; }
+interface ABResult { content: string; model: string; tokens: number; elapsed_s: number; provider: string; }
+
+function ABCompareTab({ projectId }: { projectId: string }) {
+  const [prompt, setPrompt] = useState("");
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const [models, setModels] = useState<ABModel[]>([]);
+  const [availableModels, setAvailableModels] = useState<{ provider: string; model: string }[]>([]);
+  const [results, setResults] = useState<Record<string, ABResult>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [comparing, setComparing] = useState(false);
+  const [showSystem, setShowSystem] = useState(false);
+  const [winner, setWinner] = useState<string | null>(null);
+
+  // Load available models from settings
+  useEffect(() => {
+    apiGet<any>("/api/data/settings").then(settings => {
+      const provs = settings?.providers || {};
+      const all: { provider: string; model: string }[] = [];
+      for (const [pname, pcfg] of Object.entries(provs) as [string, any][]) {
+        if (!pcfg.enabled) continue;
+        for (const m of pcfg.models || []) {
+          all.push({ provider: pname, model: m });
+        }
+      }
+      setAvailableModels(all);
+      // Pre-select first 2 if available
+      if (all.length >= 2 && models.length === 0) {
+        setModels([all[0], all[1]]);
+      }
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const addModel = () => {
+    const unused = availableModels.filter(am => !models.some(m => m.provider === am.provider && m.model === am.model));
+    if (unused.length > 0 && models.length < 4) {
+      setModels([...models, unused[0]]);
+    }
+  };
+
+  const removeModel = (idx: number) => setModels(models.filter((_, i) => i !== idx));
+
+  const changeModel = (idx: number, provider: string, model: string) => {
+    setModels(models.map((m, i) => i === idx ? { provider, model } : m));
+  };
+
+  const runCompare = async () => {
+    if (!prompt.trim() || models.length < 2) return;
+    setComparing(true);
+    setResults({});
+    setErrors({});
+    setWinner(null);
+    try {
+      const resp = await apiPost<any>("/api/generation/ab/compare", {
+        prompt,
+        system_prompt: systemPrompt,
+        models,
+        temperature: 0.7,
+        max_tokens: 2000,
+      });
+      setResults(resp.results || {});
+      setErrors(resp.errors || {});
+    } catch (e: any) {
+      setErrors({ "系统错误": e.message || "请求失败" });
+    }
+    setComparing(false);
+  };
+
+  const resultEntries = Object.entries(results);
+
+  return (
+    <div>
+      <div className="label mb-8">A/B 多模型比较</div>
+      <p className="text-xs text-muted mb-8" style={{ lineHeight: 1.5 }}>
+        输入相同的 prompt，同时发送给多个模型，对比输出质量。
+      </p>
+
+      {/* Model selection */}
+      <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>比较模型</div>
+      {models.map((m, i) => (
+        <div key={i} className="flex items-center gap-4 mb-4">
+          <span className="text-xs" style={{ color: ["var(--indigo)", "var(--jade)", "var(--purple)", "var(--gold)"][i], fontWeight: 600, minWidth: 16 }}>{String.fromCharCode(65 + i)}</span>
+          <select className="input" style={{ fontSize: 11, flex: 1, padding: "3px 6px" }}
+            value={`${m.provider}/${m.model}`}
+            onChange={e => {
+              const [p, ...rest] = e.target.value.split("/");
+              changeModel(i, p, rest.join("/"));
+            }}>
+            {availableModels.map(am => (
+              <option key={`${am.provider}/${am.model}`} value={`${am.provider}/${am.model}`}>
+                {am.provider}/{am.model}
+              </option>
+            ))}
+          </select>
+          {models.length > 2 && (
+            <button onClick={() => removeModel(i)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 14 }}>x</button>
+          )}
+        </div>
+      ))}
+      {models.length < 4 && availableModels.length > models.length && (
+        <button className="btn" style={{ fontSize: 10, padding: "2px 10px", marginBottom: 8 }} onClick={addModel}>+ 添加模型</button>
+      )}
+
+      {/* System prompt (collapsible) */}
+      <button onClick={() => setShowSystem(!showSystem)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 11, padding: "2px 0", marginBottom: 4 }}>
+        {showSystem ? "- 收起系统提示" : "+ 系统提示 (可选)"}
+      </button>
+      {showSystem && (
+        <textarea className="input mb-8" value={systemPrompt} onChange={e => setSystemPrompt(e.target.value)} rows={3} placeholder="可选：系统提示词..." style={{ fontSize: 11 }} />
+      )}
+
+      {/* Prompt */}
+      <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>测试 Prompt</div>
+      <textarea className="input mb-8" value={prompt} onChange={e => setPrompt(e.target.value)} rows={5}
+        placeholder="输入要测试的 prompt...\n例如：写一段200字的武侠打斗场景，要求有环境描写、对话和内心独白。" style={{ fontSize: 12, lineHeight: 1.6 }} />
+
+      <button className="btn-primary" style={{ width: "100%", marginBottom: 12 }} onClick={runCompare}
+        disabled={comparing || models.length < 2 || !prompt.trim()}>
+        {comparing ? "正在比较中..." : `开始比较 (${models.length} 个模型)`}
+      </button>
+
+      {/* Results */}
+      {Object.entries(errors).map(([label, err]) => (
+        <div key={label} style={{ padding: "8px 10px", background: "var(--accent-subtle)", borderRadius: "var(--radius-sm)", marginBottom: 6, borderLeft: "3px solid var(--error)" }}>
+          <div className="text-xs" style={{ fontWeight: 600 }}>{label}</div>
+          <div className="text-xs" style={{ color: "var(--error)" }}>{err}</div>
+        </div>
+      ))}
+
+      {resultEntries.length > 0 && (
+        <div>
+          {resultEntries.map(([label, r], i) => (
+            <div key={label} style={{
+              padding: "10px 12px", background: winner === label ? "var(--jade-subtle)" : "var(--bg-surface-2)",
+              borderRadius: "var(--radius-sm)", marginBottom: 8,
+              borderLeft: `3px solid ${["var(--indigo)", "var(--jade)", "var(--purple)", "var(--gold)"][i] || "var(--border)"}`,
+              border: winner === label ? "2px solid var(--jade)" : undefined,
+            }}>
+              <div className="flex items-center gap-6 mb-4">
+                <span style={{ fontWeight: 700, color: ["var(--indigo)", "var(--jade)", "var(--purple)", "var(--gold)"][i], fontSize: 13 }}>{String.fromCharCode(65 + i)}</span>
+                <span className="text-xs" style={{ fontWeight: 600, color: "var(--text-primary)" }}>{label}</span>
+                <span className="text-xs text-muted">{r.tokens} tokens / {r.elapsed_s}s</span>
+                <button className="btn" style={{ fontSize: 10, padding: "1px 8px", marginLeft: "auto" }} onClick={() => setWinner(label)}>
+                  {winner === label ? "已选为优胜" : "选为优胜"}
+                </button>
+              </div>
+              <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.7, whiteSpace: "pre-wrap", maxHeight: 300, overflowY: "auto" }}>{r.content}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

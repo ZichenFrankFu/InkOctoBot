@@ -132,6 +132,40 @@ def save_editor_data(body: dict = Body(...)):
     body["saved_at"] = time.time()
     _wj(_editor_path(pid), body); return {"ok": True, "saved_at": body["saved_at"]}
 
+# ═══ Chat History ═══
+def _chat_path(project_id: str, scope: str) -> Path:
+    d = _col("chat_history"); return d / f"{project_id}_{scope}.json"
+
+@router.get("/chat_history")
+def get_chat_history(project_id: str = "default", scope: str = "pipeline"):
+    """Load persistent chat history. scope: pipeline|character_ai|studio"""
+    p = _chat_path(project_id, scope)
+    if not p.exists():
+        return {"messages": []}
+    data = json.loads(p.read_text("utf-8"))
+    return {"messages": data.get("messages", [])}
+
+@router.put("/chat_history")
+def save_chat_history(body: dict = Body(...)):
+    """Save chat messages. body: {project_id, scope, messages}"""
+    pid = body.get("project_id", "default")
+    scope = body.get("scope", "pipeline")
+    messages = body.get("messages", [])
+    _wj(_chat_path(pid, scope), {
+        "project_id": pid,
+        "scope": scope,
+        "messages": messages,
+        "saved_at": time.time(),
+    })
+    return {"ok": True, "count": len(messages)}
+
+@router.delete("/chat_history")
+def clear_chat_history(project_id: str = "default", scope: str = "pipeline"):
+    p = _chat_path(project_id, scope)
+    if p.exists():
+        p.unlink()
+    return {"ok": True}
+
 # ═══ Storyline ═══
 def _storyline_path(project_id: str = "default") -> Path:
     d = _col("storylines"); return d / f"{project_id}.json"

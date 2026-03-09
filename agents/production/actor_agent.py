@@ -85,11 +85,17 @@ class ActorAgent(BaseAgent):
             parts.append(f"\n本场景节拍: {' → '.join(beats)}")
         if previous_beats:
             parts.append(f"\n前序表演:\n{previous_beats}")
-        parts.append("""
-请用以下格式输出表演记录:
+        parts.append(f"""
+请只输出「{self.character_name}」的表演记录，不要代替其他角色输出。
+格式要求：
 [节拍N]
-角色名(情绪): *动作描写* "对话内容"
+{self.character_name}(情绪): *动作描写* "对话内容"
   内心: 内心独白
-[氛围] 氛围描写
+
+注意：
+- 只输出{self.character_name}的动作、对话和内心独白
+- 不要输出其他角色的台词或动作
+- 不要输出[氛围]描写（那是旁白的职责）
+- 可以在对话中引用其他角色说的话作为反应依据
 """)
         return "\n".join(parts)

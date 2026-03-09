@@ -189,6 +189,7 @@ export interface ChapterOutline {
   time?: string;
   location?: string;
   characters?: string[];
+  references?: string[];
 }
 
 // ── Pipeline / Generation ──

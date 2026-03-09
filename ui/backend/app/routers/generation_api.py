@@ -29,6 +29,7 @@ class GenerateRequest(BaseModel):
     time_setting: str = ""
     location: str = ""
     characters: list[str] = []
+    references: list[str] = []
     world_rules: str = ""
     style_notes: str = ""
     system_hint: str = ""
@@ -486,7 +487,22 @@ async def _run_pipeline_background(session_id: str):
             director = SceneDirector(router_inst, project_id=req_data.get("project_id", ""))
             # Build character info string for scene planning
             _chars = req_data.get("characters", [])
-            _char_cards_str = "\n".join(f"- {c}" for c in _chars) if _chars else ""
+            _char_card_parts = []
+            try:
+                from ui.backend.app.routers.data_api import _list as _list_data
+                _all_chars = _list_data("characters")
+                _pid = req_data.get("project_id", "")
+                for _cn in _chars:
+                    _info = [_cn]
+                    for _cd in _all_chars:
+                        if _cd.get("name") == _cn and (not _pid or _cd.get("project_id", "") in ("", _pid)):
+                            if _cd.get("role"): _info.append(f"({_cd['role']})")
+                            if _cd.get("personality"): _info.append(f"- 性格: {_cd['personality'][:100]}")
+                            break
+                    _char_card_parts.append(" ".join(_info[:2]) + ("\n  " + "\n  ".join(_info[2:]) if len(_info) > 2 else ""))
+            except Exception:
+                _char_card_parts = [f"- {c}" for c in _chars]
+            _char_cards_str = "\n".join(_char_card_parts) if _char_card_parts else ""
             _location = req_data.get("location", "")
             _time_setting = req_data.get("time_setting", "")
             _outline = req_data.get("synopsis", "")
@@ -552,17 +568,52 @@ async def _run_pipeline_background(session_id: str):
                 db_path = str(app_settings.repo_root / "data" / "novels.db")
 
             memory = MemoryManager(db_path=db_path, router=router_inst)
+            _proj_id = req_data.get("project_id", "")
+            memory.set_project(_proj_id)
+
+            # Pre-load world book entries into semantic memory for RAG retrieval
+            try:
+                wb_items = _list_data("worldbook") if "_list_data" in dir() else _list("worldbook")
+                for wb in wb_items:
+                    if wb.get("project_id", "") in ("", _proj_id) and wb.get("content"):
+                        memory.store_memory(
+                            f"[{wb.get('category', '')}] {wb.get('title', '')}: {wb.get('content', '')}",
+                            memory_type="setting", chapter_num=0,
+                        )
+            except Exception as wb_err:
+                logger.debug("World book pre-load skipped: %s", wb_err)
+
             simulator = SceneSimulator(
                 router_inst, memory,
-                project_id=req_data.get("project_id", ""),
+                project_id=_proj_id,
             )
 
-            # Ensure scene_result has 'characters' list
-            if isinstance(scene_result, dict) and "characters" not in scene_result:
-                scene_result["characters"] = characters
+            # Ensure scene_result has 'characters' list — also inject into each scene
+            if isinstance(scene_result, dict):
+                if "characters" not in scene_result:
+                    scene_result["characters"] = characters
+                for sc in scene_result.get("scenes", []):
+                    if not sc.get("characters"):
+                        sc["characters"] = characters
 
-            # Build character cards (minimal — names only for now)
-            character_cards = {c: "" for c in characters}
+            # Build character cards from stored data
+            character_cards: dict[str, str] = {}
+            try:
+                from ui.backend.app.routers.data_api import _list
+                all_chars = _list("characters")
+                pid = req_data.get("project_id", "")
+                for c_name in characters:
+                    card_parts = []
+                    for cd in all_chars:
+                        if cd.get("name") == c_name and (not pid or cd.get("project_id", "") in ("", pid)):
+                            if cd.get("personality"): card_parts.append(f"性格: {cd['personality']}")
+                            if cd.get("background"): card_parts.append(f"背景: {cd['background']}")
+                            if cd.get("speech_style"): card_parts.append(f"说话风格: {cd['speech_style']}")
+                            if cd.get("role"): card_parts.append(f"角色定位: {cd['role']}")
+                            break
+                    character_cards[c_name] = "\n".join(card_parts) if card_parts else ""
+            except Exception:
+                character_cards = {c: "" for c in characters}
 
             actor_prompt_sent = (
                 f"SceneSimulator.simulate_scene(\n"
@@ -625,30 +676,30 @@ async def _run_pipeline_background(session_id: str):
         edited_text = full_text
         editor_prompt_sent = ""
         try:
-            from agents.model_providers.base import LLMMessage as Msg
-            edit_system = (
-                "你是一个专业的小说编辑兼作家。请将以下角色表演记录转化为完整的小说正文：\n"
-                "1. 将节拍标记、角色动作描写转化为流畅的叙事\n"
-                "2. 保留对话内容，使用中文引号「」\n"
-                "3. 将内心独白自然融入叙述\n"
-                "4. 将氛围描写转化为环境和气氛的文学描写\n"
-                "5. 保持原始的情节和角色互动\n"
-                "直接输出小说正文，不要保留任何结构化标记。"
-            )
-            edit_user = f"请将以下角色表演记录转化为小说正文：\n\n{full_text}"
-            editor_prompt_sent = json.dumps(
-                [{"role": "system", "content": edit_system}, {"role": "user", "content": edit_user[:1000]}],
-                ensure_ascii=False, indent=2,
-            )
-            edit_resp = await router_inst.generate(
-                agent_role="editor_stylist",
-                messages=[
-                    Msg(role="system", content=edit_system),
-                    Msg(role="user", content=edit_user),
-                ],
-                temperature=0.6, max_tokens=4096,
-            )
-            edited_text = edit_resp.content or full_text
+            from agents.production.editor_writer import EditorWriter
+            editor = EditorWriter(router_inst, project_id=req_data.get("project_id", ""))
+
+            # Separate performances and narrator text for the editor
+            perf_list = list((sim_result or {}).get("performances", {}).values()) if isinstance(sim_result, dict) else []
+            narrator_text = (sim_result or {}).get("narrator", "") if isinstance(sim_result, dict) else ""
+            if not perf_list:
+                perf_list = [full_text]
+
+            editor_prompt_sent = json.dumps({
+                "method": "EditorWriter.assemble_chapter",
+                "performance_count": len(perf_list),
+                "narrator_length": len(narrator_text),
+                "style_notes": req_data.get("style_notes", "")[:200],
+            }, ensure_ascii=False, indent=2)
+
+            edited_text = await editor.assemble_chapter(
+                performance_records=perf_list,
+                narrator_text=narrator_text,
+                chapter_num=1,
+                chapter_title=req_data.get("chapter_title", ""),
+                style_profile=req_data.get("style_notes", ""),
+                constraints=req_data.get("world_rules", ""),
+            ) or full_text
             _emit(session_id, {
                 "type": "step_done", "step": "editor_writer",
                 "result": {"text": edited_text, "word_count": len(edited_text), "prompt_sent": editor_prompt_sent},
@@ -831,3 +882,97 @@ async def generation_websocket(websocket: WebSocket, session_id: str):
             await websocket.close()
         except Exception:
             pass
+
+
+# ═══ A/B Compare Engine ═══
+
+class ABCompareRequest(BaseModel):
+    prompt: str
+    system_prompt: str = ""
+    models: list[dict] = []  # [{"provider": "openai", "model": "gpt-4o"}, ...]
+    agent_role: str = "editor_stylist"
+    temperature: float = 0.7
+    max_tokens: int = 2000
+
+_ab_sessions: dict[str, dict[str, Any]] = {}
+
+@router.post("/ab/compare")
+async def ab_compare(req: ABCompareRequest):
+    """Run same prompt through multiple models and return side-by-side results."""
+    if not req.models or len(req.models) < 2:
+        raise HTTPException(400, "至少需要2个模型进行比较")
+    if len(req.models) > 4:
+        raise HTTPException(400, "最多支持4个模型同时比较")
+
+    session_id = f"ab_{uuid.uuid4().hex[:12]}"
+    _ab_sessions[session_id] = {"status": "running", "results": {}, "errors": {}, "request": req.model_dump()}
+
+    async def _run_one(provider: str, model: str) -> tuple[str, dict]:
+        label = f"{provider}/{model}"
+        try:
+            r = _build_router(provider, model)
+            from agents.model_providers.base import LLMMessage as Msg
+            msgs = []
+            if req.system_prompt:
+                msgs.append(Msg(role="system", content=req.system_prompt))
+            msgs.append(Msg(role="user", content=req.prompt))
+            t0 = time.time()
+            resp = await r.generate(
+                agent_role=req.agent_role, messages=msgs,
+                temperature=req.temperature, max_tokens=req.max_tokens,
+            )
+            elapsed = time.time() - t0
+            return label, {
+                "content": resp.content,
+                "model": resp.model,
+                "tokens": resp.total_tokens,
+                "elapsed_s": round(elapsed, 2),
+                "provider": provider,
+            }
+        except Exception as e:
+            return label, {"error": str(e)[:300], "provider": provider, "model": model}
+
+    tasks = [_run_one(m["provider"], m["model"]) for m in req.models]
+    results_list = await asyncio.gather(*[t for t in tasks], return_exceptions=True)
+
+    results = {}
+    errors = {}
+    for item in results_list:
+        if isinstance(item, Exception):
+            errors["unknown"] = str(item)[:300]
+            continue
+        label, data = item
+        if "error" in data:
+            errors[label] = data["error"]
+        else:
+            results[label] = data
+
+    response = {
+        "session_id": session_id,
+        "prompt_preview": req.prompt[:200],
+        "results": results,
+        "errors": errors,
+        "model_count": len(req.models),
+    }
+    _ab_sessions[session_id] = {"status": "complete", **response}
+    return response
+
+@router.get("/ab/history")
+async def ab_history():
+    """List recent A/B comparison sessions."""
+    items = []
+    for sid, data in list(_ab_sessions.items())[-20:]:
+        items.append({
+            "session_id": sid,
+            "status": data.get("status"),
+            "model_count": data.get("model_count", 0),
+            "prompt_preview": data.get("prompt_preview", ""),
+        })
+    return {"items": items}
+
+@router.get("/ab/result/{session_id}")
+async def ab_result(session_id: str):
+    """Get a specific A/B comparison result."""
+    if session_id not in _ab_sessions:
+        raise HTTPException(404, "A/B比较会话不存在")
+    return _ab_sessions[session_id]
