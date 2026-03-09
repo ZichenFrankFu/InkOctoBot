@@ -493,7 +493,14 @@ async def _run_pipeline_background(session_id: str):
         except Exception as e:
             logger.error("Scene director error: %s", e, exc_info=True)
             scene_result = {"summary": f"场景规划失败：{str(e)[:200]}", "error": str(e)[:200]}
-        _emit(session_id, {"type": "step_done", "step": "scene_director", "result": scene_result})
+        scene_prompt = json.dumps({
+            "chapter_outline": req_data.get("synopsis", "")[:500],
+            "world_rules": req_data.get("world_rules", "")[:300],
+            "chapter_num": 1,
+        }, ensure_ascii=False, indent=2)
+        scene_result_with_prompt = dict(scene_result) if isinstance(scene_result, dict) else {"raw": str(scene_result)}
+        scene_result_with_prompt["prompt_sent"] = f"SceneDirector.plan_scenes({scene_prompt})"
+        _emit(session_id, {"type": "step_done", "step": "scene_director", "result": scene_result_with_prompt})
 
         # Emit handoff: show what Scene Director outputs → Actor Agents receives
         scene_summary = ""
@@ -510,66 +517,88 @@ async def _run_pipeline_background(session_id: str):
         if confirm is None:
             return
 
-        # ── Step 2: Actor Agents ────────────────────────────
+        # ── Step 2: Actor Agents (via SceneSimulator) ────────
         session["current_step"] = "actor_agents"
+        characters = req_data.get("characters", [])
         _emit(session_id, {
             "type": "step_start", "step": "actor_agents",
-            "label": "Actor Agents", "detail": "正在生成角色对话与内心活动...",
+            "label": "Actor Agents",
+            "detail": f"正在为 {len(characters)} 个角色生成表演记录...",
         })
         full_text = ""
+        actor_prompt_sent = ""
         try:
-            from agents.model_providers.base import LLMMessage as Msg
+            from agents.production.scene_simulator import SceneSimulator
+            from rag.memory.manager import MemoryManager
+            from ui.backend.app.settings import settings as app_settings
 
-            # Build scene context from director output
-            scene_desc = ""
-            if isinstance(scene_result, dict):
-                scene_desc = scene_result.get("summary", scene_result.get("raw", ""))
-                if not scene_desc:
-                    scene_desc = json.dumps(scene_result, ensure_ascii=False, indent=2)[:1000]
+            # Resolve DB path
+            try:
+                from ui.backend.app.utils import load_repo_config, get_db_path
+                repo_cfg = load_repo_config(app_settings.repo_root)
+                db_path = get_db_path(repo_cfg, app_settings.repo_root)
+            except Exception:
+                db_path = str(app_settings.repo_root / "data" / "novels.db")
 
-            system = (
-                "你是一组专业的小说角色扮演AI（Actor Agents）。\n"
-                "你的任务是根据场景大纲和导演指令，以小说正文的形式写出角色对话、"
-                "动作描写和内心活动。\n\n"
-                "输出要求：\n"
-                "1. 直接输出小说正文，不要输出JSON或结构化数据\n"
-                "2. 对话使用中文引号「」\n"
-                "3. 每个角色的对话和动作自然衔接\n"
-                "4. 适当加入内心独白和环境描写\n"
-                "5. 保持800-1500字的长度"
+            memory = MemoryManager(db_path=db_path, router=router_inst)
+            simulator = SceneSimulator(
+                router_inst, memory,
+                project_id=req_data.get("project_id", ""),
             )
-            user_content = f"## 章节大纲\n{req_data.get('synopsis', '')}"
-            if scene_desc:
-                user_content += f"\n\n## 场景导演指令\n{scene_desc}"
-            if req_data.get("world_rules"):
-                user_content += f"\n\n## 世界观\n{req_data['world_rules']}"
-            if req_data.get("style_notes"):
-                user_content += f"\n\n## 风格\n{req_data['style_notes']}"
-            user_content += "\n\n请根据以上信息，以小说正文的形式写出完整章节内容："
 
-            async for token in router_inst.generate_stream(
-                agent_role="actor_default",
-                messages=[Msg(role="system", content=system), Msg(role="user", content=user_content)],
-                temperature=0.8, max_tokens=4096,
-            ):
-                full_text += token
-                _emit(session_id, {"type": "token", "step": "actor_agents", "content": token})
+            # Ensure scene_result has 'characters' list
+            if isinstance(scene_result, dict) and "characters" not in scene_result:
+                scene_result["characters"] = characters
+
+            # Build character cards (minimal — names only for now)
+            character_cards = {c: "" for c in characters}
+
+            actor_prompt_sent = (
+                f"SceneSimulator.simulate_scene(\n"
+                f"  scene_plan={json.dumps(scene_result, ensure_ascii=False, indent=2)[:1500]},\n"
+                f"  characters={characters},\n"
+                f"  mode='parallel'\n"
+                f")"
+            )
+
+            sim_result = await simulator.simulate_scene(
+                scene_plan=scene_result,
+                character_cards=character_cards,
+                chapter_num=1,
+                style_profile=req_data.get("style_notes", ""),
+                constraints=req_data.get("world_rules", ""),
+                mode="parallel",
+            )
+
+            full_text = sim_result.get("combined", "")
+            performances = sim_result.get("performances", {})
+
+            # Emit token-like updates so UI shows the performance record
+            if full_text:
+                _emit(session_id, {"type": "token", "step": "actor_agents", "content": full_text})
 
             _emit(session_id, {
                 "type": "step_done", "step": "actor_agents",
-                "result": {"text": full_text, "word_count": len(full_text)},
+                "result": {
+                    "text": full_text,
+                    "word_count": len(full_text),
+                    "performances": {k: v[:500] for k, v in performances.items()},
+                    "actor_count": len(performances),
+                    "prompt_sent": actor_prompt_sent,
+                },
             })
         except Exception as e:
-            full_text = f"（生成失败：{str(e)[:200]}）"
+            logger.error("Actor agents error: %s", e, exc_info=True)
+            full_text = f"（表演记录生成失败：{str(e)[:200]}）"
             _emit(session_id, {
                 "type": "step_done", "step": "actor_agents",
-                "result": {"text": full_text, "error": str(e)[:200]},
+                "result": {"text": full_text, "error": str(e)[:200], "prompt_sent": actor_prompt_sent},
             })
 
         # Emit handoff: Actor Agents → Editor-Writer
         _emit(session_id, {
             "type": "handoff", "from": "Actor Agents", "to": "Editor-Writer",
-            "content": f"角色对话草稿已生成（{len(full_text)}字），将传递给编辑进行润色。",
+            "content": f"角色表演记录已生成（{len(full_text)}字，{len(characters)}个角色），将传递给编辑转化为正文。",
         })
 
         confirm = await _wait_for_confirm_bg(session_id, "actor_agents", "角色对话生成完成，是否继续编辑润色？")
@@ -583,28 +612,35 @@ async def _run_pipeline_background(session_id: str):
             "label": "Editor-Writer", "detail": "正在进行文学风格化与润色...",
         })
         edited_text = full_text
+        editor_prompt_sent = ""
         try:
             from agents.model_providers.base import LLMMessage as Msg
             edit_system = (
-                "你是一个专业的小说编辑。请对以下草稿进行文学润色：\n"
-                "1. 提升文学性和画面感\n"
-                "2. 优化对话的自然度\n"
-                "3. 调整节奏和叙事张力\n"
-                "4. 保持原文的核心情节和角色不变\n"
-                "直接输出润色后的全文，不要加任何说明。"
+                "你是一个专业的小说编辑兼作家。请将以下角色表演记录转化为完整的小说正文：\n"
+                "1. 将节拍标记、角色动作描写转化为流畅的叙事\n"
+                "2. 保留对话内容，使用中文引号「」\n"
+                "3. 将内心独白自然融入叙述\n"
+                "4. 将氛围描写转化为环境和气氛的文学描写\n"
+                "5. 保持原始的情节和角色互动\n"
+                "直接输出小说正文，不要保留任何结构化标记。"
+            )
+            edit_user = f"请将以下角色表演记录转化为小说正文：\n\n{full_text}"
+            editor_prompt_sent = json.dumps(
+                [{"role": "system", "content": edit_system}, {"role": "user", "content": edit_user[:1000]}],
+                ensure_ascii=False, indent=2,
             )
             edit_resp = await router_inst.generate(
                 agent_role="editor_stylist",
                 messages=[
                     Msg(role="system", content=edit_system),
-                    Msg(role="user", content=f"请润色以下草稿：\n\n{full_text}"),
+                    Msg(role="user", content=edit_user),
                 ],
                 temperature=0.6, max_tokens=4096,
             )
             edited_text = edit_resp.content or full_text
             _emit(session_id, {
                 "type": "step_done", "step": "editor_writer",
-                "result": {"text": edited_text, "word_count": len(edited_text)},
+                "result": {"text": edited_text, "word_count": len(edited_text), "prompt_sent": editor_prompt_sent},
             })
         except Exception as e:
             _emit(session_id, {

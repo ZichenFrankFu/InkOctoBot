@@ -11,6 +11,8 @@ interface UseResizableOptions {
   onResize?: (size: number) => void;
   /** Called when drag ends */
   onResizeEnd?: (size: number) => void;
+  /** Invert drag direction (for right/bottom panels where handle is on the opposite side) */
+  invert?: boolean;
 }
 
 interface UseResizableReturn {
@@ -24,7 +26,7 @@ interface UseResizableReturn {
 }
 
 export function useResizable(opts: UseResizableOptions): UseResizableReturn {
-  const { direction, initialSize, minSize, maxSize, cursor, onResize, onResizeEnd } = opts;
+  const { direction, initialSize, minSize, maxSize, cursor, onResize, onResizeEnd, invert } = opts;
 
   const [size, setSize] = useState(initialSize);
   const [isDragging, setIsDragging] = useState(false);
@@ -35,7 +37,8 @@ export function useResizable(opts: UseResizableOptions): UseResizableReturn {
 
   const onMove = useCallback(
     (clientX: number, clientY: number) => {
-      const delta = direction === "horizontal" ? clientX - startPos.current : clientY - startPos.current;
+      const raw = direction === "horizontal" ? clientX - startPos.current : clientY - startPos.current;
+      const delta = invert ? -raw : raw;
       const next = clamp(startSize.current + delta);
       setSize(next);
       onResize?.(next);

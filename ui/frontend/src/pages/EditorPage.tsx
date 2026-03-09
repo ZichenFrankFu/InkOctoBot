@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { apiGet, apiPost, apiPut } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
+import { computeDiff, groupIntoHunks, assembleFromHunks } from "../utils/simpleDiff";
+import type { DiffHunk } from "../utils/simpleDiff";
 import type { Volume, ChapterOutline, PipelineStatus, EvalResult } from "../api/types";
 
 const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -30,6 +32,7 @@ interface ChatMessage {
   status?: "thinking" | "speaking" | "done" | "waiting_confirm";
   timestamp: number;
   isQuestion?: boolean;
+  promptSent?: string;
 }
 
 export default function EditorPage({ projectId }: { projectId: string }) {
@@ -64,7 +67,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const [mergePreview, setMergePreview] = useState<{ original: string; generated: string } | null>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 160, maxSize: 350 });
-  const rightPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 200, maxSize: 500 });
+  const rightPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 200, maxSize: 500, invert: true });
 
   // Persist editor chat state to sessionStorage
   const EDITOR_CHAT_KEY = `inkocto_editor_chat_${projectId}`;
@@ -169,6 +172,8 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const eventCursorRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
+  const modelSnapshotRef = useRef<{ provider: string; model: string } | null>(null);
+  const [modelChanged, setModelChanged] = useState(false);
 
   // Persist active session across page navigation
   const SESS_KEY = `inkocto_pipeline_${projectId}`;
@@ -276,7 +281,13 @@ export default function EditorPage({ projectId }: { projectId: string }) {
           } else {
             resultContent = JSON.stringify(data.result || {}, null, 2).slice(0, 1000);
           }
-          return [...filtered, { agent: label, content: resultContent, status: "done", timestamp: Date.now() }];
+          const msg: ChatMessage = { agent: label, content: resultContent, status: "done", timestamp: Date.now() };
+          if (data.result?.prompt_sent) {
+            msg.promptSent = typeof data.result.prompt_sent === "string"
+              ? data.result.prompt_sent
+              : JSON.stringify(data.result.prompt_sent, null, 2);
+          }
+          return [...filtered, msg];
         });
         if (data.step === "evaluator" && data.result) {
           setEvalResult({
@@ -348,6 +359,17 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         if (resp.status === "complete" || resp.status === "error") {
           stopPolling();
         }
+        // Check for model changes
+        if (modelSnapshotRef.current) {
+          try {
+            const settings = await apiGet<any>("/api/data/settings");
+            const pc = settings?.pipeline_config || {};
+            const cur = { provider: pc.provider || "", model: pc.model || "" };
+            if (cur.provider !== modelSnapshotRef.current.provider || cur.model !== modelSnapshotRef.current.model) {
+              setModelChanged(true);
+            }
+          } catch { /* ignore */ }
+        }
       } catch {
         // Session gone — stop polling
         stopPolling();
@@ -399,10 +421,18 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const startGeneration = useCallback(async () => {
     if (!activeCh) return;
     setGenerating(true);
+    setModelChanged(false);
     setPipelineSteps(PIPELINE_STEPS.map(s => ({ ...s, status: "pending" })));
     setChatMessages([]); setWaitingForConfirm(false);
     generatedTextRef.current = "";
     eventCursorRef.current = 0;
+
+    // Snapshot current model settings for change detection
+    try {
+      const settings = await apiGet<any>("/api/data/settings");
+      const pc = settings?.pipeline_config || {};
+      modelSnapshotRef.current = { provider: pc.provider || "", model: pc.model || "" };
+    } catch { modelSnapshotRef.current = null; }
 
     const synopsis = activeCh.synopsis || "";
     setChatMessages([{
@@ -479,23 +509,18 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     }
   }, [projectId, activeChId, content]);
 
-  const handleMergeAccept = useCallback((mode: "append" | "replace") => {
-    if (!mergePreview) return;
-    const text = mergePreview.generated;
-    if (mode === "replace") {
-      setContent(text);
-    } else {
-      setContent(prev => prev ? prev + "\n\n" + text : text);
-    }
-    setChatMessages(prev => [...prev, { agent: "System", content: `已${mode === "replace" ? "替换" : "追加"}写入 ${text.length} 字到编辑器！`, status: "done", timestamp: Date.now() }]);
+  const handleDiffAccept = useCallback((finalText: string) => {
+    setContent(finalText);
+    setChatMessages(prev => [...prev, { agent: "System", content: `已合并写入 ${finalText.length} 字到编辑器！`, status: "done", timestamp: Date.now() }]);
     apiPost("/api/editor/save-version", {
       project_id: projectId || "default",
       chapter_id: activeChId,
-      text,
+      text: finalText,
       source: "ai_generated",
     }).catch(() => {});
     setMergePreview(null);
-  }, [mergePreview, projectId, activeChId]);
+    setAiTab("eval");
+  }, [projectId, activeChId]);
 
   const sendChatMessage = () => {
     if (!chatInput.trim()) return;
@@ -574,57 +599,12 @@ export default function EditorPage({ projectId }: { projectId: string }) {
           </div>
           <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
             {mergePreview ? (
-              /* Diff-style merge preview */
-              <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-                <div style={{ padding: "8px 28px", background: "var(--bg-surface-2)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)" }}>AI 生成内容预览 — 请选择写入方式</span>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button className="btn-primary" style={{ fontSize: 12, padding: "6px 16px", background: "var(--jade)", border: "none" }} onClick={() => handleMergeAccept("replace")}>
-                      替换全部
-                    </button>
-                    <button className="btn-primary" style={{ fontSize: 12, padding: "6px 16px" }} onClick={() => handleMergeAccept("append")}>
-                      追加到末尾
-                    </button>
-                    <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => setMergePreview(null)}>
-                      取消
-                    </button>
-                  </div>
-                </div>
-                <div style={{ flex: 1, overflowY: "auto", padding: "16px 28px", maxWidth: 800, margin: "0 auto", width: "100%" }}>
-                  {/* Show existing content as "old" */}
-                  {mergePreview.original && (
-                    <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--error)", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ display: "inline-block", width: 12, height: 12, background: "var(--error)", opacity: 0.15, borderRadius: 2 }} />
-                        当前内容（{mergePreview.original.length}字）
-                      </div>
-                      <div style={{
-                        padding: "12px 16px", borderRadius: 6, fontSize: 14, lineHeight: 1.8,
-                        fontFamily: "var(--font-serif)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-                        background: "rgba(255,100,100,0.05)", borderLeft: "4px solid var(--error)",
-                        color: "var(--text-secondary)", maxHeight: 200, overflowY: "auto",
-                      }}>
-                        {mergePreview.original}
-                      </div>
-                    </div>
-                  )}
-                  {/* Show generated content as "new" */}
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: "var(--jade)", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ display: "inline-block", width: 12, height: 12, background: "var(--jade)", opacity: 0.15, borderRadius: 2 }} />
-                      AI 生成内容（{mergePreview.generated.length}字）
-                    </div>
-                    <div style={{
-                      padding: "12px 16px", borderRadius: 6, fontSize: 14, lineHeight: 1.8,
-                      fontFamily: "var(--font-serif)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-                      background: "rgba(52,168,83,0.05)", borderLeft: "4px solid var(--jade)",
-                      color: "var(--text-primary)",
-                    }}>
-                      {mergePreview.generated}
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <DiffView
+                oldText={mergePreview.original}
+                newText={mergePreview.generated}
+                onAccept={handleDiffAccept}
+                onCancel={() => setMergePreview(null)}
+              />
             ) : (
               <>
                 <textarea ref={textRef} className="text-editor-area" value={content} onChange={e => { setContent(e.target.value); setSelection(null); }} onMouseUp={handleMouseUp} onKeyUp={handleMouseUp}
@@ -655,7 +635,8 @@ export default function EditorPage({ projectId }: { projectId: string }) {
                 setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
               }} />}
             {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} chatMessages={chatMessages} chatInput={chatInput}
-              onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline} />}
+              onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
+              modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} />}
           </div>
@@ -795,11 +776,13 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
-function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline }: {
+function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel }: {
   steps: PipelineStatus[]; generating: boolean; onStart: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
+  modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
 }) {
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [expandedPromptIdx, setExpandedPromptIdx] = useState<number | null>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
 
   const getAgentStyle = (agent: string) => AGENT_COLORS[agent] || { bg: "#f0f0f0", border: "#999", name: agent };
@@ -826,6 +809,16 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
           </div>
         ))}
       </div>
+      {/* Model change detection banner */}
+      {modelChanged && generating && (
+        <div style={{ padding: "8px 12px", marginBottom: 8, borderRadius: 6, background: "var(--accent-subtle)", border: "1px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ fontSize: 12, color: "var(--accent)", fontWeight: 500 }}>检测到模型更换，是否重新生成？</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button className="btn-primary" style={{ fontSize: 11, padding: "3px 12px", background: "var(--accent)", border: "none" }} onClick={onRestartWithNewModel}>是</button>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 12px" }} onClick={onDismissModelChange}>忽略</button>
+          </div>
+        </div>
+      )}
       {/* Chat area */}
       <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
@@ -840,7 +833,7 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
                 <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
                   {style.name}{msg.status === "thinking" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "#f9ab00" }}>思考中...</span>}
                 </div>
-                <div style={{ padding: "8px 12px", borderRadius: 10, background: style.bg, borderLeft: isUser ? "none" : `3px solid ${style.border}`, borderRight: isUser ? `3px solid ${style.border}` : "none", fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", wordBreak: "break-word", whiteSpace: "pre-wrap", maxHeight: msg.content.length > 800 ? 300 : undefined, overflowY: msg.content.length > 800 ? "auto" : undefined }}>
+                <div style={{ padding: "8px 12px", borderRadius: 10, background: style.bg, borderLeft: isUser ? "none" : `3px solid ${style.border}`, borderRight: isUser ? `3px solid ${style.border}` : "none", fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", wordBreak: "break-word", whiteSpace: "pre-wrap", userSelect: "text", cursor: "text", maxHeight: msg.content.length > 800 ? 300 : undefined, overflowY: msg.content.length > 800 ? "auto" : undefined }}>
                   {msg.isQuestion ? (
                     <QuestionChoices content={msg.content} onChoose={(choice) => {
                       onChatInputChange(choice);
@@ -853,6 +846,12 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
                       onClick={() => { navigator.clipboard.writeText(msg.content); }}>
                       复制
                     </button>
+                    {msg.promptSent && (
+                      <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
+                        onClick={() => setExpandedPromptIdx(expandedPromptIdx === i ? null : i)}>
+                        {expandedPromptIdx === i ? "隐藏 Prompt" : "查看 Prompt"}
+                      </button>
+                    )}
                     {msg.agent !== "User" && msg.agent !== "System" && !generating && (
                       <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
                         onClick={() => {
@@ -867,6 +866,16 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
                       </button>
                     )}
                   </div>
+                )}
+                {expandedPromptIdx === i && msg.promptSent && (
+                  <pre style={{
+                    marginTop: 6, padding: "8px 10px", borderRadius: 6, fontSize: 11, lineHeight: 1.5,
+                    background: "var(--bg-surface-2)", color: "var(--text-secondary)",
+                    whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 300, overflowY: "auto",
+                    border: "1px solid var(--border)", fontFamily: "var(--font-mono)",
+                  }}>
+                    {msg.promptSent}
+                  </pre>
                 )}
               </div>
             </div>
@@ -915,6 +924,9 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
         <button className="btn-primary" onClick={onSendMessage} disabled={!chatInput.trim()} style={{ fontSize: 12, padding: "6px 12px", flexShrink: 0 }}>发送</button>
       </div>
       {!generating && chatMessages.length === 0 && <button className="btn-primary w-full" onClick={onStart}>开始生成</button>}
+      {!generating && chatMessages.length > 0 && !waitingForConfirm && (
+        <button className="btn-primary w-full" style={{ marginBottom: 6 }} onClick={onStart}>重新开始生成</button>
+      )}
       <p className="text-xs text-muted mt-8" style={{ lineHeight: 1.6 }}>每个 Agent 完成后会询问你的意见。输入修改建议或点击「确认满意」进入下一步。</p>
     </div>
   );
@@ -1027,6 +1039,119 @@ function QuestionChoices({ content, onChoose }: { content: string; onChoose: (ch
       )}
       <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}>
         <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>或直接输入修改意见</span>
+      </div>
+    </div>
+  );
+}
+
+/* ---- DiffView: GitHub-style line diff with per-hunk accept old/new ---- */
+function DiffView({ oldText, newText, onAccept, onCancel }: {
+  oldText: string; newText: string;
+  onAccept: (finalText: string) => void;
+  onCancel: () => void;
+}) {
+  const hunks = useMemo(() => {
+    const lines = computeDiff(oldText || "", newText);
+    return groupIntoHunks(lines);
+  }, [oldText, newText]);
+
+  const [choices, setChoices] = useState<Map<number, "old" | "new">>(() => {
+    const m = new Map<number, "old" | "new">();
+    hunks.forEach(h => { if (h.hasChanges) m.set(h.id, "new"); });
+    return m;
+  });
+
+  const setAll = (v: "old" | "new") => {
+    const m = new Map<number, "old" | "new">();
+    hunks.forEach(h => { if (h.hasChanges) m.set(h.id, v); });
+    setChoices(m);
+  };
+
+  const toggle = (id: number) => {
+    setChoices(prev => {
+      const m = new Map(prev);
+      m.set(id, m.get(id) === "old" ? "new" : "old");
+      return m;
+    });
+  };
+
+  const handleConfirm = () => {
+    onAccept(assembleFromHunks(hunks, choices));
+  };
+
+  const changedCount = hunks.filter(h => h.hasChanges).length;
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: "8px 28px", background: "var(--bg-surface-2)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)" }}>
+          逐行对比 — {changedCount} 处变更
+        </span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn" style={{ fontSize: 11, padding: "4px 12px" }} onClick={() => setAll("new")}>全部使用 AI</button>
+          <button className="btn" style={{ fontSize: 11, padding: "4px 12px" }} onClick={() => setAll("old")}>全部保留原文</button>
+          <button className="btn-primary" style={{ fontSize: 12, padding: "6px 16px", background: "var(--jade)", border: "none" }} onClick={handleConfirm}>
+            确认合并
+          </button>
+          <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }} onClick={onCancel}>取消</button>
+        </div>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "8px 0", fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.6 }}>
+        {hunks.map(hunk => (
+          <div key={hunk.id} style={{ position: "relative" }}>
+            {hunk.hasChanges && (
+              <div style={{ position: "sticky", top: 0, zIndex: 2, padding: "4px 28px", background: "var(--bg-surface)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  className={choices.get(hunk.id) === "old" ? "btn-primary" : "btn"}
+                  style={{ fontSize: 10, padding: "2px 10px", background: choices.get(hunk.id) === "old" ? "var(--error)" : undefined, border: choices.get(hunk.id) === "old" ? "none" : undefined, color: choices.get(hunk.id) === "old" ? "#fff" : undefined }}
+                  onClick={() => toggle(hunk.id)}
+                >
+                  {choices.get(hunk.id) === "old" ? "✓ 保留原文" : "保留原文"}
+                </button>
+                <button
+                  className={choices.get(hunk.id) === "new" ? "btn-primary" : "btn"}
+                  style={{ fontSize: 10, padding: "2px 10px", background: choices.get(hunk.id) === "new" ? "var(--jade)" : undefined, border: choices.get(hunk.id) === "new" ? "none" : undefined, color: choices.get(hunk.id) === "new" ? "#fff" : undefined }}
+                  onClick={() => toggle(hunk.id)}
+                >
+                  {choices.get(hunk.id) === "new" ? "✓ 使用 AI" : "使用 AI"}
+                </button>
+              </div>
+            )}
+            {hunk.lines.map((line, li) => {
+              const dimmed = hunk.hasChanges && (
+                (line.type === "removed" && choices.get(hunk.id) === "new") ||
+                (line.type === "added" && choices.get(hunk.id) === "old")
+              );
+              return (
+                <div key={li} style={{
+                  padding: "1px 28px",
+                  background: line.type === "removed" ? "rgba(255,100,100,0.1)"
+                    : line.type === "added" ? "rgba(52,168,83,0.1)"
+                    : "transparent",
+                  opacity: dimmed ? 0.35 : 1,
+                  display: "flex", gap: 8,
+                  textDecoration: dimmed ? "line-through" : "none",
+                }}>
+                  <span style={{ width: 20, textAlign: "right", color: "var(--text-disabled)", flexShrink: 0, userSelect: "none" }}>
+                    {line.type === "removed" ? line.oldLineNum : line.type === "added" ? "" : line.oldLineNum}
+                  </span>
+                  <span style={{ width: 20, textAlign: "right", color: "var(--text-disabled)", flexShrink: 0, userSelect: "none" }}>
+                    {line.type === "added" ? line.newLineNum : line.type === "removed" ? "" : line.newLineNum}
+                  </span>
+                  <span style={{
+                    width: 16, textAlign: "center", flexShrink: 0, userSelect: "none", fontWeight: 700,
+                    color: line.type === "removed" ? "var(--error)" : line.type === "added" ? "var(--jade)" : "transparent",
+                  }}>
+                    {line.type === "removed" ? "-" : line.type === "added" ? "+" : " "}
+                  </span>
+                  <span style={{ flex: 1, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                    {line.text || "\u00A0"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ))}
       </div>
     </div>
   );

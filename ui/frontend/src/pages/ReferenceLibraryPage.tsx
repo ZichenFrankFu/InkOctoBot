@@ -132,6 +132,16 @@ export default function ReferenceLibraryPage() {
     }
   }
 
+  async function saveAnalysisField(fieldKey: string, data: any) {
+    if (!sel) return;
+    try {
+      const updated = await apiPut<ReferenceWork>(`/api/references/works/${sel.ref_id}/analysis`, { field: fieldKey, data });
+      setSel(updated);
+    } catch (e: any) {
+      alert("保存失败: " + (e?.message || "未知错误"));
+    }
+  }
+
   async function addWork() {
     if (!nTitle.trim()) return;
     await apiPost("/api/references/works", {
@@ -481,10 +491,10 @@ export default function ReferenceLibraryPage() {
                     <div className="card-body">
                       <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>特征提取结果</div>
                       <div className="flex flex-col gap-8">
-                        <AnalysisSection title="风格指纹" data={pj(sel.style_fingerprint_json)} />
-                        <AnalysisSection title="叙事结构" data={pj(sel.narrative_structure_json)} />
-                        <AnalysisSection title="提取角色" data={pj(sel.extracted_characters_json)} />
-                        <AnalysisSection title="节奏模板" data={pj(sel.rhythm_template_json)} />
+                        <AnalysisSection title="风格指纹" data={pj(sel.style_fingerprint_json)} fieldKey="style_fingerprint_json" onSave={saveAnalysisField} />
+                        <AnalysisSection title="叙事结构" data={pj(sel.narrative_structure_json)} fieldKey="narrative_structure_json" onSave={saveAnalysisField} />
+                        <AnalysisSection title="提取角色" data={pj(sel.extracted_characters_json)} fieldKey="extracted_characters_json" onSave={saveAnalysisField} />
+                        <AnalysisSection title="节奏模板" data={pj(sel.rhythm_template_json)} fieldKey="rhythm_template_json" onSave={saveAnalysisField} />
                       </div>
                     </div>
                   </div>
@@ -589,6 +599,8 @@ export default function ReferenceLibraryPage() {
               </div>
             )}
           </div>
+          {/* LoRA Training Panel */}
+          <LoRATrainingPanel works={works} />
         </div>
       </div>
 
@@ -762,10 +774,33 @@ export default function ReferenceLibraryPage() {
   );
 }
 
-/* ---- Analysis Section (collapsible) ---- */
-function AnalysisSection({ title, data }: { title: string; data: any }) {
+/* ---- Analysis Section (collapsible + editable) ---- */
+function AnalysisSection({ title, data, fieldKey, onSave }: {
+  title: string; data: any; fieldKey?: string; onSave?: (fieldKey: string, data: any) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState("");
+  const [editError, setEditError] = useState("");
   if (!data) return null;
+
+  const startEdit = () => {
+    setEditText(JSON.stringify(data, null, 2));
+    setEditError("");
+    setEditing(true);
+  };
+  const cancelEdit = () => { setEditing(false); setEditError(""); };
+  const saveEdit = () => {
+    try {
+      const parsed = JSON.parse(editText);
+      if (onSave && fieldKey) onSave(fieldKey, parsed);
+      setEditing(false);
+      setEditError("");
+    } catch (e: any) {
+      setEditError("JSON 格式错误: " + (e.message || "解析失败"));
+    }
+  };
+
   return (
     <div style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", overflow: "hidden" }}>
       <button
@@ -788,23 +823,167 @@ function AnalysisSection({ title, data }: { title: string; data: any }) {
         </span>
       </button>
       {open && (
-        <pre
-          className="font-mono"
-          style={{
-            margin: 0,
-            padding: 12,
-            fontSize: 11,
-            lineHeight: 1.5,
-            background: "var(--bg-card)",
-            color: "var(--text-secondary)",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
-            maxHeight: 260,
-            overflow: "auto",
-          }}
-        >
-          {JSON.stringify(data, null, 2)}
-        </pre>
+        <div style={{ background: "var(--bg-card)" }}>
+          {editing ? (
+            <div style={{ padding: 8 }}>
+              <textarea
+                className="input font-mono"
+                value={editText}
+                onChange={e => setEditText(e.target.value)}
+                style={{ width: "100%", minHeight: 200, maxHeight: 400, fontSize: 11, lineHeight: 1.5, resize: "vertical", boxSizing: "border-box" }}
+              />
+              {editError && <div style={{ fontSize: 11, color: "var(--error)", marginTop: 4 }}>{editError}</div>}
+              <div style={{ display: "flex", gap: 6, marginTop: 6, justifyContent: "flex-end" }}>
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={cancelEdit}>取消</button>
+                <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} onClick={saveEdit}>保存</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <pre
+                className="font-mono"
+                style={{
+                  margin: 0, padding: 12, fontSize: 11, lineHeight: 1.5,
+                  color: "var(--text-secondary)", whiteSpace: "pre-wrap",
+                  wordBreak: "break-all", maxHeight: 260, overflow: "auto",
+                }}
+              >
+                {JSON.stringify(data, null, 2)}
+              </pre>
+              {fieldKey && onSave && (
+                <div style={{ padding: "4px 12px 8px", textAlign: "right" }}>
+                  <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }} onClick={startEdit}>
+                    编辑
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---- LoRA Training Panel ---- */
+function LoRATrainingPanel({ works }: { works: ReferenceWork[] }) {
+  const [open, setOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [baseModel, setBaseModel] = useState("Qwen/Qwen2-1.5B");
+  const [rank, setRank] = useState(16);
+  const [alpha, setAlpha] = useState(32);
+  const [epochs, setEpochs] = useState(3);
+  const [lr, setLr] = useState(0.0002);
+  const [status, setStatus] = useState<any>(null);
+  const [training, setTraining] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const doneWorks = works.filter(w => w.preprocessing_status === "done");
+
+  const toggleWork = (refId: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(refId)) next.delete(refId); else next.add(refId);
+      return next;
+    });
+  };
+
+  const startTraining = async () => {
+    if (selectedIds.size === 0) return;
+    setTraining(true);
+    try {
+      await apiPost("/api/references/lora/train", {
+        work_ids: Array.from(selectedIds),
+        base_model: baseModel, rank, alpha, epochs, learning_rate: lr,
+      });
+      // Start polling status
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await apiGet<any>("/api/references/lora/status");
+          setStatus(s);
+          if (s.status === "done" || s.status === "error" || s.status === "idle") {
+            if (pollRef.current) clearInterval(pollRef.current);
+            setTraining(false);
+          }
+        } catch { /* ignore */ }
+      }, 2000);
+    } catch (e: any) {
+      setStatus({ status: "error", error: e?.message || "启动失败" });
+      setTraining(false);
+    }
+  };
+
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  return (
+    <div style={{ borderTop: "1px solid var(--border)", flexShrink: 0 }}>
+      <button
+        className="btn-ghost w-full"
+        style={{ padding: "10px 20px", justifyContent: "space-between", fontWeight: 600, fontSize: 13, borderRadius: 0 }}
+        onClick={() => setOpen(!open)}
+      >
+        <span>LoRA 风格训练</span>
+        <span className="text-xs text-muted" style={{ transition: "transform 0.15s", transform: open ? "rotate(180deg)" : "none", display: "inline-block" }}>&#x25BC;</span>
+      </button>
+      {open && (
+        <div style={{ padding: "12px 20px" }}>
+          <div className="label mb-8">选择参考作品（需已完成特征提取）</div>
+          <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, marginBottom: 12 }}>
+            {doneWorks.length === 0 ? (
+              <div className="text-xs text-muted" style={{ padding: 16, textAlign: "center" }}>没有已完成特征提取的作品</div>
+            ) : doneWorks.map(w => (
+              <label key={w.ref_id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", cursor: "pointer", borderBottom: "1px solid var(--border)" }}>
+                <input type="checkbox" checked={selectedIds.has(w.ref_id)} onChange={() => toggleWork(w.ref_id)} />
+                <span style={{ fontSize: 12, flex: 1 }}>{w.title}</span>
+                <span className="text-xs text-muted">{w.genre || w.media_type}</span>
+              </label>
+            ))}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+            <div className="field">
+              <label className="label">基础模型</label>
+              <select className="select w-full" value={baseModel} onChange={e => setBaseModel(e.target.value)}>
+                <option value="Qwen/Qwen2-1.5B">Qwen2-1.5B</option>
+                <option value="Qwen/Qwen2-7B">Qwen2-7B</option>
+                <option value="meta-llama/Llama-3-8B">Llama-3-8B</option>
+              </select>
+            </div>
+            <div className="field">
+              <label className="label">Epochs</label>
+              <input className="input" type="number" value={epochs} onChange={e => setEpochs(Number(e.target.value))} min={1} max={20} />
+            </div>
+            <div className="field">
+              <label className="label">Rank</label>
+              <input className="input" type="number" value={rank} onChange={e => setRank(Number(e.target.value))} min={4} max={128} />
+            </div>
+            <div className="field">
+              <label className="label">Alpha</label>
+              <input className="input" type="number" value={alpha} onChange={e => setAlpha(Number(e.target.value))} min={4} max={256} />
+            </div>
+          </div>
+
+          <button
+            className="btn-primary w-full"
+            onClick={startTraining}
+            disabled={selectedIds.size === 0 || training}
+            style={{ marginBottom: 8 }}
+          >
+            {training ? "训练中..." : `开始训练 (${selectedIds.size} 部作品)`}
+          </button>
+
+          {status && (
+            <div style={{
+              padding: "8px 12px", borderRadius: 6, fontSize: 12,
+              background: status.status === "error" ? "rgba(255,100,100,0.1)" : status.status === "done" ? "rgba(52,168,83,0.1)" : "var(--bg-surface-2)",
+              color: status.status === "error" ? "var(--error)" : status.status === "done" ? "var(--jade)" : "var(--text-secondary)",
+            }}>
+              {status.status === "running" && <div>{status.progress || "训练进行中..."}</div>}
+              {status.status === "done" && <div>训练完成！使用了 {status.samples_used} 个样本。</div>}
+              {status.status === "error" && <div>训练失败: {status.error}</div>}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
