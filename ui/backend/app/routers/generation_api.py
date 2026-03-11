@@ -124,6 +124,13 @@ class _SimpleRouter:
         inst = self._get_provider(provider, model, prov_cfg)
         return await inst.generate(messages, temperature=temperature, max_tokens=max_tokens, **kw)
 
+    async def invoke(self, *, role: str, prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
+        """Simple prompt-in, text-out API used by BaseSkill.execute()."""
+        from models.base import LLMMessage
+        messages = [LLMMessage(role="user", content=prompt)]
+        resp = await self.generate(agent_role=role, messages=messages, temperature=temperature, max_tokens=max_tokens)
+        return resp.content
+
     async def generate_stream(self, *, agent_role: str, messages, temperature=None, max_tokens=None, **kw):
         provider, model, prov_cfg = self._resolve(agent_role)
         if not model:
