@@ -1,0 +1,27 @@
+# Skill permission declarations
+# Controls what builtin and learned skills can access
+
+# Built-in skill permissions (trusted, not restricted)
+builtin_permissions:
+  - read_worldbook
+  - read_characters
+  - read_memory
+  - read_constraints
+  - read_reference_db
+  - write_memory
+  - invoke_llm
+
+# Self-learned skill permission boundaries (sandboxed)
+learned_skill_permissions:
+  allowed:
+    - read_worldbook          # Can read world book
+    - read_characters         # Can read character cards
+    - read_memory             # Can read memory
+    - read_reference_db       # Can read reference works (user-uploaded)
+    - invoke_llm              # Can call LLM via router
+  denied:
+    - write_memory            # Cannot write memory (prevent pollution)
+    - write_worldbook         # Cannot modify world book
+    - file_system_write       # Cannot write arbitrary files
+    - network_access          # Cannot access network
+    - execute_command          # Cannot execute system commands

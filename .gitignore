@@ -60,7 +60,10 @@ ui/backend/package-lock.json
 outputs/
 tests/test_output/
 data/
-models/
+# Model weights (keep models/*.py for LLM provider code)
+models/*/
+!models/__init__.py
+!models/*.py
 
 # ----------------------------------------------------------
 # Logs

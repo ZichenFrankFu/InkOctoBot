@@ -8,6 +8,7 @@ inherits from BaseAgent which provides:
   - Structured output parsing (JSON / YAML blocks)
   - Token budget tracking
   - Event bus integration
+  - Skill registry integration (call_skill / discover_skills)
 """
 from __future__ import annotations
 
@@ -16,11 +17,14 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import yaml
 
-from agents.model_providers.base import LLMMessage, LLMResponse
+from models.base import LLMMessage, LLMResponse
+
+if TYPE_CHECKING:
+    from core.skill_registry import SkillRegistry
 
 logger = logging.getLogger("inkoctobot.agents.base_agent")
 
@@ -39,10 +43,14 @@ class BaseAgent:
         project_id: str = "",
         event_bus: Any | None = None,    # EventBus instance
         extra_system: str = "",
+        skill_registry: SkillRegistry | None = None,
+        memory_manager: Any | None = None,
     ):
         self.router = router
         self.project_id = project_id
         self.event_bus = event_bus
+        self.skills = skill_registry
+        self.memory = memory_manager
         self._extra_system = extra_system
         self._prompt_template = self._load_prompt()
         self._logger = logging.getLogger(f"inkoctobot.agents.{self.agent_name}")
@@ -137,11 +145,38 @@ class BaseAgent:
         ):
             yield token
 
+    # ── Skill integration ────────────────────────────────────────
+
+    def get_skill(self, name: str) -> Any:
+        """Get a registered skill by name."""
+        if self.skills is None:
+            raise RuntimeError("No SkillRegistry configured for this agent")
+        return self.skills.get(name)
+
+    def discover_skills(self, tags: list[str]) -> list[Any]:
+        """Discover skills matching any of the given tags."""
+        if self.skills is None:
+            return []
+        return self.skills.find_by_tags(tags)
+
+    async def call_skill(self, skill_name: str, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Call a skill and emit a SKILL_EXECUTED event."""
+        skill = self.get_skill(skill_name)
+        result = await skill.execute_with_messages(inputs, self.router)
+        self.emit_event("SKILL_EXECUTED", {
+            "agent": self.agent_name,
+            "skill": skill_name,
+            "success": True,
+        })
+        return result
+
+    # ── Event integration ────────────────────────────────────────
+
     def emit_event(self, event_type: str, data: dict[str, Any] | None = None) -> None:
         """Publish an event if an event bus is configured."""
         if self.event_bus is None:
             return
-        from agents.events.event_types import Event
+        from core.event_types import Event
         self.event_bus.publish(Event(
             event_type=event_type,
             source=self.agent_name,
