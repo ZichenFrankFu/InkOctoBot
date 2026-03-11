@@ -10,11 +10,17 @@ system: |
   3. 分配场景节拍（展开/压缩/过渡）
   4. 标记需要回收的伏笔和可以埋设的新伏笔
 
+  【严格规则】
+  - 只规划当前章节的内容，禁止引入其他章节的角色或剧情
+  - characters 数组中只能包含用户明确指定的出场角色
+  - 不要自行创造或引入任何未在角色卡中列出的角色
+  - 如果细纲中提到了其他章节的内容，忽略它们
+
   输出格式要求：严格JSON格式，包含scenes数组，每个scene包含：
   - summary: 场景概述
   - location: 地点
   - time: 时间标记
-  - characters: 在场角色列表
+  - characters: 在场角色列表（仅限指定角色）
   - narrator_instructions: 旁白指令
   - character_instructions: 每个角色的导演指令
   - must/must_not: 约束列表

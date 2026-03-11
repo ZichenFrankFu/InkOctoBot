@@ -60,6 +60,8 @@ class SceneDirector(BaseAgent):
         if character_cards:
             parts.append(f"\n## 相关角色卡\n{character_cards}")
         parts.append("""
+【重要】只规划本章内容，不要引入其他章节的角色或剧情。场景中的 characters 数组只能使用上方「相关角色卡」中列出的角色名。
+
 请以JSON格式输出场景计划：
 ```json
 {
@@ -69,11 +71,11 @@ class SceneDirector(BaseAgent):
       "scene_index": 0,
       "location": "地点",
       "time": "时间标记",
-      "characters": ["角色A", "角色B"],
+      "characters": ["仅限上方列出的角色"],
       "summary": "场景概要",
       "beats": ["节拍1", "节拍2"],
       "character_instructions": {
-        "角色A": {
+        "角色名": {
           "emotional_state": "情绪状态",
           "secret_goal": "秘密目标",
           "knowledge_boundary": {

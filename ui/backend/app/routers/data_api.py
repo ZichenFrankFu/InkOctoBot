@@ -197,9 +197,17 @@ def get_settings():
     for rname, rdef in defaults.get("pipeline", {}).items():
         if rname not in data.get("pipeline", {}):
             data.setdefault("pipeline", {})[rname] = rdef
+    # Remove deprecated providers
+    providers = data.get("providers", {})
+    for dep in _DEPRECATED_PROVIDERS:
+        providers.pop(dep, None)
     return data
 @router.put("/settings")
 def save_settings(body: dict = Body(...)):
+    # Strip deprecated providers before saving
+    providers = body.get("providers", {})
+    for dep in _DEPRECATED_PROVIDERS:
+        providers.pop(dep, None)
     body["saved_at"] = time.time(); _wj(_settings_path(), body); return {"ok": True}
 
 # ═══ Local Models ═══
@@ -216,6 +224,8 @@ def list_local_models():
             models.append({"name": f.name, "file": f.name, "size_mb": round(total / 1048576, 1), "is_dir": True})
     return {"models": models}
 
+_DEPRECATED_PROVIDERS = {"vllm", "local"}
+
 def _default_settings() -> dict:
     return {
         "theme": "dark", "auto_save": True, "auto_save_interval": 30,
@@ -226,7 +236,10 @@ def _default_settings() -> dict:
             "deepseek": {"enabled": False, "api_key": "", "models": ["deepseek-chat", "deepseek-reasoner"]},
             "gemini": {"enabled": False, "api_key": "", "models": ["gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"]},
             "ollama": {"enabled": True, "base_url": "http://localhost:11434", "models": []},
-            "vllm": {"enabled": False, "base_url": "http://localhost:8000", "models": []},
+            "volcengine": {"enabled": False, "api_key": "", "base_url": "https://ark.cn-beijing.volces.com/api/v3", "models": ["doubao-pro-32k", "doubao-lite-32k"]},
+            "baidu_qianfan": {"enabled": False, "api_key": "", "models": ["ernie-4.0-8k", "ernie-3.5-8k"]},
+            "aliyun_bailian": {"enabled": False, "api_key": "", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "models": ["qwen-max", "qwen-plus", "qwen-turbo"]},
+            "grok": {"enabled": False, "api_key": "", "models": ["grok-2", "grok-2-mini"]},
         },
         "pipeline": {
             "scene_planner": {"provider": "ollama", "model": "", "compare_models": []},
@@ -236,5 +249,6 @@ def _default_settings() -> dict:
             "editor_stylist": {"provider": "ollama", "model": "", "compare_models": []},
             "editor_agent": {"provider": "ollama", "model": "", "compare_models": []},
             "evaluator": {"provider": "ollama", "model": "", "compare_models": []},
+            "analyzer": {"provider": "ollama", "model": "", "compare_models": []},
         },
     }

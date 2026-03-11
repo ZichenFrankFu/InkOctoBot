@@ -522,11 +522,22 @@ async def _run_pipeline_background(session_id: str):
             _existing_content = req_data.get("existing_content", "")
             if _existing_content:
                 _outline += f"\n\n[已有正文（请基于此续写下一部分）]\n{_existing_content[-1000:]}"
+            # Build character scope constraint to prevent memory leak
+            _chapter_num = req_data.get("chapter_num", 1)
+            _scope_constraints = req_data.get("world_rules", "")
+            if _chars:
+                _scope_constraints += (
+                    f"\n\n【严格限制】本章（第{_chapter_num}章）仅有以下角色出场：{', '.join(_chars)}。"
+                    f"\n禁止引入或提及任何不在上述列表中的角色。"
+                    f"\n禁止引用其他章节的剧情或角色。"
+                    f"\n场景中的 characters 数组只能包含上述角色名。"
+                )
             scenes = await director.plan_scenes(
                 chapter_outline=_outline,
-                chapter_num=1,
-                world_rules=req_data.get("world_rules", ""),
+                chapter_num=_chapter_num,
+                world_rules="",
                 character_cards=_char_cards_str,
+                constraints=_scope_constraints,
             )
             scene_result = scenes if isinstance(scenes, dict) else {"raw": str(scenes)}
         except Exception as e:
