@@ -240,6 +240,38 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `export_${Date.now()}.txt`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
 
+  // A1: Batch generation state
+  const [batchStatus, setBatchStatus] = useState<{ running: boolean; sessionId?: string; current?: number; completed: number[]; total: number; errors: Record<number, string> } | null>(null);
+
+  const startBatchGeneration = async () => {
+    const allChapters = volumes.flatMap(v => v.chapters);
+    if (allChapters.length < 2) { alert("至少需要2个章节才能批量生成"); return; }
+    const start = parseInt(prompt("起始章节号：", "1") || "0");
+    const end = parseInt(prompt("结束章节号：", String(Math.min(allChapters.length, start + 4))) || "0");
+    if (!start || !end || start > end) return;
+    try {
+      const resp = await apiPost<{ session_id: string; chapter_count: number }>("/api/generation/batch/start", {
+        project_id: projectId || "default",
+        chapter_range: [start, end],
+        volume_outline: volumes.map(v => v.chapters.map(c => c.synopsis || "").join("\n")).join("\n"),
+        style_notes: "",
+        world_rules: "",
+      });
+      setBatchStatus({ running: true, sessionId: resp.session_id, current: start, completed: [], total: resp.chapter_count, errors: {} });
+      // Poll for status
+      const pollBatch = setInterval(async () => {
+        try {
+          const s = await apiGet<any>(`/api/generation/batch/status/${resp.session_id}`);
+          setBatchStatus(prev => prev ? { ...prev, current: s.current_chapter, completed: s.completed || [], errors: s.errors || {} } : prev);
+          if (s.status !== "running") {
+            clearInterval(pollBatch);
+            setBatchStatus(prev => prev ? { ...prev, running: false } : prev);
+          }
+        } catch { clearInterval(pollBatch); setBatchStatus(prev => prev ? { ...prev, running: false } : prev); }
+      }, 3000);
+    } catch (e: any) { alert("批量生成启动失败: " + (e?.message || e)); }
+  };
+
   const handleSaveOutline = async () => {
     setSaveStatus("saving");
     const uv = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
@@ -602,7 +634,11 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     }
   }, [projectId, activeChId, content]);
 
+  // A4: Track last AI-written text for edit feedback analysis
+  const lastAiTextRef = useRef<string>("");
+
   const handleDiffAccept = useCallback((finalText: string) => {
+    lastAiTextRef.current = finalText;  // A4: remember AI version for later comparison
     setContent(finalText);
     setChatMessages(prev => [...prev, { agent: "System", content: `已合并写入 ${finalText.length} 字到编辑器！`, status: "done", timestamp: Date.now() }]);
     apiPost("/api/editor/save-version", {
@@ -614,6 +650,28 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     setMergePreview(null);
     setAiTab("eval");
   }, [projectId, activeChId]);
+
+  // A4: EditAnalyzer feedback — when user edits AI-generated text and saves
+  const editFeedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const aiText = lastAiTextRef.current;
+    if (!aiText || !content || content === aiText || content.length < 50) return;
+    // Only trigger if meaningful change (>5% diff)
+    const diffRatio = Math.abs(content.length - aiText.length) / Math.max(aiText.length, 1);
+    if (diffRatio < 0.02 && content.slice(0, 100) === aiText.slice(0, 100)) return;
+    if (editFeedbackTimer.current) clearTimeout(editFeedbackTimer.current);
+    editFeedbackTimer.current = setTimeout(() => {
+      apiPost("/api/generation/edit-feedback", {
+        project_id: projectId || "default",
+        chapter_num: volumes.flatMap(v => v.chapters).find(c => c.id === activeChId)?.order || 0,
+        original_text: aiText.slice(0, 5000),
+        edited_text: content.slice(0, 5000),
+      }).then(() => {
+        lastAiTextRef.current = "";  // Only analyze once per AI write
+      }).catch(() => {});
+    }, 10000);  // Wait 10s of no typing before analyzing
+    return () => { if (editFeedbackTimer.current) clearTimeout(editFeedbackTimer.current); };
+  }, [content, projectId, activeChId, volumes]);
 
   const sendChatMessage = () => {
     if (!chatInput.trim()) return;
@@ -645,7 +703,30 @@ export default function EditorPage({ projectId }: { projectId: string }) {
             <button className="btn-icon" onClick={addVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+卷</button>
             <button className="btn-icon" onClick={addChapterToFirstVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+章</button>
             <button className="btn-icon" onClick={handleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>导出</button>
+            <button className="btn-icon" onClick={startBatchGeneration} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--jade)", borderRadius: "var(--radius-sm)", color: "var(--jade)" }} disabled={batchStatus?.running}>批量</button>
           </div>
+          {batchStatus && (
+            <div style={{ padding: "6px 10px", background: batchStatus.running ? "var(--jade-subtle)" : "var(--bg-surface-2)", borderBottom: "1px solid var(--border)", fontSize: 11 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>{batchStatus.running ? `批量生成中: 第${batchStatus.current}章` : `批量完成 (${batchStatus.completed.length}/${batchStatus.total})`}</span>
+                {batchStatus.running && batchStatus.sessionId && (
+                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px", color: "var(--error)" }}
+                    onClick={() => { apiPost(`/api/generation/batch/stop/${batchStatus.sessionId}`, {}).catch(() => {}); setBatchStatus(prev => prev ? { ...prev, running: false } : prev); }}>停止</button>
+                )}
+                {!batchStatus.running && <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={() => setBatchStatus(null)}>关闭</button>}
+              </div>
+              {batchStatus.completed.length > 0 && (
+                <div style={{ marginTop: 4, color: "var(--jade)", fontSize: 10 }}>
+                  已完成: {batchStatus.completed.join(", ")}章
+                </div>
+              )}
+              {Object.keys(batchStatus.errors).length > 0 && (
+                <div style={{ marginTop: 4, color: "var(--error)", fontSize: 10 }}>
+                  失败: {Object.keys(batchStatus.errors).join(", ")}章
+                </div>
+              )}
+            </div>
+          )}
           <div className="panel-body" style={{ padding: "8px 6px" }}>
             {filteredVolumes.map(v => (
               <div key={v.id}>
@@ -900,11 +981,33 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button className="btn" style={{ flex: 1, fontSize: 12, borderColor: "var(--indigo)", color: "var(--indigo)" }} onClick={async () => {
+          try {
+            const pid = projectId || "default";
+            const chNum = chapter?.order || 1;
+            const resp = await apiPost<{ chapter_plan: any }>("/api/generation/auto-outline", {
+              project_id: pid, chapter_num: chNum,
+              volume_outline: synopsis || "",
+            });
+            const plan = resp.chapter_plan || {};
+            if (plan.summary) onChange(plan.summary);
+            if (plan.pov) onUpdateChapter?.("pov", plan.pov);
+            if (plan.scene_sketches?.[0]?.location) {
+              setLocation(plan.scene_sketches[0].location);
+              onUpdateChapter?.("location", plan.scene_sketches[0].location);
+            }
+            if (plan.scene_sketches?.[0]?.characters) {
+              onUpdateChapter?.("characters", plan.scene_sketches[0].characters);
+            }
+          } catch (e: any) {
+            alert("AI大纲生成失败: " + (e?.message || e));
+          }
+        }}>AI 生成大纲</button>
         <button className="btn-primary" style={{ flex: 1 }} onClick={onSave}>保存</button>
         <button className="btn-primary" style={{ flex: 1, background: "var(--jade, #34a853)", border: "none" }} onClick={onStartGeneration}>开始生成</button>
       </div>
       <p className="text-xs text-muted mt-12" style={{ lineHeight: 1.6 }}>
-        关联角色和参考作品后，Pipeline 生成时 AI 将参考相关信息。点击「开始生成」启动 Pipeline。
+        「AI 生成大纲」基于前章记忆和未回收伏笔自动生成本章大纲。关联角色和参考作品后，Pipeline 生成时 AI 将参考相关信息。
       </p>
     </div>
   );

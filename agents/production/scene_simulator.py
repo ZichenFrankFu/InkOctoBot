@@ -59,7 +59,7 @@ class SceneSimulator:
         """
         characters = scene_plan.get("characters", [])
 
-        # Create actor instances with knowledge isolation
+        # Create actor instances with knowledge isolation + decision engine (B3)
         actors: dict[str, ActorAgent] = {}
         for char_name in characters:
             knowledge_view = self.memory.get_context_for_actor(
@@ -69,13 +69,43 @@ class SceneSimulator:
                     char_name, {},
                 ).get("knowledge_boundary"),
             )
+
+            # B3: Integrate DecisionEngine for quantitative behavior guidance
+            decision_guidance = ""
+            try:
+                from rag.decision_engine import DecisionModel
+                char_instructions = scene_plan.get("character_instructions", {}).get(char_name, {})
+                decision_options = char_instructions.get("decision_options", [])
+                if decision_options:
+                    model = DecisionModel(character_name=char_name)
+                    decision_guidance = model.generate_guidance(
+                        scene_plan.get("summary", ""), decision_options,
+                    )
+                elif char_instructions.get("emotional_state") or char_instructions.get("secret_goal"):
+                    model = DecisionModel(character_name=char_name)
+                    other_chars = [c for c in characters if c != char_name]
+                    trust_info = [
+                        f"  对{other}的信任度: {model.get_trust(other):.0%}"
+                        for other in other_chars
+                    ]
+                    if trust_info:
+                        decision_guidance = f"[决策引擎 — {char_name}]\n" + "\n".join(trust_info)
+                        if model.should_act_impulsively():
+                            decision_guidance += "\n⚡ 当前情绪不稳定，可能做出冲动行为"
+            except Exception as de_err:
+                logger.debug("DecisionEngine skipped for %s: %s", char_name, de_err)
+
+            extra_context = knowledge_view
+            if decision_guidance:
+                extra_context += f"\n\n{decision_guidance}"
+
             actors[char_name] = ActorAgent(
                 self.router,
                 character_name=char_name,
                 character_card=character_cards.get(char_name, ""),
                 project_id=self.project_id,
                 event_bus=self.event_bus,
-                extra_system=knowledge_view,
+                extra_system=extra_context,
             )
 
         # Generate narrator text

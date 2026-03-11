@@ -22,6 +22,216 @@ logger = logging.getLogger("inkoctobot.ui.backend.generation_api")
 _active_sessions: dict[str, dict[str, Any]] = {}
 
 
+# ═══ Intelligence Integration Helpers ═══
+# These connect the existing-but-disconnected modules together.
+
+def _get_db_path() -> str:
+    """Resolve the project database path."""
+    try:
+        from ui.backend.app.settings import settings as app_settings
+        from ui.backend.app.utils import load_repo_config, get_db_path
+        repo_cfg = load_repo_config(app_settings.repo_root)
+        return get_db_path(repo_cfg, app_settings.repo_root)
+    except Exception:
+        from ui.backend.app.settings import settings as app_settings
+        return str(app_settings.repo_root / "data" / "novels.db")
+
+
+def _load_user_style_preferences(project_id: str, db_path: str) -> str:
+    """Load accumulated user style preferences from EditAnalyzer (A4: feedback loop)."""
+    try:
+        import sqlite3
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT preference_type, description, confidence
+                   FROM user_style_preferences
+                   WHERE project_id=? AND confidence>=0.3
+                   ORDER BY confidence DESC LIMIT 20""",
+                (project_id,),
+            ).fetchall()
+        if not rows:
+            return ""
+        parts = ["[用户写作偏好（从历史修改中学习）]"]
+        by_type: dict[str, list[str]] = {}
+        for r in rows:
+            by_type.setdefault(r["preference_type"], []).append(
+                f"- {r['description']} (置信度: {r['confidence']:.0%})"
+            )
+        type_labels = {"style": "风格偏好", "content": "内容偏好", "pacing": "节奏偏好"}
+        for ptype, items in by_type.items():
+            parts.append(f"\n### {type_labels.get(ptype, ptype)}")
+            parts.extend(items[:8])
+        return "\n".join(parts)
+    except Exception as e:
+        logger.debug("Load user preferences skipped: %s", e)
+        return ""
+
+
+def _load_reference_style(project_id: str, db_path: str) -> str:
+    """Load style info from linked reference works (B1: reference style injection)."""
+    try:
+        from rag.reference_db import ReferenceDB
+        ref_db = ReferenceDB(db_path)
+        links = ref_db.get_project_links(project_id)
+        if not links:
+            return ""
+        parts = ["[参考作品风格]"]
+        for link in links[:5]:
+            work = ref_db.get_work(link["ref_id"])
+            if not work:
+                continue
+            title = work.get("title", "")
+            style_fp = work.get("style_fingerprint_json")
+            why_like = work.get("user_why_i_like", "")
+            dimension = link.get("dimension", "")
+            part = f"- 《{title}》"
+            if dimension:
+                part += f"（参考维度: {dimension}）"
+            if why_like:
+                part += f"\n  喜欢原因: {why_like[:200]}"
+            if style_fp:
+                try:
+                    fp = json.loads(style_fp) if isinstance(style_fp, str) else style_fp
+                    if fp.get("avg_sentence_length"):
+                        part += f"\n  风格指纹: 平均句长{fp['avg_sentence_length']:.0f}字"
+                    if fp.get("dialogue_ratio"):
+                        part += f", 对话比{fp['dialogue_ratio']:.0%}"
+                except Exception:
+                    pass
+            parts.append(part)
+        return "\n".join(parts)
+    except Exception as e:
+        logger.debug("Load reference style skipped: %s", e)
+        return ""
+
+
+def _load_unresolved_foreshadowing(project_id: str, db_path: str, chapter_num: int) -> str:
+    """Load unresolved foreshadowing for context injection (B2: foreshadowing tracking)."""
+    try:
+        from rag.memory.episodic_timeline import EpisodicTimeline
+        timeline = EpisodicTimeline(db_path)
+        unresolved = timeline.get_unresolved_foreshadowing(project_id)
+        if not unresolved:
+            return ""
+        parts = ["[未回收伏笔提醒]"]
+        overdue = []
+        upcoming = []
+        for f in unresolved:
+            gap = chapter_num - f.get("chapter_num", 0)
+            desc = f"第{f['chapter_num']}章: {f['description']}"
+            if gap > 10:
+                overdue.append(f"⚠️ {desc} (已超{gap}章未回收)")
+            elif gap > 5:
+                upcoming.append(f"💡 {desc} (距今{gap}章)")
+        if overdue:
+            parts.append("\n### 超期伏笔（建议尽快回收）")
+            parts.extend(overdue[:5])
+        if upcoming:
+            parts.append("\n### 近期伏笔（可考虑回收）")
+            parts.extend(upcoming[:5])
+        return "\n".join(parts) if len(parts) > 1 else ""
+    except Exception as e:
+        logger.debug("Load foreshadowing skipped: %s", e)
+        return ""
+
+
+def _build_chapter_hook_constraint(chapter_num: int) -> str:
+    """Generate chapter-end hook constraint (D2: hook generation)."""
+    return (
+        "\n\n【章末钩子】本章结尾必须设置阅读钩子，吸引读者继续阅读下一章。"
+        "\n钩子类型可选：悬念型（留下未解之谜）、反转型（最后一刻的意外）、"
+        "情感型（强烈的情绪冲击）、伏笔型（暗示即将到来的重大事件）。"
+        "\n钩子应自然融入情节，不要刻意突兀。"
+    )
+
+
+def _build_shuangdian_guidance(chapter_num: int, total_chapters: int = 0) -> str:
+    """Generate shuangdian (satisfaction point) rhythm guidance (D1)."""
+    # Every 3-5 chapters should have a small shuangdian, every 10-15 chapters a big one
+    guidance = ""
+    if chapter_num % 3 == 0:
+        guidance = (
+            "\n【爽点节奏提示】本章建议安排一个小爽点（如: 小规模打脸、获得小宝物、"
+            "解决一个悬念、实力小突破等），保持读者的阅读兴奋感。"
+        )
+    if chapter_num % 10 == 0:
+        guidance = (
+            "\n【爽点节奏提示】本章建议安排一个大爽点（如: 大规模公开打脸、重大实力暴露、"
+            "获得顶级宝物、大谜团揭晓等），这是节奏高潮章节。"
+        )
+    return guidance
+
+
+async def _run_chapter_complete_hook(
+    memory_manager: Any,
+    router_inst: Any,
+    project_id: str,
+    chapter_num: int,
+    chapter_text: str,
+    scene_result: dict,
+) -> None:
+    """Post-generation hook: update memory system (A2: memory integration)."""
+    try:
+        # Generate chapter summary using LLM
+        from models.base import LLMMessage
+        summary_resp = await router_inst.generate(
+            agent_role="evaluator",
+            messages=[
+                LLMMessage(role="system", content="你是一个小说章节摘要生成器。"),
+                LLMMessage(role="user", content=(
+                    f"请为以下第{chapter_num}章生成简短摘要（100-200字），"
+                    f"并提取关键事件和角色状态变化。\n\n{chapter_text[:3000]}\n\n"
+                    "请以JSON格式输出：\n"
+                    '{"summary": "摘要", "key_events": ["事件1"], '
+                    '"character_states": {"角色名": "状态"}, '
+                    '"foreshadowing": [{"type": "planted|resolved", "description": "描述"}]}'
+                )),
+            ],
+            temperature=0.3,
+            max_tokens=1000,
+        )
+
+        # Parse summary
+        import re
+        summary_data: dict = {}
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', summary_resp.content)
+            if json_match:
+                summary_data = json.loads(json_match.group())
+        except Exception:
+            summary_data = {"summary": summary_resp.content[:200]}
+
+        summary = summary_data.get("summary", chapter_text[:200])
+        key_events = summary_data.get("key_events", [])
+        char_states = summary_data.get("character_states", {})
+
+        # Build timeline events from foreshadowing data
+        events: list[dict] = []
+        for fs in summary_data.get("foreshadowing", []):
+            events.append({
+                "event_type": "foreshadowing",
+                "description": fs.get("description", ""),
+                "foreshadow_status": "planted" if fs.get("type") == "planted" else "resolved",
+            })
+        for ke in key_events:
+            events.append({"event_type": "plot_event", "description": ke})
+
+        # Update all memory layers
+        await memory_manager.on_chapter_complete(
+            chapter_num=chapter_num,
+            chapter_text=chapter_text,
+            summary=summary,
+            key_events=key_events,
+            character_states=char_states,
+            events=events,
+        )
+        logger.info("Memory system updated for chapter %d: %d events, %d char states",
+                     chapter_num, len(events), len(char_states))
+    except Exception as e:
+        logger.warning("Chapter complete hook failed (non-fatal): %s", e)
+
+
 class GenerateRequest(BaseModel):
     project_id: str = ""
     chapter_id: str = ""
@@ -544,9 +754,36 @@ async def _run_pipeline_background(session_id: str):
                     )
                     for _real, _alias in _aliases.items():
                         _scope_constraints += f"\n  - 「{_alias}」（请始终使用此称呼，不要使用真名）"
+
+            # D2: Inject chapter-end hook constraint
+            _scope_constraints += _build_chapter_hook_constraint(_chapter_num)
+
+            # D1: Inject shuangdian rhythm guidance
+            _shuangdian = _build_shuangdian_guidance(_chapter_num)
+            if _shuangdian:
+                _scope_constraints += _shuangdian
+
+            # B2: Load unresolved foreshadowing for SceneDirector awareness
+            _db_path = _get_db_path()
+            _proj_id = req_data.get("project_id", "")
+            _foreshadow_ctx = _load_unresolved_foreshadowing(_proj_id, _db_path, _chapter_num)
+
+            # Build memory context from chapter buffer if available
+            _memory_ctx = ""
+            try:
+                from rag.memory.manager import MemoryManager as _MM
+                _mem = _MM(db_path=_db_path)
+                _mem.set_project(_proj_id)
+                _memory_ctx = _mem.get_context_for_scene_director(_chapter_num)
+            except Exception:
+                pass
+            if _foreshadow_ctx:
+                _memory_ctx += f"\n\n{_foreshadow_ctx}"
+
             scenes = await director.plan_scenes(
                 chapter_outline=_outline,
                 chapter_num=_chapter_num,
+                memory_context=_memory_ctx,
                 world_rules="",
                 character_cards=_char_cards_str,
                 constraints=_scope_constraints,
@@ -809,6 +1046,26 @@ async def _run_pipeline_background(session_id: str):
             if _extra_constraints:
                 _combined_constraints += "\n" + "\n".join(_extra_constraints)
 
+            # A4: Load user style preferences from EditAnalyzer feedback loop
+            _editor_db_path = _get_db_path()
+            _editor_proj_id = req_data.get("project_id", "")
+            _user_prefs = _load_user_style_preferences(_editor_proj_id, _editor_db_path)
+
+            # B1: Load reference work style info
+            _ref_style = _load_reference_style(_editor_proj_id, _editor_db_path)
+
+            # Build enriched style profile
+            _style_profile = req_data.get("style_notes", "")
+            if _ref_style:
+                _style_profile += f"\n\n{_ref_style}"
+
+            # Build memory context for editor
+            _editor_memory_ctx = ""
+            try:
+                _editor_memory_ctx = memory.get_context_for_editor()
+            except Exception:
+                pass
+
             editor_prompt_sent = json.dumps({
                 "method": "EditorWriter.assemble_chapter",
                 "performance_count": len(perf_list),
@@ -816,6 +1073,8 @@ async def _run_pipeline_background(session_id: str):
                 "narrator_length": len(narrator_text),
                 "style_notes": req_data.get("style_notes", "")[:200],
                 "has_existing_content": bool(_existing),
+                "has_user_preferences": bool(_user_prefs),
+                "has_reference_style": bool(_ref_style),
             }, ensure_ascii=False, indent=2)
 
             edited_text = await editor.assemble_chapter(
@@ -823,7 +1082,9 @@ async def _run_pipeline_background(session_id: str):
                 narrator_text=narrator_text,
                 chapter_num=req_data.get("chapter_num", 1),
                 chapter_title=req_data.get("chapter_title", ""),
-                style_profile=req_data.get("style_notes", ""),
+                style_profile=_style_profile,
+                user_preferences=_user_prefs,
+                memory_context=_editor_memory_ctx,
                 constraints=_combined_constraints,
             ) or full_text
             _emit(session_id, {
@@ -835,6 +1096,22 @@ async def _run_pipeline_background(session_id: str):
                 "type": "step_done", "step": "editor_writer",
                 "result": {"text": edited_text, "error": str(e)[:200]},
             })
+
+        # A2: Run chapter-complete memory hook after EditorWriter finishes
+        try:
+            _chapter_num_for_hook = req_data.get("chapter_num", 1)
+            _proj_id_for_hook = req_data.get("project_id", "")
+            if edited_text and len(edited_text) > 100 and 'memory' in dir():
+                await _run_chapter_complete_hook(
+                    memory, router_inst, _proj_id_for_hook,
+                    _chapter_num_for_hook, edited_text, scene_result,
+                )
+                _emit(session_id, {
+                    "type": "info", "step": "memory_update",
+                    "detail": f"第{_chapter_num_for_hook}章记忆系统已更新（摘要、事件、伏笔）",
+                })
+        except Exception as mem_err:
+            logger.warning("Memory hook skipped: %s", mem_err)
 
         # Emit handoff: Editor-Writer → Evaluator
         _emit(session_id, {
@@ -897,7 +1174,36 @@ async def _run_pipeline_background(session_id: str):
                 "findings": slop_found,
             })
 
-            # --- Detector 3: LLM-based comprehensive evaluation ---
+            # --- Detector 3: Cross-chapter continuity (B2: foreshadowing audit) ---
+            try:
+                _eval_db_path = _get_db_path()
+                _eval_proj_id = req_data.get("project_id", "")
+                _eval_chapter_num = req_data.get("chapter_num", 1)
+                from rag.memory.episodic_timeline import EpisodicTimeline
+                _eval_timeline = EpisodicTimeline(_eval_db_path)
+                _unresolved = _eval_timeline.get_unresolved_foreshadowing(_eval_proj_id)
+                if _unresolved:
+                    process_log.append({"detector": "CrossChapterChecker", "status": "running", "detail": "检查伏笔回收与角色一致性..."})
+                    from agents.evaluation.cross_chapter_checker import CrossChapterChecker
+                    _cc = CrossChapterChecker(router_inst, project_id=_eval_proj_id)
+                    _cc_result = await _cc.audit_foreshadowing(
+                        _unresolved, _eval_chapter_num, recent_text=edited_text[:2000],
+                    )
+                    _overdue = _cc_result.get("overdue", [])
+                    for od in _overdue[:3]:
+                        issues.append({
+                            "type": "foreshadowing", "severity": "medium",
+                            "description": f"超期伏笔: {od}" if isinstance(od, str) else f"超期伏笔: {od.get('description', '')}",
+                        })
+                    process_log.append({
+                        "detector": "CrossChapterChecker", "status": "done",
+                        "detail": f"发现 {len(_overdue)} 个超期伏笔" if _overdue else "伏笔状态正常",
+                        "findings": [str(o)[:100] for o in _overdue[:5]],
+                    })
+            except Exception as cc_err:
+                logger.debug("CrossChapterChecker skipped: %s", cc_err)
+
+            # --- Detector 4: LLM-based comprehensive evaluation ---
             llm_eval = None
             try:
                 process_log.append({"detector": "LLM Evaluator", "status": "running", "detail": "使用LLM进行6维度深度评估..."})
@@ -962,9 +1268,14 @@ async def _run_pipeline_background(session_id: str):
                 },
                 {
                     "id": "foreshadowing", "name": "伏笔一致性",
-                    "score": 4, "max_score": 5,
-                    "rationale": "伏笔线索与前文保持一致。",
-                    "findings": [],
+                    "score": max(0, 5 - len([i for i in issues if i.get("type") == "foreshadowing"])),
+                    "max_score": 5,
+                    "rationale": (
+                        f"发现 {len([i for i in issues if i.get('type') == 'foreshadowing'])} 个超期伏笔需要注意。"
+                        if any(i.get("type") == "foreshadowing" for i in issues)
+                        else "伏笔线索与前文保持一致。"
+                    ),
+                    "findings": [i["description"] for i in issues if i.get("type") == "foreshadowing"],
                 },
                 {
                     "id": "literary_quality", "name": "文学质量",
@@ -1126,6 +1437,319 @@ async def ab_compare(req: ABCompareRequest):
     }
     _ab_sessions[session_id] = {"status": "complete", **response}
     return response
+
+# ═══ A4: EditAnalyzer feedback endpoint ═══
+
+class EditFeedbackRequest(BaseModel):
+    project_id: str
+    chapter_num: int = 0
+    original_text: str
+    edited_text: str
+
+@router.post("/edit-feedback")
+async def analyze_user_edit(req: EditFeedbackRequest):
+    """Analyze user edits to learn style preferences (A4: feedback loop)."""
+    try:
+        router_inst = _build_router("", "")
+        from agents.evaluation.edit_analyzer import EditAnalyzer
+        db_path = _get_db_path()
+        analyzer = EditAnalyzer(
+            router_inst, project_id=req.project_id, db_path=db_path,
+        )
+        result = await analyzer.analyze_edit(
+            req.original_text, req.edited_text,
+            chapter_num=req.chapter_num,
+        )
+        return {"status": "ok", "analysis": result}
+    except Exception as e:
+        logger.error("Edit feedback error: %s", e)
+        raise HTTPException(500, detail=str(e)[:300])
+
+
+@router.get("/edit-preferences/{project_id}")
+async def get_learned_preferences(project_id: str):
+    """Get accumulated style preferences learned from user edits."""
+    try:
+        db_path = _get_db_path()
+        prefs = _load_user_style_preferences(project_id, db_path)
+        return {"status": "ok", "preferences": prefs}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e)[:300])
+
+
+# ═══ A3: ChapterPlanner auto-outline endpoint ═══
+
+class AutoOutlineRequest(BaseModel):
+    project_id: str
+    chapter_num: int
+    volume_outline: str = ""
+    provider: str = ""
+    model: str = ""
+
+@router.post("/auto-outline")
+async def auto_outline(req: AutoOutlineRequest):
+    """Generate chapter outline automatically using ChapterPlanner + memory context (A3)."""
+    try:
+        router_inst = _build_router(req.provider, req.model)
+        db_path = _get_db_path()
+
+        # Load memory context for planning
+        previous_summary = ""
+        character_states = ""
+        unresolved_threads = ""
+        try:
+            from rag.memory.manager import MemoryManager
+            mem = MemoryManager(db_path=db_path)
+            mem.set_project(req.project_id)
+
+            # Get previous chapter summaries
+            buffer_text = mem.chapter_buffer.get_buffer_text(req.project_id)
+            if buffer_text:
+                previous_summary = buffer_text
+
+            # Get unresolved foreshadowing
+            foreshadowing = mem.get_unresolved_foreshadowing()
+            if foreshadowing:
+                unresolved_threads = "\n".join(
+                    f"- 第{f['chapter_num']}章: {f['description']}"
+                    for f in foreshadowing[:10]
+                )
+        except Exception as mem_err:
+            logger.debug("Memory context for auto-outline skipped: %s", mem_err)
+
+        # Get character states from most recent chapter
+        try:
+            from rag.memory.chapter_buffer import ChapterBuffer
+            cb = ChapterBuffer(db_path)
+            summaries = cb.get_active_summaries(req.project_id)
+            if summaries:
+                latest = summaries[-1]
+                if latest.get("character_states"):
+                    cs = latest["character_states"]
+                    if isinstance(cs, dict):
+                        character_states = "\n".join(f"- {k}: {v}" for k, v in cs.items())
+                    elif isinstance(cs, str):
+                        character_states = cs
+        except Exception:
+            pass
+
+        # D1: Add shuangdian guidance to constraints
+        constraints = _build_shuangdian_guidance(req.chapter_num)
+
+        from agents.planner.chapter_planner import ChapterPlanner
+        planner = ChapterPlanner(router=router_inst, project_id=req.project_id)
+        result = await planner.plan_chapter(
+            req.volume_outline, req.chapter_num,
+            previous_summary=previous_summary,
+            character_states=character_states,
+            unresolved_threads=unresolved_threads,
+            constraints=constraints,
+        )
+        return {"status": "ok", "chapter_plan": result}
+    except Exception as e:
+        logger.error("Auto outline error: %s", e)
+        raise HTTPException(500, detail=str(e)[:300])
+
+
+# ═══ A1: Batch generation endpoint ═══
+
+class BatchGenerateRequest(BaseModel):
+    project_id: str = ""
+    chapter_range: list[int] = []  # [start, end] inclusive
+    volume_outline: str = ""
+    provider: str = ""
+    model: str = ""
+    style_notes: str = ""
+    world_rules: str = ""
+
+_batch_sessions: dict[str, dict[str, Any]] = {}
+
+@router.post("/batch/start")
+async def batch_generate_start(req: BatchGenerateRequest):
+    """Start batch generation of multiple chapters (A1)."""
+    if len(req.chapter_range) != 2:
+        raise HTTPException(400, "chapter_range must be [start, end]")
+    start, end = req.chapter_range
+    if start > end or end - start > 20:
+        raise HTTPException(400, "Invalid range (max 20 chapters)")
+
+    session_id = f"batch_{uuid.uuid4().hex[:12]}"
+    _batch_sessions[session_id] = {
+        "status": "running",
+        "request": req.model_dump(),
+        "chapters": list(range(start, end + 1)),
+        "completed": [],
+        "current_chapter": start,
+        "results": {},
+        "errors": {},
+    }
+
+    asyncio.create_task(_run_batch_pipeline(session_id))
+    return {"status": "started", "session_id": session_id, "chapter_count": end - start + 1}
+
+
+@router.get("/batch/status/{session_id}")
+async def batch_status(session_id: str):
+    """Get batch generation progress."""
+    session = _batch_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Batch session not found")
+    return {
+        "status": session["status"],
+        "current_chapter": session.get("current_chapter"),
+        "completed": session.get("completed", []),
+        "total": len(session.get("chapters", [])),
+        "errors": session.get("errors", {}),
+    }
+
+
+@router.post("/batch/stop/{session_id}")
+async def batch_stop(session_id: str):
+    """Stop batch generation."""
+    session = _batch_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Batch session not found")
+    session["status"] = "stopped"
+    return {"status": "stopped"}
+
+
+async def _run_batch_pipeline(session_id: str):
+    """Run pipeline for each chapter sequentially with memory carry-over."""
+    session = _batch_sessions.get(session_id)
+    if not session:
+        return
+    req_data = session["request"]
+
+    try:
+        router_inst = _build_router(req_data.get("provider", ""), req_data.get("model", ""))
+        db_path = _get_db_path()
+        project_id = req_data.get("project_id", "")
+
+        from rag.memory.manager import MemoryManager
+        memory = MemoryManager(db_path=db_path, router=router_inst)
+        memory.set_project(project_id)
+
+        # Ensure tables exist
+        try:
+            import sqlite3 as _sql
+            from database.creation_schema import ensure_creation_tables
+            with _sql.connect(db_path) as _tc:
+                ensure_creation_tables(_tc)
+        except Exception:
+            pass
+
+        for chapter_num in session["chapters"]:
+            if session["status"] == "stopped":
+                break
+
+            session["current_chapter"] = chapter_num
+            try:
+                # Step 1: Auto-generate chapter outline
+                from agents.planner.chapter_planner import ChapterPlanner
+                planner = ChapterPlanner(router=router_inst, project_id=project_id)
+
+                previous_summary = memory.chapter_buffer.get_buffer_text(project_id)
+                unresolved = memory.get_unresolved_foreshadowing()
+                unresolved_text = "\n".join(
+                    f"- 第{f['chapter_num']}章: {f['description']}" for f in unresolved[:10]
+                ) if unresolved else ""
+
+                chapter_plan = await planner.plan_chapter(
+                    req_data.get("volume_outline", ""), chapter_num,
+                    previous_summary=previous_summary,
+                    unresolved_threads=unresolved_text,
+                    constraints=_build_shuangdian_guidance(chapter_num),
+                )
+
+                synopsis = chapter_plan.get("summary", "")
+                characters = chapter_plan.get("scene_sketches", [{}])[0].get("characters", []) if chapter_plan.get("scene_sketches") else []
+
+                # Step 2: SceneDirector
+                from agents.production.scene_director import SceneDirector
+                director = SceneDirector(router_inst, project_id=project_id)
+                constraints = req_data.get("world_rules", "")
+                constraints += _build_chapter_hook_constraint(chapter_num)
+                constraints += _build_shuangdian_guidance(chapter_num)
+                foreshadow_ctx = _load_unresolved_foreshadowing(project_id, db_path, chapter_num)
+                memory_ctx = memory.get_context_for_scene_director(chapter_num)
+                if foreshadow_ctx:
+                    memory_ctx += f"\n\n{foreshadow_ctx}"
+
+                scene_result = await director.plan_scenes(
+                    chapter_outline=synopsis,
+                    chapter_num=chapter_num,
+                    memory_context=memory_ctx,
+                    constraints=constraints,
+                )
+
+                # Step 3: SceneSimulator
+                from agents.production.scene_simulator import SceneSimulator
+                simulator = SceneSimulator(router_inst, memory, project_id=project_id)
+                scene_list = scene_result.get("scenes", [])
+                char_cards: dict[str, str] = {c: "" for c in characters}
+                all_scene_results = await simulator.simulate_chapter(
+                    scene_plans=scene_list if scene_list else [scene_result],
+                    character_cards=char_cards,
+                    chapter_num=chapter_num,
+                    style_profile=req_data.get("style_notes", ""),
+                    constraints=constraints,
+                )
+
+                # Combine performances
+                perf_list = []
+                narrator_text = ""
+                for sr in all_scene_results:
+                    scene_parts = []
+                    if sr.get("narrator"):
+                        scene_parts.append(f"[旁白]\n{sr['narrator']}")
+                    for cn, perf in sr.get("performances", {}).items():
+                        scene_parts.append(f"[{cn}的表演]\n{perf}")
+                    if scene_parts:
+                        perf_list.append("\n\n".join(scene_parts))
+                    narrator_text += sr.get("narrator", "")
+
+                # Step 4: EditorWriter
+                from agents.production.editor_writer import EditorWriter
+                editor = EditorWriter(router_inst, project_id=project_id)
+                user_prefs = _load_user_style_preferences(project_id, db_path)
+                ref_style = _load_reference_style(project_id, db_path)
+                style_profile = req_data.get("style_notes", "")
+                if ref_style:
+                    style_profile += f"\n\n{ref_style}"
+
+                edited_text = await editor.assemble_chapter(
+                    performance_records=perf_list or ["（无表演记录）"],
+                    narrator_text=narrator_text,
+                    chapter_num=chapter_num,
+                    style_profile=style_profile,
+                    user_preferences=user_prefs,
+                    memory_context=memory.get_context_for_editor(),
+                    constraints=constraints,
+                )
+
+                # A2: Update memory for next chapter
+                await _run_chapter_complete_hook(
+                    memory, router_inst, project_id,
+                    chapter_num, edited_text, scene_result,
+                )
+
+                session["results"][chapter_num] = {
+                    "text": edited_text,
+                    "word_count": len(edited_text),
+                    "synopsis": synopsis,
+                }
+                session["completed"].append(chapter_num)
+
+            except Exception as ch_err:
+                logger.error("Batch chapter %d error: %s", chapter_num, ch_err)
+                session["errors"][chapter_num] = str(ch_err)[:300]
+
+        session["status"] = "complete" if session["status"] != "stopped" else "stopped"
+    except Exception as e:
+        logger.error("Batch pipeline error: %s", e, exc_info=True)
+        session["status"] = "error"
+        session["errors"]["global"] = str(e)[:300]
+
 
 @router.get("/ab/history")
 async def ab_history():
