@@ -106,7 +106,7 @@ class _SimpleRouter:
         cache_key = f"{provider}:{model}"
         if cache_key in self._provider_cache:
             return self._provider_cache[cache_key]
-        from agents.model_providers.base import ProviderConfig
+        from models.base import ProviderConfig
         cfg = ProviderConfig(
             provider_type=provider,
             model_name=model,
@@ -137,25 +137,25 @@ def _make_provider_instance(cfg):
     """Instantiate a provider from a ProviderConfig."""
     ptype = cfg.provider_type
     if ptype == "ollama":
-        from agents.model_providers.ollama_provider import OllamaProvider
+        from models.ollama_provider import OllamaProvider
         return OllamaProvider(cfg)
     elif ptype == "deepseek":
-        from agents.model_providers.deepseek_provider import DeepSeekProvider
+        from models.deepseek_provider import DeepSeekProvider
         return DeepSeekProvider(cfg)
     elif ptype == "openai":
-        from agents.model_providers.openai_provider import OpenAIProvider
+        from models.openai_provider import OpenAIProvider
         return OpenAIProvider(cfg)
     elif ptype == "anthropic":
-        from agents.model_providers.anthropic_provider import AnthropicProvider
+        from models.anthropic_provider import AnthropicProvider
         return AnthropicProvider(cfg)
     elif ptype == "gemini":
-        from agents.model_providers.gemini_provider import GeminiProvider
+        from models.gemini_provider import GeminiProvider
         return GeminiProvider(cfg)
     elif ptype == "vllm":
-        from agents.model_providers.vllm_provider import VLLMProvider
+        from models.vllm_provider import VLLMProvider
         return VLLMProvider(cfg)
     else:
-        from agents.model_providers.ollama_provider import OllamaProvider
+        from models.ollama_provider import OllamaProvider
         return OllamaProvider(cfg)
 
 
@@ -357,7 +357,7 @@ async def evaluate_text(req: EvalRequest):
 async def quick_generate(req: GenerateRequest):
     """Single-step generation: synopsis -> full chapter text."""
     try:
-        from agents.model_providers.base import LLMMessage
+        from models.base import LLMMessage
         router_inst = _build_router(req.provider, req.model)
 
         system_prompt = req.system_hint if req.system_hint else (
@@ -911,7 +911,7 @@ async def ab_compare(req: ABCompareRequest):
         label = f"{provider}/{model}"
         try:
             r = _build_router(provider, model)
-            from agents.model_providers.base import LLMMessage as Msg
+            from models.base import LLMMessage as Msg
             msgs = []
             if req.system_prompt:
                 msgs.append(Msg(role="system", content=req.system_prompt))

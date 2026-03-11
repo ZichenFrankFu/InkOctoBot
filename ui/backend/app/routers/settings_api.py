@@ -73,6 +73,7 @@ def _defaults() -> dict:
             "editor_stylist": {"provider": "ollama", "model": "", "compare_models": []},
             "editor_agent": {"provider": "ollama", "model": "", "compare_models": []},
             "evaluator": {"provider": "ollama", "model": "", "compare_models": []},
+            "analyzer": {"provider": "ollama", "model": "", "compare_models": []},
         },
     }
 

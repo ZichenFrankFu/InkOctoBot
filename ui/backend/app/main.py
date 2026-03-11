@@ -31,6 +31,7 @@ from .routers.characters_api import router as characters_router
 from .routers.worldbook_api import router as worldbook_router
 from .routers.security_api import router as security_router
 from .routers.project_api import router as project_router
+from .routers.skill_api import router as skill_router
 
 app = FastAPI(title="InkOctoBot", version="2.0.0")
 app.add_middleware(
@@ -67,6 +68,7 @@ app.include_router(characters_router)
 app.include_router(worldbook_router)
 app.include_router(security_router)
 app.include_router(project_router)
+app.include_router(skill_router)
 
 
 @app.get("/health")

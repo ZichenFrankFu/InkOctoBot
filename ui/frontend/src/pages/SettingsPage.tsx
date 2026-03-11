@@ -35,6 +35,12 @@ const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string
       { key: "worldbook_consistency", label: "一致性检查", desc: "检测世界观设定矛盾与冲突" },
     ],
   },
+  {
+    group: "分析 Skills（Analysis）",
+    roles: [
+      { key: "analyzer", label: "分析器", desc: "文本分析与特征提取 Skills" },
+    ],
+  },
 ];
 
 // Flat list for backward compat

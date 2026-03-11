@@ -372,3 +372,30 @@ export interface Task {
   log_path?: string | null;
   exit_code?: number | null;
 }
+
+// ── Skills ──
+export interface SkillInfo {
+  name: string;
+  display_name: string;
+  description: string;
+  version: string;
+  model_role: string;
+  max_tokens: number;
+  temperature: number;
+  tags: string[];
+  permissions: string[];
+  learnable: boolean;
+  is_learned: boolean;
+  agent_domain: string;
+  input_schema: Record<string, unknown>;
+  output_schema: Record<string, unknown>;
+  skill_md?: string;
+}
+
+export interface SkillExecuteResult {
+  status: string;
+  skill_name: string;
+  result: Record<string, unknown>;
+  execution_time_ms: number;
+  model_used?: string;
+}

@@ -1284,6 +1284,16 @@ function EvalTab({ result }: { result: EvalResult | null }) {
         </div>
       )}
 
+      {/* Skills used (from skill-based evaluation) */}
+      {(displayResult as any).skills_used && (displayResult as any).skills_used.length > 0 && (
+        <div style={{ padding: "8px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 12, borderLeft: "3px solid var(--purple)" }}>
+          <div className="text-xs mb-4" style={{ fontWeight: 600, color: "var(--purple)" }}>Skill-based Evaluation</div>
+          <div className="text-xs" style={{ color: "var(--text-secondary)" }}>
+            Skills used: {(displayResult as any).skills_used.join(", ")}
+          </div>
+        </div>
+      )}
+
       {/* Issues */}
       {displayResult.issues.length > 0 && (
         <div className="text-xs text-muted mb-6" style={{ fontWeight: 600 }}>问题详情</div>

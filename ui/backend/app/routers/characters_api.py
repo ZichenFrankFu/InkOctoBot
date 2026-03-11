@@ -39,7 +39,7 @@ def characters_status():
 async def generate_profile(req: GenerateProfileRequest):
     """Use AI to generate a character profile from a name and role."""
     try:
-        from agents.model_providers.base import LLMMessage
+        from models.base import LLMMessage
         router_inst = _build_router(req.provider, req.model)
 
         existing = f"\n已有人设信息：{req.existing_personality}" if req.existing_personality else ""

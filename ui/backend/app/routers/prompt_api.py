@@ -30,7 +30,7 @@ def health():
 async def disambiguate(req: DisambiguateRequest):
     try:
         from agents.constraints.disambiguator import Disambiguator
-        from agents.model_router import ModelRouter
+        from models.router import ModelRouter
         router_inst = ModelRouter()
         disam = Disambiguator(router=router_inst)
         result = await disam.disambiguate(req.text, context=req.context)
@@ -44,7 +44,7 @@ async def disambiguate(req: DisambiguateRequest):
 async def resolve(req: ResolveRequest):
     try:
         from agents.constraints.disambiguator import Disambiguator
-        from agents.model_router import ModelRouter
+        from models.router import ModelRouter
         router_inst = ModelRouter()
         disam = Disambiguator(router=router_inst)
         resolved = await disam.resolve(req.original_text, req.user_choices)

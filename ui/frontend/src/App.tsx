@@ -13,11 +13,12 @@ import SettingsPage from "./pages/SettingsPage";
 import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
+import SkillsPage from "./pages/SkillsPage";
 
 type Tab =
   | "dashboard" | "rankings" | "references" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
-  | "settings";
+  | "skills" | "settings";
 
 interface Project { id: string; name: string; genre?: string; }
 
@@ -49,6 +50,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   {
     section: "系统",
     items: [
+      { key: "skills", icon: "🧩", label: "Skills" },
       { key: "settings", icon: "⚙️", label: "设置" },
     ],
   },
@@ -154,6 +156,7 @@ export default function App() {
         {tab === "characters" && <CharacterManagerPage projectId={activeProject} projects={projects} />}
         {tab === "worldbook" && <WorldBookPage projectId={activeProject} projects={projects} />}
         {tab === "storyline" && <StorylinePage projectId={activeProject} />}
+        {tab === "skills" && <SkillsPage />}
         {tab === "settings" && <SettingsPage />}
       </main>
     </div>

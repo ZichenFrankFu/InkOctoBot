@@ -1,5 +1,7 @@
 """
 /api/eval — Evaluation engine: repetition, slop, style drift, quality scoring.
+
+Uses both direct detector imports and the Skill registry for evaluation.
 """
 from __future__ import annotations
 
@@ -32,7 +34,7 @@ def health():
 
 
 @router.post("/analyze")
-def analyze_text(req: EvalTextRequest):
+async def analyze_text(req: EvalTextRequest):
     """Run all local evaluation checks on text."""
     results: dict[str, Any] = {"text_length": len(req.text), "issues": []}
 
@@ -46,8 +48,8 @@ def analyze_text(req: EvalTextRequest):
             results["issues"].append({
                 "type": "repetition",
                 "severity": "medium" if r.get("count", 0) > 3 else "low",
-                "description": f"「{r.get('phrase', '')}」重复 {r.get('count', 0)} 次",
-                "suggestion": "考虑使用同义词替换",
+                "description": f"\u300c{r.get('phrase', '')}\u300d\u91cd\u590d {r.get('count', 0)} \u6b21",
+                "suggestion": "\u8003\u8651\u4f7f\u7528\u540c\u4e49\u8bcd\u66ff\u6362",
             })
     except Exception as e:
         results["repetition_error"] = str(e)
@@ -62,8 +64,8 @@ def analyze_text(req: EvalTextRequest):
             results["issues"].append({
                 "type": "ai_flavor",
                 "severity": "medium",
-                "description": f"AI味表达: {s.get('match', s.get('pattern', ''))}",
-                "suggestion": "用更自然的表达替换",
+                "description": f"AI\u5473\u8868\u8fbe: {s.get('match', s.get('pattern', ''))}",
+                "suggestion": "\u7528\u66f4\u81ea\u7136\u7684\u8868\u8fbe\u66ff\u6362",
             })
     except Exception as e:
         results["slop_error"] = str(e)
@@ -87,6 +89,27 @@ def analyze_text(req: EvalTextRequest):
     except Exception as e:
         results["quality_error"] = str(e)
 
+    # 5. Skill-based evaluation (supplementary — uses SkillRegistry)
+    try:
+        from core.skill_registry import SkillRegistry
+        registry = SkillRegistry()
+        registry.scan_all()
+        eval_skills = registry.find_by_tags(["evaluation"])
+        skills_used = []
+        for skill in eval_skills:
+            meta = skill.meta()
+            try:
+                # Rule-based skills can run without a model router
+                skill_result = await skill.execute({"text": req.text}, model_router=None)
+                results[f"skill_{meta.name}"] = skill_result
+                skills_used.append(meta.name)
+            except Exception:
+                # Skip skills that need LLM (no router provided)
+                pass
+        results["skills_used"] = skills_used
+    except Exception as e:
+        logger.debug("Skill-based evaluation skipped: %s", e)
+
     # Compute summary
     score = max(0, 100 - len(results["issues"]) * 8)
     results["score"] = score
@@ -96,24 +119,23 @@ def analyze_text(req: EvalTextRequest):
 
 
 @router.post("/consistency")
-def check_consistency(req: ConsistencyCheckRequest):
+async def check_consistency(req: ConsistencyCheckRequest):
     """Check text against world rules and character constraints."""
     try:
         from agents.evaluation.consistency_checker import ConsistencyChecker
-        from agents.model_router import ModelRouter
+        from models.router import ModelRouter
         router_inst = ModelRouter()
         checker = ConsistencyChecker(router_inst, project_id=req.project_id)
         # For now, do a basic rule-based check
         violations = []
-        text_lower = req.text.lower()
         for rule in req.world_rules:
             # Simple keyword check
-            if "不能" in rule or "禁止" in rule:
-                key_parts = rule.replace("不能", "").replace("禁止", "").strip()
+            if "\u4e0d\u80fd" in rule or "\u7981\u6b62" in rule:
+                key_parts = rule.replace("\u4e0d\u80fd", "").replace("\u7981\u6b62", "").strip()
                 if key_parts and key_parts in req.text:
                     violations.append({
                         "rule": rule,
-                        "description": f"文本中出现了违反规则「{rule}」的内容",
+                        "description": f"\u6587\u672c\u4e2d\u51fa\u73b0\u4e86\u8fdd\u53cd\u89c4\u5219\u300c{rule}\u300d\u7684\u5185\u5bb9",
                         "severity": "high",
                     })
         return {"status": "ok", "violations": violations, "passed": len(violations) == 0}
