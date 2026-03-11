@@ -755,30 +755,55 @@ async def _run_pipeline_background(session_id: str):
                     for _real, _alias in _aliases.items():
                         _scope_constraints += f"\n  - 「{_alias}」（请始终使用此称呼，不要使用真名）"
 
-            # D2: Inject chapter-end hook constraint
-            _scope_constraints += _build_chapter_hook_constraint(_chapter_num)
+            # D2: Inject chapter-end hook constraint (non-fatal)
+            try:
+                _scope_constraints += _build_chapter_hook_constraint(_chapter_num)
+            except Exception:
+                pass
 
-            # D1: Inject shuangdian rhythm guidance
-            _shuangdian = _build_shuangdian_guidance(_chapter_num)
-            if _shuangdian:
-                _scope_constraints += _shuangdian
+            # D1: Inject shuangdian rhythm guidance (non-fatal)
+            try:
+                _shuangdian = _build_shuangdian_guidance(_chapter_num)
+                if _shuangdian:
+                    _scope_constraints += _shuangdian
+            except Exception:
+                pass
 
-            # B2: Load unresolved foreshadowing for SceneDirector awareness
-            _db_path = _get_db_path()
-            _proj_id = req_data.get("project_id", "")
-            _foreshadow_ctx = _load_unresolved_foreshadowing(_proj_id, _db_path, _chapter_num)
-
-            # Build memory context from chapter buffer if available
+            # B2: Load unresolved foreshadowing for SceneDirector awareness (non-fatal)
             _memory_ctx = ""
             try:
+                _db_path = _get_db_path()
+                _proj_id = req_data.get("project_id", "")
+                _foreshadow_ctx = _load_unresolved_foreshadowing(_proj_id, _db_path, _chapter_num)
+                if _foreshadow_ctx:
+                    _memory_ctx += f"\n\n{_foreshadow_ctx}"
+            except Exception:
+                pass
+
+            # Build memory context from chapter buffer if available (non-fatal)
+            try:
+                _db_path = _get_db_path()
+                _proj_id = req_data.get("project_id", "")
                 from rag.memory.manager import MemoryManager as _MM
                 _mem = _MM(db_path=_db_path)
                 _mem.set_project(_proj_id)
-                _memory_ctx = _mem.get_context_for_scene_director(_chapter_num)
+                _mem_text = _mem.get_context_for_scene_director(_chapter_num)
+                if _mem_text:
+                    _memory_ctx = _mem_text + _memory_ctx
             except Exception:
                 pass
-            if _foreshadow_ctx:
-                _memory_ctx += f"\n\n{_foreshadow_ctx}"
+
+            # Truncate constraints and memory context to prevent LLM overload
+            _MAX_CONSTRAINTS_LEN = 3000
+            _MAX_MEMORY_LEN = 4000
+            if len(_scope_constraints) > _MAX_CONSTRAINTS_LEN:
+                logger.warning("Constraints truncated: %d -> %d chars",
+                               len(_scope_constraints), _MAX_CONSTRAINTS_LEN)
+                _scope_constraints = _scope_constraints[:_MAX_CONSTRAINTS_LEN]
+            if len(_memory_ctx) > _MAX_MEMORY_LEN:
+                logger.warning("Memory context truncated: %d -> %d chars",
+                               len(_memory_ctx), _MAX_MEMORY_LEN)
+                _memory_ctx = _memory_ctx[:_MAX_MEMORY_LEN]
 
             scenes = await director.plan_scenes(
                 chapter_outline=_outline,
@@ -790,8 +815,46 @@ async def _run_pipeline_background(session_id: str):
             )
             scene_result = scenes if isinstance(scenes, dict) else {"raw": str(scenes)}
         except Exception as e:
-            logger.error("Scene director error: %s", e, exc_info=True)
-            scene_result = {"summary": f"场景规划失败：{str(e)[:200]}", "error": str(e)[:200]}
+            logger.warning("Scene director first attempt failed: %s — retrying with minimal context", e)
+            # Retry with minimal context (no memory/foreshadowing, only core constraints)
+            try:
+                _core_constraints = req_data.get("world_rules", "")
+                if _chars:
+                    _display_chars_fb = [_aliases.get(c, c) for c in _chars]
+                    _core_constraints += (
+                        f"\n\n【严格限制】本章仅有以下角色出场：{', '.join(_display_chars_fb)}。"
+                        f"\n禁止引入不在上述列表中的角色。"
+                    )
+                scenes = await director.plan_scenes(
+                    chapter_outline=_outline,
+                    chapter_num=_chapter_num,
+                    memory_context="",
+                    world_rules="",
+                    character_cards=_char_cards_str,
+                    constraints=_core_constraints,
+                )
+                scene_result = scenes if isinstance(scenes, dict) else {"raw": str(scenes)}
+                scene_result["_retried"] = True
+                logger.info("Scene director retry succeeded")
+            except Exception as e2:
+                logger.error("Scene director retry also failed: %s", e2, exc_info=True)
+                # Build a proper fallback scene plan from the original synopsis
+                _display_characters = [_aliases.get(c, c) for c in _chars] if _aliases else _chars
+                scene_result = {
+                    "scenes": [{
+                        "scene_index": 0,
+                        "location": req_data.get("location", ""),
+                        "time": req_data.get("time_setting", ""),
+                        "characters": _display_characters,
+                        "summary": req_data.get("synopsis", "")[:500],
+                        "beats": [req_data.get("synopsis", "")[:200]],
+                        "character_instructions": {},
+                        "narrator_instructions": "",
+                    }],
+                    "chapter_arc": "",
+                    "_fallback": True,
+                    "_error": str(e2)[:200],
+                }
         scene_prompt = json.dumps({
             "chapter_outline": req_data.get("synopsis", "")[:500],
             "world_rules": req_data.get("world_rules", "")[:300],
@@ -803,9 +866,13 @@ async def _run_pipeline_background(session_id: str):
 
         # Simplified handoff — no raw content dump
         _num_scenes = len(scene_result.get("scenes", [])) if isinstance(scene_result, dict) else 0
+        _is_fallback = scene_result.get("_fallback", False) if isinstance(scene_result, dict) else False
+        _handoff_msg = f"场景拆分完成（{_num_scenes} 个场景），将传递给角色演员进行表演。"
+        if _is_fallback:
+            _handoff_msg = f"场景规划降级为单场景模式（原因：{scene_result.get('_error', '未知')}），将基于章节大纲继续生成。"
         _emit(session_id, {
             "type": "handoff", "from": "Scene Director", "to": "Actor Agents",
-            "content": f"场景拆分完成（{_num_scenes} 个场景），将传递给角色演员进行表演。",
+            "content": _handoff_msg,
         })
 
         confirm = await _wait_for_confirm_bg(session_id, "scene_director", "场景拆分完成，是否继续生成？")
@@ -1667,20 +1734,57 @@ async def _run_batch_pipeline(session_id: str):
                 # Step 2: SceneDirector
                 from agents.production.scene_director import SceneDirector
                 director = SceneDirector(router_inst, project_id=project_id)
-                constraints = req_data.get("world_rules", "")
-                constraints += _build_chapter_hook_constraint(chapter_num)
-                constraints += _build_shuangdian_guidance(chapter_num)
-                foreshadow_ctx = _load_unresolved_foreshadowing(project_id, db_path, chapter_num)
-                memory_ctx = memory.get_context_for_scene_director(chapter_num)
-                if foreshadow_ctx:
-                    memory_ctx += f"\n\n{foreshadow_ctx}"
+                _batch_constraints = req_data.get("world_rules", "")
+                try:
+                    _batch_constraints += _build_chapter_hook_constraint(chapter_num)
+                    _batch_constraints += _build_shuangdian_guidance(chapter_num)
+                except Exception:
+                    pass
+                _batch_memory_ctx = ""
+                try:
+                    foreshadow_ctx = _load_unresolved_foreshadowing(project_id, db_path, chapter_num)
+                    _batch_memory_ctx = memory.get_context_for_scene_director(chapter_num)
+                    if foreshadow_ctx:
+                        _batch_memory_ctx += f"\n\n{foreshadow_ctx}"
+                except Exception:
+                    pass
+                # Truncate to prevent overload
+                if len(_batch_constraints) > 3000:
+                    _batch_constraints = _batch_constraints[:3000]
+                if len(_batch_memory_ctx) > 4000:
+                    _batch_memory_ctx = _batch_memory_ctx[:4000]
 
-                scene_result = await director.plan_scenes(
-                    chapter_outline=synopsis,
-                    chapter_num=chapter_num,
-                    memory_context=memory_ctx,
-                    constraints=constraints,
-                )
+                try:
+                    scene_result = await director.plan_scenes(
+                        chapter_outline=synopsis,
+                        chapter_num=chapter_num,
+                        memory_context=_batch_memory_ctx,
+                        constraints=_batch_constraints,
+                    )
+                except Exception as sd_err:
+                    logger.warning("Batch scene director failed for ch%d: %s — retrying minimal", chapter_num, sd_err)
+                    try:
+                        scene_result = await director.plan_scenes(
+                            chapter_outline=synopsis,
+                            chapter_num=chapter_num,
+                            memory_context="",
+                            constraints=req_data.get("world_rules", ""),
+                        )
+                    except Exception as sd_err2:
+                        logger.error("Batch scene director retry failed for ch%d: %s", chapter_num, sd_err2)
+                        scene_result = {
+                            "scenes": [{
+                                "scene_index": 0,
+                                "location": "",
+                                "time": "",
+                                "characters": characters,
+                                "summary": synopsis[:500],
+                                "beats": [synopsis[:200]],
+                                "character_instructions": {},
+                                "narrator_instructions": "",
+                            }],
+                            "chapter_arc": "",
+                        }
 
                 # Step 3: SceneSimulator
                 from agents.production.scene_simulator import SceneSimulator
