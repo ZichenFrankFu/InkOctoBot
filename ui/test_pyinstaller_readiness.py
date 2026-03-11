@@ -149,7 +149,7 @@ def level1_paths():
         R.warn("前端 assets/ 目录为空或不存在", str(assets_dir))
 
     # 1.4 Python 包目录有 __init__.py
-    packages = ["spiders", "database", "tasks", "analysis",
+    packages = ["database", "tasks", "analysis",
                  "ui", "ui/backend", "ui/backend/app", "ui/backend/app/routers"]
     for pkg in packages:
         init_file = PROJECT_ROOT / pkg.replace("/", os.sep) / "__init__.py"
@@ -178,12 +178,6 @@ def level2_imports():
         ("config",                              "config.py"),
         ("database.db_schema",                  "database/db_schema.py"),
         ("database.db_handler",                 "database/db_handler.py"),
-        ("spiders.antibot",                     "spiders/antibot.py"),
-        ("spiders.base_spider",                 "spiders/base_spider.py"),
-        ("spiders.qidian_spider",               "spiders/qidian_spider.py"),
-        ("spiders.fanqie_spider",               "spiders/fanqie_spider.py"),
-        ("spiders.fanqie_font_decoder",         "spiders/fanqie_font_decoder.py"),
-        ("tasks.run_spiders_once",              "tasks/run_spiders_once.py"),
         ("ui.backend.app.main",                 "ui/backend/app/main.py"),
         ("ui.backend.app.settings",             "ui/backend/app/settings.py"),
         ("ui.backend.app.runner",               "ui/backend/app/runner.py"),
@@ -238,12 +232,12 @@ def level2_imports():
     except ImportError:
         R.fail("import webview (pywebview)", "pip install pywebview — launcher.py 必需")
 
-    # 2.4 可选：undetected_chromedriver
+    # 2.4 可选：undetected_chromedriver（仅外部 crawler repo 需要）
     try:
         import undetected_chromedriver
         R.ok("import undetected_chromedriver")
     except ImportError:
-        R.warn("import undetected_chromedriver", "爬虫模块需要，但打包测试可以暂时跳过")
+        R.warn("import undetected_chromedriver", "外部 crawler 仓库可能需要，当前仓库可跳过")
 
 
 # ==================================================================
@@ -286,6 +280,18 @@ def level3_config():
             R.warn("DATABASE 目录尚不存在（首次运行会自动创建）", str(db_p.parent))
     else:
         R.fail("config.DATABASE['path'] 为空")
+
+    crawler_db_cfg = getattr(config, "CRAWLER_DATABASE", {}) or {}
+    crawler_db_path = crawler_db_cfg.get("path", "")
+    _print(f"  config.CRAWLER_DATABASE['path'] = {crawler_db_path}")
+    if crawler_db_path:
+        crawler_db_p = Path(crawler_db_path)
+        if crawler_db_p.parent.exists():
+            R.ok("CRAWLER_DATABASE 目录存在", str(crawler_db_p.parent))
+        else:
+            R.warn("CRAWLER_DATABASE 目录尚不存在（首次运行会自动创建）", str(crawler_db_p.parent))
+    else:
+        R.warn("config.CRAWLER_DATABASE['path'] 未设置", "将回退到 DATABASE['path']")
 
     # 3.3 OUTPUT_PATHS
     out_paths = getattr(config, "OUTPUT_PATHS", {}) or {}

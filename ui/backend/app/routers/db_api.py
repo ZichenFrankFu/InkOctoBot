@@ -2,13 +2,13 @@ from __future__ import annotations
 import sqlite3
 from fastapi import APIRouter, HTTPException, Query
 from ..settings import settings
-from ..utils import load_repo_config, get_db_path
+from ..utils import load_repo_config, get_crawler_db_path
 
 router = APIRouter(prefix="/db", tags=["db"])
 
 def _get_con():
     repo_cfg = load_repo_config(settings.repo_root)
-    db_path = get_db_path(repo_cfg, settings.repo_root)
+    db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
     con = sqlite3.connect(db_path); con.row_factory = sqlite3.Row; return con
 
 @router.get("/overview")
@@ -85,7 +85,7 @@ def tag_stats(platform: str | None = None, limit: int = Query(default=30, ge=1, 
 @router.get("/info")
 def db_info():
     repo_cfg = load_repo_config(settings.repo_root)
-    return {"db_path": get_db_path(repo_cfg, settings.repo_root)}
+    return {"db_path": get_crawler_db_path(repo_cfg, settings.repo_root)}
 
 @router.get("/tables")
 def list_tables():

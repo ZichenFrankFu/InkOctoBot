@@ -19,14 +19,11 @@ a = Analysis(
         ("config.py", "."),
 
         # ---- 所有 Python 源码包（PyInstaller 不一定能自动发现动态 import）----
-        ("spiders", "spiders"),
         ("database", "database"),
         ("tasks", "tasks"),
         ("analysis", "analysis"),
         ("ui/backend", "ui/backend"),
 
-        # ---- 字体解码数据（如果有额外数据文件）----
-        # ("spiders/fanqie_font_data.json", "spiders"),
     ],
     hiddenimports=[
         # FastAPI / Uvicorn 相关
@@ -52,12 +49,6 @@ a = Analysis(
         "ui.backend.app.runner",
         "ui.backend.app.utils",
 
-        # 爬虫模块（被 tasks_api 通过 subprocess 调用，但 config.py 会 import）
-        "spiders.qidian_spider",
-        "spiders.fanqie_spider",
-        "spiders.base_spider",
-        "spiders.antibot",
-        "spiders.fanqie_font_decoder",
         "database.db_handler",
         "database.db_schema",
 
@@ -88,12 +79,6 @@ a = Analysis(
         # pywebview
         "webview",
 
-        # undetected_chromedriver
-        "undetected_chromedriver",
-
-        # fonttools (番茄字体解码)
-        "fontTools",
-        "fontTools.ttLib",
     ],
     hookspath=[],
     hooksconfig={},

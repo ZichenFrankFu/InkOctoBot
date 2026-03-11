@@ -329,7 +329,7 @@ InkOctoBot/
 ├── InkOctoBot.spec                      # PyInstaller 打包配置
 ├── launcher.py                          # GUI 桌面入口
 ├── log_setup.py                         # 全局日志配置
-├── main.py                              # CLI 主入口 (爬虫 + 分析 + 创作子命令)
+├── main.py                              # CLI 主入口（crawler 数据接入信息）
 ├── QUICKSTART.md                        # 快速启动指南
 ├── README.md                            # 项目说明
 ├── requirements.txt                     # Python 依赖
@@ -484,21 +484,11 @@ InkOctoBot/
 │   ├── api_key_manager.py               # API key 加密存储 (OS keyring + Fernet)
 │   └── data_isolation.py                # 项目级数据隔离 + 一键清理
 │
-├── spiders/                             # 网站爬虫模块(后续拆封成另外一个project)
-│   ├── antibot.py                       # 反爬检测与规避控制
-│   ├── base_spider.py                   # 爬虫基类 (Selenium/requests 封装)
-│   ├── fanqie_font_decoder.py           # 番茄字体解密模块
-│   ├── fanqie_spider.py                 # 番茄小说爬虫
-│   └── qidian_spider.py                 # 起点中文网爬虫
-│
-├── tasks/                               # 任务调度
-│   ├── run_spiders_once.py              # 单次全平台爬取任务
-│   └── scheduler.py                     # 定时任务调度器
+├── tasks/                               # 任务与后台作业
+│   └── __init__.py
 │
 ├── tests/                               # 测试套件
 │   ├── base_test.py                     # 测试基类 + 通用工具
-│   ├── fanqie_test.py                   # 番茄爬虫测试
-│   ├── qidian_test.py                   # 起点爬虫测试
 │   └── TEST.md                          # 测试文档
 │
 └── ui/                                  # 用户界面

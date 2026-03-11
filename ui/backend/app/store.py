@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List
 @dataclass
 class Task:
     task_id: str
-    task_type: str              # "spider"
+    task_type: str              # "crawler_import" | "analysis" | ...
     status: str                 # "queued"|"running"|"succeeded"|"failed"
     created_at: float
     started_at: Optional[float] = None
