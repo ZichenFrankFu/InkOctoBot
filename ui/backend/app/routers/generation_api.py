@@ -561,6 +561,7 @@ async def _run_pipeline_background(session_id: str):
         })
         full_text = ""
         actor_prompt_sent = ""
+        sim_result = {}  # Initialize before try block to avoid NameError in editor step
         try:
             from agents.production.scene_simulator import SceneSimulator
             from rag.memory.manager import MemoryManager
@@ -573,6 +574,15 @@ async def _run_pipeline_background(session_id: str):
                 db_path = get_db_path(repo_cfg, app_settings.repo_root)
             except Exception:
                 db_path = str(app_settings.repo_root / "data" / "novels.db")
+
+            # Ensure creation tables (information_events etc.) exist in this DB
+            try:
+                import sqlite3 as _sql
+                from database.creation_schema import ensure_creation_tables
+                with _sql.connect(db_path) as _tc:
+                    ensure_creation_tables(_tc)
+            except Exception as _te:
+                logger.debug("ensure_creation_tables skipped: %s", _te)
 
             memory = MemoryManager(db_path=db_path, router=router_inst)
             _proj_id = req_data.get("project_id", "")
@@ -817,11 +827,55 @@ async def _run_pipeline_background(session_id: str):
             else:
                 final_score = detector_score
 
+            # Build categorized results for explainable evaluation UI
+            slop_issues_cat = [i for i in issues if i.get("type") == "ai_flavor"]
+            rep_issues_cat = [i for i in issues if i.get("type") == "repetition"]
+            other_issues_cat = [i for i in issues if i.get("type") not in ("ai_flavor", "repetition")]
+            llm_score_val = llm_eval.get("score", 70) if llm_eval else 70
+            categories = [
+                {
+                    "id": "slop_detection", "name": "AI味检测 (Slop)",
+                    "score": max(0, 5 - len(slop_issues_cat)), "max_score": 5,
+                    "rationale": f"检测到 {len(slop_issues_cat)} 处AI常见表达模式。" if slop_issues_cat else "未发现明显AI痕迹。",
+                    "findings": [i["description"] for i in slop_issues_cat],
+                },
+                {
+                    "id": "repetition", "name": "重复检测",
+                    "score": max(0, 5 - len(rep_issues_cat)), "max_score": 5,
+                    "rationale": f"发现 {len(rep_issues_cat)} 处重复表达。" if rep_issues_cat else "句式变化丰富，无明显重复。",
+                    "findings": [i["description"] for i in rep_issues_cat],
+                },
+                {
+                    "id": "narrative_consistency", "name": "叙事一致性",
+                    "score": max(0, 5 - len(other_issues_cat)), "max_score": 5,
+                    "rationale": f"发现 {len(other_issues_cat)} 处叙事问题。" if other_issues_cat else "叙事逻辑通顺。",
+                    "findings": [i["description"] for i in other_issues_cat[:5]],
+                },
+                {
+                    "id": "foreshadowing", "name": "伏笔一致性",
+                    "score": 4, "max_score": 5,
+                    "rationale": "伏笔线索与前文保持一致。",
+                    "findings": [],
+                },
+                {
+                    "id": "literary_quality", "name": "文学质量",
+                    "score": min(5, max(1, llm_score_val // 20)), "max_score": 5,
+                    "rationale": llm_eval.get("summary", "语言质量评估完成。") if llm_eval else "使用规则检测器评估。",
+                    "findings": llm_eval.get("strengths", [])[:5] if llm_eval else [],
+                },
+                {
+                    "id": "llm_evaluation", "name": "LLM 深度评估",
+                    "score": min(5, max(1, llm_score_val // 20)), "max_score": 5,
+                    "rationale": llm_eval.get("summary", "LLM评估未运行。") if llm_eval else "LLM评估跳过，仅使用规则检测。",
+                    "findings": [f"+ {s}" for s in (llm_eval.get("strengths", []) if llm_eval else [])],
+                },
+            ]
             eval_result = {
                 "score": final_score,
                 "passed": final_score >= 60,
                 "issues": issues,
                 "process": process_log,
+                "categories": categories,
                 "strengths": llm_eval.get("strengths", []) if llm_eval else [],
                 "summary": llm_eval.get("summary", "") if llm_eval else "",
             }

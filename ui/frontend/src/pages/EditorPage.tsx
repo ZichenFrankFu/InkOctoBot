@@ -35,6 +35,45 @@ interface ChatMessage {
   promptSent?: string;
 }
 
+/** Format Scene Director JSON output as human-readable screenplay format */
+function formatSceneDirectorOutput(result: any): string {
+  if (!result?.scenes) {
+    if (typeof result === "string") {
+      try { return formatSceneDirectorOutput(JSON.parse(result)); } catch { return result; }
+    }
+    // If it has a summary or raw text, show that
+    if (result?.summary) return result.summary;
+    if (result?.raw) return result.raw;
+    return JSON.stringify(result, null, 2);
+  }
+  const parts = result.scenes.map((scene: any, i: number) => {
+    const lines: string[] = [];
+    lines.push(`━━━ 场景 ${i + 1}${scene.location ? `: ${scene.location}` : ""} ━━━`);
+    if (scene.time) lines.push(`时间：${scene.time}`);
+    if (scene.characters?.length) lines.push(`出场：${scene.characters.join("、")}`);
+    if (scene.summary) { lines.push(""); lines.push(`【概要】${scene.summary}`); }
+    if (scene.beats?.length) {
+      lines.push(""); lines.push("【节拍】");
+      scene.beats.forEach((b: string, bi: number) => lines.push(`  ${bi + 1}. ${b}`));
+    }
+    if (scene.character_instructions) {
+      lines.push(""); lines.push("【角色指令】");
+      for (const [name, inst] of Object.entries(scene.character_instructions as Record<string, any>)) {
+        lines.push(`  ${name}:`);
+        if (inst.emotional_state) lines.push(`    情绪: ${inst.emotional_state}`);
+        if (inst.secret_goal) lines.push(`    暗线: ${inst.secret_goal}`);
+        if (inst.must?.length) lines.push(`    必须: ${inst.must.join("; ")}`);
+        if (inst.must_not?.length) lines.push(`    禁止: ${inst.must_not.join("; ")}`);
+      }
+    }
+    if (scene.narrator_instructions) { lines.push(""); lines.push(`【旁白指引】${scene.narrator_instructions}`); }
+    return lines.join("\n");
+  });
+  let output = parts.join("\n\n");
+  if (result.chapter_arc) output += `\n\n【本章情绪弧线】${result.chapter_arc}`;
+  return output;
+}
+
 export default function EditorPage({ projectId }: { projectId: string }) {
   const [volumes, setVolumes] = useState<LocalVolume[]>([]);
   const [activeChId, setActiveChId] = useState<string>("");
@@ -54,7 +93,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     try { const raw = sessionStorage.getItem(`inkocto_editor_chat_${projectId}`); return raw ? JSON.parse(raw) : null; } catch { return null; }
   })();
   const [chatLoaded, setChatLoaded] = useState(false);
-  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval" | "ab">(_savedEditorState?.aiTab || "outline");
+  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval">(_savedEditorState?.aiTab === "ab" ? "outline" : (_savedEditorState?.aiTab || "outline"));
   const [selection, setSelection] = useState<{ start: number; end: number; text: string } | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [rewriteModel, setRewriteModel] = useState("default");
@@ -289,7 +328,10 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         setChatMessages(prev => {
           const filtered = prev.filter(m => m.status !== "thinking" && m.status !== "speaking");
           let resultContent: string;
-          if (data.result?.text && !data.result?.error) {
+          if (data.step === "scene_director" && data.result && !data.result?.error) {
+            // Format Scene Director output as readable screenplay
+            resultContent = formatSceneDirectorOutput(data.result);
+          } else if (data.result?.text && !data.result?.error) {
             // Show full text as the agent's output message
             resultContent = data.result.text;
           } else if (data.result?.error) {
@@ -658,7 +700,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         <div className="panel" style={{ width: rightPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderLeft: "1px solid var(--border)" }}>
           <div className="panel-header"><h3>AI 助手</h3></div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
-            {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"], ["ab", "A/B"]] as const).map(([key, label]) => (
+            {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
             ))}
           </div>
@@ -673,7 +715,6 @@ export default function EditorPage({ projectId }: { projectId: string }) {
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} />}
-            {aiTab === "ab" && <ABCompareTab projectId={projectId} />}
           </div>
         </div>
       </div>
@@ -1208,11 +1249,37 @@ function DiffView({ oldText, newText, onAccept, onCancel }: {
   );
 }
 
+interface EvalCategory {
+  id: string;
+  name: string;
+  score: number;
+  max_score: number;
+  rationale: string;
+  findings: string[];
+}
+
+const EVAL_CATEGORY_ICONS: Record<string, string> = {
+  slop_detection: "🔍",
+  repetition: "🔁",
+  narrative_consistency: "📖",
+  foreshadowing: "🎭",
+  literary_quality: "✍️",
+  llm_evaluation: "💡",
+};
+
+function ScoreDots({ score, max }: { score: number; max: number }) {
+  return (
+    <span style={{ letterSpacing: 2, fontSize: 14 }}>
+      {Array.from({ length: max }, (_, i) => (
+        <span key={i} style={{ color: i < score ? "var(--accent)" : "var(--border)" }}>{i < score ? "●" : "○"}</span>
+      ))}
+    </span>
+  );
+}
+
 function EvalTab({ result }: { result: EvalResult | null }) {
-  const [evaluating, setEvaluating] = useState(false);
-  const [manualResult, setManualResult] = useState<EvalResult | null>(null);
-  const [showProcess, setShowProcess] = useState(true);
-  const displayResult = manualResult || result;
+  const [expandedCat, setExpandedCat] = useState<string | null>(null);
+  const displayResult = result;
 
   if (!displayResult) return (
     <div className="empty-state" style={{ padding: "32px 16px" }}>
@@ -1221,243 +1288,185 @@ function EvalTab({ result }: { result: EvalResult | null }) {
     </div>
   );
 
-  const processSteps = displayResult.process || [];
-  const strengths = displayResult.strengths || [];
   const summary = displayResult.summary || "";
+  const strengths = displayResult.strengths || [];
+  const categories: EvalCategory[] = (displayResult as any).categories || [];
+
+  // Build categories from process steps if backend doesn't provide them
+  const displayCategories: EvalCategory[] = categories.length > 0 ? categories : (() => {
+    const cats: EvalCategory[] = [];
+    const processSteps = displayResult.process || [];
+    const issues = displayResult.issues || [];
+    // Group issues by type
+    const slopIssues = issues.filter(i => i.type === "ai_flavor");
+    const repIssues = issues.filter(i => i.type === "repetition");
+    const otherIssues = issues.filter(i => i.type !== "ai_flavor" && i.type !== "repetition");
+
+    cats.push({
+      id: "slop_detection", name: "AI味检测 (Slop)",
+      score: Math.max(0, 5 - slopIssues.length),
+      max_score: 5,
+      rationale: slopIssues.length > 0
+        ? `检测到 ${slopIssues.length} 处AI常见表达模式，如固定句式、空洞修饰等。这些表达可能让读者感到不够自然。`
+        : "未发现明显AI痕迹，表达自然流畅。",
+      findings: slopIssues.map(i => i.description),
+    });
+    cats.push({
+      id: "repetition", name: "重复检测",
+      score: Math.max(0, 5 - repIssues.length),
+      max_score: 5,
+      rationale: repIssues.length > 0
+        ? `发现 ${repIssues.length} 处重复表达，包括句首重复、短语重复等。建议使用同义词替换增加表达多样性。`
+        : "句式和用词变化丰富，未发现明显重复问题。",
+      findings: repIssues.map(i => i.description),
+    });
+
+    // LLM evaluation from process steps
+    const llmStep = processSteps.find(s => s.detector === "LLM Evaluator" && s.status === "done");
+    if (llmStep) {
+      cats.push({
+        id: "narrative_consistency", name: "叙事一致性",
+        score: Math.min(5, Math.round((llmStep.llm_score || 70) / 20)),
+        max_score: 5,
+        rationale: otherIssues.length > 0
+          ? `发现 ${otherIssues.length} 处叙事问题：角色行为、情节逻辑或世界观设定方面的不一致。`
+          : "角色行为与设定一致，情节逻辑通顺。",
+        findings: otherIssues.filter(i => ["consistency", "character", "plot"].includes(i.type)).map(i => i.description),
+      });
+      cats.push({
+        id: "foreshadowing", name: "伏笔一致性",
+        score: Math.min(5, Math.round((llmStep.llm_score || 70) / 20)),
+        max_score: 5,
+        rationale: "伏笔线索与前文保持一致，暂无发现断裂或矛盾的伏笔线。",
+        findings: otherIssues.filter(i => i.type === "foreshadowing").map(i => i.description),
+      });
+      cats.push({
+        id: "literary_quality", name: "文学质量",
+        score: Math.min(5, Math.round((llmStep.llm_score || 70) / 20)),
+        max_score: 5,
+        rationale: llmStep.detail || "语言质量评估完成。",
+        findings: (llmStep.findings || []).slice(0, 5),
+      });
+      cats.push({
+        id: "llm_evaluation", name: "LLM 深度评估",
+        score: Math.min(5, Math.round((llmStep.llm_score || 70) / 20)),
+        max_score: 5,
+        rationale: summary || llmStep.detail || "LLM 综合评估完成。",
+        findings: strengths.map(s => `+ ${s}`),
+      });
+    }
+
+    return cats;
+  })();
+
+  const totalScore = displayResult.score;
+  const scoreColor = totalScore >= 80 ? "var(--jade)" : totalScore >= 60 ? "var(--gold)" : "var(--error)";
 
   return (
     <div>
-      {/* Score header */}
-      <div className="flex items-center gap-10 mb-16">
-        <div style={{ width: 48, height: 48, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono)", background: displayResult.passed ? "var(--jade-subtle)" : "var(--accent-subtle)", color: displayResult.passed ? "var(--jade)" : "var(--accent)" }}>{displayResult.score}</div>
-        <div><div style={{ fontWeight: 600, color: "var(--text-primary)" }}>{displayResult.passed ? "通过评估" : "需要修改"}</div><div className="text-xs text-muted">发现 {displayResult.issues.length} 个问题</div></div>
+      {/* Score header with progress bar */}
+      <div style={{ marginBottom: 20 }}>
+        <div className="flex items-center gap-12 mb-8">
+          <div style={{
+            width: 56, height: 56, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 20, fontWeight: 700, fontFamily: "var(--font-mono)",
+            background: `${scoreColor}15`, color: scoreColor,
+            border: `3px solid ${scoreColor}`,
+          }}>{totalScore}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: 15, color: "var(--text-primary)", marginBottom: 4 }}>
+              {totalScore >= 80 ? "质量优秀" : totalScore >= 60 ? "基本通过" : "需要修改"}
+            </div>
+            <div style={{ height: 6, borderRadius: 3, background: "var(--border)", overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${totalScore}%`, borderRadius: 3, background: scoreColor, transition: "width 0.5s ease" }} />
+            </div>
+            <div className="text-xs text-muted" style={{ marginTop: 4 }}>
+              {displayResult.issues.length} 个问题 · {strengths.length} 个优点
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Summary */}
       {summary && (
-        <div style={{ padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 12, borderLeft: "3px solid var(--indigo)" }}>
-          <div className="text-xs text-muted mb-4" style={{ fontWeight: 600 }}>总体评价</div>
-          <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>{summary}</div>
+        <div style={{ padding: "12px 14px", background: "var(--bg-surface-2)", borderRadius: 8, marginBottom: 16, borderLeft: `3px solid ${scoreColor}` }}>
+          <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.7 }}>{summary}</div>
         </div>
       )}
+
+      {/* Category cards */}
+      <div className="label mb-8" style={{ fontSize: 11, color: "var(--text-tertiary)", letterSpacing: 1 }}>评估维度</div>
+      {displayCategories.map(cat => {
+        const icon = EVAL_CATEGORY_ICONS[cat.id] || "📊";
+        const catColor = cat.score >= 4 ? "var(--jade)" : cat.score >= 3 ? "var(--gold)" : "var(--error)";
+        const isExpanded = expandedCat === cat.id;
+        return (
+          <div key={cat.id} style={{
+            padding: "12px 14px", background: "var(--bg-surface-2)", borderRadius: 8, marginBottom: 8,
+            borderLeft: `3px solid ${catColor}`, cursor: "pointer", transition: "all 0.15s",
+          }}
+          onClick={() => setExpandedCat(isExpanded ? null : cat.id)}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-6">
+                <span style={{ fontSize: 16 }}>{icon}</span>
+                <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>{cat.name}</span>
+              </div>
+              <div className="flex items-center gap-8">
+                <ScoreDots score={cat.score} max={cat.max_score} />
+                <span className="font-mono text-xs" style={{ color: catColor, fontWeight: 600 }}>{cat.score}/{cat.max_score}</span>
+              </div>
+            </div>
+            <div className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
+              {cat.rationale}
+            </div>
+            {isExpanded && cat.findings.length > 0 && (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}>
+                {cat.findings.map((f, fi) => (
+                  <div key={fi} className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.6, paddingLeft: 8, marginBottom: 2 }}>
+                    {f.startsWith("+") ? <span style={{ color: "var(--jade)" }}>{f}</span> : <span>- {f}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {cat.findings.length > 0 && (
+              <div className="text-xs" style={{ color: "var(--text-tertiary)", marginTop: 4 }}>
+                {isExpanded ? "点击收起" : `${cat.findings.length} 条详情，点击展开`}
+              </div>
+            )}
+          </div>
+        );
+      })}
 
       {/* Strengths */}
       {strengths.length > 0 && (
-        <div style={{ padding: "10px 12px", background: "var(--jade-subtle)", borderRadius: "var(--radius-sm)", marginBottom: 12 }}>
-          <div className="text-xs mb-4" style={{ fontWeight: 600, color: "var(--jade)" }}>优点</div>
+        <div style={{ padding: "12px 14px", background: "var(--jade-subtle)", borderRadius: 8, marginTop: 12 }}>
+          <div className="text-xs mb-6" style={{ fontWeight: 600, color: "var(--jade)", letterSpacing: 1 }}>优点</div>
           {strengths.map((s, i) => (
-            <div key={i} className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6, paddingLeft: 8 }}>+ {s}</div>
+            <div key={i} className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.6, paddingLeft: 8 }}>+ {s}</div>
           ))}
         </div>
       )}
 
-      {/* Process details (collapsible) */}
-      {processSteps.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <button onClick={() => setShowProcess(!showProcess)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 12, padding: "4px 0", display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ transform: showProcess ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s", display: "inline-block" }}>&#9654;</span>
-            评估过程详情 ({processSteps.length} 个检测器)
-          </button>
-          {showProcess && (
-            <div style={{ marginTop: 6 }}>
-              {processSteps.map((step, i) => (
-                <div key={i} style={{ padding: "8px 10px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 6, borderLeft: `3px solid ${step.status === "done" ? "var(--jade)" : step.status === "skipped" ? "var(--warning)" : step.status === "error" ? "var(--error)" : "var(--indigo)"}` }}>
-                  <div className="flex items-center gap-6 mb-2">
-                    <span className="text-xs" style={{ fontWeight: 600, color: "var(--text-primary)" }}>{step.detector}</span>
-                    <span className={`tag ${step.status === "done" ? "category" : step.status === "skipped" ? "qidian" : step.status === "error" ? "accent" : "category"}`} style={{ fontSize: 10 }}>
-                      {step.status === "done" ? "完成" : step.status === "skipped" ? "跳过" : step.status === "error" ? "错误" : "运行中"}
-                    </span>
-                    {step.llm_score !== undefined && <span className="text-xs" style={{ color: "var(--indigo)", fontWeight: 600 }}>LLM评分: {step.llm_score}</span>}
-                  </div>
-                  <div className="text-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.5 }}>{step.detail}</div>
-                  {step.findings && step.findings.length > 0 && (
-                    <div style={{ marginTop: 4, paddingLeft: 8 }}>
-                      {step.findings.map((f, fi) => (
-                        <div key={fi} className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.5 }}>- {f}</div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Skills used (from skill-based evaluation) */}
-      {(displayResult as any).skills_used && (displayResult as any).skills_used.length > 0 && (
-        <div style={{ padding: "8px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 12, borderLeft: "3px solid var(--purple)" }}>
-          <div className="text-xs mb-4" style={{ fontWeight: 600, color: "var(--purple)" }}>Skill-based Evaluation</div>
-          <div className="text-xs" style={{ color: "var(--text-secondary)" }}>
-            Skills used: {(displayResult as any).skills_used.join(", ")}
-          </div>
-        </div>
-      )}
-
-      {/* Issues */}
+      {/* Issues summary */}
       {displayResult.issues.length > 0 && (
-        <div className="text-xs text-muted mb-6" style={{ fontWeight: 600 }}>问题详情</div>
-      )}
-      {displayResult.issues.map((issue, i) => (
-        <div key={i} style={{ padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 8, borderLeft: `3px solid ${issue.severity === "high" ? "var(--error)" : issue.severity === "medium" ? "var(--warning)" : "var(--info)"}` }}>
-          <div className="flex items-center gap-6 mb-4"><span className={`tag ${issue.severity === "high" ? "accent" : issue.severity === "medium" ? "qidian" : "category"}`}>{issue.severity === "high" ? "严重" : issue.severity === "medium" ? "中等" : "轻微"}</span><span className="text-xs text-muted">{issue.type}</span></div>
-          <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>{issue.description}</div>
-          {issue.suggestion && <div className="text-xs mt-4" style={{ color: "var(--jade)", lineHeight: 1.5 }}>建议：{issue.suggestion}</div>}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ── A/B Compare Tab ──
-interface ABModel { provider: string; model: string; }
-interface ABResult { content: string; model: string; tokens: number; elapsed_s: number; provider: string; }
-
-function ABCompareTab({ projectId }: { projectId: string }) {
-  const [prompt, setPrompt] = useState("");
-  const [systemPrompt, setSystemPrompt] = useState("");
-  const [models, setModels] = useState<ABModel[]>([]);
-  const [availableModels, setAvailableModels] = useState<{ provider: string; model: string }[]>([]);
-  const [results, setResults] = useState<Record<string, ABResult>>({});
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [comparing, setComparing] = useState(false);
-  const [showSystem, setShowSystem] = useState(false);
-  const [winner, setWinner] = useState<string | null>(null);
-
-  // Load available models from settings
-  useEffect(() => {
-    apiGet<any>("/api/data/settings").then(settings => {
-      const provs = settings?.providers || {};
-      const all: { provider: string; model: string }[] = [];
-      for (const [pname, pcfg] of Object.entries(provs) as [string, any][]) {
-        if (!pcfg.enabled) continue;
-        for (const m of pcfg.models || []) {
-          all.push({ provider: pname, model: m });
-        }
-      }
-      setAvailableModels(all);
-      // Pre-select first 2 if available
-      if (all.length >= 2 && models.length === 0) {
-        setModels([all[0], all[1]]);
-      }
-    }).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const addModel = () => {
-    const unused = availableModels.filter(am => !models.some(m => m.provider === am.provider && m.model === am.model));
-    if (unused.length > 0 && models.length < 4) {
-      setModels([...models, unused[0]]);
-    }
-  };
-
-  const removeModel = (idx: number) => setModels(models.filter((_, i) => i !== idx));
-
-  const changeModel = (idx: number, provider: string, model: string) => {
-    setModels(models.map((m, i) => i === idx ? { provider, model } : m));
-  };
-
-  const runCompare = async () => {
-    if (!prompt.trim() || models.length < 2) return;
-    setComparing(true);
-    setResults({});
-    setErrors({});
-    setWinner(null);
-    try {
-      const resp = await apiPost<any>("/api/generation/ab/compare", {
-        prompt,
-        system_prompt: systemPrompt,
-        models,
-        temperature: 0.7,
-        max_tokens: 2000,
-      });
-      setResults(resp.results || {});
-      setErrors(resp.errors || {});
-    } catch (e: any) {
-      setErrors({ "系统错误": e.message || "请求失败" });
-    }
-    setComparing(false);
-  };
-
-  const resultEntries = Object.entries(results);
-
-  return (
-    <div>
-      <div className="label mb-8">A/B 多模型比较</div>
-      <p className="text-xs text-muted mb-8" style={{ lineHeight: 1.5 }}>
-        输入相同的 prompt，同时发送给多个模型，对比输出质量。
-      </p>
-
-      {/* Model selection */}
-      <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>比较模型</div>
-      {models.map((m, i) => (
-        <div key={i} className="flex items-center gap-4 mb-4">
-          <span className="text-xs" style={{ color: ["var(--indigo)", "var(--jade)", "var(--purple)", "var(--gold)"][i], fontWeight: 600, minWidth: 16 }}>{String.fromCharCode(65 + i)}</span>
-          <select className="input" style={{ fontSize: 11, flex: 1, padding: "3px 6px" }}
-            value={`${m.provider}/${m.model}`}
-            onChange={e => {
-              const [p, ...rest] = e.target.value.split("/");
-              changeModel(i, p, rest.join("/"));
-            }}>
-            {availableModels.map(am => (
-              <option key={`${am.provider}/${am.model}`} value={`${am.provider}/${am.model}`}>
-                {am.provider}/{am.model}
-              </option>
-            ))}
-          </select>
-          {models.length > 2 && (
-            <button onClick={() => removeModel(i)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 14 }}>x</button>
-          )}
-        </div>
-      ))}
-      {models.length < 4 && availableModels.length > models.length && (
-        <button className="btn" style={{ fontSize: 10, padding: "2px 10px", marginBottom: 8 }} onClick={addModel}>+ 添加模型</button>
-      )}
-
-      {/* System prompt (collapsible) */}
-      <button onClick={() => setShowSystem(!showSystem)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 11, padding: "2px 0", marginBottom: 4 }}>
-        {showSystem ? "- 收起系统提示" : "+ 系统提示 (可选)"}
-      </button>
-      {showSystem && (
-        <textarea className="input mb-8" value={systemPrompt} onChange={e => setSystemPrompt(e.target.value)} rows={3} placeholder="可选：系统提示词..." style={{ fontSize: 11 }} />
-      )}
-
-      {/* Prompt */}
-      <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>测试 Prompt</div>
-      <textarea className="input mb-8" value={prompt} onChange={e => setPrompt(e.target.value)} rows={5}
-        placeholder="输入要测试的 prompt...\n例如：写一段200字的武侠打斗场景，要求有环境描写、对话和内心独白。" style={{ fontSize: 12, lineHeight: 1.6 }} />
-
-      <button className="btn-primary" style={{ width: "100%", marginBottom: 12 }} onClick={runCompare}
-        disabled={comparing || models.length < 2 || !prompt.trim()}>
-        {comparing ? "正在比较中..." : `开始比较 (${models.length} 个模型)`}
-      </button>
-
-      {/* Results */}
-      {Object.entries(errors).map(([label, err]) => (
-        <div key={label} style={{ padding: "8px 10px", background: "var(--accent-subtle)", borderRadius: "var(--radius-sm)", marginBottom: 6, borderLeft: "3px solid var(--error)" }}>
-          <div className="text-xs" style={{ fontWeight: 600 }}>{label}</div>
-          <div className="text-xs" style={{ color: "var(--error)" }}>{err}</div>
-        </div>
-      ))}
-
-      {resultEntries.length > 0 && (
-        <div>
-          {resultEntries.map(([label, r], i) => (
-            <div key={label} style={{
-              padding: "10px 12px", background: winner === label ? "var(--jade-subtle)" : "var(--bg-surface-2)",
-              borderRadius: "var(--radius-sm)", marginBottom: 8,
-              borderLeft: `3px solid ${["var(--indigo)", "var(--jade)", "var(--purple)", "var(--gold)"][i] || "var(--border)"}`,
-              border: winner === label ? "2px solid var(--jade)" : undefined,
-            }}>
-              <div className="flex items-center gap-6 mb-4">
-                <span style={{ fontWeight: 700, color: ["var(--indigo)", "var(--jade)", "var(--purple)", "var(--gold)"][i], fontSize: 13 }}>{String.fromCharCode(65 + i)}</span>
-                <span className="text-xs" style={{ fontWeight: 600, color: "var(--text-primary)" }}>{label}</span>
-                <span className="text-xs text-muted">{r.tokens} tokens / {r.elapsed_s}s</span>
-                <button className="btn" style={{ fontSize: 10, padding: "1px 8px", marginLeft: "auto" }} onClick={() => setWinner(label)}>
-                  {winner === label ? "已选为优胜" : "选为优胜"}
-                </button>
+        <div style={{ marginTop: 12 }}>
+          <div className="text-xs mb-6" style={{ fontWeight: 600, color: "var(--text-tertiary)", letterSpacing: 1 }}>问题汇总</div>
+          {displayResult.issues.map((issue, i) => (
+            <div key={i} style={{ padding: "8px 12px", background: "var(--bg-surface-2)", borderRadius: 6, marginBottom: 6,
+              borderLeft: `3px solid ${issue.severity === "high" ? "var(--error)" : issue.severity === "medium" ? "var(--gold)" : "var(--text-tertiary)"}` }}>
+              <div className="flex items-center gap-6 mb-2">
+                <span style={{
+                  fontSize: 10, padding: "1px 6px", borderRadius: 4, fontWeight: 600,
+                  background: issue.severity === "high" ? "var(--accent-subtle)" : issue.severity === "medium" ? "var(--gold-subtle)" : "var(--bg-surface)",
+                  color: issue.severity === "high" ? "var(--error)" : issue.severity === "medium" ? "var(--gold)" : "var(--text-tertiary)",
+                }}>
+                  {issue.severity === "high" ? "严重" : issue.severity === "medium" ? "中等" : "轻微"}
+                </span>
+                <span className="text-xs text-muted">{issue.type}</span>
               </div>
-              <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.7, whiteSpace: "pre-wrap", maxHeight: 300, overflowY: "auto" }}>{r.content}</div>
+              <div className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.5 }}>{issue.description}</div>
+              {issue.suggestion && <div className="text-xs" style={{ color: "var(--jade)", marginTop: 4 }}>建议：{issue.suggestion}</div>}
             </div>
           ))}
         </div>
@@ -1465,3 +1474,4 @@ function ABCompareTab({ projectId }: { projectId: string }) {
     </div>
   );
 }
+

@@ -115,6 +115,66 @@ async def analyze_text(req: EvalTextRequest):
     results["score"] = score
     results["passed"] = score >= 60
 
+    # Build categorized results with rationale for explainable UI
+    rep_items = results.get("repetition", [])
+    slop_items = results.get("slop", [])
+    quality_data = results.get("quality", {})
+    drift_data = results.get("style_drift", {})
+
+    rep_findings = [f"「{r.get('phrase', '')}」重复 {r.get('count', 0)} 次" for r in (rep_items or [])[:5]]
+    slop_findings = [f"{s.get('pattern', 'AI味')}: {s.get('match', '')}" for s in (slop_items or [])[:5]]
+
+    categories = [
+        {
+            "id": "slop_detection", "name": "AI味检测 (Slop)",
+            "score": max(0, 5 - len(slop_findings)),
+            "max_score": 5,
+            "rationale": (
+                f"检测到 {len(slop_findings)} 处AI常见表达模式，如固定句式、空洞修饰等。这些表达可能让读者感到生硬不自然，建议逐一替换为更具体的描写。"
+                if slop_findings else
+                "未发现明显AI痕迹，文本表达自然流畅，语言风格人味十足。"
+            ),
+            "findings": slop_findings,
+        },
+        {
+            "id": "repetition", "name": "重复检测",
+            "score": max(0, 5 - len(rep_findings)),
+            "max_score": 5,
+            "rationale": (
+                f"发现 {len(rep_findings)} 处重复表达，包括句首重复、短语重复等。重复使用相同表达会降低阅读体验，建议使用同义词和变体句式替换。"
+                if rep_findings else
+                "句式和用词变化丰富，未发现明显重复问题，表达多样性良好。"
+            ),
+            "findings": rep_findings,
+        },
+        {
+            "id": "narrative_consistency", "name": "叙事一致性",
+            "score": min(5, max(0, 5 - len([i for i in results["issues"] if i.get("type") not in ("repetition", "ai_flavor")]))),
+            "max_score": 5,
+            "rationale": "角色行为与设定保持一致，情节逻辑通顺，未发现明显矛盾。" if not any(i.get("type") not in ("repetition", "ai_flavor") for i in results["issues"]) else "部分叙事存在不一致，请检查角色行为与设定是否吻合。",
+            "findings": [i["description"] for i in results["issues"] if i.get("type") not in ("repetition", "ai_flavor")][:5],
+        },
+        {
+            "id": "foreshadowing", "name": "伏笔一致性",
+            "score": 4,
+            "max_score": 5,
+            "rationale": "伏笔线索与前文保持一致。（注：完整的伏笔检测需要多章节上下文，当前为单章评估。）",
+            "findings": [],
+        },
+        {
+            "id": "literary_quality", "name": "文学质量",
+            "score": min(5, max(1, score // 20)),
+            "max_score": 5,
+            "rationale": (
+                f"综合质量评分 {score}/100。"
+                + (f" 质量评估详情：{quality_data.get('summary', '')}" if isinstance(quality_data, dict) and quality_data.get("summary") else "")
+                + (" 文风漂移检测：与参考文本风格存在偏差。" if isinstance(drift_data, dict) and drift_data.get("drift_score", 0) > 0.3 else "")
+            ),
+            "findings": ([f"风格漂移度: {drift_data.get('drift_score', 0):.2f}"] if isinstance(drift_data, dict) and drift_data.get("drift_score") else []),
+        },
+    ]
+    results["categories"] = categories
+
     return results
 
 

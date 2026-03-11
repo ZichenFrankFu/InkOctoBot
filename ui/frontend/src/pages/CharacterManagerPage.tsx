@@ -52,12 +52,39 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   // Scroll to bottom on new messages
   useEffect(() => { charChatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [charChatMessages]);
 
-  // Persist char chat state
+  const [charChatPersisted, setCharChatPersisted] = useState(false);
+  const charChatSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Persist char chat state to sessionStorage + backend
   useEffect(() => {
     sessionStorage.setItem(CHAR_CHAT_KEY, JSON.stringify({
       messages: charChatMessages, show: showCharChat, charId: editing?.id || "",
     }));
-  }, [charChatMessages, showCharChat, editing?.id, CHAR_CHAT_KEY]);
+    // Debounced save to backend
+    if (charChatPersisted && charChatMessages.length > 0) {
+      if (charChatSaveTimer.current) clearTimeout(charChatSaveTimer.current);
+      charChatSaveTimer.current = setTimeout(() => {
+        apiPut("/api/data/chat_history", {
+          project_id: projectId || "default", scope: "character_ai",
+          messages: charChatMessages.slice(-200),
+        }).catch(() => {});
+      }, 2000);
+    }
+  }, [charChatMessages, showCharChat, editing?.id, CHAR_CHAT_KEY, charChatPersisted, projectId]);
+
+  // Load chat from backend on mount
+  useEffect(() => {
+    const pid = projectId || "default";
+    apiGet<{ messages: CharChatMsg[] }>(`/api/data/chat_history?project_id=${pid}&scope=character_ai`)
+      .then(r => {
+        if (r.messages && r.messages.length > 0 && charChatMessages.length === 0) {
+          setCharChatMessages(r.messages);
+        }
+        setCharChatPersisted(true);
+      })
+      .catch(() => setCharChatPersisted(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   // Reset chat when switching to a different character (but not on remount with same char)
   useEffect(() => {

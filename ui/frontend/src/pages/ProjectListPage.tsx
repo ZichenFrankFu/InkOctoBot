@@ -16,14 +16,6 @@ interface ChatMsg {
   timestamp: number;
 }
 
-interface Snapshot {
-  id: string;
-  label: string;
-  timestamp: number;
-  messages: ChatMsg[];
-  calibration: CalibrationState;
-}
-
 interface CalibrationState {
   tone: number;      // 0=轻松 100=严肃
   pacing: number;    // 0=快 100=慢
@@ -31,37 +23,20 @@ interface CalibrationState {
   audience: string;   // "male" | "female" | "general"
 }
 
-type StudioTab = "outline" | "characters" | "world" | "calibration";
+type StudioTab = "trending" | "brainstorm" | "calibration";
 
-const STUDIO_TABS: { key: StudioTab; label: string; icon: string }[] = [
-  { key: "outline", label: "大纲构思", icon: "📝" },
-  { key: "characters", label: "角色设计", icon: "👥" },
-  { key: "world", label: "世界观", icon: "🌐" },
-  { key: "calibration", label: "校准", icon: "🎛️" },
+const STUDIO_TABS: { key: StudioTab; label: string; icon: string; desc: string }[] = [
+  { key: "trending", label: "热门题材", icon: "🔥", desc: "浏览市场趋势" },
+  { key: "brainstorm", label: "头脑风暴", icon: "💡", desc: "AI 创意构思" },
+  { key: "calibration", label: "风格校准", icon: "🎛️", desc: "确认写作风格" },
 ];
 
-const PLACEHOLDERS: Record<StudioTab, string> = {
-  outline: "描述你的小说大纲想法...\n例：一个修仙世界中，主角意外获得上古传承...",
-  characters: "描述你想设计的角色...\n例：主角是一个性格内向但天赋极高的少年...",
-  world: "描述你的世界观设定...\n例：这个世界分为九大洲，修炼体系分为...",
-  calibration: "",
-};
-
-const AI_RESPONSES: Record<StudioTab, string[]> = {
-  outline: [
-    "这是个很有潜力的设定！让我帮你梳理一下主线：\n\n1. **起点**：主角的初始状态和触发事件\n2. **发展**：第一个转折点和能力觉醒\n3. **高潮**：核心冲突的爆发\n\n你觉得主角的核心驱动力是什么？复仇、守护、还是探索？",
-    "好的，我来帮你分析这个大纲的可行性。从商业网文的角度来看：\n\n- **爽点设计**：建议每 3-5 章一个小高潮\n- **金手指设定**：需要明确的成长体系\n- **冲突设计**：推荐「螺旋式升级」模式\n\n你想先深入哪个方面？",
-  ],
-  characters: [
-    "角色设计建议：\n\n1. **性格矛盾点**：好的角色需要内在矛盾，比如外表冷漠但内心温柔\n2. **成长弧线**：从开始到结局，角色需要有明显变化\n3. **语言特征**：每个角色应该有独特的说话方式\n\n你想让这个角色的核心性格特质是什么？",
-    "收到！让我帮你完善这个角色：\n\n- **外在形象**：需要一两个标志性特征\n- **内在动机**：角色行为的根本驱动力\n- **关系网络**：和其他角色的关系定位\n\n建议你先确定这个角色在故事中的「功能」——推动剧情、制造冲突、还是提供信息？",
-  ],
-  world: [
-    "世界观构建建议：\n\n1. **核心规则**：这个世界最独特的运行法则是什么？\n2. **力量体系**：修炼/能力/科技的层级结构\n3. **社会结构**：势力分布和权力格局\n4. **历史背景**：影响当前格局的重大历史事件\n\n先确定核心规则，其他都可以围绕它展开。你的世界核心法则是什么？",
-    "好的世界观！让我帮你检查一致性：\n\n- **经济逻辑**：资源分布和流通方式合理吗？\n- **战力天花板**：最强者能做到什么？做不到什么？\n- **普通人视角**：这个世界的普通人是怎么生活的？\n\n这些细节能让世界观更加可信。",
-  ],
-  calibration: [],
-};
+const SAMPLE_TYPES: { key: string; label: string }[] = [
+  { key: "opening", label: "开篇" },
+  { key: "dialogue", label: "对话" },
+  { key: "action", label: "动作" },
+  { key: "inner", label: "心理" },
+];
 
 export default function ProjectListPage({ activeProject, onSelectProject, onNavigate }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -71,30 +46,64 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const [formName, setFormName] = useState("");
   const [formGenre, setFormGenre] = useState("");
 
-  // Studio state — restore from sessionStorage on mount
+  // Studio state — restore from sessionStorage + backend on mount
   const STUDIO_SESS_KEY = "inkocto_studio_state";
   const _savedStudio = (() => {
     try { const raw = sessionStorage.getItem(STUDIO_SESS_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
   })();
-  const [studioTab, setStudioTab] = useState<StudioTab>(_savedStudio?.studioTab || "outline");
+  const [studioTab, setStudioTab] = useState<StudioTab>(_savedStudio?.studioTab || "trending");
   const [messages, setMessages] = useState<ChatMsg[]>(_savedStudio?.messages || []);
   const [input, setInput] = useState("");
   const [calibration, setCalibration] = useState<CalibrationState>(
     _savedStudio?.calibration || { tone: 50, pacing: 50, perspective: "third", audience: "general" },
   );
+  const [chatLoaded, setChatLoaded] = useState(false);
 
   const [aiLoading, setAiLoading] = useState(false);
 
-  // Snapshots
-  const [snapshots, setSnapshots] = useState<Snapshot[]>(_savedStudio?.snapshots || []);
-  const [showSnapshots, setShowSnapshots] = useState(false);
+  // Trending data
+  const [trendingTags, setTrendingTags] = useState<{ tag_name: string; novel_count: number }[]>([]);
+  const [trendingLoading, setTrendingLoading] = useState(false);
+
+  // Calibration sample
+  const [sampleType, setSampleType] = useState("opening");
+  const [calibrationSample, setCalibrationSample] = useState("");
+  const [sampleLoading, setSampleLoading] = useState(false);
 
   // Persist studio state to sessionStorage on changes
   useEffect(() => {
-    sessionStorage.setItem(STUDIO_SESS_KEY, JSON.stringify({ studioTab, messages, calibration, snapshots }));
-  }, [studioTab, messages, calibration, snapshots]);
+    sessionStorage.setItem(STUDIO_SESS_KEY, JSON.stringify({ studioTab, messages, calibration }));
+  }, [studioTab, messages, calibration]);
 
-  const rightPanel = useResizable({ direction: "horizontal", initialSize: 420, minSize: 320, maxSize: 700 });
+  // Backend persistence for chat (debounced)
+  const chatSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (chatLoaded && messages.length > 0) {
+      if (chatSaveTimer.current) clearTimeout(chatSaveTimer.current);
+      chatSaveTimer.current = setTimeout(() => {
+        apiPut("/api/data/chat_history", {
+          project_id: activeProject || "default", scope: "studio",
+          messages: messages.slice(-200),
+        }).catch(() => {});
+      }, 2000);
+    }
+  }, [messages, chatLoaded, activeProject]);
+
+  // Load chat from backend on mount
+  useEffect(() => {
+    const pid = activeProject || "default";
+    apiGet<{ messages: ChatMsg[] }>(`/api/data/chat_history?project_id=${pid}&scope=studio`)
+      .then(r => {
+        if (r.messages && r.messages.length > 0 && messages.length === 0) {
+          setMessages(r.messages);
+        }
+        setChatLoaded(true);
+      })
+      .catch(() => setChatLoaded(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProject]);
+
+  const rightPanel = useResizable({ direction: "horizontal", initialSize: 440, minSize: 340, maxSize: 720 });
   const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
@@ -109,6 +118,17 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Load trending tags
+  useEffect(() => {
+    if (studioTab === "trending" && trendingTags.length === 0) {
+      setTrendingLoading(true);
+      apiGet<{ rows: { tag_name: string; novel_count: number }[] }>("/api/rankings/tag_stats?limit=30")
+        .then(r => setTrendingTags(r.rows || []))
+        .catch(() => {})
+        .finally(() => setTrendingLoading(false));
+    }
+  }, [studioTab, trendingTags.length]);
 
   const handleCreate = async () => {
     if (!formName.trim()) return;
@@ -141,7 +161,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   };
 
   const sendMessage = async () => {
-    if (!input.trim() || studioTab === "calibration" || aiLoading) return;
+    if (!input.trim() || aiLoading) return;
     const userMsg: ChatMsg = { role: "user", content: input.trim(), tab: studioTab, timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg]);
     const userInput = input.trim();
@@ -152,11 +172,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     abortRef.current = controller;
 
     try {
-      const systemHints: Record<string, string> = {
-        outline: "你是一个专业的网文大纲策划专家。请根据用户的描述，提供具体、可操作的大纲策划建议。用中文回答，语气专业友好。",
-        characters: "你是一个专业的角色设计专家。请根据用户的描述，提供详细的角色设计建议，包括性格、外貌、背景等。用中文回答，语气专业友好。",
-        world: "你是一个专业的世界观构建专家。请根据用户的描述，提供系统的世界观设定建议，包括力量体系、社会结构等。用中文回答，语气专业友好。",
-      };
+      const systemHint = "你是一个顶级网文创作顾问，精通大纲策划、角色设计、世界观构建、市场趋势分析。请根据用户的描述，提供具体、可操作的创作建议。涵盖剧情结构、人物塑造、力量体系、读者心理等各个方面。用中文回答，语气专业友好，善用结构化排版。";
       const resp = await fetch("/api/generation/quick-generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -164,7 +180,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
           project_id: activeProject || "default",
           chapter_id: "studio_chat",
           synopsis: userInput,
-          system_hint: systemHints[studioTab] || systemHints.outline,
+          system_hint: systemHint,
         }),
         signal: controller.signal,
       });
@@ -201,52 +217,38 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     }
   };
 
-  const regenerateLastMessage = () => {
-    // Find the last user message in the current tab and resend it
-    const tabMsgs = messages.filter(m => m.tab === studioTab);
-    const lastUserMsg = [...tabMsgs].reverse().find(m => m.role === "user");
-    if (!lastUserMsg) return;
-    // Remove the last assistant message for this tab
-    setMessages(prev => {
-      const reversed = [...prev].reverse();
-      const idx = reversed.findIndex(m => m.tab === studioTab && m.role === "assistant");
-      if (idx >= 0) {
-        const newMsgs = [...prev];
-        newMsgs.splice(prev.length - 1 - idx, 1);
-        return newMsgs;
-      }
-      return prev;
-    });
-    setInput(lastUserMsg.content);
-    // Auto-send after a tick
-    setTimeout(() => {
-      const el = document.querySelector(".studio-send-btn") as HTMLButtonElement;
-      if (el) el.click();
-    }, 100);
-  };
+  const generateCalibrationSample = async () => {
+    setSampleLoading(true);
+    setCalibrationSample("");
+    try {
+      const toneDesc = calibration.tone < 30 ? "轻松幽默" : calibration.tone > 70 ? "严肃深沉" : "均衡";
+      const pacingDesc = calibration.pacing < 30 ? "快节奏" : calibration.pacing > 70 ? "慢节奏" : "中等节奏";
+      const perspDesc = calibration.perspective === "first" ? "第一人称" : calibration.perspective === "third" ? "第三人称" : "全知视角";
+      const typeDesc: Record<string, string> = {
+        opening: "小说开篇（300-500字）",
+        dialogue: "一段对话场景（2-3个角色互动）",
+        action: "一段动作/打斗场景",
+        inner: "一段内心独白/心理描写",
+      };
+      const prompt = `请生成一段${typeDesc[sampleType] || "短文"}的校准样本。\n\n风格要求：\n- 文风：${toneDesc}\n- 节奏：${pacingDesc}\n- 视角：${perspDesc}\n- 目标受众：${calibration.audience === "male" ? "男频" : calibration.audience === "female" ? "女频" : "大众"}\n\n请直接输出样本内容，不需要解释。`;
 
-  const saveSnapshot = () => {
-    const snap: Snapshot = {
-      id: `snap_${Date.now()}`,
-      label: `快照 ${new Date().toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`,
-      timestamp: Date.now(),
-      messages: [...messages],
-      calibration: { ...calibration },
-    };
-    setSnapshots(prev => [snap, ...prev]);
-  };
-
-  const restoreSnapshot = (snap: Snapshot) => {
-    setMessages(snap.messages);
-    setCalibration(snap.calibration);
-    setShowSnapshots(false);
+      const resp = await apiPost<{ text: string }>("/api/generation/quick-generate", {
+        project_id: activeProject || "default",
+        chapter_id: "calibration_sample",
+        synopsis: prompt,
+        system_hint: "你是一个专业的网文写手。根据给定的风格参数生成校准样本段落。直接输出文本内容，不要加标题或说明。",
+      });
+      setCalibrationSample(resp.text || "");
+    } catch (e: any) {
+      setCalibrationSample(`生成失败：${e?.message || "请检查模型连接"}`);
+    }
+    setSampleLoading(false);
   };
 
   const tabMessages = messages.filter(m => m.tab === studioTab);
 
   const formatDate = (dateVal?: string | number) => {
     if (!dateVal) return "--";
-    // Handle Unix timestamp (number or numeric string)
     const d = typeof dateVal === "number" || (typeof dateVal === "string" && /^\d+(\.\d+)?$/.test(dateVal))
       ? new Date(Number(dateVal) * 1000)
       : new Date(dateVal);
@@ -365,15 +367,17 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
         {/* Right: Creative Studio */}
         <div className="panel" style={{ width: rightPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderLeft: "1px solid var(--border)", display: "flex", flexDirection: "column" }}>
-          <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+          <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 6, paddingBottom: 8 }}>
             <div className="flex items-center justify-between">
-              <h3>创作工作室</h3>
-              <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => { setMessages([]); }}>
-                清空对话
-              </button>
+              <h3 style={{ fontSize: 15, fontWeight: 700 }}>创作工作室</h3>
+              {studioTab === "brainstorm" && (
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => { setMessages([]); }}>
+                  清空对话
+                </button>
+              )}
             </div>
             <div className="text-xs text-muted">
-              {projects.find(p => p.id === activeProject)?.name || "未选择项目"} — 在这里构思你的小说
+              {projects.find(p => p.id === activeProject)?.name || "未选择项目"}
             </div>
           </div>
 
@@ -388,10 +392,69 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
           {/* Studio content */}
           <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-            {studioTab === "calibration" ? (
+            {studioTab === "trending" ? (
+              /* Trending topics panel */
+              <div style={{ padding: 16, overflowY: "auto", flex: 1 }}>
+                <div style={{ padding: "12px 14px", background: "var(--accent-subtle)", borderRadius: 8, marginBottom: 16, borderLeft: "3px solid var(--accent)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)", marginBottom: 4 }}>浏览市场趋势</div>
+                  <div className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                    了解当前读者偏好和热门题材，为你的创作找到最佳切入点。点击任意标签可直接用于新项目的题材设定。
+                  </div>
+                </div>
+
+                {trendingLoading ? (
+                  <div className="loading"><div className="loading-spinner" />加载市场数据...</div>
+                ) : trendingTags.length === 0 ? (
+                  <div style={{ padding: "24px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13, lineHeight: 1.8 }}>
+                    暂无市场数据。请先在「市场数据库」中导入排行榜数据。
+                  </div>
+                ) : (
+                  <>
+                    <div className="label mb-8" style={{ fontSize: 11, color: "var(--text-tertiary)", letterSpacing: 1 }}>热门题材标签 TOP {trendingTags.length}</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {trendingTags.map((tag, i) => {
+                        const isTop = i < 5;
+                        const size = Math.max(12, 18 - Math.floor(i / 3));
+                        return (
+                          <button
+                            key={tag.tag_name}
+                            onClick={() => { setFormGenre(tag.tag_name); setShowForm(true); }}
+                            style={{
+                              padding: "6px 14px", borderRadius: 20,
+                              border: `1px solid ${isTop ? "var(--accent)" : "var(--border)"}`,
+                              background: isTop ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+                              color: isTop ? "var(--accent)" : "var(--text-secondary)",
+                              fontSize: size, fontWeight: isTop ? 600 : 400,
+                              cursor: "pointer", transition: "all 0.15s",
+                              display: "flex", alignItems: "center", gap: 6,
+                            }}
+                          >
+                            {isTop && <span style={{ fontSize: 10, opacity: 0.8 }}>#{i + 1}</span>}
+                            {tag.tag_name}
+                            <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>{tag.novel_count}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div style={{ marginTop: 20, padding: "10px 14px", background: "var(--bg-surface-2)", borderRadius: 8 }}>
+                      <div className="text-xs text-muted" style={{ lineHeight: 1.6 }}>
+                        提示：点击标签将自动填入新建项目的题材字段。你也可以在「头脑风暴」中和 AI 讨论具体的题材方向和创新点。
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : studioTab === "calibration" ? (
               /* Calibration panel */
-              <div style={{ padding: 16, overflowY: "auto" }}>
-                <div className="label mb-16" style={{ color: "var(--accent)" }}>小说风格校准</div>
+              <div style={{ padding: 16, overflowY: "auto", flex: 1 }}>
+                <div style={{ padding: "12px 14px", background: "var(--accent-subtle)", borderRadius: 8, marginBottom: 16, borderLeft: "3px solid var(--accent)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)", marginBottom: 4 }}>风格校准</div>
+                  <div className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                    调整文风参数，生成样本段落以确认风格方向。校准参数将影响编辑器中 Pipeline 生成的内容风格。
+                  </div>
+                </div>
+
                 <div className="card mb-16">
                   <div className="card-body">
                     <div style={{ marginBottom: 20 }}>
@@ -436,22 +499,74 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                     </div>
                   </div>
                 </div>
-                <p className="text-xs text-muted" style={{ lineHeight: 1.6 }}>
-                  校准参数将影响 AI 生成内容的风格倾向。调整后在编辑器的 Pipeline 生成中自动生效。
-                </p>
+
+                {/* Sample generation */}
+                <div className="card">
+                  <div className="card-body">
+                    <div className="label mb-8">生成校准样本</div>
+                    <div className="flex gap-6 mb-12">
+                      {SAMPLE_TYPES.map(t => (
+                        <button key={t.key} className={sampleType === t.key ? "btn-primary" : "btn"}
+                          style={{ flex: 1, fontSize: 11, padding: "5px 0", borderRadius: 16 }}
+                          onClick={() => setSampleType(t.key)}>
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
+                    <button className="btn-primary" style={{ width: "100%", marginBottom: 8 }}
+                      onClick={generateCalibrationSample} disabled={sampleLoading}>
+                      {sampleLoading ? "生成中..." : "生成样本段落"}
+                    </button>
+                    {calibrationSample && (
+                      <div style={{
+                        marginTop: 8, padding: "12px 14px", background: "var(--bg-surface-2)", borderRadius: 8,
+                        borderLeft: "3px solid var(--jade)", fontSize: 13, lineHeight: 1.8, color: "var(--text-primary)",
+                        whiteSpace: "pre-wrap", maxHeight: 300, overflowY: "auto", fontFamily: "var(--font-serif)",
+                      }}>
+                        {calibrationSample}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             ) : (
-              /* Chat panel for outline/characters/world tabs */
+              /* Brainstorm chat panel */
               <>
                 <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
-                  {tabMessages.length === 0 && (
-                    <div style={{ padding: "40px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13, lineHeight: 1.8 }}>
-                      {PLACEHOLDERS[studioTab]}
+                  {tabMessages.length === 0 && !aiLoading && (
+                    <div style={{ padding: "20px 16px" }}>
+                      <div style={{ padding: "12px 14px", background: "var(--accent-subtle)", borderRadius: 8, marginBottom: 16, borderLeft: "3px solid var(--accent)" }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)", marginBottom: 4 }}>AI 头脑风暴</div>
+                        <div className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                          和 AI 一起构思你的小说——大纲、角色、世界观、任何灵感。AI 将从市场分析、剧情结构、人物塑造等多维度给出建议。
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {[
+                          "帮我构思一个玄幻小说的核心设定和卖点",
+                          "我想写一个都市异能题材，帮我设计主角的金手指",
+                          "分析一下目前男频最流行的套路和创新方向",
+                          "帮我设计三个有辨识度的配角",
+                        ].map((hint, i) => (
+                          <button key={i} onClick={() => { setInput(hint); }}
+                            style={{
+                              padding: "10px 14px", borderRadius: 8, border: "1px solid var(--border)",
+                              background: "var(--bg-surface-2)", color: "var(--text-secondary)",
+                              fontSize: 12, textAlign: "left", cursor: "pointer", lineHeight: 1.5,
+                              transition: "all 0.15s",
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--accent-subtle)"; }}
+                            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg-surface-2)"; }}
+                          >
+                            {hint}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                   {aiLoading && (
                     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", marginBottom: 8 }}>
-                      <div style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--accent-subtle)", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>🤖</div>
+                      <div style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--accent-subtle)", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>💡</div>
                       <div style={{ padding: "8px 12px", borderRadius: 10, background: "var(--bg-surface-2)", borderLeft: "3px solid var(--accent)", fontSize: 13, color: "var(--text-tertiary)" }}>
                         AI 正在思考中...
                       </div>
@@ -465,7 +580,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                         border: `2px solid ${msg.role === "user" ? "var(--purple)" : "var(--accent)"}`,
                         display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14,
                       }}>
-                        {msg.role === "user" ? "👤" : "🤖"}
+                        {msg.role === "user" ? "👤" : "💡"}
                       </div>
                       <div style={{ maxWidth: "80%" }}>
                         <div style={{
@@ -488,25 +603,18 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                   ))}
                 </div>
                 <div style={{ padding: "8px 14px 12px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
-                  {/* Stop / Regenerate bar */}
-                  {(aiLoading || tabMessages.length > 0) && (
+                  {/* Stop bar */}
+                  {aiLoading && (
                     <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-                      {aiLoading && (
-                        <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)", borderColor: "var(--error)" }} onClick={stopGeneration}>
-                          ⏹ 终止生成
-                        </button>
-                      )}
-                      {!aiLoading && tabMessages.length > 0 && tabMessages[tabMessages.length - 1].role === "assistant" && (
-                        <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={regenerateLastMessage}>
-                          ↻ 重新生成
-                        </button>
-                      )}
+                      <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)", borderColor: "var(--error)" }} onClick={stopGeneration}>
+                        终止生成
+                      </button>
                     </div>
                   )}
                   <div className="flex gap-6">
                     <input className="input" value={input} onChange={e => setInput(e.target.value)}
                       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                      placeholder={PLACEHOLDERS[studioTab]?.split("\n")[0] || "输入你的想法..."} style={{ flex: 1, fontSize: 12 }} />
+                      placeholder="描述你的想法、问题或灵感..." style={{ flex: 1, fontSize: 12 }} />
                     <button className="btn-primary studio-send-btn" onClick={sendMessage} disabled={!input.trim() || aiLoading} style={{ fontSize: 12, padding: "6px 14px" }}>
                       {aiLoading ? "思考中..." : "发送"}
                     </button>
