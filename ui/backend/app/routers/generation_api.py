@@ -541,15 +541,11 @@ async def _run_pipeline_background(session_id: str):
         scene_result_with_prompt["prompt_sent"] = f"SceneDirector.plan_scenes({scene_prompt})"
         _emit(session_id, {"type": "step_done", "step": "scene_director", "result": scene_result_with_prompt})
 
-        # Emit handoff: show what Scene Director outputs → Actor Agents receives
-        scene_summary = ""
-        if isinstance(scene_result, dict):
-            scene_summary = scene_result.get("summary", scene_result.get("raw", ""))
-            if not scene_summary:
-                scene_summary = json.dumps(scene_result, ensure_ascii=False, indent=2)[:800]
+        # Simplified handoff — no raw content dump
+        _num_scenes = len(scene_result.get("scenes", [])) if isinstance(scene_result, dict) else 0
         _emit(session_id, {
             "type": "handoff", "from": "Scene Director", "to": "Actor Agents",
-            "content": f"场景指令已生成：\n{scene_summary[:500]}",
+            "content": f"场景拆分完成（{_num_scenes} 个场景），将传递给角色演员进行表演。",
         })
 
         confirm = await _wait_for_confirm_bg(session_id, "scene_director", "场景拆分完成，是否继续生成？")

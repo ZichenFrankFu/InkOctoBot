@@ -94,20 +94,26 @@ class EditorWriter(BaseAgent):
         if instructions:
             parts.append(f"\n## 叙事指令\n{instructions}")
 
-        parts.append("\n## 表演记录")
-        for i, perf in enumerate(performances):
-            parts.append(f"\n--- 场景 {i+1} ---\n{perf}")
+        # Filter out empty or placeholder performances
+        real_perfs = [p for p in performances if p and p.strip() and p.strip() not in ("（无表演记录）",)]
+        if real_perfs:
+            parts.append("\n## 表演记录")
+            for i, perf in enumerate(real_perfs):
+                parts.append(f"\n--- 场景 {i+1} ---\n{perf}")
+        else:
+            parts.append("\n## 素材\n（表演记录为空，请根据叙事指令和旁白素材，自行创作章节正文。）")
 
         if narrator:
             parts.append(f"\n## 旁白素材\n{narrator}")
 
-        parts.append("""
+        parts.append(f"""
 ## 输出要求
 - 将表演记录中的对话、动作、内心独白转化为文学化的叙事文本
 - 融入旁白的环境描写和氛围渲染
 - 保持情绪弧线的连贯性
 - 不要保留表演记录的格式标记
 - 目标字数约2000中文字，内容要充实完整
-- 直接输出章节正文，不需要额外说明、标题、注释或导航链接
+- 直接输出章节正文，从第一个字就是小说正文
+- 禁止输出"好的""我明白了""以下是"等确认语、标题或导航链接
 """)
         return "\n".join(parts)

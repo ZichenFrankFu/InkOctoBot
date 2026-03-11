@@ -38,17 +38,26 @@ const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string
 // Flat list for backward compat
 const PIPELINE_ROLES = PIPELINE_ROLE_GROUPS.flatMap(g => g.roles);
 
-const PROVIDER_META: Record<string, { label: string; icon: string; hasKey: boolean; hasUrl: boolean }> = {
-  openai: { label: "OpenAI", icon: "O", hasKey: true, hasUrl: false },
-  anthropic: { label: "Anthropic", icon: "A", hasKey: true, hasUrl: false },
-  deepseek: { label: "DeepSeek", icon: "D", hasKey: true, hasUrl: false },
-  gemini: { label: "Google Gemini", icon: "G", hasKey: true, hasUrl: false },
-  ollama: { label: "Ollama (本地)", icon: "L", hasKey: false, hasUrl: true },
-  volcengine: { label: "火山方舟 (豆包)", icon: "V", hasKey: true, hasUrl: true },
-  baidu_qianfan: { label: "百度千帆 (文心)", icon: "B", hasKey: true, hasUrl: false },
-  aliyun_bailian: { label: "阿里云百炼 (通义)", icon: "Q", hasKey: true, hasUrl: true },
-  grok: { label: "Grok (xAI)", icon: "X", hasKey: true, hasUrl: false },
+const PROVIDER_META: Record<string, { label: string; icon: string; hasKey: boolean; hasUrl: boolean; group: string }> = {
+  // 国际 API
+  openai: { label: "OpenAI", icon: "O", hasKey: true, hasUrl: false, group: "international" },
+  anthropic: { label: "Anthropic", icon: "A", hasKey: true, hasUrl: false, group: "international" },
+  gemini: { label: "Google Gemini", icon: "G", hasKey: true, hasUrl: false, group: "international" },
+  deepseek: { label: "DeepSeek", icon: "D", hasKey: true, hasUrl: false, group: "international" },
+  grok: { label: "Grok (xAI)", icon: "X", hasKey: true, hasUrl: false, group: "international" },
+  // 国内 API
+  volcengine: { label: "火山方舟 (豆包)", icon: "V", hasKey: true, hasUrl: true, group: "china" },
+  baidu_qianfan: { label: "百度千帆 (文心)", icon: "B", hasKey: true, hasUrl: false, group: "china" },
+  aliyun_bailian: { label: "阿里云百炼 (通义)", icon: "Q", hasKey: true, hasUrl: true, group: "china" },
+  // 自部署
+  ollama: { label: "Ollama", icon: "O", hasKey: false, hasUrl: true, group: "self_hosted" },
 };
+
+const PROVIDER_GROUPS: { key: string; label: string }[] = [
+  { key: "international", label: "国际 API" },
+  { key: "china", label: "国内 API" },
+  { key: "self_hosted", label: "自部署" },
+];
 
 type Tab = "pipeline" | "providers" | "system";
 
@@ -434,12 +443,21 @@ function ProviderGrid({
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        {Object.entries(settings.providers).map(([name, prov]) => {
-          const meta = PROVIDER_META[name] || { label: name, icon: "?", hasKey: false, hasUrl: false };
-          const testResult = testResults[name];
-
-          return (
+      {PROVIDER_GROUPS.map(group => {
+        const groupProviders = Object.entries(settings.providers).filter(
+          ([name]) => (PROVIDER_META[name]?.group || "international") === group.key
+        );
+        if (groupProviders.length === 0) return null;
+        return (
+          <div key={group.key} style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 10, paddingLeft: 4 }}>
+              {group.label}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              {groupProviders.map(([name, prov]) => {
+                const meta = PROVIDER_META[name] || { label: name, icon: "?", hasKey: false, hasUrl: false, group: "international" };
+                const testResult = testResults[name];
+                return (
             <div key={name} className="card" style={{
               borderColor: prov.enabled ? "var(--accent)" : "var(--border)",
               opacity: prov.enabled ? 1 : 0.7,
@@ -520,9 +538,12 @@ function ProviderGrid({
                 )}
               </div>
             </div>
-          );
-        })}
-      </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
