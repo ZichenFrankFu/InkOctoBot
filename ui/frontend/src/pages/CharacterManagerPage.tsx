@@ -55,6 +55,10 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const [charChatPersisted, setCharChatPersisted] = useState(false);
   const charChatSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Pending AI-generated profile awaiting user confirmation
+  const [pendingProfile, setPendingProfile] = useState<{ personality?: string; background?: string; speech_style?: string } | null>(null);
+  const [selectedFields, setSelectedFields] = useState<Set<string>>(new Set());
+
   // Persist char chat state to sessionStorage + backend
   useEffect(() => {
     sessionStorage.setItem(CHAR_CHAT_KEY, JSON.stringify({
@@ -125,16 +129,22 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
       const aiContent = data.text || "生成完成。";
       setCharChatMessages(prev => [...prev, { role: "assistant", content: aiContent, timestamp: Date.now() }]);
 
-      // Try to auto-apply JSON profile if present
+      // Try to detect JSON profile and show confirmation dialog
       try {
         let jsonStr = aiContent;
         if (jsonStr.includes("```")) {
           jsonStr = jsonStr.split("```")[1]?.replace(/^json\s*\n?/, "") || jsonStr;
         }
         const profile = JSON.parse(jsonStr);
-        if (profile.personality) u("personality", profile.personality);
-        if (profile.background) u("background", profile.background);
-        if (profile.speech_style) u("speech_style", profile.speech_style);
+        const hasFields = profile.personality || profile.background || profile.speech_style;
+        if (hasFields) {
+          const fields: Record<string, string> = {};
+          if (profile.personality) fields.personality = profile.personality;
+          if (profile.background) fields.background = profile.background;
+          if (profile.speech_style) fields.speech_style = profile.speech_style;
+          setPendingProfile(fields);
+          setSelectedFields(new Set(Object.keys(fields)));
+        }
       } catch { /* not JSON, that's fine */ }
     } catch (e: any) {
       if (e?.name === "AbortError") {
@@ -446,6 +456,65 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                           <div style={{ width: 28, height: 28, borderRadius: "50%", background: "var(--accent-subtle)", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>🤖</div>
                           <div style={{ padding: "8px 12px", borderRadius: 10, background: "var(--bg-surface-2)", borderLeft: "3px solid var(--accent)", fontSize: 13, color: "var(--text-tertiary)" }}>
                             AI 正在思考中...
+                          </div>
+                        </div>
+                      )}
+                      {/* Profile confirmation dialog */}
+                      {pendingProfile && (
+                        <div style={{
+                          margin: "8px 12px", padding: "12px 14px", borderRadius: 10,
+                          background: "var(--accent-subtle)", border: "1px solid var(--accent)",
+                        }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", marginBottom: 8 }}>
+                            AI 生成了角色信息，选择要填入的字段：
+                          </div>
+                          {Object.entries(pendingProfile).map(([field, value]) => {
+                            const labels: Record<string, string> = { personality: "性格描述", background: "背景故事", speech_style: "说话风格" };
+                            const isSelected = selectedFields.has(field);
+                            return (
+                              <label key={field} style={{
+                                display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 8,
+                                cursor: "pointer", fontSize: 12, color: "var(--text-primary)",
+                              }}>
+                                <input type="checkbox" checked={isSelected}
+                                  onChange={() => setSelectedFields(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(field)) next.delete(field); else next.add(field);
+                                    return next;
+                                  })}
+                                  style={{ accentColor: "var(--accent)", marginTop: 2 }}
+                                />
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ fontWeight: 600, marginBottom: 2 }}>{labels[field] || field}</div>
+                                  <div style={{
+                                    fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5,
+                                    maxHeight: 60, overflow: "hidden", textOverflow: "ellipsis",
+                                  }}>
+                                    {(value as string).slice(0, 150)}{(value as string).length > 150 ? "..." : ""}
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                            <button className="btn-primary" style={{ fontSize: 11, padding: "4px 14px" }}
+                              disabled={selectedFields.size === 0}
+                              onClick={() => {
+                                if (pendingProfile) {
+                                  for (const field of selectedFields) {
+                                    const val = (pendingProfile as any)[field];
+                                    if (val) u(field, val);
+                                  }
+                                }
+                                setPendingProfile(null);
+                                setSelectedFields(new Set());
+                              }}>
+                              填入选中字段
+                            </button>
+                            <button className="btn" style={{ fontSize: 11, padding: "4px 14px" }}
+                              onClick={() => { setPendingProfile(null); setSelectedFields(new Set()); }}>
+                              取消
+                            </button>
                           </div>
                         </div>
                       )}

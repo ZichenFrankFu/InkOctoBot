@@ -25,6 +25,9 @@ def _settings_path() -> Path:
     return d / "settings.json"
 
 
+_DEPRECATED_PROVIDERS = {"vllm", "local"}
+
+
 def _load() -> dict:
     p = _settings_path()
     if p.exists():
@@ -42,6 +45,10 @@ def _load() -> dict:
     for rname, rdef in defaults.get("pipeline", {}).items():
         if rname not in data.get("pipeline", {}):
             data.setdefault("pipeline", {})[rname] = rdef
+    # Remove deprecated providers
+    providers = data.get("providers", {})
+    for dep in _DEPRECATED_PROVIDERS:
+        providers.pop(dep, None)
     return data
 
 
@@ -99,6 +106,10 @@ def get_settings():
 def update_settings(body: dict):
     import time
     body["saved_at"] = time.time()
+    # Strip deprecated providers before saving
+    providers = body.get("providers", {})
+    for dep in _DEPRECATED_PROVIDERS:
+        providers.pop(dep, None)
     _save(body)
     return {"status": "ok", "saved_at": body["saved_at"]}
 

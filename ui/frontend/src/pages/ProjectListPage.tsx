@@ -123,7 +123,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   useEffect(() => {
     if (studioTab === "trending" && trendingTags.length === 0) {
       setTrendingLoading(true);
-      apiGet<{ rows: { tag_name: string; novel_count: number }[] }>("/api/rankings/tag_stats?limit=30")
+      apiGet<{ rows: { tag_name: string; novel_count: number }[] }>("/api/db/tag_stats?limit=30")
         .then(r => setTrendingTags(r.rows || []))
         .catch(() => {})
         .finally(() => setTrendingLoading(false));

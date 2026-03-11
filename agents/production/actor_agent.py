@@ -86,16 +86,25 @@ class ActorAgent(BaseAgent):
         if previous_beats:
             parts.append(f"\n前序表演:\n{previous_beats}")
         parts.append(f"""
-请只输出「{self.character_name}」的表演记录，不要代替其他角色输出。
-格式要求：
-[节拍N]
-{self.character_name}(情绪): *动作描写* "对话内容"
-  内心: 内心独白
+请以电影剧本的方式，输出「{self.character_name}」在本场景中的表演。
 
-注意：
-- 只输出{self.character_name}的动作、对话和内心独白
-- 不要输出其他角色的台词或动作
-- 不要输出[氛围]描写（那是旁白的职责）
-- 可以在对话中引用其他角色说的话作为反应依据
+格式参考（类似剧本格式）：
+
+{self.character_name.upper()}
+（情绪/神态描写）
+动作描写。
+
+          {self.character_name.upper()}
+    "台词对话内容。"
+
+（内心活动：角色此刻的心理描写）
+
+要求：
+- 只写{self.character_name}的内容，不要代替其他角色说话或行动
+- 动作和神态用叙述方式描写（不要用*号标记）
+- 台词用引号包裹
+- 内心活动用括号标注
+- 按场景节拍的先后顺序推进剧情
+- 环境描写交给旁白，你只负责角色本身
 """)
         return "\n".join(parts)
