@@ -29,6 +29,20 @@ def get_db_path(repo_cfg, repo_root: Path) -> str:
     data_dir = out.get("data", str(repo_root / "outputs" / "data"))
     return str(Path(data_dir) / "novels.db")
 
+def get_crawler_db_path(repo_cfg, repo_root: Path) -> str:
+    crawler_db = getattr(repo_cfg, "CRAWLER_DATABASE", None) or {}
+    p = crawler_db.get("path")
+    if p:
+        return str(Path(p))
+
+    # backward compatibility for old key name
+    spider_db = getattr(repo_cfg, "SPIDER_DATABASE", None) or {}
+    p2 = spider_db.get("path")
+    if p2:
+        return str(Path(p2))
+
+    return get_db_path(repo_cfg, repo_root)
+
 def get_rank_keys(repo_cfg) -> Dict[str, list[str]]:
     websites = getattr(repo_cfg, "WEBSITES", None) or {}
     res: Dict[str, list[str]] = {}

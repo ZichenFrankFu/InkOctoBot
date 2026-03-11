@@ -82,17 +82,17 @@
 
 ---
 
-## 4. 爬虫模块
+## 4. Crawler 数据接入
+
+爬虫实现已迁移至独立仓库。当前仓库只读取外部同步的 `InkOctoBot_Crawler.db`。
+
+关键读取接口：
 
 | 文件 | 说明 |
-|------|------|
-| `spiders/base_spider.py` | 抽象基类（Selenium WebDriver、代理池、反爬） |
-| `spiders/qidian_spider.py` | 起点中文网爬虫（畅销/月票/推荐/收藏/新书榜） |
-| `spiders/fanqie_spider.py` | 番茄小说爬虫（阅读榜、新书榜） |
-| `spiders/fanqie_font_decoder.py` | 番茄加密字体解码器 |
-| `spiders/antibot.py` | 反机器人检测/规避模块 |
-
----
+| --- | --- |
+| `ui/backend/app/routers/db_api.py` | 数据库浏览接口（榜单、快照、书籍） |
+| `ui/backend/app/routers/analysis_api.py` | 热点分析接口 |
+| `ui/backend/app/routers/marketing_api.py` | 市场建议接口 |
 
 ## 5. 分析模块
 
@@ -117,7 +117,7 @@
 
 | 路由文件 | 前缀 | 说明 |
 |----------|------|------|
-| `ui/backend/app/routers/db_api.py` | `/api/db/` | 市场数据库查询（novels.db） |
+| `ui/backend/app/routers/db_api.py` | `/api/db/` | 市场数据库查询（InkOctoBot_Crawler.db） |
 | `ui/backend/app/routers/analysis_api.py` | `/api/analysis/` | 趋势分析运行 |
 | `ui/backend/app/routers/data_api.py` | `/api/data/` | JSON 文件 CRUD |
 | `ui/backend/app/routers/reference_api.py` | `/api/references/` | 参考作品库 CRUD |

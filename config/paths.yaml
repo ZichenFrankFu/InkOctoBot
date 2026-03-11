@@ -5,6 +5,9 @@
 database:
   path: "data/novels.db"
 
+crawler_database:
+  path: "data/InkOctoBot_Crawler.db"
+
 output_paths:
   data_raw: "outputs/data/raw"
   logs: "outputs/logs"

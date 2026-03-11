@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np, pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 from ..settings import settings
-from ..utils import load_repo_config, get_db_path
+from ..utils import load_repo_config, get_crawler_db_path
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
@@ -52,7 +52,7 @@ def _compute_window(db_path, lookback):
 @router.get("/date_range")
 def analysis_date_range():
     repo_cfg = load_repo_config(settings.repo_root)
-    db_path = get_db_path(repo_cfg, settings.repo_root)
+    db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
     mn, mx = _db_date_range(db_path)
     return {"min_date": mn, "max_date": mx}
 
@@ -67,7 +67,7 @@ def run_analysis(
     if root not in sys.path: sys.path.insert(0, root)
 
     repo_cfg = load_repo_config(settings.repo_root)
-    db_path = get_db_path(repo_cfg, settings.repo_root)
+    db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
     start_date, end_date = _compute_window(db_path, lookback)
     if not start_date:
         return {"empty": True, "error": "no_data", "message": "数据库中暂无快照数据",

@@ -79,6 +79,16 @@ DATABASE: Dict[str, Any] = {
     },
 }
 
+# --- SPIDER_DATABASE ---
+_crawler_db_cfg = _paths.get("crawler_database", {})
+_crawler_db_rel = _crawler_db_cfg.get("path", "data/InkOctoBot_Crawler.db")
+CRAWLER_DATABASE: Dict[str, Any] = {
+    "path": os.path.join(BASE_DIR, _crawler_db_rel),
+    "tables": DATABASE["tables"],
+}
+# backward-compatible alias
+SPIDER_DATABASE: Dict[str, Any] = CRAWLER_DATABASE
+
 # --- OUTPUT_PATHS ---
 _out_cfg = _paths.get("output_paths", {})
 OUTPUT_PATHS: Dict[str, str] = {
@@ -94,6 +104,7 @@ OUTPUT_PATHS: Dict[str, str] = {
 for _p in OUTPUT_PATHS.values():
     os.makedirs(_p, exist_ok=True)
 os.makedirs(os.path.dirname(DATABASE["path"]), exist_ok=True)
+os.makedirs(os.path.dirname(CRAWLER_DATABASE["path"]), exist_ok=True)
 
 # --- SELENIUM_CONFIG ---
 SELENIUM_CONFIG: Dict[str, Any] = _selenium
