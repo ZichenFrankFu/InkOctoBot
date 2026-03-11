@@ -329,6 +329,7 @@ export interface AppSettings {
   export_format: "txt" | "docx" | "epub";
   providers: Record<string, ProviderConfig>;
   pipeline: Record<string, PipelineRole>;
+  crawler_db_path?: string;
 }
 
 // ── Analysis ──

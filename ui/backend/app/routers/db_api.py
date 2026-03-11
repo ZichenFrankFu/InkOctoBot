@@ -7,6 +7,20 @@ from ..utils import load_repo_config, get_crawler_db_path
 router = APIRouter(prefix="/db", tags=["db"])
 
 def _get_con():
+    # Check if user has set a custom crawler DB path in settings
+    try:
+        import json
+        settings_file = settings.repo_root / "data" / "settings.json"
+        if settings_file.exists():
+            user_settings = json.loads(settings_file.read_text("utf-8"))
+            custom_path = user_settings.get("crawler_db_path", "")
+            if custom_path:
+                from pathlib import Path
+                p = Path(custom_path)
+                if p.exists():
+                    con = sqlite3.connect(str(p)); con.row_factory = sqlite3.Row; return con
+    except Exception:
+        pass
     repo_cfg = load_repo_config(settings.repo_root)
     db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
     con = sqlite3.connect(db_path); con.row_factory = sqlite3.Row; return con

@@ -63,7 +63,10 @@ def _defaults() -> dict:
             "deepseek": {"enabled": False, "api_key": "", "models": ["deepseek-chat", "deepseek-reasoner"]},
             "gemini": {"enabled": False, "api_key": "", "models": ["gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"]},
             "ollama": {"enabled": True, "base_url": "http://localhost:11434", "models": []},
-            "vllm": {"enabled": False, "base_url": "http://localhost:8000", "models": []},
+            "volcengine": {"enabled": False, "api_key": "", "base_url": "https://ark.cn-beijing.volces.com/api/v3", "models": ["doubao-pro-32k", "doubao-lite-32k"]},
+            "baidu_qianfan": {"enabled": False, "api_key": "", "models": ["ernie-4.0-8k", "ernie-3.5-8k"]},
+            "aliyun_bailian": {"enabled": False, "api_key": "", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "models": ["qwen-max", "qwen-plus", "qwen-turbo"]},
+            "grok": {"enabled": False, "api_key": "", "models": ["grok-2", "grok-2-mini"]},
         },
         "pipeline": {
             "scene_planner": {"provider": "ollama", "model": "", "compare_models": []},
@@ -145,3 +148,39 @@ async def detect_ollama_models():
             "models": [],
             "message": f"无法连接 Ollama ({base_url}): {str(e)[:200]}",
         }
+
+
+@router.post("/crawler-db-path")
+def set_crawler_db_path(body: dict):
+    """Set custom crawler DB path in settings."""
+    path_str = body.get("path", "")
+    if not path_str:
+        return {"status": "error", "message": "路径不能为空"}
+    p = Path(path_str)
+    if not p.exists():
+        return {"status": "error", "message": f"文件不存在: {path_str}"}
+    if not p.suffix == ".db":
+        return {"status": "error", "message": "请选择 .db 文件"}
+    data = _load()
+    data["crawler_db_path"] = str(p.resolve())
+    _save(data)
+    return {"status": "ok", "path": str(p.resolve()), "message": f"已设置爬虫数据库路径: {p.name}"}
+
+
+@router.post("/detect-gguf")
+def detect_gguf_models():
+    """Auto-detect GGUF model files in models/ directory."""
+    models_dir = app_settings.repo_root / "models"
+    found = []
+    if models_dir.exists():
+        for f in models_dir.rglob("*.gguf"):
+            found.append({
+                "name": f.stem,
+                "path": str(f),
+                "size_mb": round(f.stat().st_size / (1024 * 1024), 1),
+            })
+    return {
+        "status": "ok",
+        "models": found,
+        "message": f"检测到 {len(found)} 个 GGUF 模型" if found else "未在 models/ 目录中找到 GGUF 文件",
+    }

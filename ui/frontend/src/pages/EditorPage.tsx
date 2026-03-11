@@ -522,6 +522,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         references: chapterReferences,
         time_setting: activeCh.time || "",
         location: activeCh.location || "",
+        existing_content: content || "",
       });
       sessionIdRef.current = resp.session_id;
       // Persist session so it survives page navigation

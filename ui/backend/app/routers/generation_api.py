@@ -35,6 +35,8 @@ class GenerateRequest(BaseModel):
     system_hint: str = ""
     provider: str = ""
     model: str = ""
+    existing_content: str = ""
+    chapter_num: int = 1
 
 
 class RewriteRequest(BaseModel):
@@ -517,6 +519,9 @@ async def _run_pipeline_background(session_id: str):
                 _outline += f"\n场景地点：{_location}"
             if _time_setting:
                 _outline += f"\n时间设定：{_time_setting}"
+            _existing_content = req_data.get("existing_content", "")
+            if _existing_content:
+                _outline += f"\n\n[已有正文（请基于此续写下一部分）]\n{_existing_content[-1000:]}"
             scenes = await director.plan_scenes(
                 chapter_outline=_outline,
                 chapter_num=1,
@@ -554,14 +559,17 @@ async def _run_pipeline_background(session_id: str):
         # ── Step 2: Actor Agents (via SceneSimulator) ────────
         session["current_step"] = "actor_agents"
         characters = req_data.get("characters", [])
+        scene_list = scene_result.get("scenes", []) if isinstance(scene_result, dict) else []
+        num_scenes = len(scene_list) if scene_list else 1
         _emit(session_id, {
             "type": "step_start", "step": "actor_agents",
             "label": "Actor Agents",
-            "detail": f"正在为 {len(characters)} 个角色生成表演记录...",
+            "detail": f"正在为 {len(characters)} 个角色 × {num_scenes} 个场景生成表演记录...",
         })
         full_text = ""
         actor_prompt_sent = ""
         sim_result = {}  # Initialize before try block to avoid NameError in editor step
+        all_scene_results: list[dict] = []  # Results from each scene
         try:
             from agents.production.scene_simulator import SceneSimulator
             from rag.memory.manager import MemoryManager
@@ -605,10 +613,8 @@ async def _run_pipeline_background(session_id: str):
                 project_id=_proj_id,
             )
 
-            # Ensure scene_result has 'characters' list — also inject into each scene
+            # Ensure each scene has a characters list
             if isinstance(scene_result, dict):
-                if "characters" not in scene_result:
-                    scene_result["characters"] = characters
                 for sc in scene_result.get("scenes", []):
                     if not sc.get("characters"):
                         sc["characters"] = characters
@@ -632,25 +638,67 @@ async def _run_pipeline_background(session_id: str):
             except Exception:
                 character_cards = {c: "" for c in characters}
 
-            actor_prompt_sent = (
-                f"SceneSimulator.simulate_scene(\n"
-                f"  scene_plan={json.dumps(scene_result, ensure_ascii=False, indent=2)[:1500]},\n"
-                f"  characters={characters},\n"
-                f"  mode='parallel'\n"
-                f")"
-            )
+            _chapter_num = req_data.get("chapter_num", 1)
 
-            sim_result = await simulator.simulate_scene(
-                scene_plan=scene_result,
-                character_cards=character_cards,
-                chapter_num=1,
-                style_profile=req_data.get("style_notes", ""),
-                constraints=req_data.get("world_rules", ""),
-                mode="parallel",
-            )
+            # Use simulate_chapter() to iterate through all scenes properly
+            if scene_list:
+                actor_prompt_sent = (
+                    f"SceneSimulator.simulate_chapter(\n"
+                    f"  scenes={num_scenes},\n"
+                    f"  characters={characters},\n"
+                    f"  mode='parallel'\n"
+                    f")"
+                )
+                all_scene_results = await simulator.simulate_chapter(
+                    scene_plans=scene_list,
+                    character_cards=character_cards,
+                    chapter_num=_chapter_num,
+                    style_profile=req_data.get("style_notes", ""),
+                    constraints=req_data.get("world_rules", ""),
+                )
+            else:
+                # Fallback: single scene from top-level scene_result
+                fallback_scene = dict(scene_result) if isinstance(scene_result, dict) else {}
+                if not fallback_scene.get("characters"):
+                    fallback_scene["characters"] = characters
+                actor_prompt_sent = (
+                    f"SceneSimulator.simulate_scene(\n"
+                    f"  scene_plan=...,\n"
+                    f"  characters={characters},\n"
+                    f"  mode='parallel'\n"
+                    f")"
+                )
+                single_result = await simulator.simulate_scene(
+                    scene_plan=fallback_scene,
+                    character_cards=character_cards,
+                    chapter_num=_chapter_num,
+                    style_profile=req_data.get("style_notes", ""),
+                    constraints=req_data.get("world_rules", ""),
+                    mode="parallel",
+                )
+                all_scene_results = [single_result]
 
-            full_text = sim_result.get("combined", "")
-            performances = sim_result.get("performances", {})
+            # Combine all scene results into a unified sim_result
+            all_performances: dict[str, str] = {}
+            all_narrators: list[str] = []
+            combined_parts: list[str] = []
+            for i, sr in enumerate(all_scene_results):
+                perfs = sr.get("performances", {})
+                for k, v in perfs.items():
+                    key = f"{k}" if len(all_scene_results) == 1 else f"{k}_scene{i+1}"
+                    all_performances[key] = v
+                if sr.get("narrator"):
+                    all_narrators.append(sr["narrator"])
+                if sr.get("combined"):
+                    combined_parts.append(sr["combined"])
+
+            full_text = "\n\n".join(combined_parts)
+            sim_result = {
+                "performances": all_performances,
+                "narrator": "\n\n".join(all_narrators),
+                "combined": full_text,
+                "scene_results": all_scene_results,
+            }
 
             # Emit token-like updates so UI shows the performance record
             if full_text:
@@ -661,8 +709,9 @@ async def _run_pipeline_background(session_id: str):
                 "result": {
                     "text": full_text,
                     "word_count": len(full_text),
-                    "performances": {k: v[:500] for k, v in performances.items()},
-                    "actor_count": len(performances),
+                    "performances": {k: v[:500] for k, v in all_performances.items()},
+                    "actor_count": len(all_performances),
+                    "scene_count": len(all_scene_results),
                     "prompt_sent": actor_prompt_sent,
                 },
             })
@@ -677,7 +726,7 @@ async def _run_pipeline_background(session_id: str):
         # Emit handoff: Actor Agents → Editor-Writer
         _emit(session_id, {
             "type": "handoff", "from": "Actor Agents", "to": "Editor-Writer",
-            "content": f"角色表演记录已生成（{len(full_text)}字，{len(characters)}个角色），将传递给编辑转化为正文。",
+            "content": f"角色表演记录已生成（{len(full_text)}字，{len(characters)}个角色，{num_scenes}个场景），将传递给编辑转化为正文。",
         })
 
         confirm = await _wait_for_confirm_bg(session_id, "actor_agents", "角色对话生成完成，是否继续编辑润色？")
@@ -696,26 +745,54 @@ async def _run_pipeline_background(session_id: str):
             from agents.production.editor_writer import EditorWriter
             editor = EditorWriter(router_inst, project_id=req_data.get("project_id", ""))
 
-            # Separate performances and narrator text for the editor
-            perf_list = list((sim_result or {}).get("performances", {}).values()) if isinstance(sim_result, dict) else []
-            narrator_text = (sim_result or {}).get("narrator", "") if isinstance(sim_result, dict) else ""
+            # Build per-scene performance records for the editor
+            perf_list: list[str] = []
+            narrator_text = ""
+            if all_scene_results:
+                for i, sr in enumerate(all_scene_results):
+                    scene_perfs = sr.get("performances", {})
+                    scene_narrator = sr.get("narrator", "")
+                    # Combine each scene's performances into one record
+                    scene_record_parts = []
+                    if scene_narrator:
+                        scene_record_parts.append(f"[旁白]\n{scene_narrator}")
+                    for char_name, perf in scene_perfs.items():
+                        scene_record_parts.append(f"[{char_name}的表演]\n{perf}")
+                    if scene_record_parts:
+                        perf_list.append("\n\n".join(scene_record_parts))
+                narrator_text = (sim_result or {}).get("narrator", "")
+            else:
+                perf_list = list((sim_result or {}).get("performances", {}).values()) if isinstance(sim_result, dict) else []
+                narrator_text = (sim_result or {}).get("narrator", "") if isinstance(sim_result, dict) else ""
             if not perf_list:
-                perf_list = [full_text]
+                perf_list = [full_text] if full_text else ["（无表演记录）"]
+
+            # Add existing content context and length target to constraints
+            _existing = req_data.get("existing_content", "")
+            _extra_constraints = []
+            if _existing:
+                _extra_constraints.append(f"[已有正文（续写请衔接）]\n{_existing[-1500:]}")
+            _extra_constraints.append("目标字数：约2000中文字。请保证内容充实完整，不要过短。")
+            _combined_constraints = req_data.get("world_rules", "")
+            if _extra_constraints:
+                _combined_constraints += "\n" + "\n".join(_extra_constraints)
 
             editor_prompt_sent = json.dumps({
                 "method": "EditorWriter.assemble_chapter",
                 "performance_count": len(perf_list),
+                "scene_count": len(all_scene_results),
                 "narrator_length": len(narrator_text),
                 "style_notes": req_data.get("style_notes", "")[:200],
+                "has_existing_content": bool(_existing),
             }, ensure_ascii=False, indent=2)
 
             edited_text = await editor.assemble_chapter(
                 performance_records=perf_list,
                 narrator_text=narrator_text,
-                chapter_num=1,
+                chapter_num=req_data.get("chapter_num", 1),
                 chapter_title=req_data.get("chapter_title", ""),
                 style_profile=req_data.get("style_notes", ""),
-                constraints=req_data.get("world_rules", ""),
+                constraints=_combined_constraints,
             ) or full_text
             _emit(session_id, {
                 "type": "step_done", "step": "editor_writer",
