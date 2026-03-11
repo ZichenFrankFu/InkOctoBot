@@ -190,6 +190,8 @@ export interface ChapterOutline {
   location?: string;
   characters?: string[];
   references?: string[];
+  /** Map of real character name -> alias for hidden identity (e.g. "李悦" -> "神秘女人") */
+  character_aliases?: Record<string, string>;
 }
 
 // ── Pipeline / Generation ──

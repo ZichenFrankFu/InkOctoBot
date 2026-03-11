@@ -109,8 +109,8 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 160, maxSize: 350 });
   const rightPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 200, maxSize: 500, invert: true });
 
-  // Persist editor chat state to sessionStorage + backend
-  const EDITOR_CHAT_KEY = `inkocto_editor_chat_${projectId}`;
+  // Persist editor chat state to sessionStorage + backend (per chapter)
+  const EDITOR_CHAT_KEY = `inkocto_editor_chat_${projectId}_${activeChId}`;
   const chatSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const persistable = chatMessages.filter(m => m.status === "done");
@@ -120,26 +120,41 @@ export default function EditorPage({ projectId }: { projectId: string }) {
       if (chatSaveTimer.current) clearTimeout(chatSaveTimer.current);
       chatSaveTimer.current = setTimeout(() => {
         apiPut("/api/data/chat_history", {
-          project_id: projectId || "default", scope: "pipeline",
+          project_id: projectId || "default", scope: `pipeline_${activeChId}`,
           messages: persistable.slice(-200),  // keep last 200 messages
         }).catch(() => {});
       }, 2000);
     }
-  }, [aiTab, chatMessages, EDITOR_CHAT_KEY, chatLoaded, projectId]);
+  }, [aiTab, chatMessages, EDITOR_CHAT_KEY, chatLoaded, projectId, activeChId]);
 
-  // Load chat history from backend on mount
+  // Load chat history from backend on chapter change
   useEffect(() => {
+    if (!activeChId) return;
     const pid = projectId || "default";
-    apiGet<{ messages: ChatMessage[] }>(`/api/data/chat_history?project_id=${pid}&scope=pipeline`)
+    setChatMessages([]);
+    setChatLoaded(false);
+    // Try to restore from sessionStorage first
+    try {
+      const raw = sessionStorage.getItem(`inkocto_editor_chat_${pid}_${activeChId}`);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (saved?.chatMessages?.length > 0) {
+          setChatMessages(saved.chatMessages);
+          if (saved.aiTab) setAiTab(saved.aiTab);
+          setChatLoaded(true);
+          return;
+        }
+      }
+    } catch { /* ignore */ }
+    apiGet<{ messages: ChatMessage[] }>(`/api/data/chat_history?project_id=${pid}&scope=pipeline_${activeChId}`)
       .then(r => {
-        if (r.messages && r.messages.length > 0 && chatMessages.length === 0) {
+        if (r.messages && r.messages.length > 0) {
           setChatMessages(r.messages);
         }
         setChatLoaded(true);
       })
       .catch(() => setChatLoaded(true));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, activeChId]);
 
   // Auto-switch to inspire tab when pipeline is running on mount
   useEffect(() => {
@@ -240,7 +255,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const [modelChanged, setModelChanged] = useState(false);
 
   // Persist active session across page navigation
-  const SESS_KEY = `inkocto_pipeline_${projectId}`;
+  const SESS_KEY = `inkocto_pipeline_${projectId}_${activeChId}`;
 
   // On mount: check for a running pipeline session to resume
   useEffect(() => {
@@ -523,6 +538,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         time_setting: activeCh.time || "",
         location: activeCh.location || "",
         existing_content: content || "",
+        character_aliases: activeCh.character_aliases || {},
       });
       sessionIdRef.current = resp.session_id;
       // Persist session so it survives page navigation
@@ -832,19 +848,44 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         )}
       </div>
 
-      {/* Selected items display */}
+      {/* Selected items display + hidden identity aliases */}
       {(selectedChars.length > 0 || selectedRefs.length > 0) && (
-        <div style={{ marginTop: 8, display: "flex", gap: 4, flexWrap: "wrap" }}>
-          {selectedChars.map(c => (
-            <span key={c.id} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--purple-subtle)", color: "var(--purple)" }}>
-              {c.name}
-            </span>
-          ))}
-          {selectedRefs.map(r => (
-            <span key={r.id} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--jade-subtle)", color: "var(--jade)" }}>
-              {r.title}
-            </span>
-          ))}
+        <div style={{ marginTop: 8 }}>
+          {selectedChars.map(c => {
+            const aliases = chapter?.character_aliases || {};
+            const alias = aliases[c.name] || "";
+            return (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--purple-subtle)", color: "var(--purple)", whiteSpace: "nowrap" }}>
+                  {c.name}
+                </span>
+                <input
+                  className="input"
+                  value={alias}
+                  onChange={e => {
+                    const newAliases = { ...(chapter?.character_aliases || {}) };
+                    if (e.target.value.trim()) {
+                      newAliases[c.name] = e.target.value;
+                    } else {
+                      delete newAliases[c.name];
+                    }
+                    onUpdateChapter?.("character_aliases", newAliases);
+                  }}
+                  placeholder="隐藏身份（如：神秘女人）"
+                  style={{ flex: 1, fontSize: 10, padding: "2px 8px", height: 22 }}
+                />
+              </div>
+            );
+          })}
+          {selectedRefs.length > 0 && (
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
+              {selectedRefs.map(r => (
+                <span key={r.id} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--jade-subtle)", color: "var(--jade)" }}>
+                  {r.title}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

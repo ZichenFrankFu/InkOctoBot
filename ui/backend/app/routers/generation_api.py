@@ -37,6 +37,7 @@ class GenerateRequest(BaseModel):
     model: str = ""
     existing_content: str = ""
     chapter_num: int = 1
+    character_aliases: dict[str, str] = {}
 
 
 class RewriteRequest(BaseModel):
@@ -496,21 +497,25 @@ async def _run_pipeline_background(session_id: str):
             director = SceneDirector(router_inst, project_id=req_data.get("project_id", ""))
             # Build character info string for scene planning
             _chars = req_data.get("characters", [])
+            _aliases = req_data.get("character_aliases", {})
             _char_card_parts = []
             try:
                 from ui.backend.app.routers.data_api import _list as _list_data
                 _all_chars = _list_data("characters")
                 _pid = req_data.get("project_id", "")
                 for _cn in _chars:
-                    _info = [_cn]
+                    _display = _aliases.get(_cn, _cn)
+                    _info = [_display]
                     for _cd in _all_chars:
                         if _cd.get("name") == _cn and (not _pid or _cd.get("project_id", "") in ("", _pid)):
                             if _cd.get("role"): _info.append(f"({_cd['role']})")
                             if _cd.get("personality"): _info.append(f"- 性格: {_cd['personality'][:100]}")
                             break
+                    if _cn != _display:
+                        _info.append(f"（作者备注：此角色真实身份为「{_cn}」，但本章中以「{_display}」的身份出场，禁止透露真实身份）")
                     _char_card_parts.append(" ".join(_info[:2]) + ("\n  " + "\n  ".join(_info[2:]) if len(_info) > 2 else ""))
             except Exception:
-                _char_card_parts = [f"- {c}" for c in _chars]
+                _char_card_parts = [f"- {_aliases.get(c, c)}" for c in _chars]
             _char_cards_str = "\n".join(_char_card_parts) if _char_card_parts else ""
             _location = req_data.get("location", "")
             _time_setting = req_data.get("time_setting", "")
@@ -526,12 +531,19 @@ async def _run_pipeline_background(session_id: str):
             _chapter_num = req_data.get("chapter_num", 1)
             _scope_constraints = req_data.get("world_rules", "")
             if _chars:
+                _display_chars = [_aliases.get(c, c) for c in _chars]
                 _scope_constraints += (
-                    f"\n\n【严格限制】本章（第{_chapter_num}章）仅有以下角色出场：{', '.join(_chars)}。"
+                    f"\n\n【严格限制】本章（第{_chapter_num}章）仅有以下角色出场：{', '.join(_display_chars)}。"
                     f"\n禁止引入或提及任何不在上述列表中的角色。"
                     f"\n禁止引用其他章节的剧情或角色。"
                     f"\n场景中的 characters 数组只能包含上述角色名。"
                 )
+                if _aliases:
+                    _scope_constraints += (
+                        f"\n\n【隐藏身份】以下角色在本章中使用化名，禁止在正文中透露真实身份："
+                    )
+                    for _real, _alias in _aliases.items():
+                        _scope_constraints += f"\n  - 「{_alias}」（请始终使用此称呼，不要使用真名）"
             scenes = await director.plan_scenes(
                 chapter_outline=_outline,
                 chapter_num=_chapter_num,
@@ -620,19 +632,24 @@ async def _run_pipeline_background(session_id: str):
                 project_id=_proj_id,
             )
 
-            # Ensure each scene has a characters list
+            # Ensure each scene has a characters list; apply aliases to scene character names
+            _display_characters = [_aliases.get(c, c) for c in characters] if _aliases else characters
             if isinstance(scene_result, dict):
                 for sc in scene_result.get("scenes", []):
                     if not sc.get("characters"):
-                        sc["characters"] = characters
+                        sc["characters"] = _display_characters
+                    elif _aliases:
+                        sc["characters"] = [_aliases.get(c, c) for c in sc["characters"]]
 
-            # Build character cards from stored data
+            # Build character cards from stored data (apply aliases for hidden identity)
+            _aliases = req_data.get("character_aliases", {})
             character_cards: dict[str, str] = {}
             try:
                 from ui.backend.app.routers.data_api import _list
                 all_chars = _list("characters")
                 pid = req_data.get("project_id", "")
                 for c_name in characters:
+                    display_name = _aliases.get(c_name, c_name)
                     card_parts = []
                     for cd in all_chars:
                         if cd.get("name") == c_name and (not pid or cd.get("project_id", "") in ("", pid)):
@@ -641,9 +658,11 @@ async def _run_pipeline_background(session_id: str):
                             if cd.get("speech_style"): card_parts.append(f"说话风格: {cd['speech_style']}")
                             if cd.get("role"): card_parts.append(f"角色定位: {cd['role']}")
                             break
-                    character_cards[c_name] = "\n".join(card_parts) if card_parts else ""
+                    if c_name != display_name:
+                        card_parts.append(f"【隐藏身份】本章中以「{display_name}」出场，禁止使用真名「{c_name}」")
+                    character_cards[display_name] = "\n".join(card_parts) if card_parts else ""
             except Exception:
-                character_cards = {c: "" for c in characters}
+                character_cards = {_aliases.get(c, c): "" for c in characters}
 
             _chapter_num = req_data.get("chapter_num", 1)
 
@@ -780,6 +799,12 @@ async def _run_pipeline_background(session_id: str):
             if _existing:
                 _extra_constraints.append(f"[已有正文（续写请衔接）]\n{_existing[-1500:]}")
             _extra_constraints.append("目标字数：约2000中文字。请保证内容充实完整，不要过短。")
+            _editor_aliases = req_data.get("character_aliases", {})
+            if _editor_aliases:
+                _alias_lines = [f"「{real}」→「{alias}」" for real, alias in _editor_aliases.items()]
+                _extra_constraints.append(
+                    f"【隐藏身份】以下角色在本章中使用化名，正文中只能使用化名：\n" + "\n".join(_alias_lines)
+                )
             _combined_constraints = req_data.get("world_rules", "")
             if _extra_constraints:
                 _combined_constraints += "\n" + "\n".join(_extra_constraints)
