@@ -323,7 +323,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
           answerText = rawText.replace(/\[FOLLOW_UP\][\s\S]*$/, "").trim();
           followUp = {
             text: fuMatch[1].trim(),
-            options: optMatch[1].split("|").map(s => s.trim()).filter(Boolean),
+            options: optMatch[1].split("|").map((s: string) => s.trim()).filter(Boolean),
           };
         } else {
           // Try JSON block extraction
