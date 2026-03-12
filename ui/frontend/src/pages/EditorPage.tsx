@@ -109,7 +109,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const [generating, setGenerating] = useState(false);
   const [evalResult, setEvalResult] = useState<EvalResult | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(_savedEditorState?.chatMessages || []);
-  const [chatInput, setChatInput] = useState("");
+  const [chatInput, setChatInput] = useState(_savedEditorState?.chatInput || "");
   const [currentAgent, setCurrentAgent] = useState<string | null>(null);
   const [waitingForConfirm, setWaitingForConfirm] = useState(false);
   const [mergePreview, setMergePreview] = useState<{ original: string; generated: string } | null>(null);
@@ -122,7 +122,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
   const chatSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const persistable = chatMessages.filter(m => m.status === "done");
-    sessionStorage.setItem(EDITOR_CHAT_KEY, JSON.stringify({ aiTab, chatMessages: persistable }));
+    sessionStorage.setItem(EDITOR_CHAT_KEY, JSON.stringify({ aiTab, chatMessages: persistable, chatInput }));
     // Debounced save to backend for permanent persistence
     if (chatLoaded && persistable.length > 0) {
       if (chatSaveTimer.current) clearTimeout(chatSaveTimer.current);
@@ -133,7 +133,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         }).catch(() => {});
       }, 2000);
     }
-  }, [aiTab, chatMessages, EDITOR_CHAT_KEY, chatLoaded, projectId, activeChId]);
+  }, [aiTab, chatMessages, chatInput, EDITOR_CHAT_KEY, chatLoaded, projectId, activeChId]);
 
   // Load chat history from backend on chapter change
   useEffect(() => {
@@ -302,12 +302,12 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     const saved = sessionStorage.getItem(SESS_KEY);
     if (saved) {
       try {
-        const { sessionId } = JSON.parse(saved);
+        const { sessionId, cursor } = JSON.parse(saved);
         if (sessionId) {
-          // Resume polling
+          // Resume polling from saved cursor position to avoid duplicate events
           sessionIdRef.current = sessionId;
           setGenerating(true);
-          eventCursorRef.current = 0;
+          eventCursorRef.current = cursor || 0;
           startPolling(sessionId);
         }
       } catch { /* ignore */ }
@@ -380,39 +380,48 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         setPipelineSteps(prev => prev.map(s =>
           s.step === stepLabel ? { ...s, status: "done" as const, detail: "已完成", progress: 100 } : s
         ));
-        // Replace thinking/speaking message with full generated content
+        // Build result content
+        let resultContent: string;
+        if (data.step === "scene_director" && data.result && !data.result?.error) {
+          resultContent = data.result?.text || formatSceneDirectorOutput(data.result);
+        } else if (data.result?.text && !data.result?.error) {
+          resultContent = data.result.text;
+        } else if (data.result?.error) {
+          resultContent = `生成出错：${data.result.error}`;
+        } else if (data.result?.score !== undefined) {
+          resultContent = data.result.summary_text || `评估完成。得分：${data.result.score}/100`;
+          if (!data.result.summary_text && data.result.issues?.length) {
+            resultContent += "\n\n问题：\n" + data.result.issues.map((i: any) =>
+              `- [${i.severity}] ${i.type}: ${i.description}`
+            ).join("\n");
+          }
+        } else if (data.result?.summary) {
+          resultContent = data.result.summary;
+        } else {
+          resultContent = JSON.stringify(data.result || {}, null, 2).slice(0, 1000);
+        }
+        const msg: ChatMessage = {
+          agent: data.agent_display_name ? "Actor Agents" : label,
+          content: resultContent, status: "done", timestamp: Date.now(),
+          agentDisplayName: data.agent_display_name || undefined,
+        };
+        if (data.result?.prompt_sent) {
+          msg.promptSent = typeof data.result.prompt_sent === "string"
+            ? data.result.prompt_sent
+            : JSON.stringify(data.result.prompt_sent, null, 2);
+        }
+        // For group-chat style (actor per-character messages), append without filtering
+        // For other steps, replace thinking/speaking message
         setChatMessages(prev => {
-          const filtered = prev.filter(m => m.status !== "thinking" && m.status !== "speaking");
-          let resultContent: string;
-          if (data.step === "scene_director" && data.result && !data.result?.error) {
-            // Format Scene Director output as readable screenplay
-            resultContent = data.result?.text || formatSceneDirectorOutput(data.result);
-          } else if (data.result?.text && !data.result?.error) {
-            resultContent = data.result.text;
-          } else if (data.result?.error) {
-            resultContent = `生成出错：${data.result.error}`;
-          } else if (data.result?.score !== undefined) {
-            // Evaluator: show summary_text if available, else build from data
-            resultContent = data.result.summary_text || `评估完成。得分：${data.result.score}/100`;
-            if (!data.result.summary_text && data.result.issues?.length) {
-              resultContent += "\n\n问题：\n" + data.result.issues.map((i: any) =>
-                `- [${i.severity}] ${i.type}: ${i.description}`
-              ).join("\n");
+          if (data.agent_display_name) {
+            // Group-chat: first per-character message clears thinking/speaking, rest append
+            const hasThinking = prev.some(m => m.status === "thinking" || m.status === "speaking");
+            if (hasThinking) {
+              return [...prev.filter(m => m.status !== "thinking" && m.status !== "speaking"), msg];
             }
-          } else if (data.result?.summary) {
-            resultContent = data.result.summary;
-          } else {
-            resultContent = JSON.stringify(data.result || {}, null, 2).slice(0, 1000);
+            return [...prev, msg];
           }
-          const msg: ChatMessage = {
-            agent: label, content: resultContent, status: "done", timestamp: Date.now(),
-            agentDisplayName: data.agent_display_name || undefined,
-          };
-          if (data.result?.prompt_sent) {
-            msg.promptSent = typeof data.result.prompt_sent === "string"
-              ? data.result.prompt_sent
-              : JSON.stringify(data.result.prompt_sent, null, 2);
-          }
+          const filtered = prev.filter(m => m.status !== "thinking" && m.status !== "speaking");
           return [...filtered, msg];
         });
         if (data.step === "evaluator" && data.result) {
@@ -548,6 +557,10 @@ export default function EditorPage({ projectId }: { projectId: string }) {
           handleEvent(evt);
           eventCursorRef.current += 1;
         }
+        // Save cursor so tab-switching resumes from correct position
+        if (resp.events.length > 0) {
+          try { sessionStorage.setItem(SESS_KEY, JSON.stringify({ sessionId, cursor: eventCursorRef.current })); } catch {}
+        }
         if (resp.status === "complete" || resp.status === "error") {
           stopPolling();
         }
@@ -649,7 +662,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
       });
       sessionIdRef.current = resp.session_id;
       // Persist session so it survives page navigation
-      sessionStorage.setItem(SESS_KEY, JSON.stringify({ sessionId: resp.session_id }));
+      sessionStorage.setItem(SESS_KEY, JSON.stringify({ sessionId: resp.session_id, cursor: 0 }));
       startPolling(resp.session_id);
     } catch {
       runQuickGenerate();
@@ -1219,20 +1232,34 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
                     <div>
                       <div style={{ marginBottom: 8 }}>{msg.content}</div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                        {msg.followUpOptions.map((opt, oi) => (
-                          <button key={oi}
-                            onClick={() => { onChatInputChange(opt); onSendMessage(); }}
-                            style={{
-                              padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border)",
-                              background: "var(--bg-surface)", color: "var(--text-primary)",
-                              fontSize: 12, textAlign: "left", cursor: "pointer", transition: "all 0.15s",
-                            }}
-                            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--accent-subtle)"; }}
-                            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg-surface)"; }}
-                          >
-                            {opt}
-                          </button>
-                        ))}
+                        {msg.followUpOptions.map((opt, oi) => {
+                          const isContinue = /满意|继续|进行下一步/.test(opt);
+                          return (
+                            <button key={oi}
+                              onClick={() => {
+                                if (isContinue) {
+                                  // Auto-confirm and continue pipeline
+                                  onConfirmContinue();
+                                } else {
+                                  onChatInputChange(opt);
+                                  onSendMessage();
+                                }
+                              }}
+                              style={{
+                                padding: "8px 14px", borderRadius: 8,
+                                border: isContinue ? "1px solid var(--jade)" : "1px solid var(--border)",
+                                background: isContinue ? "rgba(76,175,80,0.08)" : "var(--bg-surface)",
+                                color: "var(--text-primary)",
+                                fontSize: 12, textAlign: "left", cursor: "pointer", transition: "all 0.15s",
+                                fontWeight: isContinue ? 600 : 400,
+                              }}
+                              onMouseEnter={e => { e.currentTarget.style.borderColor = isContinue ? "var(--jade)" : "var(--accent)"; e.currentTarget.style.background = isContinue ? "rgba(76,175,80,0.15)" : "var(--accent-subtle)"; }}
+                              onMouseLeave={e => { e.currentTarget.style.borderColor = isContinue ? "var(--jade)" : "var(--border)"; e.currentTarget.style.background = isContinue ? "rgba(76,175,80,0.08)" : "var(--bg-surface)"; }}
+                            >
+                              {isContinue ? `✓ ${opt}` : opt}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   ) : msg.isQuestion ? (
@@ -1282,13 +1309,7 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
             </div>
           );
         })}
-        {waitingForConfirm && (
-          <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "12px 0", borderTop: "1px dashed var(--border)", marginTop: 8 }}>
-            <button className="btn-primary" style={{ padding: "8px 24px", fontSize: 13, borderRadius: 20, background: "var(--jade)", border: "none" }} onClick={onConfirmContinue}>
-              确认满意，继续下一步 →
-            </button>
-          </div>
-        )}
+        {/* Green confirm button removed — follow_up options handle progression */}
         {!generating && chatMessages.length > 0 && chatMessages[chatMessages.length - 1]?.agent === "System" && (
           <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "12px 0", borderTop: "1px dashed var(--border)", marginTop: 8 }}>
             <button className="btn-primary" style={{ padding: "8px 20px", fontSize: 13, borderRadius: 20 }} onClick={() => {
@@ -1328,7 +1349,7 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
       {!generating && chatMessages.length > 0 && !waitingForConfirm && (
         <button className="btn-primary w-full" style={{ marginBottom: 6 }} onClick={onStart}>重新开始生成</button>
       )}
-      <p className="text-xs text-muted mt-8" style={{ lineHeight: 1.6 }}>每个 Agent 完成后会询问你的意见。输入修改建议或点击「确认满意」进入下一步。</p>
+      <p className="text-xs text-muted mt-8" style={{ lineHeight: 1.6 }}>每个 Agent 完成后会给出选项。选择「满意，进行下一步」继续，或选择其他选项提出修改建议。</p>
     </div>
   );
 }

@@ -111,7 +111,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   })();
   const [studioTab, setStudioTab] = useState<StudioTab>(_savedStudio?.studioTab || "trending");
   const [messages, setMessages] = useState<ChatMsg[]>(_savedStudio?.messages || []);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(_savedStudio?.input || "");
   const [calibration, setCalibration] = useState<CalibrationState>(
     _savedStudio?.calibration || { tone: 50, pacing: 50, perspective: "third", audience: "general" },
   );
@@ -139,8 +139,8 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
   // Persist studio state to sessionStorage on changes
   useEffect(() => {
-    sessionStorage.setItem(STUDIO_SESS_KEY, JSON.stringify({ studioTab, messages, calibration }));
-  }, [studioTab, messages, calibration]);
+    sessionStorage.setItem(STUDIO_SESS_KEY, JSON.stringify({ studioTab, messages, calibration, input }));
+  }, [studioTab, messages, calibration, input]);
 
   // Backend persistence for chat (debounced)
   const chatSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -244,7 +244,34 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
       const recentMessages = [...messages.filter(m => m.tab === "brainstorm"), userMsg].slice(-20);
       const conversationContext = recentMessages.map(m => `${m.role === "user" ? "用户" : "AI"}：${m.content}`).join("\n\n");
 
-      const systemHint = "你是一个顶级网文创作顾问，精通大纲策划、角色设计、世界观构建、市场趋势分析。\n\n回答用户问题后，必须追加1-2个追问来明确用户需求。\n\n输出格式（严格JSON）：\n{\"answer\": \"你的回答...\", \"follow_up\": [{\"text\": \"追问？\", \"options\": [\"选项A\", \"选项B\", \"选项C\"]}]}\n\n追问规则：每个问题2-4个选项，选项具体有区分度，不重复已确认内容。";
+      // Detect conversation stage from history to guide follow-ups
+      const brainstormHistory = messages.filter(m => m.tab === "brainstorm");
+      const allText = brainstormHistory.map(m => m.content).join(" ");
+      const hasWorldbuilding = /世界观|设定|背景|体系|力量|修炼|境界|魔法|异能/.test(allText);
+      const hasStoryArch = /剧情|大纲|主线|结构|冲突|起承转合|节奏|伏笔|高潮/.test(allText);
+      const hasCharacters = /角色|人物|主角|配角|反派|性格|人设/.test(allText);
+
+      let stageGuide: string;
+      if (!hasWorldbuilding) {
+        stageGuide = "当前阶段：世界观构建。追问应聚焦于世界观设定（力量体系、社会背景、独特规则），帮助用户从零开始搭建世界。";
+      } else if (!hasStoryArch) {
+        stageGuide = "当前阶段：故事整体架构。世界观已有雏形，追问应聚焦于故事结构（主线冲突、卖点、节奏、伏笔布局），帮助用户确定故事骨架。";
+      } else if (!hasCharacters) {
+        stageGuide = "当前阶段：人物设计。世界观和故事架构已初步确立，追问应聚焦于角色设计（主角人设、配角功能、人物关系、成长弧线），让人物立住。";
+      } else {
+        stageGuide = "所有基础板块已讨论过。追问可自由探索用户当前最关心的方向，查漏补缺或深入细化。";
+      }
+
+      const systemHint = `你是一个顶级网文创作顾问，精通大纲策划、角色设计、世界观构建、市场趋势分析。
+
+${stageGuide}
+
+回答用户问题后，必须追加1-2个追问来引导用户进入下一步创作讨论。
+
+输出格式（严格JSON）：
+{"answer": "你的回答...", "follow_up": [{"text": "追问？", "options": ["选项A", "选项B", "选项C"]}]}
+
+追问规则：每个问题2-4个选项，选项具体有区分度，不重复已确认内容。追问要有引导性，帮助用户从模糊想法走向具体方案。`;
 
       const fullPrompt = recentMessages.length > 1
         ? `以下是对话历史：\n\n${conversationContext}\n\n请基于以上对话上下文回答用户最新的问题。`
@@ -870,6 +897,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                           borderRight: msg.role === "user" ? "3px solid var(--purple)" : "none",
                           fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)",
                           whiteSpace: msg.role === "user" ? "pre-wrap" : undefined,
+                          userSelect: "text", cursor: "text",
                           maxHeight: msg.content.length > 600 ? 300 : undefined,
                           overflowY: msg.content.length > 600 ? "auto" : undefined,
                         }}>

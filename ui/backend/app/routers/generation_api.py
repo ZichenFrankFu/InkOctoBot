@@ -737,7 +737,10 @@ def _format_evaluation_readable(eval_result: dict) -> str:
 
 
 async def _wait_for_confirm_bg(session_id: str, step: str, message: str, timeout_s: int = 600):
-    """Emit need_confirm and block until user responds (or auto-continue after timeout)."""
+    """Block until user responds via follow_up choice or chat (or auto-continue after timeout).
+    NOTE: The caller should emit a 'follow_up' event BEFORE calling this so the UI shows options.
+    This function no longer emits 'need_confirm' — the follow_up options serve as the confirmation UI.
+    """
     session = _active_sessions.get(session_id)
     if not session:
         return None
@@ -746,7 +749,7 @@ async def _wait_for_confirm_bg(session_id: str, step: str, message: str, timeout
     session["confirm_data"] = None
     session["waiting_confirm"] = True
     session["current_step"] = step
-    _emit(session_id, {"type": "need_confirm", "step": step, "message": message})
+    # No need_confirm event — the follow_up options already provide the UI
     try:
         await asyncio.wait_for(evt.wait(), timeout=timeout_s)
     except asyncio.TimeoutError:
@@ -947,14 +950,18 @@ async def _run_pipeline_background(session_id: str):
         scene_result_with_prompt["text"] = _format_scene_plan_readable(scene_result)
         _emit(session_id, {"type": "step_done", "step": "scene_director", "result": scene_result_with_prompt})
         _emit(session_id, {"type": "progress_update", "step": "scene_director", "progress": 100, "detail": "场景规划完成"})
-        # Emit follow-up options for interactive confirmation
+        # Emit follow-up options — these serve as the confirmation UI (no separate green button)
         _emit(session_id, {
             "type": "follow_up", "step": "scene_director",
             "message": "场景规划完成，请确认：",
-            "options": ["满意，继续下一步", "需要调整场景顺序", "需要增减场景", "需要调整角色安排"],
+            "options": ["满意，进行下一步", "需要调整场景顺序", "需要增减场景", "需要调整角色安排"],
         })
 
-        # Simplified handoff — no raw content dump
+        confirm = await _wait_for_confirm_bg(session_id, "scene_director", "场景规划完成，请确认")
+        if confirm is None:
+            return
+
+        # Handoff message appears AFTER user confirms
         _num_scenes = len(scene_result.get("scenes", [])) if isinstance(scene_result, dict) else 0
         _is_fallback = scene_result.get("_fallback", False) if isinstance(scene_result, dict) else False
         _handoff_msg = f"场景拆分完成（{_num_scenes} 个场景），将传递给角色演员进行表演。"
@@ -964,10 +971,6 @@ async def _run_pipeline_background(session_id: str):
             "type": "handoff", "from": "Scene Director", "to": "Actor Agents",
             "content": _handoff_msg,
         })
-
-        confirm = await _wait_for_confirm_bg(session_id, "scene_director", "场景拆分完成，是否继续生成？")
-        if confirm is None:
-            return
 
         # ── Step 2: Actor Agents (via SceneSimulator) ────────
         session["current_step"] = "actor_agents"
@@ -1121,22 +1124,30 @@ async def _run_pipeline_background(session_id: str):
                 "scene_results": all_scene_results,
             }
 
-            # Emit token-like updates so UI shows the performance record
-            if full_text:
-                _emit(session_id, {"type": "token", "step": "actor_agents", "content": full_text})
-
             _emit(session_id, {"type": "progress_update", "step": "actor_agents", "progress": 80, "detail": "角色表演完成，检查一致性..."})
 
-            # Emit each character's performance separately with character display name
+            # Group-chat style: emit each character's performance as a separate message
+            # with the character name as agent_display_name (e.g. "陈明" not "Actor Agents")
+            _seen_chars = set()
             for char_name, perf_text in all_performances.items():
                 display_name = char_name.split("_scene")[0] if "_scene" in char_name else char_name
+                if display_name in _seen_chars:
+                    continue  # avoid duplicate per-character messages across scenes
+                _seen_chars.add(display_name)
+                # Collect all scene performances for this character
+                _all_perf_for_char = []
+                for k, v in all_performances.items():
+                    dn = k.split("_scene")[0] if "_scene" in k else k
+                    if dn == display_name:
+                        _all_perf_for_char.append(v)
+                _combined_perf = "\n\n".join(_all_perf_for_char)
                 _emit(session_id, {
                     "type": "step_done", "step": "actor_agents",
                     "agent_display_name": display_name,
-                    "result": {"text": perf_text[:2000]},
+                    "result": {"text": _combined_perf[:3000]},
                 })
 
-            # Run consistency check (non-fatal)
+            # Run consistency check → emit warnings as group-chat messages per character
             try:
                 from agents.production.actor_agent import ActorAgent
                 for char_name, perf_text in all_performances.items():
@@ -1149,7 +1160,7 @@ async def _run_pipeline_background(session_id: str):
                         for w in warnings:
                             _emit(session_id, {
                                 "type": "agent_warning", "step": "actor_agents",
-                                "agent": w.get("character", display_name),
+                                "agent": display_name,
                                 "message": w.get("message", ""),
                                 "options": ["这是故意的，记录原因", "修改指令"],
                             })
@@ -1157,18 +1168,6 @@ async def _run_pipeline_background(session_id: str):
                 logger.debug("Consistency check skipped: %s", _cc_err)
 
             _emit(session_id, {"type": "progress_update", "step": "actor_agents", "progress": 100, "detail": "角色表演完成"})
-
-            _emit(session_id, {
-                "type": "step_done", "step": "actor_agents",
-                "result": {
-                    "text": full_text,
-                    "word_count": len(full_text),
-                    "performances": {k: v[:500] for k, v in all_performances.items()},
-                    "actor_count": len(all_performances),
-                    "scene_count": len(all_scene_results),
-                    "prompt_sent": actor_prompt_sent,
-                },
-            })
         except Exception as e:
             logger.error("Actor agents error: %s", e, exc_info=True)
             full_text = f"（表演记录生成失败：{str(e)[:200]}）"
@@ -1177,15 +1176,22 @@ async def _run_pipeline_background(session_id: str):
                 "result": {"text": full_text, "error": str(e)[:200], "prompt_sent": actor_prompt_sent},
             })
 
-        # Emit handoff: Actor Agents → Editor-Writer
+        # Emit follow-up options for Actor Agents confirmation
+        _emit(session_id, {
+            "type": "follow_up", "step": "actor_agents",
+            "message": "角色表演完成，请确认：",
+            "options": ["满意，进行下一步", "需要调整对话风格", "需要修改角色表现", "需要增加/删减内容"],
+        })
+
+        confirm = await _wait_for_confirm_bg(session_id, "actor_agents", "角色对话生成完成，请确认")
+        if confirm is None:
+            return
+
+        # Handoff message appears AFTER user confirms
         _emit(session_id, {
             "type": "handoff", "from": "Actor Agents", "to": "Editor-Writer",
             "content": f"角色表演记录已生成（{len(full_text)}字，{len(characters)}个角色，{num_scenes}个场景），将传递给编辑转化为正文。",
         })
-
-        confirm = await _wait_for_confirm_bg(session_id, "actor_agents", "角色对话生成完成，是否继续编辑润色？")
-        if confirm is None:
-            return
 
         # ── Step 3: Editor-Writer ───────────────────────────
         session["current_step"] = "editor_writer"
@@ -1305,15 +1311,22 @@ async def _run_pipeline_background(session_id: str):
         except Exception as mem_err:
             logger.warning("Memory hook skipped: %s", mem_err)
 
-        # Emit handoff: Editor-Writer → Evaluator
+        # Emit follow-up options for Editor-Writer confirmation
+        _emit(session_id, {
+            "type": "follow_up", "step": "editor_writer",
+            "message": "编辑润色完成，请确认：",
+            "options": ["满意，进行下一步", "需要调整文风", "需要修改节奏", "需要修改篇幅"],
+        })
+
+        confirm = await _wait_for_confirm_bg(session_id, "editor_writer", "编辑润色完成，请确认")
+        if confirm is None:
+            return
+
+        # Handoff message appears AFTER user confirms
         _emit(session_id, {
             "type": "handoff", "from": "Editor-Writer", "to": "Evaluator",
             "content": f"润色后的文稿（{len(edited_text)}字）已传递给评估器进行质量检查。",
         })
-
-        confirm = await _wait_for_confirm_bg(session_id, "editor_writer", "编辑润色完成，是否继续质量评估？")
-        if confirm is None:
-            return
 
         # ── Step 4: Evaluator ───────────────────────────────
         session["current_step"] = "evaluator"
