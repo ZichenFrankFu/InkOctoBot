@@ -838,6 +838,48 @@ async def _run_pipeline_background(session_id: str):
 
     try:
         router_inst = _build_router(req_data.get("provider", ""), req_data.get("model", ""))
+
+        # ── Load calibration style preferences ──
+        # If the frontend didn't send style_notes, try to load from saved calibration data
+        if not req_data.get("style_notes"):
+            try:
+                _cal_pid = req_data.get("project_id", "default")
+                from ui.backend.app.routers.data_api import _col
+                _cal_path = _col("calibration") / f"{_cal_pid}.json"
+                if _cal_path.exists():
+                    _cal_data = json.loads(_cal_path.read_text("utf-8"))
+                    _style_parts: list[str] = []
+                    # Extract style parameters
+                    _sp = _cal_data.get("style_params", {})
+                    if _sp:
+                        _tone = _sp.get("tone", 50)
+                        _pacing = _sp.get("pacing", 50)
+                        _persp = _sp.get("perspective", "third")
+                        _aud = _sp.get("audience", "general")
+                        _tone_desc = "轻松幽默" if _tone < 30 else ("严肃深沉" if _tone > 70 else "均衡")
+                        _pacing_desc = "快节奏" if _pacing < 30 else ("慢节奏" if _pacing > 70 else "中等节奏")
+                        _persp_map = {"first": "第一人称", "third": "第三人称", "omniscient": "全知视角"}
+                        _aud_map = {"male": "男性向", "female": "女性向", "general": "通用"}
+                        _style_parts.append(
+                            f"风格基调：{_tone_desc}，{_pacing_desc}，{_persp_map.get(_persp, _persp)}，{_aud_map.get(_aud, _aud)}"
+                        )
+                    # Extract feedback from calibration history
+                    _cal_history = _cal_data.get("history", [])
+                    _good_comments = []
+                    for entry in _cal_history[-3:]:  # last 3 calibration rounds
+                        fb = entry.get("feedback", {})
+                        if fb.get("score", 0) >= 4 and fb.get("comment"):
+                            _good_comments.append(fb["comment"])
+                        if entry.get("analysis"):
+                            _good_comments.append(entry["analysis"])
+                    if _good_comments:
+                        _style_parts.append("用户校准反馈：" + "；".join(_good_comments[-3:]))
+                    if _style_parts:
+                        req_data["style_notes"] = "\n".join(_style_parts)
+                        logger.info("Loaded calibration style for project %s: %s", _cal_pid, req_data["style_notes"][:200])
+            except Exception as _cal_err:
+                logger.debug("Calibration load skipped: %s", _cal_err)
+
         _emit(session_id, {"type": "pipeline_start", "session_id": session_id})
 
         # ── Step 1: Scene Director ──────────────────────────
@@ -938,6 +980,11 @@ async def _run_pipeline_background(session_id: str):
                     _memory_ctx = _mem_text + _memory_ctx
             except Exception:
                 pass
+
+            # Inject calibration style into constraints so Scene Director is aware
+            _style_notes = req_data.get("style_notes", "")
+            if _style_notes:
+                _scope_constraints += f"\n\n【风格要求】{_style_notes}"
 
             # Truncate constraints and memory context to prevent LLM overload
             _MAX_CONSTRAINTS_LEN = 3000
@@ -1059,26 +1106,37 @@ async def _run_pipeline_background(session_id: str):
         if confirm is None:
             return
 
-        # Handoff message appears AFTER user confirms
+        # Handoff message appears AFTER user confirms — combined with step_start to avoid duplicate messages
         _num_scenes = len(scene_result.get("scenes", [])) if isinstance(scene_result, dict) else 0
         _is_fallback = scene_result.get("_fallback", False) if isinstance(scene_result, dict) else False
-        _handoff_msg = f"场景拆分完成（{_num_scenes} 个场景），将传递给角色演员进行表演。"
-        if _is_fallback:
-            _handoff_msg = f"场景规划降级为单场景模式（原因：{scene_result.get('_error', '未知')}），将基于章节大纲继续生成。"
-        _emit(session_id, {
-            "type": "handoff", "from": "Scene Director", "to": "Actor Agents",
-            "content": _handoff_msg,
-        })
 
         # ── Step 2: Actor Agents (via SceneSimulator) ────────
         session["current_step"] = "actor_agents"
         characters = req_data.get("characters", [])
         scene_list = scene_result.get("scenes", []) if isinstance(scene_result, dict) else []
         num_scenes = len(scene_list) if scene_list else 1
+
+        # Build a descriptive detail showing scenes and characters
+        _display_chars = [_aliases.get(c, c) for c in characters] if _aliases else list(characters)
+        if _is_fallback:
+            _start_detail = f"场景规划降级为单场景模式，将基于章节大纲继续。参演角色：{'、'.join(_display_chars[:5])}"
+        else:
+            _scene_summaries = []
+            for i, sc in enumerate(scene_list[:6]):
+                sc_chars = sc.get("characters", _display_chars)
+                if _aliases:
+                    sc_chars = [_aliases.get(c, c) for c in sc_chars]
+                sc_location = sc.get("location", "")
+                _scene_summaries.append(
+                    f"场景{i+1}" + (f"「{sc_location}」" if sc_location else "")
+                    + f"：{'、'.join(sc_chars[:4])}"
+                )
+            _start_detail = f"共 {_num_scenes} 个场景开始表演：\n" + "\n".join(_scene_summaries)
+
         _emit(session_id, {
             "type": "step_start", "step": "actor_agents",
             "label": "Actor Agents",
-            "detail": f"正在为 {len(characters)} 个角色 × {num_scenes} 个场景生成表演记录...",
+            "detail": _start_detail,
         })
         full_text = ""
         actor_prompt_sent = ""
@@ -1227,6 +1285,7 @@ async def _run_pipeline_background(session_id: str):
             # Group-chat style: emit each character's performance as a separate message
             # with the character name as agent_display_name (e.g. "陈明" not "Actor Agents")
             _seen_chars = set()
+            _emitted_any_char = False
             for char_name, perf_text in all_performances.items():
                 display_name = char_name.split("_scene")[0] if "_scene" in char_name else char_name
                 if display_name in _seen_chars:
@@ -1239,10 +1298,20 @@ async def _run_pipeline_background(session_id: str):
                     if dn == display_name:
                         _all_perf_for_char.append(v)
                 _combined_perf = "\n\n".join(_all_perf_for_char)
+                if _combined_perf.strip():
+                    _emit(session_id, {
+                        "type": "step_done", "step": "actor_agents",
+                        "agent_display_name": display_name,
+                        "result": {"text": _combined_perf[:3000]},
+                    })
+                    _emitted_any_char = True
+
+            # Fallback: if no per-character messages were emitted, emit the combined text
+            if not _emitted_any_char:
+                _fallback_text = full_text[:3000] if full_text.strip() else "（角色表演已完成，但未产生独立角色记录）"
                 _emit(session_id, {
                     "type": "step_done", "step": "actor_agents",
-                    "agent_display_name": display_name,
-                    "result": {"text": _combined_perf[:3000]},
+                    "result": {"text": _fallback_text, "prompt_sent": actor_prompt_sent},
                 })
 
             # Run consistency check → emit warnings as group-chat messages per character
