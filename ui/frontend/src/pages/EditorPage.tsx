@@ -27,8 +27,24 @@ const AGENT_COLORS: Record<string, { bg: string; border: string; name: string }>
   "Actor Agents": { bg: "var(--gold-subtle)", border: "var(--gold)", name: "Actor Agents" },
   "Editor-Writer": { bg: "var(--jade-subtle)", border: "var(--jade)", name: "Editor-Writer" },
   "Evaluator": { bg: "var(--accent-subtle)", border: "var(--accent)", name: "Evaluator" },
+  "旁白": { bg: "var(--bg-surface-2)", border: "var(--text-secondary)", name: "旁白" },
   "User": { bg: "var(--purple-subtle)", border: "var(--purple)", name: "用户" },
   "System": { bg: "var(--bg-surface-2)", border: "var(--text-tertiary)", name: "系统" },
+};
+
+// Character-specific avatar colors for Actor agent group chat
+const CHAR_COLORS = [
+  { bg: "rgba(255,160,60,0.12)", border: "#e8a040" },
+  { bg: "rgba(100,180,255,0.12)", border: "#64b4ff" },
+  { bg: "rgba(255,100,130,0.12)", border: "#ff6482" },
+  { bg: "rgba(130,220,120,0.12)", border: "#82dc78" },
+  { bg: "rgba(200,140,255,0.12)", border: "#c88cff" },
+  { bg: "rgba(255,210,80,0.12)", border: "#ffd250" },
+];
+const getCharColor = (name: string) => {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  return CHAR_COLORS[Math.abs(hash) % CHAR_COLORS.length];
 };
 
 interface ChatMessage {
@@ -983,7 +999,8 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   const [references, setReferences] = useState<{ id: string; title: string; selected: boolean }[]>([]);
   const [showLinker, setShowLinker] = useState(false);
 
-  // Outline chat state
+  // Outline chat state (overlay dialog)
+  const [showOutlineChat, setShowOutlineChat] = useState(false);
   const [outlineChatMsgs, setOutlineChatMsgs] = useState<{ role: "user" | "assistant"; content: string; ts: number }[]>([]);
   const [outlineChatInput, setOutlineChatInput] = useState("");
   const [outlineChatLoading, setOutlineChatLoading] = useState(false);
@@ -1072,28 +1089,50 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       <textarea className="input" value={synopsis} onChange={e => onChange(e.target.value)} rows={6}
         placeholder={"在这里写这一章的剧情要点...\n\n例如：\n  主角初入宗门\n  与师兄发生冲突"} style={{ lineHeight: 1.8, fontFamily: "var(--font-sans)" }} />
 
-      {/* Outline AI Chat */}
-      <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+      {/* AI Outline Chat Overlay Button */}
+      <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
+        <button className="btn" onClick={() => setShowOutlineChat(!showOutlineChat)}
+          style={{ fontSize: 11, padding: "5px 14px", borderRadius: 16, borderColor: showOutlineChat ? "var(--accent)" : "var(--border)", color: showOutlineChat ? "var(--accent)" : "var(--text-secondary)" }}>
+          {showOutlineChat ? "收起 AI 助手" : "AI 大纲助手"}
+          {outlineChatMsgs.length > 0 && <span style={{ marginLeft: 4, fontSize: 9, background: "var(--accent)", color: "#fff", borderRadius: 8, padding: "1px 5px" }}>{outlineChatMsgs.length}</span>}
+        </button>
+      </div>
+
+      {/* AI Outline Chat Overlay Dialog */}
+      {showOutlineChat && (
+      <div style={{ marginTop: 6, border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.15)" }}>
         <div style={{ padding: "6px 10px", background: "var(--bg-surface-2)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)" }}>AI 大纲助手</span>
-          <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => { setOutlineChatMsgs([]); apiPut("/api/data/chat_history", { project_id: projectId, scope: `outline_chat_${chapter?.id || ""}`, messages: [] }).catch(() => {}); }}>清空</button>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)" }}>Story Architect · AI 大纲助手</span>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => { setOutlineChatMsgs([]); apiPut("/api/data/chat_history", { project_id: projectId, scope: `outline_chat_${chapter?.id || ""}`, messages: [] }).catch(() => {}); }}>清空</button>
+            <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setShowOutlineChat(false)}>收起</button>
+          </div>
         </div>
-        <div style={{ maxHeight: 200, overflowY: "auto", padding: "8px 10px" }}>
+        <div style={{ maxHeight: 240, overflowY: "auto", padding: "8px 10px" }}>
           {outlineChatMsgs.length === 0 && (
             <div style={{ padding: "16px 8px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 11 }}>
-              与 AI 讨论大纲。满意后点击「写入大纲」。
+              与 Story Architect 讨论大纲。满意后点击「写入大纲」。
             </div>
           )}
           {outlineChatMsgs.map((msg, i) => (
-            <div key={i} style={{ display: "flex", flexDirection: msg.role === "user" ? "row-reverse" : "row", marginBottom: 6, gap: 6 }}>
-              <div style={{
-                maxWidth: "85%", padding: "6px 10px", borderRadius: 8,
-                background: msg.role === "user" ? "var(--purple-subtle)" : "var(--bg-surface-2)",
-                borderLeft: msg.role === "assistant" ? "2px solid var(--accent)" : "none",
-                borderRight: msg.role === "user" ? "2px solid var(--purple)" : "none",
-                fontSize: 12, lineHeight: 1.5, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-              }}>
-                {msg.content}
+            <div key={i} style={{ display: "flex", flexDirection: msg.role === "user" ? "row-reverse" : "row", marginBottom: 8, gap: 6 }}>
+              <div style={{ width: 24, height: 24, borderRadius: "50%", background: msg.role === "user" ? "var(--purple-subtle)" : "var(--accent-subtle)", border: `1.5px solid ${msg.role === "user" ? "var(--purple)" : "var(--accent)"}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, flexShrink: 0 }}>
+                {msg.role === "user" ? "👤" : "🏗️"}
+              </div>
+              <div style={{ maxWidth: "82%" }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: msg.role === "user" ? "var(--purple)" : "var(--accent)", marginBottom: 2, textAlign: msg.role === "user" ? "right" : "left" }}>
+                  {msg.role === "user" ? "你" : "Story Architect"}
+                </div>
+                <div style={{
+                  padding: "6px 10px", borderRadius: 8,
+                  background: msg.role === "user" ? "var(--purple-subtle)" : "var(--bg-surface-2)",
+                  borderLeft: msg.role === "assistant" ? "2px solid var(--accent)" : "none",
+                  borderRight: msg.role === "user" ? "2px solid var(--purple)" : "none",
+                  fontSize: 12, lineHeight: 1.5, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
+                  userSelect: "text",
+                }}>
+                  {msg.content}
+                </div>
               </div>
             </div>
           ))}
@@ -1133,6 +1172,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           </div>
         )}
       </div>
+      )}
 
       {/* Character & Reference Linker */}
       <div style={{ marginTop: 10 }}>
@@ -1260,8 +1300,21 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
   const [expandedPromptIdx, setExpandedPromptIdx] = useState<number | null>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
 
-  const getAgentStyle = (agent: string) => AGENT_COLORS[agent] || { bg: "var(--gold-subtle)", border: "var(--gold)", name: agent };
-  const getAgentAvatar = (agent: string) => {
+  const getAgentStyle = (agent: string, displayName?: string) => {
+    if (displayName && agent === "Actor Agents") {
+      // Character-specific colors for group chat
+      if (displayName === "旁白") return AGENT_COLORS["旁白"];
+      const cc = getCharColor(displayName);
+      return { bg: cc.bg, border: cc.border, name: displayName };
+    }
+    return AGENT_COLORS[agent] || { bg: "var(--gold-subtle)", border: "var(--gold)", name: agent };
+  };
+  const getAgentAvatar = (agent: string, displayName?: string) => {
+    if (displayName && agent === "Actor Agents") {
+      if (displayName === "旁白") return "📖";
+      // Use first character of name as avatar
+      return displayName.charAt(0);
+    }
     const map: Record<string, string> = { "Scene Director": "🎬", "Actor Agents": "🎭", "Editor-Writer": "✍️", "Evaluator": "📋", "User": "👤", "System": "🤖" };
     return map[agent] || "🎭";
   };
@@ -1269,7 +1322,7 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div className="label mb-8">Creative Writing Pipeline</div>
+      <div className="label mb-8">Creative Writing Pipeline · 群聊生成</div>
       {/* Progress bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 10, padding: "6px 0" }}>
         {steps.map((s, i) => (
@@ -1310,16 +1363,23 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
       {/* Chat area */}
       <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
-          <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>在「大纲」标签中点击「开始生成」启动 Pipeline，或直接在下方输入消息</div>
+          <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>🎬🎭✍️📋</div>
+            <div>Scene Director → 角色扮演（旁白+角色名） → Editor-Writer → Evaluator</div>
+            <div style={{ marginTop: 6, fontSize: 11 }}>在「大纲」标签中点击「开始生成」启动 Pipeline</div>
+          </div>
         )}
         {chatMessages.map((msg, i) => {
-          const style = getAgentStyle(msg.agent); const isUser = msg.agent === "User";
+          const style = getAgentStyle(msg.agent, msg.agentDisplayName); const isUser = msg.agent === "User";
+          const avatar = getAgentAvatar(msg.agent, msg.agentDisplayName);
+          const isCharActor = msg.agent === "Actor Agents" && msg.agentDisplayName && msg.agentDisplayName !== "旁白";
           return (
             <div key={i} style={{ display: "flex", flexDirection: isUser ? "row-reverse" : "row", alignItems: "flex-start", marginBottom: 10, gap: 8 }}>
-              <div style={{ width: 32, height: 32, borderRadius: "50%", background: style.bg, border: `2px solid ${style.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{getAgentAvatar(msg.agent)}</div>
+              <div style={{ width: 32, height: 32, borderRadius: "50%", background: style.bg, border: `2px solid ${style.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: isCharActor ? 13 : 16, flexShrink: 0, fontWeight: isCharActor ? 700 : 400, color: isCharActor ? style.border : undefined }}>{avatar}</div>
               <div style={{ maxWidth: "80%", minWidth: 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
                   {msg.agentDisplayName || style.name}
+                  {isCharActor && <span style={{ fontSize: 9, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 4 }}>(Actor)</span>}
                   {msg.isWarning && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "var(--gold)" }}>⚠️</span>}
                   {msg.status === "thinking" && !msg.isCoT && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "#f9ab00" }}>思考中...</span>}
                   {msg.isCoT && msg.status === "thinking" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)" }}>思考中</span>}
@@ -1820,13 +1880,14 @@ function EvalTab({ result }: { result: EvalResult | null }) {
     const repIssues = issues.filter(i => i.type === "repetition");
     const otherIssues = issues.filter(i => i.type !== "ai_flavor" && i.type !== "repetition");
 
+    const slopScore = Math.max(0, 5 - slopIssues.length);
     cats.push({
-      id: "slop_detection", name: "AI味检测 (Slop)",
-      score: Math.max(0, 5 - slopIssues.length),
+      id: "slop_detection", name: `AI味检测 (Slop) — AI率 ${Math.round((1 - slopScore / 5) * 100)}%`,
+      score: slopScore,
       max_score: 5,
       rationale: slopIssues.length > 0
-        ? `检测到 ${slopIssues.length} 处AI常见表达模式，如固定句式、空洞修饰等。这些表达可能让读者感到不够自然。`
-        : "未发现明显AI痕迹，表达自然流畅。",
+        ? `检测到 ${slopIssues.length} 处AI常见表达模式，如固定句式、空洞修饰等。这些表达可能让读者感到不够自然。AI率越低越好。`
+        : "未发现明显AI痕迹，表达自然流畅。AI率 0%，达标。",
       findings: slopIssues.map(i => i.description),
     });
     cats.push({
@@ -1880,9 +1941,14 @@ function EvalTab({ result }: { result: EvalResult | null }) {
   const totalScore = displayResult.score;
   const scoreColor = totalScore >= 80 ? "var(--jade)" : totalScore >= 60 ? "var(--gold)" : "var(--error)";
 
+  // Compute AI率 from slop issues
+  const slopCount = displayResult.issues.filter(i => i.type === "ai_flavor").length;
+  const aiRate = Math.min(100, slopCount * 20);
+  const aiRateColor = aiRate <= 20 ? "var(--jade)" : aiRate <= 50 ? "var(--gold)" : "var(--error)";
+
   return (
     <div>
-      {/* Score header with progress bar */}
+      {/* Score header with AI率 */}
       <div style={{ marginBottom: 20 }}>
         <div className="flex items-center gap-12 mb-8">
           <div style={{
@@ -1902,6 +1968,15 @@ function EvalTab({ result }: { result: EvalResult | null }) {
               {displayResult.issues.length} 个问题 · {strengths.length} 个优点
             </div>
           </div>
+        </div>
+        {/* AI率 indicator */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: "var(--bg-surface-2)", borderRadius: 8, borderLeft: `3px solid ${aiRateColor}` }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>AI率</span>
+          <div style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--border)", overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${aiRate}%`, borderRadius: 3, background: aiRateColor, transition: "width 0.5s ease" }} />
+          </div>
+          <span style={{ fontSize: 13, fontWeight: 700, fontFamily: "var(--font-mono)", color: aiRateColor }}>{aiRate}%</span>
+          <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>{aiRate <= 20 ? "自然" : aiRate <= 50 ? "可接受" : "AI味重"}</span>
         </div>
       </div>
 

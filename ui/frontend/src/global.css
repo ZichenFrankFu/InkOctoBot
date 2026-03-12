@@ -1390,3 +1390,363 @@ textarea.input {
 .text-center { text-align: center; }
 .overflow-hidden { overflow: hidden; }
 .min-w-0 { min-width: 0; }
+
+/* ══════════════════════════════════════
+   AI Chat Panel (Social Media Style)
+   ══════════════════════════════════════ */
+
+.ai-chat-overlay {
+  position: relative;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+.ai-chat-overlay .ai-chat-header {
+  padding: 6px 12px;
+  background: var(--bg-surface-2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ai-chat-overlay .ai-chat-header .agent-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* Social media bubble message */
+.chat-msg-social {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  animation: slideUp 0.2s var(--ease-out);
+}
+.chat-msg-social.is-user {
+  flex-direction: row-reverse;
+}
+.chat-msg-social .chat-avatar-social {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.chat-msg-social .chat-agent-name {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.chat-msg-social .chat-agent-id {
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  margin-left: 4px;
+}
+.chat-msg-social .chat-bubble-social {
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  word-break: break-word;
+  white-space: pre-wrap;
+  user-select: text;
+  cursor: text;
+  max-width: 80%;
+}
+
+/* Follow-up question options */
+.follow-up-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.follow-up-option {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.follow-up-option:hover {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.follow-up-option.custom-input {
+  border-style: dashed;
+  color: var(--text-tertiary);
+}
+
+/* ══════════════════════════════════════
+   Tag Autocomplete
+   ══════════════════════════════════════ */
+
+.tag-autocomplete {
+  position: relative;
+}
+.tag-autocomplete .tag-input-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  min-height: 32px;
+  align-items: center;
+  cursor: text;
+  transition: border-color 0.15s;
+}
+.tag-autocomplete .tag-input-wrap:focus-within {
+  border-color: var(--accent);
+}
+.tag-autocomplete .tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: var(--accent-subtle);
+  border-radius: 12px;
+  font-size: 11px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.tag-autocomplete .tag-chip .tag-remove {
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 10px;
+}
+.tag-autocomplete .tag-chip .tag-remove:hover {
+  opacity: 1;
+}
+.tag-autocomplete .tag-input-inner {
+  flex: 1;
+  min-width: 60px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+.tag-autocomplete .tag-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: var(--z-dropdown);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  max-height: 160px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+.tag-autocomplete .tag-dropdown-item {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.tag-autocomplete .tag-dropdown-item:hover,
+.tag-autocomplete .tag-dropdown-item.active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+/* ══════════════════════════════════════
+   Batch Selection Toolbar
+   ══════════════════════════════════════ */
+
+.batch-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--accent-subtle);
+  border-bottom: 1px solid var(--accent);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* ══════════════════════════════════════
+   Consistency Check Table
+   ══════════════════════════════════════ */
+
+.consistency-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.consistency-table th {
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--bg-surface-2);
+  color: var(--text-tertiary);
+  font-weight: 600;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+}
+.consistency-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  line-height: 1.5;
+  vertical-align: top;
+}
+.consistency-table tr:hover td {
+  background: var(--bg-surface-hover);
+}
+
+/* ══════════════════════════════════════
+   Relationship Graph
+   ══════════════════════════════════════ */
+
+.rel-graph-container {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-app);
+  overflow: hidden;
+}
+.rel-graph-container svg text {
+  fill: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+/* ══════════════════════════════════════
+   Calibration Parameter Sliders
+   ══════════════════════════════════════ */
+
+.calibration-param {
+  padding: 8px 0;
+}
+.calibration-param .param-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.calibration-param .param-track {
+  position: relative;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.calibration-param .param-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.15s;
+}
+.calibration-param .param-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* ══════════════════════════════════════
+   View Toggle (Grid/List)
+   ══════════════════════════════════════ */
+
+.view-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-surface-2);
+  border-radius: var(--radius-sm);
+}
+.view-toggle button {
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+.view-toggle button.active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+/* ══════════════════════════════════════
+   Pipeline Group Chat
+   ══════════════════════════════════════ */
+
+.pipeline-group-chat .char-actor-bubble {
+  border-left-width: 3px;
+  border-left-style: solid;
+}
+.pipeline-group-chat .narrator-bubble {
+  background: var(--bg-surface-2);
+  border-left: 3px solid var(--text-secondary);
+  font-style: italic;
+}
+
+/* ══════════════════════════════════════
+   AI率 Indicator
+   ══════════════════════════════════════ */
+
+.ai-rate-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-surface-2);
+  border-radius: 8px;
+}
+.ai-rate-bar .ai-rate-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+.ai-rate-bar .ai-rate-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+/* ══════════════════════════════════════
+   Dynamic Property Flashcard
+   ══════════════════════════════════════ */
+
+.flashcard-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+.flashcard-nav button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px 10px;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+.flashcard-nav button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.flashcard-nav button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}

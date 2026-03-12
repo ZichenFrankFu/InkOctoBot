@@ -7,6 +7,10 @@ export interface Project {
   id: string;
   name: string;
   genre?: string;
+  platform?: string;          // 平台: 起点/番茄/etc
+  gender_target?: string;     // 男频/女频
+  serial_status?: string;     // 连载状态
+  synopsis?: string;          // 故事梗概
   status?: string;
   created_at?: string | number;
   updated_at?: string | number;
@@ -125,12 +129,14 @@ export interface Character {
   id: string;
   project_id: string;
   name: string;
-  role?: string;
+  gender?: string;           // 性别: 男/女/其他
+  age?: string;              // 年龄 (free text, e.g. "25", "不详")
+  role?: string;             // 角色定位: 主角/配角/反派/路人
   tags?: string[];
-  personality?: string;
-  background?: string;
-  speech_style?: string;
-  appearance?: string;
+  personality?: string;      // 性格核心记忆点
+  background?: string;       // 背景故事
+  speech_style?: string;     // 口癖
+  appearance?: string;       // 外貌核心记忆点
   layer_b?: CharacterLayerB;
   relationships?: CharacterRelationship[];
   dynamic_snapshots?: DynamicPropertySnapshot[];

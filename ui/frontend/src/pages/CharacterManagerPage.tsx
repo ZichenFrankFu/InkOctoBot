@@ -14,7 +14,8 @@ interface Props {
   projects: any[];
 }
 
-const ROLES = ["主角", "重要配角", "配角", "反派", "导师", "路人"];
+const ROLES = ["主角", "配角", "反派", "路人"];
+const GENDERS = ["男", "女", "其他"];
 
 const DEFAULT_LAYER_B: CharacterLayerB = {
   loss_aversion: 2.5,
@@ -34,6 +35,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const [search, setSearch] = useState("");
   const [relTarget, setRelTarget] = useState("");
   const [rightView, setRightView] = useState<"detail" | "graph">("detail");
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 220, maxSize: 420 });
 
@@ -357,11 +360,43 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
           <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
             <div className="flex items-center justify-between">
               <h3>角色管理</h3>
-              <button className="btn-primary" style={{ padding: "5px 12px", fontSize: 12 }} onClick={create}>
-                + 新建角色
-              </button>
+              <div className="flex gap-4">
+                <button className="btn" style={{ padding: "5px 10px", fontSize: 11 }}
+                  onClick={() => { setBatchMode(!batchMode); setSelectedIds(new Set()); }}>
+                  {batchMode ? "取消" : "批量"}
+                </button>
+                <button className="btn-primary" style={{ padding: "5px 12px", fontSize: 12 }} onClick={create}>
+                  + 新建
+                </button>
+              </div>
             </div>
             <div className="text-xs text-muted">{projName}</div>
+            {batchMode && selectedIds.size > 0 && (
+              <div className="flex gap-4 mt-4">
+                <button className="btn" style={{ fontSize: 11, flex: 1 }}
+                  onClick={() => {
+                    const selected = items.filter(c => selectedIds.has(c.id));
+                    const blob = new Blob([JSON.stringify(selected, null, 2)], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url; a.download = `characters_${Date.now()}.json`;
+                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  }}>
+                  导出 ({selectedIds.size})
+                </button>
+                <button className="btn" style={{ fontSize: 11, flex: 1, color: "var(--error)" }}
+                  onClick={async () => {
+                    if (!confirm(`确定删除 ${selectedIds.size} 个角色？`)) return;
+                    for (const id of selectedIds) {
+                      await apiDelete(`/api/data/characters/${id}`).catch(() => {});
+                    }
+                    setSelectedIds(new Set()); setBatchMode(false); load();
+                  }}>
+                  删除 ({selectedIds.size})
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Search */}
@@ -405,8 +440,22 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 <div
                   key={c.id}
                   className={`report-list-item ${editing?.id === c.id ? "active" : ""}`}
-                  onClick={() => { setEditing(c); setDirty(false); setRightView("detail"); }}
+                  onClick={() => {
+                    if (batchMode) {
+                      setSelectedIds(prev => {
+                        const next = new Set(prev);
+                        if (next.has(c.id)) next.delete(c.id); else next.add(c.id);
+                        return next;
+                      });
+                    } else {
+                      setEditing(c); setDirty(false); setRightView("detail");
+                    }
+                  }}
                 >
+                  {batchMode && (
+                    <input type="checkbox" checked={selectedIds.has(c.id)} readOnly
+                      style={{ accentColor: "var(--accent)", flexShrink: 0 }} />
+                  )}
                   <div
                     className="char-avatar"
                     style={{
@@ -425,13 +474,15 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                       {(c.relationships?.length || 0) > 0 ? ` \u00B7 ${c.relationships!.length}段关系` : ""}
                     </div>
                   </div>
-                  <button
-                    className="btn-icon"
-                    style={{ fontSize: 14 }}
-                    onClick={e => { e.stopPropagation(); remove(c.id); }}
-                  >
-                    &times;
-                  </button>
+                  {!batchMode && (
+                    <button
+                      className="btn-icon"
+                      style={{ fontSize: 14 }}
+                      onClick={e => { e.stopPropagation(); remove(c.id); }}
+                    >
+                      &times;
+                    </button>
+                  )}
                 </div>
               ))
             )}
@@ -476,11 +527,14 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </button>
               </div>
 
-              {/* AI Character Chat Panel */}
+              {/* AI Character Chat Panel (3.2.1) - overlay style */}
               {showCharChat && (
-                <div className="card mb-20" style={{ overflow: "hidden" }}>
-                  <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <h3>AI 角色助手</h3>
+                <div className="card mb-20" style={{ overflow: "hidden", border: "2px solid var(--accent)", boxShadow: "0 4px 16px var(--accent-glow)" }}>
+                  <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--accent-subtle)" }}>
+                    <div>
+                      <h3 style={{ color: "var(--accent)" }}>AI 角色助手</h3>
+                      <div className="text-xs" style={{ color: "var(--text-tertiary)", marginTop: 2 }}>Agent: Character Designer</div>
+                    </div>
                     <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => { setCharChatMessages([]); }}>清空对话</button>
                   </div>
                   <div className="card-body" style={{ padding: 0 }}>
@@ -628,47 +682,68 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </div>
               )}
 
-              {/* ═══ STATIONARY PROPERTIES ═══ */}
+              {/* ═══ FIXED PROPERTIES (3.2.2) ═══ */}
               <div className="card mb-20">
-                <div className="card-header"><h3>固定属性</h3><span className="text-xs text-muted">不随时间/章节变动</span></div>
+                <div className="card-header"><h3>角色固定属性</h3><span className="text-xs text-muted">不随时间/章节变化</span></div>
                 <div className="card-body">
-                  <div className="field mb-12">
-                    <label className="label">姓名</label>
-                    <input className="input" value={editing.name} onChange={e => u("name", e.target.value)} />
+                  {/* A) 姓名, 性别, 年龄 (Not Null) */}
+                  <div className="flex gap-12 mb-12" style={{ flexWrap: "wrap" }}>
+                    <div className="field" style={{ flex: 2, minWidth: 120 }}>
+                      <label className="label">姓名 *</label>
+                      <input className="input" value={editing.name} onChange={e => u("name", e.target.value)} />
+                    </div>
+                    <div className="field" style={{ flex: 1, minWidth: 80 }}>
+                      <label className="label">性别 *</label>
+                      <div className="flex gap-4">
+                        {GENDERS.map(g => (
+                          <button key={g} className={(editing as any).gender === g ? "btn-primary" : "btn"}
+                            style={{ flex: 1, fontSize: 11, padding: "5px 0", borderRadius: 16, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
+                            onClick={() => u("gender", g)}>{g}</button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="field" style={{ flex: 1, minWidth: 70 }}>
+                      <label className="label">年龄 *</label>
+                      <input className="input" value={(editing as any).age || ""} onChange={e => u("age", e.target.value)}
+                        placeholder="例：25" />
+                    </div>
                   </div>
+                  {/* B) 角色定位 (Not Null) */}
                   <div className="field mb-12">
-                    <label className="label">角色定位</label>
+                    <label className="label">角色定位 *</label>
                     <div className="flex gap-6" style={{ flexWrap: "wrap" }}>
                       {ROLES.map(r => (
-                        <button
-                          key={r}
+                        <button key={r}
                           className={editing.role === r ? "btn-primary" : "btn"}
                           style={{ padding: "5px 14px", fontSize: 12, borderRadius: 20 }}
-                          onClick={() => u("role", r)}
-                        >
-                          {r}
-                        </button>
+                          onClick={() => u("role", r)}>{r}</button>
                       ))}
                     </div>
                   </div>
+                  {/* C) 外貌核心记忆点 (nullable) */}
                   <div className="field mb-12">
-                    <label className="label">标签（逗号分隔）</label>
-                    <input
-                      className="input"
-                      value={(editing.tags || []).join(", ")}
-                      onChange={e => u("tags", e.target.value.split(",").map(s => s.trim()).filter(Boolean))}
-                      placeholder="例：剑修, 冷酷, 天才"
-                    />
+                    <label className="label">外貌核心记忆点</label>
+                    <textarea className="input" value={editing.appearance || ""} onChange={e => u("appearance", e.target.value)}
+                      rows={2} placeholder="最突出的外貌特征（如：左眼疤痕、银白长发）..." />
                   </div>
+                  {/* D) 性格核心记忆点 (nullable) */}
+                  <div className="field mb-12">
+                    <label className="label">性格核心记忆点</label>
+                    <textarea className="input" value={editing.personality || ""} onChange={e => u("personality", e.target.value)}
+                      rows={2} placeholder="最核心的性格特质（如：表面冷漠实则重情）..." />
+                  </div>
+                  {/* E) 背景故事 (nullable) */}
+                  <div className="field mb-12">
+                    <label className="label">背景故事</label>
+                    <textarea className="input" value={editing.background || ""} onChange={e => u("background", e.target.value)}
+                      rows={3} placeholder="在小说正文开始前发生在此角色身上的事..."
+                      style={{ fontFamily: "var(--font-serif)", lineHeight: 1.8 }} />
+                  </div>
+                  {/* F) 口癖 (nullable) */}
                   <div className="field">
-                    <label className="label">外貌</label>
-                    <textarea
-                      className="input"
-                      value={editing.appearance || ""}
-                      onChange={e => u("appearance", e.target.value)}
-                      rows={2}
-                      placeholder="角色的外貌特征..."
-                    />
+                    <label className="label">口癖</label>
+                    <textarea className="input" value={editing.speech_style || ""} onChange={e => u("speech_style", e.target.value)}
+                      rows={2} placeholder="角色的口头禅、语气特点..." />
                   </div>
                 </div>
               </div>
@@ -710,34 +785,46 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </div>
               </div>
 
-              {/* ═══ DYNAMIC PROPERTIES (Flashcards) ═══ */}
+              {/* ═══ DYNAMIC PROPERTIES (3.2.3 Flashcards) ═══ */}
               <div className="card mb-20">
                 <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
-                    <h3>动态属性</h3>
-                    <span className="text-xs text-muted">随时间/章节变化，以 flashcard 形式浏览</span>
+                    <h3>角色动态属性</h3>
+                    <span className="text-xs text-muted">随时间/章节变化 &middot; 左右滑动浏览</span>
                   </div>
                   <button className="btn" style={{ fontSize: 11, padding: "4px 12px" }} onClick={addSnapshot}>
                     + 添加快照
                   </button>
                 </div>
                 <div className="card-body">
-                  {/* Current (base) state */}
-                  <div style={{ marginBottom: 12, padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)" }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)", marginBottom: 8 }}>当前状态（基准）</div>
-                    <div className="field mb-8">
-                      <label className="label">性格描述</label>
-                      <textarea className="input" value={editing.personality || ""} onChange={e => u("personality", e.target.value)} rows={2} placeholder="描述角色的核心性格特质..." />
+                  {/* Overview: Relationship summary sorted by affinity/priority */}
+                  {(editing.relationships || []).length > 0 && (
+                    <div style={{ marginBottom: 16, padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)" }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", marginBottom: 8 }}>关系总览</div>
+                      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                        <div style={{ flex: 1, minWidth: 140 }}>
+                          <div className="text-xs text-muted mb-4">好感度排序（高→低）</div>
+                          {[...(editing.relationships || [])].sort((a, b) => (b.affinity || 0) - (a.affinity || 0)).map(r => (
+                            <div key={r.target_id} style={{ fontSize: 11, display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
+                              <span style={{ color: "var(--text-secondary)" }}>{r.target_name}</span>
+                              <span style={{ color: (r.affinity || 0) > 0 ? "var(--jade)" : (r.affinity || 0) < 0 ? "var(--error)" : "var(--text-disabled)", fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                                {(r.affinity || 0) > 0 ? "+" : ""}{r.affinity || 0}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 140 }}>
+                          <div className="text-xs text-muted mb-4">优先级排序（高→低）</div>
+                          {[...(editing.relationships || [])].sort((a, b) => (a.priority || 99) - (b.priority || 99)).map(r => (
+                            <div key={r.target_id} style={{ fontSize: 11, display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
+                              <span style={{ color: "var(--text-secondary)" }}>{r.target_name}</span>
+                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-tertiary)" }}>#{r.priority || "?"}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                    <div className="field mb-8">
-                      <label className="label">背景故事</label>
-                      <textarea className="input" value={editing.background || ""} onChange={e => u("background", e.target.value)} rows={3} placeholder="角色的过往经历..." />
-                    </div>
-                    <div className="field">
-                      <label className="label">说话风格</label>
-                      <textarea className="input" value={editing.speech_style || ""} onChange={e => u("speech_style", e.target.value)} rows={2} placeholder="口头禅、语气特点..." />
-                    </div>
-                  </div>
+                  )}
 
                   {/* Flashcard navigation */}
                   {(editing.dynamic_snapshots || []).length > 0 && (
@@ -937,6 +1024,23 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </div>
               </div>
 
+              {/* ═══ SINGLE CHARACTER RELATIONSHIP GRAPH (3.2.4) ═══ */}
+              {(editing.relationships || []).length > 0 && (
+                <div className="card mb-20">
+                  <div className="card-header"><h3>{editing.name} 的关系图谱</h3></div>
+                  <div className="card-body" style={{ padding: 8 }}>
+                    <SingleCharRelGraph
+                      character={editing}
+                      allCharacters={items}
+                      onSelectCharacter={(id) => {
+                        const target = items.find(c => c.id === id);
+                        if (target) { setEditing(target); setDirty(false); }
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* Save button at bottom */}
               <div style={{ marginTop: 24, display: "flex", justifyContent: "flex-end" }}>
                 <button
@@ -1107,6 +1211,88 @@ function GlobalRelationshipGraph({ characters, onSelectCharacter }: { characters
         </div>
       </div>
     </div>
+  );
+}
+
+/* ---- Single Character Relationship Graph (3.2.4) ---- */
+function SingleCharRelGraph({ character, allCharacters, onSelectCharacter }: {
+  character: Character; allCharacters: Character[]; onSelectCharacter: (id: string) => void;
+}) {
+  const rels = character.relationships || [];
+  if (rels.length === 0) return null;
+
+  const connectedIds = rels.map(r => r.target_id);
+  const connectedChars = allCharacters.filter(c => connectedIds.includes(c.id));
+
+  const W = 500, H = Math.max(300, connectedChars.length * 40 + 100);
+  const centerX = W / 2, centerY = H / 2;
+  const radius = Math.min(W, H) * 0.35;
+
+  const nodeR = (name: string) => Math.max(24, name.length * 7 + 6);
+  const centerR = nodeR(character.name);
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+      <defs>
+        <marker id="sc-arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L8,3 L0,6 Z" fill="var(--accent)" opacity="0.8" />
+        </marker>
+      </defs>
+
+      {/* Edges from center to connected nodes */}
+      {connectedChars.map((c, i) => {
+        const angle = -Math.PI / 2 + (2 * Math.PI / connectedChars.length) * i;
+        const tx = centerX + radius * Math.cos(angle);
+        const ty = centerY + radius * Math.sin(angle);
+        const rel = rels.find(r => r.target_id === c.id);
+        if (!rel) return null;
+
+        const dx = tx - centerX, dy = ty - centerY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const ux = dx / dist, uy = dy / dist;
+        const tr = nodeR(c.name);
+
+        const x1 = centerX + ux * (centerR + 4);
+        const y1 = centerY + uy * (centerR + 4);
+        const x2 = tx - ux * (tr + 10);
+        const y2 = ty - uy * (tr + 10);
+
+        // Heatmap color based on affinity
+        const aff = rel.affinity || 0;
+        const color = aff > 50 ? "var(--jade)" : aff > 0 ? "#6bba6b" : aff > -30 ? "var(--gold)" : "var(--error)";
+        const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+
+        return (
+          <g key={c.id}>
+            <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth={2} opacity={0.7} markerEnd="url(#sc-arrow)" />
+            {rel.label && (
+              <text x={mx} y={my - 6} textAnchor="middle" fontSize={9} fill={color} fontWeight={500}>{rel.label}</text>
+            )}
+            <text x={mx} y={my + 8} textAnchor="middle" fontSize={8} fill="var(--text-disabled)">
+              {aff > 0 ? "+" : ""}{aff}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Connected nodes */}
+      {connectedChars.map((c, i) => {
+        const angle = -Math.PI / 2 + (2 * Math.PI / connectedChars.length) * i;
+        const tx = centerX + radius * Math.cos(angle);
+        const ty = centerY + radius * Math.sin(angle);
+        const r = nodeR(c.name);
+        return (
+          <g key={c.id} style={{ cursor: "pointer" }} onClick={() => onSelectCharacter(c.id)}>
+            <circle cx={tx} cy={ty} r={r} fill="var(--bg-surface-2)" stroke="var(--border-hover)" strokeWidth={1.5} />
+            <text x={tx} y={ty + 4} textAnchor="middle" fontSize={11} fontWeight={500} fill="var(--text-primary)">{c.name}</text>
+          </g>
+        );
+      })}
+
+      {/* Center node (current character) */}
+      <circle cx={centerX} cy={centerY} r={centerR} fill="var(--accent-subtle)" stroke="var(--accent)" strokeWidth={2} />
+      <text x={centerX} y={centerY + 5} textAnchor="middle" fontSize={13} fontWeight={700} fill="var(--accent)">{character.name}</text>
+    </svg>
   );
 }
 
