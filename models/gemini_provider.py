@@ -40,14 +40,16 @@ class GeminiProvider(BaseLLMProvider):
         temperature: float | None = None, max_tokens: int | None = None,
         stop: list[str] | None = None, **kwargs: Any,
     ) -> LLMResponse:
-        resp = await self._client.chat.completions.create(
-            model=self.config.model_name or "gemini-2.0-flash",
-            messages=[{"role": m.role, "content": m.content} for m in messages],
-            temperature=temperature if temperature is not None else self.config.temperature,
-            max_tokens=max_tokens or self.config.max_tokens,
-            stop=stop,
-            **kwargs,
-        )
+        kw: dict[str, Any] = {
+            "model": self.config.model_name or "gemini-2.0-flash",
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "temperature": temperature if temperature is not None else self.config.temperature,
+            "max_tokens": max_tokens or self.config.max_tokens,
+        }
+        if stop:
+            kw["stop"] = stop
+        kw.update(kwargs)
+        resp = await self._client.chat.completions.create(**kw)
         choice = resp.choices[0]
         usage = resp.usage
         return LLMResponse(
@@ -64,15 +66,17 @@ class GeminiProvider(BaseLLMProvider):
         temperature: float | None = None, max_tokens: int | None = None,
         stop: list[str] | None = None, **kwargs: Any,
     ) -> AsyncIterator[str]:
-        stream = await self._client.chat.completions.create(
-            model=self.config.model_name or "gemini-2.0-flash",
-            messages=[{"role": m.role, "content": m.content} for m in messages],
-            temperature=temperature if temperature is not None else self.config.temperature,
-            max_tokens=max_tokens or self.config.max_tokens,
-            stop=stop,
-            stream=True,
-            **kwargs,
-        )
+        kw: dict[str, Any] = {
+            "model": self.config.model_name or "gemini-2.0-flash",
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "temperature": temperature if temperature is not None else self.config.temperature,
+            "max_tokens": max_tokens or self.config.max_tokens,
+            "stream": True,
+        }
+        if stop:
+            kw["stop"] = stop
+        kw.update(kwargs)
+        stream = await self._client.chat.completions.create(**kw)
         async for chunk in stream:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
