@@ -270,6 +270,79 @@ _AUTO_OUTLINE = (
     ']}'
 )
 
+_BRAINSTORM_JSON = json.dumps({
+    "answer": (
+        "这个构思很有潜力！星际考古+感知能力的设定很有新意。"
+        "我帮你梳理一下核心要素：\n\n"
+        "**核心冲突**：主角的感知能力既是解开远古秘密的钥匙，也是引来各方势力的原因。\n\n"
+        "**核心悬念**：远古文明为何灭亡？星门激活会带来什么后果？\n\n"
+        "**情感线索**：主角从「被迫合作」到「相互信任」的关系演变。\n\n"
+        "建议先确定以下几个关键设定，再展开详细大纲。"
+    ),
+    "follow_up": [
+        {
+            "text": "主角的感知能力应该有什么样的代价或限制？",
+            "options": [
+                "每次使用后会短暂失去自己的记忆",
+                "使用越多，被远古意识侵蚀的风险越大",
+                "只能在特定条件下触发（如接触特定材质）",
+                "能力不稳定，有时会接收到错误信息"
+            ]
+        },
+        {
+            "text": "你希望故事的整体基调偏向哪个方向？",
+            "options": [
+                "硬科幻探险 — 注重世界观逻辑和科学设定",
+                "太空歌剧 — 宏大叙事+热血战斗",
+                "悬疑解谜 — 层层揭秘远古文明的真相"
+            ]
+        }
+    ]
+}, ensure_ascii=False)
+
+_CALIBRATION_FEEDBACK_JSON = json.dumps({
+    "text": (
+        "矿洞的尽头，是一片出乎意料的开阔空间。\n\n"
+        "穹顶高达百米，表面密布着螺旋状的纹路，在头灯的照射下折射出幽蓝色的微光。"
+        "这些纹路不是天然形成的——它们太规律、太精确，带着一种超越人类审美的冷峻几何美感。\n\n"
+        "\"这是……\"李星河喉咙发紧，声音不自觉地压低了，仿佛怕惊醒沉睡在这里的什么东西。\n\n"
+        "苏晚没有回答。她关掉了头灯的白光模式，切换到红外。"
+        "在热成像视野中，这个空间呈现出完全不同的面貌：穹顶上的那些纹路，竟然还在缓慢地流动，"
+        "散发着比环境温度高出整整三度的微弱热量。\n\n"
+        "\"还活着。\"苏晚的声音很轻，但李星河听出了其中压抑的震惊，\"这些纹路——或者说这个结构——"
+        "它还在运转。亿万年了，它还在运转。\"\n\n"
+        "李星河缓缓走向穹顶正下方的一块巨大水晶平台。他的感知能力在尖叫，"
+        "前所未有地强烈，像是有什么东西在主动呼唤他。"
+    ),
+    "analysis": (
+        "根据用户上一轮的反馈（希望节奏更紧凑、增加悬念感），本次调整：\n"
+        "1. 缩短环境描写段落，每段不超过3句\n"
+        "2. 用角色反应来推动节奏，而非单纯描写\n"
+        "3. 在末尾增加了「主动呼唤」的悬念元素\n"
+        "4. 加入了更多角色互动（苏晚的专业视角补充）"
+    )
+}, ensure_ascii=False)
+
+_CHARACTER_GENERATE_PROFILE_JSON = json.dumps({
+    "personality": (
+        "外表沉稳冷静，实则内心充满对未知的好奇与热情。"
+        "面对危险时会本能地保护同伴，但不善于表达自己的感情。"
+        "有着学者特有的执着——一旦遇到感兴趣的课题，会完全沉浸其中。"
+        "内心深处因特殊能力而感到与常人格格不入，渴望被理解却又害怕被当作异类。"
+    ),
+    "background": (
+        "出身于联邦边缘星系的普通矿工家庭。童年时在一次矿难中意外接触到远古遗物，"
+        "获得了感知古代文明情感残留的特殊能力。以全额奖学金进入银河联邦大学考古学系，"
+        "研究生期间发表了三篇有影响力的论文。只有他自己知道每次使用能力后的痛苦。"
+    ),
+    "speech_style": (
+        "用词简洁精准，习惯使用考古学专业术语。语速不快但逻辑清晰。"
+        "紧张时会不自觉地摸后脑勺。偶尔会冒出带有矿区方言味道的口头禅。"
+    ),
+    "appearance": "黑发微乱，深邃的棕色眼睛带着学者特有的专注。中等身材偏瘦，常穿旧款考古学院野外夹克。",
+    "tags": ["考古学者", "感知能力", "内向", "执着", "矿工家庭"]
+}, ensure_ascii=False)
+
 _AB_COMPARE_RESULT = (
     '{"comparison": {'
     '"version_a_score": 78, "version_b_score": 85,'
@@ -321,6 +394,12 @@ def _pick_response(messages: list[LLMMessage]) -> str:
     if any(kw in combined for kw in ["一致性检查", "世界观一致性", "内部矛盾", "逻辑冲突", "世界书条目"]):
         return _CONSISTENCY_CHECK
 
+    # ── Character profile generation (JSON output) ──
+    if any(kw in combined for kw in [
+        "角色档案", "角色设计师。根据角色名字", "generate-profile",
+    ]):
+        return _CHARACTER_GENERATE_PROFILE_JSON
+
     # ── Character AI: full profile generation (when asked for JSON) ──
     if any(kw in combined for kw in ["生成完整人设", "丰富背景故事", "设计说话风格"]):
         return _CHARACTER_FULL_PROFILE
@@ -329,7 +408,15 @@ def _pick_response(messages: list[LLMMessage]) -> str:
     if any(kw in combined for kw in ["角色设计师", "角色设计", "角色助手", "增加性格矛盾"]):
         return _CHARACTER_CHAT
 
-    # ── Outline brainstorming (multi-turn) ──
+    # ── Brainstorm (expects JSON with answer + follow_up) ──
+    if any(kw in combined for kw in ["创作顾问", "追问", "follow_up"]):
+        return _BRAINSTORM_JSON
+
+    # ── Calibration with feedback history (expects JSON with text + analysis) ──
+    if any(kw in combined for kw in ["之前的评分和评论反馈", "调整风格参数", "调整风格方向"]):
+        return _CALIBRATION_FEEDBACK_JSON
+
+    # ── Outline brainstorming (multi-turn chat) ──
     if any(kw in combined for kw in ["策划编辑", "故事大纲", "构思", "brainstorm"]):
         # Check if it's a follow-up (has prior messages)
         user_msgs = [m for m in messages if m.role == "user"]
