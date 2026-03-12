@@ -413,12 +413,13 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
         scenery: "一段场景描写（300-500字）",
       };
 
+      // Only include the most recent 3 rounds of feedback to avoid prompt bloat
       let feedbackContext = "";
-      if (calibrationHistory.length > 0) {
-        feedbackContext = "\n\n用户之前的反馈历史：\n" + calibrationHistory.map((h, i) =>
-          `样本${i + 1}（评分：${h.feedback.score}/5）：${h.feedback.comment || "无评论"}`
+      const recentHistory = calibrationHistory.slice(-3);
+      if (recentHistory.length > 0) {
+        feedbackContext = "\n\n用户最近的反馈（请据此调整）：\n" + recentHistory.map((h, i) =>
+          `第${calibrationHistory.length - recentHistory.length + i + 1}轮（${h.feedback.score}/5分）：${h.feedback.comment || "无具体评论"}`
         ).join("\n");
-        feedbackContext += "\n\n请根据以上反馈调整风格方向。";
       }
 
       const prompt = `请生成一段${typeDesc[sampleType] || "短文"}的校准样本。
@@ -431,24 +432,34 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 - 网站风格：${websiteDesc}
 - 目标受众：${audienceDesc}${feedbackContext}
 
-请直接输出样本内容，不需要解释。自然语言输出，不要使用JSON格式。`;
+【重要】请直接输出纯文学内容，不要包含标题、说明文字、JSON、代码块或任何格式标记。只输出小说正文。`;
 
       const resp = await apiPost<{ text: string }>("/api/generation/quick-generate", {
         project_id: activeProject || "default",
         chapter_id: "calibration_sample",
         synopsis: prompt,
-        system_hint: "你是一个专业的网文写手。根据给定的风格参数生成校准样本段落。直接输出文本内容，不要加标题、说明或JSON格式。只输出纯文学内容。",
+        system_hint: "你是一个专业的网文写手。你的任务是根据给定的风格参数生成一段校准样本。【关键规则】只输出纯小说正文，绝对不要输出JSON、代码块、标题、分析、说明文字。直接以小说内容开头。",
       });
 
       let sampleText = resp.text || "";
-      // Strip potential JSON wrapper
+      // Strip potential JSON wrapper (defense in depth)
       try {
         const parsed = JSON.parse(sampleText);
         if (parsed?.text) sampleText = parsed.text;
+        else if (typeof parsed === "string") sampleText = parsed;
         if (parsed?.analysis) setCalibrationAnalysis(parsed.analysis);
-      } catch { /* use raw text */ }
-      // Clean up any remaining JSON artifacts
-      sampleText = sampleText.replace(/^```json\s*/i, "").replace(/\s*```\s*$/, "").trim();
+      } catch { /* use raw text — expected path */ }
+      // Aggressively clean up any remaining format artifacts
+      sampleText = sampleText
+        .replace(/^```(?:json|text|markdown)?\s*/i, "")
+        .replace(/\s*```\s*$/, "")
+        .replace(/^["']|["']$/g, "")
+        .replace(/^\{[\s\S]*?"text"\s*:\s*"/, "")
+        .replace(/"\s*\}\s*$/, "")
+        .replace(/^#+\s+.*\n/gm, "")  // remove markdown headers
+        .replace(/^【[^】]*】\s*/gm, "")  // remove 【标题】 prefixes
+        .replace(/^(?:校准样本|样本|以下是|生成内容)[：:]\s*/i, "")
+        .trim();
       setCalibrationSample(sampleText);
     } catch (e: any) {
       setCalibrationSample(`生成失败：${e?.message || "请检查模型连接"}`);
@@ -476,6 +487,14 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     const pid = activeProject || "default";
     apiPut(`/api/data/calibration/${pid}`, {
       history: calibrationHistory, style_params: calibration, confirmed: true,
+    }).catch(() => {});
+  };
+
+  const cancelConfirmStyle = () => {
+    setStyleConfirmed(false);
+    const pid = activeProject || "default";
+    apiPut(`/api/data/calibration/${pid}`, {
+      history: calibrationHistory, style_params: calibration, confirmed: false,
     }).catch(() => {});
   };
 
@@ -737,6 +756,11 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                 onClearHistory={() => setChatMessages([])}
                 placeholder="询问某个题材的市场前景..."
                 quickPrompts={getAgentConfig("trending").quickPrompts}
+                templates={[
+                  { label: "题材分析", prompt: "分析一下「」这个题材的市场前景、竞争程度和新人友好度" },
+                  { label: "市场对比", prompt: "对比「」和「」两个题材，哪个更适合新人入行？" },
+                  { label: "趋势预测", prompt: "目前网文市场有哪些新兴趋势值得关注？" },
+                ]}
                 emptyState={
                   <div style={{ padding: "16px" }}>
                     <div style={{ padding: "12px 14px", background: "var(--accent-subtle)", borderRadius: 8, marginBottom: 16, borderLeft: "3px solid var(--accent)" }}>
@@ -789,6 +813,12 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                 onClearHistory={() => setChatMessages([])}
                 placeholder="构思你的故事世界..."
                 quickPrompts={getAgentConfig("brainstorm").quickPrompts}
+                templates={[
+                  { label: "世界观设定", prompt: "帮我设计一个世界观：" },
+                  { label: "角色构思", prompt: "帮我构思一个角色，要求：" },
+                  { label: "剧情大纲", prompt: "帮我设计一个剧情大纲，类型是「」，核心卖点是：" },
+                  { label: "开篇设计", prompt: "帮我设计一个引人入胜的开篇，要求在前三章内建立核心冲突" },
+                ]}
                 emptyState={
                   <div style={{ padding: "16px" }}>
                     <div style={{ padding: "12px 14px", background: "var(--indigo-subtle)", borderRadius: 8, marginBottom: 16, borderLeft: "3px solid var(--indigo)" }}>
@@ -976,9 +1006,14 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                             disabled={sampleFeedback.score === 0 || sampleLoading}>
                             提交反馈 & 生成改进样本
                           </button>
+                          <button className="btn" style={{ flex: 1, fontSize: 11 }}
+                            onClick={generateCalibrationSample}
+                            disabled={sampleLoading}>
+                            重新生成
+                          </button>
                           <button className="btn-primary" style={{ flex: 1, fontSize: 11, background: styleConfirmed ? "var(--text-tertiary)" : "var(--jade)", border: "none" }}
-                            onClick={confirmStyle} disabled={styleConfirmed}>
-                            {styleConfirmed ? "已确认风格" : "确认为目标风格"}
+                            onClick={styleConfirmed ? cancelConfirmStyle : confirmStyle}>
+                            {styleConfirmed ? "取消确认" : "确认风格"}
                           </button>
                         </div>
 
@@ -1005,9 +1040,15 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                     )}
 
                     {styleConfirmed && (
-                      <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--jade-subtle)", borderRadius: 6, borderLeft: "3px solid var(--jade)" }}>
-                        <span style={{ fontSize: 12, color: "var(--jade)", fontWeight: 600 }}>风格方向已确认！</span>
-                        <span style={{ fontSize: 11, color: "var(--text-secondary)", marginLeft: 8 }}>Pipeline 生成时将使用此风格参数。</span>
+                      <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--jade-subtle)", borderRadius: 6, borderLeft: "3px solid var(--jade)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <div>
+                          <span style={{ fontSize: 12, color: "var(--jade)", fontWeight: 600 }}>风格方向已确认！</span>
+                          <span style={{ fontSize: 11, color: "var(--text-secondary)", marginLeft: 8 }}>Pipeline 生成时将使用此风格参数。</span>
+                        </div>
+                        <button className="btn" style={{ fontSize: 10, padding: "2px 10px", borderColor: "var(--jade)", color: "var(--jade)" }}
+                          onClick={cancelConfirmStyle}>
+                          取消确认
+                        </button>
                       </div>
                     )}
                   </div>

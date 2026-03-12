@@ -547,6 +547,18 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                         终止
                       </button>
                     )}
+                    <div className="flex gap-4 mb-4" style={{ flexWrap: "wrap" }}>
+                      {[
+                        { label: "扩展设定", prompt: "帮我扩展这条世界观设定，增加更多细节" },
+                        { label: "检查矛盾", prompt: "检查这条设定与已有世界观是否有矛盾" },
+                        { label: "生成子条目", prompt: "基于这条设定，生成几个子条目/衍生设定" },
+                      ].map(t => (
+                        <button key={t.label} className="btn" style={{ fontSize: 10, padding: "2px 8px", borderRadius: 12 }}
+                          onClick={() => setAiChatInput(t.prompt)}>
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
                     <div className="flex gap-6">
                       <input className="input" value={aiChatInput} onChange={e => setAiChatInput(e.target.value)}
                         onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendAIChat(); } }}

@@ -83,6 +83,8 @@ interface Props {
   emptyState?: React.ReactNode;
   /** Quick prompts shown in empty state */
   quickPrompts?: string[];
+  /** Template prompts shown as dropdown above input */
+  templates?: { label: string; prompt: string }[];
 }
 
 const uid = () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -91,9 +93,11 @@ export default function AIChatPanel({
   messages, onSendMessage, onStopGeneration, onRegenerateMessage,
   onSelectFollowUpOption, isGenerating, placeholder, preservedInput,
   onInputChange, onClearHistory, compact, headerContent, emptyState, quickPrompts,
+  templates,
 }: Props) {
   const [input, setInput] = useState(preservedInput || "");
   const [customFollowUp, setCustomFollowUp] = useState<{ msgId: string; text: string } | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -346,8 +350,56 @@ export default function AIChatPanel({
         borderTop: "1px solid var(--border)",
         background: "var(--bg-surface)",
         flexShrink: 0,
+        position: "relative",
       }}>
+        {/* Template dropdown */}
+        {showTemplates && templates && templates.length > 0 && (
+          <div style={{
+            position: "absolute", bottom: "100%", left: 0, right: 0,
+            background: "var(--bg-surface)", border: "1px solid var(--border)",
+            borderBottom: "none", borderRadius: "var(--radius-sm) var(--radius-sm) 0 0",
+            maxHeight: 200, overflowY: "auto", boxShadow: "var(--shadow-md)",
+            zIndex: 10,
+          }}>
+            <div style={{ padding: "6px 12px", fontSize: 10, fontWeight: 600, color: "var(--text-tertiary)", borderBottom: "1px solid var(--border)" }}>
+              选择模板
+            </div>
+            {templates.map((t, i) => (
+              <button key={i}
+                onClick={() => { setInput(t.prompt); setShowTemplates(false); inputRef.current?.focus(); }}
+                style={{
+                  display: "block", width: "100%", textAlign: "left", padding: "8px 12px",
+                  background: "transparent", border: "none", borderBottom: "1px solid var(--border-subtle)",
+                  color: "var(--text-secondary)", fontSize: 12, cursor: "pointer",
+                  transition: "background 0.1s",
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = "var(--accent-subtle)"}
+                onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+              >
+                <div style={{ fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>{t.label}</div>
+                <div style={{ fontSize: 11, color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.prompt}</div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Template toggle + input row */}
         <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+          {templates && templates.length > 0 && (
+            <button
+              onClick={() => setShowTemplates(!showTemplates)}
+              title="选择模板"
+              style={{
+                padding: "8px 10px", flexShrink: 0, background: showTemplates ? "var(--accent-subtle)" : "transparent",
+                border: `1px solid ${showTemplates ? "var(--accent)" : "var(--border)"}`,
+                borderRadius: "var(--radius-sm)", cursor: "pointer",
+                color: showTemplates ? "var(--accent)" : "var(--text-tertiary)",
+                fontSize: 14, lineHeight: 1, transition: "all 0.15s",
+              }}
+            >
+              T
+            </button>
+          )}
           <textarea
             ref={inputRef}
             className="input"
