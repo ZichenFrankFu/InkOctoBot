@@ -21,7 +21,7 @@ def key_status():
     """Check which API keys are configured."""
     import json as _json
     from ui.backend.app.settings import settings
-    p = settings.repo_root / "data" / "settings.json"
+    p = settings.get_data_path("settings.json")
     result = {}
     if p.exists():
         data = _json.loads(p.read_text("utf-8"))

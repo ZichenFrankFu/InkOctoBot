@@ -20,9 +20,9 @@ logger = logging.getLogger("inkoctobot.ui.backend.settings_api")
 
 
 def _settings_path() -> Path:
-    d = app_settings.repo_root / "data"
-    d.mkdir(parents=True, exist_ok=True)
-    return d / "settings.json"
+    p = app_settings.get_data_path("settings.json")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 _DEPRECATED_PROVIDERS = {"vllm", "local"}

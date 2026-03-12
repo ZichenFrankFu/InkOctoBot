@@ -160,3 +160,6 @@ db.sqlite3-journal
 data/*.db
 data/*.db-journal
 data/*.db-wal
+
+# Test mode data directory
+data_test/

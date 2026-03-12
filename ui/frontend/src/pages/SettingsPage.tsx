@@ -554,6 +554,7 @@ interface UsageData {
   total_output_tokens: number;
   total_calls: number;
   by_provider: Record<string, { input_tokens: number; output_tokens: number; calls: number }>;
+  by_model: Record<string, { input_tokens: number; output_tokens: number; calls: number }>;
   by_role: Record<string, { input_tokens: number; output_tokens: number; calls: number }>;
 }
 
@@ -610,7 +611,7 @@ function SystemTab({
     setUsageLoading(true);
     try {
       await apiPost("/api/generation/usage/reset", {});
-      setUsage({ total_input_tokens: 0, total_output_tokens: 0, total_calls: 0, by_provider: {}, by_role: {} });
+      setUsage({ total_input_tokens: 0, total_output_tokens: 0, total_calls: 0, by_provider: {}, by_model: {}, by_role: {} });
     } catch { /* ignore */ }
     setUsageLoading(false);
   };
@@ -759,7 +760,7 @@ function SystemTab({
         <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <h3>API 用量统计</h3>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>每 10 秒自动刷新</span>
+            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>持久化 · 每 10 秒自动刷新</span>
             <button className="btn" onClick={resetUsage} disabled={usageLoading}
               style={{ fontSize: 11, padding: "4px 12px", color: "var(--error)", borderColor: "var(--error)" }}>
               {usageLoading ? "..." : "重置"}
@@ -798,6 +799,26 @@ function SystemTab({
                         padding: "8px 12px", background: "var(--bg-secondary)", borderRadius: 6, fontSize: 12,
                       }}>
                         <span style={{ fontWeight: 600 }}>{name}</span>
+                        <span style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                          {d.calls} 次 · 输入 {formatTokens(d.input_tokens)} · 输出 {formatTokens(d.output_tokens)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* By model */}
+              {usage.by_model && Object.keys(usage.by_model).length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>按模型</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {Object.entries(usage.by_model).map(([name, d]) => (
+                      <div key={name} style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        padding: "8px 12px", background: "var(--bg-secondary)", borderRadius: 6, fontSize: 12,
+                      }}>
+                        <span style={{ fontWeight: 600, fontFamily: "var(--font-mono)", fontSize: 11 }}>{name}</span>
                         <span style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
                           {d.calls} 次 · 输入 {formatTokens(d.input_tokens)} · 输出 {formatTokens(d.output_tokens)}
                         </span>

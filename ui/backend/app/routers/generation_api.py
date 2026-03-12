@@ -22,16 +22,49 @@ logger = logging.getLogger("inkoctobot.ui.backend.generation_api")
 _active_sessions: dict[str, dict[str, Any]] = {}
 
 
-# ═══ Usage Tracking ═══
+# ═══ Usage Tracking (persisted to data/usage.json) ═══
 
-_usage_data: dict[str, Any] = {
-    "total_input_tokens": 0,
-    "total_output_tokens": 0,
-    "total_calls": 0,
-    "by_provider": {},   # provider -> {input, output, calls}
-    "by_role": {},       # agent_role -> {input, output, calls}
-    "recent": [],        # last 50 calls: {ts, role, provider, model, input, output}
-}
+from pathlib import Path as _Path
+
+def _usage_file() -> _Path:
+    from ui.backend.app.settings import settings as _s
+    d = _s.data_dir if _s.data_dir else _s.repo_root / "data"
+    return d / "usage.json"
+
+def _empty_usage() -> dict[str, Any]:
+    return {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_calls": 0,
+        "by_provider": {},
+        "by_model": {},
+        "by_role": {},
+        "recent": [],
+    }
+
+def _load_usage() -> dict[str, Any]:
+    p = _usage_file()
+    if p.exists():
+        try:
+            data = json.loads(p.read_text("utf-8"))
+            # ensure all expected keys exist (forward-compat)
+            empty = _empty_usage()
+            for k, v in empty.items():
+                data.setdefault(k, v)
+            return data
+        except Exception:
+            pass
+    return _empty_usage()
+
+def _save_usage() -> None:
+    try:
+        p = _usage_file()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(_usage_data, ensure_ascii=False, indent=2), "utf-8")
+    except Exception:
+        logger.debug("Failed to persist usage data", exc_info=True)
+
+_usage_data: dict[str, Any] = _load_usage()
 _usage_lock = asyncio.Lock()
 
 
@@ -46,6 +79,13 @@ def _record_usage(agent_role: str, provider: str, model: str, input_tokens: int,
     _usage_data["by_provider"][provider]["input_tokens"] += input_tokens
     _usage_data["by_provider"][provider]["output_tokens"] += output_tokens
     _usage_data["by_provider"][provider]["calls"] += 1
+
+    model_key = f"{provider}/{model}" if provider else model
+    if model_key not in _usage_data["by_model"]:
+        _usage_data["by_model"][model_key] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+    _usage_data["by_model"][model_key]["input_tokens"] += input_tokens
+    _usage_data["by_model"][model_key]["output_tokens"] += output_tokens
+    _usage_data["by_model"][model_key]["calls"] += 1
 
     if agent_role not in _usage_data["by_role"]:
         _usage_data["by_role"][agent_role] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
@@ -65,22 +105,21 @@ def _record_usage(agent_role: str, provider: str, model: str, input_tokens: int,
     if len(_usage_data["recent"]) > 100:
         _usage_data["recent"] = _usage_data["recent"][-100:]
 
+    _save_usage()
+
 
 @router.get("/usage")
 def get_usage():
-    """Return accumulated API usage stats for the current session."""
+    """Return accumulated API usage stats (persisted across restarts)."""
     return _usage_data
 
 
 @router.post("/usage/reset")
 def reset_usage():
-    """Reset usage counters."""
-    _usage_data["total_input_tokens"] = 0
-    _usage_data["total_output_tokens"] = 0
-    _usage_data["total_calls"] = 0
-    _usage_data["by_provider"] = {}
-    _usage_data["by_role"] = {}
-    _usage_data["recent"] = []
+    """Reset usage counters and persist the empty state."""
+    for k, v in _empty_usage().items():
+        _usage_data[k] = v
+    _save_usage()
     return {"status": "ok"}
 
 
@@ -329,10 +368,9 @@ class EvalRequest(BaseModel):
 def _get_user_settings() -> dict:
     """Load user settings with full defaults for missing keys."""
     import json as _json
-    from pathlib import Path
     from ui.backend.app.settings import settings as app_settings
     from ui.backend.app.routers.data_api import _default_settings
-    p = app_settings.repo_root / "data" / "settings.json"
+    p = app_settings.get_data_path("settings.json")
     if p.exists():
         data = _json.loads(p.read_text("utf-8"))
     else:
@@ -712,6 +750,59 @@ async def quick_generate(req: GenerateRequest):
         else:
             detail = msg
         raise HTTPException(500, detail=detail)
+
+
+# ═══ Outline Chat — interactive outline brainstorming ═══
+
+class OutlineChatRequest(BaseModel):
+    project_id: str = "default"
+    messages: list[dict[str, str]] = []  # [{role: "user"|"assistant", content: "..."}]
+    context: str = ""        # world book / character summary for context
+    provider: str = ""
+    model: str = ""
+
+
+@router.post("/outline-chat")
+async def outline_chat(req: OutlineChatRequest):
+    """Interactive outline brainstorming: multi-turn conversation with AI."""
+    try:
+        from models.base import LLMMessage
+        router_inst = _build_router(req.provider, req.model)
+
+        system = (
+            "你是一位资深小说策划编辑，擅长帮助作者构思故事大纲。你的职责：\n"
+            "1. 帮助作者发展和完善故事构思\n"
+            "2. 提出有建设性的问题，引导作者深入思考情节、人物、冲突\n"
+            "3. 在作者的想法基础上给出具体化建议（不要完全替代作者创作）\n"
+            "4. 指出可能的逻辑漏洞或情节问题\n"
+            "5. 适当时输出结构化的大纲段落\n"
+            "回复用中文。保持简洁但有深度。"
+        )
+        if req.context:
+            system += f"\n\n[参考设定]\n{req.context}"
+
+        llm_messages = [LLMMessage(role="system", content=system)]
+        for m in req.messages:
+            llm_messages.append(LLMMessage(role=m["role"], content=m["content"]))
+
+        resp = await router_inst.generate(
+            agent_role="scene_planner",
+            messages=llm_messages,
+            temperature=0.7,
+            max_tokens=2048,
+        )
+
+        return {
+            "status": "ok",
+            "reply": resp.content,
+            "model": resp.model,
+            "tokens": {"input": resp.input_tokens, "output": resp.output_tokens},
+        }
+    except ValueError as e:
+        raise HTTPException(500, detail=str(e))
+    except Exception as e:
+        logger.error("Outline chat error: %s", e, exc_info=True)
+        raise HTTPException(500, detail=str(e)[:300])
 
 
 def _emit(session_id: str, event: dict):

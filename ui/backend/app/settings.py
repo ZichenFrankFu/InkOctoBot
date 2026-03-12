@@ -23,10 +23,23 @@ def _default_repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _default_data_dir() -> Path | None:
+    """If WN_DATA_DIR is set (test mode), override the data directory."""
+    env = os.environ.get("WN_DATA_DIR")
+    return Path(env) if env else None
+
+
 class Settings(BaseSettings):
     repo_root: Path = _default_repo_root()
+    data_dir: Path | None = _default_data_dir()
+    test_mode: bool = os.environ.get("WN_TEST_MODE", "") == "1"
     python_bin: str = sys.executable          # 打包后用 sys.executable 而非 "python"
     allow_outputs_dirname: str = "outputs"
+
+    def get_data_path(self, *parts: str) -> Path:
+        """Resolve a path under the data directory, respecting test mode override."""
+        base = self.data_dir if self.data_dir else self.repo_root / "data"
+        return base.joinpath(*parts) if parts else base
 
 
 settings = Settings()

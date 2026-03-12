@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import type { PipelineStatus, EvalResult } from "../../api/types";
-import { apiPost } from "../../api/client";
+import { apiPost, apiGet, apiPut } from "../../api/client";
 
 interface Props {
   projectId: string;
@@ -17,6 +17,12 @@ const TAB_LABELS: Record<Tab, string> = {
   evaluate: "\u8BC4\u4F30",
 };
 
+interface ChatMsg {
+  role: "user" | "assistant";
+  content: string;
+  ts?: number;
+}
+
 export default function AIPanel({ projectId, chapterId, selectedText }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>("outline");
   const [synopsis, setSynopsis] = useState("");
@@ -26,6 +32,60 @@ export default function AIPanel({ projectId, chapterId, selectedText }: Props) {
   const [rewriting, setRewriting] = useState(false);
   const [evalResult, setEvalResult] = useState<EvalResult | null>(null);
   const [evaluating, setEvaluating] = useState(false);
+
+  // Outline chat state
+  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatScope = "outline_chat";
+
+  // Load persisted outline chat on mount / project change
+  useEffect(() => {
+    apiGet<{ messages: ChatMsg[] }>(`/api/data/chat_history?project_id=${projectId}&scope=${chatScope}`)
+      .then(d => setChatMessages(d.messages || []))
+      .catch(() => {});
+  }, [projectId]);
+
+  // Auto-scroll to bottom
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
+
+  const persistChat = useCallback((msgs: ChatMsg[]) => {
+    apiPut("/api/data/chat_history", { project_id: projectId, scope: chatScope, messages: msgs }).catch(() => {});
+  }, [projectId]);
+
+  const sendChatMessage = async () => {
+    const text = chatInput.trim();
+    if (!text || chatLoading) return;
+    const userMsg: ChatMsg = { role: "user", content: text, ts: Date.now() };
+    const updated = [...chatMessages, userMsg];
+    setChatMessages(updated);
+    setChatInput("");
+    setChatLoading(true);
+    try {
+      const res = await apiPost<{ reply: string }>("/api/generation/outline-chat", {
+        project_id: projectId,
+        messages: updated.map(m => ({ role: m.role, content: m.content })),
+        context: synopsis || "",
+      });
+      const aiMsg: ChatMsg = { role: "assistant", content: res.reply, ts: Date.now() };
+      const final_ = [...updated, aiMsg];
+      setChatMessages(final_);
+      persistChat(final_);
+    } catch (e: any) {
+      const errMsg: ChatMsg = { role: "assistant", content: `[Error] ${e?.message || "请求失败"}`, ts: Date.now() };
+      const final_ = [...updated, errMsg];
+      setChatMessages(final_);
+    }
+    setChatLoading(false);
+  };
+
+  const clearChat = () => {
+    setChatMessages([]);
+    persistChat([]);
+  };
 
   const runPipeline = async () => {
     if (!chapterId) return;
@@ -128,32 +188,105 @@ export default function AIPanel({ projectId, chapterId, selectedText }: Props) {
 
       {/* Tab content */}
       <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
-        {/* Outline tab */}
+        {/* Outline tab — interactive chat */}
         {activeTab === "outline" && (
-          <div>
-            <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "block", marginBottom: 8 }}>
-              Chapter Synopsis
-            </label>
-            <textarea
-              value={synopsis}
-              onChange={(e) => setSynopsis(e.target.value)}
-              placeholder="Describe this chapter's plot outline..."
-              style={{
-                width: "100%",
-                minHeight: 200,
-                padding: "12px 14px",
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                background: "var(--bg-primary)",
-                color: "var(--text-primary)",
-                fontSize: 13,
-                lineHeight: 1.7,
-                resize: "vertical",
-                outline: "none",
-                fontFamily: "inherit",
-                boxSizing: "border-box",
-              }}
-            />
+          <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+            {/* Context area (collapsible) */}
+            <details style={{ marginBottom: 8 }}>
+              <summary style={{ fontSize: 11, color: "var(--text-tertiary)", cursor: "pointer", userSelect: "none" }}>
+                章节大纲 / 背景上下文（可选）
+              </summary>
+              <textarea
+                value={synopsis}
+                onChange={(e) => setSynopsis(e.target.value)}
+                placeholder="输入本章大纲或背景设定，AI 会参考这些信息..."
+                style={{
+                  width: "100%", minHeight: 80, marginTop: 6, padding: "8px 10px",
+                  border: "1px solid var(--border)", borderRadius: 6,
+                  background: "var(--bg-primary)", color: "var(--text-primary)",
+                  fontSize: 12, lineHeight: 1.6, resize: "vertical",
+                  outline: "none", fontFamily: "inherit", boxSizing: "border-box",
+                }}
+              />
+            </details>
+
+            {/* Chat messages */}
+            <div style={{
+              flex: 1, overflowY: "auto", minHeight: 200, maxHeight: 400,
+              border: "1px solid var(--border)", borderRadius: 8,
+              background: "var(--bg-primary)", padding: 12, marginBottom: 8,
+              display: "flex", flexDirection: "column", gap: 10,
+            }}>
+              {chatMessages.length === 0 && (
+                <div style={{ textAlign: "center", color: "var(--text-disabled)", fontSize: 12, padding: 24 }}>
+                  和 AI 编辑一起构思你的大纲吧！输入你的想法开始对话。
+                </div>
+              )}
+              {chatMessages.map((m, i) => (
+                <div key={i} style={{
+                  display: "flex", flexDirection: "column",
+                  alignItems: m.role === "user" ? "flex-end" : "flex-start",
+                }}>
+                  <div style={{
+                    fontSize: 10, color: "var(--text-tertiary)", marginBottom: 2,
+                    paddingLeft: m.role === "assistant" ? 2 : 0,
+                    paddingRight: m.role === "user" ? 2 : 0,
+                  }}>
+                    {m.role === "user" ? "你" : "AI 编辑"}
+                  </div>
+                  <div style={{
+                    maxWidth: "85%", padding: "8px 12px", borderRadius: 10,
+                    background: m.role === "user" ? "var(--accent)" : "var(--bg-secondary)",
+                    color: m.role === "user" ? "#fff" : "var(--text-primary)",
+                    fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word",
+                    borderBottomRightRadius: m.role === "user" ? 2 : 10,
+                    borderBottomLeftRadius: m.role === "assistant" ? 2 : 10,
+                  }}>
+                    {m.content}
+                  </div>
+                </div>
+              ))}
+              {chatLoading && (
+                <div style={{ display: "flex", alignItems: "flex-start" }}>
+                  <div style={{
+                    padding: "8px 14px", borderRadius: 10, borderBottomLeftRadius: 2,
+                    background: "var(--bg-secondary)", fontSize: 13, color: "var(--text-tertiary)",
+                  }}>
+                    思考中...
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Input area */}
+            <div style={{ display: "flex", gap: 8 }}>
+              <textarea
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
+                }}
+                placeholder="输入你的想法... (Enter 发送, Shift+Enter 换行)"
+                rows={2}
+                style={{
+                  flex: 1, padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8,
+                  background: "var(--bg-primary)", color: "var(--text-primary)",
+                  fontSize: 13, lineHeight: 1.5, resize: "none", outline: "none",
+                  fontFamily: "inherit", boxSizing: "border-box",
+                }}
+              />
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <button className="btn-primary" onClick={sendChatMessage} disabled={chatLoading || !chatInput.trim()}
+                  style={{ flex: 1, fontSize: 12, padding: "6px 14px", whiteSpace: "nowrap" }}>
+                  {chatLoading ? "..." : "发送"}
+                </button>
+                <button className="btn" onClick={clearChat}
+                  style={{ fontSize: 10, padding: "4px 10px", color: "var(--text-tertiary)", whiteSpace: "nowrap" }}>
+                  清空
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

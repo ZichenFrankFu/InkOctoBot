@@ -12,7 +12,8 @@ from ..settings import settings
 router = APIRouter(prefix="/data", tags=["data"])
 
 def _data_dir() -> Path:
-    d = settings.repo_root / "data"; d.mkdir(parents=True, exist_ok=True); return d
+    d = settings.data_dir if settings.data_dir else settings.repo_root / "data"
+    d.mkdir(parents=True, exist_ok=True); return d
 def _col(name: str) -> Path:
     d = _data_dir() / name; d.mkdir(parents=True, exist_ok=True); return d
 def _rj(p: Path) -> dict:

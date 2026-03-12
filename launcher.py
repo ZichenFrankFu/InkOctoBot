@@ -1,4 +1,5 @@
 # launcher.py
+import argparse
 import logging
 import multiprocessing
 import os
@@ -45,6 +46,16 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _setup_test_mode(root: Path) -> Path:
+    """Set up a test data directory under data_test/ and seed it if empty."""
+    test_root = root / "data_test"
+    if not test_root.exists() or not any(test_root.iterdir()):
+        from test_seed import seed
+        seed(test_root)
+        logger.info("Seeded test data into %s", test_root)
+    return test_root
+
+
 def wait_for_server(host, port, timeout=15):
     start = time.time()
     while time.time() - start < timeout:
@@ -56,13 +67,20 @@ def wait_for_server(host, port, timeout=15):
     return False
 
 
-def run_server():
+def run_server(test_mode: bool = False):
     root = _project_root()
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
-    # 设置环境变量，让 settings.py 知道真正的项目根
-    os.environ.setdefault("WN_REPO_ROOT", str(root))
+    if test_mode:
+        # In test mode, override the data directory to data_test/
+        # We do this by creating a wrapper root that has data_test as its "data" dir
+        test_data_dir = _setup_test_mode(root)
+        os.environ["WN_REPO_ROOT"] = str(root)
+        os.environ["WN_DATA_DIR"] = str(test_data_dir)
+        os.environ["WN_TEST_MODE"] = "1"
+    else:
+        os.environ.setdefault("WN_REPO_ROOT", str(root))
 
     from ui.backend.app.main import app
     uvicorn.run(app, host=HOST, port=PORT, reload=False, log_level="info")
@@ -71,15 +89,36 @@ def run_server():
 def main():
     multiprocessing.freeze_support()
 
-    server_thread = threading.Thread(target=run_server, daemon=True)
+    parser = argparse.ArgumentParser(description="InkOctoBot Launcher")
+    parser.add_argument("--test", action="store_true",
+                        help="Launch in test mode with sample data (isolated from real data)")
+    parser.add_argument("--no-gui", action="store_true",
+                        help="Run server only without webview GUI")
+    args = parser.parse_args()
+
+    if args.test:
+        logger.info("Starting in TEST MODE — all data is isolated in data_test/")
+        print("[TEST MODE] Using isolated test data in data_test/")
+
+    server_thread = threading.Thread(target=run_server, args=(args.test,), daemon=True)
     server_thread.start()
 
     if not wait_for_server(HOST, PORT):
         logging.error("Server failed to start.")
         sys.exit(1)
 
+    if args.no_gui:
+        print(f"Server running at http://{HOST}:{PORT} (no GUI mode)")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        return
+
+    title = "InkOctoBot [TEST]" if args.test else "WebNovel Trends"
     webview.create_window(
-        "WebNovel Trends",
+        title,
         f"http://{HOST}:{PORT}",
         width=1200,
         height=800,

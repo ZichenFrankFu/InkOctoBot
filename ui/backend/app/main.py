@@ -73,7 +73,8 @@ app.include_router(skill_router)
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "2.0.0"}
+    from .settings import settings as _s
+    return {"ok": True, "version": "2.0.0", "test_mode": _s.test_mode}
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"

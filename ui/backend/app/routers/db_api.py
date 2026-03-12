@@ -14,7 +14,7 @@ def _get_con() -> sqlite3.Connection | None:
     # Check if user has set a custom crawler DB path in settings
     try:
         import json
-        settings_file = settings.repo_root / "data" / "settings.json"
+        settings_file = settings.get_data_path("settings.json")
         if settings_file.exists():
             user_settings = json.loads(settings_file.read_text("utf-8"))
             custom_path = user_settings.get("crawler_db_path", "")
