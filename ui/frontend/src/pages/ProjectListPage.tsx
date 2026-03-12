@@ -4,6 +4,63 @@ import { useResizable } from "../hooks/useResizable";
 import type { Project, FollowUpQuestion, SampleFeedback, CalibrationHistory } from "../api/types";
 import FollowUpQuestions from "../components/shared/FollowUpQuestions";
 
+/** Render basic markdown (bold, italic, numbered/bullet lists, line breaks) to React elements */
+function renderMarkdown(text: string): React.ReactNode[] {
+  const lines = text.split("\n");
+  const elements: React.ReactNode[] = [];
+
+  const inlineFormat = (s: string, key: string): React.ReactNode => {
+    // Handle **bold** and *italic*
+    const parts: React.ReactNode[] = [];
+    let remaining = s;
+    let idx = 0;
+    const re = /\*\*(.+?)\*\*|\*(.+?)\*/g;
+    let match: RegExpExecArray | null;
+    let last = 0;
+    while ((match = re.exec(remaining)) !== null) {
+      if (match.index > last) parts.push(remaining.slice(last, match.index));
+      if (match[1]) parts.push(<strong key={`${key}-b${idx++}`}>{match[1]}</strong>);
+      else if (match[2]) parts.push(<em key={`${key}-i${idx++}`}>{match[2]}</em>);
+      last = re.lastIndex;
+    }
+    if (last < remaining.length) parts.push(remaining.slice(last));
+    return parts.length === 1 ? parts[0] : <>{parts}</>;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      elements.push(<br key={`br-${i}`} />);
+      continue;
+    }
+    // Numbered list: "1. " / "1.  "
+    const numMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
+    if (numMatch) {
+      elements.push(
+        <div key={`li-${i}`} style={{ display: "flex", gap: 6, marginLeft: 4 }}>
+          <span style={{ color: "var(--text-tertiary)", flexShrink: 0 }}>{numMatch[1]}.</span>
+          <span>{inlineFormat(numMatch[2], `il-${i}`)}</span>
+        </div>
+      );
+      continue;
+    }
+    // Bullet list: "* " or "- "
+    const bulletMatch = trimmed.match(/^[*\-]\s+(.*)$/);
+    if (bulletMatch) {
+      elements.push(
+        <div key={`bl-${i}`} style={{ display: "flex", gap: 6, marginLeft: 8 }}>
+          <span style={{ color: "var(--text-tertiary)", flexShrink: 0 }}>•</span>
+          <span>{inlineFormat(bulletMatch[1], `il-${i}`)}</span>
+        </div>
+      );
+      continue;
+    }
+    elements.push(<div key={`p-${i}`}>{inlineFormat(trimmed, `il-${i}`)}</div>);
+  }
+  return elements;
+}
+
 interface Props {
   activeProject: string;
   onSelectProject: (id: string) => void;
@@ -761,22 +818,30 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                     </div>
                   )}
                   {aiLoading && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", marginBottom: 8 }}>
-                      <div style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--accent-subtle)", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>💡</div>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 12px", marginBottom: 8 }}>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0, gap: 2 }}>
+                        <div style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--accent-subtle)", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>💡</div>
+                        <div style={{ fontSize: 9, color: "var(--text-tertiary)", whiteSpace: "nowrap" }}>创作顾问</div>
+                      </div>
                       <div style={{ padding: "8px 12px", borderRadius: 10, background: "var(--bg-surface-2)", borderLeft: "3px solid var(--accent)", fontSize: 13, color: "var(--text-tertiary)" }}>
-                        AI 正在思考中...
+                        创作顾问正在思考中...
                       </div>
                     </div>
                   )}
                   {tabMessages.map((msg, i) => (
                     <div key={i} style={{ display: "flex", flexDirection: msg.role === "user" ? "row-reverse" : "row", alignItems: "flex-start", marginBottom: 12, gap: 8 }}>
-                      <div style={{
-                        width: 30, height: 30, borderRadius: "50%", flexShrink: 0,
-                        background: msg.role === "user" ? "var(--purple-subtle)" : "var(--accent-subtle)",
-                        border: `2px solid ${msg.role === "user" ? "var(--purple)" : "var(--accent)"}`,
-                        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14,
-                      }}>
-                        {msg.role === "user" ? "👤" : "💡"}
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0, gap: 2 }}>
+                        <div style={{
+                          width: 30, height: 30, borderRadius: "50%",
+                          background: msg.role === "user" ? "var(--purple-subtle)" : "var(--accent-subtle)",
+                          border: `2px solid ${msg.role === "user" ? "var(--purple)" : "var(--accent)"}`,
+                          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14,
+                        }}>
+                          {msg.role === "user" ? "👤" : "💡"}
+                        </div>
+                        <div style={{ fontSize: 9, color: "var(--text-tertiary)", whiteSpace: "nowrap" }}>
+                          {msg.role === "user" ? "我" : "创作顾问"}
+                        </div>
                       </div>
                       <div style={{ maxWidth: "80%" }}>
                         <div style={{
@@ -784,11 +849,12 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                           background: msg.role === "user" ? "var(--purple-subtle)" : "var(--bg-surface-2)",
                           borderLeft: msg.role === "user" ? "none" : "3px solid var(--accent)",
                           borderRight: msg.role === "user" ? "3px solid var(--purple)" : "none",
-                          fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", whiteSpace: "pre-wrap",
-                          maxHeight: msg.content.length > 600 ? 250 : undefined,
+                          fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)",
+                          whiteSpace: msg.role === "user" ? "pre-wrap" : undefined,
+                          maxHeight: msg.content.length > 600 ? 300 : undefined,
                           overflowY: msg.content.length > 600 ? "auto" : undefined,
                         }}>
-                          {msg.content}
+                          {msg.role === "assistant" ? renderMarkdown(msg.content) : msg.content}
                         </div>
                         <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", marginTop: 2, color: "var(--text-tertiary)" }}
                           onClick={() => navigator.clipboard.writeText(msg.content)}>
@@ -800,10 +866,17 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                   {/* Follow-up questions */}
                   {followUpQuestions.length > 0 && !aiLoading && (
                     <div style={{ padding: "8px 0", marginTop: 4 }}>
+                      <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginBottom: 8, fontWeight: 500 }}>
+                        创作顾问的追问（请回答全部问题后提交）：
+                      </div>
                       <FollowUpQuestions
                         questions={followUpQuestions}
-                        onSelect={(_qi, answer) => {
-                          setInput(answer);
+                        onSubmitAll={(answers) => {
+                          // Combine all answers into one message
+                          const combined = followUpQuestions.map((q, qi) =>
+                            `${q.text}\n我的选择：${answers[qi]}`
+                          ).join("\n\n");
+                          setInput(combined);
                           setFollowUpQuestions([]);
                           // Auto-send after a small delay
                           setTimeout(() => {
