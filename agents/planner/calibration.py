@@ -52,6 +52,60 @@ class CalibrationAgent(BaseAgent):
         )
         return resp.content
 
+    async def generate_with_feedback(
+        self,
+        style_params: dict[str, Any],
+        feedback_history: list[dict[str, Any]],
+        sample_type: str = "opening",
+    ) -> dict[str, Any]:
+        """Analyze user feedback history and generate an improved sample.
+
+        Input:
+            style_params: {tone, pacing, perspective, audience}
+            feedback_history: [{sample, score, comment}, ...]
+            sample_type: opening/dialogue/action/inner
+
+        Output: {text: str, analysis: str, adjusted_params: dict}
+        """
+        type_desc = {
+            "opening": "小说开篇（300-500字）",
+            "dialogue": "一段对话场景",
+            "action": "一段动作场景",
+            "inner": "一段内心独白",
+        }.get(sample_type, "一段短文")
+
+        feedback_context = ""
+        if feedback_history:
+            feedback_context = "\n\n用户之前的反馈历史：\n"
+            for i, fb in enumerate(feedback_history):
+                feedback_context += f"样本{i+1}（评分：{fb.get('score', '?')}/5）："
+                if fb.get("comment"):
+                    feedback_context += f" {fb['comment']}"
+                feedback_context += "\n"
+
+        tone_desc = "轻松幽默" if style_params.get("tone", 50) < 30 else "严肃深沉" if style_params.get("tone", 50) > 70 else "均衡"
+        pacing_desc = "快节奏" if style_params.get("pacing", 50) < 30 else "慢节奏" if style_params.get("pacing", 50) > 70 else "中等"
+
+        prompt = (
+            f"请生成一段{type_desc}的校准样本。\n\n"
+            f"风格要求：文风{tone_desc}，{pacing_desc}\n"
+            f"{feedback_context}\n\n"
+            f"请根据用户反馈调整风格，输出JSON格式：\n"
+            f'{{"text": "样本内容", "analysis": "根据反馈做了哪些调整", "adjusted_params": {{}}}}'
+        )
+
+        resp = await self.invoke(prompt, temperature=0.8, max_tokens=2000)
+
+        try:
+            import json
+            result = json.loads(resp.content)
+            if isinstance(result, dict) and result.get("text"):
+                return result
+        except Exception:
+            pass
+
+        return {"text": resp.content, "analysis": "", "adjusted_params": {}}
+
     async def generate_variants(
         self, world_book: str, character_cards: str, outline: str,
         *, n_variants: int = 3, style_profile: str = "",

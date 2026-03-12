@@ -157,7 +157,7 @@ export default function AIPanel({ projectId, chapterId, selectedText }: Props) {
           </div>
         )}
 
-        {/* Inspire tab - Film Pipeline */}
+        {/* Inspire tab - Creative Writing Pipeline */}
         {activeTab === "inspire" && (
           <div>
             <div style={{ marginBottom: 16 }}>
@@ -167,7 +167,7 @@ export default function AIPanel({ projectId, chapterId, selectedText }: Props) {
                 disabled={pipelineRunning || !chapterId}
                 style={{ fontSize: 13, padding: "8px 20px" }}
               >
-                {pipelineRunning ? "Running Pipeline..." : "Start Film Pipeline"}
+                {pipelineRunning ? "Running Pipeline..." : "Start Creative Writing Pipeline"}
               </button>
             </div>
 

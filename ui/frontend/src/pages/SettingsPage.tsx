@@ -10,7 +10,7 @@ const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string
     ],
   },
   {
-    group: "Film Pipeline（编辑器）",
+    group: "Creative Writing Pipeline（编辑器）",
     roles: [
       { key: "scene_director", label: "场景导演", desc: "拆分场景、生成导演指令" },
       { key: "actor_default", label: "默认角色", desc: "通用角色对话与行为" },

@@ -200,6 +200,50 @@ export interface PipelineStatus {
   status: "pending" | "running" | "done" | "error";
   detail?: string;
   progress?: number;
+  elapsed?: number;
+}
+
+// ── Follow-up Questions (brainstorm / pipeline interactive) ──
+export interface FollowUpQuestion {
+  text: string;
+  options: string[];
+}
+
+// ── Calibration Feedback ──
+export interface SampleFeedback {
+  score: number;       // 1-5
+  comment: string;
+  confirmed: boolean;
+}
+
+export interface CalibrationHistory {
+  sample: string;
+  feedback: SampleFeedback;
+  analysis?: string;
+}
+
+// ── Agent Warning (pipeline interactive) ──
+export interface AgentWarning {
+  step: string;
+  agent: string;
+  message: string;
+  severity?: "info" | "warning" | "error";
+  options?: string[];
+}
+
+// ── Extended Chat Message for pipeline ──
+export interface PipelineChatMessage {
+  agent: string;
+  content: string;
+  status?: "thinking" | "speaking" | "done" | "waiting_confirm";
+  timestamp: number;
+  isQuestion?: boolean;
+  isWarning?: boolean;
+  isCoT?: boolean;
+  promptSent?: string;
+  followUpOptions?: string[];
+  warningOptions?: string[];
+  agentDisplayName?: string;
 }
 
 export interface GenerationResult {
@@ -231,6 +275,9 @@ export interface EvalResult {
   process?: EvalProcessStep[];
   strengths?: string[];
   summary?: string;
+  summary_text?: string;
+  dimension_scores?: Record<string, number>;
+  process_log?: { detector: string; status: string; detail: string }[];
 }
 
 export interface EvalProcessStep {

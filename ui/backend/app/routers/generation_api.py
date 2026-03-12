@@ -1,5 +1,5 @@
 """
-/api/generation — Film pipeline execution via real agent pipeline.
+/api/generation — Creative Writing Pipeline execution via real agent pipeline.
 
 Provides both synchronous and streaming (WebSocket) generation endpoints
 that connect to the actual SceneDirector -> ActorAgents -> EditorWriter -> Evaluator pipeline.
@@ -658,6 +658,84 @@ def _emit(session_id: str, event: dict):
         session["events"].append(event)
 
 
+def _format_scene_plan_readable(scene_plan: dict) -> str:
+    """Convert scene plan JSON to human-readable natural language text."""
+    if not isinstance(scene_plan, dict):
+        return str(scene_plan)
+    scenes = scene_plan.get("scenes", [])
+    if not scenes:
+        if scene_plan.get("summary"):
+            return scene_plan["summary"]
+        if scene_plan.get("raw"):
+            return str(scene_plan["raw"])
+        return str(scene_plan)
+
+    parts = []
+    for i, scene in enumerate(scenes):
+        lines = [f"━━━ 场景 {i + 1}{': ' + scene.get('location', '') if scene.get('location') else ''} ━━━"]
+        if scene.get("time"):
+            lines.append(f"时间：{scene['time']}")
+        if scene.get("characters"):
+            chars = scene["characters"]
+            lines.append(f"出场：{', '.join(chars) if isinstance(chars, list) else chars}")
+        if scene.get("summary"):
+            lines.append(f"\n【概要】{scene['summary']}")
+        if scene.get("beats"):
+            lines.append("\n【节拍】")
+            for bi, b in enumerate(scene["beats"]):
+                lines.append(f"  {bi + 1}. {b}")
+        if scene.get("character_instructions"):
+            lines.append("\n【角色指令】")
+            for name, inst in scene["character_instructions"].items():
+                lines.append(f"  {name}:")
+                if isinstance(inst, dict):
+                    if inst.get("emotional_state"):
+                        lines.append(f"    情绪: {inst['emotional_state']}")
+                    if inst.get("secret_goal"):
+                        lines.append(f"    暗线: {inst['secret_goal']}")
+                    if inst.get("must"):
+                        lines.append(f"    必须: {'; '.join(inst['must'])}")
+                    if inst.get("must_not"):
+                        lines.append(f"    禁止: {'; '.join(inst['must_not'])}")
+                else:
+                    lines.append(f"    {inst}")
+        if scene.get("narrator_instructions"):
+            lines.append(f"\n【旁白指引】{scene['narrator_instructions']}")
+        parts.append("\n".join(lines))
+
+    output = "\n\n".join(parts)
+    if scene_plan.get("chapter_arc"):
+        output += f"\n\n【本章情绪弧线】{scene_plan['chapter_arc']}"
+    return output
+
+
+def _format_evaluation_readable(eval_result: dict) -> str:
+    """Convert evaluation result to human-readable natural language."""
+    score = eval_result.get("score", 0)
+    lines = [f"综合评分：{score}/100"]
+    if eval_result.get("dimension_scores"):
+        dim_labels = {
+            "constraint_satisfaction": "约束满足", "consistency": "一致性",
+            "knowledge_isolation": "知识隔离", "repetition": "重复度",
+            "ai_flavor": "AI味", "narrative_quality": "叙事质量",
+        }
+        lines.append("\n分维度评分：")
+        for dim, s in eval_result["dimension_scores"].items():
+            lines.append(f"  {dim_labels.get(dim, dim)}: {s}/100")
+    if eval_result.get("issues"):
+        lines.append("\n发现的问题：")
+        for issue in eval_result["issues"]:
+            sev_icon = {"high": "[严重]", "medium": "[中等]", "low": "[轻微]"}.get(issue.get("severity", "low"), "")
+            lines.append(f"  {sev_icon} [{issue.get('type', '')}] {issue.get('description', '')}")
+            if issue.get("suggestion"):
+                lines.append(f"    建议：{issue['suggestion']}")
+    if eval_result.get("strengths"):
+        lines.append("\n亮点：")
+        for s in eval_result["strengths"]:
+            lines.append(f"  - {s}")
+    return "\n".join(lines)
+
+
 async def _wait_for_confirm_bg(session_id: str, step: str, message: str, timeout_s: int = 600):
     """Emit need_confirm and block until user responds (or auto-continue after timeout)."""
     session = _active_sessions.get(session_id)
@@ -701,6 +779,7 @@ async def _run_pipeline_background(session_id: str):
             "type": "step_start", "step": "scene_director",
             "label": "Scene Director", "detail": "正在拆分场景...",
         })
+        _emit(session_id, {"type": "progress_update", "step": "scene_director", "progress": 10, "detail": "加载角色和世界观数据..."})
         scene_result = {}
         try:
             from agents.production.scene_director import SceneDirector
@@ -805,6 +884,7 @@ async def _run_pipeline_background(session_id: str):
                                len(_memory_ctx), _MAX_MEMORY_LEN)
                 _memory_ctx = _memory_ctx[:_MAX_MEMORY_LEN]
 
+            _emit(session_id, {"type": "progress_update", "step": "scene_director", "progress": 40, "detail": "AI 正在规划场景结构..."})
             scenes = await director.plan_scenes(
                 chapter_outline=_outline,
                 chapter_num=_chapter_num,
@@ -814,6 +894,7 @@ async def _run_pipeline_background(session_id: str):
                 constraints=_scope_constraints,
             )
             scene_result = scenes if isinstance(scenes, dict) else {"raw": str(scenes)}
+            _emit(session_id, {"type": "progress_update", "step": "scene_director", "progress": 90, "detail": "解析场景计划..."})
         except Exception as e:
             logger.warning("Scene director first attempt failed: %s — retrying with minimal context", e)
             # Retry with minimal context (no memory/foreshadowing, only core constraints)
@@ -862,7 +943,16 @@ async def _run_pipeline_background(session_id: str):
         }, ensure_ascii=False, indent=2)
         scene_result_with_prompt = dict(scene_result) if isinstance(scene_result, dict) else {"raw": str(scene_result)}
         scene_result_with_prompt["prompt_sent"] = f"SceneDirector.plan_scenes({scene_prompt})"
+        # Add human-readable text version
+        scene_result_with_prompt["text"] = _format_scene_plan_readable(scene_result)
         _emit(session_id, {"type": "step_done", "step": "scene_director", "result": scene_result_with_prompt})
+        _emit(session_id, {"type": "progress_update", "step": "scene_director", "progress": 100, "detail": "场景规划完成"})
+        # Emit follow-up options for interactive confirmation
+        _emit(session_id, {
+            "type": "follow_up", "step": "scene_director",
+            "message": "场景规划完成，请确认：",
+            "options": ["满意，继续下一步", "需要调整场景顺序", "需要增减场景", "需要调整角色安排"],
+        })
 
         # Simplified handoff — no raw content dump
         _num_scenes = len(scene_result.get("scenes", [])) if isinstance(scene_result, dict) else 0
@@ -969,6 +1059,7 @@ async def _run_pipeline_background(session_id: str):
                 character_cards = {_aliases.get(c, c): "" for c in characters}
 
             _chapter_num = req_data.get("chapter_num", 1)
+            _emit(session_id, {"type": "progress_update", "step": "actor_agents", "progress": 20, "detail": f"准备角色卡... ({len(characters)} 个角色)"})
 
             # Use simulate_chapter() to iterate through all scenes properly
             if scene_list:
@@ -1034,6 +1125,39 @@ async def _run_pipeline_background(session_id: str):
             if full_text:
                 _emit(session_id, {"type": "token", "step": "actor_agents", "content": full_text})
 
+            _emit(session_id, {"type": "progress_update", "step": "actor_agents", "progress": 80, "detail": "角色表演完成，检查一致性..."})
+
+            # Emit each character's performance separately with character display name
+            for char_name, perf_text in all_performances.items():
+                display_name = char_name.split("_scene")[0] if "_scene" in char_name else char_name
+                _emit(session_id, {
+                    "type": "step_done", "step": "actor_agents",
+                    "agent_display_name": display_name,
+                    "result": {"text": perf_text[:2000]},
+                })
+
+            # Run consistency check (non-fatal)
+            try:
+                from agents.production.actor_agent import ActorAgent
+                for char_name, perf_text in all_performances.items():
+                    display_name = char_name.split("_scene")[0] if "_scene" in char_name else char_name
+                    card = character_cards.get(display_name, "")
+                    if card:
+                        checker = ActorAgent(router_inst, project_id=req_data.get("project_id", ""),
+                                             character_name=display_name, character_card=card)
+                        warnings = await checker.check_consistency(perf_text, card, scene_result)
+                        for w in warnings:
+                            _emit(session_id, {
+                                "type": "agent_warning", "step": "actor_agents",
+                                "agent": w.get("character", display_name),
+                                "message": w.get("message", ""),
+                                "options": ["这是故意的，记录原因", "修改指令"],
+                            })
+            except Exception as _cc_err:
+                logger.debug("Consistency check skipped: %s", _cc_err)
+
+            _emit(session_id, {"type": "progress_update", "step": "actor_agents", "progress": 100, "detail": "角色表演完成"})
+
             _emit(session_id, {
                 "type": "step_done", "step": "actor_agents",
                 "result": {
@@ -1069,6 +1193,7 @@ async def _run_pipeline_background(session_id: str):
             "type": "step_start", "step": "editor_writer",
             "label": "Editor-Writer", "detail": "正在进行文学风格化与润色...",
         })
+        _emit(session_id, {"type": "progress_update", "step": "editor_writer", "progress": 10, "detail": "准备素材和风格参数..."})
         edited_text = full_text
         editor_prompt_sent = ""
         try:

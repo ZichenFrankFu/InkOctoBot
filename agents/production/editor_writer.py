@@ -57,6 +57,59 @@ class EditorWriter(BaseAgent):
         })
         return resp.content
 
+    async def check_world_rules(
+        self,
+        chapter_text: str,
+        world_rules: list[str] | str = "",
+        foreshadowing: list[dict] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Check chapter text against world rules and unresolved foreshadowing.
+
+        Returns list of warnings: [{type, message, severity}].
+        """
+        rules_str = world_rules if isinstance(world_rules, str) else "\n".join(world_rules)
+        if not rules_str and not foreshadowing:
+            return []
+
+        foreshadow_str = ""
+        if foreshadowing:
+            foreshadow_str = "\n未回收伏笔：\n" + "\n".join(
+                f"- 第{f.get('chapter', '?')}章：{f.get('text', f.get('description', ''))}"
+                for f in foreshadowing
+            )
+
+        prompt = f"""请检查以下章节文本是否违反世界观规则或遗忘伏笔。
+
+世界规则：
+{rules_str}
+{foreshadow_str}
+
+章节正文（前3000字）：
+{chapter_text[:3000]}
+
+检查项：
+1. 力量体系是否一致
+2. 地理/时间是否矛盾
+3. 伏笔是否被遗忘或矛盾回收
+
+如果发现问题，以JSON数组格式输出：
+[{{"type": "world_rule/foreshadowing/consistency", "message": "问题描述", "severity": "high/medium/low"}}]
+
+如果没有问题，输出空数组：[]
+"""
+        try:
+            resp = await self.invoke(prompt, temperature=0.3, max_tokens=1000)
+            import json
+            text = resp.content.strip()
+            if "[" in text:
+                json_str = text[text.index("["):text.rindex("]") + 1]
+                warnings = json.loads(json_str)
+                return [w for w in warnings if isinstance(w, dict) and w.get("message")]
+            return []
+        except Exception as e:
+            logger.warning("World rules check failed: %s", e)
+            return []
+
     async def targeted_rewrite(
         self,
         original_text: str,

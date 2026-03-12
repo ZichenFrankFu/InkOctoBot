@@ -3,7 +3,10 @@ import { apiGet, apiPost, apiPut } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import { computeDiff, groupIntoHunks, assembleFromHunks } from "../utils/simpleDiff";
 import type { DiffHunk } from "../utils/simpleDiff";
-import type { Volume, ChapterOutline, PipelineStatus, EvalResult } from "../api/types";
+import type { Volume, ChapterOutline, PipelineStatus, EvalResult, FollowUpQuestion } from "../api/types";
+import EvalReport from "../components/editor/EvalReport";
+import type { EvalReportData } from "../components/editor/EvalReport";
+import FollowUpQuestions from "../components/shared/FollowUpQuestions";
 
 const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const wc = (t: string) => (t ? t.replace(/[\s\p{P}]/gu, "").length : 0);
@@ -32,7 +35,12 @@ interface ChatMessage {
   status?: "thinking" | "speaking" | "done" | "waiting_confirm";
   timestamp: number;
   isQuestion?: boolean;
+  isWarning?: boolean;
+  isCoT?: boolean;
   promptSent?: string;
+  followUpOptions?: string[];
+  warningOptions?: string[];
+  agentDisplayName?: string;
 }
 
 /** Format Scene Director JSON output as human-readable screenplay format */
@@ -367,9 +375,10 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         }]);
         break;
       case "step_done": {
-        const label = stepToLabel(data.step);
+        const label = data.agent_display_name || stepToLabel(data.step);
+        const stepLabel = stepToLabel(data.step);
         setPipelineSteps(prev => prev.map(s =>
-          s.step === label ? { ...s, status: "done" as const, detail: "已完成" } : s
+          s.step === stepLabel ? { ...s, status: "done" as const, detail: "已完成", progress: 100 } : s
         ));
         // Replace thinking/speaking message with full generated content
         setChatMessages(prev => {
@@ -377,15 +386,15 @@ export default function EditorPage({ projectId }: { projectId: string }) {
           let resultContent: string;
           if (data.step === "scene_director" && data.result && !data.result?.error) {
             // Format Scene Director output as readable screenplay
-            resultContent = formatSceneDirectorOutput(data.result);
+            resultContent = data.result?.text || formatSceneDirectorOutput(data.result);
           } else if (data.result?.text && !data.result?.error) {
-            // Show full text as the agent's output message
             resultContent = data.result.text;
           } else if (data.result?.error) {
             resultContent = `生成出错：${data.result.error}`;
           } else if (data.result?.score !== undefined) {
-            resultContent = `评估完成。得分：${data.result.score}/100`;
-            if (data.result.issues?.length) {
+            // Evaluator: show summary_text if available, else build from data
+            resultContent = data.result.summary_text || `评估完成。得分：${data.result.score}/100`;
+            if (!data.result.summary_text && data.result.issues?.length) {
               resultContent += "\n\n问题：\n" + data.result.issues.map((i: any) =>
                 `- [${i.severity}] ${i.type}: ${i.description}`
               ).join("\n");
@@ -395,7 +404,10 @@ export default function EditorPage({ projectId }: { projectId: string }) {
           } else {
             resultContent = JSON.stringify(data.result || {}, null, 2).slice(0, 1000);
           }
-          const msg: ChatMessage = { agent: label, content: resultContent, status: "done", timestamp: Date.now() };
+          const msg: ChatMessage = {
+            agent: label, content: resultContent, status: "done", timestamp: Date.now(),
+            agentDisplayName: data.agent_display_name || undefined,
+          };
           if (data.result?.prompt_sent) {
             msg.promptSent = typeof data.result.prompt_sent === "string"
               ? data.result.prompt_sent
@@ -415,6 +427,9 @@ export default function EditorPage({ projectId }: { projectId: string }) {
             process: data.result.process || [],
             strengths: data.result.strengths || [],
             summary: data.result.summary || "",
+            summary_text: data.result.summary_text || "",
+            dimension_scores: data.result.dimension_scores || {},
+            process_log: data.result.process_log || [],
           });
         }
         break;
@@ -449,6 +464,66 @@ export default function EditorPage({ projectId }: { projectId: string }) {
             })),
           });
         }
+        break;
+      case "agent_warning":
+        setChatMessages(prev => [...prev, {
+          agent: data.agent || stepToLabel(data.step),
+          content: data.message,
+          status: "waiting_confirm",
+          isWarning: true,
+          warningOptions: data.options || ["这是故意的，记录原因", "修改指令"],
+          timestamp: Date.now(),
+        }]);
+        setWaitingForConfirm(true);
+        break;
+      case "follow_up":
+        setChatMessages(prev => [...prev, {
+          agent: stepToLabel(data.step),
+          content: data.message,
+          status: "waiting_confirm",
+          isQuestion: true,
+          followUpOptions: data.options || [],
+          timestamp: Date.now(),
+        }]);
+        setWaitingForConfirm(true);
+        break;
+      case "thinking_start":
+        setChatMessages(prev => [...prev, {
+          agent: stepToLabel(data.step),
+          content: "",
+          status: "thinking",
+          isCoT: true,
+          timestamp: Date.now(),
+        }]);
+        break;
+      case "thinking_token":
+        setChatMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.isCoT && last.status === "thinking") {
+            const updated = [...prev];
+            updated[updated.length - 1] = { ...last, content: last.content + (data.content || "") };
+            return updated;
+          }
+          return prev;
+        });
+        break;
+      case "thinking_end":
+        setChatMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.isCoT && last.status === "thinking") {
+            const updated = [...prev];
+            updated[updated.length - 1] = { ...last, status: "done" };
+            return updated;
+          }
+          return prev;
+        });
+        break;
+      case "progress_update":
+        setPipelineSteps(prev => prev.map(s =>
+          s.step === stepToLabel(data.step)
+            ? { ...s, progress: data.progress, detail: data.detail || s.detail }
+            : s
+        ));
         break;
       case "error":
         setGenerating(false);
@@ -1022,15 +1097,16 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
   const [expandedPromptIdx, setExpandedPromptIdx] = useState<number | null>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
 
-  const getAgentStyle = (agent: string) => AGENT_COLORS[agent] || { bg: "#f0f0f0", border: "#999", name: agent };
+  const getAgentStyle = (agent: string) => AGENT_COLORS[agent] || { bg: "var(--gold-subtle)", border: "var(--gold)", name: agent };
   const getAgentAvatar = (agent: string) => {
     const map: Record<string, string> = { "Scene Director": "🎬", "Actor Agents": "🎭", "Editor-Writer": "✍️", "Evaluator": "📋", "User": "👤", "System": "🤖" };
-    return map[agent] || "🤖";
+    return map[agent] || "🎭";
   };
+  const [cotExpanded, setCotExpanded] = useState<Record<number, boolean>>({});
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div className="label mb-8">Film Pipeline - 群聊模式</div>
+      <div className="label mb-8">Creative Writing Pipeline</div>
       {/* Progress bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 10, padding: "6px 0" }}>
         {steps.map((s, i) => (
@@ -1039,10 +1115,22 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
               if (s.status !== "done") return;
               if (onRollback) onRollback(i);
             }}
-            title={s.status === "done" ? `点击回退到「${s.step}」` : undefined}
+            title={s.status === "done" ? `点击回退到「${s.step}」` : s.detail || undefined}
           >
-            <div style={{ width: "100%", height: 4, borderRadius: 2, background: s.status === "done" ? "var(--jade)" : s.status === "running" ? "var(--gold)" : "var(--border)", transition: "background 0.3s" }} />
+            <div style={{ width: "100%", height: 6, borderRadius: 3, background: "var(--border)", overflow: "hidden" }}>
+              <div style={{
+                width: `${s.progress ?? (s.status === "done" ? 100 : s.status === "running" ? 30 : 0)}%`,
+                height: "100%", borderRadius: 3,
+                background: s.status === "done" ? "var(--jade)" : s.status === "running" ? "var(--gold)" : "var(--border)",
+                transition: "width 0.3s, background 0.3s",
+              }} />
+            </div>
             <span style={{ fontSize: 9, color: s.status === "done" ? "var(--jade)" : s.status === "running" ? "var(--gold)" : "var(--text-disabled)" }}>{s.step.split(" ")[0]}</span>
+            {s.status === "running" && s.detail && (
+              <span style={{ fontSize: 8, color: "var(--gold)", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {s.detail} {s.progress ? `${s.progress}%` : ""}
+              </span>
+            )}
           </div>
         ))}
       </div>
@@ -1068,10 +1156,86 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
               <div style={{ width: 32, height: 32, borderRadius: "50%", background: style.bg, border: `2px solid ${style.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{getAgentAvatar(msg.agent)}</div>
               <div style={{ maxWidth: "80%", minWidth: 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
-                  {style.name}{msg.status === "thinking" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "#f9ab00" }}>思考中...</span>}
+                  {msg.agentDisplayName || style.name}
+                  {msg.isWarning && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "var(--gold)" }}>⚠️</span>}
+                  {msg.status === "thinking" && !msg.isCoT && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "#f9ab00" }}>思考中...</span>}
+                  {msg.isCoT && msg.status === "thinking" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)" }}>思考中</span>}
                 </div>
-                <div style={{ padding: "8px 12px", borderRadius: 10, background: style.bg, borderLeft: isUser ? "none" : `3px solid ${style.border}`, borderRight: isUser ? `3px solid ${style.border}` : "none", fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", wordBreak: "break-word", whiteSpace: "pre-wrap", userSelect: "text", cursor: "text", maxHeight: msg.content.length > 800 ? 300 : undefined, overflowY: msg.content.length > 800 ? "auto" : undefined }}>
-                  {msg.isQuestion ? (
+                <div style={{
+                  padding: "8px 12px", borderRadius: 10,
+                  background: msg.isWarning ? "rgba(255,160,0,0.08)" : style.bg,
+                  borderLeft: isUser ? "none" : `3px solid ${msg.isWarning ? "var(--gold)" : style.border}`,
+                  borderRight: isUser ? `3px solid ${style.border}` : "none",
+                  fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)", wordBreak: "break-word", whiteSpace: "pre-wrap",
+                  userSelect: "text", cursor: "text",
+                  maxHeight: msg.content.length > 800 ? 300 : undefined, overflowY: msg.content.length > 800 ? "auto" : undefined,
+                }}>
+                  {/* CoT collapsible */}
+                  {msg.isCoT ? (
+                    <div>
+                      <button
+                        onClick={() => setCotExpanded(prev => ({ ...prev, [i]: !prev[i] }))}
+                        style={{ fontSize: 11, color: "var(--text-tertiary)", background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: 4 }}
+                      >
+                        {msg.status === "thinking" ? "思考中..." : (cotExpanded[i] ? "收起思考过程" : "查看思考过程")}
+                        {msg.status === "thinking" && <span style={{ marginLeft: 4, animation: "pulse 1s infinite" }}>...</span>}
+                      </button>
+                      {(cotExpanded[i] || msg.status === "thinking") && msg.content && (
+                        <pre style={{ fontSize: 11, color: "var(--text-tertiary)", whiteSpace: "pre-wrap", lineHeight: 1.5, maxHeight: 200, overflowY: "auto", fontFamily: "var(--font-mono)", padding: "6px 0", margin: 0 }}>
+                          {msg.content}
+                        </pre>
+                      )}
+                    </div>
+                  ) : msg.isWarning ? (
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                        <span style={{ fontSize: 14 }}>⚠️</span>
+                        <span style={{ fontWeight: 600, color: "var(--gold)" }}>角色/世界观提醒</span>
+                      </div>
+                      <div>{msg.content}</div>
+                      {msg.warningOptions && msg.status === "waiting_confirm" && (
+                        <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                          {msg.warningOptions.map((opt, oi) => (
+                            <button key={oi} className="btn" style={{ fontSize: 11, padding: "4px 12px", borderRadius: 14 }}
+                              onClick={() => {
+                                if (opt.includes("故意")) {
+                                  const reason = window.prompt("请说明原因：", "");
+                                  if (reason !== null) {
+                                    onChatInputChange(`${opt}：${reason}`);
+                                    onSendMessage();
+                                  }
+                                } else {
+                                  onChatInputChange(opt);
+                                  onSendMessage();
+                                }
+                              }}>
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : msg.isQuestion && msg.followUpOptions && msg.followUpOptions.length > 0 ? (
+                    <div>
+                      <div style={{ marginBottom: 8 }}>{msg.content}</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {msg.followUpOptions.map((opt, oi) => (
+                          <button key={oi}
+                            onClick={() => { onChatInputChange(opt); onSendMessage(); }}
+                            style={{
+                              padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border)",
+                              background: "var(--bg-surface)", color: "var(--text-primary)",
+                              fontSize: 12, textAlign: "left", cursor: "pointer", transition: "all 0.15s",
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--accent-subtle)"; }}
+                            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg-surface)"; }}
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : msg.isQuestion ? (
                     <QuestionChoices content={msg.content} onChoose={(choice) => {
                       onChatInputChange(choice);
                     }} />
@@ -1432,6 +1596,24 @@ function EvalTab({ result }: { result: EvalResult | null }) {
       <p>在「灵感」面板完成一次生成后，评估结果将显示在这里</p>
     </div>
   );
+
+  // Use EvalReport component when dimension_scores are available
+  const hasDimensionScores = displayResult.dimension_scores && Object.keys(displayResult.dimension_scores).length > 0;
+  if (hasDimensionScores) {
+    return (
+      <div>
+        <EvalReport result={{
+          score: displayResult.score,
+          passed: displayResult.passed,
+          summary_text: displayResult.summary_text || displayResult.summary || "",
+          dimension_scores: displayResult.dimension_scores,
+          issues: displayResult.issues,
+          strengths: displayResult.strengths,
+          process_log: displayResult.process_log,
+        }} />
+      </div>
+    );
+  }
 
   const summary = displayResult.summary || "";
   const strengths = displayResult.strengths || [];

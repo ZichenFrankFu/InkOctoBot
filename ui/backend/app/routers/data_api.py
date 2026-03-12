@@ -166,6 +166,25 @@ def clear_chat_history(project_id: str = "default", scope: str = "pipeline"):
         p.unlink()
     return {"ok": True}
 
+# ═══ Calibration ═══
+def _calibration_path(project_id: str) -> Path:
+    d = _col("calibration"); return d / f"{project_id}.json"
+
+@router.get("/calibration/{project_id}")
+def get_calibration(project_id: str):
+    p = _calibration_path(project_id)
+    if not p.exists():
+        return {"history": [], "style_params": {}, "confirmed": False}
+    return json.loads(p.read_text("utf-8"))
+
+@router.put("/calibration/{project_id}")
+def save_calibration(project_id: str, body: dict = Body(...)):
+    body["project_id"] = project_id
+    body["saved_at"] = time.time()
+    _wj(_calibration_path(project_id), body)
+    return {"ok": True}
+
+
 # ═══ Storyline ═══
 def _storyline_path(project_id: str = "default") -> Path:
     d = _col("storylines"); return d / f"{project_id}.json"

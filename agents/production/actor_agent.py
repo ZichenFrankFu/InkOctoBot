@@ -66,6 +66,59 @@ class ActorAgent(BaseAgent):
         )
         return resp.content
 
+    async def check_consistency(
+        self,
+        performance_text: str,
+        character_card: dict[str, Any] | str = "",
+        scene_plan: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Check if a performance violates character settings.
+
+        Returns list of warnings: [{character, message, severity}].
+        Empty list means no violations detected.
+        """
+        card_str = character_card if isinstance(character_card, str) else (
+            "\n".join(f"{k}: {v}" for k, v in character_card.items() if v) if character_card else ""
+        )
+        if not card_str and not scene_plan:
+            return []
+
+        prompt = f"""请检查以下角色表演是否违反了角色设定。
+
+角色名：{self.character_name}
+角色设定：
+{card_str}
+
+{"场景计划：" + str(scene_plan.get("summary", "")) if scene_plan else ""}
+
+角色表演内容：
+{performance_text[:3000]}
+
+检查项：
+1. 角色性格是否与设定矛盾
+2. 角色行为是否违反禁止约束
+3. 角色知识是否泄露了不应知道的信息
+4. 角色语言风格是否符合设定
+
+如果发现问题，以JSON数组格式输出：
+[{{"character": "角色名", "message": "问题描述", "severity": "high/medium/low"}}]
+
+如果没有问题，输出空数组：[]
+"""
+        try:
+            resp = await self.invoke(prompt, temperature=0.3, max_tokens=1000)
+            import json
+            text = resp.content.strip()
+            # Extract JSON array
+            if "[" in text:
+                json_str = text[text.index("["):text.rindex("]") + 1]
+                warnings = json.loads(json_str)
+                return [w for w in warnings if isinstance(w, dict) and w.get("message")]
+            return []
+        except Exception as e:
+            logger.warning("Consistency check failed: %s", e)
+            return []
+
     def _build_performance_prompt(
         self, scene_plan: dict, instructions: dict, previous_beats: str,
     ) -> str:

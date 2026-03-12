@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
-import type { Project } from "../api/types";
+import type { Project, FollowUpQuestion, SampleFeedback, CalibrationHistory } from "../api/types";
+import FollowUpQuestions from "../components/shared/FollowUpQuestions";
 
 interface Props {
   activeProject: string;
@@ -69,6 +70,15 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const [sampleType, setSampleType] = useState("opening");
   const [calibrationSample, setCalibrationSample] = useState("");
   const [sampleLoading, setSampleLoading] = useState(false);
+
+  // Calibration feedback
+  const [sampleFeedback, setSampleFeedback] = useState<SampleFeedback>({ score: 0, comment: "", confirmed: false });
+  const [calibrationHistory, setCalibrationHistory] = useState<CalibrationHistory[]>([]);
+  const [styleConfirmed, setStyleConfirmed] = useState(false);
+  const [calibrationAnalysis, setCalibrationAnalysis] = useState("");
+
+  // Follow-up questions from brainstorm AI
+  const [followUpQuestions, setFollowUpQuestions] = useState<FollowUpQuestion[]>([]);
 
   // Persist studio state to sessionStorage on changes
   useEffect(() => {
@@ -167,19 +177,29 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     const userInput = input.trim();
     setInput("");
     setAiLoading(true);
+    setFollowUpQuestions([]);
 
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
-      const systemHint = "你是一个顶级网文创作顾问，精通大纲策划、角色设计、世界观构建、市场趋势分析。请根据用户的描述，提供具体、可操作的创作建议。涵盖剧情结构、人物塑造、力量体系、读者心理等各个方面。用中文回答，语气专业友好，善用结构化排版。";
+      // Build conversation history (last 20 messages) for context
+      const recentMessages = [...messages.filter(m => m.tab === "brainstorm"), userMsg].slice(-20);
+      const conversationContext = recentMessages.map(m => `${m.role === "user" ? "用户" : "AI"}：${m.content}`).join("\n\n");
+
+      const systemHint = "你是一个顶级网文创作顾问，精通大纲策划、角色设计、世界观构建、市场趋势分析。\n\n回答用户问题后，必须追加1-2个追问来明确用户需求。\n\n输出格式（严格JSON）：\n{\"answer\": \"你的回答...\", \"follow_up\": [{\"text\": \"追问？\", \"options\": [\"选项A\", \"选项B\", \"选项C\"]}]}\n\n追问规则：每个问题2-4个选项，选项具体有区分度，不重复已确认内容。";
+
+      const fullPrompt = recentMessages.length > 1
+        ? `以下是对话历史：\n\n${conversationContext}\n\n请基于以上对话上下文回答用户最新的问题。`
+        : userInput;
+
       const resp = await fetch("/api/generation/quick-generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           project_id: activeProject || "default",
           chapter_id: "studio_chat",
-          synopsis: userInput,
+          synopsis: fullPrompt,
           system_hint: systemHint,
         }),
         signal: controller.signal,
@@ -191,8 +211,41 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
         throw new Error(detail || `HTTP ${resp.status}`);
       }
       const data = await resp.json();
-      const aiMsg: ChatMsg = { role: "assistant", content: data.text || "生成完成。", tab: studioTab, timestamp: Date.now() };
+      const rawText = data.text || "生成完成。";
+
+      // Try to parse follow-up questions from JSON response
+      let answerText = rawText;
+      let parsedFollowUp: FollowUpQuestion[] = [];
+      try {
+        // Try parsing the entire response as JSON
+        const parsed = JSON.parse(rawText);
+        if (parsed.answer) {
+          answerText = parsed.answer;
+          if (parsed.follow_up && Array.isArray(parsed.follow_up)) {
+            parsedFollowUp = parsed.follow_up.filter((q: any) => q.text && Array.isArray(q.options) && q.options.length >= 2);
+          }
+        }
+      } catch {
+        // Try extracting JSON from mixed text
+        const jsonMatch = rawText.match(/\{[\s\S]*"answer"[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (parsed.answer) {
+              answerText = parsed.answer;
+              if (parsed.follow_up && Array.isArray(parsed.follow_up)) {
+                parsedFollowUp = parsed.follow_up.filter((q: any) => q.text && Array.isArray(q.options) && q.options.length >= 2);
+              }
+            }
+          } catch { /* keep raw text */ }
+        }
+      }
+
+      const aiMsg: ChatMsg = { role: "assistant", content: answerText, tab: studioTab, timestamp: Date.now() };
       setMessages(prev => [...prev, aiMsg]);
+      if (parsedFollowUp.length > 0) {
+        setFollowUpQuestions(parsedFollowUp);
+      }
     } catch (e: any) {
       if (e?.name === "AbortError") {
         setMessages(prev => [...prev, { role: "assistant", content: "（已终止生成）", tab: studioTab, timestamp: Date.now() }]);
@@ -220,6 +273,8 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const generateCalibrationSample = async () => {
     setSampleLoading(true);
     setCalibrationSample("");
+    setCalibrationAnalysis("");
+    setSampleFeedback({ score: 0, comment: "", confirmed: false });
     try {
       const toneDesc = calibration.tone < 30 ? "轻松幽默" : calibration.tone > 70 ? "严肃深沉" : "均衡";
       const pacingDesc = calibration.pacing < 30 ? "快节奏" : calibration.pacing > 70 ? "慢节奏" : "中等节奏";
@@ -230,19 +285,73 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
         action: "一段动作/打斗场景",
         inner: "一段内心独白/心理描写",
       };
-      const prompt = `请生成一段${typeDesc[sampleType] || "短文"}的校准样本。\n\n风格要求：\n- 文风：${toneDesc}\n- 节奏：${pacingDesc}\n- 视角：${perspDesc}\n- 目标受众：${calibration.audience === "male" ? "男频" : calibration.audience === "female" ? "女频" : "大众"}\n\n请直接输出样本内容，不需要解释。`;
+
+      // Build feedback context from history
+      let feedbackContext = "";
+      if (calibrationHistory.length > 0) {
+        feedbackContext = "\n\n用户之前的反馈历史：\n" + calibrationHistory.map((h, i) =>
+          `样本${i + 1}（评分：${h.feedback.score}/5）：${h.feedback.comment || "无评论"}`
+        ).join("\n");
+        feedbackContext += "\n\n请根据以上反馈调整风格方向。生成样本后，用JSON格式输出：{\"text\": \"样本内容\", \"analysis\": \"根据反馈做了哪些调整的分析\"}";
+      }
+
+      const prompt = `请生成一段${typeDesc[sampleType] || "短文"}的校准样本。\n\n风格要求：\n- 文风：${toneDesc}\n- 节奏：${pacingDesc}\n- 视角：${perspDesc}\n- 目标受众：${calibration.audience === "male" ? "男频" : calibration.audience === "female" ? "女频" : "大众"}${feedbackContext}\n\n${calibrationHistory.length === 0 ? "请直接输出样本内容，不需要解释。" : ""}`;
 
       const resp = await apiPost<{ text: string }>("/api/generation/quick-generate", {
         project_id: activeProject || "default",
         chapter_id: "calibration_sample",
         synopsis: prompt,
-        system_hint: "你是一个专业的网文写手。根据给定的风格参数生成校准样本段落。直接输出文本内容，不要加标题或说明。",
+        system_hint: calibrationHistory.length > 0
+          ? "你是一个专业的网文写手。根据用户之前的评分和评论反馈，调整风格参数后生成改进的校准样本。输出JSON格式：{\"text\": \"样本内容\", \"analysis\": \"调整说明\"}"
+          : "你是一个专业的网文写手。根据给定的风格参数生成校准样本段落。直接输出文本内容，不要加标题或说明。",
       });
-      setCalibrationSample(resp.text || "");
+
+      const rawText = resp.text || "";
+      // Try parsing JSON response with analysis
+      try {
+        const parsed = JSON.parse(rawText);
+        if (parsed.text) {
+          setCalibrationSample(parsed.text);
+          if (parsed.analysis) setCalibrationAnalysis(parsed.analysis);
+        } else {
+          setCalibrationSample(rawText);
+        }
+      } catch {
+        setCalibrationSample(rawText);
+      }
     } catch (e: any) {
       setCalibrationSample(`生成失败：${e?.message || "请检查模型连接"}`);
     }
     setSampleLoading(false);
+  };
+
+  const submitCalibrationFeedback = async () => {
+    if (!calibrationSample || sampleFeedback.score === 0) return;
+    const entry: CalibrationHistory = {
+      sample: calibrationSample,
+      feedback: { ...sampleFeedback },
+      analysis: calibrationAnalysis,
+    };
+    setCalibrationHistory(prev => [...prev, entry]);
+    // Save to backend
+    const pid = activeProject || "default";
+    apiPut(`/api/data/calibration/${pid}`, {
+      history: [...calibrationHistory, entry],
+      style_params: calibration,
+      confirmed: false,
+    }).catch(() => {});
+    // Generate a new improved sample
+    generateCalibrationSample();
+  };
+
+  const confirmStyle = async () => {
+    setStyleConfirmed(true);
+    const pid = activeProject || "default";
+    apiPut(`/api/data/calibration/${pid}`, {
+      history: calibrationHistory,
+      style_params: calibration,
+      confirmed: true,
+    }).catch(() => {});
   };
 
   const tabMessages = messages.filter(m => m.tab === studioTab);
@@ -518,12 +627,99 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                       {sampleLoading ? "生成中..." : "生成样本段落"}
                     </button>
                     {calibrationSample && (
-                      <div style={{
-                        marginTop: 8, padding: "12px 14px", background: "var(--bg-surface-2)", borderRadius: 8,
-                        borderLeft: "3px solid var(--jade)", fontSize: 13, lineHeight: 1.8, color: "var(--text-primary)",
-                        whiteSpace: "pre-wrap", maxHeight: 300, overflowY: "auto", fontFamily: "var(--font-serif)",
-                      }}>
-                        {calibrationSample}
+                      <div>
+                        <div style={{
+                          marginTop: 8, padding: "12px 14px", background: "var(--bg-surface-2)", borderRadius: 8,
+                          borderLeft: "3px solid var(--jade)", fontSize: 13, lineHeight: 1.8, color: "var(--text-primary)",
+                          whiteSpace: "pre-wrap", maxHeight: 300, overflowY: "auto", fontFamily: "var(--font-serif)",
+                        }}>
+                          {calibrationSample}
+                        </div>
+
+                        {/* Analysis from agent */}
+                        {calibrationAnalysis && (
+                          <div style={{
+                            marginTop: 8, padding: "8px 12px", background: "var(--accent-subtle)", borderRadius: 6,
+                            borderLeft: "3px solid var(--accent)", fontSize: 12, lineHeight: 1.6, color: "var(--text-secondary)",
+                          }}>
+                            <span style={{ fontWeight: 600, color: "var(--accent)" }}>AI 分析：</span>{calibrationAnalysis}
+                          </div>
+                        )}
+
+                        {/* Star Rating */}
+                        <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                          <span className="label" style={{ marginBottom: 0, fontSize: 11 }}>评分：</span>
+                          <div style={{ display: "flex", gap: 2 }}>
+                            {[1, 2, 3, 4, 5].map(star => (
+                              <button key={star}
+                                onClick={() => setSampleFeedback(prev => ({ ...prev, score: star }))}
+                                style={{
+                                  fontSize: 20, background: "none", border: "none", cursor: "pointer",
+                                  color: star <= sampleFeedback.score ? "var(--gold)" : "var(--border)",
+                                  transition: "color 0.15s",
+                                }}
+                                onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.2)"; }}
+                                onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}
+                              >
+                                ★
+                              </button>
+                            ))}
+                          </div>
+                          {sampleFeedback.score > 0 && (
+                            <span className="text-xs text-muted">
+                              {sampleFeedback.score <= 2 ? "不满意" : sampleFeedback.score <= 3 ? "一般" : sampleFeedback.score <= 4 ? "满意" : "非常好"}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Comment */}
+                        <div style={{ marginTop: 8 }}>
+                          <textarea className="input" value={sampleFeedback.comment}
+                            onChange={e => setSampleFeedback(prev => ({ ...prev, comment: e.target.value }))}
+                            rows={2} placeholder="告诉AI你喜欢/不喜欢什么..."
+                            style={{ fontSize: 12, lineHeight: 1.6, width: "100%", boxSizing: "border-box" }} />
+                        </div>
+
+                        {/* Actions */}
+                        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                          <button className="btn" style={{ flex: 1, fontSize: 11 }}
+                            onClick={submitCalibrationFeedback}
+                            disabled={sampleFeedback.score === 0 || sampleLoading}>
+                            提交反馈 & 生成改进样本
+                          </button>
+                          <button className="btn-primary" style={{ flex: 1, fontSize: 11, background: "var(--jade)", border: "none" }}
+                            onClick={confirmStyle}
+                            disabled={sampleFeedback.score < 4}>
+                            {styleConfirmed ? "已确认风格" : "确认为目标风格"}
+                          </button>
+                        </div>
+
+                        {/* Feedback history */}
+                        {calibrationHistory.length > 0 && (
+                          <div style={{ marginTop: 12 }}>
+                            <div className="label" style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 4 }}>
+                              校准历史 ({calibrationHistory.length} 轮)
+                            </div>
+                            {calibrationHistory.map((h, hi) => (
+                              <div key={hi} style={{
+                                padding: "6px 10px", background: "var(--bg-surface-2)", borderRadius: 6, marginBottom: 4,
+                                fontSize: 11, color: "var(--text-tertiary)", display: "flex", alignItems: "center", gap: 8,
+                              }}>
+                                <span style={{ color: "var(--gold)" }}>{"★".repeat(h.feedback.score)}{"☆".repeat(5 - h.feedback.score)}</span>
+                                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {h.feedback.comment || "无评论"}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {styleConfirmed && (
+                          <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--jade-subtle)", borderRadius: 6, borderLeft: "3px solid var(--jade)" }}>
+                            <span style={{ fontSize: 12, color: "var(--jade)", fontWeight: 600 }}>风格方向已确认！</span>
+                            <span style={{ fontSize: 11, color: "var(--text-secondary)", marginLeft: 8 }}>Pipeline 生成时将使用此风格参数。</span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -601,6 +797,23 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                       </div>
                     </div>
                   ))}
+                  {/* Follow-up questions */}
+                  {followUpQuestions.length > 0 && !aiLoading && (
+                    <div style={{ padding: "8px 0", marginTop: 4 }}>
+                      <FollowUpQuestions
+                        questions={followUpQuestions}
+                        onSelect={(_qi, answer) => {
+                          setInput(answer);
+                          setFollowUpQuestions([]);
+                          // Auto-send after a small delay
+                          setTimeout(() => {
+                            const btn = document.querySelector(".studio-send-btn") as HTMLButtonElement;
+                            if (btn) btn.click();
+                          }, 100);
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
                 <div style={{ padding: "8px 14px 12px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
                   {/* Stop bar */}
