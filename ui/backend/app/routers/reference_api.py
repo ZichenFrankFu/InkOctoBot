@@ -15,6 +15,10 @@ router = APIRouter(prefix="/references", tags=["references"])
 
 def _db():
     from rag.reference_db import ReferenceDB
+    # Test mode: use reference DB from data_dir
+    if settings.test_mode and settings.data_dir:
+        db_path = str(settings.data_dir / "novels.db")
+        return ReferenceDB(db_path)
     try:
         repo_cfg = load_repo_config(settings.repo_root)
         db_path = get_db_path(repo_cfg, settings.repo_root)

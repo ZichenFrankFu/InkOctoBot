@@ -41,12 +41,20 @@ export default function WorldBookPage({ projectId, projects }: Props) {
     setLoading(true);
     try {
       const r = await apiGet<{ items: WorldBookEntry[] }>(`/api/data/worldbook?project_id=${projectId}`);
-      setItems(r.items || []);
+      const newItems = r.items || [];
+      setItems(newItems);
+      // Sync editing with fresh data after save (when not dirty)
+      setEditing(prev => {
+        if (prev && !dirty) {
+          return newItems.find(i => i.id === prev.id) || prev;
+        }
+        return prev;
+      });
     } catch (e) {
       console.error(e);
     }
     setLoading(false);
-  }, [projectId]);
+  }, [projectId, dirty]);
 
   useEffect(() => {
     load();

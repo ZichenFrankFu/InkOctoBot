@@ -387,23 +387,13 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 <h2 className="font-serif" style={{ fontSize: 22, fontWeight: 700 }}>
                   {editing.name}
                 </h2>
-                <div className="flex gap-6">
-                  <button
-                    className={showCharChat ? "btn-primary" : "btn"}
-                    style={{ fontSize: 12 }}
-                    onClick={() => setShowCharChat(!showCharChat)}
-                  >
-                    {showCharChat ? "收起 AI 对话" : "AI 角色助手"}
-                  </button>
-                  <button
-                    className="btn-primary"
-                    onClick={save}
-                    disabled={!dirty}
-                    style={{ opacity: dirty ? 1 : 0.5 }}
-                  >
-                    {dirty ? "保存" : "已保存"}
-                  </button>
-                </div>
+                <button
+                  className={showCharChat ? "btn-primary" : "btn"}
+                  style={{ fontSize: 12 }}
+                  onClick={() => setShowCharChat(!showCharChat)}
+                >
+                  {showCharChat ? "收起 AI 对话" : "AI 角色助手"}
+                </button>
               </div>
 
               {/* AI Character Chat Panel */}
@@ -557,8 +547,6 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   </div>
                 </div>
               )}
-
-              <RelationshipGraph characters={items} currentId={editing.id} />
 
               {/* Basic Info */}
               <div className="card mb-20">
@@ -766,6 +754,21 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   </div>
                 </div>
               </div>
+
+              {/* Relationship Graph — placed after add-relationship so user sees it immediately */}
+              <RelationshipGraph characters={items} currentId={editing.id} />
+
+              {/* Save button at bottom */}
+              <div style={{ marginTop: 24, display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  className="btn-primary"
+                  onClick={save}
+                  disabled={!dirty}
+                  style={{ opacity: dirty ? 1 : 0.5, padding: "10px 32px", fontSize: 14 }}
+                >
+                  {dirty ? "保存角色" : "已保存"}
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -783,20 +786,51 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
   const visibleChars = characters.filter(c => c.id === currentId || relatedIds.has(c.id));
   if (visibleChars.length <= 1) return null;
 
-  const W = 600, H = 200;
-  const cx = W / 2, cy = H / 2;
   const others = visibleChars.filter(c => c.id !== currentId);
-  const angleStep = (2 * Math.PI) / Math.max(others.length, 1);
-  const radius = Math.min(W, H) * 0.35;
+  const n = others.length;
+
+  // Dynamic sizing: wider for more characters, taller when many nodes
+  const nodeSpacing = 120;
+  const W = Math.max(400, Math.min(800, n * nodeSpacing + 200));
+  const H = Math.max(180, Math.min(400, n <= 4 ? 220 : 160 + n * 30));
+  const cx = W / 2, cy = H / 2;
+
+  // Use elliptical layout with enough radius to prevent overlap
+  const radiusX = Math.min(W * 0.38, n * 45);
+  const radiusY = Math.min(H * 0.35, n * 35);
+  const angleStep = (2 * Math.PI) / Math.max(n, 1);
+  // Start from top (-PI/2) and distribute evenly
+  const startAngle = -Math.PI / 2;
 
   const positions: Record<string, { x: number; y: number }> = { [currentId]: { x: cx, y: cy } };
   others.forEach((c, i) => {
-    const angle = -Math.PI / 2 + i * angleStep;
-    positions[c.id] = { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
+    const angle = startAngle + i * angleStep;
+    positions[c.id] = {
+      x: cx + radiusX * Math.cos(angle),
+      y: cy + radiusY * Math.sin(angle),
+    };
   });
 
+  // Ensure no overlap: check minimum distance between all pairs
+  const minDist = 60;
+  const allIds = visibleChars.map(c => c.id);
+  for (let i = 0; i < allIds.length; i++) {
+    for (let j = i + 1; j < allIds.length; j++) {
+      const a = positions[allIds[i]], b = positions[allIds[j]];
+      if (!a || !b) continue;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < minDist && dist > 0) {
+        const push = (minDist - dist) / 2;
+        const ux = dx / dist, uy = dy / dist;
+        if (allIds[i] !== currentId) { a.x -= ux * push; a.y -= uy * push; }
+        if (allIds[j] !== currentId) { b.x += ux * push; b.y += uy * push; }
+      }
+    }
+  }
+
   return (
-    <div className="card mb-20">
+    <div className="card mb-20" style={{ marginTop: 16 }}>
       <div className="card-header"><h3>关系图谱</h3></div>
       <div className="card-body" style={{ padding: 8 }}>
         <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>

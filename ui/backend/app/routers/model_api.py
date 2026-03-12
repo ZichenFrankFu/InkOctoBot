@@ -151,6 +151,13 @@ async def test_connection(req: TestConnectionRequest):
                 "models": [],
                 "message": f"连接失败: {str(e)[:200]}",
             }
+    elif req.provider == "mock":
+        return {
+            "status": "ok",
+            "connected": True,
+            "models": ["mock-test-v1"],
+            "message": "Mock 供应商（测试模式）始终可用",
+        }
     return {"status": "error", "connected": False, "models": [], "message": f"不支持的供应商: {req.provider}"}
 
 

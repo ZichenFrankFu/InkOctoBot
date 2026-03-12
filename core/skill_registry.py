@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -153,6 +154,8 @@ class SkillRegistry:
         if spec is None or spec.loader is None:
             raise ImportError(f"Cannot load spec for {skill_py}")
         module = importlib.util.module_from_spec(spec)
+        # Register in sys.modules so inspect.getfile() can resolve the source
+        sys.modules[module_name] = module
         spec.loader.exec_module(module)
         skill_cls = getattr(module, "Skill", None)
         if skill_cls is None:

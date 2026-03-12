@@ -476,6 +476,9 @@ def _make_provider_instance(cfg):
     elif ptype == "vllm":
         from models.vllm_provider import VLLMProvider
         return VLLMProvider(cfg)
+    elif ptype == "mock":
+        from models.mock_provider import MockProvider
+        return MockProvider(cfg)
     else:
         from models.ollama_provider import OllamaProvider
         return OllamaProvider(cfg)

@@ -141,6 +141,102 @@ def get_skill(name: str):
     return info
 
 
+class SkillCreateRequest(BaseModel):
+    name: str
+    display_name: str = ""
+    description: str = ""
+    domain: str = "learned_skills"
+    model_role: str = "default"
+    tags: list[str] = []
+    prompt_template: str = ""
+
+
+@router.post("/create")
+def create_skill(req: SkillCreateRequest):
+    """Create a new learned skill from template."""
+    agents_dir = Path(__file__).resolve().parents[4] / "agents"
+    skill_dir = agents_dir / "learned_skills" / req.name
+    if skill_dir.exists():
+        raise HTTPException(409, f"Skill '{req.name}' already exists")
+
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    display = req.display_name or req.name.replace("_", " ").title()
+    desc = req.description or f"Custom skill: {display}"
+    tags_str = ", ".join(req.tags) if req.tags else "custom"
+    prompt = req.prompt_template or "请根据以下输入生成内容：\\n\\n{text}"
+
+    # Write SKILL.md
+    skill_md = f"""---
+name: {req.name}
+display_name: {display}
+version: "1.0"
+model_role: {req.model_role}
+tags: [{tags_str}]
+temperature: 0.7
+max_tokens: 2000
+permissions: []
+---
+
+# {display}
+
+{desc}
+
+## Input
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| text  | str  | yes      | Input text  |
+
+## Output
+| Field  | Type | Description    |
+|--------|------|----------------|
+| result | str  | Generated text |
+"""
+    (skill_dir / "SKILL.md").write_text(skill_md, "utf-8")
+
+    # Write skill.py
+    skill_py = f'''"""Auto-generated learned skill: {display}"""
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Any
+from agents.base_skill import BaseSkill, SkillMeta
+
+
+class Skill(BaseSkill):
+    def meta(self) -> SkillMeta:
+        return SkillMeta(
+            name="{req.name}",
+            display_name="{display}",
+            description="""{desc}""",
+            version="1.0",
+            model_role="{req.model_role}",
+            tags={req.tags or ["custom"]},
+            temperature=0.7,
+            max_tokens=2000,
+            input_schema={{"text": {{"type": "str", "required": True}}}},
+            output_schema={{"result": {{"type": "str"}}}},
+            permissions=[],
+        )
+
+    def build_prompt(self, inputs: dict[str, Any]) -> str:
+        text = inputs.get("text", "")
+        return f"""{prompt.replace('"', chr(92)+'"')}""".replace("{{text}}", text)
+
+    def parse_output(self, raw: str) -> dict[str, Any]:
+        return {{"result": raw}}
+'''
+    (skill_dir / "skill.py").write_text(skill_py, "utf-8")
+
+    # Register in the running registry
+    registry = _get_registry()
+    try:
+        skill = registry._load_skill(skill_dir / "skill.py")
+        registry.register(skill)
+    except Exception as e:
+        logger.error("Failed to register new skill %s: %s", req.name, e)
+
+    return {"status": "ok", "name": req.name, "path": str(skill_dir)}
+
+
 class SkillExecuteRequest(BaseModel):
     name: str
     inputs: dict[str, Any] = {}

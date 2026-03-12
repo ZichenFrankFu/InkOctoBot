@@ -11,6 +11,11 @@ logger = logging.getLogger("inkoctobot.ui.backend.db_api")
 
 def _get_con() -> sqlite3.Connection | None:
     """Return a DB connection, or *None* when the crawler DB is unavailable."""
+    # Test mode: use crawler DB from data_dir
+    if settings.test_mode and settings.data_dir:
+        test_db = settings.data_dir / "InkOctoBot_Crawler.db"
+        if test_db.exists():
+            con = sqlite3.connect(str(test_db)); con.row_factory = sqlite3.Row; return con
     # Check if user has set a custom crawler DB path in settings
     try:
         import json
@@ -148,6 +153,9 @@ def tag_stats(platform: str | None = None, limit: int = Query(default=30, ge=1, 
 
 @router.get("/info")
 def db_info():
+    if settings.test_mode and settings.data_dir:
+        test_db = settings.data_dir / "InkOctoBot_Crawler.db"
+        return {"db_path": str(test_db), "available": test_db.exists(), "test_mode": True}
     try:
         repo_cfg = load_repo_config(settings.repo_root)
         db_path = get_crawler_db_path(repo_cfg, settings.repo_root)

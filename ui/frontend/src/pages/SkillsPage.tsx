@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { apiGet, apiPost } from "../api/client";
 import type { SkillInfo, SkillExecuteResult } from "../api/types";
 
@@ -23,8 +23,12 @@ export default function SkillsPage() {
   const [testResult, setTestResult] = useState<SkillExecuteResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
+  const [newSkill, setNewSkill] = useState({ name: "", display_name: "", description: "", tags: "", prompt_template: "" });
+  const [creating, setCreating] = useState(false);
 
-  useEffect(() => {
+  const loadSkills = useCallback(() => {
+    setLoading(true);
     Promise.all([
       apiGet<{ skills: SkillInfo[]; total: number }>("/api/skills"),
       apiGet<{ tags: string[] }>("/api/skills/tags"),
@@ -36,6 +40,28 @@ export default function SkillsPage() {
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { loadSkills(); }, [loadSkills]);
+
+  const handleCreateSkill = async () => {
+    if (!newSkill.name.trim()) return;
+    setCreating(true);
+    try {
+      await apiPost("/api/skills/create", {
+        name: newSkill.name.trim().replace(/\s+/g, "_").toLowerCase(),
+        display_name: newSkill.display_name.trim(),
+        description: newSkill.description.trim(),
+        tags: newSkill.tags.split(",").map(s => s.trim()).filter(Boolean),
+        prompt_template: newSkill.prompt_template.trim(),
+      });
+      setShowCreate(false);
+      setNewSkill({ name: "", display_name: "", description: "", tags: "", prompt_template: "" });
+      loadSkills();
+    } catch (e: any) {
+      alert(e?.message || "Failed to create skill");
+    }
+    setCreating(false);
+  };
 
   const filtered = skills.filter((s) => {
     if (search && !s.name.includes(search) && !s.display_name.includes(search) && !s.description.includes(search)) return false;
@@ -85,14 +111,57 @@ export default function SkillsPage() {
   return (
     <div className="page-container" style={{ maxWidth: 1100 }}>
       {/* Header */}
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontFamily: "var(--font-serif)", fontSize: 22, fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
-          Skill Registry
-        </h2>
-        <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
-          {skills.length} skills registered across {Object.keys(grouped).length} domains
-        </p>
+      <div style={{ marginBottom: 24, display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+        <div>
+          <h2 style={{ fontFamily: "var(--font-serif)", fontSize: 22, fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
+            Skill Registry
+          </h2>
+          <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
+            {skills.length} skills registered across {Object.keys(grouped).length} domains
+          </p>
+        </div>
+        <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => setShowCreate(!showCreate)}>
+          + New Skill
+        </button>
       </div>
+
+      {/* Create skill form */}
+      {showCreate && (
+        <div className="card mb-20" style={{ animation: "slideUp 0.2s var(--ease-out)" }}>
+          <div className="card-header"><h3>Create Learned Skill</h3></div>
+          <div className="card-body">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+              <div className="field">
+                <label className="label">Skill Name (snake_case)</label>
+                <input className="input" value={newSkill.name} onChange={e => setNewSkill(prev => ({ ...prev, name: e.target.value }))} placeholder="my_custom_skill" />
+              </div>
+              <div className="field">
+                <label className="label">Display Name</label>
+                <input className="input" value={newSkill.display_name} onChange={e => setNewSkill(prev => ({ ...prev, display_name: e.target.value }))} placeholder="My Custom Skill" />
+              </div>
+            </div>
+            <div className="field mb-12">
+              <label className="label">Description</label>
+              <input className="input" value={newSkill.description} onChange={e => setNewSkill(prev => ({ ...prev, description: e.target.value }))} placeholder="What this skill does..." />
+            </div>
+            <div className="field mb-12">
+              <label className="label">Tags (comma separated)</label>
+              <input className="input" value={newSkill.tags} onChange={e => setNewSkill(prev => ({ ...prev, tags: e.target.value }))} placeholder="custom, writing, analysis" />
+            </div>
+            <div className="field mb-12">
+              <label className="label">Prompt Template</label>
+              <textarea className="input" value={newSkill.prompt_template} onChange={e => setNewSkill(prev => ({ ...prev, prompt_template: e.target.value }))}
+                placeholder="请根据以下输入生成内容：\n\n{text}" rows={3} style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setShowCreate(false)}>Cancel</button>
+              <button className="btn-primary" onClick={handleCreateSkill} disabled={creating || !newSkill.name.trim()}>
+                {creating ? "Creating..." : "Create Skill"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Stats bar */}
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>

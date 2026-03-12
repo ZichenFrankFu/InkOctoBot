@@ -31,6 +31,7 @@ _PROVIDER_CLS: dict[str, str] = {
     "ollama":    "models.ollama_provider.OllamaProvider",
     "vllm":      "models.vllm_provider.VLLMProvider",
     "lora":      "models.lora_provider.LoRAProvider",
+    "mock":      "models.mock_provider.MockProvider",
 }
 
 

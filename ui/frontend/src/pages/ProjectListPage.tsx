@@ -727,7 +727,7 @@ ${stageGuide}
                       <span className="label" style={{ marginBottom: 6, display: "block" }}>叙事视角</span>
                       <div className="flex gap-6">
                         {([["first", "第一人称"], ["third", "第三人称"], ["omniscient", "全知视角"]] as const).map(([val, label]) => (
-                          <button key={val} className={calibration.perspective === val ? "btn-primary" : "btn"} style={{ flex: 1, fontSize: 12, padding: "6px 0", borderRadius: 20 }}
+                          <button key={val} className={calibration.perspective === val ? "btn-primary" : "btn"} style={{ flex: 1, fontSize: 12, padding: "6px 0", borderRadius: 20, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
                             onClick={() => setCalibration(prev => ({ ...prev, perspective: val }))}>{label}</button>
                         ))}
                       </div>
@@ -736,7 +736,7 @@ ${stageGuide}
                       <span className="label" style={{ marginBottom: 6, display: "block" }}>目标受众</span>
                       <div className="flex gap-6">
                         {([["male", "男频"], ["female", "女频"], ["general", "大众"]] as const).map(([val, label]) => (
-                          <button key={val} className={calibration.audience === val ? "btn-primary" : "btn"} style={{ flex: 1, fontSize: 12, padding: "6px 0", borderRadius: 20 }}
+                          <button key={val} className={calibration.audience === val ? "btn-primary" : "btn"} style={{ flex: 1, fontSize: 12, padding: "6px 0", borderRadius: 20, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
                             onClick={() => setCalibration(prev => ({ ...prev, audience: val }))}>{label}</button>
                         ))}
                       </div>
@@ -751,7 +751,7 @@ ${stageGuide}
                     <div className="flex gap-6 mb-12">
                       {SAMPLE_TYPES.map(t => (
                         <button key={t.key} className={sampleType === t.key ? "btn-primary" : "btn"}
-                          style={{ flex: 1, fontSize: 11, padding: "5px 0", borderRadius: 16 }}
+                          style={{ flex: 1, fontSize: 11, padding: "5px 0", borderRadius: 16, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
                           onClick={() => setSampleType(t.key)}>
                           {t.label}
                         </button>
