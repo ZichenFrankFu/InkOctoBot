@@ -12,9 +12,9 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agents.events.event_types import Event, EventType, AgentSuggestion
-from agents.events.event_bus import EventBus
-from agents.events.triggers import TriggerRule, TriggerRegistry
+from core.event_types import Event, EventType, AgentSuggestion
+from core.event_bus import EventBus
+from core.triggers import TriggerRule, TriggerRegistry
 
 
 class TestEventTypes(unittest.TestCase):

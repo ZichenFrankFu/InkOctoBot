@@ -148,9 +148,9 @@ export interface CharacterLayerB {
 export interface CharacterRelationship {
   target_id: string;
   target_name: string;
-  trust_alpha: number;
-  trust_beta: number;
-  loyalty: number;
+  affinity: number;      // 好感度: -100 to 100, higher = more approval
+  priority: number;      // 优先级: 1+, lower = higher priority (includes self)
+  chapter?: string;       // 时间戳: chapter or in-story time marker
   notes?: string;
 }
 

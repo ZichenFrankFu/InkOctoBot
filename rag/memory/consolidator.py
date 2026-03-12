@@ -15,7 +15,7 @@ import json
 import logging
 from typing import Any
 
-from agents.model_providers.base import LLMMessage
+from models.base import LLMMessage
 
 logger = logging.getLogger("inkoctobot.rag.memory.consolidator")
 

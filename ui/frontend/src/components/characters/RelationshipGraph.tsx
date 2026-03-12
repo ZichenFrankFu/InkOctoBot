@@ -46,19 +46,19 @@ export default function RelationshipGraph({ relationships, onEdit }: Props) {
             </span>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-            {/* Trust Alpha */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {/* Affinity */}
             <div>
               <label style={{ fontSize: 10, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>
-                Trust (\u03B1)
+                好感度
               </label>
               <input
                 type="number"
-                min={0}
+                min={-100}
                 max={100}
-                step={0.1}
-                value={rel.trust_alpha}
-                onChange={(e) => onEdit(idx, "trust_alpha", parseFloat(e.target.value) || 0)}
+                step={5}
+                value={rel.affinity}
+                onChange={(e) => onEdit(idx, "affinity", parseFloat(e.target.value) || 0)}
                 style={{
                   width: "100%",
                   padding: "4px 8px",
@@ -74,45 +74,18 @@ export default function RelationshipGraph({ relationships, onEdit }: Props) {
               />
             </div>
 
-            {/* Trust Beta */}
+            {/* Priority */}
             <div>
               <label style={{ fontSize: 10, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>
-                Trust (\u03B2)
+                优先级
               </label>
               <input
                 type="number"
-                min={0}
-                max={100}
-                step={0.1}
-                value={rel.trust_beta}
-                onChange={(e) => onEdit(idx, "trust_beta", parseFloat(e.target.value) || 0)}
-                style={{
-                  width: "100%",
-                  padding: "4px 8px",
-                  border: "1px solid var(--border)",
-                  borderRadius: 4,
-                  fontSize: 12,
-                  fontFamily: "var(--font-mono)",
-                  background: "var(--bg-secondary)",
-                  color: "var(--text-primary)",
-                  outline: "none",
-                  boxSizing: "border-box",
-                }}
-              />
-            </div>
-
-            {/* Loyalty */}
-            <div>
-              <label style={{ fontSize: 10, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>
-                Loyalty
-              </label>
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.01}
-                value={rel.loyalty}
-                onChange={(e) => onEdit(idx, "loyalty", parseFloat(e.target.value) || 0)}
+                min={1}
+                max={20}
+                step={1}
+                value={rel.priority}
+                onChange={(e) => onEdit(idx, "priority", parseInt(e.target.value) || 1)}
                 style={{
                   width: "100%",
                   padding: "4px 8px",
@@ -129,10 +102,10 @@ export default function RelationshipGraph({ relationships, onEdit }: Props) {
             </div>
           </div>
 
-          {/* Visual trust bar */}
+          {/* Visual affinity bar */}
           <div style={{ marginTop: 10 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, color: "var(--text-secondary)" }}>
-              <span>Trust: {(rel.trust_alpha / (rel.trust_alpha + rel.trust_beta || 1)).toFixed(2)}</span>
+              <span>好感度: {rel.affinity > 0 ? "+" : ""}{rel.affinity}</span>
               <div
                 style={{
                   flex: 1,
@@ -140,23 +113,33 @@ export default function RelationshipGraph({ relationships, onEdit }: Props) {
                   background: "var(--bg-tertiary)",
                   borderRadius: 2,
                   overflow: "hidden",
+                  position: "relative",
                 }}
               >
                 <div
                   style={{
-                    width: `${(rel.trust_alpha / (rel.trust_alpha + rel.trust_beta || 1)) * 100}%`,
+                    position: "absolute",
+                    left: "50%",
+                    width: `${Math.abs(rel.affinity) / 2}%`,
+                    marginLeft: rel.affinity < 0 ? `-${Math.abs(rel.affinity) / 2}%` : 0,
                     height: "100%",
-                    background: "var(--accent)",
+                    background: rel.affinity >= 0 ? "var(--jade)" : "var(--error)",
                     borderRadius: 2,
                   }}
                 />
               </div>
-              <span>Loyalty: {rel.loyalty.toFixed(2)}</span>
+              <span>优先级: #{rel.priority}</span>
             </div>
           </div>
 
+          {rel.chapter && (
+            <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-tertiary)" }}>
+              时间: {rel.chapter}
+            </div>
+          )}
+
           {rel.notes && (
-            <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-secondary)", fontStyle: "italic" }}>
+            <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-secondary)", fontStyle: "italic" }}>
               {rel.notes}
             </div>
           )}

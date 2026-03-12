@@ -63,8 +63,33 @@ def seed(target: Path) -> None:
         "background": "特工世家出身，从小接受精英训练。在一次任务中失去了搭档，心中留下阴影。",
         "appearance": "银色短发，灰蓝色眼睛，身材高挑，常穿黑色战术服",
         "tags": ["女主角", "特工", "格斗"],
+        "relationships": [
+            {
+                "target_id": char_id,
+                "target_name": "李星河",
+                "affinity": 30,
+                "priority": 3,
+                "chapter": "第3章",
+                "notes": "被迫合作的搭档，逐渐建立信任",
+            },
+        ],
         "created_at": time.time(),
     })
+
+    # Update first character with relationship to second
+    import copy
+    char1_data = json.loads((chars_dir / f"{char_id}.json").read_text("utf-8"))
+    char1_data["relationships"] = [
+        {
+            "target_id": char_id2,
+            "target_name": "苏晚",
+            "affinity": 25,
+            "priority": 2,
+            "chapter": "第3章",
+            "notes": "联邦特工，让人捉摸不透",
+        },
+    ]
+    _write(chars_dir / f"{char_id}.json", char1_data)
 
     # ── Editor (volumes + chapters) ──
     editor_dir = target / "editor"
@@ -164,7 +189,7 @@ def seed(target: Path) -> None:
         "saved_at": time.time(),
     })
 
-    # ── Chat history (sample) ──
+    # ── Chat history (sample with AI proactive questions) ──
     ch_dir = target / "chat_history"
     ch_dir.mkdir(exist_ok=True)
     _write(ch_dir / f"{pid}_outline_chat.json", {
@@ -173,6 +198,7 @@ def seed(target: Path) -> None:
         "messages": [
             {"role": "user", "content": "我想写一个星际考古的故事，主角能感知古代遗物的情感。", "ts": time.time() - 3600},
             {"role": "assistant", "content": "这个设定很有潜力！「感知遗物情感」可以作为推动剧情的核心能力。几个建议：\n\n1. 这种能力的代价是什么？（比如每次使用后会短暂失去自己的情感记忆）\n2. 远古文明灭亡的原因可以和这种能力有关\n3. 反派可以是想利用这种能力来操控古代武器的人\n\n你想先从哪个方向深入？", "ts": time.time() - 3500},
+            {"role": "assistant", "content": "在审阅你目前的大纲和角色设定后，我发现几个值得深入思考的问题：\n\n**1. 关于主角能力的边界**\n李星河的感知能力目前没有明确的使用限制。如果不加以约束，可能会在后续情节中导致「万能钥匙」问题。\n- 你打算给这种能力设定什么样的代价或冷却机制？\n- 是否有某些类型的信息是他无法感知的？\n\n**2. 反派势力的动机**\n目前大纲中提到了「神秘组织」，但他们追求星门的具体目的还不明确。\n\n你想先讨论哪个问题？", "ts": time.time() - 3400, "proactive": True},
         ],
         "saved_at": time.time(),
     })

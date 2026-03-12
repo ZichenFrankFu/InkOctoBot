@@ -822,11 +822,6 @@ ${stageGuide}
                             disabled={sampleFeedback.score === 0 || sampleLoading}>
                             提交反馈 & 生成改进样本
                           </button>
-                          <button className="btn-primary" style={{ flex: 1, fontSize: 11, background: "var(--jade)", border: "none" }}
-                            onClick={confirmStyle}
-                            disabled={sampleFeedback.score < 4}>
-                            {styleConfirmed ? "已确认风格" : "确认为目标风格"}
-                          </button>
                         </div>
 
                         {/* Feedback history */}
@@ -848,13 +843,22 @@ ${stageGuide}
                             ))}
                           </div>
                         )}
+                      </div>
+                    )}
 
-                        {styleConfirmed && (
-                          <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--jade-subtle)", borderRadius: 6, borderLeft: "3px solid var(--jade)" }}>
-                            <span style={{ fontSize: 12, color: "var(--jade)", fontWeight: 600 }}>风格方向已确认！</span>
-                            <span style={{ fontSize: 11, color: "var(--text-secondary)", marginLeft: 8 }}>Pipeline 生成时将使用此风格参数。</span>
-                          </div>
-                        )}
+                    {/* Confirm style — always visible in calibration tab */}
+                    <div style={{ marginTop: 12 }}>
+                      <button className="btn-primary" style={{ width: "100%", fontSize: 12, padding: "10px 0", background: styleConfirmed ? "var(--text-tertiary)" : "var(--jade)", border: "none" }}
+                        onClick={confirmStyle}
+                        disabled={styleConfirmed}>
+                        {styleConfirmed ? "已确认风格" : "确认为目标风格"}
+                      </button>
+                    </div>
+
+                    {styleConfirmed && (
+                      <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--jade-subtle)", borderRadius: 6, borderLeft: "3px solid var(--jade)" }}>
+                        <span style={{ fontSize: 12, color: "var(--jade)", fontWeight: 600 }}>风格方向已确认！</span>
+                        <span style={{ fontSize: 11, color: "var(--text-secondary)", marginLeft: 8 }}>Pipeline 生成时将使用此风格参数。</span>
                       </div>
                     )}
                   </div>

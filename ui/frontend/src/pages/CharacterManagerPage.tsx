@@ -269,9 +269,9 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     const newRel: CharacterRelationship = {
       target_id: targetId,
       target_name: target.name,
-      trust_alpha: 5,
-      trust_beta: 2,
-      loyalty: 0.7,
+      affinity: 50,
+      priority: (rels.length || 0) + 2,
+      chapter: "",
       notes: "",
     };
     setEditing({ ...editing, relationships: [...rels, newRel] });
@@ -661,11 +661,10 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
               <div className="card">
                 <div className="card-header">
                   <h3>角色关系</h3>
-                  <p className="text-xs text-muted">对不同角色的信任度和忠诚度</p>
+                  <p className="text-xs text-muted">好感度与优先级</p>
                 </div>
                 <div className="card-body">
                   {(editing.relationships || []).map(rel => {
-                    const trustPct = ((rel.trust_alpha / (rel.trust_alpha + rel.trust_beta)) * 100).toFixed(0);
                     return (
                       <div
                         key={rel.target_id}
@@ -690,23 +689,26 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                           </button>
                         </div>
                         <ParamSlider
-                          name={`信任 \u03B1 (${trustPct}%)`}
-                          value={rel.trust_alpha}
-                          min={1} max={20} step={1}
-                          onChange={v => updateRel(rel.target_id, "trust_alpha", v)}
+                          name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`}
+                          value={rel.affinity}
+                          min={-100} max={100} step={5}
+                          onChange={v => updateRel(rel.target_id, "affinity", v)}
                         />
                         <ParamSlider
-                          name="信任 \u03B2"
-                          value={rel.trust_beta}
+                          name={`优先级 (#${rel.priority})`}
+                          value={rel.priority}
                           min={1} max={20} step={1}
-                          onChange={v => updateRel(rel.target_id, "trust_beta", v)}
+                          onChange={v => updateRel(rel.target_id, "priority", v)}
                         />
-                        <ParamSlider
-                          name="忠诚度"
-                          value={rel.loyalty}
-                          min={0} max={1} step={0.05}
-                          onChange={v => updateRel(rel.target_id, "loyalty", v)}
-                        />
+                        <div className="field mt-8">
+                          <label className="label">时间/章节</label>
+                          <input
+                            className="input"
+                            value={rel.chapter || ""}
+                            onChange={e => updateRel(rel.target_id, "chapter", e.target.value)}
+                            placeholder="例：第3章、银河历2847年·秋"
+                          />
+                        </div>
                         <div className="field mt-8">
                           <label className="label">关系备注</label>
                           <input
@@ -777,114 +779,129 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   );
 }
 
-/* ---- Relationship Graph ---- */
+/* ---- Relationship Graph (all characters, directed edges) ---- */
 function RelationshipGraph({ characters, currentId }: { characters: Character[]; currentId: string }) {
-  const current = characters.find(c => c.id === currentId);
-  if (!current) return null;
+  if (characters.length <= 1) return null;
 
-  const relatedIds = new Set((current.relationships || []).map(r => r.target_id));
-  const visibleChars = characters.filter(c => c.id === currentId || relatedIds.has(c.id));
-  if (visibleChars.length <= 1) return null;
+  const n = characters.length;
 
-  const others = visibleChars.filter(c => c.id !== currentId);
-  const n = others.length;
-
-  // Dynamic sizing: generous spacing to prevent text overlap
-  const nodeSpacing = 160;
-  const W = Math.max(500, Math.min(900, n * nodeSpacing + 200));
-  const H = Math.max(260, Math.min(500, n <= 3 ? 280 : 220 + n * 40));
+  // Dynamic sizing
+  const W = Math.max(500, Math.min(1000, n * 140 + 200));
+  const H = Math.max(350, Math.min(700, n <= 4 ? 380 : 280 + n * 45));
   const cx = W / 2, cy = H / 2;
 
-  // Elliptical layout with generous radius
-  const radiusX = Math.max(100, Math.min(W * 0.38, n * 60));
-  const radiusY = Math.max(80, Math.min(H * 0.35, n * 50));
-  const angleStep = (2 * Math.PI) / Math.max(n, 1);
+  // Circular layout — all characters on the circle
+  const radius = Math.min(W, H) * 0.35;
+  const angleStep = (2 * Math.PI) / n;
   const startAngle = -Math.PI / 2;
 
-  const positions: Record<string, { x: number; y: number }> = { [currentId]: { x: cx, y: cy } };
-  others.forEach((c, i) => {
+  const positions: Record<string, { x: number; y: number }> = {};
+  characters.forEach((c, i) => {
     const angle = startAngle + i * angleStep;
     positions[c.id] = {
-      x: cx + radiusX * Math.cos(angle),
-      y: cy + radiusY * Math.sin(angle),
+      x: cx + radius * Math.cos(angle),
+      y: cy + radius * Math.sin(angle),
     };
   });
 
-  // Push apart overlapping nodes — run multiple passes for convergence
-  const minDist = 120;
-  const allIds = visibleChars.map(c => c.id);
-  for (let pass = 0; pass < 5; pass++) {
-    for (let i = 0; i < allIds.length; i++) {
-      for (let j = i + 1; j < allIds.length; j++) {
-        const a = positions[allIds[i]], b = positions[allIds[j]];
-        if (!a || !b) continue;
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < minDist && dist > 0) {
-          const push = (minDist - dist) / 2 + 1;
-          const ux = dx / dist, uy = dy / dist;
-          if (allIds[i] !== currentId) { a.x -= ux * push; a.y -= uy * push; }
-          if (allIds[j] !== currentId) { b.x += ux * push; b.y += uy * push; }
-        }
+  // Collect ALL directed edges from all characters
+  const allEdges: { fromId: string; toId: string; affinity: number; priority: number; notes?: string; chapter?: string }[] = [];
+  characters.forEach(c => {
+    (c.relationships || []).forEach(rel => {
+      if (positions[rel.target_id]) {
+        allEdges.push({
+          fromId: c.id,
+          toId: rel.target_id,
+          affinity: rel.affinity ?? 0,
+          priority: rel.priority ?? 10,
+          notes: rel.notes,
+          chapter: rel.chapter,
+        });
       }
-    }
-  }
+    });
+  });
 
-  // Clamp positions within the SVG bounds (with padding for labels)
-  const pad = 50;
-  for (const id of allIds) {
-    const p = positions[id];
-    if (id === currentId) continue;
-    p.x = Math.max(pad, Math.min(W - pad, p.x));
-    p.y = Math.max(pad, Math.min(H - pad, p.y));
-  }
+  // Node radius based on name length
+  const nodeR = (name: string) => Math.max(28, name.length * 7 + 8);
+
+  // Arrow marker id
+  const markerId = "rel-arrow";
 
   return (
     <div className="card mb-20" style={{ marginTop: 16 }}>
-      <div className="card-header"><h3>关系图谱</h3></div>
+      <div className="card-header"><h3>全局关系图谱</h3></div>
       <div className="card-body" style={{ padding: 8 }}>
         <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
-          {(current.relationships || []).map(rel => {
-            const from = positions[currentId];
-            const to = positions[rel.target_id];
+          <defs>
+            <marker id={markerId} markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="var(--text-tertiary)" opacity="0.7" />
+            </marker>
+          </defs>
+
+          {/* Directed edges */}
+          {allEdges.map((edge, idx) => {
+            const from = positions[edge.fromId];
+            const to = positions[edge.toId];
             if (!from || !to) return null;
-            const trustPct = rel.trust_alpha / (rel.trust_alpha + rel.trust_beta);
-            const color = trustPct > 0.6 ? "var(--jade)" : trustPct > 0.4 ? "var(--gold)" : "var(--accent)";
-            // Place edge label at 40% from center to avoid node overlap
-            const labelX = from.x + (to.x - from.x) * 0.4;
-            const labelY = from.y + (to.y - from.y) * 0.4 - 8;
+
+            const dx = to.x - from.x;
+            const dy = to.y - from.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist === 0) return null;
+
+            const ux = dx / dist, uy = dy / dist;
+            const fromChar = characters.find(c => c.id === edge.fromId);
+            const toChar = characters.find(c => c.id === edge.toId);
+            const r1 = nodeR(fromChar?.name || "");
+            const r2 = nodeR(toChar?.name || "");
+
+            // Offset for parallel edges (A→B and B→A)
+            const hasReverse = allEdges.some(e => e.fromId === edge.toId && e.toId === edge.fromId);
+            const perpX = -uy * (hasReverse ? 6 : 0);
+            const perpY = ux * (hasReverse ? 6 : 0);
+
+            const x1 = from.x + ux * (r1 + 4) + perpX;
+            const y1 = from.y + uy * (r1 + 4) + perpY;
+            const x2 = to.x - ux * (r2 + 10) + perpX;
+            const y2 = to.y - uy * (r2 + 10) + perpY;
+
+            // Edge color based on affinity
+            const color = edge.affinity > 50 ? "var(--jade)" : edge.affinity > 0 ? "var(--accent)" : edge.affinity > -50 ? "var(--gold)" : "var(--error)";
+            const strokeW = Math.max(1, Math.min(3, 1 + Math.abs(edge.affinity) / 50));
+
             return (
-              <g key={rel.target_id}>
-                <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={color} strokeWidth={2} opacity={0.4} />
-                <rect x={labelX - 30} y={labelY - 8} width={60} height={14} rx={3} fill="var(--bg-surface)" opacity={0.85} />
-                <text x={labelX} y={labelY + 3} textAnchor="middle" fontSize={9} fill="var(--text-tertiary)">
-                  {rel.notes ? rel.notes.slice(0, 6) : `信任${(trustPct * 100).toFixed(0)}%`}
-                </text>
+              <g key={`${edge.fromId}-${edge.toId}-${idx}`}>
+                <line x1={x1} y1={y1} x2={x2} y2={y2}
+                  stroke={color} strokeWidth={strokeW} opacity={0.5}
+                  markerEnd={`url(#${markerId})`} />
               </g>
             );
           })}
-          {visibleChars.map(c => {
+
+          {/* Character nodes — circles sized to fit full name */}
+          {characters.map(c => {
             const pos = positions[c.id];
             if (!pos) return null;
             const isCurrent = c.id === currentId;
-            const r = isCurrent ? 26 : 20;
+            const r = nodeR(c.name);
             const fillColor = c.role === "主角" ? "var(--accent-subtle)" : c.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)";
             const strokeColor = isCurrent ? "var(--accent)" : "var(--border-hover)";
             return (
               <g key={c.id}>
-                <circle cx={pos.x} cy={pos.y} r={r} fill={fillColor} stroke={strokeColor} strokeWidth={isCurrent ? 2.5 : 1.5} />
-                <text x={pos.x} y={pos.y + 4} textAnchor="middle" fontSize={isCurrent ? 12 : 10} fontWeight={isCurrent ? 700 : 500} fill="var(--text-primary)">
-                  {c.name.slice(0, 2)}
-                </text>
-                {/* Name label below node with background for readability */}
-                <rect x={pos.x - c.name.length * 5} y={pos.y + r + 4} width={c.name.length * 10} height={14} rx={3} fill="var(--bg-surface)" opacity={0.9} />
-                <text x={pos.x} y={pos.y + r + 15} textAnchor="middle" fontSize={10} fontWeight={500} fill="var(--text-secondary)">
+                <circle cx={pos.x} cy={pos.y} r={r} fill={fillColor} stroke={strokeColor} strokeWidth={isCurrent ? 3 : 1.5} />
+                <text x={pos.x} y={pos.y + 5} textAnchor="middle" fontSize={12} fontWeight={isCurrent ? 700 : 500} fill="var(--text-primary)">
                   {c.name}
                 </text>
               </g>
             );
           })}
         </svg>
+        <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 8, fontSize: 10, color: "var(--text-tertiary)" }}>
+          <span><span style={{ color: "var(--jade)" }}>&#9632;</span> 好感 &gt;50</span>
+          <span><span style={{ color: "var(--accent)" }}>&#9632;</span> 好感 0~50</span>
+          <span><span style={{ color: "var(--gold)" }}>&#9632;</span> 好感 -50~0</span>
+          <span><span style={{ color: "var(--error)" }}>&#9632;</span> 好感 &lt;-50</span>
+        </div>
       </div>
     </div>
   );

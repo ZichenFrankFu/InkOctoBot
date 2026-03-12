@@ -148,6 +148,16 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
     }
   }, [edges, projectId]);
 
+  // --- Auto-sync from editor on mount ---
+  const syncedOnMount = useRef(false);
+  useEffect(() => {
+    if (loaded && !syncedOnMount.current) {
+      syncedOnMount.current = true;
+      syncFromEditor();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
+
   // --- Delete node ---
   const delNode = (id: string) => {
     setNodes(prev => prev.filter(n => n.id !== id));
