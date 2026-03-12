@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -19,20 +20,26 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 logger = logging.getLogger("inkoctobot.ui.backend.skill_api")
 
-# Singleton registry instance (lazy-init)
+# Singleton registry instance (lazy-init, thread-safe)
 _registry = None
+_registry_lock = threading.Lock()
 
 
 def _get_registry():
     global _registry
-    if _registry is None:
+    if _registry is not None:
+        return _registry
+    with _registry_lock:
+        if _registry is not None:
+            return _registry
         from core.skill_registry import SkillRegistry
-        _registry = SkillRegistry()
-        _registry.scan_all()
+        reg = SkillRegistry()
+        reg.scan_all()
         # Start watching learned skills
         agents_dir = Path(__file__).resolve().parents[4] / "agents"
         learned_dir = agents_dir / "learned_skills"
-        _registry.watch_learned_skills(learned_dir)
+        reg.watch_learned_skills(learned_dir)
+        _registry = reg
     return _registry
 
 

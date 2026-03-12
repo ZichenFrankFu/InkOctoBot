@@ -1,12 +1,16 @@
 from __future__ import annotations
+import logging
 import sqlite3
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from ..settings import settings
 from ..utils import load_repo_config, get_crawler_db_path
 
 router = APIRouter(prefix="/db", tags=["db"])
+logger = logging.getLogger("inkoctobot.ui.backend.db_api")
 
-def _get_con():
+def _get_con() -> sqlite3.Connection | None:
+    """Return a DB connection, or *None* when the crawler DB is unavailable."""
     # Check if user has set a custom crawler DB path in settings
     try:
         import json
@@ -15,24 +19,35 @@ def _get_con():
             user_settings = json.loads(settings_file.read_text("utf-8"))
             custom_path = user_settings.get("crawler_db_path", "")
             if custom_path:
-                from pathlib import Path
                 p = Path(custom_path)
                 if p.exists():
                     con = sqlite3.connect(str(p)); con.row_factory = sqlite3.Row; return con
     except Exception:
         pass
-    repo_cfg = load_repo_config(settings.repo_root)
-    db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
+    try:
+        repo_cfg = load_repo_config(settings.repo_root)
+        db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
+    except Exception:
+        logger.warning("Could not resolve crawler DB path — returning empty data")
+        return None
+    if not Path(db_path).exists():
+        logger.info("Crawler DB file not found at %s — returning empty data", db_path)
+        return None
     con = sqlite3.connect(db_path); con.row_factory = sqlite3.Row; return con
 
 def _table_exists(con: sqlite3.Connection, name: str) -> bool:
     return con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()[0] > 0
 
+_OVERVIEW_EMPTY = {"novel_count": 0, "rank_list_count": 0, "snapshot_count": 0, "chapter_count": 0, "recent_snapshots": [], "platform_breakdown": [], "categories": [], "rank_families": []}
+
 @router.get("/overview")
 def overview(platform: str | None = None):
-    with _get_con() as con:
+    con = _get_con()
+    if con is None:
+        return _OVERVIEW_EMPTY
+    with con:
         if not _table_exists(con, "novels"):
-            return {"novel_count": 0, "rank_list_count": 0, "snapshot_count": 0, "chapter_count": 0, "recent_snapshots": [], "platform_breakdown": [], "categories": [], "rank_families": []}
+            return _OVERVIEW_EMPTY
         pw = " WHERE platform=?" if platform else ""
         pp = [platform] if platform else []
         novel_count = con.execute(f"SELECT COUNT(*) AS c FROM novels{pw}", pp).fetchone()["c"]
@@ -50,7 +65,10 @@ def overview(platform: str | None = None):
 
 @router.get("/top_novels")
 def top_novels(platform: str | None = None, rank_family: str | None = None, limit: int = Query(default=30, ge=1, le=100)):
-    with _get_con() as con:
+    con = _get_con()
+    if con is None:
+        return {"rows": []}
+    with con:
         if not _table_exists(con, "rank_entries"):
             return {"rows": []}
         conds, params = [], []
@@ -63,7 +81,12 @@ def top_novels(platform: str | None = None, rank_family: str | None = None, limi
 
 @router.get("/rank_lists")
 def rank_lists(platform: str | None = None):
-    with _get_con() as con:
+    con = _get_con()
+    if con is None:
+        return {"rows": []}
+    with con:
+        if not _table_exists(con, "rank_lists"):
+            return {"rows": []}
         q = "SELECT * FROM rank_lists"; p = []
         if platform: q += " WHERE platform=?"; p.append(platform)
         q += " ORDER BY platform,rank_family,rank_sub_cat"
@@ -71,20 +94,35 @@ def rank_lists(platform: str | None = None):
 
 @router.get("/snapshots")
 def snapshots(rank_list_id: int):
-    with _get_con() as con:
+    con = _get_con()
+    if con is None:
+        return {"rows": []}
+    with con:
+        if not _table_exists(con, "rank_snapshots"):
+            return {"rows": []}
         rows = con.execute("SELECT s.*,l.platform,l.rank_family,l.rank_sub_cat FROM rank_snapshots s JOIN rank_lists l ON l.rank_list_id=s.rank_list_id WHERE s.rank_list_id=? ORDER BY s.snapshot_date DESC", (rank_list_id,)).fetchall()
     return {"rows": [dict(r) for r in rows]}
 
 @router.get("/entries")
 def entries_enriched(snapshot_id: int, limit: int = Query(default=200, ge=1, le=2000)):
-    with _get_con() as con:
+    con = _get_con()
+    if con is None:
+        return {"rows": []}
+    with con:
+        if not _table_exists(con, "rank_entries"):
+            return {"rows": []}
         rows = con.execute("SELECT e.snapshot_id,e.novel_uid,e.rank,e.total_recommend,e.reading_count,e.extra_json,n.platform,n.author,n.main_category,n.status,n.total_words,n.url,nt.title FROM rank_entries e JOIN novels n ON n.novel_uid=e.novel_uid LEFT JOIN novel_titles nt ON nt.novel_uid=n.novel_uid AND nt.is_primary=1 WHERE e.snapshot_id=? ORDER BY e.rank ASC LIMIT ?", (snapshot_id, limit)).fetchall()
     return {"rows": [dict(r) for r in rows]}
 
 @router.get("/novel/{novel_uid}")
 def novel_detail(novel_uid: int):
     """Returns novel info. Chapters: only metadata (title, word_count), NO content."""
-    with _get_con() as con:
+    con = _get_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    with con:
+        if not _table_exists(con, "novels"):
+            raise HTTPException(404, "novel not found")
         n = con.execute("SELECT * FROM novels WHERE novel_uid=?", (novel_uid,)).fetchone()
         if not n: raise HTTPException(404, "novel not found")
         titles = con.execute("SELECT * FROM novel_titles WHERE novel_uid=? ORDER BY last_seen_date DESC", (novel_uid,)).fetchall()
@@ -96,7 +134,10 @@ def novel_detail(novel_uid: int):
 
 @router.get("/tag_stats")
 def tag_stats(platform: str | None = None, limit: int = Query(default=30, ge=1, le=100)):
-    with _get_con() as con:
+    con = _get_con()
+    if con is None:
+        return {"rows": []}
+    with con:
         if not _table_exists(con, "tags"):
             return {"rows": []}
         sql = "SELECT t.tag_name, COUNT(DISTINCT m.novel_uid) AS novel_count FROM tags t JOIN novel_tag_map m ON m.tag_id=t.tag_id"
@@ -107,10 +148,17 @@ def tag_stats(platform: str | None = None, limit: int = Query(default=30, ge=1, 
 
 @router.get("/info")
 def db_info():
-    repo_cfg = load_repo_config(settings.repo_root)
-    return {"db_path": get_crawler_db_path(repo_cfg, settings.repo_root)}
+    try:
+        repo_cfg = load_repo_config(settings.repo_root)
+        db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
+    except Exception:
+        db_path = None
+    return {"db_path": db_path, "available": db_path is not None and Path(db_path).exists()}
 
 @router.get("/tables")
 def list_tables():
-    with _get_con() as con:
+    con = _get_con()
+    if con is None:
+        return {"tables": []}
+    with con:
         return {"tables": [r["name"] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]}

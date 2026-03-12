@@ -100,6 +100,9 @@ class SkillRegistry:
 
     def watch_learned_skills(self, path: Path) -> None:
         """Start watching a directory for new/modified skills."""
+        if self._observer is not None:
+            # Already watching — skip duplicate start
+            return
         try:
             from watchdog.observers import Observer
             from watchdog.events import FileSystemEventHandler
@@ -128,6 +131,10 @@ class SkillRegistry:
         except ImportError:
             logger.warning(
                 "watchdog not installed — learned skill hot-reload disabled"
+            )
+        except RuntimeError:
+            logger.warning(
+                "Observer thread already started — skipping duplicate start"
             )
 
     def stop_watching(self) -> None:
