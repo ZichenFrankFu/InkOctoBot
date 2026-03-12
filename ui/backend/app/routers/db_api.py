@@ -25,9 +25,14 @@ def _get_con():
     db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
     con = sqlite3.connect(db_path); con.row_factory = sqlite3.Row; return con
 
+def _table_exists(con: sqlite3.Connection, name: str) -> bool:
+    return con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()[0] > 0
+
 @router.get("/overview")
 def overview(platform: str | None = None):
     with _get_con() as con:
+        if not _table_exists(con, "novels"):
+            return {"novel_count": 0, "rank_list_count": 0, "snapshot_count": 0, "chapter_count": 0, "recent_snapshots": [], "platform_breakdown": [], "categories": [], "rank_families": []}
         pw = " WHERE platform=?" if platform else ""
         pp = [platform] if platform else []
         novel_count = con.execute(f"SELECT COUNT(*) AS c FROM novels{pw}", pp).fetchone()["c"]
@@ -46,6 +51,8 @@ def overview(platform: str | None = None):
 @router.get("/top_novels")
 def top_novels(platform: str | None = None, rank_family: str | None = None, limit: int = Query(default=30, ge=1, le=100)):
     with _get_con() as con:
+        if not _table_exists(con, "rank_entries"):
+            return {"rows": []}
         conds, params = [], []
         if platform: conds.append("l.platform=?"); params.append(platform)
         if rank_family: conds.append("l.rank_family=?"); params.append(rank_family)
@@ -90,6 +97,8 @@ def novel_detail(novel_uid: int):
 @router.get("/tag_stats")
 def tag_stats(platform: str | None = None, limit: int = Query(default=30, ge=1, le=100)):
     with _get_con() as con:
+        if not _table_exists(con, "tags"):
+            return {"rows": []}
         sql = "SELECT t.tag_name, COUNT(DISTINCT m.novel_uid) AS novel_count FROM tags t JOIN novel_tag_map m ON m.tag_id=t.tag_id"
         p = []
         if platform: sql += " JOIN novels n ON n.novel_uid=m.novel_uid WHERE n.platform=?"; p.append(platform)

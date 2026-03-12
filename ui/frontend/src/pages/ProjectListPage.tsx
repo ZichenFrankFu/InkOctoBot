@@ -270,31 +270,50 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
       const data = await resp.json();
       const rawText = data.text || "生成完成。";
 
-      // Try to parse follow-up questions from JSON response
+      // Parse JSON response to extract answer text and follow-up questions
       let answerText = rawText;
       let parsedFollowUp: FollowUpQuestion[] = [];
-      try {
-        // Try parsing the entire response as JSON
-        const parsed = JSON.parse(rawText);
-        if (parsed.answer) {
+
+      const extractFromParsed = (parsed: any) => {
+        if (parsed?.answer) {
           answerText = parsed.answer;
-          if (parsed.follow_up && Array.isArray(parsed.follow_up)) {
-            parsedFollowUp = parsed.follow_up.filter((q: any) => q.text && Array.isArray(q.options) && q.options.length >= 2);
+          if (Array.isArray(parsed.follow_up)) {
+            parsedFollowUp = parsed.follow_up.filter(
+              (q: any) => q.text && Array.isArray(q.options) && q.options.length >= 2
+            );
           }
         }
+      };
+
+      try {
+        // Case 1: entire response is valid JSON
+        extractFromParsed(JSON.parse(rawText));
       } catch {
-        // Try extracting JSON from mixed text
-        const jsonMatch = rawText.match(/\{[\s\S]*"answer"[\s\S]*\}/);
-        if (jsonMatch) {
+        // Case 2: Gemini outputs natural text then JSON — find last {"answer" occurrence
+        const idx = rawText.lastIndexOf('{"answer"');
+        if (idx >= 0) {
+          const jsonPart = rawText.slice(idx);
           try {
-            const parsed = JSON.parse(jsonMatch[0]);
-            if (parsed.answer) {
-              answerText = parsed.answer;
-              if (parsed.follow_up && Array.isArray(parsed.follow_up)) {
-                parsedFollowUp = parsed.follow_up.filter((q: any) => q.text && Array.isArray(q.options) && q.options.length >= 2);
-              }
+            extractFromParsed(JSON.parse(jsonPart));
+          } catch {
+            // Brace-matching: find the closing } that matches the opening {
+            let depth = 0;
+            let inString = false;
+            let escaped = false;
+            let endIdx = -1;
+            for (let i = 0; i < jsonPart.length; i++) {
+              const ch = jsonPart[i];
+              if (escaped) { escaped = false; continue; }
+              if (ch === '\\' && inString) { escaped = true; continue; }
+              if (ch === '"') { inString = !inString; continue; }
+              if (inString) continue;
+              if (ch === '{') depth++;
+              else if (ch === '}') { depth--; if (depth === 0) { endIdx = i; break; } }
             }
-          } catch { /* keep raw text */ }
+            if (endIdx > 0) {
+              try { extractFromParsed(JSON.parse(jsonPart.slice(0, endIdx + 1))); } catch { /* keep raw */ }
+            }
+          }
         }
       }
 
