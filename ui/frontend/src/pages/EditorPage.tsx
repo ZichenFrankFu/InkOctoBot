@@ -441,17 +441,35 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             : JSON.stringify(data.result.prompt_sent, null, 2);
         }
         // For group-chat style (actor per-character messages), append without filtering
-        // For other steps, replace thinking/speaking message
+        // For other steps, replace thinking/speaking message from the SAME agent only
         setChatMessages(prev => {
           if (data.agent_display_name) {
-            // Group-chat: first per-character message clears thinking/speaking, rest append
-            const hasThinking = prev.some(m => m.status === "thinking" || m.status === "speaking");
-            if (hasThinking) {
-              return [...prev.filter(m => m.status !== "thinking" && m.status !== "speaking"), msg];
+            // Group-chat: first per-character message clears actor thinking/speaking, rest append
+            const hasActorThinking = prev.some(m =>
+              (m.status === "thinking" || m.status === "speaking") && m.agent === stepLabel
+            );
+            if (hasActorThinking) {
+              return [...prev.filter(m =>
+                !((m.status === "thinking" || m.status === "speaking") && m.agent === stepLabel)
+              ), msg];
             }
             return [...prev, msg];
           }
-          const filtered = prev.filter(m => m.status !== "thinking" && m.status !== "speaking");
+          // For overall actor_agents step_done: skip if we already have per-character messages
+          if (data.step === "actor_agents") {
+            const hasCharMsgs = prev.some(m => m.agent === "Actor Agents" && m.agentDisplayName && m.status === "done");
+            if (hasCharMsgs) {
+              // Only clear leftover actor thinking/speaking, don't add duplicate content
+              const cleaned = prev.filter(m =>
+                !((m.status === "thinking" || m.status === "speaking") && m.agent === "Actor Agents")
+              );
+              return cleaned;
+            }
+          }
+          // Default: replace only thinking/speaking from the same agent
+          const filtered = prev.filter(m =>
+            !((m.status === "thinking" || m.status === "speaking") && m.agent === stepLabel)
+          );
           return [...filtered, msg];
         });
         if (data.step === "evaluator" && data.result) {
