@@ -133,6 +133,7 @@ export interface Character {
   appearance?: string;
   layer_b?: CharacterLayerB;
   relationships?: CharacterRelationship[];
+  dynamic_snapshots?: DynamicPropertySnapshot[];
 }
 
 export interface CharacterLayerB {
@@ -152,10 +153,20 @@ export interface CharacterRelationship {
   priority: number;      // 优先级: 1+, lower = higher priority (includes self)
   chapter?: string;       // 时间戳: chapter or in-story time marker
   notes?: string;
+  label?: string;        // 关系标签 e.g. "师徒", "情侣", "宿敌"
+}
+
+// ── Dynamic Property Snapshot (chapter-linked) ──
+export interface DynamicPropertySnapshot {
+  chapter: string;        // chapter or in-story time marker
+  personality?: string;
+  background?: string;
+  speech_style?: string;
+  notes?: string;
 }
 
 // ── World Book ──
-export type WorldBookCategory = "power_system" | "social_structure" | "geography" | "history" | "hard_rules" | "other";
+export type WorldBookCategory = "power_system" | "factions" | "geography" | "social_rules" | "history" | "hard_rules" | "other" | string;
 
 export interface WorldBookEntry {
   id: string;
@@ -260,8 +271,9 @@ export interface TextVersion {
   version_id: string;
   chapter_id: string;
   version: number;
-  source: "ai_generated" | "user_edited" | "targeted_rewrite";
+  source: "ai_generated" | "user_edited" | "targeted_rewrite" | "outline_chat";
   text: string;
+  synopsis?: string;
   model_used?: string;
   created_at: string;
 }

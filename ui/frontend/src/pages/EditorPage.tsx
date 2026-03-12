@@ -3,10 +3,12 @@ import { apiGet, apiPost, apiPut } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import { computeDiff, groupIntoHunks, assembleFromHunks } from "../utils/simpleDiff";
 import type { DiffHunk } from "../utils/simpleDiff";
-import type { Volume, ChapterOutline, PipelineStatus, EvalResult, FollowUpQuestion } from "../api/types";
+import type { Volume, ChapterOutline, PipelineStatus, EvalResult, FollowUpQuestion, TextVersion } from "../api/types";
 import EvalReport from "../components/editor/EvalReport";
 import type { EvalReportData } from "../components/editor/EvalReport";
 import FollowUpQuestions from "../components/shared/FollowUpQuestions";
+
+const vuid = () => `v_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
 const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const wc = (t: string) => (t ? t.replace(/[\s\p{P}]/gu, "").length : 0);
@@ -96,6 +98,10 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [renameVal, setRenameVal] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleVal, setTitleVal] = useState("");
+  // Version history state
+  const [versionHistory, setVersionHistory] = useState<TextVersion[]>([]);
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
+
   // Restore aiTab from session if pipeline was running
   const _savedEditorState = (() => {
     try { const raw = sessionStorage.getItem(`inkocto_editor_chat_${projectId}`); return raw ? JSON.parse(raw) : null; } catch { return null; }
@@ -164,13 +170,21 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       .catch(() => setChatLoaded(true));
   }, [projectId, activeChId]);
 
-  // Auto-switch to inspire tab when pipeline is running on mount
+  // Auto-switch to inspire tab when pipeline is running (including on mount/return)
   useEffect(() => {
     if (generating && aiTab !== "inspire") {
       setAiTab("inspire");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [generating]);
+
+  // Load version history on mount
+  useEffect(() => {
+    if (!activeChId) return;
+    apiGet<{ versions: TextVersion[] }>(`/api/data/versions?project_id=${projectId || "default"}&chapter_id=${activeChId}`)
+      .then(r => { if (r.versions?.length > 0) setVersionHistory(r.versions); })
+      .catch(() => {});
+  }, [projectId, activeChId]);
 
   useEffect(() => {
     const pid = projectId || "default";
@@ -678,7 +692,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     if (firstMsgIdx >= 0) {
       setChatMessages([...chatMessages.slice(0, firstMsgIdx), {
         agent: "System",
-        content: `已回退到「${agentName}」阶段。点击「开始生成」重新运行。`,
+        content: `已回退到「${agentName}」阶段，正在重新生成...`,
         status: "done", timestamp: Date.now(),
       }]);
     }
@@ -691,7 +705,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setWaitingForConfirm(false);
     setGenerating(false);
     setCurrentAgent(agentName);
-  }, [chatMessages, SESS_KEY]);
+    // Auto-restart generation from this step
+    setTimeout(() => startGeneration(), 500);
+  }, [chatMessages, SESS_KEY, startGeneration]);
 
   const handleStopPipeline = useCallback(() => {
     if (sessionIdRef.current) {
@@ -721,17 +737,30 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   const handleDiffAccept = useCallback((finalText: string) => {
     lastAiTextRef.current = finalText;  // A4: remember AI version for later comparison
+    // Auto-save version before overwriting
+    if (content && content.length > 10) {
+      const prevVersion: TextVersion = {
+        version_id: vuid(), chapter_id: activeChId,
+        version: versionHistory.filter(v => v.chapter_id === activeChId).length + 1,
+        source: "user_edited", text: content, created_at: new Date().toISOString(),
+      };
+      setVersionHistory(prev => [...prev, prevVersion]);
+    }
     setContent(finalText);
+    // Save AI version
+    const aiVersion: TextVersion = {
+      version_id: vuid(), chapter_id: activeChId,
+      version: versionHistory.filter(v => v.chapter_id === activeChId).length + 2,
+      source: "ai_generated", text: finalText, created_at: new Date().toISOString(),
+    };
+    setVersionHistory(prev => [...prev, aiVersion]);
     setChatMessages(prev => [...prev, { agent: "System", content: `已合并写入 ${finalText.length} 字到编辑器！`, status: "done", timestamp: Date.now() }]);
-    apiPost("/api/editor/save-version", {
-      project_id: projectId || "default",
-      chapter_id: activeChId,
-      text: finalText,
-      source: "ai_generated",
+    apiPost("/api/data/versions", {
+      project_id: projectId || "default", version: aiVersion,
     }).catch(() => {});
     setMergePreview(null);
     setAiTab("eval");
-  }, [projectId, activeChId]);
+  }, [projectId, activeChId, content, versionHistory]);
 
   // A4: EditAnalyzer feedback — when user edits AI-generated text and saves
   const editFeedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -830,16 +859,51 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             ))}
           </div>
           <div style={{ padding: "8px 10px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
-            <div className="label mb-4" style={{ fontSize: 10 }}>版本记录</div>
-            <div style={{ maxHeight: 100, overflowY: "auto" }}>
-              <div className="text-xs text-muted" style={{ padding: "4px 6px", cursor: "pointer", borderRadius: 4 }}
-                onMouseEnter={e => e.currentTarget.style.background = "var(--bg-surface-hover)"}
-                onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div className="label" style={{ fontSize: 10, marginBottom: 0 }}>版本记录</div>
+              <button className="btn-ghost" style={{ fontSize: 10, padding: "1px 6px" }}
+                onClick={() => {
+                  // Save current state as a version
+                  if (!activeChId || !content) return;
+                  const newVersion: TextVersion = {
+                    version_id: vuid(), chapter_id: activeChId,
+                    version: versionHistory.filter(v => v.chapter_id === activeChId).length + 1,
+                    source: "user_edited", text: content,
+                    synopsis: activeCh?.synopsis || "",
+                    created_at: new Date().toISOString(),
+                  };
+                  setVersionHistory(prev => [...prev, newVersion]);
+                  // Persist
+                  apiPost("/api/data/versions", { project_id: projectId || "default", version: newVersion }).catch(() => {});
+                }}>
+                + 保存版本
+              </button>
+            </div>
+            <div style={{ maxHeight: 120, overflowY: "auto" }}>
+              <div className="text-xs text-muted" style={{ padding: "4px 6px", borderRadius: 4, fontWeight: 600 }}>
                 当前版本 · {new Date().toLocaleDateString("zh-CN")}
               </div>
-              <div className="text-xs text-muted" style={{ padding: "4px 6px", opacity: 0.6 }}>
-                连接模型后自动生成版本历史
-              </div>
+              {versionHistory.filter(v => v.chapter_id === activeChId).reverse().map(v => (
+                <div key={v.version_id} className="text-xs text-muted" style={{ padding: "4px 6px", cursor: "pointer", borderRadius: 4, display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "var(--bg-surface-hover)"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                  onClick={() => {
+                    if (confirm(`回滚到版本 ${v.version}？当前内容将被替换。`)) {
+                      setContent(v.text);
+                      if (v.synopsis) {
+                        setVolumes(prev => prev.map(vol => ({ ...vol, chapters: vol.chapters.map(c => c.id === activeChId ? { ...c, synopsis: v.synopsis || c.synopsis } : c) })));
+                      }
+                    }
+                  }}>
+                  <span>v{v.version} · {v.source === "ai_generated" ? "AI" : "手动"}</span>
+                  <span style={{ fontSize: 9 }}>{new Date(v.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" })}</span>
+                </div>
+              ))}
+              {versionHistory.filter(v => v.chapter_id === activeChId).length === 0 && (
+                <div className="text-xs text-muted" style={{ padding: "4px 6px", opacity: 0.6 }}>
+                  点击「保存版本」创建版本快照
+                </div>
+              )}
             </div>
           </div>
           <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)", fontSize: 11, color: "var(--text-tertiary)", flexShrink: 0 }}>{totalCh} 章 &middot; {totalW.toLocaleString()} 字</div>
@@ -919,6 +983,58 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   const [references, setReferences] = useState<{ id: string; title: string; selected: boolean }[]>([]);
   const [showLinker, setShowLinker] = useState(false);
 
+  // Outline chat state
+  const [outlineChatMsgs, setOutlineChatMsgs] = useState<{ role: "user" | "assistant"; content: string; ts: number }[]>([]);
+  const [outlineChatInput, setOutlineChatInput] = useState("");
+  const [outlineChatLoading, setOutlineChatLoading] = useState(false);
+  const [pendingOutline, setPendingOutline] = useState<string | null>(null);
+  const outlineChatEndRef = useRef<HTMLDivElement>(null);
+
+  // Load outline chat from backend
+  useEffect(() => {
+    const pid = projectId || "default";
+    const scope = `outline_chat_${chapter?.id || ""}`;
+    apiGet<{ messages: any[] }>(`/api/data/chat_history?project_id=${pid}&scope=${scope}`)
+      .then(r => { if (r.messages?.length > 0) setOutlineChatMsgs(r.messages); })
+      .catch(() => {});
+  }, [projectId, chapter?.id]);
+
+  useEffect(() => { outlineChatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [outlineChatMsgs]);
+
+  const sendOutlineChat = async (inputOverride?: string) => {
+    const text = (inputOverride || outlineChatInput).trim();
+    if (!text || outlineChatLoading) return;
+    const userMsg = { role: "user" as const, content: text, ts: Date.now() };
+    const updated = [...outlineChatMsgs, userMsg];
+    setOutlineChatMsgs(updated);
+    setOutlineChatInput("");
+    setOutlineChatLoading(true);
+    try {
+      const res = await apiPost<{ reply: string }>("/api/generation/outline-chat", {
+        project_id: projectId, messages: updated.map(m => ({ role: m.role, content: m.content })),
+        context: synopsis || "",
+      });
+      const aiMsg = { role: "assistant" as const, content: res.reply, ts: Date.now() };
+      const finalMsgs = [...updated, aiMsg];
+      setOutlineChatMsgs(finalMsgs);
+      apiPut("/api/data/chat_history", { project_id: projectId, scope: `outline_chat_${chapter?.id || ""}`, messages: finalMsgs.slice(-200) }).catch(() => {});
+    } catch (e: any) {
+      setOutlineChatMsgs(prev => [...prev, { role: "assistant", content: `[Error] ${e?.message || "请求失败"}`, ts: Date.now() }]);
+    }
+    setOutlineChatLoading(false);
+  };
+
+  const applyOutlineFromChat = (content: string) => {
+    setPendingOutline(content);
+  };
+
+  const confirmOutline = () => {
+    if (pendingOutline) {
+      onChange(pendingOutline);
+      setPendingOutline(null);
+    }
+  };
+
   useEffect(() => {
     const pid = projectId || "default";
     const chapterChars = chapter?.characters || [];
@@ -953,8 +1069,70 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   return (
     <div>
       <div className="label mb-8">章节剧情大纲</div>
-      <textarea className="input" value={synopsis} onChange={e => onChange(e.target.value)} rows={8}
-        placeholder={"在这里写这一章的剧情要点...\n\n例如：\n  主角初入宗门\n  与师兄发生冲突\n  发现隐藏洞穴"} style={{ lineHeight: 1.8, fontFamily: "var(--font-sans)" }} />
+      <textarea className="input" value={synopsis} onChange={e => onChange(e.target.value)} rows={6}
+        placeholder={"在这里写这一章的剧情要点...\n\n例如：\n  主角初入宗门\n  与师兄发生冲突"} style={{ lineHeight: 1.8, fontFamily: "var(--font-sans)" }} />
+
+      {/* Outline AI Chat */}
+      <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+        <div style={{ padding: "6px 10px", background: "var(--bg-surface-2)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)" }}>AI 大纲助手</span>
+          <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => { setOutlineChatMsgs([]); apiPut("/api/data/chat_history", { project_id: projectId, scope: `outline_chat_${chapter?.id || ""}`, messages: [] }).catch(() => {}); }}>清空</button>
+        </div>
+        <div style={{ maxHeight: 200, overflowY: "auto", padding: "8px 10px" }}>
+          {outlineChatMsgs.length === 0 && (
+            <div style={{ padding: "16px 8px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 11 }}>
+              与 AI 讨论大纲。满意后点击「写入大纲」。
+            </div>
+          )}
+          {outlineChatMsgs.map((msg, i) => (
+            <div key={i} style={{ display: "flex", flexDirection: msg.role === "user" ? "row-reverse" : "row", marginBottom: 6, gap: 6 }}>
+              <div style={{
+                maxWidth: "85%", padding: "6px 10px", borderRadius: 8,
+                background: msg.role === "user" ? "var(--purple-subtle)" : "var(--bg-surface-2)",
+                borderLeft: msg.role === "assistant" ? "2px solid var(--accent)" : "none",
+                borderRight: msg.role === "user" ? "2px solid var(--purple)" : "none",
+                fontSize: 12, lineHeight: 1.5, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
+              }}>
+                {msg.content}
+              </div>
+            </div>
+          ))}
+          {outlineChatLoading && (
+            <div style={{ padding: "6px 10px", fontSize: 11, color: "var(--text-tertiary)" }}>AI 思考中...</div>
+          )}
+          {/* Pending outline confirmation */}
+          {pendingOutline && (
+            <div style={{ margin: "8px 0", padding: "8px 10px", background: "var(--accent-subtle)", border: "1px solid var(--accent)", borderRadius: 6 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)", marginBottom: 4 }}>确认写入以下大纲？</div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)", maxHeight: 80, overflowY: "auto", whiteSpace: "pre-wrap", marginBottom: 6 }}>{pendingOutline.slice(0, 300)}{pendingOutline.length > 300 ? "..." : ""}</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="btn-primary" style={{ fontSize: 11, padding: "3px 12px" }} onClick={confirmOutline}>确认写入</button>
+                <button className="btn" style={{ fontSize: 11, padding: "3px 12px" }} onClick={() => setPendingOutline(null)}>取消</button>
+              </div>
+            </div>
+          )}
+          <div ref={outlineChatEndRef} />
+        </div>
+        <div style={{ padding: "6px 10px", borderTop: "1px solid var(--border)", display: "flex", gap: 6 }}>
+          <input className="input" value={outlineChatInput} onChange={e => setOutlineChatInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendOutlineChat(); } }}
+            placeholder="描述你想要的大纲..." style={{ flex: 1, fontSize: 11, padding: "4px 8px" }} />
+          <button className="btn-primary" onClick={() => sendOutlineChat()} disabled={!outlineChatInput.trim() || outlineChatLoading}
+            style={{ fontSize: 11, padding: "4px 10px" }}>{outlineChatLoading ? "..." : "发送"}</button>
+        </div>
+        {outlineChatMsgs.length > 0 && outlineChatMsgs[outlineChatMsgs.length - 1].role === "assistant" && !pendingOutline && (
+          <div style={{ padding: "4px 10px 8px", display: "flex", gap: 4 }}>
+            <button className="btn" style={{ fontSize: 10, padding: "2px 10px", borderColor: "var(--jade)", color: "var(--jade)" }}
+              onClick={() => applyOutlineFromChat(outlineChatMsgs[outlineChatMsgs.length - 1].content)}>
+              写入大纲
+            </button>
+            <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
+              onClick={() => sendOutlineChat("请继续优化上面的大纲")}>
+              继续优化
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Character & Reference Linker */}
       <div style={{ marginTop: 10 }}>
@@ -1063,33 +1241,11 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <button className="btn" style={{ flex: 1, fontSize: 12, borderColor: "var(--indigo)", color: "var(--indigo)" }} onClick={async () => {
-          try {
-            const pid = projectId || "default";
-            const chNum = chapter?.order || 1;
-            const resp = await apiPost<{ chapter_plan: any }>("/api/generation/auto-outline", {
-              project_id: pid, chapter_num: chNum,
-              volume_outline: synopsis || "",
-            });
-            const plan = resp.chapter_plan || {};
-            if (plan.summary) onChange(plan.summary);
-            if (plan.pov) onUpdateChapter?.("pov", plan.pov);
-            if (plan.scene_sketches?.[0]?.location) {
-              setLocation(plan.scene_sketches[0].location);
-              onUpdateChapter?.("location", plan.scene_sketches[0].location);
-            }
-            if (plan.scene_sketches?.[0]?.characters) {
-              onUpdateChapter?.("characters", plan.scene_sketches[0].characters);
-            }
-          } catch (e: any) {
-            alert("AI大纲生成失败: " + (e?.message || e));
-          }
-        }}>AI 生成大纲</button>
         <button className="btn-primary" style={{ flex: 1 }} onClick={onSave}>保存</button>
         <button className="btn-primary" style={{ flex: 1, background: "var(--jade, #34a853)", border: "none" }} onClick={onStartGeneration}>开始生成</button>
       </div>
       <p className="text-xs text-muted mt-12" style={{ lineHeight: 1.6 }}>
-        「AI 生成大纲」基于前章记忆和未回收伏笔自动生成本章大纲。关联角色和参考作品后，Pipeline 生成时 AI 将参考相关信息。
+        用上方 AI 大纲助手与 AI 讨论大纲，满意后点击「写入大纲」。关联角色和参考作品后，Pipeline 生成时 AI 将参考相关信息。
       </p>
     </div>
   );
@@ -1309,6 +1465,11 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
           const wasStopped = lastMsg._stopped || lastMsg.content.includes("手动终止");
           const hasError = lastMsg.content.includes("错误");
           const pipelineCompleted = !wasStopped && !hasError && lastMsg.content.includes("完成");
+          // Find the last running/done step for "restart current step"
+          const lastRunningIdx = [...steps].reverse().findIndex(s => s.status === "done" || s.status === "running");
+          const currentStepIdx = lastRunningIdx >= 0 ? steps.length - 1 - lastRunningIdx : 0;
+          // Find previous step for "go back"
+          const prevStepIdx = Math.max(0, currentStepIdx - 1);
           return (
             <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "12px 0", borderTop: "1px dashed var(--border)", marginTop: 8 }}>
               {pipelineCompleted && (
@@ -1318,14 +1479,22 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
                   确认完成，写入编辑器
                 </button>
               )}
-              <button className="btn" style={{ padding: "8px 16px", fontSize: 12, borderRadius: 20 }} onClick={() => {
-                const lastDone = [...steps].reverse().findIndex(s => s.status === "done");
-                if (lastDone >= 0 && onRollback) {
-                  onRollback(steps.length - 1 - lastDone);
-                }
-              }}>
-                回退上一步
-              </button>
+              {(wasStopped || hasError) && (
+                <button className="btn-primary" style={{ padding: "8px 16px", fontSize: 12, borderRadius: 20, background: "var(--jade)", border: "none" }} onClick={() => {
+                  // Restart current step only (not entire pipeline)
+                  if (onRollback) onRollback(currentStepIdx);
+                }}>
+                  重新生成当前步骤
+                </button>
+              )}
+              {currentStepIdx > 0 && (
+                <button className="btn" style={{ padding: "8px 16px", fontSize: 12, borderRadius: 20 }} onClick={() => {
+                  // Go back to previous agent and auto-regenerate
+                  if (onRollback) onRollback(prevStepIdx);
+                }}>
+                  回退上一步
+                </button>
+              )}
             </div>
           );
         })()}
@@ -1348,7 +1517,7 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
       </div>
       {!generating && chatMessages.length === 0 && <button className="btn-primary w-full" onClick={onStart}>开始生成</button>}
       {!generating && chatMessages.length > 0 && !waitingForConfirm && (
-        <button className="btn-primary w-full" style={{ marginBottom: 6 }} onClick={onStart}>重新开始生成</button>
+        <button className="btn w-full" style={{ marginBottom: 6 }} onClick={onStart}>从头开始新的 Pipeline</button>
       )}
       <p className="text-xs text-muted mt-8" style={{ lineHeight: 1.6 }}>每个 Agent 完成后会给出选项。选择「满意，进行下一步」继续，或选择其他选项提出修改建议。</p>
     </div>

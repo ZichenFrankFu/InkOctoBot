@@ -167,6 +167,40 @@ def clear_chat_history(project_id: str = "default", scope: str = "pipeline"):
         p.unlink()
     return {"ok": True}
 
+# ═══ Version History ═══
+def _versions_path(project_id: str) -> Path:
+    d = _col("versions"); return d / f"{project_id}.json"
+
+@router.get("/versions")
+def get_versions(project_id: str = "default", chapter_id: str = ""):
+    p = _versions_path(project_id)
+    if not p.exists():
+        return {"versions": []}
+    data = json.loads(p.read_text("utf-8"))
+    versions = data.get("versions", [])
+    if chapter_id:
+        versions = [v for v in versions if v.get("chapter_id") == chapter_id]
+    return {"versions": versions}
+
+@router.post("/versions")
+def save_version(body: dict = Body(...)):
+    pid = body.get("project_id", "default")
+    version = body.get("version", {})
+    p = _versions_path(pid)
+    data = json.loads(p.read_text("utf-8")) if p.exists() else {"versions": []}
+    versions = data.get("versions", [])
+    versions.append(version)
+    # Keep last 50 versions per chapter
+    by_ch: dict[str, list] = {}
+    for v in versions:
+        ch = v.get("chapter_id", "")
+        by_ch.setdefault(ch, []).append(v)
+    trimmed = []
+    for ch_versions in by_ch.values():
+        trimmed.extend(ch_versions[-50:])
+    _wj(p, {"versions": trimmed, "saved_at": time.time()})
+    return {"ok": True, "count": len(trimmed)}
+
 # ═══ Calibration ═══
 def _calibration_path(project_id: str) -> Path:
     d = _col("calibration"); return d / f"{project_id}.json"

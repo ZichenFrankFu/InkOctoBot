@@ -8,30 +8,64 @@ interface Props {
   projects: any[];
 }
 
-const CATEGORIES: { key: WorldBookCategory; label: string; icon: string }[] = [
-  { key: "power_system", label: "修炼体系", icon: "\u26A1" },
-  { key: "social_structure", label: "社会结构", icon: "\uD83C\uDFDB\uFE0F" },
+const BUILTIN_CATEGORIES: { key: string; label: string; icon: string }[] = [
+  { key: "power_system", label: "力量体系", icon: "\u26A1" },
+  { key: "factions", label: "势力", icon: "\uD83C\uDFF0" },
   { key: "geography", label: "地理", icon: "\uD83D\uDDFA\uFE0F" },
-  { key: "history", label: "历史", icon: "\uD83D\uDCDC" },
+  { key: "social_rules", label: "社会规则/习俗", icon: "\uD83D\uDCDC" },
+  { key: "history", label: "历史", icon: "\uD83D\uDCDA" },
   { key: "hard_rules", label: "硬规则", icon: "\uD83D\uDCCF" },
   { key: "other", label: "其他", icon: "\uD83D\uDCDD" },
 ];
 
-function catLabel(cat: WorldBookCategory): string {
-  return CATEGORIES.find(c => c.key === cat)?.label || cat;
+function catLabel(cat: string, customCats: { key: string; label: string }[]): string {
+  return BUILTIN_CATEGORIES.find(c => c.key === cat)?.label
+    || customCats.find(c => c.key === cat)?.label
+    || cat;
 }
-function catIcon(cat: WorldBookCategory): string {
-  return CATEGORIES.find(c => c.key === cat)?.icon || "\uD83D\uDCDD";
+function catIcon(cat: string): string {
+  return BUILTIN_CATEGORIES.find(c => c.key === cat)?.icon || "\uD83D\uDCDD";
 }
 
 export default function WorldBookPage({ projectId, projects }: Props) {
   const [items, setItems] = useState<WorldBookEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filterCat, setFilterCat] = useState<WorldBookCategory | "">("");
+  const [filterCat, setFilterCat] = useState<string>("");
   const [editing, setEditing] = useState<WorldBookEntry | null>(null);
   const [dirty, setDirty] = useState(false);
   const [checking, setChecking] = useState(false);
   const [checkResult, setCheckResult] = useState<string | null>(null);
+
+  // Custom categories
+  const CUSTOM_CAT_KEY = `inkocto_wb_custom_cats_${projectId}`;
+  const [customCategories, setCustomCategories] = useState<{ key: string; label: string }[]>(() => {
+    try { const raw = localStorage.getItem(CUSTOM_CAT_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; }
+  });
+  const [showAddCat, setShowAddCat] = useState(false);
+  const [newCatName, setNewCatName] = useState("");
+
+  const addCustomCategory = () => {
+    const name = newCatName.trim();
+    if (!name) return;
+    const key = `custom_${name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, "_")}`;
+    if (customCategories.some(c => c.key === key) || BUILTIN_CATEGORIES.some(c => c.key === key)) return;
+    const updated = [...customCategories, { key, label: name }];
+    setCustomCategories(updated);
+    localStorage.setItem(CUSTOM_CAT_KEY, JSON.stringify(updated));
+    setNewCatName("");
+    setShowAddCat(false);
+  };
+
+  const removeCustomCategory = (key: string) => {
+    const updated = customCategories.filter(c => c.key !== key);
+    setCustomCategories(updated);
+    localStorage.setItem(CUSTOM_CAT_KEY, JSON.stringify(updated));
+  };
+
+  const allCategories = useMemo(() => [
+    ...BUILTIN_CATEGORIES,
+    ...customCategories.map(c => ({ ...c, icon: "\uD83C\uDFF7\uFE0F" })),
+  ], [customCategories]);
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 320, minSize: 240, maxSize: 450 });
 
@@ -95,7 +129,6 @@ export default function WorldBookPage({ projectId, projects }: Props) {
     try {
       const updated = await apiPut<WorldBookEntry>(`/api/data/worldbook/${editing.id}`, editing);
       setDirty(false);
-      // Update local state directly to avoid double-load
       setItems(prev => prev.map(item => item.id === editing.id ? { ...editing, ...updated } : item));
       setEditing({ ...editing, ...updated });
     } catch (e) {
@@ -124,7 +157,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
     setChecking(true);
     setCheckResult(null);
     try {
-      const entries = items.map((e: any) => `[${e.category || "通用"}] ${e.title}: ${e.content || ""}`).join("\n");
+      const entries = items.map((e: any) => `[${catLabel(e.category, customCategories)}] ${e.title}: ${e.content || ""}`).join("\n");
       const resp = await apiPost<{ result: string; issues?: string[] }>("/api/worldbook/consistency-check", {
         project_id: projectId,
         entries_text: entries,
@@ -164,7 +197,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
             >
               全部 ({items.length})
             </button>
-            {CATEGORIES.map(c => (
+            {allCategories.map(c => (
               <button
                 key={c.key}
                 className={filterCat === c.key ? "btn-primary" : "btn"}
@@ -174,7 +207,37 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                 {c.icon} {c.label} ({catCounts[c.key] || 0})
               </button>
             ))}
+            <button
+              className="btn"
+              style={{ padding: "4px 8px", fontSize: 11, borderRadius: 12, borderStyle: "dashed" }}
+              onClick={() => setShowAddCat(!showAddCat)}
+            >
+              + 添加分类
+            </button>
           </div>
+
+          {/* Add custom category */}
+          {showAddCat && (
+            <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", display: "flex", gap: 6 }}>
+              <input className="input" value={newCatName} onChange={e => setNewCatName(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") addCustomCategory(); }}
+                placeholder="输入新分类名称..." style={{ flex: 1, fontSize: 11, padding: "4px 8px" }} />
+              <button className="btn-primary" style={{ fontSize: 11, padding: "4px 10px" }} onClick={addCustomCategory} disabled={!newCatName.trim()}>添加</button>
+            </div>
+          )}
+
+          {/* Custom categories management */}
+          {customCategories.length > 0 && showAddCat && (
+            <div style={{ padding: "4px 12px 8px", borderBottom: "1px solid var(--border)", fontSize: 10, color: "var(--text-tertiary)" }}>
+              自定义分类：
+              {customCategories.map(c => (
+                <span key={c.key} style={{ marginLeft: 4, padding: "1px 6px", background: "var(--bg-surface-2)", borderRadius: 8, cursor: "pointer" }}
+                  onClick={() => { if (confirm(`删除自定义分类「${c.label}」？`)) removeCustomCategory(c.key); }}>
+                  {c.label} &times;
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Consistency check button */}
           <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
@@ -209,7 +272,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                       {entry.title}
                     </div>
                     <div className="text-xs text-muted truncate">
-                      {catLabel(entry.category)}
+                      {catLabel(entry.category, customCategories)}
                       {entry.content ? ` \u00B7 ${entry.content.length > 40 ? entry.content.slice(0, 40) + "..." : entry.content}` : " \u00B7 (空)"}
                     </div>
                   </div>
@@ -290,7 +353,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                   <div className="field mb-12">
                     <label className="label">分类</label>
                     <div className="flex gap-6" style={{ flexWrap: "wrap" }}>
-                      {CATEGORIES.map(c => (
+                      {allCategories.map(c => (
                         <button
                           key={c.key}
                           className={editing.category === c.key ? "btn-primary" : "btn"}

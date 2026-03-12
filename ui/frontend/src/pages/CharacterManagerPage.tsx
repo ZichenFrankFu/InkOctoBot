@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
-import type { Character, CharacterLayerB, CharacterRelationship } from "../api/types";
+import type { Character, CharacterLayerB, CharacterRelationship, DynamicPropertySnapshot } from "../api/types";
 
 interface CharChatMsg {
   role: "user" | "assistant";
@@ -33,6 +33,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const [dirty, setDirty] = useState(false);
   const [search, setSearch] = useState("");
   const [relTarget, setRelTarget] = useState("");
+  const [rightView, setRightView] = useState<"detail" | "graph">("detail");
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 220, maxSize: 420 });
 
@@ -58,6 +59,12 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   // Pending AI-generated profile awaiting user confirmation
   const [pendingProfile, setPendingProfile] = useState<{ personality?: string; background?: string; speech_style?: string } | null>(null);
   const [selectedFields, setSelectedFields] = useState<Set<string>>(new Set());
+
+  // Dynamic properties flashcard state
+  const [flashcardIndex, setFlashcardIndex] = useState(0);
+
+  // Relationship time filter
+  const [relTimeFilter, setRelTimeFilter] = useState("");
 
   // Persist char chat state to sessionStorage + backend
   useEffect(() => {
@@ -211,6 +218,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
         speech_style: "",
         layer_b: DEFAULT_LAYER_B,
         relationships: [],
+        dynamic_snapshots: [],
       });
       setItems([...items, c]);
       setEditing(c);
@@ -273,6 +281,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
       priority: (rels.length || 0) + 2,
       chapter: "",
       notes: "",
+      label: "",
     };
     setEditing({ ...editing, relationships: [...rels, newRel] });
     setDirty(true);
@@ -299,6 +308,47 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     setDirty(true);
   };
 
+  // Dynamic snapshots
+  const addSnapshot = () => {
+    if (!editing) return;
+    const snaps = editing.dynamic_snapshots || [];
+    const newSnap: DynamicPropertySnapshot = {
+      chapter: `第${snaps.length + 1}章`,
+      personality: editing.personality || "",
+      background: editing.background || "",
+      speech_style: editing.speech_style || "",
+      notes: "",
+    };
+    setEditing({ ...editing, dynamic_snapshots: [...snaps, newSnap] });
+    setDirty(true);
+    setFlashcardIndex(snaps.length);
+  };
+
+  const updateSnapshot = (idx: number, key: string, val: string) => {
+    if (!editing) return;
+    const snaps = [...(editing.dynamic_snapshots || [])];
+    snaps[idx] = { ...snaps[idx], [key]: val };
+    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setDirty(true);
+  };
+
+  const removeSnapshot = (idx: number) => {
+    if (!editing) return;
+    const snaps = [...(editing.dynamic_snapshots || [])];
+    snaps.splice(idx, 1);
+    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setDirty(true);
+    if (flashcardIndex >= snaps.length) setFlashcardIndex(Math.max(0, snaps.length - 1));
+  };
+
+  // Filtered relationships for per-character view
+  const filteredRels = useMemo(() => {
+    if (!editing) return [];
+    const rels = editing.relationships || [];
+    if (!relTimeFilter) return rels;
+    return rels.filter(r => r.chapter && r.chapter.includes(relTimeFilter));
+  }, [editing, relTimeFilter]);
+
   return (
     <div className="page-full">
       <div className="panel-layout">
@@ -324,6 +374,24 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
             />
           </div>
 
+          {/* View toggle */}
+          <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", display: "flex", gap: 4 }}>
+            <button
+              className={rightView === "detail" ? "btn-primary" : "btn"}
+              style={{ flex: 1, fontSize: 11, padding: "4px 0", borderRadius: 14 }}
+              onClick={() => setRightView("detail")}
+            >
+              角色详情
+            </button>
+            <button
+              className={rightView === "graph" ? "btn-primary" : "btn"}
+              style={{ flex: 1, fontSize: 11, padding: "4px 0", borderRadius: 14 }}
+              onClick={() => setRightView("graph")}
+            >
+              全局图谱
+            </button>
+          </div>
+
           {/* List */}
           <div className="panel-body">
             {loading ? (
@@ -337,7 +405,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 <div
                   key={c.id}
                   className={`report-list-item ${editing?.id === c.id ? "active" : ""}`}
-                  onClick={() => { setEditing(c); setDirty(false); }}
+                  onClick={() => { setEditing(c); setDirty(false); setRightView("detail"); }}
                 >
                   <div
                     className="char-avatar"
@@ -373,9 +441,21 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
         {/* Resize handle */}
         <div className="panel-resize-h" {...leftPanel.handleProps} />
 
-        {/* ======== RIGHT PANEL: Character Detail ======== */}
+        {/* ======== RIGHT PANEL ======== */}
         <div className="panel flex-1" style={{ background: "var(--bg-app)", overflowY: "auto" }}>
-          {!editing ? (
+          {rightView === "graph" ? (
+            /* ======== GLOBAL RELATIONSHIP GRAPH ======== */
+            <div style={{ maxWidth: 900, margin: "0 auto", padding: "28px 32px 48px" }}>
+              <h2 className="font-serif" style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>
+                全局关系图谱
+              </h2>
+              <div style={{ padding: "8px 12px", marginBottom: 12, background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+                <strong>好感度：</strong>数值越高越喜欢对方（正值=好感, 0=不熟悉, 负值=厌恶）<br/>
+                <strong>优先级：</strong>数值越低越优先（1=最重要的人, 数值越大越不重要）
+              </div>
+              <GlobalRelationshipGraph characters={items} onSelectCharacter={(id) => { setEditing(items.find(c => c.id === id) || null); setRightView("detail"); }} />
+            </div>
+          ) : !editing ? (
             <div className="empty-state" style={{ paddingTop: 120 }}>
               <h4>选择或创建一个角色</h4>
               <p>在左侧列表中选择角色，或点击「新建角色」</p>
@@ -420,7 +500,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                             border: `2px solid ${msg.role === "user" ? "var(--purple)" : "var(--accent)"}`,
                             display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13,
                           }}>
-                            {msg.role === "user" ? "👤" : "🤖"}
+                            {msg.role === "user" ? "\uD83D\uDC64" : "\uD83E\uDD16"}
                           </div>
                           <div style={{ maxWidth: "80%" }}>
                             <div style={{
@@ -443,7 +523,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                       ))}
                       {charChatLoading && (
                         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px" }}>
-                          <div style={{ width: 28, height: 28, borderRadius: "50%", background: "var(--accent-subtle)", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>🤖</div>
+                          <div style={{ width: 28, height: 28, borderRadius: "50%", background: "var(--accent-subtle)", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>{"\uD83E\uDD16"}</div>
                           <div style={{ padding: "8px 12px", borderRadius: 10, background: "var(--bg-surface-2)", borderLeft: "3px solid var(--accent)", fontSize: 13, color: "var(--text-tertiary)" }}>
                             AI 正在思考中...
                           </div>
@@ -548,9 +628,9 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </div>
               )}
 
-              {/* Basic Info */}
+              {/* ═══ STATIONARY PROPERTIES ═══ */}
               <div className="card mb-20">
-                <div className="card-header"><h3>基本信息</h3></div>
+                <div className="card-header"><h3>固定属性</h3><span className="text-xs text-muted">不随时间/章节变动</span></div>
                 <div className="card-body">
                   <div className="field mb-12">
                     <label className="label">姓名</label>
@@ -571,7 +651,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                       ))}
                     </div>
                   </div>
-                  <div className="field">
+                  <div className="field mb-12">
                     <label className="label">标签（逗号分隔）</label>
                     <input
                       className="input"
@@ -580,41 +660,14 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                       placeholder="例：剑修, 冷酷, 天才"
                     />
                   </div>
-                </div>
-              </div>
-
-              {/* Layer A: Qualitative */}
-              <div className="card mb-20">
-                <div className="card-header"><h3>Layer A: 定性描述</h3></div>
-                <div className="card-body">
-                  <div className="field mb-12">
-                    <label className="label">性格描述</label>
-                    <textarea
-                      className="input"
-                      value={editing.personality || ""}
-                      onChange={e => u("personality", e.target.value)}
-                      rows={3}
-                      placeholder="描述角色的核心性格特质..."
-                    />
-                  </div>
-                  <div className="field mb-12">
-                    <label className="label">背景故事</label>
-                    <textarea
-                      className="input"
-                      value={editing.background || ""}
-                      onChange={e => u("background", e.target.value)}
-                      rows={4}
-                      placeholder="角色的过往经历、成长环境、关键转折..."
-                    />
-                  </div>
                   <div className="field">
-                    <label className="label">说话风格</label>
+                    <label className="label">外貌</label>
                     <textarea
                       className="input"
-                      value={editing.speech_style || ""}
-                      onChange={e => u("speech_style", e.target.value)}
+                      value={editing.appearance || ""}
+                      onChange={e => u("appearance", e.target.value)}
                       rows={2}
-                      placeholder="口头禅、语气特点、用词偏好..."
+                      placeholder="角色的外貌特征..."
                     />
                   </div>
                 </div>
@@ -622,7 +675,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 
               {/* Layer B: Quantitative */}
               <div className="card mb-20">
-                <div className="card-header"><h3>Layer B: 量化决策参数</h3></div>
+                <div className="card-header"><h3>Layer B: 量化决策参数</h3><span className="text-xs text-muted">固定属性</span></div>
                 <div className="card-body">
                   <ParamSlider
                     name="损失厌恶"
@@ -657,70 +710,197 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </div>
               </div>
 
-              {/* Relationships */}
-              <div className="card">
-                <div className="card-header">
-                  <h3>角色关系</h3>
-                  <p className="text-xs text-muted">好感度与优先级</p>
+              {/* ═══ DYNAMIC PROPERTIES (Flashcards) ═══ */}
+              <div className="card mb-20">
+                <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <h3>动态属性</h3>
+                    <span className="text-xs text-muted">随时间/章节变化，以 flashcard 形式浏览</span>
+                  </div>
+                  <button className="btn" style={{ fontSize: 11, padding: "4px 12px" }} onClick={addSnapshot}>
+                    + 添加快照
+                  </button>
                 </div>
                 <div className="card-body">
-                  {(editing.relationships || []).map(rel => {
-                    return (
-                      <div
-                        key={rel.target_id}
-                        style={{
-                          padding: 12,
-                          background: "var(--bg-surface-2)",
-                          borderRadius: "var(--radius-md)",
-                          marginBottom: 10,
-                          border: "1px solid var(--border)",
-                        }}
-                      >
-                        <div className="flex items-center justify-between mb-8">
-                          <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>
-                            &rarr; {rel.target_name || rel.target_id}
+                  {/* Current (base) state */}
+                  <div style={{ marginBottom: 12, padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)" }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)", marginBottom: 8 }}>当前状态（基准）</div>
+                    <div className="field mb-8">
+                      <label className="label">性格描述</label>
+                      <textarea className="input" value={editing.personality || ""} onChange={e => u("personality", e.target.value)} rows={2} placeholder="描述角色的核心性格特质..." />
+                    </div>
+                    <div className="field mb-8">
+                      <label className="label">背景故事</label>
+                      <textarea className="input" value={editing.background || ""} onChange={e => u("background", e.target.value)} rows={3} placeholder="角色的过往经历..." />
+                    </div>
+                    <div className="field">
+                      <label className="label">说话风格</label>
+                      <textarea className="input" value={editing.speech_style || ""} onChange={e => u("speech_style", e.target.value)} rows={2} placeholder="口头禅、语气特点..." />
+                    </div>
+                  </div>
+
+                  {/* Flashcard navigation */}
+                  {(editing.dynamic_snapshots || []).length > 0 && (
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                            onClick={() => setFlashcardIndex(Math.max(0, flashcardIndex - 1))}
+                            disabled={flashcardIndex === 0}>
+                            ← 上一张
+                          </button>
+                          <span className="text-xs text-muted">
+                            快照 {flashcardIndex + 1} / {(editing.dynamic_snapshots || []).length}
                           </span>
-                          <button
-                            className="btn-ghost"
-                            style={{ fontSize: 12, padding: "2px 8px" }}
-                            onClick={() => removeRel(rel.target_id)}
-                          >
-                            移除
+                          <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                            onClick={() => setFlashcardIndex(Math.min((editing.dynamic_snapshots || []).length - 1, flashcardIndex + 1))}
+                            disabled={flashcardIndex >= (editing.dynamic_snapshots || []).length - 1}>
+                            下一张 →
                           </button>
                         </div>
-                        <ParamSlider
-                          name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`}
-                          value={rel.affinity}
-                          min={-100} max={100} step={5}
-                          onChange={v => updateRel(rel.target_id, "affinity", v)}
-                        />
-                        <ParamSlider
-                          name={`优先级 (#${rel.priority})`}
-                          value={rel.priority}
-                          min={1} max={20} step={1}
-                          onChange={v => updateRel(rel.target_id, "priority", v)}
-                        />
-                        <div className="field mt-8">
-                          <label className="label">时间/章节</label>
-                          <input
-                            className="input"
-                            value={rel.chapter || ""}
-                            onChange={e => updateRel(rel.target_id, "chapter", e.target.value)}
-                            placeholder="例：第3章、银河历2847年·秋"
-                          />
-                        </div>
-                        <div className="field mt-8">
-                          <label className="label">关系备注</label>
-                          <input
-                            className="input"
-                            value={rel.notes || ""}
-                            onChange={e => updateRel(rel.target_id, "notes", e.target.value)}
-                            placeholder="描述两人的关系..."
-                          />
-                        </div>
+                        <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 8px", color: "var(--error)" }}
+                          onClick={() => removeSnapshot(flashcardIndex)}>
+                          删除此快照
+                        </button>
                       </div>
-                    );
-                  })}
+
+                      {/* Flashcard dots */}
+                      <div style={{ display: "flex", gap: 4, justifyContent: "center", marginBottom: 8 }}>
+                        {(editing.dynamic_snapshots || []).map((_, i) => (
+                          <div key={i} onClick={() => setFlashcardIndex(i)}
+                            style={{
+                              width: 8, height: 8, borderRadius: "50%", cursor: "pointer",
+                              background: i === flashcardIndex ? "var(--accent)" : "var(--border)",
+                              transition: "background 0.2s",
+                            }} />
+                        ))}
+                      </div>
+
+                      {/* Snapshot card */}
+                      {(() => {
+                        const snap = (editing.dynamic_snapshots || [])[flashcardIndex];
+                        if (!snap) return null;
+                        return (
+                          <div style={{
+                            padding: "12px 14px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)",
+                            border: "2px solid var(--accent)", position: "relative",
+                          }}>
+                            <div className="field mb-8">
+                              <label className="label">章节/时间点</label>
+                              <input className="input" value={snap.chapter} onChange={e => updateSnapshot(flashcardIndex, "chapter", e.target.value)}
+                                placeholder="例：第5章、三年后" style={{ fontWeight: 600 }} />
+                            </div>
+                            <div className="field mb-8">
+                              <label className="label">性格变化</label>
+                              <textarea className="input" value={snap.personality || ""} onChange={e => updateSnapshot(flashcardIndex, "personality", e.target.value)} rows={2} placeholder="此阶段的性格..." />
+                            </div>
+                            <div className="field mb-8">
+                              <label className="label">背景变化</label>
+                              <textarea className="input" value={snap.background || ""} onChange={e => updateSnapshot(flashcardIndex, "background", e.target.value)} rows={2} placeholder="此阶段发生了什么..." />
+                            </div>
+                            <div className="field mb-8">
+                              <label className="label">说话风格变化</label>
+                              <textarea className="input" value={snap.speech_style || ""} onChange={e => updateSnapshot(flashcardIndex, "speech_style", e.target.value)} rows={1} placeholder="说话风格的变化..." />
+                            </div>
+                            <div className="field">
+                              <label className="label">备注</label>
+                              <input className="input" value={snap.notes || ""} onChange={e => updateSnapshot(flashcardIndex, "notes", e.target.value)} placeholder="变化原因或事件..." />
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
+                  {(editing.dynamic_snapshots || []).length === 0 && (
+                    <div className="text-xs text-muted" style={{ textAlign: "center", padding: 12 }}>
+                      点击「添加快照」记录角色在不同章节/时间点的动态变化
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* ═══ PER-CHARACTER RELATIONSHIPS ═══ */}
+              <div className="card mb-20">
+                <div className="card-header">
+                  <div>
+                    <h3>{editing.name} 的关系</h3>
+                    <p className="text-xs text-muted">以此角色为中心的关系视图</p>
+                  </div>
+                </div>
+                <div className="card-body">
+                  {/* Guidance */}
+                  <div style={{ padding: "8px 10px", marginBottom: 12, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                    <strong>好感度：</strong>越高越喜欢（负值=厌恶, 0=不熟悉, 正值=好感）&nbsp;&nbsp;
+                    <strong>优先级：</strong>越低越优先（1=最重要的人）
+                  </div>
+
+                  {/* Time filter */}
+                  <div style={{ marginBottom: 10 }}>
+                    <input className="input" value={relTimeFilter} onChange={e => setRelTimeFilter(e.target.value)}
+                      placeholder="按时间/章节过滤关系..." style={{ fontSize: 12 }} />
+                  </div>
+
+                  {filteredRels.map(rel => (
+                    <div
+                      key={rel.target_id}
+                      style={{
+                        padding: 12,
+                        background: "var(--bg-surface-2)",
+                        borderRadius: "var(--radius-md)",
+                        marginBottom: 10,
+                        border: "1px solid var(--border)",
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-8">
+                        <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>
+                          &rarr; {rel.target_name || rel.target_id}
+                        </span>
+                        <button
+                          className="btn-ghost"
+                          style={{ fontSize: 12, padding: "2px 8px" }}
+                          onClick={() => removeRel(rel.target_id)}
+                        >
+                          移除
+                        </button>
+                      </div>
+                      <div className="field mb-8">
+                        <label className="label">关系标签</label>
+                        <input className="input" value={rel.label || ""} onChange={e => updateRel(rel.target_id, "label", e.target.value)}
+                          placeholder="例：师徒、情侣、宿敌" style={{ fontSize: 12 }} />
+                      </div>
+                      <ParamSlider
+                        name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`}
+                        value={rel.affinity}
+                        min={-100} max={100} step={5}
+                        onChange={v => updateRel(rel.target_id, "affinity", v)}
+                      />
+                      <ParamSlider
+                        name={`优先级 (#${rel.priority})`}
+                        value={rel.priority}
+                        min={1} max={20} step={1}
+                        onChange={v => updateRel(rel.target_id, "priority", v)}
+                      />
+                      <div className="field mt-8">
+                        <label className="label">时间/章节</label>
+                        <input
+                          className="input"
+                          value={rel.chapter || ""}
+                          onChange={e => updateRel(rel.target_id, "chapter", e.target.value)}
+                          placeholder="例：第3章、银河历2847年·秋"
+                        />
+                      </div>
+                      <div className="field mt-8">
+                        <label className="label">关系备注</label>
+                        <input
+                          className="input"
+                          value={rel.notes || ""}
+                          onChange={e => updateRel(rel.target_id, "notes", e.target.value)}
+                          placeholder="描述两人的关系..."
+                        />
+                      </div>
+                    </div>
+                  ))}
 
                   {/* Add relationship */}
                   <div style={{ marginTop: 12 }}>
@@ -757,9 +937,6 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </div>
               </div>
 
-              {/* Relationship Graph — placed after add-relationship so user sees it immediately */}
-              <RelationshipGraph characters={items} currentId={editing.id} />
-
               {/* Save button at bottom */}
               <div style={{ marginTop: 24, display: "flex", justifyContent: "flex-end" }}>
                 <button
@@ -779,18 +956,24 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   );
 }
 
-/* ---- Relationship Graph (all characters, directed edges) ---- */
-function RelationshipGraph({ characters, currentId }: { characters: Character[]; currentId: string }) {
-  if (characters.length <= 1) return null;
+/* ---- Global Relationship Graph (all characters, directed edges with labels) ---- */
+function GlobalRelationshipGraph({ characters, onSelectCharacter }: { characters: Character[]; onSelectCharacter: (id: string) => void }) {
+  if (characters.length <= 1) {
+    return (
+      <div className="card" style={{ padding: 32, textAlign: "center" }}>
+        <p className="text-muted">至少需要 2 个角色才能显示关系图谱</p>
+      </div>
+    );
+  }
 
   const n = characters.length;
 
   // Dynamic sizing
-  const W = Math.max(500, Math.min(1000, n * 140 + 200));
-  const H = Math.max(350, Math.min(700, n <= 4 ? 380 : 280 + n * 45));
+  const W = Math.max(550, Math.min(1000, n * 140 + 200));
+  const H = Math.max(400, Math.min(750, n <= 4 ? 420 : 320 + n * 50));
   const cx = W / 2, cy = H / 2;
 
-  // Circular layout — all characters on the circle
+  // Circular layout
   const radius = Math.min(W, H) * 0.35;
   const angleStep = (2 * Math.PI) / n;
   const startAngle = -Math.PI / 2;
@@ -804,8 +987,8 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
     };
   });
 
-  // Collect ALL directed edges from all characters
-  const allEdges: { fromId: string; toId: string; affinity: number; priority: number; notes?: string; chapter?: string }[] = [];
+  // Collect ALL directed edges
+  const allEdges: { fromId: string; toId: string; affinity: number; priority: number; notes?: string; chapter?: string; label?: string }[] = [];
   characters.forEach(c => {
     (c.relationships || []).forEach(rel => {
       if (positions[rel.target_id]) {
@@ -816,6 +999,7 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
           priority: rel.priority ?? 10,
           notes: rel.notes,
           chapter: rel.chapter,
+          label: rel.label,
         });
       }
     });
@@ -824,17 +1008,22 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
   // Node radius based on name length
   const nodeR = (name: string) => Math.max(28, name.length * 7 + 8);
 
-  // Arrow marker id
-  const markerId = "rel-arrow";
-
   return (
-    <div className="card mb-20" style={{ marginTop: 16 }}>
-      <div className="card-header"><h3>全局关系图谱</h3></div>
+    <div className="card">
       <div className="card-body" style={{ padding: 8 }}>
         <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
           <defs>
-            <marker id={markerId} markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L8,3 L0,6 Z" fill="var(--text-tertiary)" opacity="0.7" />
+            <marker id="rel-arrow-pos" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="var(--jade)" opacity="0.8" />
+            </marker>
+            <marker id="rel-arrow-mid" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="var(--accent)" opacity="0.8" />
+            </marker>
+            <marker id="rel-arrow-low" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="var(--gold)" opacity="0.8" />
+            </marker>
+            <marker id="rel-arrow-neg" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="var(--error)" opacity="0.8" />
             </marker>
           </defs>
 
@@ -855,10 +1044,10 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
             const r1 = nodeR(fromChar?.name || "");
             const r2 = nodeR(toChar?.name || "");
 
-            // Offset for parallel edges (A→B and B→A)
+            // Offset for parallel edges (A->B and B->A)
             const hasReverse = allEdges.some(e => e.fromId === edge.toId && e.toId === edge.fromId);
-            const perpX = -uy * (hasReverse ? 6 : 0);
-            const perpY = ux * (hasReverse ? 6 : 0);
+            const perpX = -uy * (hasReverse ? 8 : 0);
+            const perpY = ux * (hasReverse ? 8 : 0);
 
             const x1 = from.x + ux * (r1 + 4) + perpX;
             const y1 = from.y + uy * (r1 + 4) + perpY;
@@ -867,29 +1056,40 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
 
             // Edge color based on affinity
             const color = edge.affinity > 50 ? "var(--jade)" : edge.affinity > 0 ? "var(--accent)" : edge.affinity > -50 ? "var(--gold)" : "var(--error)";
-            const strokeW = Math.max(1, Math.min(3, 1 + Math.abs(edge.affinity) / 50));
+            const markerId = edge.affinity > 50 ? "rel-arrow-pos" : edge.affinity > 0 ? "rel-arrow-mid" : edge.affinity > -50 ? "rel-arrow-low" : "rel-arrow-neg";
+            const strokeW = Math.max(1.5, Math.min(3, 1.5 + Math.abs(edge.affinity) / 60));
+
+            // Label position (midpoint with offset)
+            const mx = (x1 + x2) / 2 + perpX * 0.5;
+            const my = (y1 + y2) / 2 + perpY * 0.5;
+
+            const labelText = edge.label || edge.notes?.slice(0, 6) || "";
 
             return (
               <g key={`${edge.fromId}-${edge.toId}-${idx}`}>
                 <line x1={x1} y1={y1} x2={x2} y2={y2}
-                  stroke={color} strokeWidth={strokeW} opacity={0.5}
+                  stroke={color} strokeWidth={strokeW} opacity={0.7}
                   markerEnd={`url(#${markerId})`} />
+                {labelText && (
+                  <text x={mx} y={my - 4} textAnchor="middle" fontSize={9}
+                    fill={color} fontWeight={500} opacity={0.9}>
+                    {labelText}
+                  </text>
+                )}
               </g>
             );
           })}
 
-          {/* Character nodes — circles sized to fit full name */}
+          {/* Character nodes */}
           {characters.map(c => {
             const pos = positions[c.id];
             if (!pos) return null;
-            const isCurrent = c.id === currentId;
             const r = nodeR(c.name);
             const fillColor = c.role === "主角" ? "var(--accent-subtle)" : c.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)";
-            const strokeColor = isCurrent ? "var(--accent)" : "var(--border-hover)";
             return (
-              <g key={c.id}>
-                <circle cx={pos.x} cy={pos.y} r={r} fill={fillColor} stroke={strokeColor} strokeWidth={isCurrent ? 3 : 1.5} />
-                <text x={pos.x} y={pos.y + 5} textAnchor="middle" fontSize={12} fontWeight={isCurrent ? 700 : 500} fill="var(--text-primary)">
+              <g key={c.id} style={{ cursor: "pointer" }} onClick={() => onSelectCharacter(c.id)}>
+                <circle cx={pos.x} cy={pos.y} r={r} fill={fillColor} stroke="var(--border-hover)" strokeWidth={1.5} />
+                <text x={pos.x} y={pos.y + 5} textAnchor="middle" fontSize={12} fontWeight={500} fill="var(--text-primary)">
                   {c.name}
                 </text>
               </g>
@@ -901,6 +1101,9 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
           <span><span style={{ color: "var(--accent)" }}>&#9632;</span> 好感 0~50</span>
           <span><span style={{ color: "var(--gold)" }}>&#9632;</span> 好感 -50~0</span>
           <span><span style={{ color: "var(--error)" }}>&#9632;</span> 好感 &lt;-50</span>
+        </div>
+        <div className="text-xs text-muted" style={{ textAlign: "center", marginTop: 4 }}>
+          点击角色节点跳转到详情
         </div>
       </div>
     </div>

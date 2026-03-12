@@ -14,11 +14,12 @@ import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
+import DevToolsPage from "./pages/DevToolsPage";
 
 type Tab =
   | "dashboard" | "rankings" | "references" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
-  | "skills" | "settings";
+  | "skills" | "settings" | "devtools";
 
 interface Project { id: string; name: string; genre?: string; }
 
@@ -52,6 +53,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     items: [
       { key: "skills", icon: "🧩", label: "Skills" },
       { key: "settings", icon: "⚙️", label: "设置" },
+      { key: "devtools", icon: "🔧", label: "开发者工具" },
     ],
   },
 ];
@@ -158,6 +160,7 @@ export default function App() {
         {tab === "storyline" && <StorylinePage projectId={activeProject} />}
         {tab === "skills" && <SkillsPage />}
         {tab === "settings" && <SettingsPage />}
+        {tab === "devtools" && <DevToolsPage projectId={activeProject} />}
       </main>
     </div>
   );

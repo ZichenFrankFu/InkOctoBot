@@ -44,6 +44,11 @@ export default function RelationshipGraph({ relationships, onEdit }: Props) {
             <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
               {rel.target_name}
             </span>
+            {rel.label && (
+              <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--accent-subtle)", color: "var(--accent)" }}>
+                {rel.label}
+              </span>
+            )}
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -135,6 +140,12 @@ export default function RelationshipGraph({ relationships, onEdit }: Props) {
           {rel.chapter && (
             <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-tertiary)" }}>
               时间: {rel.chapter}
+            </div>
+          )}
+
+          {rel.label && (
+            <div style={{ marginTop: 4, fontSize: 11, color: "var(--accent)", fontWeight: 500 }}>
+              关系: {rel.label}
             </div>
           )}
 
