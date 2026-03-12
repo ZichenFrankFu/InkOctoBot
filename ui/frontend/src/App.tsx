@@ -152,7 +152,7 @@ export default function App() {
         {tab === "analysis" && <AnalysisDashboardPage />}
         {tab === "projects" && <ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} />}
         {tab === "project-setup" && <ProjectSetupPage projectId={activeProject} />}
-        {tab === "editor" && <EditorPage projectId={activeProject} />}
+        {tab === "editor" && <EditorPage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} />}
         {tab === "characters" && <CharacterManagerPage projectId={activeProject} projects={projects} />}
         {tab === "worldbook" && <WorldBookPage projectId={activeProject} projects={projects} />}
         {tab === "storyline" && <StorylinePage projectId={activeProject} />}

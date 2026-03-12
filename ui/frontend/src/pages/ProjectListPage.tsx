@@ -187,15 +187,17 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   useEffect(() => { load(); }, [load]);
 
   // Load trending tags
+  const trendingLoaded = useRef(false);
   useEffect(() => {
-    if (studioTab === "trending" && trendingTags.length === 0) {
+    if (studioTab === "trending" && !trendingLoaded.current) {
+      trendingLoaded.current = true;
       setTrendingLoading(true);
       apiGet<{ rows: { tag_name: string; novel_count: number }[] }>("/api/db/tag_stats?limit=30")
         .then(r => setTrendingTags(r.rows || []))
         .catch(() => {})
         .finally(() => setTrendingLoading(false));
     }
-  }, [studioTab, trendingTags.length]);
+  }, [studioTab]);
 
   const handleCreate = async () => {
     if (!formName.trim()) return;
@@ -410,18 +412,48 @@ ${stageGuide}
       });
 
       const rawText = resp.text || "";
-      // Try parsing JSON response with analysis
+      // Robust extraction: try JSON, then lastIndexOf fallback, then strip JSON wrapper
+      let sampleText = "";
+      let analysisText = "";
+      const tryExtract = (obj: any) => {
+        if (obj?.text) { sampleText = obj.text; analysisText = obj.analysis || ""; return true; }
+        if (obj?.answer) { sampleText = obj.answer; return true; }
+        return false;
+      };
       try {
-        const parsed = JSON.parse(rawText);
-        if (parsed.text) {
-          setCalibrationSample(parsed.text);
-          if (parsed.analysis) setCalibrationAnalysis(parsed.analysis);
-        } else {
-          setCalibrationSample(rawText);
-        }
+        tryExtract(JSON.parse(rawText));
       } catch {
-        setCalibrationSample(rawText);
+        // Try finding JSON block in mixed output
+        const idx = rawText.lastIndexOf('{"text"');
+        const idx2 = rawText.lastIndexOf('{"answer"');
+        const bestIdx = Math.max(idx, idx2);
+        if (bestIdx >= 0) {
+          try { tryExtract(JSON.parse(rawText.slice(bestIdx))); } catch {
+            // Brace-matching fallback
+            const jsonPart = rawText.slice(bestIdx);
+            let depth = 0, inStr = false, esc = false, endI = -1;
+            for (let i = 0; i < jsonPart.length; i++) {
+              const c = jsonPart[i];
+              if (esc) { esc = false; continue; }
+              if (c === '\\' && inStr) { esc = true; continue; }
+              if (c === '"') { inStr = !inStr; continue; }
+              if (inStr) continue;
+              if (c === '{') depth++; else if (c === '}') { depth--; if (depth === 0) { endI = i; break; } }
+            }
+            if (endI > 0) { try { tryExtract(JSON.parse(jsonPart.slice(0, endI + 1))); } catch {} }
+          }
+        }
       }
+      // Final fallback: use raw text, strip any leading/trailing JSON artifacts
+      if (!sampleText) {
+        sampleText = rawText
+          .replace(/^\s*\{[\s\S]*?"text"\s*:\s*"/, "")
+          .replace(/"\s*,?\s*"analysis"\s*:[\s\S]*$/, "")
+          .replace(/^```json\s*/i, "").replace(/\s*```\s*$/, "")
+          .trim() || rawText;
+      }
+      setCalibrationSample(sampleText);
+      if (analysisText) setCalibrationAnalysis(analysisText);
     } catch (e: any) {
       setCalibrationSample(`生成失败：${e?.message || "请检查模型连接"}`);
     }

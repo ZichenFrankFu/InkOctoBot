@@ -548,7 +548,35 @@ function ProviderGrid({
   );
 }
 
-/* ---- System Tab with crawler DB, GGUF, etc. ---- */
+/* ---- Usage Stats Types ---- */
+interface UsageData {
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_calls: number;
+  by_provider: Record<string, { input_tokens: number; output_tokens: number; calls: number }>;
+  by_role: Record<string, { input_tokens: number; output_tokens: number; calls: number }>;
+}
+
+const ROLE_LABELS: Record<string, string> = {
+  scene_director: "场景导演",
+  scene_planner: "头脑风暴",
+  actor_default: "默认角色",
+  actor_protagonist: "主角专属",
+  editor_stylist: "风格编辑",
+  editor_agent: "编辑代理",
+  evaluator: "评估器",
+  character_profile_gen: "AI 生成人设",
+  worldbook_consistency: "一致性检查",
+  analyzer: "分析器",
+};
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+/* ---- System Tab with crawler DB, GGUF, usage, etc. ---- */
 function SystemTab({
   settings,
   onUpdate,
@@ -562,6 +590,30 @@ function SystemTab({
   const [crawlerStatus, setCrawlerStatus] = useState<{ ok: boolean; message: string } | null>(null);
   const [ggufModels, setGgufModels] = useState<{ name: string; path: string; size_mb: number }[]>([]);
   const [detectingGguf, setDetectingGguf] = useState(false);
+  const [usage, setUsage] = useState<UsageData | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+
+  // Auto-refresh usage every 10s
+  useEffect(() => {
+    let cancelled = false;
+    const fetchUsage = () => {
+      apiGet<UsageData>("/api/generation/usage")
+        .then(d => { if (!cancelled) setUsage(d); })
+        .catch(() => {});
+    };
+    fetchUsage();
+    const iv = setInterval(fetchUsage, 10_000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, []);
+
+  const resetUsage = async () => {
+    setUsageLoading(true);
+    try {
+      await apiPost("/api/generation/usage/reset", {});
+      setUsage({ total_input_tokens: 0, total_output_tokens: 0, total_calls: 0, by_provider: {}, by_role: {} });
+    } catch { /* ignore */ }
+    setUsageLoading(false);
+  };
 
   const setCrawlerDbPath = async () => {
     if (!crawlerPath.trim()) return;
@@ -699,6 +751,93 @@ function SystemTab({
               </button>
             ))}
           </div>
+        </div>
+      </div>
+
+      {/* API Usage */}
+      <div className="card" style={{ gridColumn: "1 / -1" }}>
+        <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <h3>API 用量统计</h3>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>每 10 秒自动刷新</span>
+            <button className="btn" onClick={resetUsage} disabled={usageLoading}
+              style={{ fontSize: 11, padding: "4px 12px", color: "var(--error)", borderColor: "var(--error)" }}>
+              {usageLoading ? "..." : "重置"}
+            </button>
+          </div>
+        </div>
+        <div className="card-body">
+          {usage ? (
+            <div>
+              {/* Summary row */}
+              <div style={{ display: "flex", gap: 24, marginBottom: 16 }}>
+                {[
+                  { label: "总调用", value: String(usage.total_calls), color: "var(--accent)" },
+                  { label: "输入 Tokens", value: formatTokens(usage.total_input_tokens), color: "var(--indigo)" },
+                  { label: "输出 Tokens", value: formatTokens(usage.total_output_tokens), color: "var(--jade)" },
+                  { label: "总 Tokens", value: formatTokens(usage.total_input_tokens + usage.total_output_tokens), color: "var(--gold)" },
+                ].map(s => (
+                  <div key={s.label} style={{
+                    flex: 1, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8,
+                    borderLeft: `3px solid ${s.color}`,
+                  }}>
+                    <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 4 }}>{s.label}</div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary)", fontFamily: "var(--font-mono)" }}>{s.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* By provider */}
+              {Object.keys(usage.by_provider).length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>按供应商</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {Object.entries(usage.by_provider).map(([name, d]) => (
+                      <div key={name} style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        padding: "8px 12px", background: "var(--bg-secondary)", borderRadius: 6, fontSize: 12,
+                      }}>
+                        <span style={{ fontWeight: 600 }}>{name}</span>
+                        <span style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                          {d.calls} 次 · 输入 {formatTokens(d.input_tokens)} · 输出 {formatTokens(d.output_tokens)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* By role */}
+              {Object.keys(usage.by_role).length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>按 Agent 角色</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {Object.entries(usage.by_role).map(([role, d]) => (
+                      <div key={role} style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        padding: "8px 12px", background: "var(--bg-secondary)", borderRadius: 6, fontSize: 12,
+                      }}>
+                        <span style={{ fontWeight: 600 }}>{ROLE_LABELS[role] || role}</span>
+                        <span style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                          {d.calls} 次 · 输入 {formatTokens(d.input_tokens)} · 输出 {formatTokens(d.output_tokens)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {usage.total_calls === 0 && (
+                <div style={{ fontSize: 12, color: "var(--text-disabled)", textAlign: "center", padding: 16 }}>
+                  暂无 API 调用记录。开始使用 Pipeline 或头脑风暴后将自动统计。
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "var(--text-disabled)", textAlign: "center", padding: 16 }}>
+              加载用量数据中...
+            </div>
+          )}
         </div>
       </div>
 

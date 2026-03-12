@@ -82,7 +82,7 @@ function formatSceneDirectorOutput(result: any): string {
   return output;
 }
 
-export default function EditorPage({ projectId }: { projectId: string }) {
+export default function EditorPage({ projectId, onNavigate }: { projectId: string; onNavigate?: (tab: string) => void }) {
   const [volumes, setVolumes] = useState<LocalVolume[]>([]);
   const [activeChId, setActiveChId] = useState<string>("");
   const [content, setContent] = useState("");
@@ -534,6 +534,11 @@ export default function EditorPage({ projectId }: { projectId: string }) {
             : s
         ));
         break;
+      case "navigate":
+        if (data.target === "settings" && onNavigate) {
+          onNavigate("settings");
+        }
+        break;
       case "error":
         setGenerating(false);
         setCurrentAgent(null);
@@ -544,7 +549,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         }]);
         break;
     }
-  }, [activeChId, SESS_KEY]);
+  }, [activeChId, SESS_KEY, onNavigate]);
 
   const startPolling = useCallback((sessionId: string) => {
     stopPolling();
@@ -563,17 +568,6 @@ export default function EditorPage({ projectId }: { projectId: string }) {
         }
         if (resp.status === "complete" || resp.status === "error") {
           stopPolling();
-        }
-        // Check for model changes
-        if (modelSnapshotRef.current) {
-          try {
-            const settings = await apiGet<any>("/api/data/settings");
-            const pc = settings?.pipeline_config || {};
-            const cur = { provider: pc.provider || "", model: pc.model || "" };
-            if (cur.provider !== modelSnapshotRef.current.provider || cur.model !== modelSnapshotRef.current.model) {
-              setModelChanged(true);
-            }
-          } catch { /* ignore */ }
         }
       } catch {
         // Session gone — stop polling
@@ -708,7 +702,7 @@ export default function EditorPage({ projectId }: { projectId: string }) {
     setGenerating(false);
     setWaitingForConfirm(false);
     setCurrentAgent(null);
-    setChatMessages(prev => [...prev, { agent: "System", content: "Pipeline 已被手动终止。", status: "done", timestamp: Date.now() }]);
+    setChatMessages(prev => [...prev, { agent: "System", content: "Pipeline 已被手动终止。", status: "done", timestamp: Date.now(), _stopped: true } as any]);
   }, [SESS_KEY]);
 
   const handleWriteToEditor = useCallback(() => {
@@ -1310,24 +1304,31 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
           );
         })}
         {/* Green confirm button removed — follow_up options handle progression */}
-        {!generating && chatMessages.length > 0 && chatMessages[chatMessages.length - 1]?.agent === "System" && (
-          <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "12px 0", borderTop: "1px dashed var(--border)", marginTop: 8 }}>
-            <button className="btn-primary" style={{ padding: "8px 20px", fontSize: 13, borderRadius: 20 }} onClick={() => {
-              if (onWriteToEditor) onWriteToEditor();
-            }}>
-              确认完成，写入编辑器
-            </button>
-            <button className="btn" style={{ padding: "8px 16px", fontSize: 12, borderRadius: 20 }} onClick={() => {
-              // Rollback to last completed step
-              const lastDone = [...steps].reverse().findIndex(s => s.status === "done");
-              if (lastDone >= 0 && onRollback) {
-                onRollback(steps.length - 1 - lastDone);
-              }
-            }}>
-              回退上一步
-            </button>
-          </div>
-        )}
+        {!generating && chatMessages.length > 0 && chatMessages[chatMessages.length - 1]?.agent === "System" && (() => {
+          const lastMsg = chatMessages[chatMessages.length - 1] as any;
+          const wasStopped = lastMsg._stopped || lastMsg.content.includes("手动终止");
+          const hasError = lastMsg.content.includes("错误");
+          const pipelineCompleted = !wasStopped && !hasError && lastMsg.content.includes("完成");
+          return (
+            <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "12px 0", borderTop: "1px dashed var(--border)", marginTop: 8 }}>
+              {pipelineCompleted && (
+                <button className="btn-primary" style={{ padding: "8px 20px", fontSize: 13, borderRadius: 20 }} onClick={() => {
+                  if (onWriteToEditor) onWriteToEditor();
+                }}>
+                  确认完成，写入编辑器
+                </button>
+              )}
+              <button className="btn" style={{ padding: "8px 16px", fontSize: 12, borderRadius: 20 }} onClick={() => {
+                const lastDone = [...steps].reverse().findIndex(s => s.status === "done");
+                if (lastDone >= 0 && onRollback) {
+                  onRollback(steps.length - 1 - lastDone);
+                }
+              }}>
+                回退上一步
+              </button>
+            </div>
+          );
+        })()}
         <div ref={chatEndRef} />
       </div>
       {/* Stop / Control bar */}

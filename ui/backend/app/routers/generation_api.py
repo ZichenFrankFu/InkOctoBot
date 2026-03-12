@@ -22,6 +22,68 @@ logger = logging.getLogger("inkoctobot.ui.backend.generation_api")
 _active_sessions: dict[str, dict[str, Any]] = {}
 
 
+# ═══ Usage Tracking ═══
+
+_usage_data: dict[str, Any] = {
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "total_calls": 0,
+    "by_provider": {},   # provider -> {input, output, calls}
+    "by_role": {},       # agent_role -> {input, output, calls}
+    "recent": [],        # last 50 calls: {ts, role, provider, model, input, output}
+}
+_usage_lock = asyncio.Lock()
+
+
+def _record_usage(agent_role: str, provider: str, model: str, input_tokens: int, output_tokens: int):
+    """Record token usage from an LLM call (thread-safe for sync context)."""
+    _usage_data["total_input_tokens"] += input_tokens
+    _usage_data["total_output_tokens"] += output_tokens
+    _usage_data["total_calls"] += 1
+
+    if provider not in _usage_data["by_provider"]:
+        _usage_data["by_provider"][provider] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+    _usage_data["by_provider"][provider]["input_tokens"] += input_tokens
+    _usage_data["by_provider"][provider]["output_tokens"] += output_tokens
+    _usage_data["by_provider"][provider]["calls"] += 1
+
+    if agent_role not in _usage_data["by_role"]:
+        _usage_data["by_role"][agent_role] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+    _usage_data["by_role"][agent_role]["input_tokens"] += input_tokens
+    _usage_data["by_role"][agent_role]["output_tokens"] += output_tokens
+    _usage_data["by_role"][agent_role]["calls"] += 1
+
+    _usage_data["recent"].append({
+        "ts": time.time(),
+        "role": agent_role,
+        "provider": provider,
+        "model": model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    })
+    # Keep only last 100 entries
+    if len(_usage_data["recent"]) > 100:
+        _usage_data["recent"] = _usage_data["recent"][-100:]
+
+
+@router.get("/usage")
+def get_usage():
+    """Return accumulated API usage stats for the current session."""
+    return _usage_data
+
+
+@router.post("/usage/reset")
+def reset_usage():
+    """Reset usage counters."""
+    _usage_data["total_input_tokens"] = 0
+    _usage_data["total_output_tokens"] = 0
+    _usage_data["total_calls"] = 0
+    _usage_data["by_provider"] = {}
+    _usage_data["by_role"] = {}
+    _usage_data["recent"] = []
+    return {"status": "ok"}
+
+
 # ═══ Intelligence Integration Helpers ═══
 # These connect the existing-but-disconnected modules together.
 
@@ -335,7 +397,9 @@ class _SimpleRouter:
         if not model:
             raise ValueError(f"角色 '{agent_role}' 未配置模型。请在「设置→Pipeline 配置」中分配。")
         inst = self._get_provider(provider, model, prov_cfg)
-        return await inst.generate(messages, temperature=temperature, max_tokens=max_tokens, **kw)
+        resp = await inst.generate(messages, temperature=temperature, max_tokens=max_tokens, **kw)
+        _record_usage(agent_role, provider, model, resp.input_tokens, resp.output_tokens)
+        return resp
 
     async def invoke(self, *, role: str, prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
         """Simple prompt-in, text-out API used by BaseSkill.execute()."""
@@ -922,6 +986,40 @@ async def _run_pipeline_background(session_id: str):
                 logger.info("Scene director retry succeeded")
             except Exception as e2:
                 logger.error("Scene director retry also failed: %s", e2, exc_info=True)
+                # Emit system error message BEFORE fallback response
+                _err_str = str(e2)[:300]
+                _is_quota = "429" in _err_str or "quota" in _err_str.lower() or "rate" in _err_str.lower()
+                _is_connect = "connect" in _err_str.lower() or "refused" in _err_str.lower()
+                _err_hint = ""
+                if _is_quota:
+                    _err_hint = "API 配额已用尽或请求频率过高。"
+                elif _is_connect:
+                    _err_hint = "无法连接到模型服务。"
+                else:
+                    _err_hint = "模型调用失败。"
+                _emit(session_id, {
+                    "type": "step_done", "step": "scene_director",
+                    "agent_display_name": "系统",
+                    "result": {"text": f"⚠️ {_err_hint}\n\n错误详情：{_err_str}"},
+                })
+                _emit(session_id, {
+                    "type": "follow_up", "step": "scene_director",
+                    "message": f"{_err_hint}请选择操作：",
+                    "options": ["前往设置界面重新配置", "使用降级模式继续", "终止生成"],
+                })
+                _confirm = await _wait_for_confirm_bg(session_id, "scene_director", "请选择操作")
+                if _confirm is None:
+                    return
+                _user_action = (_confirm or {}).get("message", "")
+                if "设置" in _user_action or "前往" in _user_action:
+                    _emit(session_id, {"type": "navigate", "target": "settings"})
+                    _emit(session_id, {"type": "complete", "text": "", "aborted": True})
+                    session["status"] = "complete"
+                    return
+                if "终止" in _user_action:
+                    _emit(session_id, {"type": "complete", "text": "", "aborted": True})
+                    session["status"] = "complete"
+                    return
                 # Build a proper fallback scene plan from the original synopsis
                 _display_characters = [_aliases.get(c, c) for c in _chars] if _aliases else _chars
                 scene_result = {
@@ -937,7 +1035,7 @@ async def _run_pipeline_background(session_id: str):
                     }],
                     "chapter_arc": "",
                     "_fallback": True,
-                    "_error": str(e2)[:200],
+                    "_error": _err_str[:200],
                 }
         scene_prompt = json.dumps({
             "chapter_outline": req_data.get("synopsis", "")[:500],

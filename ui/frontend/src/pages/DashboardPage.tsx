@@ -75,25 +75,26 @@ export default function DashboardPage({ projects, onNavigate }: { projects: { id
   useEffect(() => {
     // Load editor data for each project to get word count & chapter count
     const loadStats = async () => {
-      const stats: ProjectStats[] = [];
-      for (const proj of projects) {
-        try {
-          const data = await apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${proj.id}`);
-          const vols = data.volumes || [];
-          let totalWords = 0;
-          let chapterCount = 0;
-          for (const v of vols) {
-            for (const ch of v.chapters) {
-              chapterCount++;
-              totalWords += ch.word_count || wc(ch.content || "");
+      const results = await Promise.all(
+        projects.map(async (proj) => {
+          try {
+            const data = await apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${proj.id}`);
+            const vols = data.volumes || [];
+            let totalWords = 0;
+            let chapterCount = 0;
+            for (const v of vols) {
+              for (const ch of v.chapters) {
+                chapterCount++;
+                totalWords += ch.word_count || wc(ch.content || "");
+              }
             }
+            return { ...proj, totalWords, chapterCount };
+          } catch {
+            return { ...proj, totalWords: 0, chapterCount: 0 };
           }
-          stats.push({ ...proj, totalWords, chapterCount });
-        } catch {
-          stats.push({ ...proj, totalWords: 0, chapterCount: 0 });
-        }
-      }
-      setProjectStats(stats);
+        })
+      );
+      setProjectStats(results);
     };
 
     // Load reference library summary
