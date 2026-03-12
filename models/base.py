@@ -16,6 +16,21 @@ from typing import Any, AsyncIterator
 logger = logging.getLogger("inkoctobot.models.base")
 
 
+def _safe_model_dump(obj: Any) -> dict[str, Any]:
+    """Safely call model_dump() on Pydantic objects (e.g. OpenAI SDK responses).
+
+    Some pydantic v2 versions raise 'NoneType cannot be converted to PyBool'
+    when by_alias defaults to None internally. This wrapper handles that.
+    """
+    try:
+        return obj.model_dump()
+    except (TypeError, AttributeError):
+        try:
+            return obj.model_dump(by_alias=True)
+        except Exception:
+            return {}
+
+
 @dataclass
 class LLMMessage:
     """A single message in a conversation."""

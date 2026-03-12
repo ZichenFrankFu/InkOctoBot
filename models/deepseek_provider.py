@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any, AsyncIterator
 
-from .base import BaseLLMProvider, LLMMessage, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMMessage, LLMResponse, ProviderConfig, _safe_model_dump
 
 logger = logging.getLogger("inkoctobot.models.deepseek")
 _DEFAULT_BASE = "https://api.deepseek.com"
@@ -35,7 +35,7 @@ class DeepSeekProvider(BaseLLMProvider):
         return LLMResponse(content=c.message.content or "", model=resp.model,
                            input_tokens=u.prompt_tokens if u else 0,
                            output_tokens=u.completion_tokens if u else 0,
-                           finish_reason=c.finish_reason or "", raw=resp.model_dump())
+                           finish_reason=c.finish_reason or "", raw=_safe_model_dump(resp))
 
     async def generate_stream(self, messages: list[LLMMessage], *, temperature: float | None = None,
                               max_tokens: int | None = None, stop: list[str] | None = None, **kw: Any) -> AsyncIterator[str]:

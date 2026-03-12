@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any, AsyncIterator
 
-from .base import BaseLLMProvider, LLMMessage, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMMessage, LLMResponse, ProviderConfig, _safe_model_dump
 
 logger = logging.getLogger("inkoctobot.models.gemini")
 
@@ -56,7 +56,7 @@ class GeminiProvider(BaseLLMProvider):
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
             finish_reason=choice.finish_reason or "",
-            raw=resp.model_dump(),
+            raw=_safe_model_dump(resp),
         )
 
     async def generate_stream(
