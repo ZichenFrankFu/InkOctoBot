@@ -47,9 +47,16 @@ def _project_root() -> Path:
 
 
 def _setup_test_mode(root: Path) -> Path:
-    """Set up a test data directory under data_test/ and seed it if empty."""
+    """Set up a test data directory under data_test/ and seed it if needed."""
     test_root = root / "data_test"
-    if not test_root.exists() or not any(test_root.iterdir()):
+    # Re-seed if directory is empty OR if key DB files are missing
+    needs_seed = (
+        not test_root.exists()
+        or not any(test_root.iterdir())
+        or not (test_root / "InkOctoBot_Crawler.db").exists()
+        or not (test_root / "novels.db").exists()
+    )
+    if needs_seed:
         from test_seed import seed
         seed(test_root)
         logger.info("Seeded test data into %s", test_root)

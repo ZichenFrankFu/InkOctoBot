@@ -43,9 +43,9 @@ export default function WorldBookPage({ projectId, projects }: Props) {
       const r = await apiGet<{ items: WorldBookEntry[] }>(`/api/data/worldbook?project_id=${projectId}`);
       const newItems = r.items || [];
       setItems(newItems);
-      // Sync editing with fresh data after save (when not dirty)
+      // Sync editing with fresh data after save
       setEditing(prev => {
-        if (prev && !dirty) {
+        if (prev) {
           return newItems.find(i => i.id === prev.id) || prev;
         }
         return prev;
@@ -54,7 +54,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
       console.error(e);
     }
     setLoading(false);
-  }, [projectId, dirty]);
+  }, [projectId]);
 
   useEffect(() => {
     load();
@@ -93,9 +93,11 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   const save = async () => {
     if (!editing) return;
     try {
-      await apiPut(`/api/data/worldbook/${editing.id}`, editing);
+      const updated = await apiPut<WorldBookEntry>(`/api/data/worldbook/${editing.id}`, editing);
       setDirty(false);
-      load();
+      // Update local state directly to avoid double-load
+      setItems(prev => prev.map(item => item.id === editing.id ? { ...editing, ...updated } : item));
+      setEditing({ ...editing, ...updated });
     } catch (e) {
       console.error(e);
     }
@@ -122,7 +124,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
     setChecking(true);
     setCheckResult(null);
     try {
-      const entries = items.map((e: any) => `[${e.category || "通用"}] ${e.name}: ${e.content || ""}`).join("\n");
+      const entries = items.map((e: any) => `[${e.category || "通用"}] ${e.title}: ${e.content || ""}`).join("\n");
       const resp = await apiPost<{ result: string; issues?: string[] }>("/api/worldbook/consistency-check", {
         project_id: projectId,
         entries_text: entries,

@@ -789,17 +789,16 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
   const others = visibleChars.filter(c => c.id !== currentId);
   const n = others.length;
 
-  // Dynamic sizing: wider for more characters, taller when many nodes
-  const nodeSpacing = 120;
-  const W = Math.max(400, Math.min(800, n * nodeSpacing + 200));
-  const H = Math.max(180, Math.min(400, n <= 4 ? 220 : 160 + n * 30));
+  // Dynamic sizing: generous spacing to prevent text overlap
+  const nodeSpacing = 160;
+  const W = Math.max(500, Math.min(900, n * nodeSpacing + 200));
+  const H = Math.max(260, Math.min(500, n <= 3 ? 280 : 220 + n * 40));
   const cx = W / 2, cy = H / 2;
 
-  // Use elliptical layout with enough radius to prevent overlap
-  const radiusX = Math.min(W * 0.38, n * 45);
-  const radiusY = Math.min(H * 0.35, n * 35);
+  // Elliptical layout with generous radius
+  const radiusX = Math.max(100, Math.min(W * 0.38, n * 60));
+  const radiusY = Math.max(80, Math.min(H * 0.35, n * 50));
   const angleStep = (2 * Math.PI) / Math.max(n, 1);
-  // Start from top (-PI/2) and distribute evenly
   const startAngle = -Math.PI / 2;
 
   const positions: Record<string, { x: number; y: number }> = { [currentId]: { x: cx, y: cy } };
@@ -811,22 +810,33 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
     };
   });
 
-  // Ensure no overlap: check minimum distance between all pairs
-  const minDist = 60;
+  // Push apart overlapping nodes — run multiple passes for convergence
+  const minDist = 120;
   const allIds = visibleChars.map(c => c.id);
-  for (let i = 0; i < allIds.length; i++) {
-    for (let j = i + 1; j < allIds.length; j++) {
-      const a = positions[allIds[i]], b = positions[allIds[j]];
-      if (!a || !b) continue;
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < minDist && dist > 0) {
-        const push = (minDist - dist) / 2;
-        const ux = dx / dist, uy = dy / dist;
-        if (allIds[i] !== currentId) { a.x -= ux * push; a.y -= uy * push; }
-        if (allIds[j] !== currentId) { b.x += ux * push; b.y += uy * push; }
+  for (let pass = 0; pass < 5; pass++) {
+    for (let i = 0; i < allIds.length; i++) {
+      for (let j = i + 1; j < allIds.length; j++) {
+        const a = positions[allIds[i]], b = positions[allIds[j]];
+        if (!a || !b) continue;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < minDist && dist > 0) {
+          const push = (minDist - dist) / 2 + 1;
+          const ux = dx / dist, uy = dy / dist;
+          if (allIds[i] !== currentId) { a.x -= ux * push; a.y -= uy * push; }
+          if (allIds[j] !== currentId) { b.x += ux * push; b.y += uy * push; }
+        }
       }
     }
+  }
+
+  // Clamp positions within the SVG bounds (with padding for labels)
+  const pad = 50;
+  for (const id of allIds) {
+    const p = positions[id];
+    if (id === currentId) continue;
+    p.x = Math.max(pad, Math.min(W - pad, p.x));
+    p.y = Math.max(pad, Math.min(H - pad, p.y));
   }
 
   return (
@@ -840,11 +850,15 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
             if (!from || !to) return null;
             const trustPct = rel.trust_alpha / (rel.trust_alpha + rel.trust_beta);
             const color = trustPct > 0.6 ? "var(--jade)" : trustPct > 0.4 ? "var(--gold)" : "var(--accent)";
+            // Place edge label at 40% from center to avoid node overlap
+            const labelX = from.x + (to.x - from.x) * 0.4;
+            const labelY = from.y + (to.y - from.y) * 0.4 - 8;
             return (
               <g key={rel.target_id}>
-                <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={color} strokeWidth={2} opacity={0.5} />
-                <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 6} textAnchor="middle" fontSize={9} fill="var(--text-tertiary)">
-                  {rel.notes ? rel.notes.slice(0, 8) : `信任${(trustPct * 100).toFixed(0)}%`}
+                <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={color} strokeWidth={2} opacity={0.4} />
+                <rect x={labelX - 30} y={labelY - 8} width={60} height={14} rx={3} fill="var(--bg-surface)" opacity={0.85} />
+                <text x={labelX} y={labelY + 3} textAnchor="middle" fontSize={9} fill="var(--text-tertiary)">
+                  {rel.notes ? rel.notes.slice(0, 6) : `信任${(trustPct * 100).toFixed(0)}%`}
                 </text>
               </g>
             );
@@ -853,16 +867,18 @@ function RelationshipGraph({ characters, currentId }: { characters: Character[];
             const pos = positions[c.id];
             if (!pos) return null;
             const isCurrent = c.id === currentId;
-            const r = isCurrent ? 24 : 18;
+            const r = isCurrent ? 26 : 20;
             const fillColor = c.role === "主角" ? "var(--accent-subtle)" : c.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)";
             const strokeColor = isCurrent ? "var(--accent)" : "var(--border-hover)";
             return (
               <g key={c.id}>
-                <circle cx={pos.x} cy={pos.y} r={r} fill={fillColor} stroke={strokeColor} strokeWidth={isCurrent ? 2 : 1} />
+                <circle cx={pos.x} cy={pos.y} r={r} fill={fillColor} stroke={strokeColor} strokeWidth={isCurrent ? 2.5 : 1.5} />
                 <text x={pos.x} y={pos.y + 4} textAnchor="middle" fontSize={isCurrent ? 12 : 10} fontWeight={isCurrent ? 700 : 500} fill="var(--text-primary)">
                   {c.name.slice(0, 2)}
                 </text>
-                <text x={pos.x} y={pos.y + r + 14} textAnchor="middle" fontSize={9} fill="var(--text-tertiary)">
+                {/* Name label below node with background for readability */}
+                <rect x={pos.x - c.name.length * 5} y={pos.y + r + 4} width={c.name.length * 10} height={14} rx={3} fill="var(--bg-surface)" opacity={0.9} />
+                <text x={pos.x} y={pos.y + r + 15} textAnchor="middle" fontSize={10} fontWeight={500} fill="var(--text-secondary)">
                   {c.name}
                 </text>
               </g>
