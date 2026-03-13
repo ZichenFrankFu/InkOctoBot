@@ -93,11 +93,28 @@ def create_character(body: dict = Body(...)):
         "tags": [], "layer_b": {}, "relationships": [], "created_at": time.time()}
     for k, v in defaults.items():
         body.setdefault(k, v)
+    # Enforce name uniqueness within project
+    pid = body.get("project_id", "")
+    name = body.get("name", "")
+    if pid and name:
+        existing = [c for c in _list("characters") if c.get("project_id") == pid and c.get("name") == name]
+        if existing:
+            from fastapi import HTTPException
+            raise HTTPException(409, detail=f"角色「{name}」已存在，请使用不同的名字")
     return _save("characters", cid, body)
 @router.get("/characters/{cid}")
 def get_character(cid: str): return _get("characters", cid)
 @router.put("/characters/{cid}")
-def update_character(cid: str, body: dict = Body(...)): return _save("characters", cid, body)
+def update_character(cid: str, body: dict = Body(...)):
+    # Enforce name uniqueness within project (exclude self)
+    pid = body.get("project_id", "")
+    name = body.get("name", "")
+    if pid and name:
+        existing = [c for c in _list("characters") if c.get("project_id") == pid and c.get("name") == name and c.get("id") != cid]
+        if existing:
+            from fastapi import HTTPException
+            raise HTTPException(409, detail=f"角色「{name}」已存在，请使用不同的名字")
+    return _save("characters", cid, body)
 @router.delete("/characters/{cid}")
 def delete_character(cid: str): _del("characters", cid); return {"ok": True}
 
@@ -112,11 +129,27 @@ def create_worldbook_entry(body: dict = Body(...)):
     eid = _nid()
     body.update({"id": eid, "category": body.get("category", "力量体系"), "title": body.get("title", "新条目"),
         "content": "", "tags": [], "project_id": body.get("project_id", ""), "created_at": time.time()})
+    # Enforce title uniqueness within project
+    pid = body.get("project_id", "")
+    title = body.get("title", "")
+    if pid and title:
+        existing = [e for e in _list("worldbook") if e.get("project_id") == pid and e.get("title") == title]
+        if existing:
+            from fastapi import HTTPException
+            raise HTTPException(409, detail=f"世界书条目「{title}」已存在，请使用不同的标题")
     return _save("worldbook", eid, body)
 @router.get("/worldbook/{eid}")
 def get_worldbook_entry(eid: str): return _get("worldbook", eid)
 @router.put("/worldbook/{eid}")
-def update_worldbook_entry(eid: str, body: dict = Body(...)): return _save("worldbook", eid, body)
+def update_worldbook_entry(eid: str, body: dict = Body(...)):
+    pid = body.get("project_id", "")
+    title = body.get("title", "")
+    if pid and title:
+        existing = [e for e in _list("worldbook") if e.get("project_id") == pid and e.get("title") == title and e.get("id") != eid]
+        if existing:
+            from fastapi import HTTPException
+            raise HTTPException(409, detail=f"世界书条目「{title}」已存在，请使用不同的标题")
+    return _save("worldbook", eid, body)
 @router.delete("/worldbook/{eid}")
 def delete_worldbook_entry(eid: str): _del("worldbook", eid); return {"ok": True}
 
@@ -272,12 +305,9 @@ def analyze_preferences(body: dict = Body(...)):
                 ts = msg.get("timestamp", 0)
                 if not content or not content.strip():
                     continue
-                if role == "user":
-                    action = f"用户输入 ({scope_label})"
-                elif role == "assistant":
-                    action = f"AI回复 ({scope_label})"
-                else:
-                    continue
+                if role != "user":
+                    continue  # Only show user inputs
+                action = f"用户输入 ({scope_label})"
                 entries.append({
                     "id": msg.get("id", str(uuid.uuid4())[:8]),
                     "timestamp": _ts_fmt(ts),
@@ -297,12 +327,12 @@ def analyze_preferences(body: dict = Body(...)):
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 ts = msg.get("timestamp", 0)
-                if not content.strip():
-                    continue
+                if not content.strip() or role != "user":
+                    continue  # Only show user inputs
                 entries.append({
                     "id": msg.get("id", str(uuid.uuid4())[:8]),
                     "timestamp": _ts_fmt(ts),
-                    "action": f"{'用户输入' if role == 'user' else 'AI回复'} (大纲助手)",
+                    "action": "用户输入 (大纲助手)",
                     "detail": content[:500],
                     "scope": "outline_chat",
                     "role": role,
@@ -310,12 +340,23 @@ def analyze_preferences(body: dict = Body(...)):
         except Exception:
             continue
 
+    # Filter out previously deleted entries
+    p = _pref_path(pid)
+    deleted_ids: set = set()
+    if p.exists():
+        try:
+            old_data = json.loads(p.read_text("utf-8"))
+            deleted_ids = set(old_data.get("deleted_ids", []))
+        except Exception:
+            pass
+    entries = [e for e in entries if e.get("id") not in deleted_ids]
+
     # Sort by timestamp descending
     entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
 
     # Generate summary
-    user_entries = [e for e in entries if e.get("role") == "user"]
-    summary = f"共收集到 {len(entries)} 条交互记录（其中用户输入 {len(user_entries)} 条）。"
+    user_entries = entries  # all entries are user inputs now
+    summary = f"共收集到 {len(entries)} 条用户交互记录。"
     if user_entries:
         scopes = set(e.get("scope", "") for e in user_entries)
         summary += f" 涉及 {len(scopes)} 个对话场景。"
@@ -342,7 +383,7 @@ def analyze_preferences(body: dict = Body(...)):
     extracted_memories = _extract_memories(user_entries, pid)
 
     # Persist
-    _wj(_pref_path(pid), {"entries": entries, "summary": summary, "extracted_memories": extracted_memories, "saved_at": time.time()})
+    _wj(_pref_path(pid), {"entries": entries, "summary": summary, "extracted_memories": extracted_memories, "deleted_ids": list(deleted_ids), "saved_at": time.time()})
     return {"entries": entries, "summary": summary, "extracted_memories": extracted_memories}
 
 def _extract_memories(user_entries: list[dict], project_id: str) -> list[dict]:
@@ -438,6 +479,10 @@ def delete_preference_entry(entry_id: str, project_id: str = "default"):
     entries = data.get("entries", [])
     entries = [e for e in entries if e.get("id") != entry_id]
     data["entries"] = entries
+    # Track deleted IDs so re-analyze doesn't bring them back
+    deleted_ids = set(data.get("deleted_ids", []))
+    deleted_ids.add(entry_id)
+    data["deleted_ids"] = list(deleted_ids)
     _wj(p, data)
     return {"ok": True, "remaining": len(entries)}
 

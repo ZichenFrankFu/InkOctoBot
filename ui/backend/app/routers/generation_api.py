@@ -415,6 +415,11 @@ class _SimpleRouter:
 
     def _resolve(self, agent_role: str) -> tuple[str, str, dict]:
         """Return (provider, model, prov_cfg) for the given agent role."""
+        # In test mode, always use mock provider to avoid connection errors
+        import os
+        if os.environ.get("WN_TEST_MODE") == "1":
+            return "mock", "mock-test-v1", {}
+
         role_cfg = self._pipeline.get(agent_role, {})
         # If no config for this role, try alias mapping
         if not role_cfg.get("provider") and not role_cfg.get("model"):
