@@ -201,6 +201,20 @@ def save_version(body: dict = Body(...)):
     _wj(p, {"versions": trimmed, "saved_at": time.time()})
     return {"ok": True, "count": len(trimmed)}
 
+@router.delete("/versions/{version_id}")
+def delete_version(version_id: str, project_id: str = "default"):
+    p = _versions_path(project_id)
+    if not p.exists():
+        return {"ok": False, "error": "not found"}
+    data = json.loads(p.read_text("utf-8"))
+    versions = data.get("versions", [])
+    original_count = len(versions)
+    versions = [v for v in versions if v.get("version_id") != version_id]
+    if len(versions) == original_count:
+        return {"ok": False, "error": "version not found"}
+    _wj(p, {"versions": versions, "saved_at": time.time()})
+    return {"ok": True, "remaining": len(versions)}
+
 # ═══ Calibration ═══
 def _calibration_path(project_id: str) -> Path:
     d = _col("calibration"); return d / f"{project_id}.json"
@@ -301,6 +315,7 @@ def _default_settings() -> dict:
             "actor_default": {"provider": "ollama", "model": "", "compare_models": []},
             "actor_protagonist": {"provider": "ollama", "model": "", "compare_models": []},
             "editor_stylist": {"provider": "ollama", "model": "", "compare_models": []},
+            "editor_writer": {"provider": "ollama", "model": "", "compare_models": []},
             "editor_agent": {"provider": "ollama", "model": "", "compare_models": []},
             "evaluator": {"provider": "ollama", "model": "", "compare_models": []},
             "analyzer": {"provider": "ollama", "model": "", "compare_models": []},

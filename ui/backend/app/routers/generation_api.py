@@ -402,9 +402,23 @@ class _SimpleRouter:
         self._fallback_model = fallback_model
         self._provider_cache: dict[str, Any] = {}  # keyed by "provider:model"
 
+    # Map agent_name used by BaseAgent to the pipeline config key in settings
+    _ROLE_ALIASES: dict[str, str] = {
+        "editor_writer": "editor_stylist",
+        "editor": "editor_stylist",
+        "scene_planner": "scene_director",
+        "actor": "actor_default",
+        "actors": "actor_default",
+    }
+
     def _resolve(self, agent_role: str) -> tuple[str, str, dict]:
         """Return (provider, model, prov_cfg) for the given agent role."""
         role_cfg = self._pipeline.get(agent_role, {})
+        # If no config for this role, try alias mapping
+        if not role_cfg.get("provider") and not role_cfg.get("model"):
+            alias = self._ROLE_ALIASES.get(agent_role, "")
+            if alias:
+                role_cfg = self._pipeline.get(alias, {})
         provider = role_cfg.get("provider", "") or self._fallback_provider
         model = role_cfg.get("model", "") or self._fallback_model
         prov_cfg = self._providers_cfg.get(provider, {})
@@ -534,9 +548,15 @@ def _build_router(provider: str = "", model: str = ""):
             pass
 
     if not fb_model:
-        raise ValueError(
-            "未找到可用的 AI 模型。请在「设置」页面中启用一个模型供应商并配置模型。"
-        )
+        # In test mode, automatically fall back to mock provider
+        import os
+        if os.environ.get("WN_TEST_MODE") == "1":
+            fb_provider = "mock"
+            fb_model = "mock-test-v1"
+        else:
+            raise ValueError(
+                "未找到可用的 AI 模型。请在「设置」页面中启用一个模型供应商并配置模型。"
+            )
 
     return _SimpleRouter(user_settings, fb_provider, fb_model)
 
