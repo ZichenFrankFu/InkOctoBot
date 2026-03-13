@@ -359,7 +359,6 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     const snap = snaps[snapIdx];
     if (!snap) return;
     const rels = snap.relationships || [];
-    if (rels.some(r => r.target_id === targetId)) return;
     const newRel: CharacterRelationship = {
       target_id: targetId, target_name: target.name,
       affinity: 50, priority: (rels.length || 0) + 2,
@@ -371,22 +370,26 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     setRelTarget("");
   };
 
-  const updateSnapshotRel = (snapIdx: number, targetId: string, key: string, val: any) => {
+  const updateSnapshotRel = (snapIdx: number, relIdx: number, key: string, val: any) => {
     if (!editing) return;
     const snaps = [...(editing.dynamic_snapshots || [])];
     const snap = snaps[snapIdx];
     if (!snap) return;
-    snaps[snapIdx] = { ...snap, relationships: (snap.relationships || []).map(r => r.target_id === targetId ? { ...r, [key]: val } : r) };
+    const rels = [...(snap.relationships || [])];
+    rels[relIdx] = { ...rels[relIdx], [key]: val };
+    snaps[snapIdx] = { ...snap, relationships: rels };
     setEditing({ ...editing, dynamic_snapshots: snaps });
     setDirty(true);
   };
 
-  const removeSnapshotRel = (snapIdx: number, targetId: string) => {
+  const removeSnapshotRel = (snapIdx: number, relIdx: number) => {
     if (!editing) return;
     const snaps = [...(editing.dynamic_snapshots || [])];
     const snap = snaps[snapIdx];
     if (!snap) return;
-    snaps[snapIdx] = { ...snap, relationships: (snap.relationships || []).filter(r => r.target_id !== targetId) };
+    const rels = [...(snap.relationships || [])];
+    rels.splice(relIdx, 1);
+    snaps[snapIdx] = { ...snap, relationships: rels };
     setEditing({ ...editing, dynamic_snapshots: snaps });
     setDirty(true);
   };
@@ -934,28 +937,28 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                 <div style={{ padding: "6px 8px", marginBottom: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
                                   好感度：越高越喜欢（负=厌恶, 0=不熟, 正=好感）&nbsp;&nbsp;优先级：越低越优先（1=最重要）
                                 </div>
-                                {snapRels.map(rel => (
-                                  <div key={rel.target_id} style={{ padding: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", marginBottom: 8, border: "1px solid var(--border)" }}>
+                                {snapRels.map((rel, relIdx) => (
+                                  <div key={relIdx} style={{ padding: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", marginBottom: 8, border: "1px solid var(--border)" }}>
                                     <div className="flex items-center justify-between mb-6">
                                       <span style={{ fontWeight: 600, fontSize: 12, color: "var(--text-primary)" }}>&rarr; {rel.target_name}</span>
-                                      <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => removeSnapshotRel(flashcardIndex, rel.target_id)}>移除</button>
+                                      <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => removeSnapshotRel(flashcardIndex, relIdx)}>移除</button>
                                     </div>
                                     <div className="field mb-6">
-                                      <input className="input" value={rel.label || ""} onChange={e => updateSnapshotRel(flashcardIndex, rel.target_id, "label", e.target.value)} placeholder="关系标签：师徒、情侣..." style={{ fontSize: 11 }} />
+                                      <input className="input" value={rel.label || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "label", e.target.value)} placeholder="关系标签：师徒、情侣..." style={{ fontSize: 11 }} />
                                     </div>
-                                    <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateSnapshotRel(flashcardIndex, rel.target_id, "affinity", v)} />
-                                    <ParamSlider name={`优先级 (#${rel.priority})`} value={rel.priority} min={1} max={20} step={1} onChange={v => updateSnapshotRel(flashcardIndex, rel.target_id, "priority", v)} />
+                                    <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "affinity", v)} />
+                                    <ParamSlider name={`优先级 (#${rel.priority})`} value={rel.priority} min={1} max={20} step={1} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "priority", v)} />
                                     <div className="field mt-6">
-                                      <input className="input" value={rel.notes || ""} onChange={e => updateSnapshotRel(flashcardIndex, rel.target_id, "notes", e.target.value)} placeholder="关系备注..." style={{ fontSize: 11 }} />
+                                      <input className="input" value={rel.notes || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "notes", e.target.value)} placeholder="关系备注..." style={{ fontSize: 11 }} />
                                     </div>
                                   </div>
                                 ))}
                                 {/* Add relationship to snapshot */}
-                                {others.filter(o => !snapRels.some(r => r.target_id === o.id)).length > 0 && (
+                                {others.length > 0 && (
                                   <div className="flex gap-6 mt-8">
                                     <select className="select" style={{ flex: 1, fontSize: 11 }} value={relTarget} onChange={e => setRelTarget(e.target.value)}>
                                       <option value="">添加角色关系...</option>
-                                      {others.filter(o => !snapRels.some(r => r.target_id === o.id)).map(o => (
+                                      {others.map(o => (
                                         <option key={o.id} value={o.id}>{o.name}</option>
                                       ))}
                                     </select>

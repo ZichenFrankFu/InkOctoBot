@@ -850,7 +850,13 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                 isGenerating={aiLoading}
                 preservedInput={chatInput}
                 onInputChange={setChatInput}
-                onClearHistory={() => setTrendingMessages([])}
+                onClearHistory={() => {
+                  setTrendingMessages([]);
+                  apiPut("/api/data/chat_history", {
+                    project_id: activeProject || "default", scope: "studio_trending",
+                    messages: [],
+                  }).catch(() => {});
+                }}
                 placeholder="询问某个题材的市场前景..."
                 quickPrompts={getAgentConfig("trending").quickPrompts}
                 templates={[
@@ -907,7 +913,13 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                 isGenerating={aiLoading}
                 preservedInput={chatInput}
                 onInputChange={setChatInput}
-                onClearHistory={() => setBrainstormMessages([])}
+                onClearHistory={() => {
+                  setBrainstormMessages([]);
+                  apiPut("/api/data/chat_history", {
+                    project_id: activeProject || "default", scope: "studio_brainstorm",
+                    messages: [],
+                  }).catch(() => {});
+                }}
                 placeholder="构思你的故事世界..."
                 quickPrompts={getAgentConfig("brainstorm").quickPrompts}
                 templates={[
