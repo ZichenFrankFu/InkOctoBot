@@ -4,6 +4,7 @@ All data stored in {repo_root}/data/{collection}/.
 """
 from __future__ import annotations
 import json, time, uuid, os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from fastapi import APIRouter, HTTPException, Body
@@ -477,12 +478,20 @@ def delete_preference_entry(entry_id: str, project_id: str = "default"):
         return {"ok": False, "error": "not found"}
     data = json.loads(p.read_text("utf-8"))
     entries = data.get("entries", [])
+    # Find the entry to archive before removing
+    removed = [e for e in entries if e.get("id") == entry_id]
     entries = [e for e in entries if e.get("id") != entry_id]
     data["entries"] = entries
     # Track deleted IDs so re-analyze doesn't bring them back
     deleted_ids = set(data.get("deleted_ids", []))
     deleted_ids.add(entry_id)
     data["deleted_ids"] = list(deleted_ids)
+    # Archive the full entry data (soft delete) so it's preserved but not used by editAnalyzer
+    deleted_entries = data.get("deleted_entries", [])
+    for e in removed:
+        e["deleted_at"] = datetime.now().isoformat()
+        deleted_entries.append(e)
+    data["deleted_entries"] = deleted_entries
     _wj(p, data)
     return {"ok": True, "remaining": len(entries)}
 

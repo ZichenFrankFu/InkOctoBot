@@ -612,6 +612,25 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     apiDelete(`/api/data/preferences/${id}?project_id=${pid}`).catch(() => {});
   };
 
+  const deleteChatMessage = (messageId: string) => {
+    const pid = activeProject || "default";
+    if (studioTab === "trending") {
+      const updated = trendingMessages.filter(m => m.id !== messageId);
+      setTrendingMessages(updated);
+      apiPut("/api/data/chat_history", {
+        project_id: pid, scope: "studio_trending",
+        messages: updated.slice(-200),
+      }).catch(() => {});
+    } else if (studioTab === "brainstorm") {
+      const updated = brainstormMessages.filter(m => m.id !== messageId);
+      setBrainstormMessages(updated);
+      apiPut("/api/data/chat_history", {
+        project_id: pid, scope: "studio_brainstorm",
+        messages: updated.slice(-200),
+      }).catch(() => {});
+    }
+  };
+
   const formatDate = (dateVal?: string | number) => {
     if (!dateVal) return "--";
     const d = typeof dateVal === "number" || (typeof dateVal === "string" && /^\d+(\.\d+)?$/.test(dateVal))
@@ -850,6 +869,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                 isGenerating={aiLoading}
                 preservedInput={chatInput}
                 onInputChange={setChatInput}
+                onDeleteMessage={deleteChatMessage}
                 onClearHistory={() => {
                   setTrendingMessages([]);
                   apiPut("/api/data/chat_history", {
@@ -913,6 +933,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                 isGenerating={aiLoading}
                 preservedInput={chatInput}
                 onInputChange={setChatInput}
+                onDeleteMessage={deleteChatMessage}
                 onClearHistory={() => {
                   setBrainstormMessages([]);
                   apiPut("/api/data/chat_history", {
