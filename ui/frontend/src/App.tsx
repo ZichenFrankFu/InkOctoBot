@@ -131,11 +131,11 @@ function AppInner() {
         <button
           className="nav-btn"
           onClick={() => setSearchOpen(true)}
-          style={{ margin: "4px 12px 8px", padding: "8px 12px", display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
+          style={{ margin: "4px 8px 4px", padding: "6px 10px", display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
         >
-          <span style={{ fontSize: 13 }}>/</span>
+          <span style={{ fontSize: 12, opacity: 0.6 }}>&#x2315;</span>
           <span style={{ flex: 1, textAlign: "left" }}>搜索...</span>
-          <kbd style={{ fontSize: 10, color: "var(--text-disabled)", background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 5px", fontFamily: "var(--font-mono)" }}>
+          <kbd style={{ fontSize: 9, color: "var(--text-disabled)", background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 4px", fontFamily: "var(--font-mono)", lineHeight: 1.4 }}>
             {/Mac|iPod|iPhone|iPad/.test(navigator?.platform || "") ? "\u2318K" : "Ctrl+K"}
           </kbd>
         </button>

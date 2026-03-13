@@ -192,6 +192,8 @@ def list_agents():
         for agent_info in agents_list:
             aname = agent_info["name"]
             for sname, sinfo in domain_skills_map.items():
+                if sname in assigned_skills:
+                    continue  # Already assigned to another agent
                 subdir = sinfo.get("_subdir", "")
                 skill_name_lower = sname.lower()
                 # Match by: skill subdir contains agent name fragment, or vice versa
@@ -560,7 +562,7 @@ def delete_skill(name: str):
 
 def _deactivated_path() -> Path:
     from ..settings import settings
-    d = Path(settings.data_dir) / "skill_learning_log"
+    d = settings.get_data_path("skill_learning_log")
     d.mkdir(parents=True, exist_ok=True)
     return d / "deactivated.json"
 
@@ -662,7 +664,7 @@ async def execute_skill(req: SkillExecuteRequest):
 
 def _learning_log_path() -> Path:
     from ..settings import settings
-    d = Path(settings.data_dir) / "skill_learning_log"
+    d = settings.get_data_path("skill_learning_log")
     d.mkdir(parents=True, exist_ok=True)
     return d / "log.json"
 
