@@ -413,6 +413,21 @@ def _pick_response(messages: list[LLMMessage]) -> str:
     if any(kw in combined for kw in ["分镜场景计划", "拆解为分镜", "场景计划", "scene plan"]):
         return _SCENE_PLAN_JSON
 
+    # ── Editor-Writer (pipeline step 3): expects polished prose ──
+    # Must be checked before evaluator/actor because the editor prompt contains
+    # "表演记录" and "章节正文" which could also match actor/calibration patterns.
+    if any(kw in combined for kw in ["剪辑师+作家", "剪辑成", "Editor-Writer"]):
+        return _EDITOR_REWRITE
+
+    # ── Narrator Agent (pipeline): atmospheric/environmental narration ──
+    if any(kw in combined for kw in ["旁白Actor", "环境描写、氛围渲染"]):
+        return _CALIBRATION_SAMPLE  # Atmospheric prose works well as narrator output
+
+    # ── Actor Agent (pipeline step 2): expects semi-structured performance ──
+    # Must be before generic keyword fallbacks since actor prompts contain "表演", "角色"
+    if any(kw in combined for kw in ["演员Agent", "电影剧本的表演记录", "只输出你所扮演角色"]):
+        return _PIPELINE_ACTOR_PROSE
+
     # ── Evaluator: expects JSON evaluation ──
     if any(kw in combined for kw in ["综合评估", "质量评估", "评分", "evaluate", "evaluation"]):
         return _EVALUATION_JSON
