@@ -374,7 +374,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const handleSaveOutline = async () => {
     setSaveStatus("saving");
     const uv = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
-    try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv }); setSaveStatus("saved"); } catch { setSaveStatus("unsaved"); }
+    try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv }); setSaveStatus("saved"); } catch (e: any) { setSaveStatus("unsaved"); toast(e.message || "操作失败", "error"); }
   };
 
   const generatedTextRef = useRef<string>("");
@@ -1044,7 +1044,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                   };
                   setVersionHistory(prev => [...prev, newVersion]);
                   // Persist
-                  apiPost("/api/data/versions", { project_id: projectId || "default", version: newVersion }).catch(() => {});
+                  apiPost("/api/data/versions", { project_id: projectId || "default", version: newVersion }).catch((e) => toast(e.message || "操作失败", "error"));
                 }}>
                 + 保存版本
               </button>
@@ -1074,7 +1074,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                       e.stopPropagation();
                       if (confirm(`删除版本 v${v.version}？此操作不可撤销。`)) {
                         setVersionHistory(prev => prev.filter(x => x.version_id !== v.version_id));
-                        apiDelete(`/api/data/versions/${v.version_id}?project_id=${projectId || "default"}`).catch(() => {});
+                        apiDelete(`/api/data/versions/${v.version_id}?project_id=${projectId || "default"}`).catch((e) => toast(e.message || "操作失败", "error"));
                       }
                     }}
                     style={{ fontSize: 9, padding: "0 4px", background: "none", border: "none", color: "var(--text-disabled)", cursor: "pointer", flexShrink: 0, lineHeight: 1 }}
@@ -1168,6 +1168,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; projectId: string;
   chapter?: ChapterOutline | null; onUpdateChapter?: (field: string, value: any) => void;
 }) {
+  const { toast } = useToast();
   const [time, setTime] = useState(chapter?.time || "");
   const [location, setLocation] = useState(chapter?.location || "");
 
@@ -1286,7 +1287,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         <div style={{ padding: "6px 10px", background: "var(--bg-surface-2)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)" }}>Story Architect · AI 大纲助手</span>
           <div style={{ display: "flex", gap: 4 }}>
-            <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => { setOutlineChatMsgs([]); apiPut("/api/data/chat_history", { project_id: projectId, scope: `outline_chat_${chapter?.id || ""}`, messages: [] }).catch(() => {}); }}>清空</button>
+            <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => { setOutlineChatMsgs([]); apiPut("/api/data/chat_history", { project_id: projectId, scope: `outline_chat_${chapter?.id || ""}`, messages: [] }).catch((e) => toast(e.message || "操作失败", "error")); }}>清空</button>
           </div>
         </div>
         <div style={{ maxHeight: 240, overflowY: "auto", padding: "8px 10px" }}>
