@@ -169,29 +169,31 @@ export default function AIChatPanel({
         flex: 1, overflowY: "auto", padding: compact ? "8px 10px" : "12px 14px",
       }}>
         {messages.length === 0 && !isGenerating ? (
-          emptyState || (
-            <div style={{ padding: "20px 16px" }}>
-              {quickPrompts && quickPrompts.length > 0 && (
-                <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
-                  {quickPrompts.map((hint, i) => (
-                    <button key={i} onClick={() => setInput(hint)}
-                      className="ai-chat-quick-prompt"
-                      style={{
-                        padding: "10px 14px", borderRadius: 8, border: "1px solid var(--border)",
-                        background: "var(--bg-surface-2)", color: "var(--text-secondary)",
-                        fontSize: 12, textAlign: "left", cursor: "pointer", lineHeight: 1.5,
-                        transition: "all 0.15s",
-                      }}
-                      onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--accent-subtle)"; }}
-                      onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg-surface-2)"; }}
-                    >
-                      {hint}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )
+          <div>
+            {emptyState || null}
+            {quickPrompts && quickPrompts.length > 0 && (
+              <div style={{ display: "grid", gap: 8, padding: emptyState ? "0 16px 16px" : "20px 16px" }}>
+                {quickPrompts.map((hint, i) => (
+                  <button key={i} onClick={() => setInput(hint)}
+                    className="ai-chat-quick-prompt"
+                    style={{
+                      padding: "10px 14px", borderRadius: 8, border: "1px solid var(--border)",
+                      background: "var(--bg-surface-2)", color: "var(--text-secondary)",
+                      fontSize: 12, textAlign: "left", cursor: "pointer", lineHeight: 1.5,
+                      transition: "all 0.15s",
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--accent-subtle)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg-surface-2)"; }}
+                  >
+                    {hint}
+                  </button>
+                ))}
+              </div>
+            )}
+            {!emptyState && !quickPrompts?.length && (
+              <div style={{ padding: "20px 16px" }} />
+            )}
+          </div>
         ) : (
           messages.map((msg) => {
             const isUser = msg.role === "user";

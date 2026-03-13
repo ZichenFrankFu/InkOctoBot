@@ -277,7 +277,7 @@ export interface TextVersion {
   version_id: string;
   chapter_id: string;
   version: number;
-  source: "ai_generated" | "user_edited" | "targeted_rewrite" | "outline_chat";
+  source: "ai_generated" | "user_edited" | "targeted_rewrite" | "outline_chat" | "auto_saved";
   text: string;
   synopsis?: string;
   model_used?: string;
@@ -392,6 +392,7 @@ export interface AppSettings {
   theme: string;
   auto_save: boolean;
   auto_save_interval: number;
+  max_backup_versions: number;
   cost_confirm: boolean;
   export_format: "txt" | "docx" | "epub";
   providers: Record<string, ProviderConfig>;
