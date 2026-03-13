@@ -169,6 +169,8 @@ export interface DynamicPropertySnapshot {
   background?: string;
   speech_style?: string;
   notes?: string;
+  relationships?: CharacterRelationship[];
+  layer_b?: CharacterLayerB;
 }
 
 // ── World Book ──

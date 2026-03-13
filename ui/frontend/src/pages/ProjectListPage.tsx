@@ -66,7 +66,8 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     try { const raw = sessionStorage.getItem(STUDIO_SESS_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
   })();
   const [studioTab, setStudioTab] = useState<StudioTab>(_savedStudio?.studioTab || "trending");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(_savedStudio?.chatMessages || []);
+  const [trendingMessages, setTrendingMessages] = useState<ChatMessage[]>(_savedStudio?.trendingMessages || []);
+  const [brainstormMessages, setBrainstormMessages] = useState<ChatMessage[]>(_savedStudio?.brainstormMessages || []);
   const [chatInput, setChatInput] = useState(_savedStudio?.chatInput || "");
   const [calibration, setCalibration] = useState<CalibrationState>(
     _savedStudio?.calibration || { tone: 50, pacing: 50, rhetoric: 50, perspective: "third", websiteStyle: "qidian", audience: "general" },
@@ -91,7 +92,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
   // Preferences (偏好记忆) state
   const [prefEntries, setPrefEntries] = useState<{ id: string; timestamp: string; action: string; detail: string; role?: string; scope?: string }[]>([]);
-  const [prefFilter, setPrefFilter] = useState<"all" | "user" | "assistant">("all");
+  // prefFilter removed — backend now only returns user inputs
   const [prefSummary, setPrefSummary] = useState("");
   const [prefLoading, setPrefLoading] = useState(false);
   // Extracted interaction memories (like project memory)
@@ -99,24 +100,40 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
   const [editingMemoryText, setEditingMemoryText] = useState("");
 
+  // Derived: current tab's messages and setter
+  const chatMessages = studioTab === "trending" ? trendingMessages : brainstormMessages;
+  const setChatMessages = studioTab === "trending" ? setTrendingMessages : setBrainstormMessages;
+
   // Persist studio state to sessionStorage
   useEffect(() => {
-    sessionStorage.setItem(STUDIO_SESS_KEY, JSON.stringify({ studioTab, chatMessages, calibration, chatInput }));
-  }, [studioTab, chatMessages, calibration, chatInput, STUDIO_SESS_KEY]);
+    sessionStorage.setItem(STUDIO_SESS_KEY, JSON.stringify({ studioTab, trendingMessages, brainstormMessages, calibration, chatInput }));
+  }, [studioTab, trendingMessages, brainstormMessages, calibration, chatInput, STUDIO_SESS_KEY]);
 
-  // Backend persistence for chat (debounced)
-  const chatSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Backend persistence for chat (debounced, per-tab)
+  const trendingSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const brainstormSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (chatLoaded && chatMessages.length > 0) {
-      if (chatSaveTimer.current) clearTimeout(chatSaveTimer.current);
-      chatSaveTimer.current = setTimeout(() => {
+    if (chatLoaded && trendingMessages.length > 0) {
+      if (trendingSaveTimer.current) clearTimeout(trendingSaveTimer.current);
+      trendingSaveTimer.current = setTimeout(() => {
         apiPut("/api/data/chat_history", {
-          project_id: activeProject || "default", scope: `studio_${studioTab}`,
-          messages: chatMessages.slice(-200),
+          project_id: activeProject || "default", scope: "studio_trending",
+          messages: trendingMessages.slice(-200),
         }).catch(() => {});
       }, 2000);
     }
-  }, [chatMessages, chatLoaded, activeProject, studioTab]);
+  }, [trendingMessages, chatLoaded, activeProject]);
+  useEffect(() => {
+    if (chatLoaded && brainstormMessages.length > 0) {
+      if (brainstormSaveTimer.current) clearTimeout(brainstormSaveTimer.current);
+      brainstormSaveTimer.current = setTimeout(() => {
+        apiPut("/api/data/chat_history", {
+          project_id: activeProject || "default", scope: "studio_brainstorm",
+          messages: brainstormMessages.slice(-200),
+        }).catch(() => {});
+      }, 2000);
+    }
+  }, [brainstormMessages, chatLoaded, activeProject]);
 
   // Agent switch guidance messages
   const AGENT_GUIDANCE: Record<StudioTab, string> = {
@@ -126,36 +143,24 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     preferences: "",
   };
 
-  // Track previous tab for switch detection
+  // Track previous tab for switch detection — no longer inject cross-tab guidance
   const prevStudioTabRef = useRef<StudioTab>(studioTab);
   useEffect(() => {
-    const prevTab = prevStudioTabRef.current;
-    if (prevTab !== studioTab && chatMessages.length > 0) {
-      const guidance = AGENT_GUIDANCE[studioTab];
-      if (guidance) {
-        const config = getAgentConfig(studioTab);
-        const guidanceMsg: ChatMessage = {
-          id: uid(), role: "assistant", content: guidance,
-          agentName: config.agentName, timestamp: Date.now(), status: "done",
-        };
-        setChatMessages(prev => [...prev, guidanceMsg]);
-      }
-    }
     prevStudioTabRef.current = studioTab;
   }, [studioTab]);
 
-  // Load chat from backend on mount / project change
+  // Load chat from backend on mount / project change (both tabs independently)
   useEffect(() => {
     const pid = activeProject || "default";
-    apiGet<{ messages: ChatMessage[] }>(`/api/data/chat_history?project_id=${pid}&scope=studio_${studioTab}`)
-      .then(r => {
-        if (r.messages && r.messages.length > 0 && chatMessages.length === 0) {
-          setChatMessages(r.messages);
-        }
-        setChatLoaded(true);
-      })
-      .catch(() => setChatLoaded(true));
-  }, [activeProject, studioTab]);
+    let loaded = 0;
+    const markLoaded = () => { loaded++; if (loaded >= 2) setChatLoaded(true); };
+    apiGet<{ messages: ChatMessage[] }>(`/api/data/chat_history?project_id=${pid}&scope=studio_trending`)
+      .then(r => { if (r.messages && r.messages.length > 0 && trendingMessages.length === 0) setTrendingMessages(r.messages); markLoaded(); })
+      .catch(() => markLoaded());
+    apiGet<{ messages: ChatMessage[] }>(`/api/data/chat_history?project_id=${pid}&scope=studio_brainstorm`)
+      .then(r => { if (r.messages && r.messages.length > 0 && brainstormMessages.length === 0) setBrainstormMessages(r.messages); markLoaded(); })
+      .catch(() => markLoaded());
+  }, [activeProject]);
 
   // Load locked samples from backend on mount
   useEffect(() => {
@@ -837,7 +842,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
             {studioTab === "trending" ? (
               /* ── 热点题材 (Marketing Agent chat) ── */
               <AIChatPanel
-                messages={chatMessages}
+                messages={trendingMessages}
                 onSendMessage={sendMessage}
                 onStopGeneration={stopGeneration}
                 onRegenerateMessage={handleRegenerate}
@@ -845,7 +850,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                 isGenerating={aiLoading}
                 preservedInput={chatInput}
                 onInputChange={setChatInput}
-                onClearHistory={() => setChatMessages([])}
+                onClearHistory={() => setTrendingMessages([])}
                 placeholder="询问某个题材的市场前景..."
                 quickPrompts={getAgentConfig("trending").quickPrompts}
                 templates={[
@@ -894,7 +899,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
             ) : studioTab === "brainstorm" ? (
               /* ── 头脑风暴 (Story Architect chat) ── */
               <AIChatPanel
-                messages={chatMessages}
+                messages={brainstormMessages}
                 onSendMessage={sendMessage}
                 onStopGeneration={stopGeneration}
                 onRegenerateMessage={handleRegenerate}
@@ -902,7 +907,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                 isGenerating={aiLoading}
                 preservedInput={chatInput}
                 onInputChange={setChatInput}
-                onClearHistory={() => setChatMessages([])}
+                onClearHistory={() => setBrainstormMessages([])}
                 placeholder="构思你的故事世界..."
                 quickPrompts={getAgentConfig("brainstorm").quickPrompts}
                 templates={[
@@ -1259,43 +1264,25 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                   </div>
                 )}
 
-                {/* Filter tabs */}
-                {prefEntries.length > 0 && (
-                  <div className="flex gap-4 mb-12">
-                    {([["all", "全部"], ["user", "用户输入"], ["assistant", "AI回复"]] as const).map(([key, label]) => (
-                      <button key={key} className={prefFilter === key ? "btn-primary" : "btn"}
-                        style={{ fontSize: 11, padding: "4px 12px", borderRadius: 16 }}
-                        onClick={() => setPrefFilter(key)}>
-                        {label} ({key === "all" ? prefEntries.length : prefEntries.filter(e => e.role === key).length})
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {/* Entries list */}
+                {/* Entries list (user inputs only) */}
                 {prefEntries.length > 0 && (
                   <div className="card">
                     <div className="card-header">
-                      <h3>交互记录</h3>
-                      <span className="text-xs text-muted">
-                        {prefFilter === "all" ? prefEntries.length : prefEntries.filter(e => e.role === prefFilter).length} 条
-                      </span>
+                      <h3>用户交互记录</h3>
+                      <span className="text-xs text-muted">{prefEntries.length} 条</span>
                     </div>
                     <div className="card-body" style={{ padding: 0, maxHeight: 400, overflowY: "auto" }}>
-                      {prefEntries.filter(e => prefFilter === "all" || e.role === prefFilter).map((entry) => (
+                      {prefEntries.map((entry) => (
                         <div key={entry.id} style={{
                           padding: "10px 16px", borderBottom: "1px solid var(--border-subtle)",
                           display: "flex", alignItems: "flex-start", gap: 10,
-                          borderLeft: entry.role === "user" ? "3px solid var(--purple)" : "3px solid var(--accent)",
+                          borderLeft: "3px solid var(--purple)",
                         }}>
                           <div style={{
                             width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 2,
-                            background: entry.role === "user" ? "var(--purple-subtle)" : "var(--accent-subtle)",
-                            border: `1.5px solid ${entry.role === "user" ? "var(--purple)" : "var(--accent)"}`,
+                            background: "var(--purple-subtle)", border: "1.5px solid var(--purple)",
                             display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10,
-                          }}>
-                            {entry.role === "user" ? "U" : "AI"}
-                          </div>
+                          }}>U</div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div className="flex items-center gap-8 mb-4">
                               <span className="text-xs font-mono" style={{ color: "var(--text-disabled)" }}>{entry.timestamp}</span>

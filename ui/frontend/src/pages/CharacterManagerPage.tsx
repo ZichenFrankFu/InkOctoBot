@@ -67,7 +67,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const [flashcardIndex, setFlashcardIndex] = useState(0);
 
   // Dynamic section sub-tab: snapshots, relationships, layerB
-  const [dynTab, setDynTab] = useState<"snapshots" | "relationships" | "layerb">("snapshots");
+  const [dynTab, setDynTab] = useState<"snapshots">("snapshots");
 
   // Relationship time filter
   const [relTimeFilter, setRelTimeFilter] = useState("");
@@ -318,12 +318,15 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const addSnapshot = () => {
     if (!editing) return;
     const snaps = editing.dynamic_snapshots || [];
+    const prevSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
     const newSnap: DynamicPropertySnapshot = {
       chapter: `第${snaps.length + 1}章`,
-      personality: editing.personality || "",
-      background: editing.background || "",
-      speech_style: editing.speech_style || "",
+      personality: prevSnap?.personality || editing.personality || "",
+      background: prevSnap?.background || editing.background || "",
+      speech_style: prevSnap?.speech_style || editing.speech_style || "",
       notes: "",
+      relationships: prevSnap?.relationships || (editing.relationships || []).map(r => ({ ...r })),
+      layer_b: prevSnap?.layer_b || (editing.layer_b ? { ...editing.layer_b } : { ...DEFAULT_LAYER_B }),
     };
     setEditing({ ...editing, dynamic_snapshots: [...snaps, newSnap] });
     setDirty(true);
@@ -347,7 +350,83 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     if (flashcardIndex >= snaps.length) setFlashcardIndex(Math.max(0, snaps.length - 1));
   };
 
-  // Filtered relationships for per-character view
+  // Snapshot-level relationship helpers
+  const addSnapshotRel = (snapIdx: number, targetId: string) => {
+    if (!editing || !targetId) return;
+    const target = items.find(c => c.id === targetId);
+    if (!target) return;
+    const snaps = [...(editing.dynamic_snapshots || [])];
+    const snap = snaps[snapIdx];
+    if (!snap) return;
+    const rels = snap.relationships || [];
+    if (rels.some(r => r.target_id === targetId)) return;
+    const newRel: CharacterRelationship = {
+      target_id: targetId, target_name: target.name,
+      affinity: 50, priority: (rels.length || 0) + 2,
+      chapter: snap.chapter, notes: "", label: "",
+    };
+    snaps[snapIdx] = { ...snap, relationships: [...rels, newRel] };
+    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setDirty(true);
+    setRelTarget("");
+  };
+
+  const updateSnapshotRel = (snapIdx: number, targetId: string, key: string, val: any) => {
+    if (!editing) return;
+    const snaps = [...(editing.dynamic_snapshots || [])];
+    const snap = snaps[snapIdx];
+    if (!snap) return;
+    snaps[snapIdx] = { ...snap, relationships: (snap.relationships || []).map(r => r.target_id === targetId ? { ...r, [key]: val } : r) };
+    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setDirty(true);
+  };
+
+  const removeSnapshotRel = (snapIdx: number, targetId: string) => {
+    if (!editing) return;
+    const snaps = [...(editing.dynamic_snapshots || [])];
+    const snap = snaps[snapIdx];
+    if (!snap) return;
+    snaps[snapIdx] = { ...snap, relationships: (snap.relationships || []).filter(r => r.target_id !== targetId) };
+    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setDirty(true);
+  };
+
+  const updateSnapshotLayerB = (snapIdx: number, key: keyof CharacterLayerB, val: number) => {
+    if (!editing) return;
+    const snaps = [...(editing.dynamic_snapshots || [])];
+    const snap = snaps[snapIdx];
+    if (!snap) return;
+    snaps[snapIdx] = { ...snap, layer_b: { ...(snap.layer_b || DEFAULT_LAYER_B), [key]: val } };
+    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setDirty(true);
+  };
+
+  // Compute latest affinity/priority rankings across all snapshots
+  const latestRankings = useMemo(() => {
+    if (!editing) return { affinity: [] as { name: string; value: number; chapter: string }[], priority: [] as { name: string; value: number; chapter: string }[] };
+    const snaps = editing.dynamic_snapshots || [];
+    // Build map: target_id -> latest values
+    const latestByTarget: Record<string, { name: string; affinity: number; priority: number; chapter: string }> = {};
+    // Go through snapshots in order (latest wins)
+    for (const snap of snaps) {
+      for (const rel of (snap.relationships || [])) {
+        latestByTarget[rel.target_id] = { name: rel.target_name, affinity: rel.affinity, priority: rel.priority, chapter: snap.chapter };
+      }
+    }
+    // Fallback to top-level relationships if no snapshots
+    if (Object.keys(latestByTarget).length === 0) {
+      for (const rel of (editing.relationships || [])) {
+        latestByTarget[rel.target_id] = { name: rel.target_name, affinity: rel.affinity, priority: rel.priority, chapter: rel.chapter || "" };
+      }
+    }
+    const entries = Object.values(latestByTarget);
+    return {
+      affinity: [...entries].sort((a, b) => b.affinity - a.affinity),
+      priority: [...entries].sort((a, b) => a.priority - b.priority),
+    };
+  }, [editing]);
+
+  // Filtered relationships for per-character view (legacy, kept for graph)
   const filteredRels = useMemo(() => {
     if (!editing) return [];
     const rels = editing.relationships || [];
@@ -762,32 +841,10 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
                     <h3>角色动态属性</h3>
-                    <span className="text-xs text-muted">时间快照 · 关系 · 决策参数</span>
+                    <span className="text-xs text-muted">时间快照（含关系 · 决策参数）</span>
                   </div>
                 </div>
-                {/* Sub-tabs */}
-                <div style={{ display: "flex", borderBottom: "1px solid var(--border)", background: "var(--bg-surface-2)" }}>
-                  {([
-                    { key: "snapshots" as const, label: "时间快照", count: (editing.dynamic_snapshots || []).length },
-                    { key: "relationships" as const, label: "关系", count: (editing.relationships || []).length },
-                    { key: "layerb" as const, label: "Layer B 决策", count: null },
-                  ]).map(t => (
-                    <button key={t.key}
-                      onClick={() => setDynTab(t.key)}
-                      style={{
-                        flex: 1, padding: "8px 0", fontSize: 12, fontWeight: dynTab === t.key ? 600 : 400,
-                        color: dynTab === t.key ? "var(--accent)" : "var(--text-tertiary)",
-                        background: "transparent", border: "none", borderBottom: dynTab === t.key ? "2px solid var(--accent)" : "2px solid transparent",
-                        cursor: "pointer", transition: "all 0.15s",
-                      }}>
-                      {t.label}{t.count !== null ? ` (${t.count})` : ""}
-                    </button>
-                  ))}
-                </div>
                 <div className="card-body">
-
-                  {/* ── Tab: 时间快照 ── */}
-                  {dynTab === "snapshots" && (<>
                     <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
                       <button className="btn" style={{ fontSize: 11, padding: "4px 12px" }} onClick={addSnapshot}>
                         + 添加快照
@@ -796,7 +853,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 
                     {(editing.dynamic_snapshots || []).length > 0 && (
                       <div>
-                        {/* Timeline-style tab strip (replaces small dots) */}
+                        {/* Timeline-style tab strip */}
                         <div style={{ display: "flex", gap: 0, marginBottom: 10, overflowX: "auto", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
                           {(editing.dynamic_snapshots || []).map((snap, i) => (
                             <button key={i} onClick={() => setFlashcardIndex(i)}
@@ -839,6 +896,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                         {(() => {
                           const snap = (editing.dynamic_snapshots || [])[flashcardIndex];
                           if (!snap) return null;
+                          const snapRels = snap.relationships || [];
+                          const snapLayerB = snap.layer_b || DEFAULT_LAYER_B;
                           return (
                             <div style={{
                               padding: "12px 14px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)",
@@ -861,9 +920,60 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                 <label className="label">说话风格变化</label>
                                 <textarea className="input" value={snap.speech_style || ""} onChange={e => updateSnapshot(flashcardIndex, "speech_style", e.target.value)} rows={1} placeholder="说话风格的变化..." />
                               </div>
-                              <div className="field">
+                              <div className="field mb-12">
                                 <label className="label">备注</label>
                                 <input className="input" value={snap.notes || ""} onChange={e => updateSnapshot(flashcardIndex, "notes", e.target.value)} placeholder="变化原因或事件..." />
+                              </div>
+
+                              {/* ── Snapshot Relationships ── */}
+                              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 4 }}>
+                                <div className="flex items-center justify-between mb-8">
+                                  <label className="label" style={{ marginBottom: 0, fontWeight: 600 }}>关系 ({snapRels.length})</label>
+                                </div>
+                                <div style={{ padding: "6px 8px", marginBottom: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+                                  好感度：越高越喜欢（负=厌恶, 0=不熟, 正=好感）&nbsp;&nbsp;优先级：越低越优先（1=最重要）
+                                </div>
+                                {snapRels.map(rel => (
+                                  <div key={rel.target_id} style={{ padding: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", marginBottom: 8, border: "1px solid var(--border)" }}>
+                                    <div className="flex items-center justify-between mb-6">
+                                      <span style={{ fontWeight: 600, fontSize: 12, color: "var(--text-primary)" }}>&rarr; {rel.target_name}</span>
+                                      <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => removeSnapshotRel(flashcardIndex, rel.target_id)}>移除</button>
+                                    </div>
+                                    <div className="field mb-6">
+                                      <input className="input" value={rel.label || ""} onChange={e => updateSnapshotRel(flashcardIndex, rel.target_id, "label", e.target.value)} placeholder="关系标签：师徒、情侣..." style={{ fontSize: 11 }} />
+                                    </div>
+                                    <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateSnapshotRel(flashcardIndex, rel.target_id, "affinity", v)} />
+                                    <ParamSlider name={`优先级 (#${rel.priority})`} value={rel.priority} min={1} max={20} step={1} onChange={v => updateSnapshotRel(flashcardIndex, rel.target_id, "priority", v)} />
+                                    <div className="field mt-6">
+                                      <input className="input" value={rel.notes || ""} onChange={e => updateSnapshotRel(flashcardIndex, rel.target_id, "notes", e.target.value)} placeholder="关系备注..." style={{ fontSize: 11 }} />
+                                    </div>
+                                  </div>
+                                ))}
+                                {/* Add relationship to snapshot */}
+                                {others.filter(o => !snapRels.some(r => r.target_id === o.id)).length > 0 && (
+                                  <div className="flex gap-6 mt-8">
+                                    <select className="select" style={{ flex: 1, fontSize: 11 }} value={relTarget} onChange={e => setRelTarget(e.target.value)}>
+                                      <option value="">添加角色关系...</option>
+                                      {others.filter(o => !snapRels.some(r => r.target_id === o.id)).map(o => (
+                                        <option key={o.id} value={o.id}>{o.name}</option>
+                                      ))}
+                                    </select>
+                                    <button className="btn-primary" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => addSnapshotRel(flashcardIndex, relTarget)} disabled={!relTarget}>+ 添加</button>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* ── Snapshot Layer B ── */}
+                              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 12 }}>
+                                <label className="label" style={{ fontWeight: 600, marginBottom: 8 }}>决策参数 (Layer B)</label>
+                                <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 8, lineHeight: 1.5 }}>
+                                  量化参数影响 AI 生成时角色在此阶段的行为倾向。
+                                </div>
+                                <ParamSlider name="损失厌恶" value={snapLayerB.loss_aversion ?? DEFAULT_LAYER_B.loss_aversion} min={0} max={5} step={0.1} onChange={v => updateSnapshotLayerB(flashcardIndex, "loss_aversion", v)} />
+                                <ParamSlider name="风险厌恶(收益)" value={snapLayerB.risk_aversion_gain ?? DEFAULT_LAYER_B.risk_aversion_gain} min={0} max={1} step={0.05} onChange={v => updateSnapshotLayerB(flashcardIndex, "risk_aversion_gain", v)} />
+                                <ParamSlider name="风险厌恶(损失)" value={snapLayerB.risk_aversion_loss ?? DEFAULT_LAYER_B.risk_aversion_loss} min={0} max={1} step={0.05} onChange={v => updateSnapshotLayerB(flashcardIndex, "risk_aversion_loss", v)} />
+                                <ParamSlider name="冲动概率" value={snapLayerB.impulse_probability ?? DEFAULT_LAYER_B.impulse_probability} min={0} max={1} step={0.05} onChange={v => updateSnapshotLayerB(flashcardIndex, "impulse_probability", v)} />
+                                <ParamSlider name="社交频率" value={snapLayerB.social_frequency ?? DEFAULT_LAYER_B.social_frequency} min={0} max={10} step={0.5} onChange={v => updateSnapshotLayerB(flashcardIndex, "social_frequency", v)} />
                               </div>
                             </div>
                           );
@@ -873,108 +983,48 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 
                     {(editing.dynamic_snapshots || []).length === 0 && (
                       <div className="text-xs text-muted" style={{ textAlign: "center", padding: 16 }}>
-                        点击「添加快照」记录角色在不同章节/时间点的动态变化
+                        点击「添加快照」记录角色在不同章节/时间点的动态变化（含关系和决策参数）
                       </div>
                     )}
-                  </>)}
-
-                  {/* ── Tab: 关系 ── */}
-                  {dynTab === "relationships" && (<>
-                    {/* Relationship summary overview */}
-                    {(editing.relationships || []).length > 0 && (
-                      <div style={{ marginBottom: 12, padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)" }}>
-                        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-                          <div style={{ flex: 1, minWidth: 140 }}>
-                            <div className="text-xs text-muted mb-4">好感度排序（高→低）</div>
-                            {[...(editing.relationships || [])].sort((a, b) => (b.affinity || 0) - (a.affinity || 0)).map(r => (
-                              <div key={r.target_id} style={{ fontSize: 11, display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
-                                <span style={{ color: "var(--text-secondary)" }}>{r.target_name}</span>
-                                <span style={{ color: (r.affinity || 0) > 0 ? "var(--jade)" : (r.affinity || 0) < 0 ? "var(--error)" : "var(--text-disabled)", fontFamily: "var(--font-mono)", fontSize: 10 }}>
-                                  {(r.affinity || 0) > 0 ? "+" : ""}{r.affinity || 0}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                          <div style={{ flex: 1, minWidth: 140 }}>
-                            <div className="text-xs text-muted mb-4">优先级排序（高→低）</div>
-                            {[...(editing.relationships || [])].sort((a, b) => (a.priority || 99) - (b.priority || 99)).map(r => (
-                              <div key={r.target_id} style={{ fontSize: 11, display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
-                                <span style={{ color: "var(--text-secondary)" }}>{r.target_name}</span>
-                                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-tertiary)" }}>#{r.priority || "?"}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Guidance */}
-                    <div style={{ padding: "8px 10px", marginBottom: 12, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                      <strong>好感度：</strong>越高越喜欢（负值=厌恶, 0=不熟悉, 正值=好感）&nbsp;&nbsp;
-                      <strong>优先级：</strong>越低越优先（1=最重要的人）
-                    </div>
-
-                    {/* Time filter */}
-                    <div style={{ marginBottom: 10 }}>
-                      <input className="input" value={relTimeFilter} onChange={e => setRelTimeFilter(e.target.value)}
-                        placeholder="按时间/章节过滤关系..." style={{ fontSize: 12 }} />
-                    </div>
-
-                    {filteredRels.map(rel => (
-                      <div key={rel.target_id} style={{ padding: 12, background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)", marginBottom: 10, border: "1px solid var(--border)" }}>
-                        <div className="flex items-center justify-between mb-8">
-                          <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>&rarr; {rel.target_name || rel.target_id}</span>
-                          <button className="btn-ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => removeRel(rel.target_id)}>移除</button>
-                        </div>
-                        <div className="field mb-8">
-                          <label className="label">关系标签</label>
-                          <input className="input" value={rel.label || ""} onChange={e => updateRel(rel.target_id, "label", e.target.value)} placeholder="例：师徒、情侣、宿敌" style={{ fontSize: 12 }} />
-                        </div>
-                        <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateRel(rel.target_id, "affinity", v)} />
-                        <ParamSlider name={`优先级 (#${rel.priority})`} value={rel.priority} min={1} max={20} step={1} onChange={v => updateRel(rel.target_id, "priority", v)} />
-                        <div className="field mt-8">
-                          <label className="label">时间/章节</label>
-                          <input className="input" value={rel.chapter || ""} onChange={e => updateRel(rel.target_id, "chapter", e.target.value)} placeholder="例：第3章、银河历2847年·秋" />
-                        </div>
-                        <div className="field mt-8">
-                          <label className="label">关系备注</label>
-                          <input className="input" value={rel.notes || ""} onChange={e => updateRel(rel.target_id, "notes", e.target.value)} placeholder="描述两人的关系..." />
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Add relationship */}
-                    <div style={{ marginTop: 12 }}>
-                      <div className="label mb-8">快速添加关系</div>
-                      {others.filter(o => !(editing.relationships || []).some(r => r.target_id === o.id)).length > 0 ? (
-                        <div className="flex gap-8">
-                          <select className="select" style={{ flex: 1 }} value={relTarget} onChange={e => setRelTarget(e.target.value)}>
-                            <option value="">选择角色...</option>
-                            {others.filter(o => !(editing.relationships || []).some(r => r.target_id === o.id)).map(o => (
-                              <option key={o.id} value={o.id}>{o.name}</option>
-                            ))}
-                          </select>
-                          <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => addRelationship(relTarget)} disabled={!relTarget}>+ 添加关系</button>
-                        </div>
-                      ) : (
-                        <div className="text-xs text-muted">所有角色已添加关系</div>
-                      )}
-                    </div>
-                  </>)}
-
-                  {/* ── Tab: Layer B 决策参数 ── */}
-                  {dynTab === "layerb" && (<>
-                    <div style={{ padding: "8px 10px", marginBottom: 12, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                      量化决策参数影响 AI 生成时角色的行为倾向。调整参数后 Pipeline 会参考这些值来决定角色在不同情境下的反应。
-                    </div>
-                    <ParamSlider name="损失厌恶" value={editing.layer_b?.loss_aversion ?? DEFAULT_LAYER_B.loss_aversion} min={0} max={5} step={0.1} onChange={v => uLayerB("loss_aversion", v)} />
-                    <ParamSlider name="风险厌恶(收益)" value={editing.layer_b?.risk_aversion_gain ?? DEFAULT_LAYER_B.risk_aversion_gain} min={0} max={1} step={0.05} onChange={v => uLayerB("risk_aversion_gain", v)} />
-                    <ParamSlider name="风险厌恶(损失)" value={editing.layer_b?.risk_aversion_loss ?? DEFAULT_LAYER_B.risk_aversion_loss} min={0} max={1} step={0.05} onChange={v => uLayerB("risk_aversion_loss", v)} />
-                    <ParamSlider name="冲动概率" value={editing.layer_b?.impulse_probability ?? DEFAULT_LAYER_B.impulse_probability} min={0} max={1} step={0.05} onChange={v => uLayerB("impulse_probability", v)} />
-                    <ParamSlider name="社交频率" value={editing.layer_b?.social_frequency ?? DEFAULT_LAYER_B.social_frequency} min={0} max={10} step={0.5} onChange={v => uLayerB("social_frequency", v)} />
-                  </>)}
                 </div>
               </div>
+
+              {/* ═══ AFFINITY / PRIORITY RANKINGS (latest values) ═══ */}
+              {(latestRankings.affinity.length > 0 || latestRankings.priority.length > 0) && (
+                <div className="card mb-20">
+                  <div className="card-header"><h3>好感度 & 优先级排序</h3><span className="text-xs text-muted">最新快照值</span></div>
+                  <div className="card-body">
+                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                      <div style={{ flex: 1, minWidth: 140 }}>
+                        <div className="text-xs text-muted mb-4">好感度排序（高→低）</div>
+                        {latestRankings.affinity.map(r => (
+                          <div key={r.name} style={{ fontSize: 11, display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
+                            <span style={{ color: "var(--text-secondary)" }}>{r.name}</span>
+                            <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                              <span style={{ color: r.value > 0 ? "var(--jade)" : r.value < 0 ? "var(--error)" : "var(--text-disabled)", fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                                {r.value > 0 ? "+" : ""}{r.value}
+                              </span>
+                              {r.chapter && <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>@{r.chapter}</span>}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 140 }}>
+                        <div className="text-xs text-muted mb-4">优先级排序（高→低）</div>
+                        {latestRankings.priority.map(r => (
+                          <div key={r.name} style={{ fontSize: 11, display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
+                            <span style={{ color: "var(--text-secondary)" }}>{r.name}</span>
+                            <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-tertiary)" }}>#{r.value}</span>
+                              {r.chapter && <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>@{r.chapter}</span>}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* ═══ SINGLE CHARACTER RELATIONSHIP GRAPH (3.2.4) ═══ */}
               {(editing.relationships || []).length > 0 && (
