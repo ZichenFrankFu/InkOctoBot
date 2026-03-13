@@ -507,6 +507,62 @@ def _seed_reference_db(db_path: Path) -> None:
     con.commit()
     con.close()
 
+    # ── Preferences (偏好记忆) ──
+    pref_dir = target / "preferences"
+    pref_dir.mkdir(exist_ok=True)
+    _write(pref_dir / f"{pid}.json", {
+        "entries": [
+            {"id": "pref_001", "timestamp": "2026-03-13 10:00", "action": "用户输入 (头脑风暴)", "detail": "帮我构思一个玄幻小说的核心设定和卖点", "scope": "studio_brainstorm", "role": "user"},
+            {"id": "pref_002", "timestamp": "2026-03-13 10:05", "action": "用户输入 (头脑风暴)", "detail": "我喜欢轻松幽默的文风，不要太严肃", "scope": "studio_brainstorm", "role": "user"},
+            {"id": "pref_003", "timestamp": "2026-03-13 09:50", "action": "用户输入 (风格校准)", "detail": "我想要偏向轻松幽默的文风", "scope": "studio_calibration", "role": "user"},
+            {"id": "pref_004", "timestamp": "2026-03-13 09:30", "action": "用户输入 (热点讨论)", "detail": "玄幻题材目前市场竞争大吗？", "scope": "studio_trending", "role": "user"},
+            {"id": "pref_005", "timestamp": "2026-03-13 09:20", "action": "用户输入 (大纲助手)", "detail": "根据这一章的定位，帮我生成详细的章节大纲", "scope": "outline_chat", "role": "user"},
+        ],
+        "summary": "（测试数据）共收集到 5 条用户交互记录。涉及 4 个对话场景。",
+        "extracted_memories": [
+            {"id": "mem_pref_002", "content": "偏好轻松幽默的文风，不喜欢过于严肃的写法", "source": "头脑风暴", "timestamp": "2026-03-13 10:05"},
+            {"id": "mem_pref_003", "content": "希望文风偏向轻松幽默", "source": "风格校准", "timestamp": "2026-03-13 09:50"},
+        ],
+        "deleted_ids": [],
+        "deleted_entries": [],
+        "saved_at": time.time(),
+    })
+
+    # ── Skill Learning Log ──
+    sl_dir = target / "skill_learning_log"
+    sl_dir.mkdir(exist_ok=True)
+    _write(sl_dir / "log.json", {
+        "entries": [
+            {
+                "id": "sl_test_001",
+                "skill_name": "style_tone_adjuster",
+                "display_name": "风格语气调整器",
+                "trigger": "用户多次修改AI生成文本的语气和基调",
+                "need_description": "自动检测并调整输出文风以匹配用户偏好的轻松幽默风格",
+                "project_id": pid,
+                "created_at": "2026-03-12 14:30",
+            },
+            {
+                "id": "sl_test_002",
+                "skill_name": "dialogue_naturalizer",
+                "display_name": "对话自然化处理",
+                "trigger": "评估器多次标记对话不自然",
+                "need_description": "优化角色对话的口语化程度和个性化表达",
+                "project_id": pid,
+                "created_at": "2026-03-11 09:15",
+            },
+            {
+                "id": "sl_test_003",
+                "skill_name": "pacing_optimizer",
+                "display_name": "节奏优化器",
+                "trigger": "用户反复调整段落长度和场景切换节奏",
+                "need_description": "根据场景类型自动调整叙事节奏和段落密度",
+                "project_id": pid,
+                "created_at": "2026-03-10 16:45",
+            },
+        ],
+    })
+
 
 def _write(p: Path, data: dict) -> None:
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")

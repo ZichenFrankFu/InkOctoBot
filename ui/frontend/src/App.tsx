@@ -158,7 +158,7 @@ export default function App() {
         {tab === "characters" && <CharacterManagerPage projectId={activeProject} projects={projects} />}
         {tab === "worldbook" && <WorldBookPage projectId={activeProject} projects={projects} />}
         {tab === "storyline" && <StorylinePage projectId={activeProject} />}
-        {tab === "skills" && <SkillsPage />}
+        {tab === "skills" && <SkillsPage projects={projects} activeProject={activeProject} />}
         {tab === "settings" && <SettingsPage />}
         {tab === "devtools" && <DevToolsPage projectId={activeProject} />}
       </main>
