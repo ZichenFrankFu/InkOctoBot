@@ -101,6 +101,68 @@ def list_tags():
     return {"tags": sorted(tags)}
 
 
+@router.get("/agents")
+def list_agents():
+    """List all agents and their associated skills."""
+    agents_dir = Path(__file__).resolve().parents[4] / "agents"
+    registry = _get_registry()
+    deactivated = _get_deactivated()
+
+    # Discover agents from subdirectories that contain agent .py files
+    AGENT_DOMAINS = {
+        "planner": {"label": "规划", "description": "故事规划与架构设计"},
+        "production": {"label": "生产", "description": "内容创作与场景执行"},
+        "evaluation": {"label": "评估", "description": "质量评估与一致性检查"},
+        "analysis": {"label": "分析", "description": "风格分析与特征提取"},
+        "constraints": {"label": "约束", "description": "约束消歧与规则执行"},
+        "learned_skills": {"label": "自学习", "description": "通过使用自动习得的技能"},
+    }
+
+    result = []
+    for domain, info in AGENT_DOMAINS.items():
+        domain_dir = agents_dir / domain
+        if not domain_dir.is_dir():
+            continue
+
+        # Find agent classes
+        agent_names = []
+        for py in domain_dir.glob("*.py"):
+            if py.name.startswith("__"):
+                continue
+            try:
+                text = py.read_text("utf-8", errors="ignore")
+                if "BaseAgent" in text and "agent_name" in text:
+                    for line in text.splitlines():
+                        if "agent_name" in line and "=" in line:
+                            name = line.split("=", 1)[1].strip().strip('"').strip("'")
+                            if name and name != "base":
+                                agent_names.append(name)
+            except Exception:
+                pass
+
+        # Find skills belonging to this domain
+        domain_skills = []
+        for skill in registry._skills.values():
+            if _skill_domain(skill) == domain:
+                meta = skill.meta()
+                domain_skills.append({
+                    "name": meta.name,
+                    "display_name": meta.display_name,
+                    "active": meta.name not in deactivated,
+                    "is_learned": domain == "learned_skills",
+                })
+
+        result.append({
+            "domain": domain,
+            "label": info["label"],
+            "description": info["description"],
+            "agents": agent_names,
+            "skills": domain_skills,
+        })
+
+    return {"agents": result}
+
+
 @router.get("/learning-log")
 def get_learning_log():
     """Get the skill learning history log."""
