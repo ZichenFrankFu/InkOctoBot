@@ -98,7 +98,7 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
       {/* Section: World View */}
       <SectionCard
         title="世界观概述"
-        icon="&#x1F30D;"
+        icon="&#x2295;"
         expanded={expandedSections.worldview}
         onToggle={() => toggleSection("worldview")}
         actions={
@@ -139,7 +139,7 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
       {/* Section: Characters Preview */}
       <SectionCard
         title="角色列表"
-        icon="&#x1F464;"
+        icon="&#x2662;"
         expanded={expandedSections.characters}
         onToggle={() => toggleSection("characters")}
         actions={
@@ -199,7 +199,7 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
       {/* Section: Outline */}
       <SectionCard
         title="大纲编辑"
-        icon="&#x1F4DD;"
+        icon="&#x270E;"
         expanded={expandedSections.outline}
         onToggle={() => toggleSection("outline")}
         actions={
@@ -224,7 +224,7 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
       {/* Section: Constraints */}
       <SectionCard
         title="约束设定"
-        icon="&#x1F4CF;"
+        icon="&#x2500;"
         expanded={expandedSections.constraints}
         onToggle={() => toggleSection("constraints")}
       >

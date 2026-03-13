@@ -461,7 +461,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
             智能体管理
           </h2>
           <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
-            {agentDomains.reduce((s, d) => s + d.agents.length, 0)} 个智能体 &middot; {skills.length} 个技能 ({workflowCount} workflow + {learnedCount} learned)
+            {agentDomains.reduce((s, d) => s + d.agents.length, 0)} Agents &middot; {workflowCount} Skills &middot; {learnedCount} Learned
           </p>
         </div>
         <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => setShowCreate(!showCreate)}>
@@ -472,7 +472,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       {/* Tabs */}
       <div style={{ display: "flex", gap: 0, marginBottom: 20, borderBottom: "2px solid var(--border-subtle)" }}>
         {([
-          { key: "agents" as const, label: "智能体 & 技能", count: agentDomains.reduce((s, d) => s + d.agents.length, 0) },
+          { key: "agents" as const, label: "智能体 & Skills", count: agentDomains.reduce((s, d) => s + d.agents.length, 0) },
           { key: "learning" as const, label: "自学习成果", count: learningLog.length },
         ]).map(tab => (
           <button
@@ -497,8 +497,8 @@ export default function SkillsPage({ projects, activeProject }: Props) {
         ))}
       </div>
 
-      {/* Create skill form (shown on agents tab) */}
-      {showCreate && activeTab === "agents" && (
+      {/* Create skill form (shown on learning tab) */}
+      {showCreate && activeTab === "learning" && (
         <div className="card mb-20" style={{ animation: "slideUp 0.2s var(--ease-out)" }}>
           <div className="card-header"><h3>新建自学习技能</h3></div>
           <div className="card-body">
@@ -634,7 +634,6 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                                     cursor: "pointer",
                                   }} onClick={() => setExpandedDomain(domain.domain)}>
                                     {s.display_name || s.name}
-                                    {s.is_learned && <span style={{ fontSize: 8, marginLeft: 4, color: "var(--purple)", fontWeight: 700 }}>自学习</span>}
                                   </div>
                                 ))}
                               </div>
@@ -679,7 +678,6 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                                     cursor: "pointer",
                                   }} onClick={() => setExpandedDomain(domain.domain)}>
                                     {s.display_name || s.name}
-                                    {s.is_learned && <span style={{ fontSize: 8, marginLeft: 4, color: "var(--purple)", fontWeight: 700 }}>自学习</span>}
                                   </div>
                                 ))}
                               </div>

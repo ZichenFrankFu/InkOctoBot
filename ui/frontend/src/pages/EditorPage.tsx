@@ -1277,7 +1277,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           {outlineChatMsgs.map((msg, i) => (
             <div key={i} style={{ display: "flex", flexDirection: msg.role === "user" ? "row-reverse" : "row", marginBottom: 8, gap: 6 }}>
               <div style={{ width: 24, height: 24, borderRadius: "50%", background: msg.role === "user" ? "var(--purple-subtle)" : "var(--accent-subtle)", border: `1.5px solid ${msg.role === "user" ? "var(--purple)" : "var(--accent)"}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, flexShrink: 0 }}>
-                {msg.role === "user" ? "👤" : "🏗️"}
+                {msg.role === "user" ? "U" : "AI"}
               </div>
               <div style={{ maxWidth: "82%" }}>
                 <div style={{ fontSize: 10, fontWeight: 600, color: msg.role === "user" ? "var(--purple)" : "var(--accent)", marginBottom: 2, textAlign: msg.role === "user" ? "right" : "left" }}>
@@ -1487,12 +1487,12 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
   };
   const getAgentAvatar = (agent: string, displayName?: string) => {
     if (displayName && agent === "Actor Agents") {
-      if (displayName === "旁白") return "📖";
+      if (displayName === "旁白") return "N";
       // Use first character of name as avatar
       return displayName.charAt(0);
     }
-    const map: Record<string, string> = { "Scene Director": "🎬", "Actor Agents": "🎭", "Editor-Writer": "✍️", "Evaluator": "📋", "User": "👤", "System": "🤖" };
-    return map[agent] || "🎭";
+    const map: Record<string, string> = { "Scene Director": "SD", "Actor Agents": "AC", "Editor-Writer": "EW", "Evaluator": "EV", "User": "U", "System": "SY" };
+    return map[agent] || "AG";
   };
   const [cotExpanded, setCotExpanded] = useState<Record<number, boolean>>({});
 
@@ -1540,7 +1540,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
       <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
           <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
-            <div style={{ fontSize: 28, marginBottom: 8 }}>🎬🎭✍️📋</div>
+            <div style={{ fontSize: 14, marginBottom: 8, letterSpacing: 4, color: "var(--text-tertiary)" }}>SD / AC / EW / EV</div>
             <div>Scene Director → 角色扮演（旁白+角色名） → Editor-Writer → Evaluator</div>
             <div style={{ marginTop: 6, fontSize: 11 }}>在「大纲」标签中点击「开始生成」启动 Pipeline</div>
           </div>
@@ -1556,7 +1556,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
                 <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
                   {msg.agentDisplayName || style.name}
                   {isCharActor && <span style={{ fontSize: 9, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 4 }}>(Actor)</span>}
-                  {msg.isWarning && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "var(--gold)" }}>⚠️</span>}
+                  {msg.isWarning && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "var(--gold)" }}>\u26A0</span>}
                   {msg.status === "thinking" && !msg.isCoT && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "#f9ab00" }}>思考中...</span>}
                   {msg.isCoT && msg.status === "thinking" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)" }}>思考中</span>}
                 </div>
@@ -1588,7 +1588,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
                   ) : msg.isWarning ? (
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                        <span style={{ fontSize: 14 }}>⚠️</span>
+                        <span style={{ fontSize: 14 }}>\u26A0</span>
                         <span style={{ fontWeight: 600, color: "var(--gold)" }}>角色/世界观提醒</span>
                       </div>
                       <div>{msg.content}</div>
@@ -2015,12 +2015,12 @@ interface EvalCategory {
 }
 
 const EVAL_CATEGORY_ICONS: Record<string, string> = {
-  slop_detection: "🔍",
-  repetition: "🔁",
-  narrative_consistency: "📖",
-  foreshadowing: "🎭",
-  literary_quality: "✍️",
-  llm_evaluation: "💡",
+  slop_detection: "\u25C9",
+  repetition: "\u21BB",
+  narrative_consistency: "\u2261",
+  foreshadowing: "\u2234",
+  literary_quality: "\u270E",
+  llm_evaluation: "\u2605",
 };
 
 function ScoreDots({ score, max }: { score: number; max: number }) {
@@ -2186,7 +2186,7 @@ function EvalTab({ result }: { result: EvalResult | null }) {
       {/* Category cards */}
       <div className="label mb-8" style={{ fontSize: 11, color: "var(--text-tertiary)", letterSpacing: 1 }}>评估维度</div>
       {displayCategories.map(cat => {
-        const icon = EVAL_CATEGORY_ICONS[cat.id] || "📊";
+        const icon = EVAL_CATEGORY_ICONS[cat.id] || "\u25A3";
         const catColor = cat.score >= 4 ? "var(--jade)" : cat.score >= 3 ? "var(--gold)" : "var(--error)";
         const isExpanded = expandedCat === cat.id;
         return (

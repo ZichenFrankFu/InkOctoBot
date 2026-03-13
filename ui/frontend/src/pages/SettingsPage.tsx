@@ -174,9 +174,9 @@ export default function SettingsPage() {
   }
 
   const TABS: { key: Tab; label: string; icon: string }[] = [
-    { key: "pipeline", label: "Pipeline 配置", icon: "⚙" },
-    { key: "providers", label: "模型供应商", icon: "🔌" },
-    { key: "system", label: "系统设置", icon: "🛠" },
+    { key: "pipeline", label: "Pipeline 配置", icon: "\u2699" },
+    { key: "providers", label: "模型供应商", icon: "\u2261" },
+    { key: "system", label: "系统设置", icon: "\u2638" },
   ];
 
   return (

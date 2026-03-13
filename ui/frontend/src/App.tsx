@@ -27,32 +27,32 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   {
     section: "概览",
     items: [
-      { key: "dashboard", icon: "📊", label: "首页" },
+      { key: "dashboard", icon: "\u25A3", label: "首页" },
     ],
   },
   {
     section: "数据",
     items: [
-      { key: "rankings", icon: "📋", label: "市场数据库" },
-      { key: "references", icon: "📚", label: "参考作品库" },
-      { key: "analysis", icon: "📈", label: "分析面板" },
+      { key: "rankings", icon: "\u2261", label: "市场数据库" },
+      { key: "references", icon: "\u229E", label: "参考作品库" },
+      { key: "analysis", icon: "\u2197", label: "分析面板" },
     ],
   },
   {
     section: "创作",
     items: [
-      { key: "projects", icon: "📁", label: "开书" },
-      { key: "characters", icon: "👤", label: "角色管理" },
-      { key: "worldbook", icon: "🌍", label: "世界书" },
-      { key: "editor", icon: "✏️", label: "编辑器" },
-      { key: "storyline", icon: "🗺️", label: "剧情线" },
+      { key: "projects", icon: "\u25A1", label: "开书" },
+      { key: "characters", icon: "\u2662", label: "角色管理" },
+      { key: "worldbook", icon: "\u2295", label: "世界书" },
+      { key: "editor", icon: "\u270E", label: "编辑器" },
+      { key: "storyline", icon: "\u2500", label: "剧情线" },
     ],
   },
   {
     section: "系统",
     items: [
-      { key: "skills", icon: "🧩", label: "智能体" },
-      { key: "settings", icon: "⚙️", label: "设置" },
+      { key: "skills", icon: "\u2699", label: "智能体" },
+      { key: "settings", icon: "\u2638", label: "设置" },
     ],
   },
 ];
