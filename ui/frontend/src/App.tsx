@@ -51,7 +51,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   {
     section: "系统",
     items: [
-      { key: "skills", icon: "🧩", label: "Skills" },
+      { key: "skills", icon: "🧩", label: "智能体" },
       { key: "settings", icon: "⚙️", label: "设置" },
     ],
   },
