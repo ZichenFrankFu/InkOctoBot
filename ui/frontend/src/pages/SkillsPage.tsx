@@ -105,23 +105,61 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   // Expanded domain in agents tab
   const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
 
+  const buildFallbackDomains = useCallback((skillsList: SkillInfo[]): AgentDomain[] => {
+    // Group skills by domain to build a fallback view when the agents API fails
+    const domainMap: Record<string, SkillInfo[]> = {};
+    for (const s of skillsList) {
+      const d = (s as any).agent_domain || "unknown";
+      if (!domainMap[d]) domainMap[d] = [];
+      domainMap[d].push(s);
+    }
+    return Object.entries(domainMap).map(([domain, domainSkills]) => {
+      const meta = DOMAIN_LABELS[domain] || DOMAIN_LABELS.unknown;
+      return {
+        domain,
+        label: meta.label,
+        description: "",
+        agents: [{
+          name: domain,
+          class_name: "",
+          skills: domainSkills.map(s => ({
+            name: s.name,
+            display_name: s.display_name || s.name,
+            active: s.active !== false,
+            is_learned: !!(s as any).is_learned,
+          })),
+        }],
+        unassigned_skills: [],
+      };
+    });
+  }, []);
+
   const loadSkills = useCallback(() => {
     setLoading(true);
-    Promise.all([
-      apiGet<{ skills: SkillInfo[]; total: number }>("/api/skills"),
-      apiGet<{ tags: string[] }>("/api/skills/tags"),
-      apiGet<{ entries: LearningLogEntry[] }>("/api/skills/learning-log"),
-      apiGet<{ agents: AgentDomain[] }>("/api/skills/agents"),
-    ])
+    // Fetch skills, tags, and learning-log independently from agents
+    // so a failure in one does not block the others
+    const skillsP = apiGet<{ skills: SkillInfo[]; total: number }>("/api/skills").catch(() => ({ skills: [] as SkillInfo[], total: 0 }));
+    const tagsP = apiGet<{ tags: string[] }>("/api/skills/tags").catch(() => ({ tags: [] as string[] }));
+    const logP = apiGet<{ entries: LearningLogEntry[] }>("/api/skills/learning-log").catch(() => ({ entries: [] as LearningLogEntry[] }));
+    const agentsP = apiGet<{ agents: AgentDomain[] }>("/api/skills/agents").catch(() => ({ agents: [] as AgentDomain[] }));
+
+    Promise.all([skillsP, tagsP, logP, agentsP])
       .then(([skillsResp, tagsResp, logResp, agentsResp]) => {
-        setSkills(skillsResp.skills || []);
+        const fetchedSkills = skillsResp.skills || [];
+        setSkills(fetchedSkills);
         setAllTags(tagsResp.tags || []);
         setLearningLog(logResp.entries || []);
-        setAgentDomains(agentsResp.agents || []);
+        const agents = agentsResp.agents || [];
+        // If agents API returned empty but we have skills, build fallback domains
+        if (agents.length === 0 && fetchedSkills.length > 0) {
+          setAgentDomains(buildFallbackDomains(fetchedSkills));
+        } else {
+          setAgentDomains(agents);
+        }
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, []);
+  }, [buildFallbackDomains]);
 
   useEffect(() => { loadSkills(); }, [loadSkills]);
 
@@ -554,6 +592,13 @@ export default function SkillsPage({ projects, activeProject }: Props) {
           </div>
 
           {/* Domain → Agent → Skills hierarchy */}
+          {agentDomains.length === 0 && skills.length === 0 && !loading && (
+            <div className="card" style={{ padding: 24, textAlign: "center" }}>
+              <div style={{ fontSize: 13, color: "var(--text-tertiary)" }}>
+                暂无注册的技能或 Agent。请检查后端服务是否正常运行。
+              </div>
+            </div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             {agentDomains.map(domain => {
               const meta = DOMAIN_LABELS[domain.domain] || DOMAIN_LABELS.unknown;

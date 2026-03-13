@@ -55,7 +55,7 @@ const platformLabel = (p: string) =>
 
 const wc = (t: string) => (t ? t.replace(/[\s\p{P}]/gu, "").length : 0);
 
-export default function DashboardPage({ projects, onNavigate }: { projects: { id: string; name: string; genre?: string }[]; onNavigate: (tab: string) => void }) {
+export default function DashboardPage({ projects, onNavigate, onSelectProject }: { projects: { id: string; name: string; genre?: string }[]; onNavigate: (tab: string) => void; onSelectProject?: (id: string) => void }) {
   const [platform, setPlatform] = useState<PlatformFilter>("");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [highFreq, setHighFreq] = useState<HighFreqNovel[]>([]);
@@ -228,7 +228,7 @@ export default function DashboardPage({ projects, onNavigate }: { projects: { id
                     key={proj.id}
                     className="card"
                     style={{ cursor: "pointer", border: "1px solid var(--border)", background: "var(--bg-surface-2)" }}
-                    onClick={() => onNavigate("editor")}
+                    onClick={() => { onSelectProject?.(proj.id); onNavigate("editor"); }}
                   >
                     <div style={{ padding: "16px 18px" }}>
                       <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)", marginBottom: 6 }}>

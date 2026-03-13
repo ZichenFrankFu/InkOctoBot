@@ -1,6 +1,12 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { apiGet } from "./api/client";
 
+import { ToastProvider, useToast } from "./components/shared/Toast";
+import ErrorBoundary from "./components/shared/ErrorBoundary";
+import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts";
+import ShortcutHint from "./components/shared/ShortcutHint";
+
+import GlobalSearch from "./components/shared/GlobalSearch";
 import DashboardPage from "./pages/DashboardPage";
 import RankingsPage from "./pages/RankingsPage";
 import ReferenceLibraryPage from "./pages/ReferenceLibraryPage";
@@ -57,12 +63,22 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   },
 ];
 
-export default function App() {
+function AppInner() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [sidebarW, setSidebarW] = useState(220);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<string>("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const dragging = useRef(false);
+  const { toast } = useToast();
+
+  const shortcutHandlers = useMemo(() => ({
+    onSearch: () => setSearchOpen(true),
+    onSave: () => { toast("已保存", "success"); },
+    onEscape: () => { setSearchOpen(false); },
+  }), [toast]);
+
+  useKeyboardShortcuts(shortcutHandlers);
 
   useEffect(() => {
     apiGet<{ items: Project[] }>("/api/data/projects")
@@ -111,6 +127,19 @@ export default function App() {
           <p>AI 小说智能体工作台</p>
         </div>
 
+        {/* Search trigger */}
+        <button
+          className="nav-btn"
+          onClick={() => setSearchOpen(true)}
+          style={{ margin: "4px 12px 8px", padding: "8px 12px", display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
+        >
+          <span style={{ fontSize: 13 }}>/</span>
+          <span style={{ flex: 1, textAlign: "left" }}>搜索...</span>
+          <kbd style={{ fontSize: 10, color: "var(--text-disabled)", background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 5px", fontFamily: "var(--font-mono)" }}>
+            {/Mac|iPod|iPhone|iPad/.test(navigator?.platform || "") ? "\u2318K" : "Ctrl+K"}
+          </kbd>
+        </button>
+
         <nav className="sidebar-nav">
           {NAV.map(group => (
             <React.Fragment key={group.section}>
@@ -147,19 +176,39 @@ export default function App() {
       <div className="resize-handle" onMouseDown={onMouseDown} />
 
       <main className="main-content">
-        {tab === "dashboard" && <DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} />}
-        {tab === "rankings" && <RankingsPage />}
-        {tab === "references" && <ReferenceLibraryPage />}
-        {tab === "analysis" && <AnalysisDashboardPage />}
-        {tab === "projects" && <ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} />}
-        {tab === "project-setup" && <ProjectSetupPage projectId={activeProject} />}
-        {tab === "editor" && <EditorPage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} />}
-        {tab === "characters" && <CharacterManagerPage projectId={activeProject} projects={projects} />}
-        {tab === "worldbook" && <WorldBookPage projectId={activeProject} projects={projects} />}
-        {tab === "storyline" && <StorylinePage projectId={activeProject} />}
-        {tab === "skills" && <SkillsPage projects={projects} activeProject={activeProject} />}
-        {tab === "settings" && <SettingsPage />}
+        <ErrorBoundary>
+          {tab === "dashboard" && <DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} onSelectProject={setActiveProject} />}
+          {tab === "rankings" && <RankingsPage />}
+          {tab === "references" && <ReferenceLibraryPage />}
+          {tab === "analysis" && <AnalysisDashboardPage />}
+          {tab === "projects" && <ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} />}
+          {tab === "project-setup" && <ProjectSetupPage projectId={activeProject} />}
+          {tab === "editor" && <EditorPage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} />}
+          {tab === "characters" && <CharacterManagerPage projectId={activeProject} projects={projects} />}
+          {tab === "worldbook" && <WorldBookPage projectId={activeProject} projects={projects} />}
+          {tab === "storyline" && <StorylinePage projectId={activeProject} />}
+          {tab === "skills" && <SkillsPage projects={projects} activeProject={activeProject} />}
+          {tab === "settings" && <SettingsPage />}
+        </ErrorBoundary>
       </main>
+
+      <GlobalSearch
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onNavigate={(t: string) => setTab(t as Tab)}
+        projects={projects}
+        activeProject={activeProject}
+      />
+
+      <ShortcutHint />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <AppInner />
+    </ToastProvider>
   );
 }

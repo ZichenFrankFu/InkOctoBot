@@ -141,6 +141,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const textRef = useRef<HTMLTextAreaElement>(null);
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 160, maxSize: 350 });
   const rightPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 200, maxSize: 500, invert: true });
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
 
   // Persist editor chat state to sessionStorage + backend (per chapter)
   const EDITOR_CHAT_KEY = `inkocto_editor_chat_${projectId}_${activeChId}`;
@@ -1115,11 +1116,15 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <div className="flex items-center gap-8 text-xs"><span style={{ color: saveStatus === "saved" ? "var(--jade)" : saveStatus === "saving" ? "var(--gold)" : "var(--text-tertiary)" }}>{saveStatus === "saved" ? "已保存" : saveStatus === "saving" ? "保存中..." : "未保存"}</span></div>
           </div>
         </div>
-        <div className="panel-resize-h" {...rightPanel.handleProps} />
+        {rightPanelOpen && <div className="panel-resize-h" {...rightPanel.handleProps} />}
 
         {/* RIGHT PANEL */}
+        {rightPanelOpen ? (
         <div className="panel" style={{ width: rightPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderLeft: "1px solid var(--border)" }}>
-          <div className="panel-header"><h3>AI 助手</h3></div>
+          <div className="panel-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3>AI 助手</h3>
+            <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 面板">&#9654;</button>
+          </div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
             {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
@@ -1138,6 +1143,13 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             {aiTab === "eval" && <EvalTab result={evalResult} />}
           </div>
         </div>
+        ) : (
+        <div style={{ width: 36, flexShrink: 0, background: "var(--bg-surface)", borderLeft: "1px solid var(--border)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 12 }}>
+          <button onClick={() => setRightPanelOpen(true)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "4px", writingMode: "vertical-rl", letterSpacing: 2 }} title="展开 AI 面板">
+            &#9664; AI
+          </button>
+        </div>
+        )}
       </div>
     </div>
   );

@@ -193,14 +193,21 @@ def list_agents():
             aname = agent_info["name"]
             for sname, sinfo in domain_skills_map.items():
                 subdir = sinfo.get("_subdir", "")
+                skill_name_lower = sname.lower()
                 # Match by: skill subdir contains agent name fragment, or vice versa
                 # e.g. actor_agent ↔ actor_perform, editor_writer ↔ editor_write
                 abase = aname.replace("_agent", "").replace("agent_", "")
                 sbase = subdir.replace("_", "")
                 abase_clean = abase.replace("_", "")
-                if (abase_clean and sbase and (
-                    abase_clean in sbase or sbase in abase_clean
-                    or abase.split("_")[0] == subdir.split("_")[0]
+                # Also try matching against the skill's registered name
+                sname_clean = skill_name_lower.replace("_", "")
+                if (abase_clean and (
+                    (sbase and (
+                        abase_clean in sbase or sbase in abase_clean
+                        or abase.split("_")[0] == subdir.split("_")[0]
+                    ))
+                    or abase_clean in sname_clean or sname_clean in abase_clean
+                    or (abase.split("_")[0] and abase.split("_")[0] in skill_name_lower.split("_"))
                 )):
                     skill_copy = {k: v for k, v in sinfo.items() if not k.startswith("_")}
                     agent_info["skills"].append(skill_copy)
@@ -211,6 +218,20 @@ def list_agents():
         for sname, sinfo in domain_skills_map.items():
             if sname not in assigned_skills:
                 unassigned.append({k: v for k, v in sinfo.items() if not k.startswith("_")})
+
+        # If domain has skills but no agents, create a synthetic domain-level agent
+        # so the skills remain visible in the UI
+        if not agents_list and domain_skills_map:
+            agents_list.append({
+                "name": domain,
+                "class_name": f"{domain.title()}Domain",
+                "skills": [
+                    {k: v for k, v in sinfo.items() if not k.startswith("_")}
+                    for sinfo in domain_skills_map.values()
+                ],
+            })
+            # All skills are now assigned to the synthetic agent
+            unassigned = []
 
         result.append({
             "domain": domain,
