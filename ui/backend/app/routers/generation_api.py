@@ -409,6 +409,8 @@ class _SimpleRouter:
         "scene_planner": "scene_director",
         "actor": "actor_default",
         "actors": "actor_default",
+        "actor_agent": "actor_default",
+        "narrator_agent": "actor_default",
     }
 
     def _resolve(self, agent_role: str) -> tuple[str, str, dict]:
