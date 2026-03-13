@@ -416,14 +416,14 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
           <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", display: "flex", gap: 4 }}>
             <button
               className={rightView === "detail" ? "btn-primary" : "btn"}
-              style={{ flex: 1, fontSize: 11, padding: "4px 0", borderRadius: 14 }}
+              style={{ flex: 1, fontSize: 11, padding: "4px 0", borderRadius: 14, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
               onClick={() => setRightView("detail")}
             >
               角色详情
             </button>
             <button
               className={rightView === "graph" ? "btn-primary" : "btn"}
-              style={{ flex: 1, fontSize: 11, padding: "4px 0", borderRadius: 14 }}
+              style={{ flex: 1, fontSize: 11, padding: "4px 0", borderRadius: 14, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
               onClick={() => setRightView("graph")}
             >
               全局图谱
@@ -474,7 +474,6 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                     </div>
                     <div className="text-xs text-muted">
                       {c.role || "角色"}
-                      {(c.relationships?.length || 0) > 0 ? ` \u00B7 ${c.relationships!.length}段关系` : ""}
                     </div>
                   </div>
                   {!batchMode && (
@@ -713,7 +712,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                       </div>
                     </div>
                     <div className="field" style={{ flex: 1, minWidth: 70 }}>
-                      <label className="label">年龄 *</label>
+                      <label className="label">年龄</label>
                       <input className="input" value={(editing as any).age || ""} onChange={e => u("age", e.target.value)}
                         placeholder="例：25" />
                     </div>
@@ -1015,6 +1014,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 
 /* ---- Global Relationship Graph (all characters, directed edges with labels) ---- */
 function GlobalRelationshipGraph({ characters, onSelectCharacter }: { characters: Character[]; onSelectCharacter: (id: string) => void }) {
+  const [zoom, setZoom] = React.useState(1);
+
   if (characters.length <= 1) {
     return (
       <div className="card" style={{ padding: 32, textAlign: "center" }}>
@@ -1065,10 +1066,25 @@ function GlobalRelationshipGraph({ characters, onSelectCharacter }: { characters
   // Node radius based on name length
   const nodeR = (name: string) => Math.max(28, name.length * 7 + 8);
 
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    setZoom(prev => Math.max(0.5, Math.min(3, prev + (e.deltaY < 0 ? 0.1 : -0.1))));
+  };
+
+  // Compute zoomed viewBox
+  const vbW = W / zoom, vbH = H / zoom;
+  const vbX = (W - vbW) / 2, vbY = (H - vbH) / 2;
+
   return (
     <div className="card">
       <div className="card-body" style={{ padding: 8 }}>
-        <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginBottom: 4 }}>
+          <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(prev => Math.min(3, prev + 0.2))}>+</button>
+          <span style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: "22px" }}>{Math.round(zoom * 100)}%</span>
+          <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(prev => Math.max(0.5, prev - 0.2))}>-</button>
+          <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(1)}>重置</button>
+        </div>
+        <svg width="100%" viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`} style={{ display: "block" }} onWheel={handleWheel}>
           <defs>
             <marker id="rel-arrow-pos" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
               <path d="M0,0 L8,3 L0,6 Z" fill="var(--jade)" opacity="0.8" />

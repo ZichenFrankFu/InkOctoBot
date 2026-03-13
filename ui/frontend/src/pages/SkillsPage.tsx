@@ -256,6 +256,11 @@ export default function SkillsPage() {
                             {skill.name}
                           </code>
                           <span style={{ fontSize: 10, color: "var(--text-disabled)" }}>v{skill.version}</span>
+                          {skill.is_learned && (
+                            <span style={{ fontSize: 10, padding: "1px 8px", borderRadius: 10, background: "var(--purple-subtle, rgba(147,51,234,0.1))", color: "var(--purple, #9333ea)", fontWeight: 600 }}>
+                              自学习
+                            </span>
+                          )}
                         </div>
                         <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
                           {skill.description}

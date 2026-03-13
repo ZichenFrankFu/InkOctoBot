@@ -243,9 +243,9 @@ def get_preferences(project_id: str = "default"):
     """Load saved preference entries."""
     p = _pref_path(project_id)
     if not p.exists():
-        return {"entries": [], "summary": ""}
+        return {"entries": [], "summary": "", "extracted_memories": []}
     data = json.loads(p.read_text("utf-8"))
-    return {"entries": data.get("entries", []), "summary": data.get("summary", "")}
+    return {"entries": data.get("entries", []), "summary": data.get("summary", ""), "extracted_memories": data.get("extracted_memories", [])}
 
 @router.post("/preferences/analyze")
 def analyze_preferences(body: dict = Body(...)):
@@ -335,10 +335,99 @@ def analyze_preferences(body: dict = Body(...)):
                 {"id": "mock_8", "timestamp": "2026-03-13 09:20", "action": "用户输入 (大纲助手)", "detail": "根据这一章的定位，帮我生成详细的章节大纲", "scope": "outline_chat", "role": "user"},
             ]
             summary = "（测试模式）共收集到 8 条模拟交互记录（其中用户输入 5 条）。涉及 4 个对话场景。"
+        # Also provide mock extracted memories in test mode
+        user_entries = [e for e in entries if e.get("role") == "user"]
+
+    # Extract interaction memories from user entries
+    extracted_memories = _extract_memories(user_entries, pid)
 
     # Persist
-    _wj(_pref_path(pid), {"entries": entries, "summary": summary, "saved_at": time.time()})
-    return {"entries": entries, "summary": summary}
+    _wj(_pref_path(pid), {"entries": entries, "summary": summary, "extracted_memories": extracted_memories, "saved_at": time.time()})
+    return {"entries": entries, "summary": summary, "extracted_memories": extracted_memories}
+
+def _extract_memories(user_entries: list[dict], project_id: str) -> list[dict]:
+    """Extract key creative preferences/memories from user interaction history."""
+    # Load existing extracted memories to preserve user edits
+    p = _pref_path(project_id)
+    existing: list[dict] = []
+    if p.exists():
+        try:
+            existing = json.loads(p.read_text("utf-8")).get("extracted_memories", [])
+        except Exception:
+            pass
+    existing_ids = {m.get("id") for m in existing}
+
+    # Simple heuristic extraction: look for user messages that express preferences
+    preference_keywords = [
+        "喜欢", "想要", "偏好", "风格", "希望", "不要", "倾向", "调整",
+        "更多", "更少", "增加", "减少", "节奏", "基调", "语气", "文风",
+    ]
+    memories: list[dict] = list(existing)  # Keep existing ones
+    for entry in user_entries:
+        detail = entry.get("detail", "")
+        if not detail or len(detail) < 8:
+            continue
+        # Check if it expresses a preference
+        if any(kw in detail for kw in preference_keywords):
+            mem_id = f"mem_{entry.get('id', '')}"
+            if mem_id in existing_ids:
+                continue  # Don't overwrite user-edited memories
+            scope = entry.get("scope", "")
+            source_label = {
+                "studio_trending": "热点讨论",
+                "studio_brainstorm": "头脑风暴",
+                "studio_calibration": "风格校准",
+                "studio_preferences": "偏好记忆",
+                "outline_chat": "大纲助手",
+            }.get(scope, scope)
+            memories.append({
+                "id": mem_id,
+                "content": detail[:300],
+                "source": source_label,
+                "timestamp": entry.get("timestamp", ""),
+            })
+    # Deduplicate and limit
+    seen = set()
+    unique = []
+    for m in memories:
+        if m["id"] not in seen:
+            seen.add(m["id"])
+            unique.append(m)
+    return unique[:50]
+
+
+@router.delete("/preferences/memory/{memory_id}")
+def delete_extracted_memory(memory_id: str, project_id: str = "default"):
+    """Delete a single extracted memory."""
+    p = _pref_path(project_id)
+    if not p.exists():
+        return {"ok": False, "error": "not found"}
+    data = json.loads(p.read_text("utf-8"))
+    memories = data.get("extracted_memories", [])
+    memories = [m for m in memories if m.get("id") != memory_id]
+    data["extracted_memories"] = memories
+    _wj(p, data)
+    return {"ok": True, "remaining": len(memories)}
+
+
+@router.put("/preferences/memory/{memory_id}")
+def update_extracted_memory(memory_id: str, body: dict = Body(...)):
+    """Update a single extracted memory's content."""
+    project_id = body.get("project_id", "default")
+    new_content = body.get("content", "")
+    p = _pref_path(project_id)
+    if not p.exists():
+        return {"ok": False, "error": "not found"}
+    data = json.loads(p.read_text("utf-8"))
+    memories = data.get("extracted_memories", [])
+    for m in memories:
+        if m.get("id") == memory_id:
+            m["content"] = new_content
+            break
+    data["extracted_memories"] = memories
+    _wj(p, data)
+    return {"ok": True}
+
 
 @router.delete("/preferences/{entry_id}")
 def delete_preference_entry(entry_id: str, project_id: str = "default"):
