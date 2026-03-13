@@ -75,6 +75,8 @@ interface Props {
   onInputChange?: (text: string) => void;
   /** Clear chat callback */
   onClearHistory?: () => void;
+  /** Delete single message callback */
+  onDeleteMessage?: (messageId: string) => void;
   /** Compact mode for overlay panels */
   compact?: boolean;
   /** Header content (agent name/description) */
@@ -92,7 +94,7 @@ const uid = () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 export default function AIChatPanel({
   messages, onSendMessage, onStopGeneration, onRegenerateMessage,
   onSelectFollowUpOption, isGenerating, placeholder, preservedInput,
-  onInputChange, onClearHistory, compact, headerContent, emptyState, quickPrompts,
+  onInputChange, onClearHistory, onDeleteMessage, compact, headerContent, emptyState, quickPrompts,
   templates,
 }: Props) {
   const [input, setInput] = useState(preservedInput || "");
@@ -320,13 +322,21 @@ export default function AIChatPanel({
                     </div>
                   )}
 
-                  {/* Actions: regenerate */}
-                  {!isUser && msg.status === "done" && msg.canRegenerate && onRegenerateMessage && (
+                  {/* Actions: regenerate + delete */}
+                  {((!isUser && msg.status === "done" && msg.canRegenerate && onRegenerateMessage) || onDeleteMessage) && (
                     <div style={{ marginTop: 4, display: "flex", gap: 4 }}>
-                      <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 8px", color: "var(--text-disabled)" }}
-                        onClick={() => onRegenerateMessage(msg.id)}>
-                        重新生成
-                      </button>
+                      {!isUser && msg.status === "done" && msg.canRegenerate && onRegenerateMessage && (
+                        <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 8px", color: "var(--text-disabled)" }}
+                          onClick={() => onRegenerateMessage(msg.id)}>
+                          重新生成
+                        </button>
+                      )}
+                      {onDeleteMessage && (
+                        <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 8px", color: "var(--text-disabled)" }}
+                          onClick={() => onDeleteMessage(msg.id)}>
+                          删除
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
