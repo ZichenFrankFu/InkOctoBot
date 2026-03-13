@@ -207,7 +207,7 @@ export default function RankingsPage() {
           {step === "lists" &&
             (rankLists.length === 0 ? (
               <div className="empty-state">
-                <div className="empty-icon">📭</div>
+                <div className="empty-icon">--</div>
                 <h4>暂无榜单数据</h4>
                 <p>请先运行数据采集后再来查看。</p>
               </div>

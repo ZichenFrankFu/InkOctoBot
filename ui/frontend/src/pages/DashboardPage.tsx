@@ -312,7 +312,7 @@ export default function DashboardPage({ projects, onNavigate }: { projects: { id
         </div>
       ) : !overview ? (
         <div className="empty-state">
-          <div className="empty-icon">📭</div>
+          <div className="empty-icon">--</div>
           <h4>暂无数据</h4>
           <p>数据库中尚无市场数据，请先运行数据采集。</p>
         </div>
@@ -321,10 +321,10 @@ export default function DashboardPage({ projects, onNavigate }: { projects: { id
           {/* Stats Grid */}
           <div className="stats-grid">
             {[
-              { icon: "📚", color: "red", value: overview.novel_count, label: "收录小说" },
-              { icon: "🏆", color: "gold", value: overview.rank_list_count, label: "榜单类型" },
-              { icon: "📸", color: "jade", value: overview.snapshot_count, label: "榜单快照" },
-              { icon: "📖", color: "indigo", value: overview.chapter_count, label: "采集章节" },
+              { icon: "\u229E", color: "red", value: overview.novel_count, label: "收录小说" },
+              { icon: "\u2606", color: "gold", value: overview.rank_list_count, label: "榜单类型" },
+              { icon: "\u25CB", color: "jade", value: overview.snapshot_count, label: "榜单快照" },
+              { icon: "\u2500", color: "indigo", value: overview.chapter_count, label: "采集章节" },
             ].map((s) => (
               <div className="stat-card" key={s.label}>
                 <div className={`stat-icon ${s.color}`}>{s.icon}</div>

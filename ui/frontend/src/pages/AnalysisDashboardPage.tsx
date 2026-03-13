@@ -454,12 +454,12 @@ export default function AnalysisDashboardPage() {
 
           {/* Empty result */}
           {!loadingTrend && trendData && trendData.empty && (
-            <div className="empty-state"><div className="empty-icon">📭</div><h4>暂无数据</h4><p>所选范围没有可分析数据，请调整参数后重试。</p></div>
+            <div className="empty-state"><div className="empty-icon">--</div><h4>暂无数据</h4><p>所选范围没有可分析数据，请调整参数后重试。</p></div>
           )}
 
           {/* Initial state */}
           {!loadingTrend && !trendData && !trendError && (
-            <div className="empty-state"><div className="empty-icon">📊</div><h4>准备就绪</h4><p>正在自动运行默认分析...</p></div>
+            <div className="empty-state"><div className="empty-icon">...</div><h4>准备就绪</h4><p>正在自动运行默认分析...</p></div>
           )}
         </>
       )}

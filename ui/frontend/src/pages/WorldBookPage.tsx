@@ -11,12 +11,12 @@ interface Props {
 
 const BUILTIN_CATEGORIES: { key: string; label: string; icon: string }[] = [
   { key: "power_system", label: "力量体系", icon: "\u26A1" },
-  { key: "factions", label: "势力", icon: "\uD83C\uDFF0" },
-  { key: "geography", label: "地理", icon: "\uD83D\uDDFA\uFE0F" },
-  { key: "social_rules", label: "社会规则/习俗", icon: "\uD83D\uDCDC" },
-  { key: "history", label: "历史", icon: "\uD83D\uDCDA" },
-  { key: "hard_rules", label: "硬规则", icon: "\uD83D\uDCCF" },
-  { key: "other", label: "其他", icon: "\uD83D\uDCDD" },
+  { key: "factions", label: "势力", icon: "\u2694" },
+  { key: "geography", label: "地理", icon: "\u2295" },
+  { key: "social_rules", label: "社会规则/习俗", icon: "\u2261" },
+  { key: "history", label: "历史", icon: "\u229E" },
+  { key: "hard_rules", label: "硬规则", icon: "\u2500" },
+  { key: "other", label: "其他", icon: "\u25CB" },
 ];
 
 function catLabel(cat: string, customCats: { key: string; label: string }[]): string {
@@ -90,7 +90,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
 
   const allCategories = useMemo(() => [
     ...BUILTIN_CATEGORIES,
-    ...customCategories.map(c => ({ ...c, icon: "\uD83C\uDFF7\uFE0F" })),
+    ...customCategories.map(c => ({ ...c, icon: "\u2022" })),
   ], [customCategories]);
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 320, minSize: 240, maxSize: 450 });

@@ -675,7 +675,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
               <div className="loading"><div className="loading-spinner" />加载中...</div>
             ) : projects.length === 0 ? (
               <div className="empty-state">
-                <div className="empty-icon">&#x1F4C2;</div>
+                <div className="empty-icon">--</div>
                 <h4>还没有项目</h4>
                 <p>点击「新建项目」开始你的创作之旅</p>
               </div>
@@ -1001,7 +1001,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                           style={{ flex: 1, fontSize: 11, padding: "5px 0", borderRadius: 16, minWidth: 70, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}
                           onClick={() => setSampleType(t.key)}>
                           {t.label}
-                          {lockedSamples[t.key] && <span style={{ marginLeft: 3, fontSize: 9 }} title="已锁定参考样本">🔒</span>}
+                          {lockedSamples[t.key] && <span style={{ marginLeft: 3, fontSize: 9 }} title="已锁定参考样本">\u25A0</span>}
                         </button>
                       ))}
                     </div>
@@ -1109,14 +1109,14 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                 {Object.keys(lockedSamples).length > 0 && (
                   <div className="card">
                     <div className="card-body">
-                      <div className="label mb-8">🔒 锁定参考样本</div>
+                      <div className="label mb-8">\u25A0 锁定参考样本</div>
                       <div className="text-xs text-muted" style={{ marginBottom: 8 }}>
                         已锁定 {Object.keys(lockedSamples).length}/4 种类型，生成时将作为风格参考。
                       </div>
                       {SAMPLE_TYPES.filter(t => lockedSamples[t.key]).map(t => (
                         <div key={t.key} style={{ marginBottom: 8 }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--gold)" }}>🔒 {t.label}</span>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--gold)" }}>\u25A0 {t.label}</span>
                             <button className="btn" style={{ fontSize: 10, padding: "1px 8px", color: "var(--text-tertiary)" }}
                               onClick={() => {
                                 setLockedSamples(prev => {
