@@ -578,18 +578,22 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
         <div className="panel-resize-h" {...leftPanel.handleProps} />
 
         {/* ======== RIGHT PANEL ======== */}
-        <div className="panel flex-1" style={{ background: "var(--bg-app)", overflowY: "auto" }}>
+        <div className="panel flex-1" style={{ background: "var(--bg-app)", overflowY: rightView === "graph" ? "hidden" : "auto" }}>
           {rightView === "graph" ? (
-            /* ======== GLOBAL RELATIONSHIP GRAPH ======== */
-            <div style={{ maxWidth: 900, margin: "0 auto", padding: "28px 32px 48px" }}>
-              <h2 className="font-serif" style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>
-                全局关系图谱
-              </h2>
-              <div style={{ padding: "8px 12px", marginBottom: 12, background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-                <strong>好感度：</strong>数值越高越喜欢对方（正值=好感, 0=不熟悉, 负值=厌恶）<br/>
-                <strong>优先级：</strong>数值越低越优先（1=最重要的人, 数值越大越不重要）
+            /* ======== GLOBAL RELATIONSHIP GRAPH (full column) ======== */
+            <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+              <div style={{ padding: "16px 20px 8px", flexShrink: 0 }}>
+                <h2 className="font-serif" style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
+                  全局关系图谱
+                </h2>
+                <div style={{ padding: "6px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+                  <strong>好感度：</strong>正值=好感, 0=不熟悉, 负值=厌恶 &nbsp;|&nbsp;
+                  <strong>优先级：</strong>数值越低越优先（1=最重要的人）
+                </div>
               </div>
-              <GlobalRelationshipGraph characters={items} onSelectCharacter={(id) => { setEditing(items.find(c => c.id === id) || null); setRightView("detail"); }} />
+              <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+                <GlobalRelationshipGraph characters={items} onSelectCharacter={(id) => { setEditing(items.find(c => c.id === id) || null); setRightView("detail"); }} fullHeight />
+              </div>
             </div>
           ) : !editing ? (
             <div className="empty-state" style={{ paddingTop: 120 }}>
@@ -1067,8 +1071,24 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 }
 
 /* ---- Global Relationship Graph (all characters, directed edges with labels) ---- */
-function GlobalRelationshipGraph({ characters, onSelectCharacter }: { characters: Character[]; onSelectCharacter: (id: string) => void }) {
+function GlobalRelationshipGraph({ characters, onSelectCharacter, fullHeight }: { characters: Character[]; onSelectCharacter: (id: string) => void; fullHeight?: boolean }) {
   const [zoom, setZoom] = React.useState(1);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [containerSize, setContainerSize] = React.useState({ w: 800, h: 600 });
+
+  React.useEffect(() => {
+    if (!fullHeight || !containerRef.current) return;
+    const measure = () => {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        setContainerSize({ w: Math.max(400, rect.width - 16), h: Math.max(300, rect.height - 60) });
+      }
+    };
+    measure();
+    const obs = new ResizeObserver(measure);
+    obs.observe(containerRef.current);
+    return () => obs.disconnect();
+  }, [fullHeight]);
 
   if (characters.length <= 1) {
     return (
@@ -1080,9 +1100,9 @@ function GlobalRelationshipGraph({ characters, onSelectCharacter }: { characters
 
   const n = characters.length;
 
-  // Dynamic sizing
-  const W = Math.max(550, Math.min(1000, n * 140 + 200));
-  const H = Math.max(400, Math.min(750, n <= 4 ? 420 : 320 + n * 50));
+  // Dynamic sizing - use container size when fullHeight
+  const W = fullHeight ? containerSize.w : Math.max(550, Math.min(1000, n * 140 + 200));
+  const H = fullHeight ? containerSize.h : Math.max(400, Math.min(750, n <= 4 ? 420 : 320 + n * 50));
   const cx = W / 2, cy = H / 2;
 
   // Circular layout
@@ -1130,15 +1150,15 @@ function GlobalRelationshipGraph({ characters, onSelectCharacter }: { characters
   const vbX = (W - vbW) / 2, vbY = (H - vbH) / 2;
 
   return (
-    <div className="card">
-      <div className="card-body" style={{ padding: 8 }}>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginBottom: 4 }}>
+    <div ref={containerRef} className={fullHeight ? "" : "card"} style={fullHeight ? { height: "100%", display: "flex", flexDirection: "column" } : {}}>
+      <div className={fullHeight ? "" : "card-body"} style={fullHeight ? { flex: 1, display: "flex", flexDirection: "column", padding: "0 8px" } : { padding: 8 }}>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginBottom: 4, flexShrink: 0 }}>
           <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(prev => Math.min(3, prev + 0.2))}>+</button>
           <span style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: "22px" }}>{Math.round(zoom * 100)}%</span>
           <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(prev => Math.max(0.5, prev - 0.2))}>-</button>
           <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(1)}>重置</button>
         </div>
-        <svg width="100%" viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`} style={{ display: "block" }} onWheel={handleWheel}>
+        <svg width="100%" height={fullHeight ? "100%" : undefined} viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`} style={fullHeight ? { display: "block", flex: 1, minHeight: 0 } : { display: "block" }} onWheel={handleWheel}>
           <defs>
             <marker id="rel-arrow-pos" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
               <path d="M0,0 L8,3 L0,6 Z" fill="var(--jade)" opacity="0.8" />

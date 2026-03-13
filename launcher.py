@@ -123,7 +123,7 @@ def main():
             pass
         return
 
-    title = "InkOctoBot [TEST]" if args.test else "WebNovel Trends"
+    title = "InkOctoBot [TEST]" if args.test else "InkOctoBot"
     webview.create_window(
         title,
         f"http://{HOST}:{PORT}",

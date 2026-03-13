@@ -14,12 +14,12 @@ import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
-import DevToolsPage from "./pages/DevToolsPage";
+// DevToolsPage removed
 
 type Tab =
   | "dashboard" | "rankings" | "references" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
-  | "skills" | "settings" | "devtools";
+  | "skills" | "settings";
 
 interface Project { id: string; name: string; genre?: string; }
 
@@ -53,7 +53,6 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     items: [
       { key: "skills", icon: "🧩", label: "Skills" },
       { key: "settings", icon: "⚙️", label: "设置" },
-      { key: "devtools", icon: "🔧", label: "开发者工具" },
     ],
   },
 ];
@@ -106,7 +105,7 @@ export default function App() {
       <aside className="sidebar" style={{ width: sidebarW }}>
         <div className="sidebar-brand">
           <h1>
-            <span style={{ fontSize: 22 }}>🐙</span>
+            <img src="/favicon.svg" alt="InkOctoBot" style={{ width: 24, height: 24, verticalAlign: "middle", marginRight: 6 }} />
             InkOctoBot
           </h1>
           <p>AI 小说智能体工作台</p>
@@ -160,7 +159,6 @@ export default function App() {
         {tab === "storyline" && <StorylinePage projectId={activeProject} />}
         {tab === "skills" && <SkillsPage projects={projects} activeProject={activeProject} />}
         {tab === "settings" && <SettingsPage />}
-        {tab === "devtools" && <DevToolsPage projectId={activeProject} />}
       </main>
     </div>
   );

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <!-- Head -->
+  <ellipse cx="32" cy="22" rx="18" ry="16" fill="url(#g)"/>
+  <!-- Eyes -->
+  <ellipse cx="25" cy="20" rx="4" ry="4.5" fill="#fff"/>
+  <ellipse cx="39" cy="20" rx="4" ry="4.5" fill="#fff"/>
+  <circle cx="26" cy="20" r="2" fill="#1e1b4b"/>
+  <circle cx="40" cy="20" r="2" fill="#1e1b4b"/>
+  <!-- Tentacles -->
+  <path d="M14 32 Q8 44 12 54" stroke="#6366f1" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M20 34 Q14 48 18 56" stroke="#7c3aed" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M26 36 Q24 50 22 58" stroke="#6366f1" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M32 37 Q32 52 32 60" stroke="#8b5cf6" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M38 36 Q40 50 42 58" stroke="#6366f1" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M44 34 Q50 48 46 56" stroke="#7c3aed" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M50 32 Q56 44 52 54" stroke="#6366f1" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <!-- Ink pen -->
+  <rect x="43" y="6" width="3" height="14" rx="1" fill="#f59e0b" transform="rotate(25 44 13)"/>
+  <polygon points="43,20 45,20 44,24" fill="#1e1b4b" transform="rotate(25 44 13)"/>
+</svg>
