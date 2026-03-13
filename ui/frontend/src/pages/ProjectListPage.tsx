@@ -86,6 +86,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const [calibrationHistory, setCalibrationHistory] = useState<CalibrationHistory[]>([]);
   const [styleConfirmed, setStyleConfirmed] = useState(false);
   const [calibrationAnalysis, setCalibrationAnalysis] = useState("");
+  const [lockedSamples, setLockedSamples] = useState<Record<string, string>>({});
 
   // Preferences (偏好记忆) state
   const [prefEntries, setPrefEntries] = useState<{ id: string; timestamp: string; action: string; detail: string }[]>([]);
@@ -123,6 +124,16 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
       })
       .catch(() => setChatLoaded(true));
   }, [activeProject, studioTab]);
+
+  // Load locked samples from backend on mount
+  useEffect(() => {
+    const pid = activeProject || "default";
+    apiGet<{ locked_samples?: Record<string, string> }>(`/api/data/calibration/${pid}`)
+      .then(r => {
+        if (r.locked_samples) setLockedSamples(r.locked_samples);
+      })
+      .catch(() => {});
+  }, [activeProject]);
 
   const rightPanel = useResizable({ direction: "horizontal", initialSize: 460, minSize: 340, maxSize: 720 });
   const abortRef = useRef<AbortController | null>(null);
@@ -230,10 +241,12 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 如果用户确认了满意的内容，在末尾追加 [QUICK_FILL]可快速填入的字段名:内容[/QUICK_FILL] 标记供用户确认。`,
         placeholder: "构思你的故事世界...",
         quickPrompts: [
+          "帮我思考整体故事梗概",
           "帮我构思一个玄幻小说的核心设定和卖点",
           "我想写一个都市异能题材，帮我设计主角的金手指",
           "帮我设计三个有辨识度的配角",
           "帮我搭建一个修仙世界的力量等级体系",
+          "帮我设计一条主线剧情的起承转合",
         ],
       },
       calibration: {
@@ -477,7 +490,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     setCalibrationHistory(prev => [...prev, entry]);
     const pid = activeProject || "default";
     apiPut(`/api/data/calibration/${pid}`, {
-      history: [...calibrationHistory, entry], style_params: calibration, confirmed: false,
+      history: [...calibrationHistory, entry], style_params: calibration, confirmed: false, locked_samples: lockedSamples,
     }).catch(() => {});
     generateCalibrationSample();
   };
@@ -486,7 +499,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     setStyleConfirmed(true);
     const pid = activeProject || "default";
     apiPut(`/api/data/calibration/${pid}`, {
-      history: calibrationHistory, style_params: calibration, confirmed: true,
+      history: calibrationHistory, style_params: calibration, confirmed: true, locked_samples: lockedSamples,
     }).catch(() => {});
   };
 
@@ -494,8 +507,25 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     setStyleConfirmed(false);
     const pid = activeProject || "default";
     apiPut(`/api/data/calibration/${pid}`, {
-      history: calibrationHistory, style_params: calibration, confirmed: false,
+      history: calibrationHistory, style_params: calibration, confirmed: false, locked_samples: lockedSamples,
     }).catch(() => {});
+  };
+
+  const toggleLockSample = () => {
+    if (!calibrationSample) return;
+    setLockedSamples(prev => {
+      const next = { ...prev };
+      if (next[sampleType]) {
+        delete next[sampleType];
+      } else {
+        next[sampleType] = calibrationSample;
+      }
+      const pid = activeProject || "default";
+      apiPut(`/api/data/calibration/${pid}`, {
+        history: calibrationHistory, style_params: calibration, confirmed: styleConfirmed, locked_samples: next,
+      }).catch(() => {});
+      return next;
+    });
   };
 
   const analyzePrefences = async () => {
@@ -938,15 +968,16 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                     <div className="flex gap-6 mb-12" style={{ flexWrap: "wrap" }}>
                       {SAMPLE_TYPES.map(t => (
                         <button key={t.key} className={sampleType === t.key ? "btn-primary" : "btn"}
-                          style={{ flex: 1, fontSize: 11, padding: "5px 0", borderRadius: 16, minWidth: 70, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
+                          style={{ flex: 1, fontSize: 11, padding: "5px 0", borderRadius: 16, minWidth: 70, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}
                           onClick={() => setSampleType(t.key)}>
                           {t.label}
+                          {lockedSamples[t.key] && <span style={{ marginLeft: 3, fontSize: 9 }} title="已锁定参考样本">🔒</span>}
                         </button>
                       ))}
                     </div>
                     <button className="btn-primary" style={{ width: "100%", marginBottom: 8 }}
                       onClick={generateCalibrationSample} disabled={sampleLoading}>
-                      {sampleLoading ? "生成中..." : "生成样本段落"}
+                      {sampleLoading ? "生成中..." : calibrationSample ? "重新生成" : "生成样本段落"}
                     </button>
 
                     {calibrationSample && (
@@ -959,6 +990,15 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                         }}>
                           {calibrationSample}
                         </div>
+
+                        <button className="btn" onClick={toggleLockSample}
+                          style={{ marginTop: 6, fontSize: 11, padding: "3px 12px", display: "flex", alignItems: "center", gap: 4,
+                            color: lockedSamples[sampleType] ? "var(--gold)" : "var(--text-tertiary)",
+                            borderColor: lockedSamples[sampleType] ? "var(--gold)" : undefined,
+                          }}>
+                          <span style={{ fontSize: 12 }}>{lockedSamples[sampleType] ? "🔒" : "🔓"}</span>
+                          {lockedSamples[sampleType] ? "取消锁定" : "锁定为参考"}
+                        </button>
 
                         {calibrationAnalysis && (
                           <div style={{
@@ -1053,6 +1093,46 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                     )}
                   </div>
                 </div>
+
+                {/* Locked reference samples */}
+                {Object.keys(lockedSamples).length > 0 && (
+                  <div className="card">
+                    <div className="card-body">
+                      <div className="label mb-8">🔒 锁定参考样本</div>
+                      <div className="text-xs text-muted" style={{ marginBottom: 8 }}>
+                        已锁定 {Object.keys(lockedSamples).length}/4 种类型，生成时将作为风格参考。
+                      </div>
+                      {SAMPLE_TYPES.filter(t => lockedSamples[t.key]).map(t => (
+                        <div key={t.key} style={{ marginBottom: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--gold)" }}>🔒 {t.label}</span>
+                            <button className="btn" style={{ fontSize: 10, padding: "1px 8px", color: "var(--text-tertiary)" }}
+                              onClick={() => {
+                                setLockedSamples(prev => {
+                                  const next = { ...prev };
+                                  delete next[t.key];
+                                  const pid = activeProject || "default";
+                                  apiPut(`/api/data/calibration/${pid}`, {
+                                    history: calibrationHistory, style_params: calibration, confirmed: styleConfirmed, locked_samples: next,
+                                  }).catch(() => {});
+                                  return next;
+                                });
+                              }}>
+                              解锁
+                            </button>
+                          </div>
+                          <div style={{
+                            padding: "8px 10px", background: "var(--bg-surface-2)", borderRadius: 6,
+                            borderLeft: "2px solid var(--gold)", fontSize: 12, lineHeight: 1.6,
+                            color: "var(--text-secondary)", whiteSpace: "pre-wrap", maxHeight: 120, overflowY: "auto",
+                          }}>
+                            {lockedSamples[t.key].length > 200 ? lockedSamples[t.key].slice(0, 200) + "..." : lockedSamples[t.key]}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               /* ── 偏好记忆 (EditAnalyzer) ── */
