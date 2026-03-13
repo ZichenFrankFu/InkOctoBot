@@ -99,6 +99,48 @@ def list_tags():
     return {"tags": sorted(tags)}
 
 
+@router.get("/learning-log")
+def get_learning_log():
+    """Get the skill learning history log."""
+    p = _learning_log_path()
+    if not p.exists():
+        # Provide mock data in test mode
+        if os.environ.get("WN_TEST_MODE") == "1":
+            return {"entries": _mock_learning_log()}
+        return {"entries": []}
+    try:
+        data = json.loads(p.read_text("utf-8"))
+        return {"entries": data.get("entries", [])}
+    except Exception:
+        return {"entries": []}
+
+
+@router.post("/learning-log")
+def add_learning_log_entry(body: dict = Body(...)):
+    """Record a new skill learning event."""
+    p = _learning_log_path()
+    data = {"entries": []}
+    if p.exists():
+        try:
+            data = json.loads(p.read_text("utf-8"))
+        except Exception:
+            pass
+    entries = data.get("entries", [])
+    entry = {
+        "id": f"sl_{uuid.uuid4().hex[:8]}",
+        "skill_name": body.get("skill_name", ""),
+        "display_name": body.get("display_name", ""),
+        "trigger": body.get("trigger", ""),
+        "need_description": body.get("need_description", ""),
+        "project_id": body.get("project_id", ""),
+        "created_at": time.strftime("%Y-%m-%d %H:%M"),
+    }
+    entries.insert(0, entry)
+    data["entries"] = entries[:100]  # keep last 100
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+    return {"ok": True, "entry": entry}
+
+
 @router.get("/learned")
 def list_learned_skills():
     """List skills from the learned_skills directory."""
@@ -293,55 +335,13 @@ async def execute_skill(req: SkillExecuteRequest):
         raise HTTPException(500, f"Skill execution error: {str(e)[:300]}")
 
 
-# ── Skill Learning Log ──
+# ── Skill Learning Log (helpers) ──
 
 def _learning_log_path() -> Path:
     from ..settings import settings
     d = Path(settings.data_dir) / "skill_learning_log"
     d.mkdir(parents=True, exist_ok=True)
     return d / "log.json"
-
-
-@router.get("/learning-log")
-def get_learning_log():
-    """Get the skill learning history log."""
-    p = _learning_log_path()
-    if not p.exists():
-        # Provide mock data in test mode
-        if os.environ.get("WN_TEST_MODE") == "1":
-            return {"entries": _mock_learning_log()}
-        return {"entries": []}
-    try:
-        data = json.loads(p.read_text("utf-8"))
-        return {"entries": data.get("entries", [])}
-    except Exception:
-        return {"entries": []}
-
-
-@router.post("/learning-log")
-def add_learning_log_entry(body: dict = Body(...)):
-    """Record a new skill learning event."""
-    p = _learning_log_path()
-    data = {"entries": []}
-    if p.exists():
-        try:
-            data = json.loads(p.read_text("utf-8"))
-        except Exception:
-            pass
-    entries = data.get("entries", [])
-    entry = {
-        "id": f"sl_{uuid.uuid4().hex[:8]}",
-        "skill_name": body.get("skill_name", ""),
-        "display_name": body.get("display_name", ""),
-        "trigger": body.get("trigger", ""),
-        "need_description": body.get("need_description", ""),
-        "project_id": body.get("project_id", ""),
-        "created_at": time.strftime("%Y-%m-%d %H:%M"),
-    }
-    entries.insert(0, entry)
-    data["entries"] = entries[:100]  # keep last 100
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-    return {"ok": True, "entry": entry}
 
 
 def _mock_learning_log() -> list[dict]:
