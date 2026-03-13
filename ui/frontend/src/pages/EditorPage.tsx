@@ -117,6 +117,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   // Version history state
   const [versionHistory, setVersionHistory] = useState<TextVersion[]>([]);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [maxBackupVersions, setMaxBackupVersions] = useState(10);
+  const autoVersionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAutoVersionContent = useRef<string>("");
 
   // Restore aiTab from session if pipeline was running
   const _savedEditorState = (() => {
@@ -246,6 +249,54 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }, 1500);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [content, titleVal]);
+
+  // Load max_backup_versions setting
+  useEffect(() => {
+    apiGet<{ max_backup_versions?: number }>("/api/data/settings")
+      .then(r => { if (r.max_backup_versions) setMaxBackupVersions(r.max_backup_versions); })
+      .catch(() => {});
+  }, []);
+
+  // Auto-save version backup (every 60s if content changed)
+  useEffect(() => {
+    if (!loaded || !activeChId || !content) return;
+    if (autoVersionTimer.current) clearTimeout(autoVersionTimer.current);
+    autoVersionTimer.current = setTimeout(() => {
+      if (content === lastAutoVersionContent.current) return;
+      if (content.trim().length < 10) return; // skip trivially short
+      lastAutoVersionContent.current = content;
+      const newVersion: TextVersion = {
+        version_id: vuid(), chapter_id: activeChId,
+        version: versionHistory.filter(v => v.chapter_id === activeChId).length + 1,
+        source: "auto_saved", text: content,
+        synopsis: activeCh?.synopsis || "",
+        created_at: new Date().toISOString(),
+      };
+      setVersionHistory(prev => {
+        const updated = [...prev, newVersion];
+        // Trim auto_saved versions per chapter to maxBackupVersions
+        const byChapter: Record<string, typeof updated> = {};
+        for (const v of updated) {
+          (byChapter[v.chapter_id] ||= []).push(v);
+        }
+        const trimmed: typeof updated = [];
+        for (const [, chVersions] of Object.entries(byChapter)) {
+          const autoVersions = chVersions.filter(v => v.source === "auto_saved");
+          const otherVersions = chVersions.filter(v => v.source !== "auto_saved");
+          const keptAuto = autoVersions.slice(-maxBackupVersions);
+          trimmed.push(...otherVersions, ...keptAuto);
+        }
+        return trimmed;
+      });
+      apiPost("/api/data/versions", { project_id: projectId || "default", version: newVersion }).catch(() => {});
+    }, 60000); // 60 seconds
+    return () => { if (autoVersionTimer.current) clearTimeout(autoVersionTimer.current); };
+  }, [content, loaded, activeChId, maxBackupVersions]);
+
+  // Reset last auto-version content when switching chapters
+  useEffect(() => {
+    lastAutoVersionContent.current = "";
+  }, [activeChId]);
 
   const handleMouseUp = () => {
     const el = textRef.current; if (!el) return;
@@ -1005,7 +1056,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                       }
                     }
                   }}>
-                    v{v.version} · {v.source === "ai_generated" ? "AI" : "手动"}
+                    v{v.version} · {v.source === "ai_generated" ? "AI" : v.source === "auto_saved" ? "自动" : "手动"}
                   </span>
                   <span style={{ fontSize: 9, flexShrink: 0 }}>{new Date(v.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" })}</span>
                   <button
@@ -1215,7 +1266,6 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)" }}>Story Architect · AI 大纲助手</span>
           <div style={{ display: "flex", gap: 4 }}>
             <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => { setOutlineChatMsgs([]); apiPut("/api/data/chat_history", { project_id: projectId, scope: `outline_chat_${chapter?.id || ""}`, messages: [] }).catch(() => {}); }}>清空</button>
-            <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setShowOutlineChat(false)}>收起</button>
           </div>
         </div>
         <div style={{ maxHeight: 240, overflowY: "auto", padding: "8px 10px" }}>

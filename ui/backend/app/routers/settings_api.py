@@ -62,6 +62,7 @@ def _defaults() -> dict:
         "theme": "dark",
         "auto_save": True,
         "auto_save_interval": 30,
+        "max_backup_versions": 10,
         "cost_confirm": True,
         "export_format": "txt",
         "providers": {

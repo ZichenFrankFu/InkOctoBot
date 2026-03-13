@@ -234,6 +234,138 @@ def save_calibration(project_id: str, body: dict = Body(...)):
     return {"ok": True}
 
 
+# ═══ Preferences / Activity History ═══
+def _pref_path(project_id: str) -> Path:
+    d = _col("preferences"); return d / f"{project_id}.json"
+
+@router.get("/preferences")
+def get_preferences(project_id: str = "default"):
+    """Load saved preference entries."""
+    p = _pref_path(project_id)
+    if not p.exists():
+        return {"entries": [], "summary": ""}
+    data = json.loads(p.read_text("utf-8"))
+    return {"entries": data.get("entries", []), "summary": data.get("summary", "")}
+
+@router.post("/preferences/analyze")
+def analyze_preferences(body: dict = Body(...)):
+    """Gather user activity from chat histories and return as entries."""
+    pid = body.get("project_id", "default")
+    chat_dir = _col("chat_history")
+    entries: list[dict] = []
+
+    # Scan all chat history files for this project
+    for fp in sorted(chat_dir.glob(f"{pid}_*.json")):
+        try:
+            data = json.loads(fp.read_text("utf-8"))
+            scope = data.get("scope", fp.stem.replace(f"{pid}_", ""))
+            scope_label = {
+                "studio_trending": "热点讨论",
+                "studio_brainstorm": "头脑风暴",
+                "studio_calibration": "风格校准",
+                "studio_preferences": "偏好记忆",
+                "pipeline": "Pipeline对话",
+            }.get(scope, scope)
+            for msg in data.get("messages", []):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                ts = msg.get("timestamp", 0)
+                if not content or not content.strip():
+                    continue
+                if role == "user":
+                    action = f"用户输入 ({scope_label})"
+                elif role == "assistant":
+                    action = f"AI回复 ({scope_label})"
+                else:
+                    continue
+                entries.append({
+                    "id": msg.get("id", str(uuid.uuid4())[:8]),
+                    "timestamp": _ts_fmt(ts),
+                    "action": action,
+                    "detail": content[:500],
+                    "scope": scope,
+                    "role": role,
+                })
+        except Exception:
+            continue
+
+    # Also include outline chats (per chapter)
+    for fp in sorted(chat_dir.glob(f"{pid}_outline_chat_*.json")):
+        try:
+            data = json.loads(fp.read_text("utf-8"))
+            for msg in data.get("messages", []):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                ts = msg.get("timestamp", 0)
+                if not content.strip():
+                    continue
+                entries.append({
+                    "id": msg.get("id", str(uuid.uuid4())[:8]),
+                    "timestamp": _ts_fmt(ts),
+                    "action": f"{'用户输入' if role == 'user' else 'AI回复'} (大纲助手)",
+                    "detail": content[:500],
+                    "scope": "outline_chat",
+                    "role": role,
+                })
+        except Exception:
+            continue
+
+    # Sort by timestamp descending
+    entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+
+    # Generate summary
+    user_entries = [e for e in entries if e.get("role") == "user"]
+    summary = f"共收集到 {len(entries)} 条交互记录（其中用户输入 {len(user_entries)} 条）。"
+    if user_entries:
+        scopes = set(e.get("scope", "") for e in user_entries)
+        summary += f" 涉及 {len(scopes)} 个对话场景。"
+
+    # If no entries found (e.g. test mode), provide mock data
+    if not entries:
+        is_test = os.environ.get("WN_TEST_MODE") == "1"
+        if is_test:
+            entries = [
+                {"id": "mock_1", "timestamp": "2026-03-13 10:00", "action": "用户输入 (头脑风暴)", "detail": "帮我构思一个玄幻小说的核心设定和卖点", "scope": "studio_brainstorm", "role": "user"},
+                {"id": "mock_2", "timestamp": "2026-03-13 10:01", "action": "AI回复 (头脑风暴)", "detail": "关于玄幻小说的核心设定，我建议从以下几个方向思考：1. 独特的修炼体系...", "scope": "studio_brainstorm", "role": "assistant"},
+                {"id": "mock_3", "timestamp": "2026-03-13 10:05", "action": "用户输入 (头脑风暴)", "detail": "帮我设计三个有辨识度的配角", "scope": "studio_brainstorm", "role": "user"},
+                {"id": "mock_4", "timestamp": "2026-03-13 10:06", "action": "AI回复 (头脑风暴)", "detail": "好的，以下是三个各具特色的配角设计：\n1. 柳无痕——温文尔雅的毒师...", "scope": "studio_brainstorm", "role": "assistant"},
+                {"id": "mock_5", "timestamp": "2026-03-13 09:50", "action": "用户输入 (风格校准)", "detail": "我想要偏向轻松幽默的文风", "scope": "studio_calibration", "role": "user"},
+                {"id": "mock_6", "timestamp": "2026-03-13 09:30", "action": "用户输入 (热点讨论)", "detail": "玄幻题材目前市场竞争大吗？", "scope": "studio_trending", "role": "user"},
+                {"id": "mock_7", "timestamp": "2026-03-13 09:31", "action": "AI回复 (热点讨论)", "detail": "玄幻题材确实竞争激烈，但仍有细分赛道机会...", "scope": "studio_trending", "role": "assistant"},
+                {"id": "mock_8", "timestamp": "2026-03-13 09:20", "action": "用户输入 (大纲助手)", "detail": "根据这一章的定位，帮我生成详细的章节大纲", "scope": "outline_chat", "role": "user"},
+            ]
+            summary = "（测试模式）共收集到 8 条模拟交互记录（其中用户输入 5 条）。涉及 4 个对话场景。"
+
+    # Persist
+    _wj(_pref_path(pid), {"entries": entries, "summary": summary, "saved_at": time.time()})
+    return {"entries": entries, "summary": summary}
+
+@router.delete("/preferences/{entry_id}")
+def delete_preference_entry(entry_id: str, project_id: str = "default"):
+    p = _pref_path(project_id)
+    if not p.exists():
+        return {"ok": False, "error": "not found"}
+    data = json.loads(p.read_text("utf-8"))
+    entries = data.get("entries", [])
+    entries = [e for e in entries if e.get("id") != entry_id]
+    data["entries"] = entries
+    _wj(p, data)
+    return {"ok": True, "remaining": len(entries)}
+
+def _ts_fmt(ts) -> str:
+    """Format a timestamp (ms or s) to readable string."""
+    if not ts:
+        return ""
+    try:
+        t = float(ts)
+        if t > 1e12:  # milliseconds
+            t /= 1000
+        import datetime
+        return datetime.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(ts)
+
+
 # ═══ Storyline ═══
 def _storyline_path(project_id: str = "default") -> Path:
     d = _col("storylines"); return d / f"{project_id}.json"
@@ -296,7 +428,7 @@ _DEPRECATED_PROVIDERS = {"vllm", "local"}
 
 def _default_settings() -> dict:
     return {
-        "theme": "dark", "auto_save": True, "auto_save_interval": 30,
+        "theme": "dark", "auto_save": True, "auto_save_interval": 30, "max_backup_versions": 10,
         "cost_confirm": True, "export_format": "txt",
         "providers": {
             "openai": {"enabled": False, "api_key": "", "models": ["gpt-4o", "gpt-4o-mini"]},

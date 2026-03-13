@@ -719,6 +719,19 @@ function SystemTab({
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-tertiary)" }}>
             <span>5秒</span><span>300秒</span>
           </div>
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border-subtle)" }}>
+            <div style={{ marginBottom: 8 }}>
+              <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>最大保存备份数量：</span>
+              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>{settings.max_backup_versions || 10} 个版本</span>
+            </div>
+            <input type="range" min={1} max={20} step={1} value={settings.max_backup_versions || 10} onChange={(e) => onUpdate({ max_backup_versions: Number(e.target.value) })} style={{ width: "100%", accentColor: "var(--accent)" }} />
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-tertiary)" }}>
+              <span>1</span><span>20</span>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4, lineHeight: 1.5 }}>
+              每章保留的自动备份版本数。超出时自动删除最早的备份。
+            </div>
+          </div>
         </div>
       </div>
 

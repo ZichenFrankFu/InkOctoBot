@@ -89,7 +89,8 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const [lockedSamples, setLockedSamples] = useState<Record<string, string>>({});
 
   // Preferences (偏好记忆) state
-  const [prefEntries, setPrefEntries] = useState<{ id: string; timestamp: string; action: string; detail: string }[]>([]);
+  const [prefEntries, setPrefEntries] = useState<{ id: string; timestamp: string; action: string; detail: string; role?: string; scope?: string }[]>([]);
+  const [prefFilter, setPrefFilter] = useState<"all" | "user" | "assistant">("all");
   const [prefSummary, setPrefSummary] = useState("");
   const [prefLoading, setPrefLoading] = useState(false);
 
@@ -991,15 +992,6 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                           {calibrationSample}
                         </div>
 
-                        <button className="btn" onClick={toggleLockSample}
-                          style={{ marginTop: 6, fontSize: 11, padding: "3px 12px", display: "flex", alignItems: "center", gap: 4,
-                            color: lockedSamples[sampleType] ? "var(--gold)" : "var(--text-tertiary)",
-                            borderColor: lockedSamples[sampleType] ? "var(--gold)" : undefined,
-                          }}>
-                          <span style={{ fontSize: 12 }}>{lockedSamples[sampleType] ? "🔒" : "🔓"}</span>
-                          {lockedSamples[sampleType] ? "取消锁定" : "锁定为参考"}
-                        </button>
-
                         {calibrationAnalysis && (
                           <div style={{
                             marginTop: 8, padding: "8px 12px", background: "var(--accent-subtle)", borderRadius: 6,
@@ -1046,14 +1038,15 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                             disabled={sampleFeedback.score === 0 || sampleLoading}>
                             提交反馈 & 生成改进样本
                           </button>
-                          <button className="btn" style={{ flex: 1, fontSize: 11 }}
-                            onClick={generateCalibrationSample}
-                            disabled={sampleLoading}>
-                            重新生成
-                          </button>
-                          <button className="btn-primary" style={{ flex: 1, fontSize: 11, background: styleConfirmed ? "var(--text-tertiary)" : "var(--jade)", border: "none" }}
-                            onClick={styleConfirmed ? cancelConfirmStyle : confirmStyle}>
-                            {styleConfirmed ? "取消确认" : "确认风格"}
+                          <button className={lockedSamples[sampleType] ? "btn" : "btn-primary"}
+                            style={{ flex: 1, fontSize: 11,
+                              background: lockedSamples[sampleType] ? undefined : "var(--gold)",
+                              borderColor: lockedSamples[sampleType] ? "var(--gold)" : "var(--gold)",
+                              color: lockedSamples[sampleType] ? "var(--gold)" : "#fff",
+                              border: `1px solid var(--gold)`,
+                            }}
+                            onClick={toggleLockSample}>
+                            {lockedSamples[sampleType] ? "取消锁定" : "锁定参考"}
                           </button>
                         </div>
 
@@ -1079,18 +1072,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                       </div>
                     )}
 
-                    {styleConfirmed && (
-                      <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--jade-subtle)", borderRadius: 6, borderLeft: "3px solid var(--jade)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                        <div>
-                          <span style={{ fontSize: 12, color: "var(--jade)", fontWeight: 600 }}>风格方向已确认！</span>
-                          <span style={{ fontSize: 11, color: "var(--text-secondary)", marginLeft: 8 }}>Pipeline 生成时将使用此风格参数。</span>
-                        </div>
-                        <button className="btn" style={{ fontSize: 10, padding: "2px 10px", borderColor: "var(--jade)", color: "var(--jade)" }}
-                          onClick={cancelConfirmStyle}>
-                          取消确认
-                        </button>
-                      </div>
-                    )}
+                    {/* Removed old confirmStyle banner — locking is now per-sample-type via "锁定参考" button */}
                   </div>
                 </div>
 
@@ -1146,38 +1128,64 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
                 <button className="btn-primary mb-16" style={{ width: "100%" }}
                   onClick={analyzePrefences} disabled={prefLoading}>
-                  {prefLoading ? "分析中..." : "分析我的创作偏好"}
+                  {prefLoading ? "分析中..." : prefEntries.length > 0 ? "刷新交互记录" : "收集交互记录"}
                 </button>
 
                 {/* Summary */}
                 {prefSummary && (
                   <div className="card mb-16">
-                    <div className="card-header"><h3>偏好总结</h3></div>
+                    <div className="card-header"><h3>交互总结</h3></div>
                     <div className="card-body" style={{ fontSize: 13, lineHeight: 1.7, color: "var(--text-secondary)", userSelect: "text" }}>
                       {prefSummary}
                     </div>
                   </div>
                 )}
 
-                {/* Entries list with timestamps */}
+                {/* Filter tabs */}
+                {prefEntries.length > 0 && (
+                  <div className="flex gap-4 mb-12">
+                    {([["all", "全部"], ["user", "用户输入"], ["assistant", "AI回复"]] as const).map(([key, label]) => (
+                      <button key={key} className={prefFilter === key ? "btn-primary" : "btn"}
+                        style={{ fontSize: 11, padding: "4px 12px", borderRadius: 16 }}
+                        onClick={() => setPrefFilter(key)}>
+                        {label} ({key === "all" ? prefEntries.length : prefEntries.filter(e => e.role === key).length})
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Entries list */}
                 {prefEntries.length > 0 && (
                   <div className="card">
                     <div className="card-header">
-                      <h3>编辑历史记录</h3>
-                      <span className="text-xs text-muted">{prefEntries.length} 条</span>
+                      <h3>交互记录</h3>
+                      <span className="text-xs text-muted">
+                        {prefFilter === "all" ? prefEntries.length : prefEntries.filter(e => e.role === prefFilter).length} 条
+                      </span>
                     </div>
-                    <div className="card-body" style={{ padding: 0 }}>
-                      {prefEntries.map((entry) => (
+                    <div className="card-body" style={{ padding: 0, maxHeight: 400, overflowY: "auto" }}>
+                      {prefEntries.filter(e => prefFilter === "all" || e.role === prefFilter).map((entry) => (
                         <div key={entry.id} style={{
                           padding: "10px 16px", borderBottom: "1px solid var(--border-subtle)",
-                          display: "flex", alignItems: "flex-start", gap: 12,
+                          display: "flex", alignItems: "flex-start", gap: 10,
+                          borderLeft: entry.role === "user" ? "3px solid var(--purple)" : "3px solid var(--accent)",
                         }}>
+                          <div style={{
+                            width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 2,
+                            background: entry.role === "user" ? "var(--purple-subtle)" : "var(--accent-subtle)",
+                            border: `1.5px solid ${entry.role === "user" ? "var(--purple)" : "var(--accent)"}`,
+                            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10,
+                          }}>
+                            {entry.role === "user" ? "U" : "AI"}
+                          </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div className="flex items-center gap-8 mb-4">
                               <span className="text-xs font-mono" style={{ color: "var(--text-disabled)" }}>{entry.timestamp}</span>
                               <span className="tag category" style={{ fontSize: 10 }}>{entry.action}</span>
                             </div>
-                            <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{entry.detail}</div>
+                            <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                              {entry.detail.length > 300 ? entry.detail.slice(0, 300) + "..." : entry.detail}
+                            </div>
                           </div>
                           <button className="btn-icon" style={{ fontSize: 12, flexShrink: 0 }}
                             onClick={() => removePrefEntry(entry.id)}>&times;</button>
@@ -1189,7 +1197,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
                 {prefEntries.length === 0 && !prefSummary && (
                   <div className="empty-state" style={{ padding: 32 }}>
-                    <p>点击上方按钮分析你的创作偏好</p>
+                    <p>点击上方按钮收集所有AI对话交互记录</p>
                   </div>
                 )}
               </div>
