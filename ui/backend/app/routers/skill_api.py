@@ -77,6 +77,7 @@ def _skill_domain(skill) -> str:
 def list_skills():
     """List all registered skills with metadata."""
     registry = _get_registry()
+    deactivated = _get_deactivated()
     skills = []
     for skill in registry._skills.values():
         meta = skill.meta()
@@ -85,6 +86,7 @@ def list_skills():
         info["is_learned"] = "learned_skills" in (
             getattr(type(skill), "__module__", "") or ""
         )
+        info["active"] = meta.name not in deactivated
         skills.append(info)
     return {"skills": skills, "total": len(skills)}
 
@@ -280,6 +282,181 @@ class Skill(BaseSkill):
         logger.error("Failed to register new skill %s: %s", req.name, e)
 
     return {"status": "ok", "name": req.name, "path": str(skill_dir)}
+
+
+class SkillUpdateRequest(BaseModel):
+    display_name: str = ""
+    description: str = ""
+    tags: list[str] = []
+    prompt_template: str = ""
+    model_role: str = ""
+    temperature: float | None = None
+    max_tokens: int | None = None
+
+
+@router.put("/{name}")
+def update_skill(name: str, req: SkillUpdateRequest):
+    """Update a learned skill's SKILL.md and skill.py metadata."""
+    registry = _get_registry()
+    if not registry.has(name):
+        raise HTTPException(404, f"Skill '{name}' not found")
+
+    skill = registry.get(name)
+    domain = _skill_domain(skill)
+    if domain != "learned_skills":
+        raise HTTPException(403, "Only learned skills can be modified")
+
+    try:
+        import inspect
+        src = inspect.getfile(type(skill))
+        skill_dir = Path(src).parent
+    except Exception:
+        raise HTTPException(500, "Cannot locate skill source")
+
+    # Update SKILL.md
+    skill_md_path = skill_dir / "SKILL.md"
+    meta = skill.meta()
+    display = req.display_name or meta.display_name
+    desc = req.description or meta.description
+    tags = req.tags if req.tags else meta.tags
+    model_role = req.model_role or meta.model_role
+    temperature = req.temperature if req.temperature is not None else meta.temperature
+    max_tokens = req.max_tokens if req.max_tokens is not None else meta.max_tokens
+    tags_str = ", ".join(tags)
+
+    skill_md_content = f"""---
+name: {name}
+display_name: {display}
+version: "{meta.version}"
+model_role: {model_role}
+tags: [{tags_str}]
+temperature: {temperature}
+max_tokens: {max_tokens}
+permissions: []
+---
+
+# {display}
+
+{desc}
+"""
+    skill_md_path.write_text(skill_md_content, "utf-8")
+
+    # Update skill.py
+    prompt = req.prompt_template or "请根据以下输入生成内容：\\n\\n{text}"
+    skill_py_content = f'''"""Auto-generated learned skill: {display}"""
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Any
+from agents.base_skill import BaseSkill, SkillMeta
+
+
+class Skill(BaseSkill):
+    def meta(self) -> SkillMeta:
+        return SkillMeta(
+            name="{name}",
+            display_name="{display}",
+            description="""{desc}""",
+            version="{meta.version}",
+            model_role="{model_role}",
+            tags={tags},
+            temperature={temperature},
+            max_tokens={max_tokens},
+            input_schema={{"text": {{"type": "str", "required": True}}}},
+            output_schema={{"result": {{"type": "str"}}}},
+            permissions=[],
+        )
+
+    def build_prompt(self, inputs: dict[str, Any]) -> str:
+        text = inputs.get("text", "")
+        return f"""{prompt.replace('"', chr(92)+'"')}""".replace("{{text}}", text)
+
+    def parse_output(self, raw: str) -> dict[str, Any]:
+        return {{"result": raw}}
+'''
+    (skill_dir / "skill.py").write_text(skill_py_content, "utf-8")
+
+    # Reload the skill in registry
+    try:
+        new_skill = registry._load_skill(skill_dir / "skill.py")
+        registry.register(new_skill)
+    except Exception as e:
+        logger.error("Failed to reload skill %s: %s", name, e)
+
+    return {"status": "ok", "name": name}
+
+
+@router.delete("/{name}")
+def delete_skill(name: str):
+    """Delete a learned skill entirely."""
+    registry = _get_registry()
+    if not registry.has(name):
+        raise HTTPException(404, f"Skill '{name}' not found")
+
+    skill = registry.get(name)
+    domain = _skill_domain(skill)
+    if domain != "learned_skills":
+        raise HTTPException(403, "Only learned skills can be deleted")
+
+    try:
+        import inspect
+        import shutil
+        src = inspect.getfile(type(skill))
+        skill_dir = Path(src).parent
+        shutil.rmtree(skill_dir, ignore_errors=True)
+    except Exception as e:
+        logger.error("Failed to delete skill files for %s: %s", name, e)
+
+    registry.unregister(name)
+    return {"status": "ok", "name": name}
+
+
+# ── Deactivated skills tracking ──
+
+def _deactivated_path() -> Path:
+    from ..settings import settings
+    d = Path(settings.data_dir) / "skill_learning_log"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "deactivated.json"
+
+
+def _get_deactivated() -> set[str]:
+    p = _deactivated_path()
+    if not p.exists():
+        return set()
+    try:
+        data = json.loads(p.read_text("utf-8"))
+        return set(data.get("deactivated", []))
+    except Exception:
+        return set()
+
+
+def _save_deactivated(names: set[str]) -> None:
+    p = _deactivated_path()
+    p.write_text(json.dumps({"deactivated": sorted(names)}, ensure_ascii=False), "utf-8")
+
+
+@router.post("/{name}/toggle")
+def toggle_skill(name: str):
+    """Toggle a skill's active/deactivated state."""
+    registry = _get_registry()
+    if not registry.has(name):
+        # Check if it's deactivated
+        deactivated = _get_deactivated()
+        if name in deactivated:
+            deactivated.discard(name)
+            _save_deactivated(deactivated)
+            return {"status": "ok", "name": name, "active": True}
+        raise HTTPException(404, f"Skill '{name}' not found")
+
+    deactivated = _get_deactivated()
+    if name in deactivated:
+        deactivated.discard(name)
+        active = True
+    else:
+        deactivated.add(name)
+        active = False
+    _save_deactivated(deactivated)
+    return {"status": "ok", "name": name, "active": active}
 
 
 class SkillExecuteRequest(BaseModel):

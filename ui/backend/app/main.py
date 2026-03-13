@@ -34,7 +34,7 @@ from .routers.project_api import router as project_router
 from .routers.skill_api import router as skill_router
 from .routers.dev_api import router as dev_router
 
-app = FastAPI(title="InkOctoBot", version="2.0.0")
+app = FastAPI(title="InkOctoBot — AI 小说智能体工作台", version="2.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"],

@@ -57,6 +57,10 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   const [showCreate, setShowCreate] = useState(false);
   const [newSkill, setNewSkill] = useState({ name: "", display_name: "", description: "", tags: "", prompt_template: "" });
   const [creating, setCreating] = useState(false);
+  const [editingSkill, setEditingSkill] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ display_name: "", description: "", tags: "", prompt_template: "" });
+  const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   // Self-learning section state
   const [learningLog, setLearningLog] = useState<LearningLogEntry[]>([]);
@@ -147,6 +151,55 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       alert(e?.message || "Failed to create skill");
     }
     setCreating(false);
+  };
+
+  const handleToggleSkill = async (name: string) => {
+    try {
+      const resp = await apiPost<{ active: boolean }>(`/api/skills/${name}/toggle`, {});
+      setSkills(prev => prev.map(s => s.name === name ? { ...s, active: resp.active } : s));
+    } catch (e: any) {
+      alert(e?.message || "Failed to toggle skill");
+    }
+  };
+
+  const handleDeleteSkill = async (name: string) => {
+    try {
+      await apiDelete(`/api/skills/${name}`);
+      setSkills(prev => prev.filter(s => s.name !== name));
+      setConfirmDelete(null);
+      if (expanded === name) setExpanded(null);
+      if (editingSkill === name) setEditingSkill(null);
+    } catch (e: any) {
+      alert(e?.message || "Failed to delete skill");
+    }
+  };
+
+  const handleEditSkill = (skill: SkillInfo) => {
+    setEditingSkill(skill.name);
+    setEditForm({
+      display_name: skill.display_name,
+      description: skill.description,
+      tags: skill.tags.join(", "),
+      prompt_template: "",
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingSkill) return;
+    setSaving(true);
+    try {
+      await apiPut(`/api/skills/${editingSkill}`, {
+        display_name: editForm.display_name.trim(),
+        description: editForm.description.trim(),
+        tags: editForm.tags.split(",").map(s => s.trim()).filter(Boolean),
+        prompt_template: editForm.prompt_template.trim() || undefined,
+      });
+      setEditingSkill(null);
+      loadSkills();
+    } catch (e: any) {
+      alert(e?.message || "Failed to update skill");
+    }
+    setSaving(false);
   };
 
   const filtered = skills.filter((s) => {
@@ -523,11 +576,12 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                         padding: "14px 20px",
                         cursor: "pointer",
                         transition: "background 0.1s",
+                        opacity: skill.active === false ? 0.5 : 1,
                       }}
                     >
                       <div style={{ flex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", textDecoration: skill.active === false ? "line-through" : "none" }}>
                             {skill.display_name}
                           </span>
                           <code style={{ fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-secondary)", padding: "1px 6px", borderRadius: 4 }}>
@@ -539,10 +593,46 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                               自学习
                             </span>
                           )}
+                          {skill.active === false && (
+                            <span style={{ fontSize: 10, padding: "1px 8px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-disabled)", fontWeight: 600 }}>
+                              已停用
+                            </span>
+                          )}
                         </div>
                         <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
                           {skill.description}
                         </div>
+                      </div>
+                      {/* Action buttons */}
+                      <div style={{ display: "flex", gap: 4, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                        <button
+                          className="btn"
+                          style={{ fontSize: 10, padding: "3px 8px" }}
+                          title={skill.active === false ? "启用" : "停用"}
+                          onClick={() => handleToggleSkill(skill.name)}
+                        >
+                          {skill.active === false ? "启用" : "停用"}
+                        </button>
+                        {skill.is_learned && (
+                          <>
+                            <button
+                              className="btn"
+                              style={{ fontSize: 10, padding: "3px 8px" }}
+                              title="修改"
+                              onClick={() => handleEditSkill(skill)}
+                            >
+                              修改
+                            </button>
+                            <button
+                              className="btn"
+                              style={{ fontSize: 10, padding: "3px 8px", color: "var(--error)" }}
+                              title="删除"
+                              onClick={() => setConfirmDelete(skill.name)}
+                            >
+                              删除
+                            </button>
+                          </>
+                        )}
                       </div>
                       <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                         {skill.tags.slice(0, 3).map((t) => (
@@ -572,6 +662,49 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                         &#9654;
                       </span>
                     </div>
+
+                    {/* Delete confirmation */}
+                    {confirmDelete === skill.name && (
+                      <div style={{ padding: "12px 20px", background: "rgba(239,68,68,0.06)", borderTop: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 12 }}>
+                        <span style={{ fontSize: 12, color: "var(--error)", flex: 1 }}>
+                          确认删除技能 "{skill.display_name}"？此操作不可撤销。
+                        </span>
+                        <button className="btn" style={{ fontSize: 11, padding: "4px 12px" }} onClick={() => setConfirmDelete(null)}>取消</button>
+                        <button className="btn-primary" style={{ fontSize: 11, padding: "4px 12px", background: "var(--error)", borderColor: "var(--error)" }} onClick={() => handleDeleteSkill(skill.name)}>确认删除</button>
+                      </div>
+                    )}
+
+                    {/* Edit form */}
+                    {editingSkill === skill.name && (
+                      <div style={{ padding: "16px 20px", background: "var(--bg-secondary)", borderTop: "1px solid var(--border-subtle)" }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 12 }}>修改技能</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                          <div className="field">
+                            <label className="label">Display Name</label>
+                            <input className="input" value={editForm.display_name} onChange={e => setEditForm(prev => ({ ...prev, display_name: e.target.value }))} />
+                          </div>
+                          <div className="field">
+                            <label className="label">Tags (逗号分隔)</label>
+                            <input className="input" value={editForm.tags} onChange={e => setEditForm(prev => ({ ...prev, tags: e.target.value }))} />
+                          </div>
+                        </div>
+                        <div className="field mb-12">
+                          <label className="label">Description</label>
+                          <input className="input" value={editForm.description} onChange={e => setEditForm(prev => ({ ...prev, description: e.target.value }))} />
+                        </div>
+                        <div className="field mb-12">
+                          <label className="label">Prompt Template (留空保持不变)</label>
+                          <textarea className="input" value={editForm.prompt_template} onChange={e => setEditForm(prev => ({ ...prev, prompt_template: e.target.value }))}
+                            placeholder="留空则保持原有模板" rows={3} style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
+                        </div>
+                        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                          <button className="btn" onClick={() => setEditingSkill(null)}>取消</button>
+                          <button className="btn-primary" onClick={handleSaveEdit} disabled={saving}>
+                            {saving ? "保存中..." : "保存修改"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Expanded detail */}
                     {isExpanded && (

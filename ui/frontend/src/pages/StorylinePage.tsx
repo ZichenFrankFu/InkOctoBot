@@ -72,13 +72,21 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
     setDirty(true);
   }, [nodes]);
 
-  // --- Auto layout ---
+  // --- Auto layout (show connections clearly) ---
   const autoLayout = useCallback(() => {
+    if (nodes.length === 0) return;
     const sorted = [...nodes].sort((a, b) => (a.chapter_num || 999) - (b.chapter_num || 999));
+
+    // Build adjacency for multi-row layout
+    const nodeMap = new Map(sorted.map(n => [n.id, n]));
+    const COLS = Math.max(3, Math.ceil(Math.sqrt(sorted.length * 1.5)));
+    const ROW_H = NODE_H + 80;
+    const COL_W = NODE_W + GAP_X;
+
     setNodes(sorted.map((n, i) => ({
       ...n,
-      x: 60 + i * (NODE_W + GAP_X),
-      y: 60,
+      x: 60 + (i % COLS) * COL_W,
+      y: 60 + Math.floor(i / COLS) * ROW_H,
     })));
     setDirty(true);
   }, [nodes]);
@@ -320,99 +328,90 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
               </button>
             </div>
             <span className="text-xs text-muted" style={{ marginLeft: "auto" }}>
-              ↑ 早 &middot; 时间线 &middot; 晚 ↓ &nbsp;|&nbsp; 横向并排 = 同时发生
+              拖拽移动节点 &nbsp;|&nbsp; 「添加连线」创建关系 &nbsp;|&nbsp; 「自动布局」整理位置
             </span>
           </div>
 
-          {/* Vertical Timeline */}
-          <div style={{ padding: "24px 20px", minHeight: "100%" }}>
-            {(() => {
-              // Group nodes by week
-              // Group by time period (use time field or fall back to chapter order)
-              const timeGroups = new Map<string, StoryNode[]>();
-              const sorted = [...nodes].sort((a, b) => (a.chapter_num || 0) - (b.chapter_num || 0));
-              sorted.forEach(n => {
-                const key = n.time || `章节 ${n.chapter_num || "?"}`;
-                if (!timeGroups.has(key)) timeGroups.set(key, []);
-                timeGroups.get(key)!.push(n);
-              });
-              const weekEntries = Array.from(timeGroups.entries());
+          {/* Draggable Canvas with SVG connections */}
+          <div style={{ position: "relative", width: canvasW, height: canvasH, minHeight: "100%" }}>
+            {/* SVG connection lines layer */}
+            <svg style={{ position: "absolute", top: 0, left: 0, width: canvasW, height: canvasH, pointerEvents: "none", zIndex: 1 }}>
+              <defs>
+                <marker id="storyline-arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L8,3 L0,6 Z" fill="var(--accent)" opacity="0.7" />
+                </marker>
+              </defs>
+              {edgePaths.map(ep => (
+                <g key={ep.id}>
+                  <path d={ep.path} fill="none" stroke="var(--accent)" strokeWidth={2} opacity={0.5} markerEnd="url(#storyline-arrow)" />
+                  {ep.label && (
+                    <text x={ep.mx} y={ep.my} textAnchor="middle" fontSize={10} fill="var(--text-secondary)">
+                      {ep.label}
+                    </text>
+                  )}
+                </g>
+              ))}
+            </svg>
 
-              return weekEntries.map(([timeLabel, weekNodes], wi) => (
-                <div key={timeLabel} style={{ position: "relative", marginBottom: 8 }}>
-                  {/* Time label + vertical line */}
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
-                    {/* Timeline spine */}
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 80, flexShrink: 0 }}>
-                      <div style={{
-                        minWidth: 64, padding: "4px 10px", borderRadius: 16,
-                        background: "var(--accent-subtle)", border: "2px solid var(--accent)",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        fontSize: 10, fontWeight: 700, color: "var(--accent)", zIndex: 2,
-                        textAlign: "center", lineHeight: 1.3, whiteSpace: "nowrap",
-                      }}>
-                        {timeLabel.length > 8 ? timeLabel.slice(0, 8) + "…" : timeLabel}
-                      </div>
-                      {wi < weekEntries.length - 1 && (
-                        <div style={{ width: 2, flex: 1, minHeight: 20, background: "var(--border)", marginTop: 4 }} />
-                      )}
-                    </div>
-                    {/* Nodes row (parallel events at same time) */}
-                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", flex: 1, paddingBottom: 16 }}>
-                      {weekNodes.map(n => (
-                        <div
-                          key={n.id}
-                          onClick={() => setSelected(n.id)}
-                          className={`timeline-node ${selected === n.id ? "selected" : ""}`}
-                          style={{
-                            position: "relative",
-                            left: "auto", top: "auto",
-                            width: 220,
-                            minHeight: NODE_H,
-                            borderTop: `4px solid ${n.color || "var(--accent)"}`,
-                            cursor: "pointer",
-                            flexShrink: 0,
-                          }}
-                        >
-                          <div className="timeline-node-title">
-                            {n.chapter_num != null && (
-                              <span style={{ color: n.color || "var(--accent)", marginRight: 4 }}>Ch{n.chapter_num}</span>
-                            )}
-                            {n.title}
-                          </div>
-                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4 }}>
-                            {n.time && (
-                              <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "var(--accent-subtle)", color: "var(--accent)" }}>
-                                {n.time}
-                              </span>
-                            )}
-                            {n.location && (
-                              <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "var(--jade-subtle)", color: "var(--jade)" }}>
-                                {n.location}
-                              </span>
-                            )}
-                          </div>
-                          <div className="timeline-node-meta" style={{ lineHeight: 1.4, height: 28, overflow: "hidden" }}>
-                            {n.summary || "(空)"}
-                          </div>
-                          {(n.characters?.length || 0) > 0 && (
-                            <div style={{ fontSize: 10, color: "var(--text-disabled)", marginTop: 2, display: "flex", gap: 3, flexWrap: "wrap" }}>
-                              {n.characters!.map((ch, i) => (
-                                <span key={i} style={{ background: "var(--purple-subtle)", color: "var(--purple)", padding: "0 5px", borderRadius: 6, fontSize: 9 }}>{ch}</span>
-                              ))}
-                            </div>
-                          )}
-                          {/* Connection indicators */}
-                          {edges.filter(e => e.from === n.id).length > 0 && (
-                            <div style={{ position: "absolute", bottom: -2, left: "50%", transform: "translateX(-50%)", fontSize: 10, color: "var(--text-disabled)" }}>↓</div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+            {/* Draggable node cards */}
+            {nodes.map(n => (
+              <div
+                key={n.id}
+                onMouseDown={(e) => onNodeMouseDown(n.id, e)}
+                onClick={() => {
+                  if (connecting && connecting !== n.id) {
+                    setEdges(prev => [...prev, { id: uid(), from: connecting, to: n.id, label: "" }]);
+                    setConnecting(null);
+                    setDirty(true);
+                  } else {
+                    setSelected(n.id);
+                  }
+                }}
+                className={`timeline-node ${selected === n.id ? "selected" : ""}`}
+                style={{
+                  position: "absolute",
+                  left: n.x,
+                  top: n.y,
+                  width: NODE_W,
+                  minHeight: NODE_H,
+                  borderTop: `4px solid ${n.color || "var(--accent)"}`,
+                  cursor: dragging?.id === n.id ? "grabbing" : "grab",
+                  zIndex: selected === n.id ? 5 : 2,
+                  boxShadow: selected === n.id ? "0 2px 12px rgba(0,0,0,0.15)" : "0 1px 4px rgba(0,0,0,0.08)",
+                  transition: dragging?.id === n.id ? "none" : "box-shadow 0.15s",
+                  userSelect: "none",
+                }}
+              >
+                <div className="timeline-node-title">
+                  {n.chapter_num != null && (
+                    <span style={{ color: n.color || "var(--accent)", marginRight: 4 }}>Ch{n.chapter_num}</span>
+                  )}
+                  {n.title}
                 </div>
-              ));
-            })()}
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4 }}>
+                  {n.time && (
+                    <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "var(--accent-subtle)", color: "var(--accent)" }}>
+                      {n.time}
+                    </span>
+                  )}
+                  {n.location && (
+                    <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "var(--jade-subtle)", color: "var(--jade)" }}>
+                      {n.location}
+                    </span>
+                  )}
+                </div>
+                <div className="timeline-node-meta" style={{ lineHeight: 1.4, height: 28, overflow: "hidden" }}>
+                  {n.summary || "(空)"}
+                </div>
+                {(n.characters?.length || 0) > 0 && (
+                  <div style={{ fontSize: 10, color: "var(--text-disabled)", marginTop: 2, display: "flex", gap: 3, flexWrap: "wrap" }}>
+                    {n.characters!.map((ch, i) => (
+                      <span key={i} style={{ background: "var(--purple-subtle)", color: "var(--purple)", padding: "0 5px", borderRadius: 6, fontSize: 9 }}>{ch}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
 
