@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { apiGet, apiPut } from "../api/client";
+import { useToast } from "../components/shared/Toast";
 import type { StoryNode, StoryEdge, ChapterOutline, Volume } from "../api/types";
 
 const uid = () => `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -11,6 +12,7 @@ const HEADER_H = 56;
 const TIMELINE_H = 64;
 
 export default function StorylinePage({ projectId }: { projectId: string }) {
+  const { toast } = useToast();
   const [nodes, setNodes] = useState<StoryNode[]>([]);
   const [edges, setEdges] = useState<StoryEdge[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -19,6 +21,14 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
   const [connecting, setConnecting] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
+
+  // Warn before leaving with unsaved changes
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
 
   // --- Load ---
   useEffect(() => {
@@ -45,7 +55,7 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
     if (!loaded || !dirty) return;
     const t = setTimeout(() => {
       const pid = projectId || "default";
-      apiPut(`/api/data/storyline`, { project_id: pid, nodes, edges }).catch(console.error);
+      apiPut(`/api/data/storyline`, { project_id: pid, nodes, edges }).catch((e: any) => toast(e.message || "操作失败", "error"));
       setDirty(false);
     }, 2000);
     return () => clearTimeout(t);

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
+import { useToast } from "../components/shared/Toast";
 import { useResizable } from "../hooks/useResizable";
 import { computeDiff, groupIntoHunks, assembleFromHunks } from "../utils/simpleDiff";
 import type { DiffHunk } from "../utils/simpleDiff";
@@ -101,6 +102,7 @@ function formatSceneDirectorOutput(result: any): string {
 }
 
 export default function EditorPage({ projectId, onNavigate }: { projectId: string; onNavigate?: (tab: string) => void }) {
+  const { toast } = useToast();
   const [volumes, setVolumes] = useState<LocalVolume[]>([]);
   const [activeChId, setActiveChId] = useState<string>("");
   const [content, setContent] = useState("");
@@ -238,6 +240,13 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   }, [activeChId, loaded]);
 
   useEffect(() => {
+    if (saveStatus !== "unsaved") return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [saveStatus]);
+
+  useEffect(() => {
     if (!loaded) return;
     setSaveStatus("unsaved");
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -245,8 +254,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       setSaveStatus("saving");
       const updatedVolumes = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
       setVolumes(updatedVolumes);
-      try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: updatedVolumes }); setSaveStatus("saved"); }
-      catch { setSaveStatus("unsaved"); }
+      try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: updatedVolumes }); setSaveStatus("saved"); toast("已自动保存", "success"); }
+      catch (e: any) { setSaveStatus("unsaved"); toast(e.message || "自动保存失败", "error"); }
     }, 1500);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [content, titleVal]);
@@ -842,7 +851,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setWaitingForConfirm(false);
     setChatMessages(prev => [...prev, { agent: "User", content: "确认满意，继续下一步。", status: "done", timestamp: Date.now() }]);
     if (sessionIdRef.current) {
-      apiPost(`/api/generation/confirm/${sessionIdRef.current}`, { action: "continue" }).catch(() => {});
+      apiPost(`/api/generation/confirm/${sessionIdRef.current}`, { action: "continue" }).catch((e) => toast(e.message || "操作失败", "error"));
     }
   };
 
@@ -859,7 +868,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }
     // Abort the current pipeline
     if (sessionIdRef.current) {
-      apiPost(`/api/generation/confirm/${sessionIdRef.current}`, { action: "abort" }).catch(() => {});
+      apiPost(`/api/generation/confirm/${sessionIdRef.current}`, { action: "abort" }).catch((e) => toast(e.message || "操作失败", "error"));
     }
     stopPolling();
     sessionStorage.removeItem(SESS_KEY);
@@ -872,7 +881,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   const handleStopPipeline = useCallback(() => {
     if (sessionIdRef.current) {
-      apiPost(`/api/generation/stop/${sessionIdRef.current}`, {}).catch(() => {});
+      apiPost(`/api/generation/stop/${sessionIdRef.current}`, {}).catch((e) => toast(e.message || "操作失败", "error"));
     }
     stopPolling();
     sessionStorage.removeItem(SESS_KEY);
@@ -918,7 +927,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setChatMessages(prev => [...prev, { agent: "System", content: `已合并写入 ${finalText.length} 字到编辑器！`, status: "done", timestamp: Date.now() }]);
     apiPost("/api/data/versions", {
       project_id: projectId || "default", version: aiVersion,
-    }).catch(() => {});
+    }).catch((e) => toast(e.message || "操作失败", "error"));
     setMergePreview(null);
     setAiTab("eval");
   }, [projectId, activeChId, content, versionHistory]);
@@ -952,7 +961,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setChatInput("");
     if (waitingForConfirm && sessionIdRef.current) {
       setWaitingForConfirm(false);
-      apiPost(`/api/generation/confirm/${sessionIdRef.current}`, { action: "continue", message: msg }).catch(() => {});
+      apiPost(`/api/generation/confirm/${sessionIdRef.current}`, { action: "continue", message: msg }).catch((e) => toast(e.message || "操作失败", "error"));
     }
   };
 
@@ -983,7 +992,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                 <span>{batchStatus.running ? `批量生成中: 第${batchStatus.current}章` : `批量完成 (${batchStatus.completed.length}/${batchStatus.total})`}</span>
                 {batchStatus.running && batchStatus.sessionId && (
                   <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px", color: "var(--error)" }}
-                    onClick={() => { apiPost(`/api/generation/batch/stop/${batchStatus.sessionId}`, {}).catch(() => {}); setBatchStatus(prev => prev ? { ...prev, running: false } : prev); }}>停止</button>
+                    onClick={() => { apiPost(`/api/generation/batch/stop/${batchStatus.sessionId}`, {}).catch((e) => toast(e.message || "操作失败", "error")); setBatchStatus(prev => prev ? { ...prev, running: false } : prev); }}>停止</button>
                 )}
                 {!batchStatus.running && <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={() => setBatchStatus(null)}>关闭</button>}
               </div>

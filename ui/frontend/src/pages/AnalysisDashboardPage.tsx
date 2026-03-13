@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { apiGet } from "../api/client";
+import { useToast } from "../components/shared/Toast";
 
 /* ── trend analysis types ── */
 interface TrendResult {
@@ -133,6 +134,7 @@ function sortBy<T>(arr: T[], key: string, dir: SortDir): T[] {
 }
 
 export default function AnalysisDashboardPage() {
+  const { toast } = useToast();
   const [mainTab, setMainTab] = useState<MainTab>("trends");
 
   /* ── Trend analysis state ── */
@@ -183,11 +185,13 @@ export default function AnalysisDashboardPage() {
         }
       })
       .catch(e => {
-        setTrendError(String(e));
+        const msg = e?.message || String(e);
+        setTrendError(msg);
         setTrendData(null);
+        toast(msg || "分析失败", "error");
       })
       .finally(() => setLoadingTrend(false));
-  }, [trendPlatform, lookback, topK]);
+  }, [trendPlatform, lookback, topK, toast]);
 
   const trendSubTabs: { key: SubTab; label: string; show?: boolean }[] = [
     { key: "tags", label: "标签趋势" },

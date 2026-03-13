@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
+import { useToast } from "../components/shared/Toast";
 import type { ReferenceWork, ReferenceEntry, MediaType } from "../api/types";
 
 const MEDIA_TYPES: { value: MediaType; label: string; color: string }[] = [
@@ -61,6 +62,7 @@ function StarRating({ value, onChange }: { value: number; onChange: (n: number) 
 }
 
 export default function ReferenceLibraryPage() {
+  const { toast } = useToast();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
@@ -138,24 +140,28 @@ export default function ReferenceLibraryPage() {
       const updated = await apiPut<ReferenceWork>(`/api/references/works/${sel.ref_id}/analysis`, { field: fieldKey, data });
       setSel(updated);
     } catch (e: any) {
-      alert("保存失败: " + (e?.message || "未知错误"));
+      toast(e?.message || "操作失败", "error");
     }
   }
 
   async function addWork() {
     if (!nTitle.trim()) return;
-    await apiPost("/api/references/works", {
-      title: nTitle.trim(),
-      creator: nCreator.trim() || undefined,
-      media_type: nMedia,
-      genre: nGenre.trim() || undefined,
-      user_why_i_like: nWhy.trim() || undefined,
-      user_rating: nRating || undefined,
-      source: "manual",
-    });
-    setShowAddWork(false);
-    setNTitle(""); setNCreator(""); setNGenre(""); setNWhy(""); setNRating(0);
-    load();
+    try {
+      await apiPost("/api/references/works", {
+        title: nTitle.trim(),
+        creator: nCreator.trim() || undefined,
+        media_type: nMedia,
+        genre: nGenre.trim() || undefined,
+        user_why_i_like: nWhy.trim() || undefined,
+        user_rating: nRating || undefined,
+        source: "manual",
+      });
+      setShowAddWork(false);
+      setNTitle(""); setNCreator(""); setNGenre(""); setNWhy(""); setNRating(0);
+      load();
+    } catch (e: any) {
+      toast(e.message || "操作失败", "error");
+    }
   }
 
   async function uploadNovelText() {
@@ -180,7 +186,7 @@ export default function ReferenceLibraryPage() {
         setSel(updated);
         setWorks(prev => prev.map(w => w.ref_id === updated.ref_id ? updated : w));
       } catch (e: any) {
-        alert(`上传失败: ${e.message}`);
+        toast(e.message || "操作失败", "error");
       }
       setUploading(false);
       return;
@@ -206,17 +212,21 @@ export default function ReferenceLibraryPage() {
       if (fileInputRef.current) fileInputRef.current.value = "";
       load();
     } catch (e: any) {
-      alert(`上传失败: ${e.message}`);
+      toast(e.message || "操作失败", "error");
     }
     setUploading(false);
   }
 
   async function delWork(id: string) {
     if (!confirm("确定删除这部参考作品及其所有条目？")) return;
-    await apiDelete(`/api/references/works/${id}`);
-    setSel(null);
-    setEntries([]);
-    load();
+    try {
+      await apiDelete(`/api/references/works/${id}`);
+      setSel(null);
+      setEntries([]);
+      load();
+    } catch (e: any) {
+      toast(e.message || "操作失败", "error");
+    }
   }
 
   async function batchDelete() {
@@ -225,8 +235,8 @@ export default function ReferenceLibraryPage() {
     for (const id of selectedIds) {
       try {
         await apiDelete(`/api/references/works/${id}`);
-      } catch (e) {
-        console.error("Failed to delete", id, e);
+      } catch (e: any) {
+        toast(e.message || "操作失败", "error");
       }
     }
     if (sel && selectedIds.has(sel.ref_id)) {
@@ -255,16 +265,16 @@ export default function ReferenceLibraryPage() {
       setSel(updated);
       setWorks(prev => prev.map(w => w.ref_id === sel.ref_id ? updated : w));
     } catch (e: any) {
-      alert(`评分更新失败: ${e.message}`);
+      toast(e.message || "操作失败", "error");
     }
   }
 
   async function runPreprocess(id: string) {
     try {
       const r = await apiPost<any>(`/api/references/preprocess/${id}`, {});
-      alert(`特征提取完成 (${r.chapters || 0} 章, ${r.errors?.length || 0} 错误)`);
+      toast(`特征提取完成 (${r.chapters || 0} 章, ${r.errors?.length || 0} 错误)`, "success");
     } catch (e: any) {
-      alert(`特征提取失败: ${e.message}`);
+      toast(e.message || "操作失败", "error");
     }
     load();
     if (sel?.ref_id === id) {
@@ -277,22 +287,30 @@ export default function ReferenceLibraryPage() {
 
   async function addEntry() {
     if (!sel || !eCont.trim()) return;
-    await apiPost("/api/references/entries", {
-      ref_id: sel.ref_id,
-      entry_type: eType,
-      title: eTitle.trim(),
-      content: eCont.trim(),
-      position_label: ePos.trim() || undefined,
-      user_notes: eNotes.trim() || undefined,
-    });
-    setShowAddEntry(false);
-    setETitle(""); setECont(""); setEPos(""); setENotes("");
-    selectWork(sel);
+    try {
+      await apiPost("/api/references/entries", {
+        ref_id: sel.ref_id,
+        entry_type: eType,
+        title: eTitle.trim(),
+        content: eCont.trim(),
+        position_label: ePos.trim() || undefined,
+        user_notes: eNotes.trim() || undefined,
+      });
+      setShowAddEntry(false);
+      setETitle(""); setECont(""); setEPos(""); setENotes("");
+      selectWork(sel);
+    } catch (e: any) {
+      toast(e.message || "操作失败", "error");
+    }
   }
 
   async function delEntry(eid: string) {
-    await apiDelete(`/api/references/entries/${eid}`);
-    if (sel) selectWork(sel);
+    try {
+      await apiDelete(`/api/references/entries/${eid}`);
+      if (sel) selectWork(sel);
+    } catch (e: any) {
+      toast(e.message || "操作失败", "error");
+    }
   }
 
   const statusBadge = (s: string) => {

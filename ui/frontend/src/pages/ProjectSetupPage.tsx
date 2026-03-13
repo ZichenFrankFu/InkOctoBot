@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { apiGet, apiPut } from "../api/client";
+import { useToast } from "../components/shared/Toast";
 import type { Project, Character, WorldBookEntry } from "../api/types";
 
 interface SetupProps {
@@ -8,6 +9,7 @@ interface SetupProps {
 }
 
 export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) {
+  const { toast } = useToast();
   const [project, setProject] = useState<Project | null>(null);
   const [characters, setCharacters] = useState<Character[]>([]);
   const [worldEntries, setWorldEntries] = useState<WorldBookEntry[]>([]);
@@ -25,6 +27,13 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
   const [outlineText, setOutlineText] = useState("");
   const [constraints, setConstraints] = useState("");
   const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,8 +69,9 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
         constraints,
       });
       setDirty(false);
-    } catch (e) {
-      console.error(e);
+      toast("设置已保存", "success");
+    } catch (e: any) {
+      toast(e.message || "操作失败", "error");
     }
   };
 

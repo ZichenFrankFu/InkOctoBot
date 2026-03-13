@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
+import { useToast } from "../components/shared/Toast";
 import type { WorldBookEntry, WorldBookCategory } from "../api/types";
 import TagAutocomplete from "../components/shared/TagAutocomplete";
 
@@ -42,6 +43,7 @@ interface AIChatMsg {
 }
 
 export default function WorldBookPage({ projectId, projects }: Props) {
+  const { toast } = useToast();
   const [items, setItems] = useState<WorldBookEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterCat, setFilterCat] = useState<string>("");
@@ -144,7 +146,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
       setItems([...items, entry]);
       setEditing(entry);
       setDirty(false);
-    } catch (e) { console.error(e); }
+    } catch (e: any) { toast(e?.message || "操作失败", "error"); }
   };
 
   const save = async () => {
@@ -154,7 +156,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
       setDirty(false);
       setItems(prev => prev.map(item => item.id === editing.id ? { ...editing, ...updated } : item));
       setEditing({ ...editing, ...updated });
-    } catch (e) { console.error(e); }
+    } catch (e: any) { toast(e?.message || "操作失败", "error"); }
   };
 
   const remove = async (id: string) => {
@@ -163,7 +165,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
       await apiDelete(`/api/data/worldbook/${id}`);
       if (editing?.id === id) setEditing(null);
       load();
-    } catch (e) { console.error(e); }
+    } catch (e: any) { toast(e?.message || "操作失败", "error"); }
   };
 
   const u = (key: string, val: any) => {
@@ -294,7 +296,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                   onClick={async () => {
                     if (!confirm(`确定删除 ${selectedIds.size} 个条目？`)) return;
                     for (const id of selectedIds) {
-                      await apiDelete(`/api/data/worldbook/${id}`).catch(() => {});
+                      await apiDelete(`/api/data/worldbook/${id}`).catch((e) => toast(e.message || "操作失败", "error"));
                     }
                     setSelectedIds(new Set()); setBatchMode(false); load();
                   }}>

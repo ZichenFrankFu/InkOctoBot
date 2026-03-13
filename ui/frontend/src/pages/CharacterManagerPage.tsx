@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
+import { useToast } from "../components/shared/Toast";
 import type { Character, CharacterLayerB, CharacterRelationship, DynamicPropertySnapshot } from "../api/types";
 
 interface CharChatMsg {
@@ -28,6 +29,7 @@ const DEFAULT_LAYER_B: CharacterLayerB = {
 };
 
 export default function CharacterManagerPage({ projectId, projects }: Props) {
+  const { toast } = useToast();
   const [items, setItems] = useState<Character[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Character | null>(null);
@@ -37,6 +39,14 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const [rightView, setRightView] = useState<"detail" | "graph">("detail");
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Warn before leaving with unsaved changes
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 220, maxSize: 420 });
 
@@ -229,8 +239,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
       setItems([...items, c]);
       setEditing(c);
       setDirty(false);
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      toast(e.message || "操作失败", "error");
     }
   };
 
@@ -240,8 +250,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
       await apiPut(`/api/data/characters/${editing.id}`, editing);
       setDirty(false);
       load();
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      toast(e.message || "操作失败", "error");
     }
   };
 
@@ -251,8 +261,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
       await apiDelete(`/api/data/characters/${id}`);
       if (editing?.id === id) setEditing(null);
       load();
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      toast(e.message || "操作失败", "error");
     }
   };
 
@@ -475,7 +485,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   onClick={async () => {
                     if (!confirm(`确定删除 ${selectedIds.size} 个角色？`)) return;
                     for (const id of selectedIds) {
-                      await apiDelete(`/api/data/characters/${id}`).catch(() => {});
+                      await apiDelete(`/api/data/characters/${id}`).catch((e: any) => toast(e.message || "操作失败", "error"));
                     }
                     setSelectedIds(new Set()); setBatchMode(false); load();
                   }}>
@@ -518,8 +528,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
             {loading ? (
               <div className="loading"><div className="loading-spinner" /></div>
             ) : filtered.length === 0 ? (
-              <div className="empty-state" style={{ padding: 32 }}>
-                <p>{search ? "没有匹配的角色" : "该项目暂无角色"}</p>
+              <div className="empty-state" style={{ padding: 32, textAlign: "center" }}>
+                <p>{search ? "没有匹配的角色" : "暂无角色，点击左上角「+」添加"}</p>
               </div>
             ) : (
               filtered.map(c => (

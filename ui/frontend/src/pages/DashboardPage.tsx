@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { apiGet } from "../api/client";
+import { useToast } from "../components/shared/Toast";
 import type { Novel, RankList, ReferenceWork, Volume } from "../api/types";
 
 /* ── local response types ── */
@@ -56,11 +57,14 @@ const platformLabel = (p: string) =>
 const wc = (t: string) => (t ? t.replace(/[\s\p{P}]/gu, "").length : 0);
 
 export default function DashboardPage({ projects, onNavigate, onSelectProject }: { projects: { id: string; name: string; genre?: string }[]; onNavigate: (tab: string) => void; onSelectProject?: (id: string) => void }) {
+  const { toast } = useToast();
   const [platform, setPlatform] = useState<PlatformFilter>("");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [highFreq, setHighFreq] = useState<HighFreqNovel[]>([]);
   const [hotTags, setHotTags] = useState<HotTag[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
 
   /* side panel */
   const [panelOpen, setPanelOpen] = useState(false);
@@ -130,6 +134,7 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
   /* ── fetch market data on platform change ── */
   useEffect(() => {
     setLoading(true);
+    setLoadError(false);
     const qs = platform ? `?platform=${platform}` : "";
     Promise.all([
       apiGet<Overview>(`/api/db/overview${qs}`),
@@ -141,9 +146,12 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
         setHighFreq(Array.isArray(hf.rows) ? hf.rows : []);
         setHotTags(Array.isArray(tg.rows) ? tg.rows : []);
       })
-      .catch(console.error)
+      .catch((e) => {
+        setLoadError(true);
+        toast(e.message || "加载失败", "error");
+      })
       .finally(() => setLoading(false));
-  }, [platform]);
+  }, [platform, retryKey]);
 
   /* ── derived ── */
   const maxCategory = useMemo(
@@ -166,8 +174,8 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
     try {
       const d = await apiGet<NovelDetail>(`/api/db/novel/${uid}`);
       setPanelData(d);
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      toast(e?.message || "加载作品详情失败", "error");
     } finally {
       setPanelLoading(false);
     }
@@ -309,6 +317,15 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
         <div className="loading">
           <div className="loading-spinner" />
           加载中...
+        </div>
+      ) : loadError ? (
+        <div className="empty-state">
+          <div className="empty-icon">!</div>
+          <h4>加载失败</h4>
+          <p>无法加载市场数据，请检查网络连接或稍后重试。</p>
+          <button className="btn" onClick={() => setRetryKey(k => k + 1)} style={{ marginTop: 12 }}>
+            重试
+          </button>
         </div>
       ) : !overview ? (
         <div className="empty-state">

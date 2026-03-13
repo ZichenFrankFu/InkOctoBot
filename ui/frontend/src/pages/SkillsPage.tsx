@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import type { SkillInfo, SkillExecuteResult, Project } from "../api/types";
+import { useToast } from "../components/shared/Toast";
 
 const DOMAIN_LABELS: Record<string, { label: string; color: string }> = {
   planner: { label: "Planner", color: "var(--indigo)" },
@@ -65,6 +66,7 @@ interface Props {
 }
 
 export default function SkillsPage({ projects, activeProject }: Props) {
+  const { toast } = useToast();
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -186,24 +188,26 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       if (resp.summary) setPrefSummary(resp.summary);
       if (resp.entries) setPrefEntries(resp.entries);
       if (resp.extracted_memories) setExtractedMemories(resp.extracted_memories);
-    } catch { /* ignore */ }
+    } catch (e: any) {
+      toast(e?.message || "操作失败", "error");
+    }
     setPrefLoading(false);
   };
 
   const removeExtractedMemory = (id: string) => {
     setExtractedMemories(prev => prev.filter(m => m.id !== id));
-    apiDelete(`/api/data/preferences/memory/${id}?project_id=${prefProject}`).catch(() => {});
+    apiDelete(`/api/data/preferences/memory/${id}?project_id=${prefProject}`).catch((e) => toast(e.message || "操作失败", "error"));
   };
 
   const updateExtractedMemory = (id: string, newContent: string) => {
     setExtractedMemories(prev => prev.map(m => m.id === id ? { ...m, content: newContent } : m));
     setEditingMemoryId(null);
-    apiPut(`/api/data/preferences/memory/${id}`, { project_id: prefProject, content: newContent }).catch(() => {});
+    apiPut(`/api/data/preferences/memory/${id}`, { project_id: prefProject, content: newContent }).catch((e) => toast(e.message || "操作失败", "error"));
   };
 
   const removePrefEntry = (id: string) => {
     setPrefEntries(prev => prev.filter(e => e.id !== id));
-    apiDelete(`/api/data/preferences/${id}?project_id=${prefProject}`).catch(() => {});
+    apiDelete(`/api/data/preferences/${id}?project_id=${prefProject}`).catch((e) => toast(e.message || "操作失败", "error"));
   };
 
   const handleCreateSkill = async () => {
@@ -220,8 +224,9 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       setShowCreate(false);
       setNewSkill({ name: "", display_name: "", description: "", tags: "", prompt_template: "" });
       loadSkills();
+      toast("技能创建成功", "success");
     } catch (e: any) {
-      alert(e?.message || "Failed to create skill");
+      toast(e?.message || "创建技能失败", "error");
     }
     setCreating(false);
   };
@@ -236,6 +241,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
         if (resp.active) next.delete(name); else next.add(name);
         return next;
       });
+      toast(resp.active ? "技能已启用" : "技能已停用", "success");
     } catch (e: any) {
       // For test mode entries not in registry, toggle locally
       setLogDeactivated(prev => {
@@ -243,6 +249,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
         if (next.has(name)) next.delete(name); else next.add(name);
         return next;
       });
+      toast(e?.message || "操作失败", "error");
     }
   };
 
@@ -254,8 +261,9 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       setConfirmDelete(null);
       if (expanded === name) setExpanded(null);
       if (editingSkill === name) setEditingSkill(null);
+      toast("技能已删除", "success");
     } catch (e: any) {
-      alert(e?.message || "Failed to delete skill");
+      toast(e?.message || "删除技能失败", "error");
     }
   };
 
@@ -281,8 +289,9 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       });
       setEditingSkill(null);
       loadSkills();
+      toast("技能修改已保存", "success");
     } catch (e: any) {
-      alert(e?.message || "Failed to update skill");
+      toast(e?.message || "保存修改失败", "error");
     }
     setSaving(false);
   };
@@ -318,7 +327,9 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       });
       setTestResult(resp);
     } catch (e: any) {
-      setTestError(e?.message || String(e));
+      const msg = e?.message || String(e);
+      setTestError(msg);
+      toast(msg || "操作失败", "error");
     }
     setTesting(false);
   };

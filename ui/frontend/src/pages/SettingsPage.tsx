@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut } from "../api/client";
+import { useToast } from "../components/shared/Toast";
 import type { AppSettings } from "../api/types";
 
 const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string; desc: string }[] }[] = [
@@ -67,7 +68,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [toast, setToast] = useState("");
+  const { toast } = useToast();
 
   useEffect(() => {
     apiGet<AppSettings>("/api/data/settings")
@@ -137,16 +138,28 @@ export default function SettingsPage() {
   };
 
   const save = async () => {
+    if (!settings) return;
+
+    // Validate: warn if any pipeline role has a provider selected but the provider has no API key
+    const providers = settings.providers || {};
+    for (const [role, cfg] of Object.entries(settings.pipeline || {})) {
+      if (cfg.provider) {
+        const provMeta = PROVIDER_META[cfg.provider];
+        const provCfg = providers[cfg.provider];
+        if (provMeta?.hasKey && provCfg && !provCfg.api_key?.trim()) {
+          toast(`供应商「${provMeta.label}」的 API Key 为空，请先在「模型供应商」中配置`, "error");
+          return;
+        }
+      }
+    }
+
     setSaving(true);
     try {
       await apiPut("/api/data/settings", settings);
       setDirty(false);
-      setToast("已保存");
-      setTimeout(() => setToast(""), 2000);
-    } catch (e) {
-      console.error("Save failed:", e);
-      setToast("保存失败");
-      setTimeout(() => setToast(""), 3000);
+      toast("已保存", "success");
+    } catch (e: any) {
+      toast(e?.message || "保存失败", "error");
     } finally {
       setSaving(false);
     }
@@ -192,15 +205,6 @@ export default function SettingsPage() {
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {toast && (
-            <span style={{
-              fontSize: 12,
-              color: toast === "已保存" ? "var(--jade)" : "var(--error)",
-              animation: "fadeIn 0.2s",
-            }}>
-              {toast}
-            </span>
-          )}
           <button
             className="btn-primary"
             onClick={save}
@@ -594,13 +598,15 @@ function SystemTab({
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [usageLoading, setUsageLoading] = useState(false);
 
+  const { toast } = useToast();
+
   // Auto-refresh usage every 10s
   useEffect(() => {
     let cancelled = false;
     const fetchUsage = () => {
       apiGet<UsageData>("/api/generation/usage")
         .then(d => { if (!cancelled) setUsage(d); })
-        .catch(() => {});
+        .catch((e) => toast(e.message || "加载用量数据失败", "error"));
     };
     fetchUsage();
     const iv = setInterval(fetchUsage, 10_000);
@@ -612,7 +618,8 @@ function SystemTab({
     try {
       await apiPost("/api/generation/usage/reset", {});
       setUsage({ total_input_tokens: 0, total_output_tokens: 0, total_calls: 0, by_provider: {}, by_model: {}, by_role: {} });
-    } catch { /* ignore */ }
+      toast("用量统计已重置", "success");
+    } catch (e: any) { toast(e?.message || "重置失败", "error"); }
     setUsageLoading(false);
   };
 
@@ -634,7 +641,7 @@ function SystemTab({
     try {
       const resp = await apiPost<{ models: typeof ggufModels; message: string }>("/api/settings/detect-gguf", {});
       setGgufModels(resp.models || []);
-    } catch { /* ignore */ }
+    } catch (e: any) { toast(e?.message || "检测 GGUF 模型失败", "error"); }
     setDetectingGguf(false);
   };
 
