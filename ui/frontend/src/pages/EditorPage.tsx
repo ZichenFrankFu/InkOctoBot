@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { apiGet, apiPost, apiPut } from "../api/client";
+import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import { computeDiff, groupIntoHunks, assembleFromHunks } from "../utils/simpleDiff";
 import type { DiffHunk } from "../utils/simpleDiff";
@@ -665,6 +665,81 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setCurrentAgent(null);
   }, [activeCh, projectId, activeChId]);
 
+  const runPlainAgent = useCallback(async () => {
+    if (!activeCh) return;
+    setGenerating(true);
+    setPipelineSteps([{ step: "Plain Agent", status: "running", detail: "单Agent直接生成中..." }]);
+    setChatMessages([{
+      agent: "System",
+      content: `单Agent模式启动（跳过Pipeline）。基于大纲「${(activeCh.synopsis || "").slice(0, 50)}...」直接生成全文。`,
+      status: "done", timestamp: Date.now(),
+    }]);
+    generatedTextRef.current = "";
+
+    try {
+      // Gather context
+      const synopsis = activeCh.synopsis || "";
+      const chars = activeCh.characters || [];
+      const parts = [`## 章节大纲\n${synopsis}`];
+      if (activeCh.time) parts.push(`## 时间\n${activeCh.time}`);
+      if (activeCh.location) parts.push(`## 地点\n${activeCh.location}`);
+      if (chars.length > 0) parts.push(`## 出场角色\n${chars.join("、")}`);
+
+      // Fetch character details for richer context
+      try {
+        const charResp = await apiGet<{ items: any[] }>(`/api/data/characters?project_id=${projectId || "default"}`);
+        const relevantChars = (charResp.items || []).filter((c: any) => chars.includes(c.name));
+        if (relevantChars.length > 0) {
+          parts.push("## 角色设定\n" + relevantChars.map((c: any) =>
+            `【${c.name}】${c.personality ? `性格：${c.personality}` : ""}${c.speech_style ? ` 说话风格：${c.speech_style}` : ""}`
+          ).join("\n"));
+        }
+      } catch { /* ignore */ }
+
+      // Fetch calibration style params
+      try {
+        const calResp = await apiGet<any>(`/api/data/calibration/${projectId || "default"}`);
+        if (calResp?.style_params) {
+          const sp = calResp.style_params;
+          const toneDesc = sp.tone < 30 ? "轻松幽默" : sp.tone > 70 ? "严肃深沉" : "均衡";
+          const pacingDesc = sp.pacing < 30 ? "快节奏" : sp.pacing > 70 ? "慢热" : "中等";
+          parts.push(`## 风格\n文风：${toneDesc}，节奏：${pacingDesc}`);
+        }
+      } catch { /* ignore */ }
+
+      if (content && content.length > 10) {
+        parts.push(`## 已有内容（续写）\n${content.slice(-500)}`);
+        parts.push("\n请续写以上内容，保持风格一致，输出800-1500字的完整章节正文。");
+      } else {
+        parts.push("\n请根据以上信息，写出完整的章节内容（800-1500字）。直接输出小说正文，不要输出标题或格式标记。");
+      }
+
+      const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
+        project_id: projectId,
+        chapter_id: activeChId,
+        synopsis: parts.join("\n\n"),
+      });
+
+      generatedTextRef.current = resp.text;
+      setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "已完成", progress: 100 }]);
+      setChatMessages(prev => {
+        const filtered = prev.filter(m => m.status !== "thinking");
+        return [...filtered,
+          { agent: "Editor-Writer", content: resp.text, status: "done" as const, timestamp: Date.now() },
+          { agent: "System", content: `生成完成！共 ${resp.text.length} 字。模型: ${resp.model}${resp.tokens ? ` (${resp.tokens.input}+${resp.tokens.output} tokens)` : ""}`, status: "done" as const, timestamp: Date.now() },
+        ];
+      });
+    } catch (e: any) {
+      setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "出错" }]);
+      setChatMessages(prev => [...prev, {
+        agent: "System", content: `生成出错：${e?.message || "请检查模型连接"}`,
+        status: "done", timestamp: Date.now(),
+      }]);
+    }
+    setGenerating(false);
+    setCurrentAgent(null);
+  }, [activeCh, projectId, activeChId, content]);
+
   const startGeneration = useCallback(async () => {
     if (!activeCh) return;
     setGenerating(true);
@@ -918,10 +993,11 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                 当前版本 · {new Date().toLocaleDateString("zh-CN")}
               </div>
               {versionHistory.filter(v => v.chapter_id === activeChId).reverse().map(v => (
-                <div key={v.version_id} className="text-xs text-muted" style={{ padding: "4px 6px", cursor: "pointer", borderRadius: 4, display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                <div key={v.version_id} className="text-xs text-muted" style={{ padding: "4px 6px", borderRadius: 4, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4 }}
                   onMouseEnter={e => e.currentTarget.style.background = "var(--bg-surface-hover)"}
                   onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                  onClick={() => {
+                >
+                  <span style={{ cursor: "pointer", flex: 1 }} onClick={() => {
                     if (confirm(`回滚到版本 ${v.version}？当前内容将被替换。`)) {
                       setContent(v.text);
                       if (v.synopsis) {
@@ -929,8 +1005,24 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                       }
                     }
                   }}>
-                  <span>v{v.version} · {v.source === "ai_generated" ? "AI" : "手动"}</span>
-                  <span style={{ fontSize: 9 }}>{new Date(v.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" })}</span>
+                    v{v.version} · {v.source === "ai_generated" ? "AI" : "手动"}
+                  </span>
+                  <span style={{ fontSize: 9, flexShrink: 0 }}>{new Date(v.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" })}</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm(`删除版本 v${v.version}？此操作不可撤销。`)) {
+                        setVersionHistory(prev => prev.filter(x => x.version_id !== v.version_id));
+                        apiDelete(`/api/data/versions/${v.version_id}?project_id=${projectId || "default"}`).catch(() => {});
+                      }
+                    }}
+                    style={{ fontSize: 9, padding: "0 4px", background: "none", border: "none", color: "var(--text-disabled)", cursor: "pointer", flexShrink: 0, lineHeight: 1 }}
+                    onMouseEnter={e => e.currentTarget.style.color = "var(--error)"}
+                    onMouseLeave={e => e.currentTarget.style.color = "var(--text-disabled)"}
+                    title="删除此版本"
+                  >
+                    ×
+                  </button>
                 </div>
               ))}
               {versionHistory.filter(v => v.chapter_id === activeChId).length === 0 && (
@@ -988,7 +1080,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               chapter={activeCh} onUpdateChapter={(field, value) => {
                 setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
               }} />}
-            {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} chatMessages={chatMessages} chatInput={chatInput}
+            {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
@@ -1171,12 +1263,28 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           <div ref={outlineChatEndRef} />
         </div>
         <div style={{ padding: "6px 10px", borderTop: "1px solid var(--border)", display: "flex", gap: 6 }}>
-          <input className="input" value={outlineChatInput} onChange={e => setOutlineChatInput(e.target.value)}
+          <textarea className="input" value={outlineChatInput} onChange={e => setOutlineChatInput(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendOutlineChat(); } }}
-            placeholder="描述你想要的大纲..." style={{ flex: 1, fontSize: 11, padding: "4px 8px" }} />
+            placeholder="描述你想要的大纲..." rows={1} style={{ flex: 1, fontSize: 11, padding: "4px 8px", minHeight: 28, maxHeight: 80, resize: "none" }} />
           <button className="btn-primary" onClick={() => sendOutlineChat()} disabled={!outlineChatInput.trim() || outlineChatLoading}
             style={{ fontSize: 11, padding: "4px 10px" }}>{outlineChatLoading ? "..." : "发送"}</button>
         </div>
+        {/* Quick prompts for outline chat */}
+        {outlineChatMsgs.length === 0 && (
+          <div style={{ padding: "4px 10px 8px", display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {[
+              { label: "生成大纲", prompt: "根据这一章的定位，帮我生成详细的章节大纲" },
+              { label: "冲突设计", prompt: "帮我设计这一章的核心冲突和转折点" },
+              { label: "节奏优化", prompt: "分析并优化这章大纲的叙事节奏" },
+              { label: "悬念设置", prompt: "帮我在大纲中设计章末悬念和伏笔" },
+            ].map(t => (
+              <button key={t.label} className="btn" style={{ fontSize: 10, padding: "2px 8px", borderRadius: 12 }}
+                onClick={() => sendOutlineChat(t.prompt)}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
         {outlineChatMsgs.length > 0 && outlineChatMsgs[outlineChatMsgs.length - 1].role === "assistant" && !pendingOutline && (
           <div style={{ padding: "4px 10px 8px", display: "flex", gap: 4 }}>
             <button className="btn" style={{ fontSize: 10, padding: "2px 10px", borderColor: "var(--jade)", color: "var(--jade)" }}
@@ -1309,8 +1417,8 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
-function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel }: {
-  steps: PipelineStatus[]; generating: boolean; onStart: () => void; chatMessages: ChatMessage[]; chatInput: string;
+function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel }: {
+  steps: PipelineStatus[]; generating: boolean; onStart: () => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
 }) {
@@ -1588,16 +1696,36 @@ function InspireTab({ steps, generating, onStart, chatMessages, chatInput, onCha
       )}
       {/* Input */}
       <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-        <input className="input" value={chatInput} onChange={e => onChatInputChange(e.target.value)}
+        <textarea className="input" value={chatInput} onChange={e => onChatInputChange(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSendMessage(); } }}
-          placeholder={waitingForConfirm ? "输入修改意见，或点击确认继续..." : "输入消息与 Agent 对话..."} style={{ flex: 1, fontSize: 12, padding: "6px 10px" }} />
+          placeholder={waitingForConfirm ? "输入修改意见，或点击确认继续..." : "输入消息与 Agent 对话..."} rows={1} style={{ flex: 1, fontSize: 12, padding: "6px 10px", minHeight: 32, maxHeight: 100, resize: "none" }} />
         <button className="btn-primary" onClick={onSendMessage} disabled={!chatInput.trim()} style={{ fontSize: 12, padding: "6px 12px", flexShrink: 0 }}>发送</button>
       </div>
-      {!generating && chatMessages.length === 0 && <button className="btn-primary w-full" onClick={onStart}>开始生成</button>}
-      {!generating && chatMessages.length > 0 && !waitingForConfirm && (
-        <button className="btn w-full" style={{ marginBottom: 6 }} onClick={onStart}>从头开始新的 Pipeline</button>
+      {!generating && chatMessages.length === 0 && (
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn-primary" style={{ flex: 1 }} onClick={onStart}>Pipeline 生成</button>
+          {onStartPlain && (
+            <button className="btn" style={{ flex: 1, borderColor: "var(--jade)", color: "var(--jade)" }} onClick={onStartPlain}
+              title="跳过Pipeline多步骤流程，单Agent直接生成全文">
+              单Agent生成
+            </button>
+          )}
+        </div>
       )}
-      <p className="text-xs text-muted mt-8" style={{ lineHeight: 1.6 }}>每个 Agent 完成后会给出选项。选择「满意，进行下一步」继续，或选择其他选项提出修改建议。</p>
+      {!generating && chatMessages.length > 0 && !waitingForConfirm && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+          <button className="btn" style={{ flex: 1 }} onClick={onStart}>重启 Pipeline</button>
+          {onStartPlain && (
+            <button className="btn" style={{ flex: 1, borderColor: "var(--jade)", color: "var(--jade)" }} onClick={onStartPlain}>
+              单Agent生成
+            </button>
+          )}
+        </div>
+      )}
+      <p className="text-xs text-muted mt-8" style={{ lineHeight: 1.6 }}>
+        <strong>Pipeline</strong>：4步Agent协作（导演→角色→编辑→评估），质量高但耗时长。<br />
+        <strong>单Agent</strong>：跳过Pipeline，直接生成全文，速度快。
+      </p>
     </div>
   );
 }

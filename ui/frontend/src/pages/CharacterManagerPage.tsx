@@ -664,9 +664,9 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                         </div>
                       )}
                       <div style={{ display: "flex", gap: 6 }}>
-                        <input className="input" value={charChatInput} onChange={e => setCharChatInput(e.target.value)}
+                        <textarea className="input" value={charChatInput} onChange={e => setCharChatInput(e.target.value)}
                           onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendCharChatMessage(); } }}
-                          placeholder="描述你想要的角色特征..." style={{ flex: 1, fontSize: 12 }} />
+                          placeholder="描述你想要的角色特征..." rows={1} style={{ flex: 1, fontSize: 12, minHeight: 32, maxHeight: 100, resize: "none" }} />
                         <button className="btn-primary" onClick={() => sendCharChatMessage()} disabled={!charChatInput.trim() || charChatLoading} style={{ fontSize: 12, padding: "6px 14px" }}>
                           {charChatLoading ? "生成中..." : "发送"}
                         </button>

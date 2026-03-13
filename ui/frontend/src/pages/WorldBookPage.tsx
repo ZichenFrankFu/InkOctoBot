@@ -560,9 +560,9 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                       ))}
                     </div>
                     <div className="flex gap-6">
-                      <input className="input" value={aiChatInput} onChange={e => setAiChatInput(e.target.value)}
+                      <textarea className="input" value={aiChatInput} onChange={e => setAiChatInput(e.target.value)}
                         onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendAIChat(); } }}
-                        placeholder="讨论设定..." style={{ flex: 1, fontSize: 12 }} />
+                        placeholder="讨论设定..." rows={1} style={{ flex: 1, fontSize: 12, minHeight: 32, maxHeight: 100, resize: "none" }} />
                       <button className="btn-primary" onClick={sendAIChat}
                         disabled={!aiChatInput.trim() || aiChatLoading}
                         style={{ fontSize: 12, padding: "6px 14px" }}>
