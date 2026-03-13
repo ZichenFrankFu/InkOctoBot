@@ -403,7 +403,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 
   // Compute latest affinity/priority rankings across all snapshots
   const latestRankings = useMemo(() => {
-    if (!editing) return { affinity: [] as { name: string; value: number; chapter: string }[], priority: [] as { name: string; value: number; chapter: string }[] };
+    type RankEntry = { name: string; value: number; chapter: string };
+    if (!editing) return { affinity: [] as RankEntry[], priority: [] as RankEntry[] };
     const snaps = editing.dynamic_snapshots || [];
     // Build map: target_id -> latest values
     const latestByTarget: Record<string, { name: string; affinity: number; priority: number; chapter: string }> = {};
@@ -421,8 +422,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     }
     const entries = Object.values(latestByTarget);
     return {
-      affinity: [...entries].sort((a, b) => b.affinity - a.affinity),
-      priority: [...entries].sort((a, b) => a.priority - b.priority),
+      affinity: [...entries].sort((a, b) => b.affinity - a.affinity).map(e => ({ name: e.name, value: e.affinity, chapter: e.chapter })),
+      priority: [...entries].sort((a, b) => a.priority - b.priority).map(e => ({ name: e.name, value: e.priority, chapter: e.chapter })),
     };
   }, [editing]);
 
