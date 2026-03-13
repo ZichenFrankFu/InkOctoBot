@@ -548,9 +548,15 @@ def _build_router(provider: str = "", model: str = ""):
             pass
 
     if not fb_model:
-        raise ValueError(
-            "未找到可用的 AI 模型。请在「设置」页面中启用一个模型供应商并配置模型。"
-        )
+        # In test mode, automatically fall back to mock provider
+        import os
+        if os.environ.get("WN_TEST_MODE") == "1":
+            fb_provider = "mock"
+            fb_model = "mock-test-v1"
+        else:
+            raise ValueError(
+                "未找到可用的 AI 模型。请在「设置」页面中启用一个模型供应商并配置模型。"
+            )
 
     return _SimpleRouter(user_settings, fb_provider, fb_model)
 

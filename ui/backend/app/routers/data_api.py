@@ -315,6 +315,7 @@ def _default_settings() -> dict:
             "actor_default": {"provider": "ollama", "model": "", "compare_models": []},
             "actor_protagonist": {"provider": "ollama", "model": "", "compare_models": []},
             "editor_stylist": {"provider": "ollama", "model": "", "compare_models": []},
+            "editor_writer": {"provider": "ollama", "model": "", "compare_models": []},
             "editor_agent": {"provider": "ollama", "model": "", "compare_models": []},
             "evaluator": {"provider": "ollama", "model": "", "compare_models": []},
             "analyzer": {"provider": "ollama", "model": "", "compare_models": []},
