@@ -34,6 +34,8 @@ from .routers.project_api import router as project_router
 from .routers.skill_api import router as skill_router
 from .routers.dev_api import router as dev_router
 
+# Note: config_api and tasks_api are stub routers (TODO only) — not registered until implemented.
+
 app = FastAPI(title="InkOctoBot — AI 小说智能体工作台", version="2.1.0")
 app.add_middleware(
     CORSMiddleware,

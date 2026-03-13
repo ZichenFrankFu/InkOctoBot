@@ -13,7 +13,7 @@ from ..settings import settings
 router = APIRouter(prefix="/data", tags=["data"])
 
 def _data_dir() -> Path:
-    d = settings.data_dir if settings.data_dir else settings.repo_root / "data"
+    d = settings.get_data_path()
     d.mkdir(parents=True, exist_ok=True); return d
 def _col(name: str) -> Path:
     d = _data_dir() / name; d.mkdir(parents=True, exist_ok=True); return d
@@ -28,7 +28,7 @@ def _list(c: str) -> list[dict]:
     items = []
     for f in sorted(_col(c).glob("*.json")):
         try: items.append(json.loads(f.read_text("utf-8")))
-        except: pass
+        except (json.JSONDecodeError, OSError): pass
     return items
 
 def _get(c: str, id: str) -> dict:

@@ -131,7 +131,7 @@ function AppInner() {
         <button
           className="nav-btn"
           onClick={() => setSearchOpen(true)}
-          style={{ margin: "8px 16px 8px", padding: "6px 10px", display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
+          style={{ margin: "4px 12px 4px", padding: "4px 8px", display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 28 }}
         >
           <span style={{ fontSize: 12, opacity: 0.6 }}>&#x2315;</span>
           <span style={{ flex: 1, textAlign: "left" }}>搜索...</span>
