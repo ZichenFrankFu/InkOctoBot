@@ -318,6 +318,40 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                     <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
                       <span style={{ color: "var(--jade)", fontWeight: 600 }}>用途：</span>{entry.need_description}
                     </div>
+                    {/* Actions for learned skills */}
+                    {(() => {
+                      const matchedSkill = skills.find(s => s.name === entry.skill_name);
+                      if (!matchedSkill) return null;
+                      return (
+                        <div style={{ display: "flex", gap: 6, marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border-subtle)" }}>
+                          <button
+                            className="btn"
+                            style={{ fontSize: 10, padding: "3px 10px" }}
+                            onClick={() => handleToggleSkill(entry.skill_name)}
+                          >
+                            {matchedSkill.active === false ? "启用" : "停用"}
+                          </button>
+                          {confirmDelete === entry.skill_name ? (
+                            <>
+                              <span style={{ fontSize: 10, color: "var(--error)", lineHeight: "22px" }}>确认删除？</span>
+                              <button className="btn" style={{ fontSize: 10, padding: "3px 8px" }} onClick={() => setConfirmDelete(null)}>取消</button>
+                              <button className="btn" style={{ fontSize: 10, padding: "3px 8px", color: "var(--error)", borderColor: "var(--error)" }} onClick={() => handleDeleteSkill(entry.skill_name)}>确认</button>
+                            </>
+                          ) : (
+                            <button
+                              className="btn"
+                              style={{ fontSize: 10, padding: "3px 10px", color: "var(--error)" }}
+                              onClick={() => setConfirmDelete(entry.skill_name)}
+                            >
+                              删除
+                            </button>
+                          )}
+                          {matchedSkill.active === false && (
+                            <span style={{ fontSize: 10, color: "var(--text-disabled)", lineHeight: "22px", marginLeft: 4 }}>已停用</span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 ))}
               </div>
