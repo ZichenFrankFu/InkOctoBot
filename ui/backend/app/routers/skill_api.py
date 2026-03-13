@@ -103,12 +103,11 @@ def list_tags():
 
 @router.get("/agents")
 def list_agents():
-    """List all agents and their associated skills."""
+    """List all agents with their associated skills, grouped by domain."""
     agents_dir = Path(__file__).resolve().parents[4] / "agents"
     registry = _get_registry()
     deactivated = _get_deactivated()
 
-    # Discover agents from subdirectories that contain agent .py files
     AGENT_DOMAINS = {
         "planner": {"label": "规划", "description": "故事规划与架构设计"},
         "production": {"label": "生产", "description": "内容创作与场景执行"},
@@ -118,46 +117,110 @@ def list_agents():
         "learned_skills": {"label": "自学习", "description": "通过使用自动习得的技能"},
     }
 
+    # Map skill name -> skill directory parent name for agent matching
+    def _skill_info(meta):
+        return {
+            "name": meta.name,
+            "display_name": meta.display_name,
+            "active": meta.name not in deactivated,
+            "is_learned": False,
+        }
+
     result = []
     for domain, info in AGENT_DOMAINS.items():
         domain_dir = agents_dir / domain
         if not domain_dir.is_dir():
             continue
 
-        # Find agent classes
-        agent_names = []
-        for py in domain_dir.glob("*.py"):
+        # Collect all domain skills with their file paths
+        domain_skills_map: dict[str, dict] = {}
+        for skill in registry._skills.values():
+            if _skill_domain(skill) == domain:
+                meta = skill.meta()
+                si = _skill_info(meta)
+                si["is_learned"] = domain == "learned_skills"
+                # Determine which subdirectory this skill lives in
+                try:
+                    import inspect
+                    src = Path(inspect.getfile(type(skill)))
+                    # e.g. agents/evaluation/skills/quality_score/skill.py
+                    # parent = quality_score, parent.parent = skills
+                    skill_subdir = src.parent.name  # e.g. "quality_score"
+                    si["_subdir"] = skill_subdir
+                except Exception:
+                    si["_subdir"] = ""
+                domain_skills_map[meta.name] = si
+
+        # Find agents and map skills to each agent
+        agents_list = []
+        # Scan for agent classes (BaseAgent subclasses + other agent-like classes)
+        for py in sorted(domain_dir.glob("*.py")):
             if py.name.startswith("__"):
                 continue
             try:
                 text = py.read_text("utf-8", errors="ignore")
-                if "BaseAgent" in text and "agent_name" in text:
-                    for line in text.splitlines():
-                        if "agent_name" in line and "=" in line:
-                            name = line.split("=", 1)[1].strip().strip('"').strip("'")
-                            if name and name != "base":
-                                agent_names.append(name)
             except Exception:
-                pass
+                continue
+            # Extract agent_name or class name
+            agent_name = ""
+            class_name = ""
+            agent_desc = ""
+            for line in text.splitlines():
+                if "agent_name" in line and "=" in line and not line.strip().startswith("#"):
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if val and val != "base":
+                        agent_name = val
+                if line.strip().startswith("class ") and ":" in line:
+                    class_name = line.strip().split("class ", 1)[1].split("(")[0].split(":")[0].strip()
+                if '"""' in line and not agent_desc:
+                    agent_desc = line.strip().strip('"').strip()
+            if not agent_name:
+                # Use snake_case of filename for non-BaseAgent classes
+                if class_name:
+                    agent_name = py.stem
+                else:
+                    continue
 
-        # Find skills belonging to this domain
-        domain_skills = []
-        for skill in registry._skills.values():
-            if _skill_domain(skill) == domain:
-                meta = skill.meta()
-                domain_skills.append({
-                    "name": meta.name,
-                    "display_name": meta.display_name,
-                    "active": meta.name not in deactivated,
-                    "is_learned": domain == "learned_skills",
-                })
+            agents_list.append({
+                "name": agent_name,
+                "class_name": class_name,
+                "skills": [],
+            })
+
+        # Map skills to agents by naming convention
+        assigned_skills: set[str] = set()
+        for agent_info in agents_list:
+            aname = agent_info["name"]
+            for sname, sinfo in domain_skills_map.items():
+                subdir = sinfo.get("_subdir", "")
+                # Match by: skill subdir contains agent name fragment, or vice versa
+                # e.g. actor_agent ↔ actor_perform, editor_writer ↔ editor_write
+                abase = aname.replace("_agent", "").replace("agent_", "")
+                sbase = subdir.replace("_", "")
+                abase_clean = abase.replace("_", "")
+                if (abase_clean and sbase and (
+                    abase_clean in sbase or sbase in abase_clean
+                    or abase.split("_")[0] == subdir.split("_")[0]
+                )):
+                    skill_copy = {k: v for k, v in sinfo.items() if not k.startswith("_")}
+                    agent_info["skills"].append(skill_copy)
+                    assigned_skills.add(sname)
+
+        # Unassigned skills go as domain-level
+        unassigned = []
+        for sname, sinfo in domain_skills_map.items():
+            if sname not in assigned_skills:
+                unassigned.append({k: v for k, v in sinfo.items() if not k.startswith("_")})
 
         result.append({
             "domain": domain,
             "label": info["label"],
             "description": info["description"],
-            "agents": agent_names,
-            "skills": domain_skills,
+            "agents": [
+                {"name": a["name"], "class_name": a["class_name"], "skills": a["skills"]}
+                for a in agents_list
+            ],
+            "unassigned_skills": unassigned,
         })
 
     return {"agents": result}

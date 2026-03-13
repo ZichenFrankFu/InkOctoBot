@@ -38,12 +38,25 @@ interface PrefEntry {
   role?: string;
 }
 
+interface AgentSkillSummary {
+  name: string;
+  display_name: string;
+  active: boolean;
+  is_learned: boolean;
+}
+
+interface AgentEntry {
+  name: string;
+  class_name: string;
+  skills: AgentSkillSummary[];
+}
+
 interface AgentDomain {
   domain: string;
   label: string;
   description: string;
-  agents: string[];
-  skills: { name: string; display_name: string; active: boolean; is_learned: boolean }[];
+  agents: AgentEntry[];
+  unassigned_skills: AgentSkillSummary[];
 }
 
 interface Props {
@@ -448,7 +461,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
             智能体管理
           </h2>
           <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
-            {agentDomains.reduce((sum, d) => sum + d.agents.length, 0)} 个智能体 &middot; {skills.length} 个技能 ({workflowCount} workflow + {learnedCount} learned)
+            {agentDomains.reduce((s, d) => s + d.agents.length, 0)} 个智能体 &middot; {skills.length} 个技能 ({workflowCount} workflow + {learnedCount} learned)
           </p>
         </div>
         <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => setShowCreate(!showCreate)}>
@@ -540,13 +553,15 @@ export default function SkillsPage({ projects, activeProject }: Props) {
             </select>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Domain → Agent → Skills hierarchy */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             {agentDomains.map(domain => {
               const meta = DOMAIN_LABELS[domain.domain] || DOMAIN_LABELS.unknown;
-              const domainSkills = filtered.filter(s => s.agent_domain === domain.domain);
+              const totalSkills = domain.agents.reduce((s, a) => s + a.skills.length, 0) + domain.unassigned_skills.length;
               const isDomainExpanded = expandedDomain === domain.domain;
               return (
                 <div key={domain.domain} className="card">
+                  {/* Domain header (功能板块) */}
                   <div
                     className="card-header"
                     style={{ borderLeft: `3px solid ${meta.color}`, padding: "10px 16px", cursor: "pointer" }}
@@ -556,64 +571,130 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <h3 style={{ fontSize: 14, margin: 0, color: meta.color }}>{domain.label}</h3>
                         <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                          {domain.agents.length} agent{domain.agents.length !== 1 ? "s" : ""} &middot; {domain.skills.length} skill{domain.skills.length !== 1 ? "s" : ""}
+                          {domain.agents.length} agents &middot; {totalSkills} skills
                         </span>
                       </div>
                       <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>{domain.description}</div>
                     </div>
                     <span style={{ fontSize: 12, color: "var(--text-disabled)", transition: "transform 0.2s", transform: isDomainExpanded ? "rotate(90deg)" : "none" }}>&#9654;</span>
                   </div>
+
                   <div className="card-body" style={{ padding: 0 }}>
-                    {/* Agents row */}
-                    {domain.agents.length > 0 && (
-                      <div style={{ padding: "10px 16px", borderBottom: domainSkills.length > 0 ? "1px solid var(--border-subtle)" : "none" }}>
-                        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>Agents</div>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          {domain.agents.map(name => (
-                            <div key={name} style={{
-                              padding: "5px 12px", borderRadius: 8, background: "var(--bg-surface)",
-                              border: `1px solid ${meta.color}33`, fontSize: 12,
-                              color: "var(--text-primary)", fontWeight: 500,
-                            }}>
-                              <span style={{ color: meta.color, marginRight: 4, fontSize: 10 }}>&#9679;</span>
-                              {name}
+                    {/* Agent list with their skills */}
+                    {domain.agents.map((agent, agentIdx) => {
+                      const agentSkills = filtered.filter(s =>
+                        agent.skills.some(as => as.name === s.name)
+                      );
+                      const hasSkills = agent.skills.length > 0;
+                      return (
+                        <div key={agent.name} style={{
+                          borderBottom: agentIdx < domain.agents.length - 1 || domain.unassigned_skills.length > 0
+                            ? "1px solid var(--border-subtle)" : "none",
+                        }}>
+                          {/* Agent row */}
+                          <div style={{
+                            display: "flex", alignItems: "center", gap: 10,
+                            padding: "10px 16px", paddingLeft: 24,
+                          }}>
+                            <span style={{ color: meta.color, fontSize: 10, flexShrink: 0 }}>&#9679;</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                                  {agent.name}
+                                </span>
+                                {agent.class_name && (
+                                  <code style={{ fontSize: 10, color: "var(--text-tertiary)", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>
+                                    {agent.class_name}
+                                  </code>
+                                )}
+                                {!hasSkills && (
+                                  <span style={{ fontSize: 10, color: "var(--text-disabled)", fontStyle: "italic" }}>无技能</span>
+                                )}
+                              </div>
                             </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                            {hasSkills && (
+                              <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+                                {agent.skills.length} skill{agent.skills.length > 1 ? "s" : ""}
+                              </span>
+                            )}
+                          </div>
 
-                    {/* Skills - expandable list */}
-                    {domainSkills.length > 0 && !isDomainExpanded && (
-                      <div style={{ padding: "10px 16px" }}>
-                        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>Skills</div>
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {domainSkills.map(s => (
-                            <div key={s.name} style={{
-                              padding: "4px 10px", borderRadius: 6,
-                              background: s.active !== false ? "var(--bg-surface)" : "var(--bg-secondary)",
-                              border: "1px solid var(--border-subtle)", fontSize: 11,
-                              color: s.active !== false ? "var(--text-primary)" : "var(--text-disabled)",
-                              opacity: s.active !== false ? 1 : 0.6,
-                              textDecoration: s.active !== false ? "none" : "line-through",
-                              cursor: "pointer",
-                            }} onClick={() => setExpandedDomain(domain.domain)}>
-                              {s.display_name || s.name}
-                              {s.is_learned && <span style={{ fontSize: 8, marginLeft: 4, color: "var(--purple)", fontWeight: 700 }}>自学习</span>}
+                          {/* Skills belonging to this agent */}
+                          {hasSkills && !isDomainExpanded && (
+                            <div style={{ padding: "0 16px 10px", paddingLeft: 44 }}>
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                {agent.skills.map(s => (
+                                  <div key={s.name} style={{
+                                    padding: "3px 10px", borderRadius: 6,
+                                    background: s.active ? "var(--bg-surface)" : "var(--bg-secondary)",
+                                    border: "1px solid var(--border-subtle)", fontSize: 11,
+                                    color: s.active ? "var(--text-primary)" : "var(--text-disabled)",
+                                    opacity: s.active ? 1 : 0.6,
+                                    textDecoration: s.active ? "none" : "line-through",
+                                    cursor: "pointer",
+                                  }} onClick={() => setExpandedDomain(domain.domain)}>
+                                    {s.display_name || s.name}
+                                    {s.is_learned && <span style={{ fontSize: 8, marginLeft: 4, color: "var(--purple)", fontWeight: 700 }}>自学习</span>}
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                          ))}
+                          )}
+
+                          {/* Expanded: full skill detail rows */}
+                          {isDomainExpanded && agentSkills.length > 0 && (
+                            <div style={{ marginLeft: 24, borderLeft: `2px solid ${meta.color}22` }}>
+                              {agentSkills.map((skill, idx) => renderSkillRow(skill, idx, agentSkills.length))}
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    )}
+                      );
+                    })}
 
-                    {/* Skills - detailed list (when domain is expanded) */}
-                    {isDomainExpanded && domainSkills.length > 0 && (
-                      <div>
-                        {domainSkills.map((skill, idx) => renderSkillRow(skill, idx, domainSkills.length))}
-                      </div>
-                    )}
+                    {/* Unassigned skills (domain-level, not tied to a specific agent) */}
+                    {domain.unassigned_skills.length > 0 && (() => {
+                      const unassignedFiltered = filtered.filter(s =>
+                        domain.unassigned_skills.some(us => us.name === s.name)
+                      );
+                      return (
+                        <div style={{ borderTop: domain.agents.length > 0 ? "1px solid var(--border-subtle)" : "none" }}>
+                          <div style={{ padding: "8px 16px 4px", paddingLeft: 24 }}>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)" }}>
+                              独立技能
+                            </span>
+                            <span style={{ fontSize: 10, color: "var(--text-tertiary)", marginLeft: 6 }}>
+                              ({domain.unassigned_skills.length})
+                            </span>
+                          </div>
+                          {!isDomainExpanded && (
+                            <div style={{ padding: "4px 16px 10px", paddingLeft: 44 }}>
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                {domain.unassigned_skills.map(s => (
+                                  <div key={s.name} style={{
+                                    padding: "3px 10px", borderRadius: 6,
+                                    background: s.active ? "var(--bg-surface)" : "var(--bg-secondary)",
+                                    border: "1px solid var(--border-subtle)", fontSize: 11,
+                                    color: s.active ? "var(--text-primary)" : "var(--text-disabled)",
+                                    opacity: s.active ? 1 : 0.6,
+                                    cursor: "pointer",
+                                  }} onClick={() => setExpandedDomain(domain.domain)}>
+                                    {s.display_name || s.name}
+                                    {s.is_learned && <span style={{ fontSize: 8, marginLeft: 4, color: "var(--purple)", fontWeight: 700 }}>自学习</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {isDomainExpanded && unassignedFiltered.length > 0 && (
+                            <div style={{ marginLeft: 24, borderLeft: "2px solid var(--border-subtle)" }}>
+                              {unassignedFiltered.map((skill, idx) => renderSkillRow(skill, idx, unassignedFiltered.length))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
 
-                    {domain.agents.length === 0 && domainSkills.length === 0 && (
+                    {domain.agents.length === 0 && domain.unassigned_skills.length === 0 && (
                       <div style={{ padding: "12px 16px", fontSize: 12, color: "var(--text-tertiary)" }}>暂无注册的 agent 或 skill</div>
                     )}
                   </div>
