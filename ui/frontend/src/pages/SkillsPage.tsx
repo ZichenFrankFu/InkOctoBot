@@ -87,8 +87,10 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   // Track deactivated state for learning log entries not in registry
   const [logDeactivated, setLogDeactivated] = useState<Set<string>>(new Set());
 
-  // Active tab: "skills" | "agents" | "learning"
-  const [activeTab, setActiveTab] = useState<"skills" | "agents" | "learning">("skills");
+  // Active tab: "agents" | "learning"
+  const [activeTab, setActiveTab] = useState<"agents" | "learning">("agents");
+  // Expanded domain in agents tab
+  const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
 
   const loadSkills = useCallback(() => {
     setLoading(true);
@@ -294,27 +296,169 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   const learnedCount = skills.filter(s => s.is_learned).length;
   const workflowCount = skills.filter(s => !s.is_learned).length;
 
+  // Render a skill row with expand/edit/test/delete capabilities
+  const renderSkillRow = (skill: SkillInfo, idx: number, total: number) => {
+    const isExp = expanded === skill.name;
+    const isTst = testSkill === skill.name;
+    const workflow = isWorkflowSkill(skill);
+    return (
+      <div key={skill.name} style={{ borderBottom: idx < total - 1 ? "1px solid var(--border-subtle)" : "none" }}>
+        <div
+          onClick={() => setExpanded(isExp ? null : skill.name)}
+          style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "10px 16px",
+            cursor: "pointer", transition: "background 0.1s",
+            opacity: skill.active === false ? 0.5 : 1,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", textDecoration: skill.active === false ? "line-through" : "none" }}>
+                {skill.display_name}
+              </span>
+              <code style={{ fontSize: 10, color: "var(--text-tertiary)", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>
+                {skill.name}
+              </code>
+              <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>v{skill.version}</span>
+              {skill.is_learned && (
+                <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--purple-subtle, rgba(147,51,234,0.1))", color: "var(--purple, #9333ea)", fontWeight: 600 }}>自学习</span>
+              )}
+              {skill.active === false && (
+                <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-disabled)", fontWeight: 600 }}>已停用</span>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {skill.description}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 4, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+            <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => handleToggleSkill(skill.name)}>
+              {skill.active === false ? "启用" : "停用"}
+            </button>
+            {!workflow && (
+              <>
+                <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => handleEditSkill(skill)}>修改</button>
+                <button className="btn" style={{ fontSize: 10, padding: "2px 8px", color: "var(--error)" }} onClick={() => setConfirmDelete(skill.name)}>删除</button>
+              </>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+            {skill.tags.slice(0, 3).map(t => (
+              <span key={t} style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-secondary)" }}>{t}</span>
+            ))}
+          </div>
+          <span style={{ fontSize: 11, color: "var(--text-disabled)", transition: "transform 0.2s", transform: isExp ? "rotate(90deg)" : "none" }}>&#9654;</span>
+        </div>
+        {confirmDelete === skill.name && (
+          <div style={{ padding: "10px 16px", background: "rgba(239,68,68,0.06)", borderTop: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ fontSize: 12, color: "var(--error)", flex: 1 }}>确认删除技能 &ldquo;{skill.display_name}&rdquo;？此操作不可撤销。</span>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => setConfirmDelete(null)}>取消</button>
+            <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px", background: "var(--error)", borderColor: "var(--error)" }} onClick={() => handleDeleteSkill(skill.name)}>确认删除</button>
+          </div>
+        )}
+        {editingSkill === skill.name && (
+          <div style={{ padding: "14px 16px", background: "var(--bg-secondary)", borderTop: "1px solid var(--border-subtle)" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 10 }}>修改技能</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <div className="field">
+                <label className="label">Display Name</label>
+                <input className="input" value={editForm.display_name} onChange={e => setEditForm(prev => ({ ...prev, display_name: e.target.value }))} />
+              </div>
+              <div className="field">
+                <label className="label">Tags (逗号分隔)</label>
+                <input className="input" value={editForm.tags} onChange={e => setEditForm(prev => ({ ...prev, tags: e.target.value }))} />
+              </div>
+            </div>
+            <div className="field mb-12">
+              <label className="label">Description</label>
+              <input className="input" value={editForm.description} onChange={e => setEditForm(prev => ({ ...prev, description: e.target.value }))} />
+            </div>
+            <div className="field mb-12">
+              <label className="label">Prompt Template (留空保持不变)</label>
+              <textarea className="input" value={editForm.prompt_template} onChange={e => setEditForm(prev => ({ ...prev, prompt_template: e.target.value }))}
+                placeholder="留空则保持原有模板" rows={3} style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setEditingSkill(null)}>取消</button>
+              <button className="btn-primary" onClick={handleSaveEdit} disabled={saving}>{saving ? "保存中..." : "保存修改"}</button>
+            </div>
+          </div>
+        )}
+        {isExp && (
+          <div style={{ padding: "0 16px 14px", background: "var(--bg-secondary)", borderTop: "1px solid var(--border-subtle)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 12 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Input Schema</div>
+                <pre style={{ fontSize: 11, background: "var(--bg-surface)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 200, margin: 0 }}>
+                  {JSON.stringify(skill.input_schema, null, 2)}
+                </pre>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Output Schema</div>
+                <pre style={{ fontSize: 11, background: "var(--bg-surface)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 200, margin: 0 }}>
+                  {JSON.stringify(skill.output_schema, null, 2)}
+                </pre>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 12, marginTop: 10, fontSize: 11, flexWrap: "wrap" }}>
+              <span style={{ color: "var(--text-secondary)" }}>Temperature: <strong>{skill.temperature}</strong></span>
+              <span style={{ color: "var(--text-secondary)" }}>Max tokens: <strong>{skill.max_tokens}</strong></span>
+              <span style={{ color: "var(--text-secondary)" }}>Role: <strong>{skill.model_role}</strong></span>
+              {workflow && <span style={{ color: "var(--text-disabled)", fontStyle: "italic" }}>Workflow skill (不可删除)</span>}
+              {skill.is_learned && <span style={{ color: "var(--purple)", fontWeight: 600 }}>Learned Skill</span>}
+            </div>
+            <div style={{ marginTop: 14, padding: 10, background: "var(--bg-surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>Test Skill</span>
+                <button className="btn-primary" onClick={() => { setTestSkill(skill.name); handleTest(skill.name); }}
+                  disabled={testing && isTst} style={{ fontSize: 11, padding: "3px 10px" }}>
+                  {testing && isTst ? "Running..." : "Execute"}
+                </button>
+              </div>
+              <textarea
+                value={isTst || testSkill === skill.name ? testInput : "{}"}
+                onChange={e => { setTestSkill(skill.name); setTestInput(e.target.value); }}
+                placeholder='{"text": "sample input..."}'
+                style={{ width: "100%", minHeight: 50, fontFamily: "var(--font-mono)", fontSize: 11, padding: 8, borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", resize: "vertical", boxSizing: "border-box" }}
+              />
+              {testResult && isTst && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 11, color: "var(--jade)", marginBottom: 4 }}>Completed in {testResult.execution_time_ms}ms</div>
+                  <pre style={{ fontSize: 11, background: "var(--bg-secondary)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 300, margin: 0 }}>
+                    {JSON.stringify(testResult.result, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {testError && isTst && (
+                <div style={{ marginTop: 8, fontSize: 11, color: "var(--error)" }}>{testError}</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="page-container" style={{ maxWidth: 1100 }}>
       {/* Header */}
       <div style={{ marginBottom: 20, display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
         <div>
           <h2 style={{ fontFamily: "var(--font-serif)", fontSize: 22, fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
-            Skill Registry
+            智能体管理
           </h2>
           <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
-            {skills.length} skills ({workflowCount} workflow + {learnedCount} learned) &middot; {agentDomains.reduce((sum, d) => sum + d.agents.length, 0)} agents
+            {agentDomains.reduce((sum, d) => sum + d.agents.length, 0)} 个智能体 &middot; {skills.length} 个技能 ({workflowCount} workflow + {learnedCount} learned)
           </p>
         </div>
         <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => setShowCreate(!showCreate)}>
-          + New Skill
+          + 新建技能
         </button>
       </div>
 
       {/* Tabs */}
       <div style={{ display: "flex", gap: 0, marginBottom: 20, borderBottom: "2px solid var(--border-subtle)" }}>
         {([
-          { key: "skills" as const, label: "技能列表", count: skills.length },
           { key: "agents" as const, label: "智能体 & 技能", count: agentDomains.reduce((s, d) => s + d.agents.length, 0) },
           { key: "learning" as const, label: "自学习成果", count: learningLog.length },
         ]).map(tab => (
@@ -340,433 +484,144 @@ export default function SkillsPage({ projects, activeProject }: Props) {
         ))}
       </div>
 
-      {/* ═══════════════════════ TAB: Skills ═══════════════════════ */}
-      {activeTab === "skills" && (
-        <>
-          {/* Create skill form */}
-          {showCreate && (
-            <div className="card mb-20" style={{ animation: "slideUp 0.2s var(--ease-out)" }}>
-              <div className="card-header"><h3>Create Learned Skill</h3></div>
-              <div className="card-body">
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-                  <div className="field">
-                    <label className="label">Skill Name (snake_case)</label>
-                    <input className="input" value={newSkill.name} onChange={e => setNewSkill(prev => ({ ...prev, name: e.target.value }))} placeholder="my_custom_skill" />
-                  </div>
-                  <div className="field">
-                    <label className="label">Display Name</label>
-                    <input className="input" value={newSkill.display_name} onChange={e => setNewSkill(prev => ({ ...prev, display_name: e.target.value }))} placeholder="My Custom Skill" />
-                  </div>
-                </div>
-                <div className="field mb-12">
-                  <label className="label">Description</label>
-                  <input className="input" value={newSkill.description} onChange={e => setNewSkill(prev => ({ ...prev, description: e.target.value }))} placeholder="What this skill does..." />
-                </div>
-                <div className="field mb-12">
-                  <label className="label">Tags (comma separated)</label>
-                  <input className="input" value={newSkill.tags} onChange={e => setNewSkill(prev => ({ ...prev, tags: e.target.value }))} placeholder="custom, writing, analysis" />
-                </div>
-                <div className="field mb-12">
-                  <label className="label">Prompt Template</label>
-                  <textarea className="input" value={newSkill.prompt_template} onChange={e => setNewSkill(prev => ({ ...prev, prompt_template: e.target.value }))}
-                    placeholder="请根据以下输入生成内容：\n\n{text}" rows={3} style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
-                </div>
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  <button className="btn" onClick={() => setShowCreate(false)}>Cancel</button>
-                  <button className="btn-primary" onClick={handleCreateSkill} disabled={creating || !newSkill.name.trim()}>
-                    {creating ? "Creating..." : "Create Skill"}
-                  </button>
-                </div>
+      {/* Create skill form (shown on agents tab) */}
+      {showCreate && activeTab === "agents" && (
+        <div className="card mb-20" style={{ animation: "slideUp 0.2s var(--ease-out)" }}>
+          <div className="card-header"><h3>新建自学习技能</h3></div>
+          <div className="card-body">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+              <div className="field">
+                <label className="label">Skill Name (snake_case)</label>
+                <input className="input" value={newSkill.name} onChange={e => setNewSkill(prev => ({ ...prev, name: e.target.value }))} placeholder="my_custom_skill" />
+              </div>
+              <div className="field">
+                <label className="label">Display Name</label>
+                <input className="input" value={newSkill.display_name} onChange={e => setNewSkill(prev => ({ ...prev, display_name: e.target.value }))} placeholder="My Custom Skill" />
               </div>
             </div>
-          )}
-
-          {/* Stats bar */}
-          <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-            {domainOrder.map((d) => {
-              const count = grouped[d]?.length || 0;
-              if (!count) return null;
-              const meta = DOMAIN_LABELS[d] || DOMAIN_LABELS.unknown;
-              return (
-                <div
-                  key={d}
-                  style={{
-                    padding: "5px 12px",
-                    borderRadius: 8,
-                    background: "var(--bg-surface)",
-                    border: `1px solid ${meta.color}`,
-                    fontSize: 11,
-                    color: meta.color,
-                    fontWeight: 600,
-                  }}
-                >
-                  {meta.label}: {count}
-                </div>
-              );
-            })}
+            <div className="field mb-12">
+              <label className="label">Description</label>
+              <input className="input" value={newSkill.description} onChange={e => setNewSkill(prev => ({ ...prev, description: e.target.value }))} placeholder="What this skill does..." />
+            </div>
+            <div className="field mb-12">
+              <label className="label">Tags (comma separated)</label>
+              <input className="input" value={newSkill.tags} onChange={e => setNewSkill(prev => ({ ...prev, tags: e.target.value }))} placeholder="custom, writing, analysis" />
+            </div>
+            <div className="field mb-12">
+              <label className="label">Prompt Template</label>
+              <textarea className="input" value={newSkill.prompt_template} onChange={e => setNewSkill(prev => ({ ...prev, prompt_template: e.target.value }))}
+                placeholder="请根据以下输入生成内容：\n\n{text}" rows={3} style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setShowCreate(false)}>取消</button>
+              <button className="btn-primary" onClick={handleCreateSkill} disabled={creating || !newSkill.name.trim()}>
+                {creating ? "创建中..." : "创建技能"}
+              </button>
+            </div>
           </div>
+        </div>
+      )}
 
+      {/* ═══════════════════════ TAB: Agents & Skills ═══════════════════════ */}
+      {activeTab === "agents" && (
+        <>
           {/* Search + filter */}
           <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
             <input
               className="input"
-              placeholder="Search skills..."
+              placeholder="搜索技能..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               style={{ flex: 1, maxWidth: 300 }}
             />
-            <select
-              className="select"
-              value={filterTag}
-              onChange={(e) => setFilterTag(e.target.value)}
-              style={{ minWidth: 140 }}
-            >
-              <option value="">All tags</option>
-              {allTags.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
+            <select className="select" value={filterTag} onChange={(e) => setFilterTag(e.target.value)} style={{ minWidth: 140 }}>
+              <option value="">全部标签</option>
+              {allTags.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
 
-          {/* Skill groups */}
-          {sortedDomains.map((domain) => {
-            const domainSkills = grouped[domain];
-            const meta = DOMAIN_LABELS[domain] || DOMAIN_LABELS.unknown;
-            return (
-              <div key={domain} className="card" style={{ marginBottom: 14 }}>
-                <div className="card-header" style={{ borderLeft: `3px solid ${meta.color}`, padding: "10px 16px" }}>
-                  <h3 style={{ fontSize: 13, margin: 0, color: meta.color }}>{meta.label}</h3>
-                  <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                    {domainSkills.length} skill{domainSkills.length > 1 ? "s" : ""}
-                  </span>
-                </div>
-                <div className="card-body" style={{ padding: 0 }}>
-                  {domainSkills.map((skill, idx) => {
-                    const isExpanded = expanded === skill.name;
-                    const isTesting = testSkill === skill.name;
-                    const workflow = isWorkflowSkill(skill);
-                    return (
-                      <div
-                        key={skill.name}
-                        style={{
-                          borderBottom: idx < domainSkills.length - 1 ? "1px solid var(--border-subtle)" : "none",
-                        }}
-                      >
-                        {/* Skill row */}
-                        <div
-                          onClick={() => setExpanded(isExpanded ? null : skill.name)}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 10,
-                            padding: "12px 16px",
-                            cursor: "pointer",
-                            transition: "background 0.1s",
-                            opacity: skill.active === false ? 0.5 : 1,
-                          }}
-                        >
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", textDecoration: skill.active === false ? "line-through" : "none" }}>
-                                {skill.display_name}
-                              </span>
-                              <code style={{ fontSize: 10, color: "var(--text-tertiary)", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>
-                                {skill.name}
-                              </code>
-                              <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>v{skill.version}</span>
-                              {skill.is_learned && (
-                                <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--purple-subtle, rgba(147,51,234,0.1))", color: "var(--purple, #9333ea)", fontWeight: 600 }}>
-                                  自学习
-                                </span>
-                              )}
-                              {skill.active === false && (
-                                <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-disabled)", fontWeight: 600 }}>
-                                  已停用
-                                </span>
-                              )}
-                            </div>
-                            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {skill.description}
-                            </div>
-                          </div>
-                          {/* Action buttons */}
-                          <div style={{ display: "flex", gap: 4, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
-                            <button
-                              className="btn"
-                              style={{ fontSize: 10, padding: "2px 8px" }}
-                              title={skill.active === false ? "启用" : "停用"}
-                              onClick={() => handleToggleSkill(skill.name)}
-                            >
-                              {skill.active === false ? "启用" : "停用"}
-                            </button>
-                            {!workflow && (
-                              <>
-                                <button
-                                  className="btn"
-                                  style={{ fontSize: 10, padding: "2px 8px" }}
-                                  title="修改"
-                                  onClick={() => handleEditSkill(skill)}
-                                >
-                                  修改
-                                </button>
-                                <button
-                                  className="btn"
-                                  style={{ fontSize: 10, padding: "2px 8px", color: "var(--error)" }}
-                                  title="删除"
-                                  onClick={() => setConfirmDelete(skill.name)}
-                                >
-                                  删除
-                                </button>
-                              </>
-                            )}
-                          </div>
-                          <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
-                            {skill.tags.slice(0, 3).map((t) => (
-                              <span
-                                key={t}
-                                style={{
-                                  fontSize: 9,
-                                  padding: "1px 6px",
-                                  borderRadius: 10,
-                                  background: "var(--bg-secondary)",
-                                  color: "var(--text-secondary)",
-                                }}
-                              >
-                                {t}
-                              </span>
-                            ))}
-                          </div>
-                          <span style={{ fontSize: 11, color: "var(--text-disabled)", transition: "transform 0.2s", transform: isExpanded ? "rotate(90deg)" : "none" }}>
-                            &#9654;
-                          </span>
-                        </div>
-
-                        {/* Delete confirmation */}
-                        {confirmDelete === skill.name && (
-                          <div style={{ padding: "10px 16px", background: "rgba(239,68,68,0.06)", borderTop: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 12 }}>
-                            <span style={{ fontSize: 12, color: "var(--error)", flex: 1 }}>
-                              确认删除技能 "{skill.display_name}"？此操作不可撤销。
-                            </span>
-                            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => setConfirmDelete(null)}>取消</button>
-                            <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px", background: "var(--error)", borderColor: "var(--error)" }} onClick={() => handleDeleteSkill(skill.name)}>确认删除</button>
-                          </div>
-                        )}
-
-                        {/* Edit form */}
-                        {editingSkill === skill.name && (
-                          <div style={{ padding: "14px 16px", background: "var(--bg-secondary)", borderTop: "1px solid var(--border-subtle)" }}>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 10 }}>修改技能</div>
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-                              <div className="field">
-                                <label className="label">Display Name</label>
-                                <input className="input" value={editForm.display_name} onChange={e => setEditForm(prev => ({ ...prev, display_name: e.target.value }))} />
-                              </div>
-                              <div className="field">
-                                <label className="label">Tags (逗号分隔)</label>
-                                <input className="input" value={editForm.tags} onChange={e => setEditForm(prev => ({ ...prev, tags: e.target.value }))} />
-                              </div>
-                            </div>
-                            <div className="field mb-12">
-                              <label className="label">Description</label>
-                              <input className="input" value={editForm.description} onChange={e => setEditForm(prev => ({ ...prev, description: e.target.value }))} />
-                            </div>
-                            <div className="field mb-12">
-                              <label className="label">Prompt Template (留空保持不变)</label>
-                              <textarea className="input" value={editForm.prompt_template} onChange={e => setEditForm(prev => ({ ...prev, prompt_template: e.target.value }))}
-                                placeholder="留空则保持原有模板" rows={3} style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
-                            </div>
-                            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                              <button className="btn" onClick={() => setEditingSkill(null)}>取消</button>
-                              <button className="btn-primary" onClick={handleSaveEdit} disabled={saving}>
-                                {saving ? "保存中..." : "保存修改"}
-                              </button>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Expanded detail */}
-                        {isExpanded && (
-                          <div style={{ padding: "0 16px 14px", background: "var(--bg-secondary)", borderTop: "1px solid var(--border-subtle)" }}>
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 12 }}>
-                              <div>
-                                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Input Schema</div>
-                                <pre style={{ fontSize: 11, background: "var(--bg-surface)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 200, margin: 0 }}>
-                                  {JSON.stringify(skill.input_schema, null, 2)}
-                                </pre>
-                              </div>
-                              <div>
-                                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Output Schema</div>
-                                <pre style={{ fontSize: 11, background: "var(--bg-surface)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 200, margin: 0 }}>
-                                  {JSON.stringify(skill.output_schema, null, 2)}
-                                </pre>
-                              </div>
-                            </div>
-
-                            <div style={{ display: "flex", gap: 12, marginTop: 10, fontSize: 11, flexWrap: "wrap" }}>
-                              <span style={{ color: "var(--text-secondary)" }}>
-                                Temperature: <strong>{skill.temperature}</strong>
-                              </span>
-                              <span style={{ color: "var(--text-secondary)" }}>
-                                Max tokens: <strong>{skill.max_tokens}</strong>
-                              </span>
-                              <span style={{ color: "var(--text-secondary)" }}>
-                                Role: <strong>{skill.model_role}</strong>
-                              </span>
-                              {workflow && (
-                                <span style={{ color: "var(--text-disabled)", fontStyle: "italic" }}>Workflow skill (不可删除)</span>
-                              )}
-                              {skill.is_learned && (
-                                <span style={{ color: "var(--purple)", fontWeight: 600 }}>Learned Skill</span>
-                              )}
-                            </div>
-
-                            {/* Test panel */}
-                            <div style={{ marginTop: 14, padding: 10, background: "var(--bg-surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>Test Skill</span>
-                                <button
-                                  className="btn-primary"
-                                  onClick={() => {
-                                    setTestSkill(skill.name);
-                                    handleTest(skill.name);
-                                  }}
-                                  disabled={testing && isTesting}
-                                  style={{ fontSize: 11, padding: "3px 10px" }}
-                                >
-                                  {testing && isTesting ? "Running..." : "Execute"}
-                                </button>
-                              </div>
-                              <textarea
-                                value={isTesting || testSkill === skill.name ? testInput : "{}"}
-                                onChange={(e) => {
-                                  setTestSkill(skill.name);
-                                  setTestInput(e.target.value);
-                                }}
-                                placeholder='{"text": "sample input..."}'
-                                style={{
-                                  width: "100%",
-                                  minHeight: 50,
-                                  fontFamily: "var(--font-mono)",
-                                  fontSize: 11,
-                                  padding: 8,
-                                  borderRadius: 6,
-                                  border: "1px solid var(--border)",
-                                  background: "var(--bg-secondary)",
-                                  color: "var(--text-primary)",
-                                  resize: "vertical",
-                                  boxSizing: "border-box",
-                                }}
-                              />
-                              {testResult && isTesting && (
-                                <div style={{ marginTop: 8 }}>
-                                  <div style={{ fontSize: 11, color: "var(--jade)", marginBottom: 4 }}>
-                                    Completed in {testResult.execution_time_ms}ms
-                                  </div>
-                                  <pre style={{ fontSize: 11, background: "var(--bg-secondary)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 300, margin: 0 }}>
-                                    {JSON.stringify(testResult.result, null, 2)}
-                                  </pre>
-                                </div>
-                              )}
-                              {testError && isTesting && (
-                                <div style={{ marginTop: 8, fontSize: 11, color: "var(--error)" }}>
-                                  {testError}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {agentDomains.map(domain => {
+              const meta = DOMAIN_LABELS[domain.domain] || DOMAIN_LABELS.unknown;
+              const domainSkills = filtered.filter(s => s.agent_domain === domain.domain);
+              const isDomainExpanded = expandedDomain === domain.domain;
+              return (
+                <div key={domain.domain} className="card">
+                  <div
+                    className="card-header"
+                    style={{ borderLeft: `3px solid ${meta.color}`, padding: "10px 16px", cursor: "pointer" }}
+                    onClick={() => setExpandedDomain(isDomainExpanded ? null : domain.domain)}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <h3 style={{ fontSize: 14, margin: 0, color: meta.color }}>{domain.label}</h3>
+                        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                          {domain.agents.length} agent{domain.agents.length !== 1 ? "s" : ""} &middot; {domain.skills.length} skill{domain.skills.length !== 1 ? "s" : ""}
+                        </span>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-
-          {filtered.length === 0 && (
-            <div style={{ textAlign: "center", padding: 60, color: "var(--text-tertiary)", fontSize: 14 }}>
-              No skills found matching your criteria.
-            </div>
-          )}
-        </>
-      )}
-
-      {/* ═══════════════════════ TAB: Agents ═══════════════════════ */}
-      {activeTab === "agents" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {agentDomains.map(domain => {
-            const meta = DOMAIN_LABELS[domain.domain] || DOMAIN_LABELS.unknown;
-            return (
-              <div key={domain.domain} className="card">
-                <div className="card-header" style={{ borderLeft: `3px solid ${meta.color}`, padding: "10px 16px" }}>
-                  <div>
-                    <h3 style={{ fontSize: 14, margin: 0, color: meta.color }}>{domain.label} ({meta.label})</h3>
-                    <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>{domain.description}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>{domain.description}</div>
+                    </div>
+                    <span style={{ fontSize: 12, color: "var(--text-disabled)", transition: "transform 0.2s", transform: isDomainExpanded ? "rotate(90deg)" : "none" }}>&#9654;</span>
                   </div>
-                  <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                    {domain.agents.length} agent{domain.agents.length !== 1 ? "s" : ""} &middot; {domain.skills.length} skill{domain.skills.length !== 1 ? "s" : ""}
-                  </span>
-                </div>
-                <div className="card-body" style={{ padding: "12px 16px" }}>
-                  {/* Agents */}
-                  {domain.agents.length > 0 && (
-                    <div style={{ marginBottom: domain.skills.length > 0 ? 12 : 0 }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>Agents</div>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        {domain.agents.map(name => (
-                          <div key={name} style={{
-                            padding: "6px 12px",
-                            borderRadius: 8,
-                            background: "var(--bg-surface)",
-                            border: `1px solid ${meta.color}33`,
-                            fontSize: 12,
-                            color: "var(--text-primary)",
-                            fontWeight: 500,
-                          }}>
-                            <span style={{ color: meta.color, marginRight: 4, fontSize: 10 }}>&#9679;</span>
-                            {name}
-                          </div>
-                        ))}
+                  <div className="card-body" style={{ padding: 0 }}>
+                    {/* Agents row */}
+                    {domain.agents.length > 0 && (
+                      <div style={{ padding: "10px 16px", borderBottom: domainSkills.length > 0 ? "1px solid var(--border-subtle)" : "none" }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>Agents</div>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {domain.agents.map(name => (
+                            <div key={name} style={{
+                              padding: "5px 12px", borderRadius: 8, background: "var(--bg-surface)",
+                              border: `1px solid ${meta.color}33`, fontSize: 12,
+                              color: "var(--text-primary)", fontWeight: 500,
+                            }}>
+                              <span style={{ color: meta.color, marginRight: 4, fontSize: 10 }}>&#9679;</span>
+                              {name}
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {/* Skills */}
-                  {domain.skills.length > 0 && (
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>Skills</div>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {domain.skills.map(s => (
-                          <div key={s.name} style={{
-                            padding: "4px 10px",
-                            borderRadius: 6,
-                            background: s.active ? "var(--bg-surface)" : "var(--bg-secondary)",
-                            border: "1px solid var(--border-subtle)",
-                            fontSize: 11,
-                            color: s.active ? "var(--text-primary)" : "var(--text-disabled)",
-                            opacity: s.active ? 1 : 0.6,
-                            textDecoration: s.active ? "none" : "line-through",
-                          }}>
-                            {s.display_name || s.name}
-                            {s.is_learned && (
-                              <span style={{ fontSize: 8, marginLeft: 4, color: "var(--purple)", fontWeight: 700 }}>自学习</span>
-                            )}
-                          </div>
-                        ))}
+                    {/* Skills - expandable list */}
+                    {domainSkills.length > 0 && !isDomainExpanded && (
+                      <div style={{ padding: "10px 16px" }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>Skills</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {domainSkills.map(s => (
+                            <div key={s.name} style={{
+                              padding: "4px 10px", borderRadius: 6,
+                              background: s.active !== false ? "var(--bg-surface)" : "var(--bg-secondary)",
+                              border: "1px solid var(--border-subtle)", fontSize: 11,
+                              color: s.active !== false ? "var(--text-primary)" : "var(--text-disabled)",
+                              opacity: s.active !== false ? 1 : 0.6,
+                              textDecoration: s.active !== false ? "none" : "line-through",
+                              cursor: "pointer",
+                            }} onClick={() => setExpandedDomain(domain.domain)}>
+                              {s.display_name || s.name}
+                              {s.is_learned && <span style={{ fontSize: 8, marginLeft: 4, color: "var(--purple)", fontWeight: 700 }}>自学习</span>}
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {domain.agents.length === 0 && domain.skills.length === 0 && (
-                    <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>暂无注册的 agent 或 skill</div>
-                  )}
+                    {/* Skills - detailed list (when domain is expanded) */}
+                    {isDomainExpanded && domainSkills.length > 0 && (
+                      <div>
+                        {domainSkills.map((skill, idx) => renderSkillRow(skill, idx, domainSkills.length))}
+                      </div>
+                    )}
+
+                    {domain.agents.length === 0 && domainSkills.length === 0 && (
+                      <div style={{ padding: "12px 16px", fontSize: 12, color: "var(--text-tertiary)" }}>暂无注册的 agent 或 skill</div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        </>
       )}
 
       {/* ═══════════════════════ TAB: Self-Learning ═══════════════════════ */}

@@ -101,6 +101,10 @@ def serve_spa(request: Request, full_path: str):
         return JSONResponse({"detail": "Not Found"}, 404)
     if full_path == "health":
         return {"ok": True}
+    # Serve static files (e.g. favicon.svg) directly if they exist
+    static_file = STATIC_DIR / full_path
+    if static_file.is_file() and STATIC_DIR in static_file.resolve().parents:
+        return FileResponse(str(static_file))
     if INDEX_HTML.exists():
         return FileResponse(str(INDEX_HTML))
     return JSONResponse({"ok": False, "msg": "UI not built"}, 500)
