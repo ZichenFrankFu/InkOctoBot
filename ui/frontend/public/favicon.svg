@@ -1,50 +1,269 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <defs>
-    <radialGradient id="inkHead" cx="0.5" cy="0.4" r="0.6">
-      <stop offset="0%" stop-color="#4a4a6a"/>
-      <stop offset="70%" stop-color="#2d2d44"/>
-      <stop offset="100%" stop-color="#1a1a2e"/>
-    </radialGradient>
-    <radialGradient id="inkDrop" cx="0.3" cy="0.3" r="0.7">
-      <stop offset="0%" stop-color="#3d3d5c" stop-opacity="0.7"/>
-      <stop offset="100%" stop-color="#1a1a2e" stop-opacity="0.3"/>
-    </radialGradient>
-  </defs>
-  <!-- Ink wash background splash -->
-  <circle cx="32" cy="30" r="28" fill="#1a1a2e" opacity="0.06"/>
-  <ellipse cx="30" cy="32" rx="24" ry="20" fill="#2d2d44" opacity="0.05"/>
-  <!-- Head - ink wash style with soft edges -->
-  <ellipse cx="32" cy="22" rx="17" ry="15" fill="url(#inkHead)" opacity="0.92"/>
-  <ellipse cx="32" cy="20" rx="14" ry="11" fill="#3d3d5c" opacity="0.3"/>
-  <!-- Eyes - brush stroke style -->
-  <ellipse cx="25" cy="20" rx="3.8" ry="4.2" fill="#e8e4df"/>
-  <ellipse cx="39" cy="20" rx="3.8" ry="4.2" fill="#e8e4df"/>
-  <circle cx="26" cy="20" r="1.8" fill="#1a1a2e"/>
-  <circle cx="40" cy="20" r="1.8" fill="#1a1a2e"/>
-  <circle cx="26.5" cy="19.5" r="0.6" fill="#e8e4df"/>
-  <circle cx="40.5" cy="19.5" r="0.6" fill="#e8e4df"/>
-  <!-- Tentacles - ink brush strokes with varying opacity -->
-  <path d="M14 33 Q5 46 9 57" stroke="#2d2d44" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.85"/>
-  <path d="M18 35 Q10 50 15 59" stroke="#3d3d5c" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.75"/>
-  <path d="M24 37 Q19 52 18 61" stroke="#2d2d44" stroke-width="2.8" fill="none" stroke-linecap="round" opacity="0.7"/>
-  <path d="M30 38 Q27 54 29 62" stroke="#4a4a6a" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.65"/>
-  <path d="M36 38 Q39 54 37 62" stroke="#4a4a6a" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.65"/>
-  <path d="M42 37 Q47 52 46 61" stroke="#2d2d44" stroke-width="2.8" fill="none" stroke-linecap="round" opacity="0.7"/>
-  <path d="M48 35 Q56 50 51 59" stroke="#3d3d5c" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.75"/>
-  <path d="M52 33 Q61 46 57 57" stroke="#2d2d44" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.85"/>
-  <!-- Ink brush pen (毛笔) held by right tentacle -->
-  <g transform="rotate(25 52 32)">
-    <!-- Brush handle - bamboo color -->
-    <rect x="50" y="10" width="3" height="18" rx="1.5" fill="#8B7355" opacity="0.9"/>
-    <rect x="50.3" y="10" width="0.8" height="18" rx="0.4" fill="#a08c6a" opacity="0.4"/>
-    <!-- Brush tip - ink soaked -->
-    <path d="M50 28 Q51.5 34 53 28" fill="#1a1a2e" opacity="0.9"/>
-    <path d="M50.5 28 Q51.5 32 52.5 28" fill="#2d2d44" opacity="0.6"/>
-  </g>
-  <!-- Ink splatter effects -->
-  <circle cx="58" cy="44" r="2" fill="url(#inkDrop)"/>
-  <circle cx="55" cy="49" r="1.2" fill="#2d2d44" opacity="0.35"/>
-  <circle cx="60" cy="47" r="0.8" fill="#1a1a2e" opacity="0.25"/>
-  <circle cx="6" cy="52" r="1.5" fill="#2d2d44" opacity="0.2"/>
-  <circle cx="10" cy="56" r="0.7" fill="#1a1a2e" opacity="0.15"/>
+<svg width="100%" viewBox="0 0 680 680" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<radialGradient id="bg6" cx="50%" cy="42%" r="58%">
+<stop offset="0%" stop-color="#f2eadb"/>
+<stop offset="100%" stop-color="#ddd0b8"/>
+</radialGradient>
+<radialGradient id="hd6" cx="42%" cy="35%" r="55%">
+<stop offset="0%" stop-color="#3a3a3a"/>
+<stop offset="100%" stop-color="#141414"/>
+</radialGradient>
+<radialGradient id="ck6" cx="50%" cy="50%" r="50%">
+<stop offset="0%" stop-color="#b86060" stop-opacity="0.4"/>
+<stop offset="100%" stop-color="#b86060" stop-opacity="0"/>
+</radialGradient>
+<radialGradient id="es6" cx="35%" cy="30%" r="50%">
+<stop offset="0%" stop-color="#fff" stop-opacity="0.22"/>
+<stop offset="100%" stop-color="#fff" stop-opacity="0"/>
+</radialGradient>
+<radialGradient id="inkHalo" cx="50%" cy="50%" r="50%">
+<stop offset="0%" stop-color="#141414" stop-opacity="0.08"/>
+<stop offset="100%" stop-color="#141414" stop-opacity="0"/>
+</radialGradient>
+</defs>
+
+<!-- aged xuan paper bg -->
+<rect x="40" y="40" width="600" height="600" rx="130" fill="url(#bg6)"/>
+
+<!-- paper fiber 宣纸纤维 -->
+<g opacity="0.035">
+<path d="M60 140 Q200 136 400 142 Q550 146 620 138" stroke="#8b7355" stroke-width="1.2" fill="none"/>
+<path d="M60 260 Q180 265 340 258 Q500 254 620 262" stroke="#8b7355" stroke-width="0.8" fill="none"/>
+<path d="M60 400 Q250 396 440 404 Q580 408 620 398" stroke="#8b7355" stroke-width="1" fill="none"/>
+<path d="M60 520 Q300 524 500 518 Q600 515 620 522" stroke="#8b7355" stroke-width="0.7" fill="none"/>
+</g>
+
+<!-- big ink wash 泼墨 background blobs -->
+<g opacity="0.045">
+<ellipse cx="180" cy="180" rx="120" ry="60" fill="#141414"/>
+<ellipse cx="500" cy="160" rx="90" ry="50" fill="#141414"/>
+<ellipse cx="130" cy="500" rx="80" ry="55" fill="#141414"/>
+<ellipse cx="550" cy="480" rx="100" ry="55" fill="#141414"/>
+<ellipse cx="340" cy="610" rx="180" ry="50" fill="#141414"/>
+</g>
+
+<!-- ink mist 墨气 upper -->
+<g opacity="0.03">
+<path d="M80 100 Q200 70 340 90 Q480 110 600 80" stroke="#141414" stroke-width="30" fill="none" stroke-linecap="round"/>
+<path d="M100 600 Q250 580 400 595 Q550 610 620 585" stroke="#141414" stroke-width="25" fill="none" stroke-linecap="round"/>
+</g>
+
+<!-- faint magic circle 法阵 -->
+<g transform="translate(340,350)" opacity="0.035">
+<circle r="260" fill="none" stroke="#141414" stroke-width="1.5"/>
+<circle r="248" fill="none" stroke="#141414" stroke-width="0.5" stroke-dasharray="5 9"/>
+</g>
+
+<!-- 印章 seal stamps -->
+<g opacity="0.13">
+<g transform="translate(98,98)">
+<rect x="-14" y="-14" width="28" height="28" rx="2" fill="#b83030" opacity="0.15"/>
+<rect x="-14" y="-14" width="28" height="28" rx="2" fill="none" stroke="#a02828" stroke-width="1.3"/>
+<path d="M-5-7L0-1L5-7M-7 2L0 8L7 2" stroke="#a02828" stroke-width="1.1" fill="none"/>
+</g>
+<g transform="translate(582,582)">
+<rect x="-14" y="-14" width="28" height="28" rx="2" fill="#b83030" opacity="0.15"/>
+<rect x="-14" y="-14" width="28" height="28" rx="2" fill="none" stroke="#a02828" stroke-width="1.3"/>
+<circle r="6" fill="none" stroke="#a02828" stroke-width="0.9"/>
+<circle r="2.5" fill="#a02828" opacity="0.6"/>
+</g>
+</g>
+
+<!-- gold sparkle dust -->
+<g opacity="0.14">
+<g transform="translate(170,160)"><path d="M0-4Q1-1 4 0Q1 1 0 4Q-1 1-4 0Q-1-1 0-4Z" fill="#a08010"/></g>
+<g transform="translate(520,170)"><path d="M0-3Q.8-.8 3 0Q.8.8 0 3Q-.8.8-3 0Q-.8-.8 0-3Z" fill="#a08010"/></g>
+<g transform="translate(135,440)"><path d="M0-3Q.8-.8 3 0Q.8.8 0 3Q-.8.8-3 0Q-.8-.8 0-3Z" fill="#a08010"/></g>
+<g transform="translate(555,430)"><path d="M0-3.5Q.9-.9 3.5 0Q.9.9 0 3.5Q-.9.9-3.5 0Q-.9-.9 0-3.5Z" fill="#a08010"/></g>
+</g>
+
+<!-- ===== NOTEBOOKS semicircle ===== -->
+<g transform="translate(340,445)">
+<g transform="translate(-168,20) rotate(-22)">
+<rect x="-25" y="-17" width="50" height="34" rx="2.5" fill="#f0e8d5" stroke="#a09078" stroke-width="0.8"/><line x1="0" y1="-17" x2="0" y2="17" stroke="#b8a888" stroke-width="0.7"/>
+<g opacity="0.16"><line x1="-19" y1="-9" x2="-3" y2="-9" stroke="#141414" stroke-width="0.7"/><line x1="-19" y1="-3" x2="-3" y2="-3" stroke="#141414" stroke-width="0.6"/><line x1="4" y1="-9" x2="20" y2="-9" stroke="#141414" stroke-width="0.7"/></g>
+</g>
+<g transform="translate(-118,68) rotate(-12)">
+<rect x="-25" y="-17" width="50" height="34" rx="2.5" fill="#ebe3d0" stroke="#a09078" stroke-width="0.8"/><line x1="0" y1="-17" x2="0" y2="17" stroke="#b8a888" stroke-width="0.7"/>
+<g opacity="0.15"><line x1="-19" y1="-9" x2="-3" y2="-9" stroke="#141414" stroke-width="0.7"/><line x1="4" y1="-9" x2="20" y2="-9" stroke="#141414" stroke-width="0.7"/></g>
+</g>
+<g transform="translate(-58,100) rotate(-4)">
+<rect x="-25" y="-17" width="50" height="34" rx="2.5" fill="#f0e8d5" stroke="#a09078" stroke-width="0.8"/><line x1="0" y1="-17" x2="0" y2="17" stroke="#b8a888" stroke-width="0.7"/>
+<g opacity="0.16"><line x1="-19" y1="-9" x2="-3" y2="-9" stroke="#141414" stroke-width="0.7"/><line x1="-19" y1="-3" x2="-3" y2="-3" stroke="#141414" stroke-width="0.6"/><line x1="4" y1="-9" x2="20" y2="-9" stroke="#141414" stroke-width="0.7"/></g>
+</g>
+<g transform="translate(5,112) rotate(1)">
+<rect x="-25" y="-17" width="50" height="34" rx="2.5" fill="#ebe3d0" stroke="#a09078" stroke-width="0.8"/><line x1="0" y1="-17" x2="0" y2="17" stroke="#b8a888" stroke-width="0.7"/>
+<g opacity="0.12"><circle cx="12" cy="0" r="7" fill="none" stroke="#141414" stroke-width="0.6"/><circle cx="12" cy="0" r="3" fill="none" stroke="#141414" stroke-width="0.4"/><line x1="-19" y1="-9" x2="-3" y2="-9" stroke="#141414" stroke-width="0.7"/></g>
+</g>
+<g transform="translate(65,105) rotate(6)">
+<rect x="-25" y="-17" width="50" height="34" rx="2.5" fill="#f0e8d5" stroke="#a09078" stroke-width="0.8"/><line x1="0" y1="-17" x2="0" y2="17" stroke="#b8a888" stroke-width="0.7"/>
+<g opacity="0.16"><line x1="-19" y1="-9" x2="-3" y2="-9" stroke="#141414" stroke-width="0.7"/><line x1="4" y1="-9" x2="20" y2="-9" stroke="#141414" stroke-width="0.7"/><line x1="4" y1="-3" x2="18" y2="-3" stroke="#141414" stroke-width="0.6"/></g>
+</g>
+<g transform="translate(125,82) rotate(14)">
+<rect x="-25" y="-17" width="50" height="34" rx="2.5" fill="#ebe3d0" stroke="#a09078" stroke-width="0.8"/><line x1="0" y1="-17" x2="0" y2="17" stroke="#b8a888" stroke-width="0.7"/>
+<g opacity="0.15"><line x1="-19" y1="-9" x2="-3" y2="-9" stroke="#141414" stroke-width="0.7"/><line x1="4" y1="-9" x2="20" y2="-9" stroke="#141414" stroke-width="0.7"/></g>
+</g>
+<g transform="translate(175,40) rotate(24)">
+<rect x="-25" y="-17" width="50" height="34" rx="2.5" fill="#f0e8d5" stroke="#a09078" stroke-width="0.8"/><line x1="0" y1="-17" x2="0" y2="17" stroke="#b8a888" stroke-width="0.7"/>
+<g opacity="0.16"><line x1="-19" y1="-9" x2="-3" y2="-9" stroke="#141414" stroke-width="0.7"/><line x1="-19" y1="-3" x2="-3" y2="-3" stroke="#141414" stroke-width="0.6"/><line x1="4" y1="-9" x2="20" y2="-9" stroke="#141414" stroke-width="0.7"/></g>
+</g>
+<g transform="translate(210,-5) rotate(32)">
+<rect x="-25" y="-17" width="50" height="34" rx="2.5" fill="#ebe3d0" stroke="#a09078" stroke-width="0.8"/><line x1="0" y1="-17" x2="0" y2="17" stroke="#b8a888" stroke-width="0.7"/>
+<g opacity="0.15"><line x1="-19" y1="-9" x2="-3" y2="-9" stroke="#141414" stroke-width="0.7"/><line x1="4" y1="-9" x2="20" y2="-9" stroke="#141414" stroke-width="0.7"/></g>
+</g>
+</g>
+
+<!-- ===== OCTOPUS ===== -->
+<g transform="translate(340,255)">
+
+<!-- large ink halo around whole body -->
+<ellipse cx="0" cy="30" rx="150" ry="100" fill="url(#inkHalo)"/>
+
+<!-- === BODY 身体 - slightly elongated downward so tentacles connect === -->
+<ellipse cx="0" cy="38" rx="72" ry="35" fill="#1a1a1a" opacity="0.65"/>
+<!-- head -->
+<ellipse cx="0" cy="-8" rx="90" ry="75" fill="url(#hd6)"/>
+<!-- dry brush 飞白 on head -->
+<path d="M-55 -55 Q-20 -65 15 -58 Q45 -52 60 -45" stroke="#e8d5b7" stroke-width="12" stroke-linecap="round" fill="none" opacity="0.04"/>
+<path d="M-40 -35 Q0 -42 40 -35" stroke="#e8d5b7" stroke-width="8" stroke-linecap="round" fill="none" opacity="0.03"/>
+
+<!-- tiny wings -->
+<g opacity="0.55">
+<path d="M-78 -18 Q-102 -48 -96 -68 Q-93 -76 -87 -68 Q-82 -56 -84 -40 Q-84 -26 -76 -16" fill="#2a2a2a" stroke="#141414" stroke-width="0.8"/>
+<path d="M78 -18 Q102 -48 96 -68 Q93 -76 87 -68 Q82 -56 84 -40 Q84 -26 76 -16" fill="#2a2a2a" stroke="#141414" stroke-width="0.8"/>
+</g>
+
+<!-- neural net -->
+<g opacity="0.2">
+<circle cx="-18" cy="-46" r="2.2" fill="#a08010"/><circle cx="8" cy="-55" r="2.2" fill="#a08010"/><circle cx="30" cy="-43" r="2.2" fill="#a08010"/>
+<circle cx="-4" cy="-30" r="1.8" fill="#a08010"/><circle cx="20" cy="-27" r="1.8" fill="#a08010"/>
+<circle cx="-36" cy="-33" r="1.5" fill="#a08010"/><circle cx="46" cy="-29" r="1.5" fill="#a08010"/>
+<line x1="-18" y1="-46" x2="8" y2="-55" stroke="#a08010" stroke-width="0.6"/><line x1="8" y1="-55" x2="30" y2="-43" stroke="#a08010" stroke-width="0.6"/>
+<line x1="-18" y1="-46" x2="-4" y2="-30" stroke="#a08010" stroke-width="0.6"/><line x1="30" y1="-43" x2="20" y2="-27" stroke="#a08010" stroke-width="0.6"/>
+<line x1="-4" y1="-30" x2="20" y2="-27" stroke="#a08010" stroke-width="0.6"/><line x1="8" y1="-55" x2="-4" y2="-30" stroke="#a08010" stroke-width="0.5"/>
+<line x1="-36" y1="-33" x2="-18" y2="-46" stroke="#a08010" stroke-width="0.4"/><line x1="46" y1="-29" x2="30" y2="-43" stroke="#a08010" stroke-width="0.4"/>
+</g>
+
+<!-- eyes -->
+<ellipse cx="-30" cy="-6" rx="24" ry="22" fill="#ede5d2"/><ellipse cx="-30" cy="-6" rx="24" ry="22" fill="url(#es6)"/>
+<ellipse cx="-30" cy="-6" rx="24" ry="22" fill="none" stroke="#141414" stroke-width="1.5" opacity="0.18"/>
+<circle cx="-28" cy="-4" r="14" fill="#8b7328"/><circle cx="-28" cy="-4" r="10" fill="#6b5818"/><circle cx="-28" cy="-4" r="7" fill="#0d0d0d"/>
+<circle cx="-23" cy="-11" r="5" fill="#fff" opacity="0.8"/><circle cx="-34" cy="1" r="2.5" fill="#fff" opacity="0.38"/>
+
+<ellipse cx="30" cy="-6" rx="24" ry="22" fill="#ede5d2"/><ellipse cx="30" cy="-6" rx="24" ry="22" fill="url(#es6)"/>
+<ellipse cx="30" cy="-6" rx="24" ry="22" fill="none" stroke="#141414" stroke-width="1.5" opacity="0.18"/>
+<circle cx="32" cy="-4" r="14" fill="#8b7328"/><circle cx="32" cy="-4" r="10" fill="#6b5818"/><circle cx="32" cy="-4" r="7" fill="#0d0d0d"/>
+<circle cx="37" cy="-11" r="5" fill="#fff" opacity="0.8"/><circle cx="26" cy="1" r="2.5" fill="#fff" opacity="0.38"/>
+
+<!-- blush -->
+<ellipse cx="-54" cy="8" rx="12" ry="7" fill="url(#ck6)"/>
+<ellipse cx="54" cy="8" rx="12" ry="7" fill="url(#ck6)"/>
+<!-- mouth -->
+<path d="M-10 20 Q0 28 10 20" fill="none" stroke="#141414" stroke-width="2" stroke-linecap="round" opacity="0.28"/>
+
+<!-- ======== 8 TENTACLES from BODY downward ======== -->
+<!-- Each: thick brushstroke tentacle → wraps pen at MID-SHAFT → pen tip down to notebook -->
+
+<!-- T1 far-left: from body left edge -->
+<path d="M-62 52 Q-100 80 -140 120 Q-168 152 -172 178 Q-174 195 -165 200 Q-155 195 -152 175 Q-148 148 -120 110 Q-92 75 -58 50" fill="none" stroke="#141414" stroke-width="18" stroke-linecap="round" opacity="0.7"/>
+<!-- 飞白 dry brush layer -->
+<path d="M-140 120 Q-168 152 -172 178 Q-174 195 -165 200" fill="none" stroke="#3a3a3a" stroke-width="12" stroke-linecap="round" opacity="0.12"/>
+<!-- suction hint -->
+<circle cx="-158" cy="170" r="4.5" fill="#d4c49e" opacity="0.2"/><circle cx="-150" cy="190" r="3.8" fill="#d4c49e" opacity="0.18"/>
+<!-- PEN: tentacle grips middle, pen extends above & below -->
+<g transform="translate(-166,198) rotate(-18)">
+<rect x="-2.8" y="-22" width="5.6" height="60" rx="2.2" fill="#4a3520" opacity="0.82"/>
+<rect x="-2.2" y="-22" width="4.4" height="7" rx="1.5" fill="#7a5a14" opacity="0.6"/>
+<path d="M-2.5 38 L0 50 L2.5 38Z" fill="#141414" opacity="0.8"/>
+<circle cx="0" cy="51" r="2.8" fill="#141414" opacity="0.3"/>
+</g>
+
+<!-- T2 mid-left -->
+<path d="M-42 58 Q-72 100 -92 148 Q-105 182 -100 205 Q-96 218 -86 212 Q-80 200 -78 175 Q-74 138 -52 95 Q-38 68 -32 56" fill="none" stroke="#141414" stroke-width="16" stroke-linecap="round" opacity="0.68"/>
+<path d="M-92 148 Q-105 182 -100 205 Q-96 218 -86 212" fill="none" stroke="#3a3a3a" stroke-width="10" stroke-linecap="round" opacity="0.1"/>
+<circle cx="-88" cy="195" r="4" fill="#d4c49e" opacity="0.18"/>
+<g transform="translate(-92,214) rotate(-5)">
+<rect x="-2.8" y="-22" width="5.6" height="60" rx="2.2" fill="#4a3520" opacity="0.82"/>
+<rect x="-2.2" y="-22" width="4.4" height="7" rx="1.5" fill="#7a5a14" opacity="0.6"/>
+<path d="M-2.5 38 L0 50 L2.5 38Z" fill="#141414" opacity="0.8"/>
+<circle cx="0" cy="51" r="2.8" fill="#141414" opacity="0.3"/>
+</g>
+
+<!-- T3 inner-left -->
+<path d="M-22 62 Q-35 110 -40 160 Q-42 195 -34 225 Q-28 240 -20 232 Q-16 218 -20 190 Q-22 148 -14 100 Q-8 72 -8 60" fill="none" stroke="#141414" stroke-width="14" stroke-linecap="round" opacity="0.65"/>
+<path d="M-40 160 Q-42 195 -34 225" fill="none" stroke="#3a3a3a" stroke-width="9" stroke-linecap="round" opacity="0.08"/>
+<g transform="translate(-26,236) rotate(4)">
+<rect x="-2.8" y="-22" width="5.6" height="58" rx="2.2" fill="#4a3520" opacity="0.82"/>
+<rect x="-2.2" y="-22" width="4.4" height="7" rx="1.5" fill="#7a5a14" opacity="0.6"/>
+<path d="M-2.5 36 L0 48 L2.5 36Z" fill="#141414" opacity="0.8"/>
+<circle cx="0" cy="49" r="2.8" fill="#141414" opacity="0.3"/>
+</g>
+
+<!-- T4 center-left -->
+<path d="M-6 65 Q-12 120 -10 178 Q-8 215 -2 242 Q4 255 10 246 Q12 230 8 200 Q6 150 8 108 Q8 75 6 65" fill="none" stroke="#141414" stroke-width="13" stroke-linecap="round" opacity="0.62"/>
+<g transform="translate(4,250) rotate(6)">
+<rect x="-2.8" y="-22" width="5.6" height="56" rx="2.2" fill="#4a3520" opacity="0.82"/>
+<rect x="-2.2" y="-22" width="4.4" height="7" rx="1.5" fill="#7a5a14" opacity="0.6"/>
+<path d="M-2.5 34 L0 46 L2.5 34Z" fill="#141414" opacity="0.8"/>
+<circle cx="0" cy="47" r="2.8" fill="#141414" opacity="0.3"/>
+</g>
+
+<!-- T5 center-right -->
+<path d="M18 65 Q24 120 22 178 Q20 215 26 242 Q32 255 38 246 Q40 230 36 200 Q34 150 30 108 Q26 75 22 65" fill="none" stroke="#141414" stroke-width="13" stroke-linecap="round" opacity="0.62"/>
+<g transform="translate(34,250) rotate(10)">
+<rect x="-2.8" y="-22" width="5.6" height="56" rx="2.2" fill="#4a3520" opacity="0.82"/>
+<rect x="-2.2" y="-22" width="4.4" height="7" rx="1.5" fill="#7a5a14" opacity="0.6"/>
+<path d="M-2.5 34 L0 46 L2.5 34Z" fill="#141414" opacity="0.8"/>
+<circle cx="0" cy="47" r="2.8" fill="#141414" opacity="0.3"/>
+</g>
+
+<!-- T6 inner-right -->
+<path d="M34 62 Q48 110 52 160 Q55 195 48 225 Q42 240 34 232 Q30 218 34 190 Q36 148 28 100 Q22 72 22 60" fill="none" stroke="#141414" stroke-width="14" stroke-linecap="round" opacity="0.65"/>
+<path d="M52 160 Q55 195 48 225" fill="none" stroke="#3a3a3a" stroke-width="9" stroke-linecap="round" opacity="0.08"/>
+<g transform="translate(42,236) rotate(14)">
+<rect x="-2.8" y="-22" width="5.6" height="58" rx="2.2" fill="#4a3520" opacity="0.82"/>
+<rect x="-2.2" y="-22" width="4.4" height="7" rx="1.5" fill="#7a5a14" opacity="0.6"/>
+<path d="M-2.5 36 L0 48 L2.5 36Z" fill="#141414" opacity="0.8"/>
+<circle cx="0" cy="49" r="2.8" fill="#141414" opacity="0.3"/>
+</g>
+
+<!-- T7 mid-right -->
+<path d="M48 58 Q78 100 98 148 Q112 182 106 205 Q102 218 92 212 Q86 200 84 175 Q80 138 58 95 Q44 68 40 56" fill="none" stroke="#141414" stroke-width="16" stroke-linecap="round" opacity="0.68"/>
+<path d="M98 148 Q112 182 106 205 Q102 218 92 212" fill="none" stroke="#3a3a3a" stroke-width="10" stroke-linecap="round" opacity="0.1"/>
+<circle cx="94" cy="195" r="4" fill="#d4c49e" opacity="0.18"/>
+<g transform="translate(98,214) rotate(20)">
+<rect x="-2.8" y="-22" width="5.6" height="60" rx="2.2" fill="#4a3520" opacity="0.82"/>
+<rect x="-2.2" y="-22" width="4.4" height="7" rx="1.5" fill="#7a5a14" opacity="0.6"/>
+<path d="M-2.5 38 L0 50 L2.5 38Z" fill="#141414" opacity="0.8"/>
+<circle cx="0" cy="51" r="2.8" fill="#141414" opacity="0.3"/>
+</g>
+
+<!-- T8 far-right -->
+<path d="M62 52 Q100 80 140 120 Q168 152 172 178 Q174 195 165 200 Q155 195 152 175 Q148 148 120 110 Q92 75 58 50" fill="none" stroke="#141414" stroke-width="18" stroke-linecap="round" opacity="0.7"/>
+<path d="M140 120 Q168 152 172 178 Q174 195 165 200" fill="none" stroke="#3a3a3a" stroke-width="12" stroke-linecap="round" opacity="0.12"/>
+<circle cx="158" cy="170" r="4.5" fill="#d4c49e" opacity="0.2"/><circle cx="150" cy="190" r="3.8" fill="#d4c49e" opacity="0.18"/>
+<g transform="translate(166,198) rotate(22)">
+<rect x="-2.8" y="-22" width="5.6" height="60" rx="2.2" fill="#4a3520" opacity="0.82"/>
+<rect x="-2.2" y="-22" width="4.4" height="7" rx="1.5" fill="#7a5a14" opacity="0.6"/>
+<path d="M-2.5 38 L0 50 L2.5 38Z" fill="#141414" opacity="0.8"/>
+<circle cx="0" cy="51" r="2.8" fill="#141414" opacity="0.3"/>
+</g>
+
+</g>
+
+<!-- 墨点飞溅 ink splatter -->
+<g opacity="0.12">
+<circle cx="185" cy="565" r="5.5" fill="#141414"/><circle cx="178" cy="575" r="2.5" fill="#141414"/><circle cx="193" cy="573" r="1.8" fill="#141414"/>
+<circle cx="490" cy="560" r="4.5" fill="#141414"/><circle cx="498" cy="569" r="2" fill="#141414"/>
+<circle cx="340" cy="585" r="3.5" fill="#141414"/><circle cx="348" cy="592" r="1.5" fill="#141414"/>
+</g>
+
+<!-- calligraphic accent strokes 书法点缀 -->
+<g opacity="0.04">
+<path d="M110 590 Q130 575 160 580" stroke="#141414" stroke-width="4" stroke-linecap="round" fill="none"/>
+<path d="M520 585 Q540 572 565 578" stroke="#141414" stroke-width="3" stroke-linecap="round" fill="none"/>
+</g>
+
+<!-- border -->
+<rect x="40" y="40" width="600" height="600" rx="130" fill="none" stroke="#a09078" stroke-width="1" opacity="0.12"/>
 </svg>
