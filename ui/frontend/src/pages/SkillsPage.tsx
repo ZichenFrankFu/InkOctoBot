@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { apiGet, apiPost } from "../api/client";
-import type { SkillInfo, SkillExecuteResult } from "../api/types";
+import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
+import type { SkillInfo, SkillExecuteResult, Project } from "../api/types";
 
 const DOMAIN_LABELS: Record<string, { label: string; color: string }> = {
   planner: { label: "Planner", color: "var(--indigo)" },
@@ -11,7 +11,38 @@ const DOMAIN_LABELS: Record<string, { label: string; color: string }> = {
   unknown: { label: "Other", color: "var(--text-secondary)" },
 };
 
-export default function SkillsPage() {
+interface LearningLogEntry {
+  id: string;
+  skill_name: string;
+  display_name: string;
+  trigger: string;
+  need_description: string;
+  project_id: string;
+  created_at: string;
+}
+
+interface ExtractedMemory {
+  id: string;
+  content: string;
+  source: string;
+  timestamp: string;
+}
+
+interface PrefEntry {
+  id: string;
+  timestamp: string;
+  action: string;
+  detail: string;
+  scope?: string;
+  role?: string;
+}
+
+interface Props {
+  projects: Project[];
+  activeProject: string;
+}
+
+export default function SkillsPage({ projects, activeProject }: Props) {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -27,21 +58,76 @@ export default function SkillsPage() {
   const [newSkill, setNewSkill] = useState({ name: "", display_name: "", description: "", tags: "", prompt_template: "" });
   const [creating, setCreating] = useState(false);
 
+  // Self-learning section state
+  const [learningLog, setLearningLog] = useState<LearningLogEntry[]>([]);
+  const [prefProject, setPrefProject] = useState(activeProject || "default");
+  const [prefEntries, setPrefEntries] = useState<PrefEntry[]>([]);
+  const [prefSummary, setPrefSummary] = useState("");
+  const [extractedMemories, setExtractedMemories] = useState<ExtractedMemory[]>([]);
+  const [prefLoading, setPrefLoading] = useState(false);
+  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
+  const [editingMemoryText, setEditingMemoryText] = useState("");
+
   const loadSkills = useCallback(() => {
     setLoading(true);
     Promise.all([
       apiGet<{ skills: SkillInfo[]; total: number }>("/api/skills"),
       apiGet<{ tags: string[] }>("/api/skills/tags"),
+      apiGet<{ entries: LearningLogEntry[] }>("/api/skills/learning-log"),
     ])
-      .then(([skillsResp, tagsResp]) => {
+      .then(([skillsResp, tagsResp, logResp]) => {
         setSkills(skillsResp.skills || []);
         setAllTags(tagsResp.tags || []);
+        setLearningLog(logResp.entries || []);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => { loadSkills(); }, [loadSkills]);
+
+  // Load preferences when project selection changes
+  useEffect(() => {
+    if (!prefProject) return;
+    apiGet<{ entries: PrefEntry[]; summary: string; extracted_memories?: ExtractedMemory[] }>(
+      `/api/data/preferences?project_id=${prefProject}`
+    )
+      .then(r => {
+        setPrefEntries(r.entries || []);
+        setPrefSummary(r.summary || "");
+        setExtractedMemories(r.extracted_memories || []);
+      })
+      .catch(() => { setPrefEntries([]); setPrefSummary(""); setExtractedMemories([]); });
+  }, [prefProject]);
+
+  const analyzePreferences = async () => {
+    setPrefLoading(true);
+    try {
+      const resp = await apiPost<{ summary: string; entries: PrefEntry[]; extracted_memories?: ExtractedMemory[] }>(
+        "/api/data/preferences/analyze", { project_id: prefProject }
+      );
+      if (resp.summary) setPrefSummary(resp.summary);
+      if (resp.entries) setPrefEntries(resp.entries);
+      if (resp.extracted_memories) setExtractedMemories(resp.extracted_memories);
+    } catch { /* ignore */ }
+    setPrefLoading(false);
+  };
+
+  const removeExtractedMemory = (id: string) => {
+    setExtractedMemories(prev => prev.filter(m => m.id !== id));
+    apiDelete(`/api/data/preferences/memory/${id}?project_id=${prefProject}`).catch(() => {});
+  };
+
+  const updateExtractedMemory = (id: string, newContent: string) => {
+    setExtractedMemories(prev => prev.map(m => m.id === id ? { ...m, content: newContent } : m));
+    setEditingMemoryId(null);
+    apiPut(`/api/data/preferences/memory/${id}`, { project_id: prefProject, content: newContent }).catch(() => {});
+  };
+
+  const removePrefEntry = (id: string) => {
+    setPrefEntries(prev => prev.filter(e => e.id !== id));
+    apiDelete(`/api/data/preferences/${id}?project_id=${prefProject}`).catch(() => {});
+  };
 
   const handleCreateSkill = async () => {
     if (!newSkill.name.trim()) return;
@@ -99,6 +185,8 @@ export default function SkillsPage() {
     setTesting(false);
   };
 
+  const projectName = (pid: string) => projects.find(p => p.id === pid)?.name || pid;
+
   if (loading) {
     return (
       <div className="loading" style={{ paddingTop: 120 }}>
@@ -123,6 +211,196 @@ export default function SkillsPage() {
         <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => setShowCreate(!showCreate)}>
           + New Skill
         </button>
+      </div>
+
+      {/* ════════════════════════════════════════════════════════════════
+          自学习成果 (Self-Learning Results)
+          ════════════════════════════════════════════════════════════════ */}
+      <div className="card" style={{ marginBottom: 24, borderLeft: "3px solid var(--purple)" }}>
+        <div className="card-header" style={{ background: "var(--purple-subtle, rgba(147,51,234,0.06))" }}>
+          <h3 style={{ fontSize: 15, margin: 0, color: "var(--purple, #9333ea)" }}>自学习成果</h3>
+          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+            EditAnalyzer · 偏好记忆 · 自动习得技能
+          </span>
+        </div>
+        <div className="card-body" style={{ padding: 0 }}>
+          {/* ── Skill Learning Log ── */}
+          <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border-subtle)" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 10 }}>
+              技能习得记录
+              <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 8 }}>
+                {learningLog.length} 条
+              </span>
+            </div>
+            {learningLog.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-tertiary)", padding: "8px 0" }}>
+                暂无自学习记录。当系统检测到重复的用户修改模式或评估失败时，将自动生成新技能。
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {learningLog.map(entry => (
+                  <div key={entry.id} style={{
+                    padding: "10px 14px", background: "var(--bg-surface)", borderRadius: 8,
+                    border: "1px solid var(--border-subtle)",
+                  }}>
+                    <div className="flex items-center gap-8" style={{ marginBottom: 4 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--purple, #9333ea)" }}>
+                        {entry.display_name || entry.skill_name}
+                      </span>
+                      <code style={{ fontSize: 10, color: "var(--text-tertiary)", background: "var(--bg-secondary)", padding: "1px 6px", borderRadius: 4 }}>
+                        {entry.skill_name}
+                      </code>
+                      {entry.project_id && (
+                        <span style={{ fontSize: 10, padding: "1px 8px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-secondary)" }}>
+                          {projectName(entry.project_id)}
+                        </span>
+                      )}
+                      <span style={{ fontSize: 10, color: "var(--text-disabled)", marginLeft: "auto" }}>
+                        {entry.created_at}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>
+                      <span style={{ color: "var(--gold)", fontWeight: 600 }}>触发：</span>{entry.trigger}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                      <span style={{ color: "var(--jade)", fontWeight: 600 }}>用途：</span>{entry.need_description}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── Per-Project Preference Memories ── */}
+          <div style={{ padding: "16px 20px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>偏好记忆</div>
+              <select className="select" style={{ fontSize: 11, minWidth: 140 }}
+                value={prefProject} onChange={e => setPrefProject(e.target.value)}>
+                {projects.length === 0 && <option value="default">默认项目</option>}
+                {projects.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <button className="btn" style={{ fontSize: 11, padding: "3px 10px", marginLeft: "auto" }}
+                onClick={analyzePreferences} disabled={prefLoading}>
+                {prefLoading ? "分析中..." : prefEntries.length > 0 ? "刷新" : "收集交互记录"}
+              </button>
+            </div>
+
+            <div style={{ padding: "8px 12px", background: "var(--purple-subtle, rgba(147,51,234,0.06))", borderRadius: 6, marginBottom: 12, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+              根据该项目内所有AI对话交互记录，自动提取创作偏好。各项目的偏好记忆独立存储，用于改进AI生成质量。
+            </div>
+
+            {/* Summary */}
+            {prefSummary && (
+              <div style={{ padding: "8px 12px", background: "var(--bg-surface)", borderRadius: 6, marginBottom: 12, fontSize: 12, color: "var(--text-secondary)" }}>
+                {prefSummary}
+              </div>
+            )}
+
+            {/* Extracted memories */}
+            {extractedMemories.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>
+                  提取的创作偏好
+                  <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 6 }}>
+                    {extractedMemories.length} 条
+                  </span>
+                </div>
+                {extractedMemories.map(mem => (
+                  <div key={mem.id} style={{
+                    padding: "8px 12px", borderBottom: "1px solid var(--border-subtle)",
+                    display: "flex", alignItems: "flex-start", gap: 8,
+                    borderLeft: "3px solid var(--indigo)",
+                  }}>
+                    <div style={{
+                      width: 20, height: 20, borderRadius: "50%", flexShrink: 0, marginTop: 1,
+                      background: "var(--indigo-subtle)", border: "1.5px solid var(--indigo)",
+                      display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9,
+                      color: "var(--indigo)",
+                    }}>M</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="flex items-center gap-8" style={{ marginBottom: 2 }}>
+                        <span style={{ fontSize: 10, color: "var(--text-disabled)" }}>{mem.timestamp}</span>
+                        <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "var(--indigo-subtle)", color: "var(--indigo)" }}>{mem.source}</span>
+                      </div>
+                      {editingMemoryId === mem.id ? (
+                        <div>
+                          <textarea className="input" value={editingMemoryText}
+                            onChange={e => setEditingMemoryText(e.target.value)}
+                            rows={2} style={{ fontSize: 11, width: "100%", boxSizing: "border-box", marginBottom: 4 }} />
+                          <div className="flex gap-4">
+                            <button className="btn-primary" style={{ fontSize: 10, padding: "2px 8px" }}
+                              onClick={() => updateExtractedMemory(mem.id, editingMemoryText)}>保存</button>
+                            <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }}
+                              onClick={() => setEditingMemoryId(null)}>取消</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                          {mem.content}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex gap-2" style={{ flexShrink: 0 }}>
+                      <button className="btn-icon" style={{ fontSize: 10 }}
+                        onClick={() => { setEditingMemoryId(mem.id); setEditingMemoryText(mem.content); }}
+                        title="编辑">&#9998;</button>
+                      <button className="btn-icon" style={{ fontSize: 11 }}
+                        onClick={() => removeExtractedMemory(mem.id)}
+                        title="删除">&times;</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* User interaction entries */}
+            {prefEntries.length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>
+                  用户交互记录
+                  <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 6 }}>
+                    {prefEntries.length} 条
+                  </span>
+                </div>
+                <div style={{ maxHeight: 300, overflowY: "auto" }}>
+                  {prefEntries.map(entry => (
+                    <div key={entry.id} style={{
+                      padding: "8px 12px", borderBottom: "1px solid var(--border-subtle)",
+                      display: "flex", alignItems: "flex-start", gap: 8,
+                      borderLeft: "3px solid var(--purple, #9333ea)",
+                    }}>
+                      <div style={{
+                        width: 20, height: 20, borderRadius: "50%", flexShrink: 0, marginTop: 1,
+                        background: "var(--purple-subtle)", border: "1.5px solid var(--purple, #9333ea)",
+                        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9,
+                      }}>U</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="flex items-center gap-8" style={{ marginBottom: 2 }}>
+                          <span style={{ fontSize: 10, color: "var(--text-disabled)" }}>{entry.timestamp}</span>
+                          <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "var(--bg-secondary)", color: "var(--text-secondary)" }}>{entry.action}</span>
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                          {entry.detail.length > 300 ? entry.detail.slice(0, 300) + "..." : entry.detail}
+                        </div>
+                      </div>
+                      <button className="btn-icon" style={{ fontSize: 11, flexShrink: 0 }}
+                        onClick={() => removePrefEntry(entry.id)}>&times;</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {prefEntries.length === 0 && !prefSummary && extractedMemories.length === 0 && (
+              <div style={{ textAlign: "center", padding: "16px 0", color: "var(--text-tertiary)", fontSize: 12 }}>
+                点击「收集交互记录」按钮来分析该项目的AI对话历史
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Create skill form */}

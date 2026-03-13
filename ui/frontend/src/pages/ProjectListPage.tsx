@@ -19,13 +19,12 @@ interface CalibrationState {
   audience: string;    // "male" | "female" | "general"
 }
 
-type StudioTab = "trending" | "brainstorm" | "calibration" | "preferences";
+type StudioTab = "trending" | "brainstorm" | "calibration";
 
 const STUDIO_TABS: { key: StudioTab; label: string; agent: string }[] = [
   { key: "trending", label: "热点题材", agent: "Marketing" },
   { key: "brainstorm", label: "头脑风暴", agent: "Story Architect" },
   { key: "calibration", label: "风格校准", agent: "Editor-Writer" },
-  { key: "preferences", label: "偏好记忆", agent: "EditAnalyzer" },
 ];
 
 const SAMPLE_TYPES: { key: string; label: string }[] = [
@@ -90,15 +89,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const [calibrationAnalysis, setCalibrationAnalysis] = useState("");
   const [lockedSamples, setLockedSamples] = useState<Record<string, string>>({});
 
-  // Preferences (偏好记忆) state
-  const [prefEntries, setPrefEntries] = useState<{ id: string; timestamp: string; action: string; detail: string; role?: string; scope?: string }[]>([]);
-  // prefFilter removed — backend now only returns user inputs
-  const [prefSummary, setPrefSummary] = useState("");
-  const [prefLoading, setPrefLoading] = useState(false);
-  // Extracted interaction memories (like project memory)
-  const [extractedMemories, setExtractedMemories] = useState<{ id: string; content: string; source: string; timestamp: string }[]>([]);
-  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
-  const [editingMemoryText, setEditingMemoryText] = useState("");
+
 
   // Derived: current tab's messages and setter
   const chatMessages = studioTab === "trending" ? trendingMessages : brainstormMessages;
@@ -140,14 +131,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     trending: "你好，我是 Marketing Agent。我可以帮你分析市场趋势、题材热度、新人友好程度等。告诉我你感兴趣的题材，或者问我市场相关的问题吧！",
     brainstorm: "你好，我是 Story Architect Agent。我可以帮你构思世界观、设计角色、规划故事大纲。告诉我你的创意想法，我来帮你一步步完善！",
     calibration: "",
-    preferences: "",
   };
-
-  // Track previous tab for switch detection — no longer inject cross-tab guidance
-  const prevStudioTabRef = useRef<StudioTab>(studioTab);
-  useEffect(() => {
-    prevStudioTabRef.current = studioTab;
-  }, [studioTab]);
 
   // Load chat from backend on mount / project change (both tabs independently)
   useEffect(() => {
@@ -199,19 +183,6 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     }
   }, [studioTab]);
 
-  // Load preferences on tab switch
-  useEffect(() => {
-    if (studioTab === "preferences" && prefEntries.length === 0) {
-      const pid = activeProject || "default";
-      apiGet<{ entries: any[]; summary: string; extracted_memories?: any[] }>(`/api/data/preferences?project_id=${pid}`)
-        .then(r => {
-          if (r.entries) setPrefEntries(r.entries);
-          if (r.summary) setPrefSummary(r.summary);
-          if (r.extracted_memories) setExtractedMemories(r.extracted_memories);
-        })
-        .catch(() => {});
-    }
-  }, [studioTab, activeProject]);
 
   const handleCreate = async () => {
     if (!formName.trim()) return;
@@ -292,15 +263,6 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
         systemHint: "你是Editor-Writer，专注于风格校准。根据用户设置的文风参数生成校准样本。",
         placeholder: "描述你想要的文风...",
         quickPrompts: [],
-      },
-      preferences: {
-        agentName: "EditAnalyzer",
-        systemHint: "你是EditAnalyzer，专注于分析用户的编辑偏好和创作习惯，总结偏好以改进AI辅助。",
-        placeholder: "询问你的创作偏好分析...",
-        quickPrompts: [
-          "分析一下我目前的创作偏好",
-          "根据我的编辑历史，我倾向于什么样的文风？",
-        ],
       },
     };
     return configs[tab];
@@ -578,38 +540,6 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
       }).catch(() => {});
       return next;
     });
-  };
-
-  const analyzePrefences = async () => {
-    setPrefLoading(true);
-    try {
-      const resp = await apiPost<{ summary: string; entries: any[]; extracted_memories?: any[] }>("/api/data/preferences/analyze", {
-        project_id: activeProject || "default",
-      });
-      if (resp.summary) setPrefSummary(resp.summary);
-      if (resp.entries) setPrefEntries(resp.entries);
-      if (resp.extracted_memories) setExtractedMemories(resp.extracted_memories);
-    } catch { /* ignore */ }
-    setPrefLoading(false);
-  };
-
-  const removeExtractedMemory = (id: string) => {
-    const pid = activeProject || "default";
-    setExtractedMemories(prev => prev.filter(m => m.id !== id));
-    apiDelete(`/api/data/preferences/memory/${id}?project_id=${pid}`).catch(() => {});
-  };
-
-  const updateExtractedMemory = (id: string, newContent: string) => {
-    const pid = activeProject || "default";
-    setExtractedMemories(prev => prev.map(m => m.id === id ? { ...m, content: newContent } : m));
-    setEditingMemoryId(null);
-    apiPut(`/api/data/preferences/memory/${id}`, { project_id: pid, content: newContent }).catch(() => {});
-  };
-
-  const removePrefEntry = (id: string) => {
-    const pid = activeProject || "default";
-    setPrefEntries(prev => prev.filter(e => e.id !== id));
-    apiDelete(`/api/data/preferences/${id}?project_id=${pid}`).catch(() => {});
   };
 
   const deleteChatMessage = (messageId: string) => {
@@ -1215,131 +1145,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                   </div>
                 )}
               </div>
-            ) : (
-              /* ── 偏好记忆 (EditAnalyzer) ── */
-              <div style={{ padding: 16, overflowY: "auto", flex: 1 }}>
-                <div style={{ padding: "12px 14px", background: "var(--purple-subtle)", borderRadius: 8, marginBottom: 16, borderLeft: "3px solid var(--purple)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--purple)", marginBottom: 4 }}>EditAnalyzer Agent</div>
-                  <div className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                    根据你在本项目内所做的所有请求及编辑，总结创作偏好并改进各AI能力。你可以增加、更改或删除条目。
-                  </div>
-                </div>
-
-                <button className="btn-primary mb-16" style={{ width: "100%" }}
-                  onClick={analyzePrefences} disabled={prefLoading}>
-                  {prefLoading ? "分析中..." : prefEntries.length > 0 ? "刷新交互记录" : "收集交互记录"}
-                </button>
-
-                {/* Summary */}
-                {prefSummary && (
-                  <div className="card mb-16">
-                    <div className="card-header"><h3>交互总结</h3></div>
-                    <div className="card-body" style={{ fontSize: 13, lineHeight: 1.7, color: "var(--text-secondary)", userSelect: "text" }}>
-                      {prefSummary}
-                    </div>
-                  </div>
-                )}
-
-                {/* Extracted interaction memories (like project memory) */}
-                {extractedMemories.length > 0 && (
-                  <div className="card mb-16">
-                    <div className="card-header">
-                      <h3>提取的创作偏好</h3>
-                      <span className="text-xs text-muted">{extractedMemories.length} 条 · 从交互记录中自动提取</span>
-                    </div>
-                    <div className="card-body" style={{ padding: 0 }}>
-                      {extractedMemories.map((mem) => (
-                        <div key={mem.id} style={{
-                          padding: "10px 16px", borderBottom: "1px solid var(--border-subtle)",
-                          display: "flex", alignItems: "flex-start", gap: 10,
-                          borderLeft: "3px solid var(--indigo)",
-                        }}>
-                          <div style={{
-                            width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 2,
-                            background: "var(--indigo-subtle)", border: "1.5px solid var(--indigo)",
-                            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10,
-                            color: "var(--indigo)",
-                          }}>M</div>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div className="flex items-center gap-8 mb-4">
-                              <span className="text-xs font-mono" style={{ color: "var(--text-disabled)" }}>{mem.timestamp}</span>
-                              <span className="tag category" style={{ fontSize: 10, background: "var(--indigo-subtle)", color: "var(--indigo)" }}>{mem.source}</span>
-                            </div>
-                            {editingMemoryId === mem.id ? (
-                              <div>
-                                <textarea className="input" value={editingMemoryText}
-                                  onChange={e => setEditingMemoryText(e.target.value)}
-                                  rows={2} style={{ fontSize: 12, width: "100%", boxSizing: "border-box", marginBottom: 6 }} />
-                                <div className="flex gap-4">
-                                  <button className="btn-primary" style={{ fontSize: 10, padding: "3px 10px" }}
-                                    onClick={() => updateExtractedMemory(mem.id, editingMemoryText)}>保存</button>
-                                  <button className="btn" style={{ fontSize: 10, padding: "3px 10px" }}
-                                    onClick={() => setEditingMemoryId(null)}>取消</button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                                {mem.content}
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex gap-2" style={{ flexShrink: 0 }}>
-                            <button className="btn-icon" style={{ fontSize: 11 }}
-                              onClick={() => { setEditingMemoryId(mem.id); setEditingMemoryText(mem.content); }}
-                              title="编辑">&#9998;</button>
-                            <button className="btn-icon" style={{ fontSize: 12 }}
-                              onClick={() => removeExtractedMemory(mem.id)}
-                              title="删除">&times;</button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Entries list (user inputs only) */}
-                {prefEntries.length > 0 && (
-                  <div className="card">
-                    <div className="card-header">
-                      <h3>用户交互记录</h3>
-                      <span className="text-xs text-muted">{prefEntries.length} 条</span>
-                    </div>
-                    <div className="card-body" style={{ padding: 0, maxHeight: 400, overflowY: "auto" }}>
-                      {prefEntries.map((entry) => (
-                        <div key={entry.id} style={{
-                          padding: "10px 16px", borderBottom: "1px solid var(--border-subtle)",
-                          display: "flex", alignItems: "flex-start", gap: 10,
-                          borderLeft: "3px solid var(--purple)",
-                        }}>
-                          <div style={{
-                            width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 2,
-                            background: "var(--purple-subtle)", border: "1.5px solid var(--purple)",
-                            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10,
-                          }}>U</div>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div className="flex items-center gap-8 mb-4">
-                              <span className="text-xs font-mono" style={{ color: "var(--text-disabled)" }}>{entry.timestamp}</span>
-                              <span className="tag category" style={{ fontSize: 10 }}>{entry.action}</span>
-                            </div>
-                            <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                              {entry.detail.length > 300 ? entry.detail.slice(0, 300) + "..." : entry.detail}
-                            </div>
-                          </div>
-                          <button className="btn-icon" style={{ fontSize: 12, flexShrink: 0 }}
-                            onClick={() => removePrefEntry(entry.id)}>&times;</button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {prefEntries.length === 0 && !prefSummary && (
-                  <div className="empty-state" style={{ padding: 32 }}>
-                    <p>点击上方按钮收集所有AI对话交互记录</p>
-                  </div>
-                )}
-              </div>
-            )}
+            ) : null}
           </div>
         </div>
       </div>

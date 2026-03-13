@@ -7,14 +7,17 @@ execute registered skills.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import threading
 import time
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -288,3 +291,86 @@ async def execute_skill(req: SkillExecuteRequest):
     except Exception as e:
         logger.error("Skill execute error (%s): %s", req.name, e, exc_info=True)
         raise HTTPException(500, f"Skill execution error: {str(e)[:300]}")
+
+
+# ── Skill Learning Log ──
+
+def _learning_log_path() -> Path:
+    from ..settings import settings
+    d = Path(settings.data_dir) / "skill_learning_log"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "log.json"
+
+
+@router.get("/learning-log")
+def get_learning_log():
+    """Get the skill learning history log."""
+    p = _learning_log_path()
+    if not p.exists():
+        # Provide mock data in test mode
+        if os.environ.get("WN_TEST_MODE") == "1":
+            return {"entries": _mock_learning_log()}
+        return {"entries": []}
+    try:
+        data = json.loads(p.read_text("utf-8"))
+        return {"entries": data.get("entries", [])}
+    except Exception:
+        return {"entries": []}
+
+
+@router.post("/learning-log")
+def add_learning_log_entry(body: dict = Body(...)):
+    """Record a new skill learning event."""
+    p = _learning_log_path()
+    data = {"entries": []}
+    if p.exists():
+        try:
+            data = json.loads(p.read_text("utf-8"))
+        except Exception:
+            pass
+    entries = data.get("entries", [])
+    entry = {
+        "id": f"sl_{uuid.uuid4().hex[:8]}",
+        "skill_name": body.get("skill_name", ""),
+        "display_name": body.get("display_name", ""),
+        "trigger": body.get("trigger", ""),
+        "need_description": body.get("need_description", ""),
+        "project_id": body.get("project_id", ""),
+        "created_at": time.strftime("%Y-%m-%d %H:%M"),
+    }
+    entries.insert(0, entry)
+    data["entries"] = entries[:100]  # keep last 100
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+    return {"ok": True, "entry": entry}
+
+
+def _mock_learning_log() -> list[dict]:
+    return [
+        {
+            "id": "sl_mock_001",
+            "skill_name": "style_tone_adjuster",
+            "display_name": "风格语气调整器",
+            "trigger": "用户多次修改AI生成文本的语气和基调",
+            "need_description": "自动检测并调整输出文风以匹配用户偏好的轻松幽默风格",
+            "project_id": "test_project_001",
+            "created_at": "2026-03-12 14:30",
+        },
+        {
+            "id": "sl_mock_002",
+            "skill_name": "dialogue_naturalizer",
+            "display_name": "对话自然化处理",
+            "trigger": "评估器多次标记对话不自然",
+            "need_description": "优化角色对话的口语化程度和个性化表达",
+            "project_id": "test_project_001",
+            "created_at": "2026-03-11 09:15",
+        },
+        {
+            "id": "sl_mock_003",
+            "skill_name": "pacing_optimizer",
+            "display_name": "节奏优化器",
+            "trigger": "用户反复调整段落长度和场景切换节奏",
+            "need_description": "根据场景类型自动调整叙事节奏和段落密度",
+            "project_id": "test_project_001",
+            "created_at": "2026-03-10 16:45",
+        },
+    ]
