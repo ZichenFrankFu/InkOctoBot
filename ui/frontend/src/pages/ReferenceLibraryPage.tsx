@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
+import useDebounce from "../hooks/useDebounce";
 import { useToast } from "../components/shared/Toast";
 import type { ReferenceWork, ReferenceEntry, MediaType } from "../api/types";
 
@@ -105,10 +106,12 @@ export default function ReferenceLibraryPage() {
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 360, minSize: 260, maxSize: 560 });
 
   /* ---- Data loading ---- */
+  const debouncedSearch = useDebounce(search, 300);
+
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
-    if (search) params.set("search", search);
+    if (debouncedSearch) params.set("search", debouncedSearch);
     if (filterMedia) params.set("media_type", filterMedia);
     try {
       const r = await apiGet<{ items: ReferenceWork[]; total: number }>(`/api/references/works?${params}`);
@@ -118,7 +121,7 @@ export default function ReferenceLibraryPage() {
       console.error(e);
     }
     setLoading(false);
-  }, [search, filterMedia]);
+  }, [debouncedSearch, filterMedia]);
 
   useEffect(() => {
     load();

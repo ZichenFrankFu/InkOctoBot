@@ -38,6 +38,7 @@ DDL = [
     "CREATE INDEX IF NOT EXISTS idx_novels_main_category ON novels(main_category);",
     "CREATE INDEX IF NOT EXISTS idx_novels_status ON novels(status);",
     "CREATE INDEX IF NOT EXISTS idx_novels_last_seen ON novels(last_seen_date);",
+    "CREATE INDEX IF NOT EXISTS idx_novels_intro_norm ON novels(intro_norm);",
 
     # =========================
     # Multiple titles per novel (rename history / aliases)

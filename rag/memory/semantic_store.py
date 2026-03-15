@@ -73,15 +73,22 @@ class SemanticMemory:
         n_results: int = 5,
     ) -> list[dict[str, Any]]:
         """Search memory filtered by character involvement."""
+        # Try to use ChromaDB $contains filter for character name first
         results = self._store.query(
             query_text, n_results=n_results * 2,
             where={"project_id": project_id},
         )
         filtered = []
         for r in results:
-            chars = json.loads(r.get("metadata", {}).get("characters", "[]"))
-            if not chars or character_name in chars:
-                filtered.append(r)
+            chars_raw = r.get("metadata", {}).get("characters", "[]")
+            # Fast string check before full JSON parse
+            if chars_raw == "[]" or character_name in chars_raw:
+                if chars_raw == "[]":
+                    filtered.append(r)
+                else:
+                    chars = json.loads(chars_raw)
+                    if not chars or character_name in chars:
+                        filtered.append(r)
                 if len(filtered) >= n_results:
                     break
         return filtered

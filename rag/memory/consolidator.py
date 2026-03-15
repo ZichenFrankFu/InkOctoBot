@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import sqlite3
+import uuid
 from typing import Any
 
 from models.base import LLMMessage
@@ -88,14 +91,19 @@ class MemoryConsolidator:
                                 chapter_num=chapter_num, source="consolidator")
             return
 
-        for fact in parsed.get("permanent_facts", []):
+        facts = parsed.get("permanent_facts", [])
+        for fact in facts:
             self.semantic.store_permanent_fact(project_id, fact, chapter_num)
-            import sqlite3, uuid
+        if facts:
+            rows = [
+                (f"pf_{uuid.uuid4().hex[:12]}", project_id, "permanent", fact, chapter_num)
+                for fact in facts
+            ]
             with sqlite3.connect(self.db_path) as conn:
-                conn.execute(
+                conn.executemany(
                     """INSERT INTO permanent_facts (fact_id, project_id, fact_type, content, source_chapter)
-                       VALUES (?, ?, 'permanent', ?, ?)""",
-                    (f"pf_{uuid.uuid4().hex[:12]}", project_id, fact, chapter_num),
+                       VALUES (?, ?, ?, ?, ?)""",
+                    rows,
                 )
                 conn.commit()
 
@@ -119,7 +127,6 @@ class MemoryConsolidator:
 
     @staticmethod
     def _parse_response(text: str) -> dict[str, Any] | None:
-        import re
         m = re.search(r"```json\s*([\s\S]*?)```", text)
         if m:
             try:

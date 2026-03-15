@@ -82,8 +82,8 @@ function ToastMessage({ item, onRemove }: { item: ToastItem; onRemove: (id: numb
   };
 
   return (
-    <div style={style}>
-      <span style={dotStyle} />
+    <div style={style} role="alert" aria-live="polite">
+      <span style={dotStyle} aria-hidden="true" />
       <span>{item.message}</span>
     </div>
   );

@@ -24,10 +24,14 @@ def _wj(p: Path, d: Any):
 def _nid() -> str:
     return f"{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
 
-def _list(c: str) -> list[dict]:
+def _list(c: str, *, filter_key: str = "", filter_value: str = "") -> list[dict]:
     items = []
     for f in sorted(_col(c).glob("*.json")):
-        try: items.append(json.loads(f.read_text("utf-8")))
+        try:
+            item = json.loads(f.read_text("utf-8"))
+            if filter_key and filter_value and item.get(filter_key) != filter_value:
+                continue
+            items.append(item)
         except (json.JSONDecodeError, OSError): pass
     return items
 
@@ -58,7 +62,7 @@ def _enrich_project(proj: dict) -> dict:
                 for ch in v.get("chapters", []):
                     total_chapters += 1
                     content = ch.get("content", "")
-                    total_words += ch.get("word_count", 0) or len(content.replace(" ", "").replace("\n", ""))
+                    total_words += ch.get("word_count", 0) or (len(content) - content.count(" ") - content.count("\n"))
             proj["word_count"] = total_words
             proj["chapter_count"] = total_chapters
         except Exception:
@@ -66,8 +70,13 @@ def _enrich_project(proj: dict) -> dict:
     return proj
 
 @router.get("/projects")
-def list_projects():
-    return {"items": [_enrich_project(p) for p in _list("projects")]}
+def list_projects(page: int = 0, size: int = 0):
+    items = [_enrich_project(p) for p in _list("projects")]
+    total = len(items)
+    if size > 0:
+        start = page * size
+        items = items[start:start + size]
+    return {"items": items, "total": total}
 @router.post("/projects")
 def create_project(body: dict = Body(...)):
     pid = _nid()
@@ -82,10 +91,16 @@ def delete_project(pid: str): _del("projects", pid); return {"ok": True}
 
 # ═══ Characters ═══
 @router.get("/characters")
-def list_characters(project_id: str | None = None):
-    items = _list("characters")
-    if project_id: items = [i for i in items if i.get("project_id") == project_id]
-    return {"items": items}
+def list_characters(project_id: str | None = None, page: int = 0, size: int = 0):
+    if project_id:
+        items = _list("characters", filter_key="project_id", filter_value=project_id)
+    else:
+        items = _list("characters")
+    total = len(items)
+    if size > 0:
+        start = page * size
+        items = items[start:start + size]
+    return {"items": items, "total": total}
 @router.post("/characters")
 def create_character(body: dict = Body(...)):
     cid = _nid()
@@ -98,9 +113,8 @@ def create_character(body: dict = Body(...)):
     pid = body.get("project_id", "")
     name = body.get("name", "")
     if pid and name:
-        existing = [c for c in _list("characters") if c.get("project_id") == pid and c.get("name") == name]
-        if existing:
-            from fastapi import HTTPException
+        existing = _list("characters", filter_key="project_id", filter_value=pid)
+        if any(c.get("name") == name for c in existing):
             raise HTTPException(409, detail=f"角色「{name}」已存在，请使用不同的名字")
     return _save("characters", cid, body)
 @router.get("/characters/{cid}")
@@ -111,9 +125,8 @@ def update_character(cid: str, body: dict = Body(...)):
     pid = body.get("project_id", "")
     name = body.get("name", "")
     if pid and name:
-        existing = [c for c in _list("characters") if c.get("project_id") == pid and c.get("name") == name and c.get("id") != cid]
-        if existing:
-            from fastapi import HTTPException
+        existing = _list("characters", filter_key="project_id", filter_value=pid)
+        if any(c.get("name") == name and c.get("id") != cid for c in existing):
             raise HTTPException(409, detail=f"角色「{name}」已存在，请使用不同的名字")
     return _save("characters", cid, body)
 @router.delete("/characters/{cid}")
@@ -121,10 +134,16 @@ def delete_character(cid: str): _del("characters", cid); return {"ok": True}
 
 # ═══ World Book ═══
 @router.get("/worldbook")
-def list_worldbook(project_id: str | None = None):
-    items = _list("worldbook")
-    if project_id: items = [i for i in items if i.get("project_id") == project_id]
-    return {"items": items}
+def list_worldbook(project_id: str | None = None, page: int = 0, size: int = 0):
+    if project_id:
+        items = _list("worldbook", filter_key="project_id", filter_value=project_id)
+    else:
+        items = _list("worldbook")
+    total = len(items)
+    if size > 0:
+        start = page * size
+        items = items[start:start + size]
+    return {"items": items, "total": total}
 @router.post("/worldbook")
 def create_worldbook_entry(body: dict = Body(...)):
     eid = _nid()
@@ -134,9 +153,8 @@ def create_worldbook_entry(body: dict = Body(...)):
     pid = body.get("project_id", "")
     title = body.get("title", "")
     if pid and title:
-        existing = [e for e in _list("worldbook") if e.get("project_id") == pid and e.get("title") == title]
-        if existing:
-            from fastapi import HTTPException
+        existing = _list("worldbook", filter_key="project_id", filter_value=pid)
+        if any(e.get("title") == title for e in existing):
             raise HTTPException(409, detail=f"世界书条目「{title}」已存在，请使用不同的标题")
     return _save("worldbook", eid, body)
 @router.get("/worldbook/{eid}")
@@ -146,9 +164,8 @@ def update_worldbook_entry(eid: str, body: dict = Body(...)):
     pid = body.get("project_id", "")
     title = body.get("title", "")
     if pid and title:
-        existing = [e for e in _list("worldbook") if e.get("project_id") == pid and e.get("title") == title and e.get("id") != eid]
-        if existing:
-            from fastapi import HTTPException
+        existing = _list("worldbook", filter_key="project_id", filter_value=pid)
+        if any(e.get("title") == title and e.get("id") != eid for e in existing):
             raise HTTPException(409, detail=f"世界书条目「{title}」已存在，请使用不同的标题")
     return _save("worldbook", eid, body)
 @router.delete("/worldbook/{eid}")
@@ -503,8 +520,7 @@ def _ts_fmt(ts) -> str:
         t = float(ts)
         if t > 1e12:  # milliseconds
             t /= 1000
-        import datetime
-        return datetime.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M")
+        return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return str(ts)
 

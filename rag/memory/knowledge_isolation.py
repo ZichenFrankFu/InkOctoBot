@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,11 +56,15 @@ class KnowledgeIsolationEngine:
     def __init__(self, db_path: str, semantic_memory: Any):
         self.db_path = db_path
         self.semantic = semantic_memory
+        self._local = threading.local()
 
     def _conn(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self.db_path)
-        c.row_factory = sqlite3.Row
-        c.execute("PRAGMA foreign_keys=ON")
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = sqlite3.connect(self.db_path, check_same_thread=False)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA foreign_keys=ON")
+            self._local.conn = c
         return c
 
     def build_world_view(
@@ -135,7 +141,6 @@ class KnowledgeIsolationEngine:
         source_description: str = "",
     ) -> str:
         """Record that a character learned (or was misled about) something."""
-        import uuid
         info_id = f"inf_{uuid.uuid4().hex[:12]}"
         with self._conn() as c:
             c.execute(

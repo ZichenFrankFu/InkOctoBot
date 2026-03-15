@@ -87,7 +87,7 @@ function AppInner() {
         setProjects(items);
         if (items.length && !activeProject) setActiveProject(items[0].id);
       })
-      .catch(() => {});
+      .catch((err) => { console.warn("Failed to load projects:", err.message); });
   }, []);
 
   const activeProjectName = projects.find(p => p.id === activeProject)?.name || "未选择";
@@ -118,7 +118,8 @@ function AppInner() {
 
   return (
     <div className="app-layout">
-      <aside className="sidebar" style={{ width: sidebarW }}>
+      <a href="#main-content" className="sr-only">Skip to main content</a>
+      <aside className="sidebar" style={{ width: sidebarW }} role="navigation" aria-label="Main navigation">
         <div className="sidebar-brand">
           <h1>
             <img src="/favicon.svg" alt="InkOctoBot" style={{ width: 24, height: 24, verticalAlign: "middle", marginRight: 6 }} />
@@ -131,6 +132,7 @@ function AppInner() {
         <button
           className="nav-btn"
           onClick={() => setSearchOpen(true)}
+          aria-label="Search (Ctrl+K)"
           style={{ margin: "4px 12px 4px", padding: "4px 8px", display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 28 }}
         >
           <span style={{ fontSize: 12, opacity: 0.6 }}>&#x2315;</span>
@@ -140,7 +142,7 @@ function AppInner() {
           </kbd>
         </button>
 
-        <nav className="sidebar-nav">
+        <nav className="sidebar-nav" aria-label="Page navigation">
           {NAV.map(group => (
             <React.Fragment key={group.section}>
               {group.section === "创作" ? (
@@ -161,8 +163,10 @@ function AppInner() {
                   key={item.key}
                   className={`nav-btn${tab === item.key ? " active" : ""}`}
                   onClick={() => setTab(item.key)}
+                  aria-current={tab === item.key ? "page" : undefined}
+                  aria-label={item.label}
                 >
-                  <span className="nav-icon">{item.icon}</span>
+                  <span className="nav-icon" aria-hidden="true">{item.icon}</span>
                   <span>{item.label}</span>
                 </button>
               ))}
@@ -175,21 +179,19 @@ function AppInner() {
 
       <div className="resize-handle" onMouseDown={onMouseDown} />
 
-      <main className="main-content">
-        <ErrorBoundary>
-          {tab === "dashboard" && <DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} onSelectProject={setActiveProject} />}
-          {tab === "rankings" && <RankingsPage />}
-          {tab === "references" && <ReferenceLibraryPage />}
-          {tab === "analysis" && <AnalysisDashboardPage />}
-          {tab === "projects" && <ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} />}
-          {tab === "project-setup" && <ProjectSetupPage projectId={activeProject} />}
-          {tab === "editor" && <EditorPage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} />}
-          {tab === "characters" && <CharacterManagerPage projectId={activeProject} projects={projects} />}
-          {tab === "worldbook" && <WorldBookPage projectId={activeProject} projects={projects} />}
-          {tab === "storyline" && <StorylinePage projectId={activeProject} />}
-          {tab === "skills" && <SkillsPage projects={projects} activeProject={activeProject} />}
-          {tab === "settings" && <SettingsPage />}
-        </ErrorBoundary>
+      <main id="main-content" className="main-content" role="main" aria-label="Page content">
+        {tab === "dashboard" && <ErrorBoundary key="dashboard"><DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} onSelectProject={setActiveProject} /></ErrorBoundary>}
+        {tab === "rankings" && <ErrorBoundary key="rankings"><RankingsPage /></ErrorBoundary>}
+        {tab === "references" && <ErrorBoundary key="references"><ReferenceLibraryPage /></ErrorBoundary>}
+        {tab === "analysis" && <ErrorBoundary key="analysis"><AnalysisDashboardPage /></ErrorBoundary>}
+        {tab === "projects" && <ErrorBoundary key="projects"><ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {tab === "project-setup" && <ErrorBoundary key="project-setup"><ProjectSetupPage projectId={activeProject} /></ErrorBoundary>}
+        {tab === "editor" && <ErrorBoundary key="editor"><EditorPage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {tab === "characters" && <ErrorBoundary key="characters"><CharacterManagerPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
+        {tab === "worldbook" && <ErrorBoundary key="worldbook"><WorldBookPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
+        {tab === "storyline" && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
+        {tab === "skills" && <ErrorBoundary key="skills"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
+        {tab === "settings" && <ErrorBoundary key="settings"><SettingsPage /></ErrorBoundary>}
       </main>
 
       <GlobalSearch

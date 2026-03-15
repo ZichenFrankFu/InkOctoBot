@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import type { PipelineStatus, EvalResult } from "../../api/types";
 import { apiPost, apiGet, apiPut } from "../../api/client";
+import InlineDiff from "../shared/InlineDiff";
 
 interface Props {
   projectId: string;
@@ -425,22 +426,17 @@ export default function AIPanel({ projectId, chapterId, selectedText }: Props) {
             {rewriteResult && (
               <div>
                 <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "block", marginBottom: 8 }}>
-                  Rewrite Result
+                  Rewrite Result (Diff View)
                 </label>
-                <div
-                  style={{
-                    padding: "12px 14px",
-                    borderRadius: 6,
-                    background: "var(--bg-secondary)",
-                    border: "1px solid var(--accent)",
-                    fontSize: 13,
-                    lineHeight: 1.7,
-                    color: "var(--text-primary)",
-                    whiteSpace: "pre-wrap",
+                <InlineDiff
+                  original={selectedText || ""}
+                  modified={rewriteResult}
+                  onAccept={() => {
+                    // TODO: Replace selected text in editor with rewriteResult
+                    setRewriteResult("");
                   }}
-                >
-                  {rewriteResult}
-                </div>
+                  onReject={() => setRewriteResult("")}
+                />
               </div>
             )}
           </div>
