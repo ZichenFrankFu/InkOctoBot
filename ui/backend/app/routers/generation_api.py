@@ -2281,6 +2281,232 @@ async def _run_batch_pipeline(session_id: str):
         session["errors"]["global"] = str(e)[:300]
 
 
+# ═══ Prompt Preview — build full prompt for manual copy-paste to web LLM ═══
+
+class PromptPreviewRequest(BaseModel):
+    project_id: str = "default"
+    chapter_id: str = ""
+    synopsis: str = ""
+    characters: list[str] = []
+    references: list[str] = []
+    time_setting: str = ""
+    location: str = ""
+    existing_content: str = ""
+    chapter_num: int = 1
+    character_aliases: dict[str, str] = {}
+    world_rules: str = ""
+    style_notes: str = ""
+    agent_role: str = "scene_director"  # which agent's prompt to preview
+
+
+@router.post("/prompt-preview")
+async def prompt_preview(req: PromptPreviewRequest):
+    """Build the full prompt (system + memory + RAG + constraints + user content)
+    for a given agent role, and return it for manual copy-paste into a web LLM.
+    Does NOT call any LLM — purely assembles the prompt text."""
+    try:
+        sections: list[dict[str, str]] = []  # [{label, content}]
+
+        # ── 1. Load system prompt from YAML ──
+        agent_name_map = {
+            "scene_director": "scene_director",
+            "editor_writer": "editor_writer",
+            "actor_agent": "actor_agent",
+            "evaluator": "evaluator",
+            "narrator_agent": "narrator_agent",
+        }
+        yaml_name = agent_name_map.get(req.agent_role, req.agent_role)
+        system_prompt = ""
+        try:
+            from pathlib import Path as _P
+            _prompt_path = _P(__file__).resolve().parent.parent.parent.parent.parent / "config" / "prompts" / f"{yaml_name}.yaml"
+            if _prompt_path.exists():
+                import yaml as _yaml
+                _tmpl = _yaml.safe_load(_prompt_path.read_text("utf-8")) or {}
+                system_prompt = _tmpl.get("system", "")
+        except Exception:
+            pass
+
+        if system_prompt:
+            sections.append({"label": "System Prompt", "content": system_prompt.strip()})
+
+        # ── 2. Load calibration style ──
+        _style_notes = req.style_notes
+        if not _style_notes:
+            try:
+                from ui.backend.app.routers.data_api import _col
+                _cal_path = _col("calibration") / f"{req.project_id}.json"
+                if _cal_path.exists():
+                    _cal_data = json.loads(_cal_path.read_text("utf-8"))
+                    _sp = _cal_data.get("style_params", {})
+                    if _sp:
+                        _tone = _sp.get("tone", 50)
+                        _pacing = _sp.get("pacing", 50)
+                        _persp = _sp.get("perspective", "third")
+                        _aud = _sp.get("audience", "general")
+                        _tone_desc = "轻松幽默" if _tone < 30 else ("严肃深沉" if _tone > 70 else "均衡")
+                        _pacing_desc = "快节奏" if _pacing < 30 else ("慢节奏" if _pacing > 70 else "中等节奏")
+                        _persp_map = {"first": "第一人称", "third": "第三人称", "omniscient": "全知视角"}
+                        _aud_map = {"male": "男性向", "female": "女性向", "general": "通用"}
+                        _style_notes = f"风格基调：{_tone_desc}，{_pacing_desc}，{_persp_map.get(_persp, _persp)}，{_aud_map.get(_aud, _aud)}"
+            except Exception:
+                pass
+
+        # ── 3. Build constraints ──
+        constraints_parts = []
+        if req.world_rules:
+            constraints_parts.append(req.world_rules)
+
+        _aliases = req.character_aliases or {}
+        if req.characters:
+            _display_chars = [_aliases.get(c, c) for c in req.characters]
+            constraints_parts.append(
+                f"【严格限制】本章（第{req.chapter_num}章）仅有以下角色出场：{', '.join(_display_chars)}。\n"
+                f"禁止引入或提及任何不在上述列表中的角色。"
+            )
+            if _aliases:
+                constraints_parts.append("【隐藏身份】以下角色在本章中使用化名：")
+                for _real, _alias in _aliases.items():
+                    constraints_parts.append(f"  - 「{_alias}」（禁止使用真名）")
+
+        try:
+            constraints_parts.append(_build_chapter_hook_constraint(req.chapter_num))
+        except Exception:
+            pass
+        try:
+            _shd = _build_shuangdian_guidance(req.chapter_num)
+            if _shd:
+                constraints_parts.append(_shd)
+        except Exception:
+            pass
+
+        if _style_notes:
+            constraints_parts.append(f"【风格要求】{_style_notes}")
+
+        if constraints_parts:
+            sections.append({"label": "约束规则 (Constraints)", "content": "\n\n".join(constraints_parts)})
+
+        # ── 4. Build memory context ──
+        memory_parts = []
+        try:
+            _db_path = _get_db_path()
+            from rag.memory.manager import MemoryManager as _MM
+            _mem = _MM(db_path=_db_path)
+            _mem.set_project(req.project_id)
+
+            if req.agent_role == "scene_director":
+                _mem_text = _mem.get_context_for_scene_director(req.chapter_num)
+            elif req.agent_role == "editor_writer":
+                _mem_text = _mem.get_context_for_editor()
+            elif req.agent_role == "evaluator":
+                _mem_text = _mem.get_context_for_evaluator(req.chapter_num)
+            else:
+                _mem_text = _mem.get_context_for_scene_director(req.chapter_num)
+
+            if _mem_text:
+                memory_parts.append(_mem_text)
+        except Exception:
+            pass
+
+        # Foreshadowing
+        try:
+            _db_path = _get_db_path()
+            _fs = _load_unresolved_foreshadowing(req.project_id, _db_path, req.chapter_num)
+            if _fs:
+                memory_parts.append(_fs)
+        except Exception:
+            pass
+
+        # Reference style
+        try:
+            _db_path = _get_db_path()
+            _ref_style = _load_reference_style(req.project_id, _db_path)
+            if _ref_style:
+                memory_parts.append(_ref_style)
+        except Exception:
+            pass
+
+        # User style preferences
+        try:
+            _db_path = _get_db_path()
+            _user_pref = _load_user_style_preferences(req.project_id, _db_path)
+            if _user_pref:
+                memory_parts.append(_user_pref)
+        except Exception:
+            pass
+
+        if memory_parts:
+            sections.append({"label": "上下文信息 (Memory + RAG)", "content": "\n\n".join(memory_parts)})
+
+        # ── 5. Build character cards ──
+        if req.characters:
+            char_card_parts = []
+            try:
+                from ui.backend.app.routers.data_api import _list
+                all_chars = _list("characters")
+                for c_name in req.characters:
+                    display_name = _aliases.get(c_name, c_name)
+                    info = [display_name]
+                    for cd in all_chars:
+                        if cd.get("name") == c_name and (not req.project_id or cd.get("project_id", "") in ("", req.project_id)):
+                            if cd.get("role"): info.append(f"({cd['role']})")
+                            if cd.get("personality"): info.append(f"性格: {cd['personality']}")
+                            if cd.get("background"): info.append(f"背景: {cd['background']}")
+                            if cd.get("speech_style"): info.append(f"说话风格: {cd['speech_style']}")
+                            break
+                    if c_name != display_name:
+                        info.append(f"【隐藏身份】真实身份为「{c_name}」，本章中以「{display_name}」出场")
+                    char_card_parts.append("\n  ".join(info))
+            except Exception:
+                char_card_parts = [_aliases.get(c, c) for c in req.characters]
+            if char_card_parts:
+                sections.append({"label": "角色卡 (Character Cards)", "content": "\n\n".join(char_card_parts)})
+
+        # ── 6. Build user content (the main prompt) ──
+        user_parts = []
+        _outline = req.synopsis or ""
+        if req.location:
+            _outline += f"\n场景地点：{req.location}"
+        if req.time_setting:
+            _outline += f"\n时间设定：{req.time_setting}"
+        if _outline:
+            user_parts.append(f"## 章节大纲\n{_outline}")
+        if req.existing_content:
+            user_parts.append(f"## 已有正文（续写）\n{req.existing_content[-1000:]}")
+        if not user_parts:
+            user_parts.append("（请在大纲栏输入章节大纲后再预览）")
+        sections.append({"label": "用户输入 (User Content)", "content": "\n\n".join(user_parts)})
+
+        # ── 7. Assemble full prompt text ──
+        full_prompt_parts = []
+        for sec in sections:
+            full_prompt_parts.append(f"{'=' * 50}\n【{sec['label']}】\n{'=' * 50}\n{sec['content']}")
+        full_prompt = "\n\n".join(full_prompt_parts)
+
+        # Also build a compact single-message version for direct paste into web LLM
+        compact_parts = []
+        for sec in sections:
+            if sec["label"] == "System Prompt":
+                compact_parts.append(sec["content"])
+            elif sec["label"] == "用户输入 (User Content)":
+                compact_parts.append(sec["content"])
+            else:
+                compact_parts.append(f"## {sec['label']}\n{sec['content']}")
+        compact_prompt = "\n\n".join(compact_parts)
+
+        return {
+            "status": "ok",
+            "sections": sections,
+            "full_prompt": full_prompt,
+            "compact_prompt": compact_prompt,
+            "agent_role": req.agent_role,
+            "token_estimate": len(compact_prompt) // 2,  # rough CJK estimate
+        }
+    except Exception as e:
+        logger.error("Prompt preview error: %s", e, exc_info=True)
+        raise HTTPException(500, detail=str(e))
+
+
 @router.get("/ab/history")
 async def ab_history():
     """List recent A/B comparison sessions."""

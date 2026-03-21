@@ -128,7 +128,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     try { const raw = sessionStorage.getItem(`inkocto_editor_chat_${projectId}`); return raw ? JSON.parse(raw) : null; } catch { return null; }
   })();
   const [chatLoaded, setChatLoaded] = useState(false);
-  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval">(_savedEditorState?.aiTab === "ab" ? "outline" : (_savedEditorState?.aiTab || "outline"));
+  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval" | "prompt">(_savedEditorState?.aiTab === "ab" ? "outline" : (_savedEditorState?.aiTab || "outline"));
   const [selection, setSelection] = useState<{ start: number; end: number; text: string } | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [rewriteModel, setRewriteModel] = useState("default");
@@ -1148,7 +1148,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 面板">&#9654;</button>
           </div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
-            {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
+            {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"], ["prompt", "Prompt"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
             ))}
           </div>
@@ -1163,6 +1163,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} />}
+            {aiTab === "prompt" && <PromptTab projectId={projectId} chapter={activeCh} />}
           </div>
         </div>
         ) : (
@@ -2294,6 +2295,230 @@ function EvalTab({ result }: { result: EvalResult | null }) {
             </div>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+function PromptTab({ projectId, chapter }: { projectId: string; chapter?: ChapterOutline | null }) {
+  const { toast } = useToast();
+  const [sections, setSections] = useState<{ label: string; content: string }[]>([]);
+  const [compactPrompt, setCompactPrompt] = useState("");
+  const [fullPrompt, setFullPrompt] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [tokenEstimate, setTokenEstimate] = useState(0);
+  const [agentRole, setAgentRole] = useState("scene_director");
+  const [viewMode, setViewMode] = useState<"sections" | "compact" | "full">("compact");
+  const [copied, setCopied] = useState(false);
+  const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set());
+
+  const loadPrompt = async () => {
+    if (!chapter) return;
+    setLoading(true);
+    try {
+      const resp = await apiPost<{
+        sections: { label: string; content: string }[];
+        full_prompt: string;
+        compact_prompt: string;
+        token_estimate: number;
+      }>("/api/generation/prompt-preview", {
+        project_id: projectId || "default",
+        chapter_id: chapter.id,
+        synopsis: chapter.synopsis || "",
+        characters: chapter.characters || [],
+        references: chapter.references || [],
+        time_setting: chapter.time || "",
+        location: chapter.location || "",
+        existing_content: chapter.content || "",
+        chapter_num: 1,
+        character_aliases: chapter.character_aliases || {},
+        agent_role: agentRole,
+      });
+      setSections(resp.sections);
+      setCompactPrompt(resp.compact_prompt);
+      setFullPrompt(resp.full_prompt);
+      setTokenEstimate(resp.token_estimate);
+    } catch (e: any) {
+      toast(e?.message || "加载 Prompt 失败", "error");
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (chapter) loadPrompt();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chapter?.id, agentRole]);
+
+  const handleCopy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      toast("已复制到剪贴板", "success");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for non-HTTPS environments
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      setCopied(true);
+      toast("已复制到剪贴板", "success");
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const toggleSection = (idx: number) => {
+    setExpandedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
+
+  if (!chapter) return (
+    <div className="empty-state" style={{ padding: "32px 16px" }}>
+      <h4>请选择章节</h4>
+      <p>选择一个章节后可预览完整 Prompt</p>
+    </div>
+  );
+
+  const currentText = viewMode === "compact" ? compactPrompt : viewMode === "full" ? fullPrompt : "";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Header */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div className="text-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          预览发送给 LLM 的完整 Prompt（含 Memory + RAG），可直接复制到 ChatGPT / Claude 等网页端使用。
+        </div>
+
+        {/* Agent role selector */}
+        <div className="flex items-center gap-8">
+          <span className="text-xs" style={{ color: "var(--text-secondary)", whiteSpace: "nowrap" }}>Agent:</span>
+          <select
+            value={agentRole}
+            onChange={e => setAgentRole(e.target.value)}
+            style={{
+              flex: 1, fontSize: 12, padding: "4px 8px", borderRadius: 6,
+              border: "1px solid var(--border)", background: "var(--bg-primary)",
+              color: "var(--text-primary)", outline: "none",
+            }}
+          >
+            <option value="scene_director">Scene Director (场景导演)</option>
+            <option value="editor_writer">Editor-Writer (编辑作家)</option>
+            <option value="actor_agent">Actor Agent (角色演员)</option>
+            <option value="evaluator">Evaluator (评估器)</option>
+          </select>
+        </div>
+      </div>
+
+      {/* View mode + token count + action buttons */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        {(["sections", "compact", "full"] as const).map(mode => (
+          <button key={mode} onClick={() => setViewMode(mode)} style={{
+            fontSize: 11, padding: "3px 10px", borderRadius: 12,
+            border: viewMode === mode ? "1px solid var(--accent)" : "1px solid var(--border)",
+            background: viewMode === mode ? "var(--accent-subtle)" : "transparent",
+            color: viewMode === mode ? "var(--accent)" : "var(--text-secondary)",
+            cursor: "pointer",
+          }}>
+            {mode === "sections" ? "分段" : mode === "compact" ? "紧凑" : "完整"}
+          </button>
+        ))}
+        <span className="text-xs" style={{ color: "var(--text-tertiary)", marginLeft: "auto" }}>
+          ~{tokenEstimate.toLocaleString()} tokens
+        </span>
+      </div>
+
+      {/* Action buttons */}
+      <div className="flex gap-6">
+        <button
+          className="btn-primary"
+          onClick={() => handleCopy(viewMode === "sections" ? fullPrompt : currentText)}
+          disabled={loading || (!compactPrompt && sections.length === 0)}
+          style={{ flex: 1, fontSize: 12, padding: "7px 14px" }}
+        >
+          {copied ? "已复制" : "复制 Prompt"}
+        </button>
+        <button
+          className="btn"
+          onClick={loadPrompt}
+          disabled={loading}
+          style={{ fontSize: 12, padding: "7px 14px", border: "1px solid var(--border)" }}
+        >
+          {loading ? "加载中..." : "刷新"}
+        </button>
+      </div>
+
+      {/* Content display */}
+      {loading ? (
+        <div style={{ textAlign: "center", padding: 24, color: "var(--text-tertiary)" }}>
+          正在组装 Prompt...
+        </div>
+      ) : viewMode === "sections" ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {sections.map((sec, i) => (
+            <div key={i} style={{
+              border: "1px solid var(--border)", borderRadius: 8,
+              background: "var(--bg-surface-2)", overflow: "hidden",
+            }}>
+              <div
+                onClick={() => toggleSection(i)}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "8px 12px", cursor: "pointer",
+                  background: expandedSections.has(i) ? "var(--bg-surface)" : "transparent",
+                }}
+              >
+                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+                  {sec.label}
+                </span>
+                <div className="flex items-center gap-6">
+                  <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                    {sec.content.length} 字
+                  </span>
+                  <button
+                    onClick={e => { e.stopPropagation(); handleCopy(sec.content); }}
+                    style={{
+                      fontSize: 10, padding: "2px 8px", borderRadius: 4,
+                      border: "1px solid var(--border)", background: "transparent",
+                      color: "var(--text-secondary)", cursor: "pointer",
+                    }}
+                  >
+                    复制
+                  </button>
+                  <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+                    {expandedSections.has(i) ? "\u25B2" : "\u25BC"}
+                  </span>
+                </div>
+              </div>
+              {expandedSections.has(i) && (
+                <pre style={{
+                  padding: "10px 12px", margin: 0, fontSize: 11, lineHeight: 1.6,
+                  color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
+                  maxHeight: 300, overflowY: "auto", borderTop: "1px solid var(--border)",
+                  fontFamily: "var(--font-mono)",
+                }}>
+                  {sec.content}
+                </pre>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <pre style={{
+          padding: "12px 14px", margin: 0, fontSize: 11, lineHeight: 1.6,
+          color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
+          background: "var(--bg-surface-2)", borderRadius: 8,
+          border: "1px solid var(--border)", maxHeight: 500, overflowY: "auto",
+          fontFamily: "var(--font-mono)",
+        }}>
+          {currentText || "（暂无内容，请先在大纲栏输入章节信息）"}
+        </pre>
       )}
     </div>
   );
