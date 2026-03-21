@@ -351,6 +351,101 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `export_${Date.now()}.txt`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
 
+  const handleBundleExport = async () => {
+    try {
+      const pid = projectId || "default";
+      // Fetch characters + worldbook in parallel
+      const [charResp, wbResp] = await Promise.all([
+        apiGet<{ items: any[] }>(`/api/data/characters?project_id=${pid}`),
+        apiGet<{ items: any[] }>(`/api/data/worldbook?project_id=${pid}`),
+      ]);
+      const characters = charResp.items || [];
+      const worldbook = wbResp.items || [];
+
+      const lines: string[] = [];
+      lines.push("╔══════════════════════════════════════╗");
+      lines.push("║      角色 + 世界书 + 章节大纲 导出     ║");
+      lines.push("╚══════════════════════════════════════╝");
+      lines.push("");
+
+      // Characters section
+      lines.push("═".repeat(50));
+      lines.push("【角色卡】");
+      lines.push("═".repeat(50));
+      if (characters.length === 0) {
+        lines.push("（暂无角色数据）\n");
+      } else {
+        for (const c of characters) {
+          lines.push(`\n▸ ${c.name}${c.role ? ` (${c.role})` : ""}`);
+          if (c.personality) lines.push(`  性格：${c.personality}`);
+          if (c.background) lines.push(`  背景：${c.background}`);
+          if (c.speech_style) lines.push(`  说话风格：${c.speech_style}`);
+          if (c.appearance) lines.push(`  外貌：${c.appearance}`);
+          if (c.tags?.length) lines.push(`  标签：${c.tags.join("、")}`);
+          if (c.relationships?.length) {
+            lines.push("  关系：");
+            for (const r of c.relationships) {
+              lines.push(`    - ${r.target_name}${r.label ? ` [${r.label}]` : ""}: 亲密度 ${r.affinity ?? "N/A"}${r.notes ? ` (${r.notes})` : ""}`);
+            }
+          }
+        }
+        lines.push("");
+      }
+
+      // World book section
+      lines.push("═".repeat(50));
+      lines.push("【世界书】");
+      lines.push("═".repeat(50));
+      if (worldbook.length === 0) {
+        lines.push("（暂无世界书数据）\n");
+      } else {
+        const categoryNames: Record<string, string> = {
+          power_system: "力量体系", factions: "势力", geography: "地理",
+          social_rules: "社会规则", history: "历史", hard_rules: "硬规则", other: "其他",
+        };
+        // Group by category
+        const grouped: Record<string, any[]> = {};
+        for (const wb of worldbook) {
+          const cat = wb.category || "other";
+          (grouped[cat] ||= []).push(wb);
+        }
+        for (const [cat, entries] of Object.entries(grouped)) {
+          lines.push(`\n── ${categoryNames[cat] || cat} ──`);
+          for (const e of entries) {
+            lines.push(`\n▸ ${e.title}`);
+            if (e.content) lines.push(`  ${e.content}`);
+            if (e.tags?.length) lines.push(`  标签：${e.tags.join("、")}`);
+          }
+        }
+        lines.push("");
+      }
+
+      // Chapter outlines section
+      lines.push("═".repeat(50));
+      lines.push("【章节大纲】");
+      lines.push("═".repeat(50));
+      for (const v of volumes) {
+        lines.push(`\n━━━ ${v.title} ━━━`);
+        for (const c of v.chapters) {
+          lines.push(`\n▸ ${c.title}${c.characters?.length ? ` [${c.characters.join("、")}]` : ""}`);
+          if (c.time) lines.push(`  时间：${c.time}`);
+          if (c.location) lines.push(`  地点：${c.location}`);
+          if (c.synopsis) lines.push(`  大纲：${c.synopsis}`);
+          lines.push(`  字数：${c.word_count || wc(c.content || "")} 字`);
+        }
+      }
+
+      const text = lines.join("\n");
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = `bundle_export_${Date.now()}.txt`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+      toast("已导出角色+世界书+章节大纲", "success");
+    } catch (e: any) {
+      toast(e.message || "导出失败", "error");
+    }
+  };
+
   // A1: Batch generation state
   const [batchStatus, setBatchStatus] = useState<{ running: boolean; sessionId?: string; current?: number; completed: number[]; total: number; errors: Record<number, string> } | null>(null);
 
@@ -1008,7 +1103,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
           <div style={{ padding: "4px 10px 6px", display: "flex", gap: 6 }}>
             <button className="btn-icon" onClick={addVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+卷</button>
             <button className="btn-icon" onClick={addChapterToFirstVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+章</button>
-            <button className="btn-icon" onClick={handleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>导出</button>
+            <button className="btn-icon" onClick={handleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }} title="导出正文">导出</button>
+            <button className="btn-icon" onClick={handleBundleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} title="打包导出：角色+世界书+章节大纲">打包</button>
             <button className="btn-icon" onClick={startBatchGeneration} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--jade)", borderRadius: "var(--radius-sm)", color: "var(--jade)" }} disabled={batchStatus?.running}>批量</button>
           </div>
           {batchStatus && (

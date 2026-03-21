@@ -1289,6 +1289,31 @@ async def _run_pipeline_background(session_id: str):
             _proj_id = req_data.get("project_id", "")
             memory.set_project(_proj_id)
 
+            # Fallback: if memory layers are empty, seed from editor content
+            if not memory.has_memory_content():
+                try:
+                    from ui.backend.app.routers.data_api import _col as _data_col, _safe_id as _sid
+                    _editor_path = _data_col("editor") / f"{_sid(_proj_id)}.json"
+                    if _editor_path.exists():
+                        _editor_data = json.loads(_editor_path.read_text("utf-8"))
+                        _fallback_text = memory.build_fallback_from_editor(
+                            _editor_data.get("volumes", []),
+                            current_chapter_id=req_data.get("chapter_id", ""),
+                        )
+                        if _fallback_text:
+                            # Inject as immediate context so agents can see it
+                            from rag.memory.immediate import SceneContext as _SC
+                            memory.start_scene(_SC(
+                                scene_index=0,
+                                characters=characters,
+                                location=req_data.get("location", ""),
+                                time_marker=req_data.get("time_setting", ""),
+                                scene_text=_fallback_text,
+                            ))
+                            logger.info("Memory fallback: seeded from editor content (%d chars)", len(_fallback_text))
+                except Exception as _fb_err:
+                    logger.debug("Editor memory fallback skipped: %s", _fb_err)
+
             # Pre-load world book entries into semantic memory for RAG retrieval
             try:
                 wb_items = _list_data("worldbook") if "_list_data" in dir() else _list("worldbook")
@@ -2390,12 +2415,15 @@ async def prompt_preview(req: PromptPreviewRequest):
         # Shared context: common across all agents (foreshadowing, ref style, user prefs, chapter buffer)
         shared_memory_parts = []
         agent_memory_parts = []
+        _memory_has_content = False
 
         try:
             _db_path = _get_db_path()
             from rag.memory.manager import MemoryManager as _MM
             _mem = _MM(db_path=_db_path)
             _mem.set_project(req.project_id)
+
+            _memory_has_content = _mem.has_memory_content()
 
             # Shared: chapter buffer (L2) — used by all agents except actor
             try:
@@ -2419,6 +2447,22 @@ async def prompt_preview(req: PromptPreviewRequest):
 
             if _mem_text:
                 agent_memory_parts.append(_mem_text)
+
+            # Fallback: if memory is empty, build context from editor content
+            if not _memory_has_content and not shared_memory_parts and not agent_memory_parts:
+                try:
+                    from ui.backend.app.routers.data_api import _col as _data_col, _safe_id as _sid
+                    _editor_path = _data_col("editor") / f"{_sid(req.project_id)}.json"
+                    if _editor_path.exists():
+                        _editor_data = json.loads(_editor_path.read_text("utf-8"))
+                        _fallback = _mem.build_fallback_from_editor(
+                            _editor_data.get("volumes", []),
+                            current_chapter_id=req.chapter_id,
+                        )
+                        if _fallback:
+                            shared_memory_parts.append(_fallback)
+                except Exception as _fb_err:
+                    logger.debug("Editor fallback skipped: %s", _fb_err)
         except Exception:
             pass
 
