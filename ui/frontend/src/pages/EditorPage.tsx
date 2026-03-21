@@ -308,6 +308,12 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     lastAutoVersionContent.current = "";
   }, [activeChId]);
 
+  const handleSaveOutline = useCallback(async () => {
+    setSaveStatus("saving");
+    const uv = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
+    try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv }); setSaveStatus("saved"); toast("已保存", "success"); } catch (e: any) { setSaveStatus("unsaved"); toast(e.message || "保存失败", "error"); }
+  }, [volumes, activeChId, content, titleVal, projectId, toast]);
+
   // Ctrl+S / Cmd+S triggers manual save with toast
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -477,12 +483,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       }, 3000);
     } catch (e: any) { alert("批量生成启动失败: " + (e?.message || e)); }
   };
-
-  const handleSaveOutline = useCallback(async () => {
-    setSaveStatus("saving");
-    const uv = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
-    try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv }); setSaveStatus("saved"); toast("已保存", "success"); } catch (e: any) { setSaveStatus("unsaved"); toast(e.message || "保存失败", "error"); }
-  }, [volumes, activeChId, content, titleVal, projectId, toast]);
 
   const generatedTextRef = useRef<string>("");
   const stepTextRef = useRef<string>("");  // text for current step only
