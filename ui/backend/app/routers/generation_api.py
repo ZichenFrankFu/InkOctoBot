@@ -2334,8 +2334,8 @@ async def prompt_preview(req: PromptPreviewRequest):
         _style_notes = req.style_notes
         if not _style_notes:
             try:
-                from ui.backend.app.routers.data_api import _col
-                _cal_path = _col("calibration") / f"{req.project_id}.json"
+                from ui.backend.app.routers.data_api import _col, _safe_id
+                _cal_path = _col("calibration") / f"{_safe_id(req.project_id)}.json"
                 if _cal_path.exists():
                     _cal_data = json.loads(_cal_path.read_text("utf-8"))
                     _sp = _cal_data.get("style_params", {})
@@ -2386,57 +2386,81 @@ async def prompt_preview(req: PromptPreviewRequest):
         if constraints_parts:
             sections.append({"label": "约束规则 (Constraints)", "content": "\n\n".join(constraints_parts)})
 
-        # ── 4. Build memory context ──
-        memory_parts = []
+        # ── 4. Build memory context (split into shared + agent-specific) ──
+        # Shared context: common across all agents (foreshadowing, ref style, user prefs, chapter buffer)
+        shared_memory_parts = []
+        agent_memory_parts = []
+
         try:
             _db_path = _get_db_path()
             from rag.memory.manager import MemoryManager as _MM
             _mem = _MM(db_path=_db_path)
             _mem.set_project(req.project_id)
 
+            # Shared: chapter buffer (L2) — used by all agents except actor
+            try:
+                _l2 = _mem.chapter_buffer.get_buffer_text(req.project_id)
+                if _l2:
+                    shared_memory_parts.append(f"[近期章节摘要 (Layer 2)]\n{_l2}")
+            except Exception:
+                pass
+
+            # Agent-specific memory
             if req.agent_role == "scene_director":
                 _mem_text = _mem.get_context_for_scene_director(req.chapter_num)
             elif req.agent_role == "editor_writer":
                 _mem_text = _mem.get_context_for_editor()
             elif req.agent_role == "evaluator":
                 _mem_text = _mem.get_context_for_evaluator(req.chapter_num)
+            elif req.agent_role == "actor_agent":
+                _mem_text = _mem.get_context_for_scene_director(req.chapter_num)
             else:
                 _mem_text = _mem.get_context_for_scene_director(req.chapter_num)
 
             if _mem_text:
-                memory_parts.append(_mem_text)
+                agent_memory_parts.append(_mem_text)
         except Exception:
             pass
 
-        # Foreshadowing
+        # Shared: Foreshadowing (used by all agents)
         try:
             _db_path = _get_db_path()
             _fs = _load_unresolved_foreshadowing(req.project_id, _db_path, req.chapter_num)
             if _fs:
-                memory_parts.append(_fs)
+                shared_memory_parts.append(_fs)
         except Exception:
             pass
 
-        # Reference style
+        # Shared: Reference style (used by all agents)
         try:
             _db_path = _get_db_path()
             _ref_style = _load_reference_style(req.project_id, _db_path)
             if _ref_style:
-                memory_parts.append(_ref_style)
+                shared_memory_parts.append(_ref_style)
         except Exception:
             pass
 
-        # User style preferences
+        # Shared: User style preferences (used by all agents)
         try:
             _db_path = _get_db_path()
             _user_pref = _load_user_style_preferences(req.project_id, _db_path)
             if _user_pref:
-                memory_parts.append(_user_pref)
+                shared_memory_parts.append(_user_pref)
         except Exception:
             pass
 
-        if memory_parts:
-            sections.append({"label": "上下文信息 (Memory + RAG)", "content": "\n\n".join(memory_parts)})
+        if shared_memory_parts:
+            sections.append({
+                "label": "通用上下文 (Shared Context)",
+                "content": "\n\n".join(shared_memory_parts),
+                "shared": True,
+            })
+        if agent_memory_parts:
+            sections.append({
+                "label": f"Agent 上下文 ({req.agent_role})",
+                "content": "\n\n".join(agent_memory_parts),
+                "shared": False,
+            })
 
         # ── 5. Build character cards ──
         if req.characters:
@@ -2494,11 +2518,17 @@ async def prompt_preview(req: PromptPreviewRequest):
                 compact_parts.append(f"## {sec['label']}\n{sec['content']}")
         compact_prompt = "\n\n".join(compact_parts)
 
+        # Build shared context string for direct copy (single-agent mode)
+        shared_context = "\n\n".join(
+            sec["content"] for sec in sections if sec.get("shared")
+        )
+
         return {
             "status": "ok",
             "sections": sections,
             "full_prompt": full_prompt,
             "compact_prompt": compact_prompt,
+            "shared_context": shared_context,
             "agent_role": req.agent_role,
             "token_estimate": len(compact_prompt) // 2,  # rough CJK estimate
         }

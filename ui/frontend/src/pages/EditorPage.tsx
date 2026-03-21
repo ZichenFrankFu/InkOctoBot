@@ -254,8 +254,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       setSaveStatus("saving");
       const updatedVolumes = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
       setVolumes(updatedVolumes);
-      try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: updatedVolumes }); setSaveStatus("saved"); toast("已自动保存", "success"); }
-      catch (e: any) { setSaveStatus("unsaved"); toast(e.message || "自动保存失败", "error"); }
+      try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: updatedVolumes }); setSaveStatus("saved"); }
+      catch (e: any) { setSaveStatus("unsaved"); console.warn("自动保存失败:", e.message); }
     }, 1500);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [content, titleVal]);
@@ -307,6 +307,18 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   useEffect(() => {
     lastAutoVersionContent.current = "";
   }, [activeChId]);
+
+  // Ctrl+S / Cmd+S triggers manual save with toast
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        handleSaveOutline();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [handleSaveOutline]);
 
   const handleMouseUp = () => {
     const el = textRef.current; if (!el) return;
@@ -371,11 +383,11 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     } catch (e: any) { alert("批量生成启动失败: " + (e?.message || e)); }
   };
 
-  const handleSaveOutline = async () => {
+  const handleSaveOutline = useCallback(async () => {
     setSaveStatus("saving");
     const uv = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
-    try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv }); setSaveStatus("saved"); } catch (e: any) { setSaveStatus("unsaved"); toast(e.message || "操作失败", "error"); }
-  };
+    try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv }); setSaveStatus("saved"); toast("已保存", "success"); } catch (e: any) { setSaveStatus("unsaved"); toast(e.message || "保存失败", "error"); }
+  }, [volumes, activeChId, content, titleVal, projectId, toast]);
 
   const generatedTextRef = useRef<string>("");
   const stepTextRef = useRef<string>("");  // text for current step only
@@ -1160,7 +1172,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               }} />}
             {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
-              modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }} />}
+              modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
+              onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} />}
             {aiTab === "prompt" && <PromptTab projectId={projectId} chapter={activeCh} />}
@@ -1503,10 +1516,10 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
-function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel }: {
+function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onDeleteMessage }: {
   steps: PipelineStatus[]; generating: boolean; onStart: () => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
-  modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
+  modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void; onDeleteMessage?: (index: number) => void;
 }) {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [expandedPromptIdx, setExpandedPromptIdx] = useState<number | null>(null);
@@ -1715,6 +1728,15 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
                         ↻ 重新生成
                       </button>
                     )}
+                    {!generating && onDeleteMessage && (
+                      <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
+                        onClick={() => onDeleteMessage(i)}
+                        onMouseEnter={e => e.currentTarget.style.color = "var(--error)"}
+                        onMouseLeave={e => e.currentTarget.style.color = "var(--text-tertiary)"}
+                        title="删除此消息">
+                        × 删除
+                      </button>
+                    )}
                   </div>
                 )}
                 {expandedPromptIdx === i && msg.promptSent && (
@@ -1867,23 +1889,7 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange }:
 
 function QuestionChoices({ content, onChoose }: { content: string; onChoose: (choice: string) => void }) {
   const [page, setPage] = useState(0);
-  // Parse choices from content: look for **方案 X：...** patterns
-  const parts = content.split(/(\*\*方案 [A-Z]：[^*]+\*\*)/g);
-  const intro = parts[0] || "";
-  const choices: { label: string; detail: string }[] = [];
-  let current = "";
-  for (const line of content.split("\n")) {
-    const match = line.match(/^\*\*方案 ([A-Z])：(.+)\*\*$/);
-    if (match) {
-      if (current) choices.push({ label: current, detail: "" });
-      current = `方案 ${match[1]}：${match[2]}`;
-    } else if (current && line.match(/^\d+\./)) {
-      choices[choices.length] = choices[choices.length] || { label: current, detail: "" };
-      if (!choices[choices.length - 1]) choices.push({ label: current, detail: line });
-      else choices[choices.length - 1] = { ...choices[choices.length - 1], detail: (choices[choices.length - 1].detail ? choices[choices.length - 1].detail + "\n" : "") + line };
-    }
-  }
-  // Simpler approach: split into sections by **方案
+  // Split into sections by **方案
   const sections = content.split(/(?=\*\*方案 [A-Z])/);
   const headerText = sections[0] || "";
   const choiceSections = sections.slice(1);
@@ -2302,9 +2308,10 @@ function EvalTab({ result }: { result: EvalResult | null }) {
 
 function PromptTab({ projectId, chapter }: { projectId: string; chapter?: ChapterOutline | null }) {
   const { toast } = useToast();
-  const [sections, setSections] = useState<{ label: string; content: string }[]>([]);
+  const [sections, setSections] = useState<{ label: string; content: string; shared?: boolean }[]>([]);
   const [compactPrompt, setCompactPrompt] = useState("");
   const [fullPrompt, setFullPrompt] = useState("");
+  const [sharedContext, setSharedContext] = useState("");
   const [loading, setLoading] = useState(false);
   const [tokenEstimate, setTokenEstimate] = useState(0);
   const [agentRole, setAgentRole] = useState("scene_director");
@@ -2317,9 +2324,10 @@ function PromptTab({ projectId, chapter }: { projectId: string; chapter?: Chapte
     setLoading(true);
     try {
       const resp = await apiPost<{
-        sections: { label: string; content: string }[];
+        sections: { label: string; content: string; shared?: boolean }[];
         full_prompt: string;
         compact_prompt: string;
+        shared_context: string;
         token_estimate: number;
       }>("/api/generation/prompt-preview", {
         project_id: projectId || "default",
@@ -2337,6 +2345,7 @@ function PromptTab({ projectId, chapter }: { projectId: string; chapter?: Chapte
       setSections(resp.sections);
       setCompactPrompt(resp.compact_prompt);
       setFullPrompt(resp.full_prompt);
+      setSharedContext(resp.shared_context || "");
       setTokenEstimate(resp.token_estimate);
     } catch (e: any) {
       toast(e?.message || "加载 Prompt 失败", "error");
@@ -2393,7 +2402,7 @@ function PromptTab({ projectId, chapter }: { projectId: string; chapter?: Chapte
       {/* Header */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <div className="text-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-          预览发送给 LLM 的完整 Prompt（含 Memory + RAG），可直接复制到 ChatGPT / Claude 等网页端使用。
+          预览发送给 LLM 的完整 Prompt（含 Memory + RAG）。◈ 标记的「通用上下文」部分所有 Agent 通用，可单独复制用于单Agent生成。
         </div>
 
         {/* Agent role selector */}
@@ -2435,23 +2444,35 @@ function PromptTab({ projectId, chapter }: { projectId: string; chapter?: Chapte
       </div>
 
       {/* Action buttons */}
-      <div className="flex gap-6">
-        <button
-          className="btn-primary"
-          onClick={() => handleCopy(viewMode === "sections" ? fullPrompt : currentText)}
-          disabled={loading || (!compactPrompt && sections.length === 0)}
-          style={{ flex: 1, fontSize: 12, padding: "7px 14px" }}
-        >
-          {copied ? "已复制" : "复制 Prompt"}
-        </button>
-        <button
-          className="btn"
-          onClick={loadPrompt}
-          disabled={loading}
-          style={{ fontSize: 12, padding: "7px 14px", border: "1px solid var(--border)" }}
-        >
-          {loading ? "加载中..." : "刷新"}
-        </button>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div className="flex gap-6">
+          <button
+            className="btn-primary"
+            onClick={() => handleCopy(viewMode === "sections" ? fullPrompt : currentText)}
+            disabled={loading || (!compactPrompt && sections.length === 0)}
+            style={{ flex: 1, fontSize: 12, padding: "7px 14px" }}
+          >
+            {copied ? "已复制" : "复制完整 Prompt"}
+          </button>
+          <button
+            className="btn"
+            onClick={loadPrompt}
+            disabled={loading}
+            style={{ fontSize: 12, padding: "7px 14px", border: "1px solid var(--border)" }}
+          >
+            {loading ? "加载中..." : "刷新"}
+          </button>
+        </div>
+        {sharedContext && (
+          <button
+            className="btn"
+            onClick={() => handleCopy(sharedContext)}
+            disabled={loading}
+            style={{ fontSize: 11, padding: "5px 14px", border: "1px solid var(--indigo, var(--border))", color: "var(--indigo, var(--text-secondary))" }}
+          >
+            复制通用上下文（适用于单Agent模式）
+          </button>
+        )}
       </div>
 
       {/* Content display */}
@@ -2461,9 +2482,11 @@ function PromptTab({ projectId, chapter }: { projectId: string; chapter?: Chapte
         </div>
       ) : viewMode === "sections" ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {sections.map((sec, i) => (
+          {sections.map((sec, i) => {
+            const isShared = sec.shared === true;
+            return (
             <div key={i} style={{
-              border: "1px solid var(--border)", borderRadius: 8,
+              border: isShared ? "1px solid var(--indigo, var(--border))" : "1px solid var(--border)", borderRadius: 8,
               background: "var(--bg-surface-2)", overflow: "hidden",
             }}>
               <div
@@ -2471,11 +2494,11 @@ function PromptTab({ projectId, chapter }: { projectId: string; chapter?: Chapte
                 style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between",
                   padding: "8px 12px", cursor: "pointer",
-                  background: expandedSections.has(i) ? "var(--bg-surface)" : "transparent",
+                  background: expandedSections.has(i) ? "var(--bg-surface)" : isShared ? "rgba(99,102,241,0.05)" : "transparent",
                 }}
               >
-                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
-                  {sec.label}
+                <span style={{ fontSize: 12, fontWeight: 600, color: isShared ? "var(--indigo, var(--text-primary))" : "var(--text-primary)" }}>
+                  {isShared && "\u25C8 "}{sec.label}
                 </span>
                 <div className="flex items-center gap-6">
                   <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
@@ -2507,7 +2530,8 @@ function PromptTab({ projectId, chapter }: { projectId: string; chapter?: Chapte
                 </pre>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <pre style={{
