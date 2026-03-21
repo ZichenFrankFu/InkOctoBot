@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import uuid
 from typing import Any
 
@@ -28,11 +29,15 @@ class ChapterBuffer:
         self.db_path = db_path
         self.max_chapters = max_chapters
         self.max_tokens = max_tokens
+        self._local = threading.local()
 
     def _conn(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self.db_path)
-        c.row_factory = sqlite3.Row
-        c.execute("PRAGMA foreign_keys=ON")
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = sqlite3.connect(self.db_path, check_same_thread=False)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA foreign_keys=ON")
+            self._local.conn = c
         return c
 
     def add_summary(

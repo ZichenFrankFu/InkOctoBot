@@ -8,8 +8,10 @@ Migrated from agents/model_router.py.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import logging
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -35,9 +37,9 @@ _PROVIDER_CLS: dict[str, str] = {
 }
 
 
+@lru_cache(maxsize=32)
 def _import_class(dotpath: str) -> type:
     mod_path, cls_name = dotpath.rsplit(".", 1)
-    import importlib
     mod = importlib.import_module(mod_path)
     return getattr(mod, cls_name)
 

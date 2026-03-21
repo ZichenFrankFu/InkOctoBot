@@ -158,7 +158,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         apiPut("/api/data/chat_history", {
           project_id: projectId || "default", scope: `pipeline_${activeChId}`,
           messages: persistable.slice(-200),  // keep last 200 messages
-        }).catch(() => {});
+        }).catch((err) => { console.warn("Chat save failed:", err.message); });
       }, 2000);
     }
   }, [aiTab, chatMessages, chatInput, EDITOR_CHAT_KEY, chatLoaded, projectId, activeChId]);
@@ -205,7 +205,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     if (!activeChId) return;
     apiGet<{ versions: TextVersion[] }>(`/api/data/versions?project_id=${projectId || "default"}&chapter_id=${activeChId}`)
       .then(r => { if (r.versions?.length > 0) setVersionHistory(r.versions); })
-      .catch(() => {});
+      .catch((err) => { console.warn("Version history load failed:", err.message); });
   }, [projectId, activeChId]);
 
   useEffect(() => {
@@ -264,7 +264,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   useEffect(() => {
     apiGet<{ max_backup_versions?: number }>("/api/data/settings")
       .then(r => { if (r.max_backup_versions) setMaxBackupVersions(r.max_backup_versions); })
-      .catch(() => {});
+      .catch((err) => { console.warn("Settings load failed:", err.message); });
   }, []);
 
   // Auto-save version backup (every 60s if content changed)
@@ -969,7 +969,20 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const totalW = useMemo(() => volumes.reduce((s, v) => s + v.chapters.reduce((s2, c) => s2 + wc(c.content || ""), 0), 0), [volumes]);
   const totalCh = useMemo(() => volumes.reduce((s, v) => s + v.chapters.length, 0), [volumes]);
 
-  if (!loaded) return <div className="loading" style={{ height: "100vh" }}><div className="loading-spinner" />加载中...</div>;
+  if (!loaded) return (
+    <div style={{ display: "flex", height: "100vh", gap: 1 }}>
+      <div style={{ width: 220, background: "var(--bg-surface)", padding: 16 }}>
+        {[1,2,3,4,5].map(i => <div key={i} className="skeleton-line" style={{ height: 28, marginBottom: 8, borderRadius: 6, background: "var(--bg-surface-2)", animation: "pulse 1.5s ease-in-out infinite" }} />)}
+      </div>
+      <div style={{ flex: 1, background: "var(--bg-surface)", padding: 24 }}>
+        <div className="skeleton-line" style={{ height: 32, width: "40%", marginBottom: 16, borderRadius: 6, background: "var(--bg-surface-2)", animation: "pulse 1.5s ease-in-out infinite" }} />
+        {[1,2,3,4,5,6].map(i => <div key={i} className="skeleton-line" style={{ height: 16, marginBottom: 12, borderRadius: 4, background: "var(--bg-surface-2)", width: `${70 + Math.random() * 30}%`, animation: "pulse 1.5s ease-in-out infinite" }} />)}
+      </div>
+      <div style={{ width: 280, background: "var(--bg-surface)", padding: 16 }}>
+        {[1,2,3].map(i => <div key={i} className="skeleton-line" style={{ height: 60, marginBottom: 12, borderRadius: 8, background: "var(--bg-surface-2)", animation: "pulse 1.5s ease-in-out infinite" }} />)}
+      </div>
+    </div>
+  );
 
   return (
     <div className="page-full">

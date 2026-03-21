@@ -359,15 +359,25 @@ class DatabaseHandler:
         best_uid = None
         best_score = -1.0
 
-        for n in self._candidate_novels(conn, payload.platform, author_norm):
+        candidates = self._candidate_novels(conn, payload.platform, author_norm)
+
+        # Preload all titles for candidates in a single query (avoid N+1)
+        candidate_uids = [n["novel_uid"] for n in candidates]
+        titles_by_uid: dict[int, list[str]] = {uid: [] for uid in candidate_uids}
+        if candidate_uids:
+            placeholders = ",".join("?" * len(candidate_uids))
+            title_rows = conn.execute(
+                f"SELECT novel_uid, title_norm FROM novel_titles WHERE novel_uid IN ({placeholders})",
+                candidate_uids,
+            ).fetchall()
+            for r in title_rows:
+                titles_by_uid[r["novel_uid"]].append(r["title_norm"])
+
+        for n in candidates:
             n_intro_norm = n["intro_norm"] or ""
             n_main = n["main_category"] or ""
 
-            title_rows = conn.execute(
-                "SELECT title_norm FROM novel_titles WHERE novel_uid=? LIMIT 25",
-                (n["novel_uid"],),
-            ).fetchall()
-            existing_title_norms = [r["title_norm"] for r in title_rows]
+            existing_title_norms = titles_by_uid.get(n["novel_uid"], [])
 
             sig = {}
             try:

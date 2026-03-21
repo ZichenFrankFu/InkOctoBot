@@ -117,20 +117,34 @@ class Evaluator(BaseAgent):
             lines.append("基本通过，但有一些需要注意的问题。")
         else:
             lines.append("质量不足，建议修改后重试。")
-        if issues:
-            high_issues = [i for i in issues if i.get("severity") == "high"]
-            if high_issues:
-                lines.append(f"发现 {len(high_issues)} 个严重问题需要关注。")
+        # Single-pass issue counting
+        high_count = 0
+        type_counts: dict[str, int] = {"constraint": 0, "consistency": 0, "repetition": 0, "ai_flavor": 0}
+        for i in issues:
+            if i.get("severity") == "high":
+                high_count += 1
+            itype = (i.get("type") or "").lower()
+            if itype == "constraint":
+                type_counts["constraint"] += 1
+            elif itype == "consistency":
+                type_counts["consistency"] += 1
+            elif "重复" in itype:
+                type_counts["repetition"] += 1
+            elif "ai" in itype:
+                type_counts["ai_flavor"] += 1
+
+        if high_count:
+            lines.append(f"发现 {high_count} 个严重问题需要关注。")
         if strengths:
             lines.append(f"亮点：{'; '.join(strengths[:3])}")
         result["summary_text"] = " ".join(lines)
 
-        # Build process log
+        # Build process log from pre-counted results
         process_log = [
-            {"detector": "约束检查", "status": "通过" if not any(i.get("type") == "constraint" for i in issues) else f"发现{sum(1 for i in issues if i.get('type') == 'constraint')}处", "detail": "检查约束满足度"},
-            {"detector": "一致性检查", "status": "通过" if not any(i.get("type") == "consistency" for i in issues) else f"发现{sum(1 for i in issues if i.get('type') == 'consistency')}处", "detail": "检查角色行为一致性"},
-            {"detector": "重复检测", "status": "通过" if not any("重复" in (i.get("type") or "") for i in issues) else f"发现{sum(1 for i in issues if '重复' in (i.get('type') or ''))}处", "detail": "检测重复表达"},
-            {"detector": "AI味检测", "status": "通过" if not any("ai" in (i.get("type") or "").lower() for i in issues) else f"发现{sum(1 for i in issues if 'ai' in (i.get('type') or '').lower())}处", "detail": "检测AI生成痕迹"},
+            {"detector": "约束检查", "status": "通过" if not type_counts["constraint"] else f"发现{type_counts['constraint']}处", "detail": "检查约束满足度"},
+            {"detector": "一致性检查", "status": "通过" if not type_counts["consistency"] else f"发现{type_counts['consistency']}处", "detail": "检查角色行为一致性"},
+            {"detector": "重复检测", "status": "通过" if not type_counts["repetition"] else f"发现{type_counts['repetition']}处", "detail": "检测重复表达"},
+            {"detector": "AI味检测", "status": "通过" if not type_counts["ai_flavor"] else f"发现{type_counts['ai_flavor']}处", "detail": "检测AI生成痕迹"},
             {"detector": "综合评估", "status": "done", "detail": f"最终评分 {score}/100"},
         ]
         result["process_log"] = process_log
