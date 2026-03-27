@@ -20,7 +20,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import re as _re_module
 from preprocessing.chapter_splitter import split_chapters
+
+# Additional patterns to split on: author-note headings that aren't standard chapter titles
+_AUTHOR_NOTE_HEADING_PATTERNS = [
+    _re_module.compile(
+        r"^(?:作者说|作者的话|作品相关|上架感言|完本感言|请假|请假条|"
+        r"通知|公告|致读者|番外说明|关于更新|关于本书|新书推荐|推书|"
+        r"感言|致谢|更新说明|书友群)\s*$",
+        _re_module.MULTILINE,
+    ),
+]
+
+# Extra chapter heading patterns for novel ingester (beyond standard chapter_splitter)
+_EXTRA_CHAPTER_PATTERNS = [
+    _re_module.compile(r"^番外\s+.+", _re_module.MULTILINE),    # 番外 标题
+    _re_module.compile(r"^番外\d*\s*$", _re_module.MULTILINE),  # 单独的 "番外" "番外1"
+    _re_module.compile(r"^楔子\s*$", _re_module.MULTILINE),     # 楔子
+    _re_module.compile(r"^序章\s*.*$", _re_module.MULTILINE),   # 序章
+    _re_module.compile(r"^尾声\s*.*$", _re_module.MULTILINE),   # 尾声
+    _re_module.compile(r"^后记\s*.*$", _re_module.MULTILINE),   # 后记
+]
 
 logger = logging.getLogger("inkoctobot.preprocessing.novel_ingester")
 
@@ -379,8 +400,19 @@ class NovelIngester:
         )
 
         # Split chapters (skip metadata region)
+        # Use low min_chapter_length to avoid merging author-notes into story chapters
+        # Include author-note heading patterns as additional split points
         body = text[metadata.metadata_end_pos:] if metadata.metadata_end_pos > 0 else text
-        raw_chapters = split_chapters(body)
+        from preprocessing.chapter_splitter import _CHAPTER_PATTERNS
+        all_patterns = _CHAPTER_PATTERNS + _EXTRA_CHAPTER_PATTERNS
+        raw_chapters = split_chapters(
+            body,
+            min_chapter_length=50,
+            patterns=all_patterns,
+        )
+
+        # Re-split: detect embedded author-note sections within chapters
+        raw_chapters = self._split_embedded_author_notes(raw_chapters)
 
         # Classify chapters: story vs author-note
         cleaned_chapters: list[CleanedChapter] = []
@@ -481,6 +513,47 @@ class NovelIngester:
         )
 
     # ── Internal helpers ──────────────────────────────────────
+
+    @staticmethod
+    def _split_embedded_author_notes(chapters: list[dict]) -> list[dict]:
+        """
+        Detect author-note headings embedded within chapter content and split them out.
+
+        For example, if chapter content contains "...story text...\n\n上架感言\n\n...author note...",
+        split it into two entries.
+        """
+        result = []
+        for ch in chapters:
+            content = ch.get("content", "")
+            split_found = False
+
+            for pat in _AUTHOR_NOTE_HEADING_PATTERNS:
+                m = pat.search(content)
+                if m:
+                    # Split at the author-note heading
+                    story_part = content[:m.start()].strip()
+                    note_title = m.group().strip()
+                    note_content = content[m.end():].strip()
+
+                    if story_part:
+                        result.append({
+                            **ch,
+                            "content": story_part,
+                        })
+                    if note_content or note_title:
+                        result.append({
+                            "chapter_num": ch["chapter_num"],
+                            "title": note_title,
+                            "content": note_content,
+                            "start": ch.get("start", 0) + m.start(),
+                        })
+                    split_found = True
+                    break
+
+            if not split_found:
+                result.append(ch)
+
+        return result
 
     def _read_file(self, path: Path) -> str | None:
         """Read a text file, trying common Chinese encodings."""
