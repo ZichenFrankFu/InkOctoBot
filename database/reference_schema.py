@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS reference_works (
     ref_id TEXT PRIMARY KEY, title TEXT NOT NULL, creator TEXT,
     media_type TEXT NOT NULL DEFAULT 'web_novel' CHECK (media_type IN ('web_novel','literature','poetry','film','anime','tv_series','other')),
     genre TEXT, tags_json TEXT,
-    source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('platform_crawl','file_upload','manual')),
+    source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('platform_crawl','file_upload','manual','novel_corpus')),
     platform TEXT, novel_uid INTEGER, file_path TEXT,
     user_rating INTEGER CHECK (user_rating BETWEEN 1 AND 5), user_summary TEXT,
     user_why_i_like TEXT, learning_dimensions_json TEXT,
