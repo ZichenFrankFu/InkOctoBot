@@ -63,3 +63,24 @@ role_overrides:
     model: "qwen2.5:14b"
     temperature: 0.5
     max_tokens: 2000
+
+  # Novel skill extraction — chapter-level (local model, high throughput)
+  chapter_extractor:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.3
+    max_tokens: 4096
+
+  # Novel skill extraction — novel-level aggregation (cloud model, long context)
+  novel_aggregator:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.3
+    max_tokens: 8192
+
+  # Novel skill extraction — cross-novel pattern mining (cloud model)
+  pattern_miner:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.4
+    max_tokens: 8192

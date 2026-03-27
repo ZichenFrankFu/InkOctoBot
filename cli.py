@@ -7,6 +7,7 @@ Usage:
     ink skill list/test/create
     ink generate chapter/evaluate
     ink analysis trend/extract/report
+    ink extract ingest/run/emit/status
     ink memory status/consolidate/search
     ink model list/test/cost
     ink config show/validate
@@ -264,6 +265,151 @@ def analysis_trend(
 ) -> None:
     """Run trend analysis."""
     typer.echo(f"Running trend analysis (tag={tag}, weeks={weeks})")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Novel Skill Extraction
+# ═══════════════════════════════════════════════════════════════════
+extract_app = typer.Typer(help="Novel skill extraction pipeline (小说技巧提取)")
+app.add_typer(extract_app, name="extract")
+
+_DEFAULT_CORPUS_DIR = "data/novel_corpus"
+_DEFAULT_DB = "data/references.db"
+
+
+@extract_app.command("ingest")
+def extract_ingest(
+    dir: str = typer.Option(_DEFAULT_CORPUS_DIR, "--dir", "-d", help="Novel corpus directory"),
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="Single txt file to ingest"),
+    db: str = typer.Option(_DEFAULT_DB, "--db", help="Database path"),
+) -> None:
+    """Ingest and clean novel txt files (扫描、清洗、注册小说)."""
+    from preprocessing.novel_ingester import NovelIngester
+
+    ingester = NovelIngester(db, dir)
+
+    if file:
+        result = ingester.ingest_single(file)
+        if result:
+            typer.echo(f"Ingested: {result.title} ({result.total_chapters} chapters, "
+                       f"{result.total_chars:,} chars, {result.excluded_author_notes} author-notes removed)")
+            if result.needs_review:
+                typer.echo(f"  ⚠ {len(result.needs_review)} items need review")
+        else:
+            typer.echo("No new file to ingest (already processed or not found).")
+    else:
+        results = ingester.ingest_all()
+        typer.echo(f"\nIngested {len(results)} novels:")
+        total_chars = 0
+        total_notes = 0
+        for r in results:
+            typer.echo(f"  {r.title}: {r.total_chapters} chapters, {r.total_chars:,} chars")
+            total_chars += r.total_chars
+            total_notes += r.excluded_author_notes
+
+        typer.echo(f"\nTotal: {len(results)} novels, {total_chars:,} chars, "
+                   f"{total_notes} author-notes removed")
+
+
+@extract_app.command("run")
+def extract_run(
+    phase: Optional[str] = typer.Option(None, "--phase", "-p",
+        help="Phase to run: clean/chapter/novel/pattern/emit (default: all)"),
+    novels: Optional[str] = typer.Option(None, "--novels", "-n",
+        help="Comma-separated novel titles to process"),
+    resume: bool = typer.Option(True, "--resume/--no-resume",
+        help="Resume from last checkpoint"),
+    db: str = typer.Option(_DEFAULT_DB, "--db", help="Database path"),
+    corpus_dir: str = typer.Option(_DEFAULT_CORPUS_DIR, "--dir", help="Corpus directory"),
+) -> None:
+    """Run extraction pipeline (运行提取流程)."""
+    from preprocessing.skill_extraction.orchestrator import SkillExtractionOrchestrator
+
+    orchestrator = SkillExtractionOrchestrator(
+        db_path=db,
+        corpus_dir=corpus_dir,
+    )
+
+    phases = [phase] if phase else None
+    novel_list = [n.strip() for n in novels.split(",")] if novels else None
+
+    result = asyncio.run(orchestrator.run(
+        resume=resume,
+        novels=novel_list,
+        phases=phases,
+    ))
+
+    typer.echo(f"\nPipeline result:")
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@extract_app.command("emit")
+def extract_emit(
+    category: Optional[str] = typer.Option(None, "--category", "-c",
+        help="Category: writing_technique/chapter_design/story_arc"),
+    all_cats: bool = typer.Option(False, "--all", help="Emit all categories"),
+    db: str = typer.Option(_DEFAULT_DB, "--db", help="Database path"),
+) -> None:
+    """Generate skill files from mined patterns (生成技巧skill)."""
+    from preprocessing.skill_extraction.skill_emitter import SkillEmitter
+
+    emitter = SkillEmitter(db)
+
+    if all_cats or not category:
+        counts = emitter.emit_all()
+        for cat, count in counts.items():
+            typer.echo(f"  {cat}: {count} skills emitted")
+    else:
+        count = emitter.emit_category(category)
+        typer.echo(f"  {category}: {count} skills emitted")
+
+
+@extract_app.command("status")
+def extract_status(
+    db: str = typer.Option(_DEFAULT_DB, "--db", help="Database path"),
+) -> None:
+    """Show extraction pipeline status (查看提取进度)."""
+    from preprocessing.skill_extraction.orchestrator import SkillExtractionOrchestrator
+
+    orchestrator = SkillExtractionOrchestrator(db_path=db)
+    status = orchestrator.get_status()
+
+    typer.echo(f"\nNovel Skill Extraction Status")
+    typer.echo(f"{'='*40}")
+    typer.echo(f"Total novels: {status['total_novels']}")
+
+    typer.echo(f"\nPhase progress:")
+    for phase, counts in status.get("phases", {}).items():
+        total = sum(counts.values())
+        completed = counts.get("completed", 0)
+        failed = counts.get("failed", 0)
+        typer.echo(f"  {phase:20s}: {completed}/{total} completed"
+                   + (f", {failed} failed" if failed else ""))
+
+    typer.echo(f"\nExtracted patterns:")
+    for cat, count in status.get("patterns", {}).items():
+        typer.echo(f"  {cat}: {count}")
+
+    typer.echo(f"\nSkills emitted: {status.get('skills_emitted', 0)}")
+
+
+@extract_app.command("clean-status")
+def extract_clean_status(
+    db: str = typer.Option(_DEFAULT_DB, "--db", help="Database path"),
+) -> None:
+    """Show data cleaning status (查看清洗报告)."""
+    from preprocessing.novel_ingester import NovelIngester
+
+    ingester = NovelIngester(db)
+    status = ingester.get_clean_status()
+
+    typer.echo(f"\nData Cleaning Status")
+    typer.echo(f"{'='*40}")
+    typer.echo(f"Total novels ingested: {status['total_novels']}")
+    typer.echo(f"By status: {status['by_status']}")
+    typer.echo(f"Total chapters: {status['total_chapters']}")
+    typer.echo(f"Total chars: {status['total_chars']:,}")
+    typer.echo(f"Author notes removed: {status['total_author_notes_removed']}")
 
 
 # ═══════════════════════════════════════════════════════════════════
