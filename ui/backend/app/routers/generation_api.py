@@ -1289,6 +1289,31 @@ async def _run_pipeline_background(session_id: str):
             _proj_id = req_data.get("project_id", "")
             memory.set_project(_proj_id)
 
+            # Fallback: if memory layers are empty, seed from editor content
+            if not memory.has_memory_content():
+                try:
+                    from ui.backend.app.routers.data_api import _col as _data_col, _safe_id as _sid
+                    _editor_path = _data_col("editor") / f"{_sid(_proj_id)}.json"
+                    if _editor_path.exists():
+                        _editor_data = json.loads(_editor_path.read_text("utf-8"))
+                        _fallback_text = memory.build_fallback_from_editor(
+                            _editor_data.get("volumes", []),
+                            current_chapter_id=req_data.get("chapter_id", ""),
+                        )
+                        if _fallback_text:
+                            # Inject as immediate context so agents can see it
+                            from rag.memory.immediate import SceneContext as _SC
+                            memory.start_scene(_SC(
+                                scene_index=0,
+                                characters=characters,
+                                location=req_data.get("location", ""),
+                                time_marker=req_data.get("time_setting", ""),
+                                scene_text=_fallback_text,
+                            ))
+                            logger.info("Memory fallback: seeded from editor content (%d chars)", len(_fallback_text))
+                except Exception as _fb_err:
+                    logger.debug("Editor memory fallback skipped: %s", _fb_err)
+
             # Pre-load world book entries into semantic memory for RAG retrieval
             try:
                 wb_items = _list_data("worldbook") if "_list_data" in dir() else _list("worldbook")
@@ -2334,8 +2359,8 @@ async def prompt_preview(req: PromptPreviewRequest):
         _style_notes = req.style_notes
         if not _style_notes:
             try:
-                from ui.backend.app.routers.data_api import _col
-                _cal_path = _col("calibration") / f"{req.project_id}.json"
+                from ui.backend.app.routers.data_api import _col, _safe_id
+                _cal_path = _col("calibration") / f"{_safe_id(req.project_id)}.json"
                 if _cal_path.exists():
                     _cal_data = json.loads(_cal_path.read_text("utf-8"))
                     _sp = _cal_data.get("style_params", {})
@@ -2386,57 +2411,100 @@ async def prompt_preview(req: PromptPreviewRequest):
         if constraints_parts:
             sections.append({"label": "约束规则 (Constraints)", "content": "\n\n".join(constraints_parts)})
 
-        # ── 4. Build memory context ──
-        memory_parts = []
+        # ── 4. Build memory context (split into shared + agent-specific) ──
+        # Shared context: common across all agents (foreshadowing, ref style, user prefs, chapter buffer)
+        shared_memory_parts = []
+        agent_memory_parts = []
+        _memory_has_content = False
+
         try:
             _db_path = _get_db_path()
             from rag.memory.manager import MemoryManager as _MM
             _mem = _MM(db_path=_db_path)
             _mem.set_project(req.project_id)
 
+            _memory_has_content = _mem.has_memory_content()
+
+            # Shared: chapter buffer (L2) — used by all agents except actor
+            try:
+                _l2 = _mem.chapter_buffer.get_buffer_text(req.project_id)
+                if _l2:
+                    shared_memory_parts.append(f"[近期章节摘要 (Layer 2)]\n{_l2}")
+            except Exception:
+                pass
+
+            # Agent-specific memory
             if req.agent_role == "scene_director":
                 _mem_text = _mem.get_context_for_scene_director(req.chapter_num)
             elif req.agent_role == "editor_writer":
                 _mem_text = _mem.get_context_for_editor()
             elif req.agent_role == "evaluator":
                 _mem_text = _mem.get_context_for_evaluator(req.chapter_num)
+            elif req.agent_role == "actor_agent":
+                _mem_text = _mem.get_context_for_scene_director(req.chapter_num)
             else:
                 _mem_text = _mem.get_context_for_scene_director(req.chapter_num)
 
             if _mem_text:
-                memory_parts.append(_mem_text)
+                agent_memory_parts.append(_mem_text)
+
+            # Fallback: if memory is empty, build context from editor content
+            if not _memory_has_content and not shared_memory_parts and not agent_memory_parts:
+                try:
+                    from ui.backend.app.routers.data_api import _col as _data_col, _safe_id as _sid
+                    _editor_path = _data_col("editor") / f"{_sid(req.project_id)}.json"
+                    if _editor_path.exists():
+                        _editor_data = json.loads(_editor_path.read_text("utf-8"))
+                        _fallback = _mem.build_fallback_from_editor(
+                            _editor_data.get("volumes", []),
+                            current_chapter_id=req.chapter_id,
+                        )
+                        if _fallback:
+                            shared_memory_parts.append(_fallback)
+                except Exception as _fb_err:
+                    logger.debug("Editor fallback skipped: %s", _fb_err)
         except Exception:
             pass
 
-        # Foreshadowing
+        # Shared: Foreshadowing (used by all agents)
         try:
             _db_path = _get_db_path()
             _fs = _load_unresolved_foreshadowing(req.project_id, _db_path, req.chapter_num)
             if _fs:
-                memory_parts.append(_fs)
+                shared_memory_parts.append(_fs)
         except Exception:
             pass
 
-        # Reference style
+        # Shared: Reference style (used by all agents)
         try:
             _db_path = _get_db_path()
             _ref_style = _load_reference_style(req.project_id, _db_path)
             if _ref_style:
-                memory_parts.append(_ref_style)
+                shared_memory_parts.append(_ref_style)
         except Exception:
             pass
 
-        # User style preferences
+        # Shared: User style preferences (used by all agents)
         try:
             _db_path = _get_db_path()
             _user_pref = _load_user_style_preferences(req.project_id, _db_path)
             if _user_pref:
-                memory_parts.append(_user_pref)
+                shared_memory_parts.append(_user_pref)
         except Exception:
             pass
 
-        if memory_parts:
-            sections.append({"label": "上下文信息 (Memory + RAG)", "content": "\n\n".join(memory_parts)})
+        if shared_memory_parts:
+            sections.append({
+                "label": "通用上下文 (Shared Context)",
+                "content": "\n\n".join(shared_memory_parts),
+                "shared": True,
+            })
+        if agent_memory_parts:
+            sections.append({
+                "label": f"Agent 上下文 ({req.agent_role})",
+                "content": "\n\n".join(agent_memory_parts),
+                "shared": False,
+            })
 
         # ── 5. Build character cards ──
         if req.characters:
@@ -2494,11 +2562,17 @@ async def prompt_preview(req: PromptPreviewRequest):
                 compact_parts.append(f"## {sec['label']}\n{sec['content']}")
         compact_prompt = "\n\n".join(compact_parts)
 
+        # Build shared context string for direct copy (single-agent mode)
+        shared_context = "\n\n".join(
+            sec["content"] for sec in sections if sec.get("shared")
+        )
+
         return {
             "status": "ok",
             "sections": sections,
             "full_prompt": full_prompt,
             "compact_prompt": compact_prompt,
+            "shared_context": shared_context,
             "agent_role": req.agent_role,
             "token_estimate": len(compact_prompt) // 2,  # rough CJK estimate
         }

@@ -194,6 +194,78 @@ class MemoryManager:
                 parts.append(f"- 第{f['chapter_num']}章: {f['description']} [{f['foreshadow_status']}]")
         return "\n\n".join(parts)
 
+    # ── Fallback: editor content when memory layers are empty ──
+
+    def has_memory_content(self) -> bool:
+        """Check if any memory layer has meaningful content."""
+        l1 = self.immediate.get_context_text(include_previous=True)
+        if l1:
+            return True
+        l2 = self.chapter_buffer.get_buffer_text(self._project_id)
+        if l2:
+            return True
+        return False
+
+    def build_fallback_from_editor(self, editor_volumes: list[dict],
+                                    current_chapter_id: str = "") -> str:
+        """Build memory-like context from saved editor chapter content.
+
+        Used when no pipeline has been run yet, so all memory layers are empty.
+        Extracts summaries from previous chapters' existing content.
+        """
+        parts: list[str] = []
+        all_chapters: list[dict] = []
+        for v in editor_volumes:
+            for c in v.get("chapters", []):
+                all_chapters.append(c)
+
+        # Sort by order
+        all_chapters.sort(key=lambda c: c.get("order", 0))
+
+        # Find current chapter index
+        current_idx = -1
+        for i, c in enumerate(all_chapters):
+            if c.get("id") == current_chapter_id:
+                current_idx = i
+                break
+
+        # Build context from previous chapters that have content
+        prev_summaries: list[str] = []
+        for i, c in enumerate(all_chapters):
+            if i >= current_idx and current_idx >= 0:
+                break
+            text = c.get("content", "").strip()
+            synopsis = c.get("synopsis", "").strip()
+            if not text and not synopsis:
+                continue
+            title = c.get("title", f"第{i + 1}章")
+            # Use synopsis if available, otherwise truncate content
+            if synopsis:
+                prev_summaries.append(f"第{c.get('order', i + 1)}章 {title}：{synopsis}")
+            elif text:
+                # Take first ~200 chars as a rough summary
+                snippet = text[:200].replace("\n", " ")
+                if len(text) > 200:
+                    snippet += "..."
+                prev_summaries.append(f"第{c.get('order', i + 1)}章 {title}：{snippet}")
+
+        if prev_summaries:
+            parts.append("[已有章节内容（编辑器 Fallback）]")
+            parts.extend(prev_summaries[-10:])  # Keep last 10 chapters
+
+        # If current chapter has content, add as immediate context
+        if current_idx >= 0:
+            cur = all_chapters[current_idx]
+            cur_text = cur.get("content", "").strip()
+            if cur_text:
+                # Last 800 chars as "current scene"
+                snippet = cur_text[-800:]
+                if len(cur_text) > 800:
+                    snippet = "..." + snippet
+                parts.append(f"\n[当前章节已有内容]\n{snippet}")
+
+        return "\n\n".join(parts)
+
     def get_stats(self) -> dict[str, Any]:
         return {
             "layer1": self.immediate.to_dict(),

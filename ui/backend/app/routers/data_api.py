@@ -24,6 +24,17 @@ def _wj(p: Path, d: Any):
 def _nid() -> str:
     return f"{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
 
+import re as _re
+
+def _safe_id(val: str) -> str:
+    """Sanitize user-supplied IDs to prevent path traversal."""
+    # Strip path separators and parent directory references
+    sanitized = _re.sub(r'[/\\]', '_', val.strip())
+    sanitized = sanitized.replace('..', '_')
+    if not sanitized:
+        sanitized = "default"
+    return sanitized
+
 def _list(c: str, *, filter_key: str = "", filter_value: str = "") -> list[dict]:
     items = []
     for f in sorted(_col(c).glob("*.json")):
@@ -51,7 +62,7 @@ def _del(c: str, id: str):
 # ═══ Projects ═══
 def _enrich_project(proj: dict) -> dict:
     """Compute word_count and chapter_count from editor data."""
-    pid = proj.get("id", "default")
+    pid = _safe_id(proj.get("id", "default"))
     ep = _col("editor") / f"{pid}.json"
     if ep.exists():
         try:
@@ -173,7 +184,7 @@ def delete_worldbook_entry(eid: str): _del("worldbook", eid); return {"ok": True
 
 # ═══ Editor ═══
 def _editor_path(project_id: str = "default") -> Path:
-    d = _col("editor"); return d / f"{project_id}.json"
+    d = _col("editor"); return d / f"{_safe_id(project_id)}.json"
 @router.get("/editor")
 def get_editor_data(project_id: str = "default"):
     p = _editor_path(project_id)
@@ -186,7 +197,7 @@ def save_editor_data(body: dict = Body(...)):
 
 # ═══ Chat History ═══
 def _chat_path(project_id: str, scope: str) -> Path:
-    d = _col("chat_history"); return d / f"{project_id}_{scope}.json"
+    d = _col("chat_history"); return d / f"{_safe_id(project_id)}_{_safe_id(scope)}.json"
 
 @router.get("/chat_history")
 def get_chat_history(project_id: str = "default", scope: str = "pipeline"):
@@ -220,7 +231,7 @@ def clear_chat_history(project_id: str = "default", scope: str = "pipeline"):
 
 # ═══ Version History ═══
 def _versions_path(project_id: str) -> Path:
-    d = _col("versions"); return d / f"{project_id}.json"
+    d = _col("versions"); return d / f"{_safe_id(project_id)}.json"
 
 @router.get("/versions")
 def get_versions(project_id: str = "default", chapter_id: str = ""):
@@ -268,7 +279,7 @@ def delete_version(version_id: str, project_id: str = "default"):
 
 # ═══ Calibration ═══
 def _calibration_path(project_id: str) -> Path:
-    d = _col("calibration"); return d / f"{project_id}.json"
+    d = _col("calibration"); return d / f"{_safe_id(project_id)}.json"
 
 @router.get("/calibration/{project_id}")
 def get_calibration(project_id: str):
@@ -287,7 +298,7 @@ def save_calibration(project_id: str, body: dict = Body(...)):
 
 # ═══ Preferences / Activity History ═══
 def _pref_path(project_id: str) -> Path:
-    d = _col("preferences"); return d / f"{project_id}.json"
+    d = _col("preferences"); return d / f"{_safe_id(project_id)}.json"
 
 @router.get("/preferences")
 def get_preferences(project_id: str = "default"):
@@ -301,7 +312,7 @@ def get_preferences(project_id: str = "default"):
 @router.post("/preferences/analyze")
 def analyze_preferences(body: dict = Body(...)):
     """Gather user activity from chat histories and return as entries."""
-    pid = body.get("project_id", "default")
+    pid = _safe_id(body.get("project_id", "default"))
     chat_dir = _col("chat_history")
     entries: list[dict] = []
 
@@ -527,7 +538,7 @@ def _ts_fmt(ts) -> str:
 
 # ═══ Storyline ═══
 def _storyline_path(project_id: str = "default") -> Path:
-    d = _col("storylines"); return d / f"{project_id}.json"
+    d = _col("storylines"); return d / f"{_safe_id(project_id)}.json"
 @router.get("/storyline")
 def get_storyline(project_id: str = "default"):
     p = _storyline_path(project_id)

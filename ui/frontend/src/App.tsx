@@ -74,7 +74,7 @@ function AppInner() {
 
   const shortcutHandlers = useMemo(() => ({
     onSearch: () => setSearchOpen(true),
-    onSave: () => { toast("已保存", "success"); },
+    onSave: () => { /* Ctrl+S handled by EditorPage directly */ },
     onEscape: () => { setSearchOpen(false); },
   }), [toast]);
 
