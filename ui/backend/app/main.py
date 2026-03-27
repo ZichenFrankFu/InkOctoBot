@@ -11,6 +11,7 @@ from .routers.db_api import router as db_router
 from .routers.analysis_api import router as analysis_router
 from .routers.data_api import router as data_router
 from .routers.reference_api import router as reference_router
+from .routers.extraction_api import router as extraction_router
 from .routers.marketing_api import router as marketing_router
 
 # ── Agent pipeline routers ──
@@ -51,6 +52,7 @@ app.include_router(db_router, prefix="/api")
 app.include_router(analysis_router, prefix="/api")
 app.include_router(data_router, prefix="/api")
 app.include_router(reference_router, prefix="/api")
+app.include_router(extraction_router, prefix="/api")
 app.include_router(marketing_router, prefix="/api")
 
 # Agent pipeline

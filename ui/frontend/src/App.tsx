@@ -20,10 +20,11 @@ import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
+import NovelCorpusPage from "./pages/NovelCorpusPage";
 // DevToolsPage removed
 
 type Tab =
-  | "dashboard" | "rankings" | "references" | "analysis"
+  | "dashboard" | "rankings" | "references" | "corpus" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
   | "skills" | "settings";
 
@@ -41,6 +42,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     items: [
       { key: "rankings", icon: "\u2261", label: "市场数据库" },
       { key: "references", icon: "\u229E", label: "参考作品库" },
+      { key: "corpus", icon: "\u25A8", label: "小说语料库" },
       { key: "analysis", icon: "\u2197", label: "分析面板" },
     ],
   },
@@ -183,6 +185,7 @@ function AppInner() {
         {tab === "dashboard" && <ErrorBoundary key="dashboard"><DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} onSelectProject={setActiveProject} /></ErrorBoundary>}
         {tab === "rankings" && <ErrorBoundary key="rankings"><RankingsPage /></ErrorBoundary>}
         {tab === "references" && <ErrorBoundary key="references"><ReferenceLibraryPage /></ErrorBoundary>}
+        {tab === "corpus" && <ErrorBoundary key="corpus"><NovelCorpusPage /></ErrorBoundary>}
         {tab === "analysis" && <ErrorBoundary key="analysis"><AnalysisDashboardPage /></ErrorBoundary>}
         {tab === "projects" && <ErrorBoundary key="projects"><ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "project-setup" && <ErrorBoundary key="project-setup"><ProjectSetupPage projectId={activeProject} /></ErrorBoundary>}

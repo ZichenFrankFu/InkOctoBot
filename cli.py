@@ -324,10 +324,12 @@ def extract_run(
 ) -> None:
     """Run extraction pipeline (运行提取流程)."""
     from preprocessing.skill_extraction.orchestrator import SkillExtractionOrchestrator
+    from models.router import ModelRouter
 
     orchestrator = SkillExtractionOrchestrator(
         db_path=db,
         corpus_dir=corpus_dir,
+        model_router=ModelRouter(),
     )
 
     phases = [phase] if phase else None
