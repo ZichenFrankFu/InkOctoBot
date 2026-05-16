@@ -153,17 +153,76 @@ def _score_pattern(matches: list[re.Match[str]], text_len: int) -> float:
     )
 
 
+# Strip parenthesized noise from chapter titles — e.g. "第一章 邂逅（求月票）"
+# becomes "第一章 邂逅". Matches both full-width and half-width brackets.
+_PAREN_NOISE = re.compile(r"[（(]\s*[^（()）]*\s*[)）]")
+
+
+def _clean_title(s: str) -> str:
+    """Remove parenthesized asides like '（求月票）' / '(求收藏)' from chapter
+    titles, collapse whitespace, and trim."""
+    if not s:
+        return s
+    out = _PAREN_NOISE.sub("", s)
+    out = re.sub(r"\s+", " ", out).strip()
+    return out
+
+
 def _build_chapters(text: str, matches: list[re.Match[str]],
                      pattern_name: str) -> list[dict]:
-    """Materialize matches into chapter records."""
+    """Materialize matches into chapter records.
+
+    Also drops "TOC-style" duplicates: when the same chapter number
+    appears multiple times in the first ~3% of the document, only the
+    LAST occurrence wins (the rest are presumed to be a table of
+    contents reproduced before the body)."""
     if not matches:
         return []
+
+    # Heuristic TOC pruning. If we have a cluster of matches all packed
+    # into the first 3% of text whose numbers already appear later in
+    # the document, drop those early matches — they're almost always a
+    # table of contents.
+    text_len = len(text)
+    toc_zone = max(2000, int(text_len * 0.05))
+    seen_nums: dict[int, int] = {}  # number → last seen match index
+    keep: list[re.Match[str]] = []
+    for m in matches:
+        n = cn2int(m.group(1))
+        if n is None:
+            keep.append(m)
+            continue
+        if m.start() < toc_zone:
+            # Hold off — we may drop these later if duplicates appear past the TOC zone
+            pass
+        seen_nums.setdefault(n, -1)
+
+    # Two-pass dedup: collect all positions per number, then keep the
+    # LAST occurrence whenever there are duplicates inside the TOC zone.
+    by_num: dict[int, list[int]] = {}
+    for i, m in enumerate(matches):
+        n = cn2int(m.group(1))
+        if n is None:
+            continue
+        by_num.setdefault(n, []).append(i)
+    drop_idx: set[int] = set()
+    for n, idxs in by_num.items():
+        if len(idxs) < 2:
+            continue
+        # Keep the last occurrence; drop earlier ones that fall in the TOC zone.
+        for j in idxs[:-1]:
+            if matches[j].start() < toc_zone:
+                drop_idx.add(j)
+    pruned = [m for i, m in enumerate(matches) if i not in drop_idx]
+    if not pruned:
+        pruned = matches
+
     vol_marks = [(m.start(), m.group(0).strip()[:60], cn2int(m.group(1)))
                  for m in _VOLUME_PAT.finditer(text)]
     chapters: list[dict] = []
     cur_vol = ""
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+    for i, m in enumerate(pruned):
+        end = pruned[i + 1].start() if i + 1 < len(pruned) else len(text)
         while vol_marks and vol_marks[0][0] <= m.start():
             cur_vol = vol_marks.pop(0)[1]
         # Tolerate user regexes that capture <2 groups — fall back to
@@ -176,7 +235,9 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
             title_text = (m.group(2) or "").strip()
         except (IndexError, error_re):
             title_text = ""
-        raw_marker = m.group(0).strip()
+        # Strip parenthesized noise from both the title and the rendered marker
+        title_text = _clean_title(title_text)
+        raw_marker = _clean_title(m.group(0).strip())
         normalized = cn2int(num_text) or (i + 1)
         chapters.append({
             "index": i,
@@ -191,11 +252,76 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
     return chapters
 
 
+# ── Format-string → regex translation ──
+#
+# Users type a literal heading template like "第N章" or "N、" or "卷N" and
+# we generate a regex that captures the number + optional title. ``N`` is
+# the placeholder for the chapter number — it expands to a group matching
+# either Arabic digits OR Chinese numerals.
+
+_NUMBER_GROUP = r"([零〇一二两三四五六七八九十百千万0-9]+)"
+_TITLE_GROUP = r"([^\n]{0,80})"
+# Special regex chars we must escape when treating the user's input as a literal.
+_RE_META = set(r".^$*+?{}[]\|()")
+
+
+def format_to_regex(fmt: str) -> str:
+    """Convert a user-friendly heading template into a regex pattern.
+
+    Rules:
+      - ``N`` is the chapter-number placeholder; it expands to a digit /
+        Chinese-numeral capture group.
+      - All other characters are escaped (treated as literal text).
+      - The regex is anchored to the start of a line, allows optional
+        leading whitespace, and captures an optional title after the
+        heading (separated by colons / dots / commas / 顿号 / spaces).
+
+    Examples:
+      ``第N章``     → matches "第1章", "第一章", "第 12 章 …"
+      ``第N回``     → matches "第N回" style
+      ``N、``       → matches "1、章节标题"
+      ``N.``        → matches "1. 章节标题"
+      ``卷N``       → matches "卷1", "卷一二三"
+      ``Chapter N`` → matches "Chapter 12: Title"
+    """
+    fmt = (fmt or "").strip()
+    if not fmt:
+        return ""
+    parts = []
+    n_count = 0
+    i = 0
+    while i < len(fmt):
+        ch = fmt[i]
+        if ch == "N":
+            parts.append(_NUMBER_GROUP)
+            n_count += 1
+            i += 1
+        elif ch.isspace() or ch == "　":
+            # Any whitespace in the template is forgiving — match any
+            # mix of spaces / tabs / full-width spaces.
+            parts.append(r"[\s　]*")
+            i += 1
+        else:
+            if ch in _RE_META:
+                parts.append("\\" + ch)
+            else:
+                parts.append(ch)
+            i += 1
+    if n_count == 0:
+        # No number placeholder — likely a literal heading. Doesn't make
+        # sense as a chapter marker, but compile anyway with no number
+        # group to avoid a confusing error.
+        body = "".join(parts)
+    else:
+        body = "".join(parts)
+    return rf"^[\s　]*{body}[\s：:　.、，,．]*{_TITLE_GROUP}$"
+
+
 def _compile_extra(raw_patterns: list[dict] | None) -> list[tuple[str, re.Pattern[str]]]:
     """Compile user-supplied chapter patterns. Each entry is
-    ``{name, regex, enabled?}``. Silently drops entries whose regex
-    fails to compile — they're surfaced via the candidates list at
-    score 0 so the UI can flag them, but we never raise."""
+    ``{name, format?|regex?, enabled?}``. Prefers ``format`` (user-friendly
+    template, e.g. "第N章") and falls back to raw ``regex`` for backward
+    compat. Silently drops entries that fail to compile."""
     out: list[tuple[str, re.Pattern[str]]] = []
     for p in (raw_patterns or []):
         if not isinstance(p, dict):
@@ -203,7 +329,10 @@ def _compile_extra(raw_patterns: list[dict] | None) -> list[tuple[str, re.Patter
         if p.get("enabled") is False:
             continue
         name = (p.get("name") or "自定义").strip()
-        regex = p.get("regex") or ""
+        fmt = (p.get("format") or "").strip()
+        regex = (p.get("regex") or "").strip()
+        if fmt and not regex:
+            regex = format_to_regex(fmt)
         if not regex:
             continue
         try:
@@ -293,16 +422,24 @@ _AUTHOR_KEYWORDS = [
 ]
 
 
+_TITLE_AUTHOR_MARKERS = [
+    "感言", "请假", "通知", "公告", "致歉", "本章说",
+    "作者菌", "作者大大", "废话", "闲聊", "杂谈",
+    "上架感言", "完本感言", "新书发布",
+]
+
+
 def flag_author_notes(chapters: list[dict]) -> list[dict]:
-    """Pure-heuristic flagger. Mutates each chapter in-place to add:
+    """Heuristic flagger. Mutates each chapter in-place to add:
 
       is_author_note: bool — final verdict
       author_note_score: int — additive signal score
       author_note_reasons: list[str] — human-readable reasons
 
-    The verdict requires score >= 3 to reduce false positives on
-    legitimately-short chapters or chapters whose narrator happens to
-    monologue in first person.
+    Decision rule (CONSERVATIVE to avoid false positives on normal short
+    chapters): require a "strong" signal — keyword in body OR title
+    marker — AND at least one supporting signal (length anomaly or
+    first-person density). Length alone is NEVER enough.
     """
     if not chapters:
         return chapters
@@ -316,35 +453,46 @@ def flag_author_notes(chapters: list[dict]) -> list[dict]:
         n = len(content)
         score = 0
         reasons: list[str] = []
-        # A) Author keyword hits
+        has_strong_signal = False
+
+        # A) Author keyword hits (STRONG signal)
         hits = [kw for kw in _AUTHOR_KEYWORDS if kw in content]
         if hits:
+            has_strong_signal = True
             score += min(5, len(hits) * 2)
             reasons.append("命中关键词：" + "、".join(hits[:4])
                             + (f"…(+{len(hits) - 4})" if len(hits) > 4 else ""))
-        # B) Length: significantly shorter than median (and absolutely short)
-        if median_len > 0 and n < median_len * 0.35 and n < 2000:
+
+        # B) Title author-marker (STRONG signal) — but only specific markers
+        # that almost always mean author asides ("感言"/"请假"/"上架感言" etc.).
+        # Removed generic markers like "作者"/"读者" since they appear in many
+        # real chapter titles (e.g. "作者归来" being part of the plot).
+        title_blob = (c.get("title") or "") + " " + (c.get("title_only") or "")
+        if any(kw in title_blob for kw in _TITLE_AUTHOR_MARKERS):
+            has_strong_signal = True
+            score += 4
+            reasons.append("标题包含作者标记")
+
+        # C) Length anomaly (SUPPORTING). User reports: real chapters
+        # 2000-5000 字, author notes ≤ 1000 字. Use absolute thresholds
+        # plus a relative one against the median.
+        if n < 1000 and (median_len == 0 or n < median_len * 0.4):
             score += 2
             reasons.append(f"篇幅偏短（{n} 字 / 中位 {int(median_len)} 字）")
-        elif n < 600:
+        elif n < 1500 and median_len > 0 and n < median_len * 0.5:
             score += 1
-            reasons.append(f"篇幅极短（{n} 字）")
-        # C) Title contains author-note markers
-        title_blob = (c.get("title") or "") + " " + (c.get("title_only") or "")
-        if any(kw in title_blob for kw in [
-            "感言", "番外", "请假", "通知", "公告", "致歉", "说明", "本章说",
-            "作者", "读者", "废话", "闲聊", "杂谈",
-        ]):
-            score += 3
-            reasons.append("标题包含作者标记")
-        # D) High first-person density + no dialogue (作者闲聊体征)
+            reasons.append(f"篇幅略短（{n} 字 / 中位 {int(median_len)} 字）")
+
+        # D) First-person density + no dialogue (SUPPORTING)
         if n > 200:
             wo_density = content.count("我") / n
-            has_dialogue = any(ch in content for ch in ["「", "“", "「", "『"])
-            if wo_density > 0.025 and not has_dialogue:
+            has_dialogue = any(ch in content for ch in ["「", "“", "『"])
+            if wo_density > 0.03 and not has_dialogue:
                 score += 1
                 reasons.append("第一人称密度高且无对话")
-        c["is_author_note"] = score >= 3
+
+        # Final decision: must have STRONG signal AND score >= 4.
+        c["is_author_note"] = has_strong_signal and score >= 4
         c["author_note_score"] = score
         c["author_note_reasons"] = reasons
     return chapters

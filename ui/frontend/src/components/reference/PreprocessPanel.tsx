@@ -4,7 +4,10 @@ import { useToast } from "../shared/Toast";
 
 interface ChapterPattern {
   name: string;
-  regex: string;
+  /** User-friendly template (e.g. "第N章", "N、", "卷N"). N = chapter number. */
+  format?: string;
+  /** Raw regex (advanced; only used when format is empty). */
+  regex?: string;
   enabled: boolean;
 }
 
@@ -35,6 +38,8 @@ interface PreprocessStatus {
   fallback_used?: boolean;
   error?: string | null;
   persisted?: boolean;
+  can_undo?: boolean;
+  last_removed_chapters?: number[];
 }
 
 interface SegmentInfo {
@@ -70,6 +75,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const { toast } = useToast();
   const [status, setStatus] = useState<PreprocessStatus | null>(null);
   const [excluded, setExcluded] = useState<Set<number>>(new Set());
+  // Set the first time we receive a chapters list for THIS job, so we
+  // don't keep re-auto-populating ``excluded`` on every status poll
+  // (which would clobber the user's manual changes).
+  const excludedSeededRef = useRef<string>("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [filter, setFilter] = useState<"all" | "flagged" | "kept">("all");
   const [applying, setApplying] = useState(false);
@@ -91,17 +100,26 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     try {
       const r = await apiGet<PreprocessStatus>(`/api/references/works/${refId}/preprocess/status`);
       setStatus(r);
-      // Once flagged chapters are known, pre-select them for exclusion
-      if (r.chapters && r.chapters.length > 0 && excluded.size === 0) {
+      // Seed ``excluded`` exactly once per detection run. ``seedKey`` is
+      // the detection signature — if it changes (new run), we re-seed.
+      const seedKey = r.state === "done"
+        ? `${r.total_chapters}:${r.flagged_count}`
+        : "";
+      if (
+        seedKey
+        && excludedSeededRef.current !== `${refId}:${seedKey}`
+        && r.chapters && r.chapters.length > 0
+      ) {
         const initial = new Set<number>();
         r.chapters.forEach(c => { if (c.is_author_note) initial.add(c.number); });
-        if (initial.size > 0) setExcluded(initial);
+        setExcluded(initial);
+        excludedSeededRef.current = `${refId}:${seedKey}`;
       }
       return r;
     } catch (e) {
       return null;
     }
-  }, [refId, excluded.size]);
+  }, [refId]);
 
   const fetchPlan = useCallback(async () => {
     if (!hasFullText) { setPlan(null); return; }
@@ -133,7 +151,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   };
 
   const addPattern = () => {
-    const next = [...patterns, { name: `自定义 ${patterns.length + 1}`, regex: "", enabled: true }];
+    const next = [...patterns, { name: `自定义 ${patterns.length + 1}`, format: "", enabled: true }];
     setPatterns(next);
   };
 
@@ -150,11 +168,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
 
   const testPattern = async (idx: number) => {
     const p = patterns[idx];
-    if (!p?.regex) { toast("请先填写正则", "info"); return; }
+    const fmt = (p?.format || "").trim();
+    const rx = (p?.regex || "").trim();
+    if (!fmt && !rx) { toast("请先填写格式或正则", "info"); return; }
     try {
       const r = await apiPost<{ count: number; preview: any[] }>(
         "/api/references/chapter_patterns/test",
-        { regex: p.regex, ref_id: refId },
+        fmt ? { format: fmt, ref_id: refId } : { regex: rx, ref_id: refId },
       );
       setPatternTesting({ idx, count: r.count, preview: r.preview });
     } catch (e: any) {
@@ -208,8 +228,26 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       const r = await apiPost<PreprocessStatus>(`/api/references/works/${refId}/preprocess/start`, {});
       setStatus(r);
       setExcluded(new Set());
+      excludedSeededRef.current = "";  // allow re-seeding when the new run finishes
     } catch (e: any) {
       toast(e?.message || "启动失败", "error");
+    }
+  };
+
+  const undoExclusions = async () => {
+    if (!confirm("撤销上一次清理？将从备份恢复正文。")) return;
+    try {
+      const r = await apiPost<{ restored_char_count: number; restored_chapters: number[] }>(
+        `/api/references/works/${refId}/preprocess/undo_exclusions`, {},
+      );
+      toast(`已恢复 ${r.restored_chapters.length} 章（${fmtChars(r.restored_char_count)}）`, "success");
+      setStatus(null);
+      excludedSeededRef.current = "";
+      await fetchStatus();
+      await fetchPlan();
+      await onAfterApplyExclusions?.();
+    } catch (e: any) {
+      toast(e?.message || "撤销失败", "error");
     }
   };
 
@@ -518,11 +556,24 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
           </button>
           {patternsOpen && (
             <div style={{ marginTop: 6 }}>
-              <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
-                内置「第N章」「第N回」「1、标题」「Chapter N」等格式。若你的小说用了不同的章节标记，可在这里添加正则，应捕获 2 个组：
-                <code style={{ background: "var(--bg-card)", padding: "1px 4px", borderRadius: 2 }}>(章节号)</code> 和
-                <code style={{ background: "var(--bg-card)", padding: "1px 4px", borderRadius: 2 }}>(标题)</code>。
-                示例：<code style={{ background: "var(--bg-card)", padding: "1px 4px", borderRadius: 2 }}>{'^[\\s　]*卷([0-9]+)[\\s.、]+(.{1,60})$'}</code>
+              <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.6 }}>
+                内置「第N章」「第N回」「1、标题」「1.标题」「Chapter N」等格式。
+                若你的小说用了不同的章节标记，可在这里添加。
+                <br />
+                <strong style={{ color: "var(--text-secondary)" }}>写法：</strong>
+                直接写出章节标题的样子，把章节号的位置写成
+                <code style={{
+                  background: "var(--bg-card)", padding: "1px 6px",
+                  borderRadius: 2, color: "var(--accent)", fontFamily: "var(--font-mono)",
+                }}>N</code>
+                （大写 N，代表数字或中文数字）。
+                <br />
+                <strong style={{ color: "var(--text-secondary)" }}>示例：</strong>
+                <code style={{ background: "var(--bg-card)", padding: "1px 6px", marginLeft: 4, borderRadius: 2 }}>第N章</code>
+                <code style={{ background: "var(--bg-card)", padding: "1px 6px", marginLeft: 4, borderRadius: 2 }}>第N回</code>
+                <code style={{ background: "var(--bg-card)", padding: "1px 6px", marginLeft: 4, borderRadius: 2 }}>N、</code>
+                <code style={{ background: "var(--bg-card)", padding: "1px 6px", marginLeft: 4, borderRadius: 2 }}>卷N</code>
+                <code style={{ background: "var(--bg-card)", padding: "1px 6px", marginLeft: 4, borderRadius: 2 }}>Chapter N</code>
               </div>
               {patterns.length > 0 && (
                 <div className="flex flex-col gap-6" style={{ marginBottom: 8 }}>
@@ -539,21 +590,22 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         />
                         <input
                           className="input"
-                          placeholder="名称（如：卷N格式）"
+                          placeholder="名称（仅自己看，如：卷N）"
                           value={p.name}
                           onChange={e => updatePattern(i, { name: e.target.value })}
                           style={{ width: 140, fontSize: 12 }}
                         />
                         <input
-                          className="input font-mono"
-                          placeholder="^[\s　]*卷([0-9]+)[\s.、]+(.{1,60})$"
-                          value={p.regex}
-                          onChange={e => updatePattern(i, { regex: e.target.value })}
-                          style={{ flex: 1, fontSize: 11 }}
+                          className="input"
+                          placeholder="格式（如：第N章、N、、卷N）"
+                          value={p.format || ""}
+                          onChange={e => updatePattern(i, { format: e.target.value, regex: "" })}
+                          style={{ flex: 1, fontSize: 12 }}
+                          title="把章节号位置写成 N，其它字符照写即可"
                         />
                         <button className="btn" style={{ fontSize: 11, padding: "3px 8px" }}
                                 onClick={() => testPattern(i)}
-                                title="对当前作品的正文测试匹配数">
+                                title="对当前作品测试匹配数">
                           测试
                         </button>
                         <button className="btn-icon"
@@ -595,20 +647,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                   保存格式
                 </button>
               </div>
-              {/* Show what each candidate scored last run, useful for debugging custom pats */}
-              {status?.candidates && status.candidates.length > 0 && (
-                <div className="text-xs text-muted" style={{ marginTop: 8, lineHeight: 1.6 }}>
-                  上次识别评分：
-                  {status.candidates.map((c, i) => (
-                    <span key={i} className="tag" style={{
-                      marginLeft: 4, fontSize: 10, padding: "1px 6px",
-                      background: c.score > 1.0 ? "var(--accent-subtle)" : "var(--bg-surface-2)",
-                      color: c.score > 1.0 ? "var(--accent)" : "var(--text-tertiary)",
-                      border: `1px solid ${c.score > 1.0 ? "var(--accent)" : "var(--border)"}`,
-                    }}>{c.name}: {c.count}/score {c.score}</span>
-                  ))}
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -645,11 +683,19 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                           }}>{o.label}</button>
                 ))}
               </div>
+              {status?.can_undo && (
+                <button className="btn"
+                        style={{ fontSize: 11, padding: "4px 12px", color: "var(--gold)" }}
+                        onClick={undoExclusions}
+                        title={`撤销上一次清理（${status.last_removed_chapters?.length || 0} 章）`}>
+                  撤销清理
+                </button>
+              )}
               <button className="btn-primary"
                       style={{ fontSize: 11, padding: "4px 12px" }}
                       onClick={applyExclusions}
                       disabled={applying || excluded.size === 0}
-                      title={excluded.size === 0 ? "未选择任何章节" : `物理删除 ${excluded.size} 章`}>
+                      title={excluded.size === 0 ? "未选择任何章节" : `物理删除 ${excluded.size} 章（会备份原文）`}>
                 {applying ? "应用中…" : `应用清理（${excluded.size}）`}
               </button>
             </div>

@@ -569,26 +569,32 @@ class ChapterPatternsBody(BaseModel):
 
 @router.put("/chapter_patterns")
 def put_chapter_patterns(body: ChapterPatternsBody):
-    """Replace the entire custom-pattern list. Each entry is validated
-    (regex must compile) before saving — invalid entries return 400."""
+    """Replace the entire custom-pattern list. Each entry uses either
+    ``format`` (user-friendly template, preferred) or ``regex`` (advanced).
+    Validates regex compilation before saving."""
     import re as _re
+    from analysis.feature_extraction.chapter_parser import format_to_regex
     cleaned: list[dict] = []
     for i, p in enumerate(body.patterns or []):
         if not isinstance(p, dict):
             raise HTTPException(400, f"第 {i + 1} 项格式错误")
         name = (p.get("name") or "").strip() or f"自定义 {i + 1}"
+        fmt = (p.get("format") or "").strip()
         regex = (p.get("regex") or "").strip()
-        if not regex:
+        if not fmt and not regex:
             continue
+        # Validate by compiling the effective regex
+        effective = regex or format_to_regex(fmt)
         try:
-            _re.compile(regex)
+            _re.compile(effective)
         except _re.error as e:
-            raise HTTPException(400, f"「{name}」正则编译失败：{e}")
-        cleaned.append({
-            "name": name,
-            "regex": regex,
-            "enabled": bool(p.get("enabled", True)),
-        })
+            raise HTTPException(400, f"「{name}」格式无效：{e}")
+        entry: dict = {"name": name, "enabled": bool(p.get("enabled", True))}
+        if fmt:
+            entry["format"] = fmt
+        if regex:
+            entry["regex"] = regex
+        cleaned.append(entry)
     data = _read_settings_dict()
     data["chapter_patterns"] = cleaned
     _write_settings_dict(data)
@@ -596,7 +602,8 @@ def put_chapter_patterns(body: ChapterPatternsBody):
 
 
 class ChapterPatternTestBody(BaseModel):
-    regex: str
+    regex: str | None = None
+    format: str | None = None  # user-friendly template ("第N章", "N、", etc.)
     ref_id: str | None = None
     sample_text: str | None = None
 
@@ -604,12 +611,18 @@ class ChapterPatternTestBody(BaseModel):
 @router.post("/chapter_patterns/test")
 def test_chapter_pattern(body: ChapterPatternTestBody):
     """Compile + run a candidate pattern against either the given
-    sample text or the full text of a specific work. Returns the
-    match count + first few preview matches so the user can sanity-check
-    before saving."""
+    sample text or the full text of a specific work. Accepts either a
+    user-friendly ``format`` template (e.g. "第N章") OR a raw ``regex``."""
     import re as _re
+    from analysis.feature_extraction.chapter_parser import format_to_regex
+    regex = (body.regex or "").strip()
+    fmt = (body.format or "").strip()
+    if fmt and not regex:
+        regex = format_to_regex(fmt)
+    if not regex:
+        raise HTTPException(400, "请提供 format 或 regex")
     try:
-        pat = _re.compile(body.regex, _re.MULTILINE | _re.IGNORECASE)
+        pat = _re.compile(regex, _re.MULTILINE | _re.IGNORECASE)
     except _re.error as e:
         raise HTTPException(400, f"正则编译失败：{e}")
     if body.sample_text:
@@ -685,13 +698,20 @@ def preprocess_status(ref_id: str):
             except Exception:
                 pass
         out = job.to_status()
-        # Include the full chapter list when the job finished
         if job.state in ("done", "cancelled", "error"):
             out["chapters"] = [
                 {**{k: v for k, v in c.items() if k != "content"},
                  "char_count": len(c.get("content") or "")}
                 for c in job.chapters
             ]
+        # Surface undo availability so the UI can show a "撤销清理" button
+        try:
+            state2 = json.loads(w.get("segments_json") or "{}")
+        except Exception:
+            state2 = {}
+        bak_info = state2.get("exclusion_backup") if isinstance(state2, dict) else None
+        out["can_undo"] = bool(bak_info and bak_info.get("path") and Path(bak_info["path"]).exists())
+        out["last_removed_chapters"] = (bak_info or {}).get("removed_chapters") or []
         return out
     # No in-memory job — return persisted result if any
     try:
@@ -699,6 +719,9 @@ def preprocess_status(ref_id: str):
     except Exception:
         state = {}
     pre = (state or {}).get("preprocess") if isinstance(state, dict) else None
+    bak_info = state.get("exclusion_backup") if isinstance(state, dict) else None
+    can_undo = bool(bak_info and bak_info.get("path") and Path(bak_info["path"]).exists())
+    last_removed = (bak_info or {}).get("removed_chapters") or []
     if pre:
         return {
             "state": "done",
@@ -708,6 +731,8 @@ def preprocess_status(ref_id: str):
             "log": [],
             "chapters": pre.get("chapters") or [],
             "persisted": True,
+            "can_undo": can_undo,
+            "last_removed_chapters": last_removed,
         }
     return {
         "state": "idle",
@@ -716,6 +741,8 @@ def preprocess_status(ref_id: str):
         "flagged_count": 0,
         "log": [],
         "chapters": [],
+        "can_undo": can_undo,
+        "last_removed_chapters": last_removed,
     }
 
 
@@ -726,36 +753,41 @@ class ApplyExclusionsRequest(BaseModel):
 @router.post("/works/{ref_id}/preprocess/apply_exclusions")
 def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
     """Physically delete the excluded chapters from the on-disk text and
-    re-save. Subsequent _split_chapters / segment plans see the cleaned
-    text. **Irreversible** — does not back up the original (user chose
-    this trade-off for cleanliness)."""
+    re-save. The pre-edit text is saved to ``{file_path}.bak`` (overwriting
+    any prior backup) so the user can undo via POST /preprocess/undo_exclusions
+    while the backup still exists."""
     from analysis.feature_extraction import preprocess_jobs
     from analysis.feature_extraction.chapter_parser import (
         detect_chapters, apply_exclusions,
+    )
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, _load_chapter_patterns,
     )
     db = _db()
     w = db.get_work(ref_id)
     if not w:
         raise HTTPException(404, "参考作品不存在")
-    from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
     pipe = FeatureExtractionPipeline(db.db_path)
     text = pipe._load_text(w)
     if not text:
         raise HTTPException(400, "尚未上传正文")
-    detect = detect_chapters(text)
+    detect = detect_chapters(text, extra_patterns=_load_chapter_patterns())
     excluded = set(int(n) for n in (body.excluded_chapters or []))
     new_text = apply_exclusions(text, detect["chapters"], excluded)
     if not new_text.strip():
         raise HTTPException(400, "排除后文本为空，操作已取消")
-    # Re-save to the work's file
     file_path = w.get("file_path")
     if not file_path:
         raise HTTPException(400, "作品没有关联的文件路径")
+    src = Path(file_path)
+    bak = src.with_suffix(src.suffix + ".bak")
     try:
-        Path(file_path).write_text(new_text, encoding="utf-8")
+        # Snapshot the pre-edit file so we can restore on undo. Overwrites
+        # any prior .bak — only the most-recent apply is undoable.
+        bak.write_text(text, encoding="utf-8")
+        src.write_text(new_text, encoding="utf-8")
     except Exception as e:
         raise HTTPException(500, f"写入文件失败：{e}")
-    # Clear any prior preprocess + segments state, since the text changed.
     try:
         state = json.loads(w.get("segments_json") or "{}")
     except Exception:
@@ -766,17 +798,72 @@ def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
         state.pop("plan", None)
         state["results"] = {}
         state["completed"] = []
+        # Track the undo backup so /undo_exclusions can find it.
+        state["exclusion_backup"] = {
+            "path": str(bak),
+            "removed_chapters": sorted(excluded),
+            "prev_char_count": len(text),
+        }
     db.update_work(
         ref_id,
         segments_json=json.dumps(state, ensure_ascii=False),
         preprocessing_status="pending",
     )
-    # Drop any in-memory job state
     preprocess_jobs.clear(ref_id)
     return {
         "ok": True,
         "removed_chapters": sorted(excluded),
         "new_char_count": len(new_text),
+        "can_undo": True,
+    }
+
+
+@router.post("/works/{ref_id}/preprocess/undo_exclusions")
+def preprocess_undo_exclusions(ref_id: str):
+    """Restore the pre-apply text from the most recent .bak snapshot.
+    Single-level undo — the next /apply_exclusions overwrites the backup,
+    so undo only reaches back one step."""
+    from analysis.feature_extraction import preprocess_jobs
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    bak_info = (state or {}).get("exclusion_backup") if isinstance(state, dict) else None
+    if not bak_info or not bak_info.get("path"):
+        raise HTTPException(400, "没有可撤销的清理记录")
+    bak = Path(bak_info["path"])
+    if not bak.exists():
+        raise HTTPException(400, "备份文件已不存在，无法撤销")
+    file_path = w.get("file_path")
+    if not file_path:
+        raise HTTPException(400, "作品没有关联的文件路径")
+    try:
+        text = bak.read_text(encoding="utf-8")
+        Path(file_path).write_text(text, encoding="utf-8")
+        bak.unlink(missing_ok=True)
+    except Exception as e:
+        raise HTTPException(500, f"恢复失败：{e}")
+    if isinstance(state, dict):
+        state.pop("preprocess", None)
+        state.pop("custom_plan", None)
+        state.pop("plan", None)
+        state.pop("exclusion_backup", None)
+        state["results"] = {}
+        state["completed"] = []
+    db.update_work(
+        ref_id,
+        segments_json=json.dumps(state, ensure_ascii=False),
+        preprocessing_status="pending",
+    )
+    preprocess_jobs.clear(ref_id)
+    return {
+        "ok": True,
+        "restored_char_count": len(text),
+        "restored_chapters": bak_info.get("removed_chapters") or [],
     }
 
 
