@@ -240,12 +240,12 @@ class FeatureExtractionPipeline:
                 cur_chars = 0
         return {"type": "chunks", "segments": segments, "total_chapters": len(chapters)}
 
-    def run_segment(self, ref_id: str, segment_index: int,
-                     segment_chars: int | None = None) -> dict[str, Any]:
-        """Run feature extraction on one segment only. Stores per-segment
-        results in reference_works.segments_json (list keyed by index).
-        Does NOT merge into top-level fields yet — call finalize_segments
-        after all segments are done.
+    def compute_segment(self, ref_id: str, segment_index: int,
+                          segment_chars: int | None = None) -> dict[str, Any]:
+        """Extract features for one segment but DO NOT persist anything.
+
+        Returns the same shape that gets stored, so the caller can preview
+        and then call persist_segment to save.
         """
         from rag.reference_db import ReferenceDB
 
@@ -256,7 +256,7 @@ class FeatureExtractionPipeline:
 
         text = self._load_text(work)
         if not text:
-            return {"ref_id": ref_id, "error": "no text content available"}
+            return {"error": "no text content available"}
 
         all_chapters = self._split_chapters(text)
         plan = self.plan_segments(all_chapters, segment_chars=segment_chars)
@@ -296,19 +296,7 @@ class FeatureExtractionPipeline:
         try: plot = extract_plot_outline(seg_chapters, narrative=narr)
         except Exception as e: errors.append(f"plot_outline: {e}")
 
-        # Load existing segments_json from work
-        existing_raw = work.get("segments_json") or ""
-        try:
-            existing = json.loads(existing_raw) if existing_raw else {}
-        except Exception:
-            existing = {}
-        if not isinstance(existing, dict):
-            existing = {}
-        results = existing.get("results", {})
-        if not isinstance(results, dict):
-            results = {}
-
-        results[str(segment_index)] = {
+        return {
             "index": segment_index,
             "title": seg.get("title"),
             "start_chapter": seg.get("start_chapter"),
@@ -322,6 +310,34 @@ class FeatureExtractionPipeline:
             "rhythm": rhythm,
             "plot_outline": plot,
         }
+
+    def persist_segment(self, ref_id: str, result: dict) -> dict[str, Any]:
+        """Persist a previously-computed segment result into segments_json."""
+        from rag.reference_db import ReferenceDB
+        rdb = ReferenceDB(self.db_path)
+        work = rdb.get_work(ref_id)
+        if not work:
+            raise ValueError(f"reference work not found: {ref_id}")
+        seg_index = result.get("index")
+        if not isinstance(seg_index, int):
+            raise ValueError("result.index missing or invalid")
+
+        # Refresh plan to know total
+        text = self._load_text(work)
+        chapters = self._split_chapters(text) if text else []
+        plan = self.plan_segments(chapters)
+        segs = plan["segments"]
+
+        try:
+            existing = json.loads(work.get("segments_json") or "{}")
+        except Exception:
+            existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+        results = existing.get("results") or {}
+        if not isinstance(results, dict):
+            results = {}
+        results[str(seg_index)] = result
 
         new_state = {
             "type": plan["type"],
@@ -343,12 +359,20 @@ class FeatureExtractionPipeline:
         )
         return {
             "ref_id": ref_id,
-            "segment_index": segment_index,
+            "segment_index": seg_index,
             "total_segments": len(segs),
             "completed_count": len(results),
-            "result": results[str(segment_index)],
             "all_done": new_status == "done",
         }
+
+    def run_segment(self, ref_id: str, segment_index: int,
+                     segment_chars: int | None = None) -> dict[str, Any]:
+        """Compute + persist in one call (kept for backwards compat)."""
+        result = self.compute_segment(ref_id, segment_index, segment_chars=segment_chars)
+        if "error" in result and len(result) <= 2:
+            return {"ref_id": ref_id, **result}
+        info = self.persist_segment(ref_id, result)
+        return {**info, "result": result}
 
     def finalize_segments(self, ref_id: str) -> dict[str, Any]:
         """Merge all per-segment results into top-level fields:

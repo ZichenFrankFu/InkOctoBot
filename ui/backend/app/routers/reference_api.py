@@ -338,10 +338,53 @@ class SegmentRunRequest(BaseModel):
     segment_chars: Optional[int] = None
 
 
+class SegmentCommitRequest(BaseModel):
+    result: dict
+
+
+@router.post("/works/{ref_id}/segments/preview")
+def preview_segment(ref_id: str, body: SegmentRunRequest):
+    """Run extraction for one segment WITHOUT persisting. Returns the full
+    extracted payload so the user can review before committing."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        result = pipe.compute_segment(ref_id, body.segment_index, segment_chars=body.segment_chars)
+        if "error" in result and len(result) <= 2:
+            raise HTTPException(400, result.get("error") or "提取失败")
+        return result
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"分段提取失败: {e}")
+
+
+@router.post("/works/{ref_id}/segments/commit")
+def commit_segment(ref_id: str, body: SegmentCommitRequest):
+    """Persist a previewed (possibly user-edited) segment result."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        return pipe.persist_segment(ref_id, body.result)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"保存失败: {e}")
+
+
 @router.post("/works/{ref_id}/segments/run")
 def run_segment(ref_id: str, body: SegmentRunRequest):
-    """Process one segment of a work. After all segments are done, call
-    /works/{ref_id}/segments/finalize to merge results into top-level fields."""
+    """Compute + persist in one call (legacy path)."""
     db = _db()
     w = db.get_work(ref_id)
     if not w:

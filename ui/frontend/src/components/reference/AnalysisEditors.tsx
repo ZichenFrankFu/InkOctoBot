@@ -41,10 +41,11 @@ interface SectionProps {
   children: React.ReactNode;
   empty?: boolean;
   emptyHint?: string;
+  defaultOpen?: boolean;
 }
 
-export function Section({ title, subtitle, onExtract, extractLabel, extracting, children, empty, emptyHint }: SectionProps) {
-  const [open, setOpen] = useState(true);
+export function Section({ title, subtitle, onExtract, extractLabel, extracting, children, empty, emptyHint, defaultOpen = true }: SectionProps) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
       <button

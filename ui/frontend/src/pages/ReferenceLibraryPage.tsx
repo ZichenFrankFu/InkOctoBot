@@ -3,17 +3,16 @@ import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import useDebounce from "../hooks/useDebounce";
 import { useToast } from "../components/shared/Toast";
-import type { ReferenceWork, ReferenceEntry, MediaType } from "../api/types";
+import type { ReferenceWork, MediaType } from "../api/types";
 import {
   Section,
   StyleFingerprintEditor,
   NarrativeStructureEditor,
   CharactersEditor,
   RhythmTemplateEditor,
-  PlotOutlineEditor,
 } from "../components/reference/AnalysisEditors";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
-import SegmentExtractor from "../components/reference/SegmentExtractor";
+import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
 
 /* ── Extraction types ── */
 interface ExtractionProgress {
@@ -52,11 +51,6 @@ const MEDIA_TYPES: { value: MediaType; label: string; color: string }[] = [
   { value: "anime", label: "动漫", color: "#f472b6" },
   { value: "tv_series", label: "电视剧", color: "var(--indigo)" },
   { value: "other", label: "其他", color: "var(--text-tertiary)" },
-];
-
-const ENTRY_TYPES = [
-  "scene", "character", "worldbuilding", "dialogue", "technique",
-  "atmosphere", "plot_structure", "emotional_beat", "hook", "style_sample", "other",
 ];
 
 function mediaLabel(mt: string) {
@@ -109,7 +103,6 @@ export default function ReferenceLibraryPage() {
   const [search, setSearch] = useState("");
   const [filterMedia, setFilterMedia] = useState("");
   const [sel, setSel] = useState<ReferenceWork | null>(null);
-  const [entries, setEntries] = useState<ReferenceEntry[]>([]);
   const [loading, setLoading] = useState(false);
 
   // Extraction pipeline state
@@ -139,14 +132,6 @@ export default function ReferenceLibraryPage() {
   const [uFile, setUFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Add entry inline form
-  const [showAddEntry, setShowAddEntry] = useState(false);
-  const [eType, setEType] = useState("scene");
-  const [eTitle, setETitle] = useState("");
-  const [eCont, setECont] = useState("");
-  const [ePos, setEPos] = useState("");
-  const [eNotes, setENotes] = useState("");
 
   // Batch management
   const [batchMode, setBatchMode] = useState(false);
@@ -249,14 +234,8 @@ export default function ReferenceLibraryPage() {
     } catch (e: any) { toast(e.message, "error"); }
   };
 
-  async function selectWork(w: ReferenceWork) {
+  function selectWork(w: ReferenceWork) {
     setSel(w);
-    try {
-      const r = await apiGet<{ items: ReferenceEntry[] }>(`/api/references/entries/${w.ref_id}`);
-      setEntries(r.items || []);
-    } catch {
-      setEntries([]);
-    }
   }
 
   async function extractPlotOutline(refId: string) {
@@ -357,11 +336,10 @@ export default function ReferenceLibraryPage() {
   }
 
   async function delWork(id: string) {
-    if (!confirm("确定删除这部参考作品及其所有条目？")) return;
+    if (!confirm("确定删除这部参考作品？")) return;
     try {
       await apiDelete(`/api/references/works/${id}`);
       setSel(null);
-      setEntries([]);
       load();
     } catch (e: any) {
       toast(e.message || "操作失败", "error");
@@ -380,7 +358,6 @@ export default function ReferenceLibraryPage() {
     }
     if (sel && selectedIds.has(sel.ref_id)) {
       setSel(null);
-      setEntries([]);
     }
     setSelectedIds(new Set());
     setBatchMode(false);
@@ -421,34 +398,6 @@ export default function ReferenceLibraryPage() {
         const w = await apiGet<ReferenceWork>(`/api/references/works/${id}`);
         setSel(w);
       } catch {}
-    }
-  }
-
-  async function addEntry() {
-    if (!sel || !eCont.trim()) return;
-    try {
-      await apiPost("/api/references/entries", {
-        ref_id: sel.ref_id,
-        entry_type: eType,
-        title: eTitle.trim(),
-        content: eCont.trim(),
-        position_label: ePos.trim() || undefined,
-        user_notes: eNotes.trim() || undefined,
-      });
-      setShowAddEntry(false);
-      setETitle(""); setECont(""); setEPos(""); setENotes("");
-      selectWork(sel);
-    } catch (e: any) {
-      toast(e.message || "操作失败", "error");
-    }
-  }
-
-  async function delEntry(eid: string) {
-    try {
-      await apiDelete(`/api/references/entries/${eid}`);
-      if (sel) selectWork(sel);
-    } catch (e: any) {
-      toast(e.message || "操作失败", "error");
     }
   }
 
@@ -619,11 +568,11 @@ export default function ReferenceLibraryPage() {
                       </span>
                     </div>
                     <div className="flex gap-12 text-sm text-muted">
-                      {sel.creator && <span>&#x270D;&#xFE0F; {sel.creator}</span>}
+                      {sel.creator && <span>{sel.creator}</span>}
                       {sel.genre && <span>{sel.genre}</span>}
                       <span>{sel.created_at?.split("T")[0] || "\u2014"}</span>
                       {Boolean(sel.has_full_text) && (
-                        <span style={{ color: "var(--jade)", fontWeight: 500 }}>&#x2705; 已上传正文</span>
+                        <span style={{ color: "var(--jade)", fontWeight: 500 }}>已上传正文</span>
                       )}
                     </div>
                   </div>
@@ -662,175 +611,84 @@ export default function ReferenceLibraryPage() {
                   </div>
                 </div>
 
-                {/* Incremental segment-by-segment extraction */}
-                {Boolean(sel.has_full_text) && (
-                  <SegmentExtractor
-                    refId={sel.ref_id}
-                    hasFullText={Boolean(sel.has_full_text)}
-                    preprocessingStatus={sel.preprocessing_status}
-                    onWorkUpdated={async () => {
-                      try {
-                        const w = await apiGet<ReferenceWork>(`/api/references/works/${sel.ref_id}`);
-                        setSel(w);
-                        setWorks(prev => prev.map(x => x.ref_id === w.ref_id ? w : x));
-                      } catch {}
-                    }}
-                  />
-                )}
-
                 {/* Analysis results — structured editors */}
-                {(sel.preprocessing_status === "done" || sel.plot_outline_json) && (
-                  <div className="card mb-16">
-                    <div className="card-body">
-                      <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>特征提取结果</div>
-                      <div className="flex flex-col gap-8">
-                        <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏"
-                          empty={!pj(sel.style_fingerprint_json)}
-                          emptyHint="暂无风格指纹。请先提取特征。"
-                        >
-                          <StyleFingerprintEditor
-                            data={pj(sel.style_fingerprint_json)}
-                            onSave={d => saveAnalysisField("style_fingerprint_json", d)}
-                          />
-                        </Section>
-
-                        <Section title="叙事结构" subtitle="开篇 / 高潮 / 钩子 / 爽点"
-                          empty={!pj(sel.narrative_structure_json)}
-                          emptyHint="暂无叙事结构。请先提取特征。"
-                        >
-                          <NarrativeStructureEditor
-                            data={pj(sel.narrative_structure_json)}
-                            onSave={d => saveAnalysisField("narrative_structure_json", d)}
-                          />
-                        </Section>
-
-                        <Section title="剧情大纲" subtitle="梗概 / 主题 / 幕 / 关键事件">
-                          <PlotOutlineEditor
-                            data={pj(sel.plot_outline_json) as PlotOutline | null}
-                            onSave={d => saveAnalysisField("plot_outline_json", d)}
-                            onExtract={Boolean(sel.has_full_text) ? () => extractPlotOutline(sel.ref_id) : undefined}
-                            extracting={extractingPlot}
-                          />
-                        </Section>
-
-                        <Section title="提取角色" subtitle="姓名 / 对白 / 关系"
-                          empty={!pj(sel.extracted_characters_json)}
-                          emptyHint="暂无角色数据。请先提取特征。"
-                        >
-                          <CharactersEditor
-                            data={pj(sel.extracted_characters_json)}
-                            onSave={d => saveAnalysisField("extracted_characters_json", d)}
-                          />
-                        </Section>
-
-                        <Section title="节奏模板" subtitle="张力曲线 / 分段"
-                          empty={!pj(sel.rhythm_template_json)}
-                          emptyHint="暂无节奏数据。请先提取特征。"
-                        >
-                          <RhythmTemplateEditor
-                            data={pj(sel.rhythm_template_json)}
-                            onSave={d => saveAnalysisField("rhythm_template_json", d)}
-                          />
-                        </Section>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Entries */}
-                <div className="card">
-                  <div className="card-header">
-                    <h3>参考条目 ({entries.length})</h3>
-                    <button className="btn" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setShowAddEntry(true)}>
-                      + 添加
-                    </button>
-                  </div>
+                <div className="card mb-16">
                   <div className="card-body">
-                    {/* Add entry form */}
-                    {showAddEntry && (
-                      <div style={{
-                        padding: 12,
-                        borderRadius: "var(--radius-md)",
-                        background: "var(--bg-surface)",
-                        border: "1px solid var(--border)",
-                        marginBottom: 12,
-                      }}>
-                        <div className="flex gap-6 mb-8" style={{ flexWrap: "wrap" }}>
-                          <select className="select" value={eType} onChange={e => setEType(e.target.value)} style={{ flex: "0 0 140px" }}>
-                            {ENTRY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                          </select>
-                          <input className="input" placeholder="标题" value={eTitle} onChange={e => setETitle(e.target.value)} style={{ flex: 1 }} />
-                          <input className="input" placeholder="位置 (第3章/S1E05)" value={ePos} onChange={e => setEPos(e.target.value)} style={{ flex: "0 0 140px" }} />
-                        </div>
-                        <textarea
-                          className="input mb-8"
-                          placeholder="内容（原文摘录或你的描述）"
-                          value={eCont}
-                          onChange={e => setECont(e.target.value)}
-                          rows={3}
-                        />
-                        <textarea
-                          className="input mb-8"
-                          placeholder="个人笔记（可选）"
-                          value={eNotes}
-                          onChange={e => setENotes(e.target.value)}
-                          rows={2}
-                        />
-                        <div className="flex gap-6">
-                          <button className="btn-primary" onClick={addEntry} disabled={!eCont.trim()}>保存</button>
-                          <button className="btn" onClick={() => setShowAddEntry(false)}>取消</button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Entry list */}
-                    <div className="flex flex-col gap-6">
-                      {entries.map(e => (
-                        <div
-                          key={e.entry_id}
-                          style={{
-                            padding: "10px 12px",
-                            borderRadius: "var(--radius-sm)",
-                            background: "var(--bg-surface)",
-                            border: "1px solid var(--border)",
+                    <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>特征提取结果</div>
+                    <div className="flex flex-col gap-8">
+                      {/* 1. 剧情大纲 (with integrated segment workflow) */}
+                      <Section title="剧情大纲" subtitle="编年史格式 · 时间段 + 事件" defaultOpen>
+                        <PlotOutlinePanel
+                          refId={sel.ref_id}
+                          hasFullText={Boolean(sel.has_full_text)}
+                          preprocessingStatus={sel.preprocessing_status}
+                          plotOutline={pj(sel.plot_outline_json) as PlotOutline | null}
+                          onSavePlot={d => saveAnalysisField("plot_outline_json", d)}
+                          onAfterMerge={async () => {
+                            try {
+                              const w = await apiGet<ReferenceWork>(`/api/references/works/${sel.ref_id}`);
+                              setSel(w);
+                              setWorks(prev => prev.map(x => x.ref_id === w.ref_id ? w : x));
+                            } catch {}
                           }}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <span className="tag accent" style={{ marginRight: 6 }}>{e.entry_type}</span>
-                              <span style={{ fontWeight: 500, fontSize: 13, color: "var(--text-primary)" }}>{e.title || "(无标题)"}</span>
-                              {e.position_label && (
-                                <span className="text-xs text-muted" style={{ marginLeft: 6 }}>{e.position_label}</span>
-                              )}
-                            </div>
-                            <button className="btn-icon" style={{ fontSize: 14 }} onClick={() => delEntry(e.entry_id)}>
-                              &times;
-                            </button>
-                          </div>
-                          {e.content && (
-                            <div className="text-sm mt-6" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                              {e.content.length > 200 ? e.content.slice(0, 200) + "..." : e.content}
-                            </div>
-                          )}
-                          {e.user_notes && (
-                            <div className="text-xs mt-4" style={{ color: "var(--text-tertiary)", fontStyle: "italic" }}>
-                              {e.user_notes}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      {!entries.length && (
-                        <div className="text-xs text-muted text-center" style={{ padding: "16px 0" }}>
-                          暂无条目 &mdash; 点击上方「添加」记录你的感受
-                        </div>
-                      )}
+                          onRegenerateFromText={Boolean(sel.has_full_text) ? () => extractPlotOutline(sel.ref_id) : undefined}
+                          regenerating={extractingPlot}
+                        />
+                      </Section>
+
+                      {/* 2. 提取角色 */}
+                      <Section title="提取角色" subtitle="姓名 / 对白 / 关系"
+                        empty={!pj(sel.extracted_characters_json)}
+                        emptyHint="暂无角色数据。请先提取特征。"
+                        defaultOpen
+                      >
+                        <CharactersEditor
+                          data={pj(sel.extracted_characters_json)}
+                          onSave={d => saveAnalysisField("extracted_characters_json", d)}
+                        />
+                      </Section>
+
+                      {/* 3. 风格指纹 — collapsed by default */}
+                      <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏"
+                        empty={!pj(sel.style_fingerprint_json)}
+                        emptyHint="暂无风格指纹。请先提取特征。"
+                        defaultOpen={false}
+                      >
+                        <StyleFingerprintEditor
+                          data={pj(sel.style_fingerprint_json)}
+                          onSave={d => saveAnalysisField("style_fingerprint_json", d)}
+                        />
+                      </Section>
+
+                      {/* 4. 叙事结构 — collapsed by default */}
+                      <Section title="叙事结构" subtitle="开篇 / 高潮 / 钩子 / 爽点"
+                        empty={!pj(sel.narrative_structure_json)}
+                        emptyHint="暂无叙事结构。请先提取特征。"
+                        defaultOpen={false}
+                      >
+                        <NarrativeStructureEditor
+                          data={pj(sel.narrative_structure_json)}
+                          onSave={d => saveAnalysisField("narrative_structure_json", d)}
+                        />
+                      </Section>
+
+                      {/* 5. 节奏模板 — collapsed by default */}
+                      <Section title="节奏模板" subtitle="张力曲线 / 分段"
+                        empty={!pj(sel.rhythm_template_json)}
+                        emptyHint="暂无节奏数据。请先提取特征。"
+                        defaultOpen={false}
+                      >
+                        <RhythmTemplateEditor
+                          data={pj(sel.rhythm_template_json)}
+                          onSave={d => saveAnalysisField("rhythm_template_json", d)}
+                        />
+                      </Section>
                     </div>
                   </div>
                 </div>
               </div>
             ) : (
               <div className="empty-state" style={{ paddingTop: 80 }}>
-                <div className="empty-icon">&#x1F4DA;</div>
                 <h4>选择一部作品查看详情</h4>
                 <p>或点击上方添加新的参考作品</p>
               </div>
