@@ -103,7 +103,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   const [logDeactivated, setLogDeactivated] = useState<Set<string>>(new Set());
 
   // Active tab: "agents" | "learning"
-  const [activeTab, setActiveTab] = useState<"agents" | "learning">("agents");
+  const [activeTab, setActiveTab] = useState<"agents" | "learning" | "compare">("agents");
   // Expanded domain in agents tab
   const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
 
@@ -522,6 +522,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       <div style={{ display: "flex", gap: 0, marginBottom: 20, borderBottom: "2px solid var(--border-subtle)" }}>
         {([
           { key: "agents" as const, label: "智能体 & Skills", count: agentDomains.reduce((s, d) => s + d.agents.length, 0) },
+          { key: "compare" as const, label: "作品对比", count: 0 },
           { key: "learning" as const, label: "自学习成果", count: learningLog.length },
         ]).map(tab => (
           <button
@@ -759,6 +760,11 @@ export default function SkillsPage({ projects, activeProject }: Props) {
         </>
       )}
 
+      {/* ═══════════════════════ TAB: Compare Works ═══════════════════════ */}
+      {activeTab === "compare" && (
+        <CompareWorksPanel onSaved={() => { loadSkills(); setActiveTab("agents"); }} />
+      )}
+
       {/* ═══════════════════════ TAB: Self-Learning ═══════════════════════ */}
       {activeTab === "learning" && (
         <div className="card" style={{ borderLeft: "3px solid var(--purple)" }}>
@@ -976,6 +982,268 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                   点击「收集交互记录」按钮来分析该项目的AI对话历史
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ───────────────── Compare-Works → Draft Skill ───────────────── */
+
+interface WorkRow {
+  ref_id: string;
+  title: string;
+  creator?: string;
+  media_type?: string;
+}
+
+interface CompareDraft {
+  name: string;
+  display_name: string;
+  description: string;
+  prompt_template: string;
+  tags: string[];
+}
+
+interface CompareResponse {
+  draft: CompareDraft;
+  source_works: { ref_id: string; title: string }[];
+  focus: string;
+}
+
+const FOCUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "all",        label: "整体" },
+  { value: "plot",       label: "剧情大纲" },
+  { value: "characters", label: "角色塑造" },
+  { value: "settings",   label: "世界观设定" },
+  { value: "rhythm",     label: "叙事节奏" },
+  { value: "style",      label: "语言风格" },
+];
+
+function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
+  const [works, setWorks] = useState<WorkRow[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [focus, setFocus] = useState<string>("all");
+  const [instruction, setInstruction] = useState("");
+  const [searching, setSearching] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState<CompareDraft | null>(null);
+  const [sourceWorks, setSourceWorks] = useState<{ ref_id: string; title: string }[]>([]);
+
+  useEffect(() => {
+    apiGet<{ items: WorkRow[]; total: number }>("/api/references/works?limit=500")
+      .then(r => setWorks(r.items || []))
+      .catch(() => setWorks([]));
+  }, []);
+
+  const filtered = works.filter(w => {
+    if (!searching.trim()) return true;
+    const q = searching.toLowerCase();
+    return (w.title || "").toLowerCase().includes(q) ||
+           (w.creator || "").toLowerCase().includes(q);
+  });
+
+  const toggleWork = (refId: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(refId)) next.delete(refId);
+      else if (next.size < 8) next.add(refId);
+      return next;
+    });
+  };
+
+  const generate = async () => {
+    if (selected.size < 2) {
+      alert("请选择至少 2 部作品对比");
+      return;
+    }
+    setGenerating(true);
+    setDraft(null);
+    try {
+      const r = await apiPost<CompareResponse>(
+        "/api/skills/compare_works",
+        { ref_ids: Array.from(selected), focus, instruction },
+        { timeoutMs: 300_000 },
+      );
+      setDraft(r.draft);
+      setSourceWorks(r.source_works || []);
+    } catch (e: any) {
+      alert(`生成失败: ${e?.message || e}`);
+    } finally { setGenerating(false); }
+  };
+
+  const save = async () => {
+    if (!draft) return;
+    if (!draft.name.trim() || !draft.prompt_template.trim()) {
+      alert("请填写 name 和 prompt_template");
+      return;
+    }
+    setSaving(true);
+    try {
+      await apiPost("/api/skills/create", {
+        name: draft.name.trim(),
+        display_name: draft.display_name.trim() || draft.name.trim(),
+        description: draft.description.trim(),
+        domain: "learned_skills",
+        model_role: "default",
+        tags: draft.tags,
+        prompt_template: draft.prompt_template,
+      });
+      onSaved?.();
+      setDraft(null);
+      setSelected(new Set());
+    } catch (e: any) {
+      alert(`保存失败: ${e?.message || e}`);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
+        选择 2-8 部参考作品，AI 会对比它们的提取数据并生成一条可保存为 Skill 的洞察。Skill 保存后会出现在「智能体 & Skills」的「自学习」域，可被任何 agent 调用。
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        {/* LEFT: work picker */}
+        <div className="card">
+          <div className="card-header">
+            <h3>
+              选择作品
+              <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
+                {selected.size}/{Math.min(works.length, 8)} 已选 (最多 8)
+              </span>
+            </h3>
+          </div>
+          <div className="card-body">
+            <input
+              className="input"
+              placeholder="搜索标题 / 作者..."
+              value={searching}
+              onChange={e => setSearching(e.target.value)}
+              style={{ marginBottom: 8 }}
+            />
+            <div style={{ maxHeight: 380, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+              {filtered.length === 0 ? (
+                <div className="text-xs text-muted text-center" style={{ padding: 16 }}>
+                  无匹配作品
+                </div>
+              ) : filtered.map(w => {
+                const on = selected.has(w.ref_id);
+                return (
+                  <label key={w.ref_id} style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "8px 12px", cursor: "pointer",
+                    borderBottom: "1px solid var(--border)",
+                    background: on ? "var(--accent-subtle)" : "transparent",
+                  }}>
+                    <input
+                      type="checkbox" checked={on}
+                      onChange={() => toggleWork(w.ref_id)}
+                      style={{ width: 14, height: 14 }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="truncate" style={{ fontSize: 13, fontWeight: 600 }}>{w.title}</div>
+                      {w.creator && (
+                        <div className="text-xs text-muted truncate">{w.creator}</div>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT: focus + instruction + generate */}
+        <div className="card">
+          <div className="card-header"><h3>对比设置</h3></div>
+          <div className="card-body">
+            <div className="field" style={{ marginBottom: 12 }}>
+              <label className="label">关注维度</label>
+              <select className="select w-full" value={focus} onChange={e => setFocus(e.target.value)}>
+                {FOCUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div className="field" style={{ marginBottom: 12 }}>
+              <label className="label">额外指示（可选）</label>
+              <textarea
+                className="input" rows={3}
+                placeholder="例如：把对比结果包装成一个能指导 chapter director agent 选择 hook 类型的 skill"
+                value={instruction}
+                onChange={e => setInstruction(e.target.value)}
+              />
+            </div>
+            <button
+              className="btn-primary w-full"
+              onClick={generate}
+              disabled={generating || selected.size < 2}
+            >
+              {generating ? "AI 对比生成中..." : `生成对比 Skill (${selected.size} 部作品)`}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Draft preview */}
+      {draft && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-header">
+            <h3>
+              草稿 Skill
+              <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
+                来源：{sourceWorks.map(w => w.title).join(" · ")}
+              </span>
+            </h3>
+          </div>
+          <div className="card-body">
+            <div className="field" style={{ marginBottom: 10 }}>
+              <label className="label">技能名（snake_case，会创建 agents/learned_skills/&lt;name&gt;/）</label>
+              <input
+                className="input"
+                value={draft.name}
+                onChange={e => setDraft({ ...draft, name: e.target.value })}
+              />
+            </div>
+            <div className="field" style={{ marginBottom: 10 }}>
+              <label className="label">显示名</label>
+              <input
+                className="input"
+                value={draft.display_name}
+                onChange={e => setDraft({ ...draft, display_name: e.target.value })}
+              />
+            </div>
+            <div className="field" style={{ marginBottom: 10 }}>
+              <label className="label">描述</label>
+              <textarea
+                className="input" rows={2}
+                value={draft.description}
+                onChange={e => setDraft({ ...draft, description: e.target.value })}
+              />
+            </div>
+            <div className="field" style={{ marginBottom: 10 }}>
+              <label className="label">标签（逗号分隔）</label>
+              <input
+                className="input"
+                value={draft.tags.join("，")}
+                onChange={e => setDraft({ ...draft, tags: e.target.value.split(/[,，]/).map(s => s.trim()).filter(Boolean) })}
+              />
+            </div>
+            <div className="field" style={{ marginBottom: 14 }}>
+              <label className="label">Prompt 模板</label>
+              <textarea
+                className="input font-mono" rows={12}
+                style={{ fontSize: 12, lineHeight: 1.55 }}
+                value={draft.prompt_template}
+                onChange={e => setDraft({ ...draft, prompt_template: e.target.value })}
+              />
+            </div>
+            <div className="flex gap-8" style={{ justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setDraft(null)} disabled={saving}>丢弃</button>
+              <button className="btn" onClick={generate} disabled={saving || generating}>重新生成</button>
+              <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "保存中..." : "保存为 Skill"}</button>
             </div>
           </div>
         </div>

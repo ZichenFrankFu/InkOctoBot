@@ -15,7 +15,7 @@ import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
@@ -699,3 +699,172 @@ def _mock_learning_log() -> list[dict]:
             "created_at": "2026-03-10 16:45",
         },
     ]
+
+
+# ═══ Cross-work comparison → draft skill ═══════════════════
+
+class CompareWorksRequest(BaseModel):
+    ref_ids: list[str]
+    focus: str = "all"           # 'all' | 'characters' | 'plot' | 'rhythm' | 'settings'
+    instruction: str = ""        # optional user steer
+    prompt_override: Optional[str] = None  # per-call ephemeral override
+
+
+_COMPARE_PROMPT_DEFAULT = """你是创作技巧分析师。下面是 {n} 部参考作品的提取数据。
+请对比它们的 **{focus}** 特征，找出**共同模式**和**显著差异**，并提炼出一条可作为创作技巧 (Skill) 的洞察。
+
+要求：
+1. 先客观陈述共同模式（2-3 句），再陈述差异点（2-3 句），最后给出可操作的写作建议。
+2. 把它包装成一个**可重用的 Skill** — 一段 prompt 模板，里面带 {{user_input}} 占位符让后续调用可以传入新场景。
+
+{instruction_block}
+
+返回严格 JSON（不要 markdown 包装）：
+{{
+  "name": "snake_case_skill_name",
+  "display_name": "可读名称",
+  "description": "≤ 100 字描述这个 skill 解决什么问题",
+  "prompt_template": "完整 prompt 模板，包含 {{user_input}} 占位符",
+  "tags": ["对比", "学习", ...]
+}}
+
+作品数据：
+{bundle}
+"""
+
+
+@router.post("/compare_works")
+async def compare_works(body: CompareWorksRequest):
+    """Pull each work's extracted features, ask the AI to find common
+    patterns + differences, return a draft Skill object that the client
+    can review and then save via the existing /api/skills/create."""
+    from rag.reference_db import ReferenceDB
+    from ui.backend.app.settings import settings as _app_settings
+    from models.router import ModelRouter
+
+    if not body.ref_ids:
+        raise HTTPException(400, "请至少选择一部作品")
+    if len(body.ref_ids) > 8:
+        raise HTTPException(400, "一次最多对比 8 部作品")
+
+    try:
+        try:
+            from ui.backend.app.utils import load_repo_config, get_db_path
+            repo_cfg = load_repo_config(_app_settings.repo_root)
+            db_path = get_db_path(repo_cfg, _app_settings.repo_root)
+        except FileNotFoundError:
+            db_path = str(_app_settings.repo_root / "data" / "novels.db")
+        rdb = ReferenceDB(db_path)
+    except Exception as e:
+        raise HTTPException(500, f"打开参考库失败: {e}")
+
+    works: list[dict] = []
+    for rid in body.ref_ids:
+        w = rdb.get_work(rid)
+        if not w:
+            raise HTTPException(404, f"参考作品不存在: {rid}")
+        works.append(w)
+
+    def _pj(s: Optional[str]) -> Any:
+        if not s:
+            return None
+        try:
+            return json.loads(s)
+        except Exception:
+            return None
+
+    def _focused(w: dict) -> dict:
+        """Build a compact JSON bundle for one work, scoped to focus."""
+        out: dict[str, Any] = {
+            "title": w.get("title"),
+            "creator": w.get("creator"),
+            "genre": w.get("genre"),
+            "media_type": w.get("media_type"),
+        }
+        if body.focus in ("plot", "all"):
+            out["plot"] = _pj(w.get("plot_outline_json"))
+        if body.focus in ("characters", "all"):
+            out["characters"] = (_pj(w.get("extracted_characters_json")) or [])[:15]
+        if body.focus in ("settings", "all"):
+            out["settings"] = (_pj(w.get("settings_json")) or [])[:15]
+        if body.focus in ("rhythm", "all"):
+            rh = _pj(w.get("rhythm_json")) or {}
+            out["rhythm"] = {
+                "coverage": rh.get("coverage"),
+                "opening_pattern": rh.get("opening_pattern"),
+                "climax_positions": rh.get("climax_positions"),
+                "shuangdian": rh.get("shuangdian"),
+                "pacing_segments": rh.get("pacing_segments"),
+                # chapter_features can be huge; sample evenly
+                "chapter_features_sample": (rh.get("chapter_features") or [])[::5],
+            }
+        if body.focus in ("style", "all"):
+            out["style_fingerprint"] = _pj(w.get("style_fingerprint_json"))
+        return out
+
+    bundle = [{"ref_id": w["ref_id"], **_focused(w)} for w in works]
+    bundle_str = json.dumps(bundle, ensure_ascii=False, indent=2)
+    # Cap bundle size to keep prompt tractable
+    if len(bundle_str) > 60_000:
+        bundle_str = bundle_str[:60_000] + "\n[...截断]"
+
+    instruction_block = (
+        f"额外指示：{body.instruction.strip()}" if body.instruction.strip() else ""
+    )
+    focus_zh = {
+        "all": "整体（剧情/角色/设定/节奏/风格）",
+        "plot": "剧情大纲", "characters": "角色塑造",
+        "settings": "世界观设定", "rhythm": "叙事节奏",
+        "style": "语言风格",
+    }.get(body.focus, body.focus)
+
+    base = body.prompt_override or _COMPARE_PROMPT_DEFAULT
+    prompt = base.format(
+        n=len(works), focus=focus_zh,
+        instruction_block=instruction_block,
+        bundle=bundle_str,
+    )
+
+    try:
+        router_inst = ModelRouter()
+        raw = await router_inst.invoke(
+            role="reference_extractor", prompt=prompt,
+            max_tokens=2048, temperature=0.4,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"AI 对比调用失败: {e}")
+
+    # Strip markdown fences if present
+    import re as _re
+    s = (raw or "").strip()
+    fence = _re.match(r"^```(?:json)?\s*(.*?)\s*```$", s, _re.DOTALL)
+    if fence:
+        s = fence.group(1).strip()
+    a, b = s.find("{"), s.rfind("}")
+    if 0 <= a < b:
+        s = s[a:b+1]
+    try:
+        draft = json.loads(s)
+        if not isinstance(draft, dict):
+            raise ValueError("not an object")
+    except Exception as e:
+        raise HTTPException(502, f"AI 返回的 JSON 无法解析: {e}; raw={raw[:200]!r}")
+
+    # Default work-set tag for traceability
+    tags = list(draft.get("tags") or [])
+    if "对比" not in tags: tags.insert(0, "对比")
+    if "自学习" not in tags: tags.append("自学习")
+
+    return {
+        "draft": {
+            "name": str(draft.get("name") or f"compare_{int(time.time())}"),
+            "display_name": str(draft.get("display_name") or "作品对比"),
+            "description": str(draft.get("description") or ""),
+            "prompt_template": str(draft.get("prompt_template") or ""),
+            "tags": tags,
+        },
+        "source_works": [
+            {"ref_id": w["ref_id"], "title": w.get("title")} for w in works
+        ],
+        "focus": body.focus,
+    }
