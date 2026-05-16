@@ -187,6 +187,32 @@ class ModelRouter:
         )
         return resp.content
 
+    async def invoke_with_web_search(
+        self,
+        *,
+        role: str,
+        prompt: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> str:
+        """Like ``invoke`` but requires the resolved provider to expose
+        ``generate_with_web_search``. Raises NotImplementedError when the
+        configured provider/model doesn't support web search."""
+        provider = self._get_provider(role)
+        messages = [LLMMessage(role="user", content=prompt)]
+        resp = await provider.generate_with_web_search(
+            messages, temperature=temperature, max_tokens=max_tokens,
+        )
+        return resp.content
+
+    def resolve_role(self, role: str) -> tuple[str, str]:
+        """Return (provider_type, model_name) currently bound to ``role``.
+        Returns ("", "") if unbound."""
+        prov = self._get_provider(role)
+        if prov is None:
+            return ("", "")
+        return (prov.provider_type, prov.model_name)
+
     def estimate_cost(
         self, agent_role: str, input_tokens: int, output_tokens: int,
     ) -> float:

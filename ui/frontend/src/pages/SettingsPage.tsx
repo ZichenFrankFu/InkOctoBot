@@ -34,6 +34,13 @@ const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string
       { key: "analyzer", label: "分析器", desc: "文本分析与特征提取" },
     ],
   },
+  {
+    group: "参考作品数据库",
+    roles: [
+      { key: "reference_extractor", label: "参考作品分段提取", desc: "角色 / 设定 / 叙事 / 节奏（无 AI 时回退 NLP）" },
+      { key: "reference_web_search", label: "参考作品 AI 联网补全", desc: "元数据补全；需要支持 web search 的模型（如 Claude Sonnet 4 / GPT-4o）" },
+    ],
+  },
 ];
 
 // Flat list for backward compat

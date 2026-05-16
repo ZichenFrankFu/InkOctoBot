@@ -44,8 +44,8 @@ class ReferenceDB:
                    (ref_id,title,creator,media_type,genre,tags_json,source,
                     platform,novel_uid,file_path,user_rating,user_summary,
                     user_why_i_like,learning_dimensions_json,has_full_text,
-                    preprocessing_status)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    preprocessing_status,serial_status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (rid, title, kw.get("creator", ""), media_type,
                  kw.get("genre", ""),
                  json.dumps(kw.get("tags", []), ensure_ascii=False),
@@ -53,7 +53,8 @@ class ReferenceDB:
                  kw.get("file_path"), kw.get("user_rating"),
                  kw.get("user_summary"), kw.get("user_why_i_like"),
                  json.dumps(kw.get("learning_dimensions", []), ensure_ascii=False),
-                 int(kw.get("has_full_text", False)), pre))
+                 int(kw.get("has_full_text", False)), pre,
+                 kw.get("serial_status")))
             c.commit()
         return self.get_work(rid)  # type: ignore
 
@@ -112,7 +113,7 @@ class ReferenceDB:
             "preprocessing_status", "style_fingerprint_json",
             "narrative_structure_json", "extracted_characters_json",
             "rhythm_template_json", "plot_outline_json", "segments_json",
-            "settings_json", "file_path",
+            "settings_json", "serial_status", "file_path",
         }
         sets = ["updated_at=CURRENT_TIMESTAMP"]
         params: list[Any] = []

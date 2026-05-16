@@ -88,3 +88,44 @@ class AnthropicProvider(BaseLLMProvider):
     def estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
         prices = _PRICING.get(self.config.model_name, (0.003, 0.015))
         return (input_tokens / 1000 * prices[0]) + (output_tokens / 1000 * prices[1])
+
+    async def generate_with_web_search(
+        self, messages: list[LLMMessage], *,
+        temperature: float | None = None, max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Hosted ``web_search_20250305`` tool. Anthropic agents the search
+        loop server-side; the final text response is what we return."""
+        from .web_search_capabilities import supports_web_search
+        if not supports_web_search("anthropic", self.config.model_name):
+            raise NotImplementedError(
+                f"anthropic/{self.config.model_name} 暂未接入联网搜索"
+            )
+        sys_text, api_msgs = self._split(messages)
+        kw: dict[str, Any] = {
+            "model": self.config.model_name, "messages": api_msgs,
+            "max_tokens": max_tokens or self.config.max_tokens,
+            "temperature": temperature if temperature is not None else self.config.temperature,
+            "tools": [{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 5,
+            }],
+        }
+        if sys_text:
+            kw["system"] = sys_text
+        resp = await self._client.messages.create(**kw)
+        # Concatenate text blocks (skip tool_use / tool_result blocks)
+        parts: list[str] = []
+        for block in (resp.content or []):
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return LLMResponse(
+            content="".join(parts),
+            model=resp.model,
+            input_tokens=resp.usage.input_tokens,
+            output_tokens=resp.usage.output_tokens,
+            finish_reason=resp.stop_reason or "",
+            raw={"id": resp.id, "model": resp.model, "used_web_search": True},
+        )

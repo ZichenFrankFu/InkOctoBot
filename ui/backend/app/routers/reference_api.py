@@ -29,6 +29,9 @@ def _db():
 
 # ═══ Works ═══════════════════════════════════════════════
 
+_SERIAL_STATUS_VALUES = frozenset({"ongoing", "completed", "hiatus", "unknown"})
+
+
 class WorkCreate(BaseModel):
     title: str
     media_type: str = "web_novel"
@@ -41,6 +44,7 @@ class WorkCreate(BaseModel):
     user_why_i_like: Optional[str] = None
     learning_dimensions: list[str] = []
     has_full_text: bool = False
+    serial_status: Optional[str] = None
 
 
 class WorkUpdate(BaseModel):
@@ -53,6 +57,7 @@ class WorkUpdate(BaseModel):
     user_why_i_like: Optional[str] = None
     learning_dimensions: Optional[list[str]] = None
     tags: Optional[list[str]] = None
+    serial_status: Optional[str] = None
 
 
 @router.get("/works")
@@ -89,6 +94,8 @@ def get_work(ref_id: str):
 
 @router.post("/works")
 def create_work(body: WorkCreate):
+    if body.serial_status is not None and body.serial_status not in _SERIAL_STATUS_VALUES:
+        raise HTTPException(400, f"无效的 serial_status: {body.serial_status}")
     return _db().create_work(
         title=body.title, media_type=body.media_type, source=body.source,
         creator=body.creator, genre=body.genre, tags=body.tags,
@@ -96,6 +103,7 @@ def create_work(body: WorkCreate):
         user_why_i_like=body.user_why_i_like,
         learning_dimensions=body.learning_dimensions,
         has_full_text=body.has_full_text,
+        serial_status=body.serial_status,
     )
 
 
@@ -141,9 +149,12 @@ async def upload_text_for_work(ref_id: str, file: UploadFile = File(...)):
 
 @router.put("/works/{ref_id}")
 def update_work(ref_id: str, body: WorkUpdate):
+    if body.serial_status is not None and body.serial_status not in _SERIAL_STATUS_VALUES:
+        raise HTTPException(400, f"无效的 serial_status: {body.serial_status}")
     fields: dict = {}
     for k in ("title", "creator", "genre", "media_type",
-              "user_rating", "user_summary", "user_why_i_like"):
+              "user_rating", "user_summary", "user_why_i_like",
+              "serial_status"):
         v = getattr(body, k, None)
         if v is not None:
             fields[k] = v
@@ -615,3 +626,153 @@ async def _run_lora_training(body: LoRATrainRequest):
 @router.get("/lora/status")
 def lora_training_status():
     return _lora_status
+
+# ═══ AI metadata completion (web search) ═══════════════════
+
+_AI_COMPLETE_PROMPT = """请通过联网搜索查询以下 {media_type_zh}　的基本信息，并返回严格 JSON。
+
+标题：《{title}》
+{author_hint}
+
+请填写以下字段（找不到的字段保留空字符串/null，不要编造）：
+- creator: 作者全名（中文优先；电影/动漫/电视剧填导演或制作组）
+- genres: 题材标签列表，3-5 个，例如 ["都市", "异术超能", "穿越"]
+- serial_status: 作品状态，必须是 "ongoing"（连载中）/ "completed"（已完结）/ "hiatus"（停更）/ "unknown" 之一
+- summary: 一句话梗概，≤ 50 字
+
+只返回如下结构的 JSON 对象（不要 markdown 代码块）：
+{{"creator":"","genres":[],"serial_status":"unknown","summary":""}}
+"""
+
+_MEDIA_ZH = {
+    "web_novel": "网文小说", "literature": "文学作品", "poetry": "诗歌作品",
+    "film": "电影", "anime": "动漫", "tv_series": "电视剧", "other": "作品",
+}
+
+
+@router.get("/web_search/capability")
+def web_search_capability():
+    """Return whether the configured ``reference_web_search`` role's
+    provider+model is in the known web-search-capable set."""
+    try:
+        from models.router import ModelRouter
+        from models.web_search_capabilities import supports_web_search, describe
+        router_inst = ModelRouter()
+        provider, model = router_inst.resolve_role("reference_web_search")
+        enabled = supports_web_search(provider, model)
+        return {
+            "enabled": enabled,
+            "provider": provider, "model": model,
+            "reason": describe(provider, model),
+        }
+    except Exception as e:
+        return {
+            "enabled": False, "provider": "", "model": "",
+            "reason": f"加载模型路由失败：{e}",
+        }
+
+
+def _strip_json_blob(raw: str) -> str:
+    import re as _re
+    s = (raw or "").strip()
+    fence = _re.match(r"^```(?:json)?\s*(.*?)\s*```$", s, _re.DOTALL)
+    if fence:
+        s = fence.group(1).strip()
+    a = s.find("{")
+    b = s.rfind("}")
+    if 0 <= a < b:
+        s = s[a:b+1]
+    return s
+
+
+@router.post("/works/{ref_id}/ai_complete")
+async def ai_complete_work(ref_id: str):
+    """Use the configured ``reference_web_search`` model to fill in
+    metadata fields (creator/genre/serial_status/user_summary). Only
+    fills fields the user hasn't already set; user edits are preserved."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+
+    try:
+        from models.router import ModelRouter
+        from models.web_search_capabilities import supports_web_search, describe
+        router_inst = ModelRouter()
+        provider, model = router_inst.resolve_role("reference_web_search")
+    except Exception as e:
+        raise HTTPException(500, f"模型路由初始化失败：{e}")
+
+    if not supports_web_search(provider, model):
+        raise HTTPException(400, describe(provider, model))
+
+    author_hint = (
+        f"已知作者：{w['creator']}（可用作辅助检索；如有更准确的全名请覆盖）"
+        if w.get("creator") else "作者未知，请通过标题检索"
+    )
+    prompt = _AI_COMPLETE_PROMPT.format(
+        media_type_zh=_MEDIA_ZH.get(w.get("media_type", ""), "作品"),
+        title=w.get("title", ""),
+        author_hint=author_hint,
+    )
+
+    try:
+        raw = await router_inst.invoke_with_web_search(
+            role="reference_web_search", prompt=prompt,
+            max_tokens=1024, temperature=0.2,
+        )
+    except NotImplementedError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"联网调用失败：{e}")
+
+    try:
+        result = json.loads(_strip_json_blob(raw))
+        if not isinstance(result, dict):
+            raise ValueError("response is not a JSON object")
+    except Exception as e:
+        raise HTTPException(502, f"模型返回的 JSON 无法解析：{e}")
+
+    # Only fill empty fields (preserve user edits)
+    fields: dict = {}
+    updated_keys: list[str] = []
+
+    def _has(k: str) -> bool:
+        v = w.get(k)
+        return v not in (None, "", 0)
+
+    new_creator = (result.get("creator") or "").strip()
+    if new_creator and not _has("creator"):
+        fields["creator"] = new_creator; updated_keys.append("作者")
+
+    new_genres = result.get("genres") or []
+    if isinstance(new_genres, list) and not _has("genre"):
+        parts = [str(g).strip() for g in new_genres if str(g).strip()]
+        if parts:
+            fields["genre"] = "，".join(parts[:5])
+            updated_keys.append("题材")
+
+    new_serial = (result.get("serial_status") or "").strip().lower()
+    if new_serial in _SERIAL_STATUS_VALUES and not _has("serial_status"):
+        fields["serial_status"] = new_serial
+        updated_keys.append("连载状态")
+
+    new_summary = (result.get("summary") or "").strip()
+    if new_summary and not _has("user_summary"):
+        fields["user_summary"] = new_summary[:200]
+        updated_keys.append("一句话梗概")
+
+    if not fields:
+        return {
+            "work": w, "updated_keys": [],
+            "message": "已有字段均不为空，未做修改（如需重新生成请先清空字段）。",
+            "provider": provider, "model": model,
+            "raw_response": result,
+        }
+
+    updated = db.update_work(ref_id, **fields)
+    return {
+        "work": updated, "updated_keys": updated_keys,
+        "provider": provider, "model": model,
+        "raw_response": result,
+    }

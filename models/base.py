@@ -126,5 +126,24 @@ class BaseLLMProvider(abc.ABC):
         """Estimate cost in USD. Override for commercial providers."""
         return 0.0
 
+    async def generate_with_web_search(
+        self,
+        messages: list[LLMMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate a completion with web-search tool access.
+
+        Default raises NotImplementedError so capability is opt-in.
+        Anthropic and OpenAI providers override this to wire the hosted
+        web_search tool. Other providers fall through to NotImplementedError
+        which the router catches and surfaces as a clear capability error.
+        """
+        raise NotImplementedError(
+            f"{self.provider_type} 暂未接入联网搜索"
+        )
+
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} model={self.model_name}>"

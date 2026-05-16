@@ -14,6 +14,7 @@ import {
 } from "../components/reference/AnalysisEditors";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
+import { splitGenres } from "../utils/genre";
 
 const MEDIA_TYPES: { value: MediaType; label: string; color: string }[] = [
   { value: "web_novel", label: "网文", color: "var(--accent)" },
@@ -126,6 +127,22 @@ export default function ReferenceLibraryPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Pre-select a work from sessionStorage (set by ReferenceOverviewPage's
+  // "open details" button). Cleared after first use.
+  useEffect(() => {
+    if (sel || works.length === 0) return;
+    try {
+      const target = sessionStorage.getItem("ref_open_ref_id");
+      if (target) {
+        const match = works.find(w => w.ref_id === target);
+        if (match) {
+          setSel(match);
+          sessionStorage.removeItem("ref_open_ref_id");
+        }
+      }
+    } catch { /* sessionStorage may be unavailable; ignore */ }
+  }, [works, sel]);
 
   function selectWork(w: ReferenceWork) {
     setSel(w);
@@ -403,12 +420,24 @@ export default function ReferenceLibraryPage() {
                   <div className="truncate" style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)", marginBottom: 4 }}>
                     {w.title}
                   </div>
-                  <div className="flex items-center gap-6 text-xs" style={{ flexWrap: "wrap" }}>
+                  <div className="flex items-center gap-6 text-xs" style={{ flexWrap: "wrap", marginBottom: 2 }}>
                     {w.creator && <span className="text-muted truncate" style={{ maxWidth: 100 }}>{w.creator}</span>}
                     {w.user_rating ? <span style={{ color: "var(--gold)" }}>{stars(w.user_rating)}</span> : null}
                     <div style={{ flex: 1 }} />
                     {statusBadge(w.preprocessing_status)}
                   </div>
+                  {splitGenres(w.genre).length > 0 && (
+                    <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
+                      {splitGenres(w.genre).slice(0, 3).map(g => (
+                        <span key={g} className="tag" style={{
+                          fontSize: 10, padding: "1px 6px",
+                          background: "var(--bg-surface)",
+                          color: "var(--text-secondary)",
+                          border: "1px solid var(--border)",
+                        }}>{g}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
