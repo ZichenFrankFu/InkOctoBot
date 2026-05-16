@@ -350,6 +350,10 @@ class SegmentRunRequest(BaseModel):
     segment_index: int
     segment_chars: Optional[int] = None
     use_ai: bool = True
+    # Route the AI calls through the reference_web_search role so the
+    # model can use web search to verify its extraction against the
+    # real-world publication (reduces hallucinations on well-known works).
+    use_web_search: bool = False
     # Per-call prompt overrides — keys are registry keys ("reference.characters",
     # "reference.settings", "reference.rhythm"). Values are full prompt text.
     # Not persisted; affects this call only.
@@ -375,6 +379,7 @@ async def preview_segment(ref_id: str, body: SegmentRunRequest):
             ref_id, body.segment_index,
             segment_chars=body.segment_chars,
             use_ai=body.use_ai,
+            use_web_search=body.use_web_search,
             prompt_overrides=body.prompt_overrides,
         )
         if "error" in result and len(result) <= 2:
@@ -419,6 +424,7 @@ async def run_segment(ref_id: str, body: SegmentRunRequest):
             ref_id, body.segment_index,
             segment_chars=body.segment_chars,
             use_ai=body.use_ai,
+            use_web_search=body.use_web_search,
             prompt_overrides=body.prompt_overrides,
         )
     except ValueError as e:

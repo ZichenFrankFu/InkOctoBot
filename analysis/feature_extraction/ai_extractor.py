@@ -151,11 +151,32 @@ def _strip_json(raw: str) -> str:
     return s
 
 
-async def _invoke(router: Any, prompt: str, *, max_tokens: int = 4096) -> str:
-    raw = await router.invoke(
-        role=_ROLE, prompt=prompt,
-        max_tokens=max_tokens, temperature=0.2,
-    )
+_WEB_VERIFY_HINT = (
+    "如果你具备联网搜索能力，请优先使用搜索结果对你抽取出的事实"
+    "（角色姓名、设定名称、关键事件、时间线）进行验证；对于不能验证、"
+    "或与文本表面信息相矛盾的项，**宁可留空也不要编造**。"
+)
+
+
+async def _invoke(router: Any, prompt: str, *,
+                    max_tokens: int = 4096,
+                    use_web_search: bool = False) -> str:
+    """Single entry-point for AI calls. When ``use_web_search`` is True we
+    route to the ``reference_web_search`` role and use the provider's
+    ``generate_with_web_search`` path; otherwise the regular
+    ``reference_extractor`` invoke. The hint is prepended so the model
+    knows to cross-check facts when web search is available."""
+    if use_web_search:
+        full_prompt = f"{_WEB_VERIFY_HINT}\n\n{prompt}"
+        raw = await router.invoke_with_web_search(
+            role="reference_web_search", prompt=full_prompt,
+            max_tokens=max_tokens, temperature=0.2,
+        )
+    else:
+        raw = await router.invoke(
+            role=_ROLE, prompt=prompt,
+            max_tokens=max_tokens, temperature=0.2,
+        )
     return raw or ""
 
 
@@ -177,7 +198,8 @@ def _parse_obj(raw: str) -> dict:
 
 
 async def ai_extract_characters(chapters: list[dict], router: Any,
-                                   *, prompt_override: str | None = None) -> list[dict]:
+                                   *, prompt_override: str | None = None,
+                                   use_web_search: bool = False) -> list[dict]:
     """Returns list of {name, mentions, intro, speech_samples, first_seen_at}.
     appearance_chapters / appearance_word_count are filled in by the caller
     after intersecting with chapter texts (rule-based, deterministic)."""
@@ -187,7 +209,7 @@ async def ai_extract_characters(chapters: list[dict], router: Any,
         "reference.characters", override=prompt_override,
         n_chapters=len(chapters), n_chars=nchars, text=text,
     )
-    raw = await _invoke(router, prompt)
+    raw = await _invoke(router, prompt, use_web_search=use_web_search)
     items = _parse_list(raw)
     out: list[dict] = []
     for it in items:
@@ -206,7 +228,8 @@ async def ai_extract_characters(chapters: list[dict], router: Any,
 
 
 async def ai_extract_settings(chapters: list[dict], router: Any,
-                                *, prompt_override: str | None = None) -> list[dict]:
+                                *, prompt_override: str | None = None,
+                                use_web_search: bool = False) -> list[dict]:
     """Returns list of {category, title, content, hidden, first_introduced_at}."""
     from analysis.feature_extraction.prompts import render
     text, nchars = _build_segment_text(chapters)
@@ -214,7 +237,7 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
         "reference.settings", override=prompt_override,
         n_chapters=len(chapters), n_chars=nchars, text=text,
     )
-    raw = await _invoke(router, prompt)
+    raw = await _invoke(router, prompt, use_web_search=use_web_search)
     items = _parse_list(raw)
     valid_cats = {"power_system", "factions", "geography", "social_rules",
                   "history", "hard_rules", "worldview", "other"}
@@ -288,7 +311,8 @@ _CHAPTER_TYPES_VALID = frozenset({
 
 
 async def ai_extract_rhythm_v2(chapters: list[dict], router: Any,
-                                  *, prompt_override: str | None = None) -> dict:
+                                  *, prompt_override: str | None = None,
+                                  use_web_search: bool = False) -> dict:
     """Single AI call that produces the consolidated rhythm_json shape
     (replaces ai_extract_narrative + ai_extract_rhythm)."""
     from analysis.feature_extraction.prompts import render
@@ -297,7 +321,7 @@ async def ai_extract_rhythm_v2(chapters: list[dict], router: Any,
         "reference.rhythm", override=prompt_override,
         n_chapters=len(chapters), text=text,
     )
-    raw = await _invoke(router, prompt, max_tokens=4096)
+    raw = await _invoke(router, prompt, max_tokens=4096, use_web_search=use_web_search)
     obj = _parse_obj(raw)
 
     valid_openings = {"in_medias_res", "dialogue_open", "worldbuilding", "character_intro"}

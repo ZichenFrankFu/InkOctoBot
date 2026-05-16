@@ -583,47 +583,122 @@ export function CharactersEditor({ data, onSave }: { data: CharacterItem[] | nul
   }
 
   return (
-    <CharactersReadOnlyList list={list} onEdit={start} />
+    <CharactersReadOnlyList
+      list={list}
+      onEdit={start}
+      onSaveOne={async (idx, next) => {
+        const updated = [...(data || [])];
+        updated[idx] = next;
+        await onSave(updated);
+      }}
+    />
   );
 }
 
-function CharactersReadOnlyList({ list, onEdit }: { list: CharacterItem[]; onEdit: () => void }) {
+function CharactersReadOnlyList({
+  list, onEdit, onSaveOne,
+}: {
+  list: CharacterItem[];
+  onEdit: () => void;
+  onSaveOne?: (originalIndex: number, next: CharacterItem) => Promise<void> | void;
+}) {
   const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  // Per-card inline edit state: original-list index of the char being
+  // edited + a working draft. Editing one card leaves the rest untouched.
+  const [cardEdit, setCardEdit] = useState<{ idx: number; draft: CharacterItem } | null>(null);
+  const [cardSaving, setCardSaving] = useState(false);
   const INITIAL = 5;
 
-  // Defensive sort on the client too: protagonist tags first, then by
-  // appearance_chapters desc, then mentions desc. (The backend sorts on
-  // merge, but legacy data + per-segment previews benefit from this.)
+  // Sort with protagonist tags first, then by appearance_chapters desc,
+  // then mentions desc. We pair each item with its original index so
+  // per-card edits can write back to the right slot.
   const _ROLE_ORDER: Record<string, number> = {
     主角: 0, 女主角: 1, 反派: 2,
     男配: 3, 女配: 3, 师长: 3,
     重要配角: 4, 路人: 8, 其他: 9, "": 9,
   };
-  const sorted = [...list].sort((a, b) => {
-    const ra = _ROLE_ORDER[a.role_tag || ""] ?? 9;
-    const rb = _ROLE_ORDER[b.role_tag || ""] ?? 9;
+  const sortedWithIdx = list.map((c, idx) => ({ c, idx })).sort((a, b) => {
+    const ra = _ROLE_ORDER[a.c.role_tag || ""] ?? 9;
+    const rb = _ROLE_ORDER[b.c.role_tag || ""] ?? 9;
     if (ra !== rb) return ra - rb;
-    const apA = a.appearance_chapters || 0;
-    const apB = b.appearance_chapters || 0;
+    const apA = a.c.appearance_chapters || 0;
+    const apB = b.c.appearance_chapters || 0;
     if (apA !== apB) return apB - apA;
-    return (b.mentions || 0) - (a.mentions || 0);
+    return (b.c.mentions || 0) - (a.c.mentions || 0);
   });
-  const visible = showAll ? sorted : sorted.slice(0, INITIAL);
+  const visible = showAll ? sortedWithIdx : sortedWithIdx.slice(0, INITIAL);
+
+  const saveCard = async () => {
+    if (!cardEdit || !onSaveOne) return;
+    setCardSaving(true);
+    try {
+      await onSaveOne(cardEdit.idx, cardEdit.draft);
+      setCardEdit(null);
+    } finally { setCardSaving(false); }
+  };
 
   return (
     <div>
       <div className="flex flex-col gap-6" style={{ marginBottom: 12 }}>
         {list.length === 0 && <div className="text-xs text-muted text-center" style={{ padding: 8 }}>暂无角色</div>}
-        {visible.map((c, i) => {
-          const isOpen = !!expanded[i];
+        {visible.map(({ c, idx }) => {
+          const isOpen = !!expanded[idx];
           const hasSpeech = (c.speech_samples || []).length > 0;
+          const isInline = cardEdit?.idx === idx;
+          if (isInline) {
+            const ed = cardEdit!.draft;
+            const patch = (p: Partial<CharacterItem>) => setCardEdit({ idx, draft: { ...ed, ...p } });
+            return (
+              <div key={idx} style={{
+                border: "1px solid var(--accent)", borderRadius: 4,
+                padding: 10, background: "var(--bg-card)",
+              }}>
+                <div className="flex gap-6" style={{ marginBottom: 6 }}>
+                  <input className="input" placeholder="姓名" value={ed.name}
+                    onChange={e => patch({ name: e.target.value })}
+                    style={{ flex: 1, fontSize: 12 }} />
+                  <select className="select" value={ed.role_tag || ""}
+                    onChange={e => patch({ role_tag: e.target.value as CharacterRoleTag })}
+                    style={{ flex: "0 0 130px" }} title="角色定位">
+                    <option value="">（未标注）</option>
+                    {(["主角","女主角","反派","男配","女配","师长","重要配角","路人","其他"] as const).map(rt =>
+                      <option key={rt} value={rt}>{rt}</option>)}
+                  </select>
+                </div>
+                <input className="input" placeholder="首次出场时间锚点"
+                  value={ed.first_seen_at || ""}
+                  onChange={e => patch({ first_seen_at: e.target.value })}
+                  style={{ marginBottom: 6, fontSize: 12 }} />
+                <textarea className="input" rows={3}
+                  placeholder="角色简介（身份 / 能力 / 关键设定，1-3 句）"
+                  value={ed.intro || ""}
+                  onChange={e => patch({ intro: e.target.value })}
+                  style={{ marginBottom: 6, fontSize: 12 }} />
+                <textarea className="input" rows={2}
+                  placeholder="对白样本（每行一条）"
+                  value={(ed.speech_samples || []).join("\n")}
+                  onChange={e => patch({
+                    speech_samples: e.target.value.split("\n").map(s => s.trim()).filter(Boolean),
+                  })}
+                  style={{ marginBottom: 6, fontSize: 12 }} />
+                <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
+                  <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                          onClick={() => setCardEdit(null)} disabled={cardSaving}>取消</button>
+                  <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
+                          onClick={saveCard} disabled={cardSaving}>
+                    {cardSaving ? "保存中..." : "保存"}
+                  </button>
+                </div>
+              </div>
+            );
+          }
           return (
-            <div key={i} style={{ border: "1px solid var(--border)", borderRadius: 4 }}>
+            <div key={idx} className="ref-card-row" style={{ border: "1px solid var(--border)", borderRadius: 4 }}>
               <button
                 className="btn-ghost w-full"
                 style={{ justifyContent: "space-between", padding: "8px 10px", borderRadius: 0, fontWeight: 500, textAlign: "left" }}
-                onClick={() => setExpanded(prev => ({ ...prev, [i]: !prev[i] }))}
+                onClick={() => setExpanded(prev => ({ ...prev, [idx]: !prev[idx] }))}
                 disabled={!hasSpeech && !c.intro}
               >
                 <span style={{ flex: 1, minWidth: 0 }}>
@@ -661,6 +736,21 @@ function CharactersReadOnlyList({ list, onEdit }: { list: CharacterItem[]; onEdi
                   <span className="text-xs text-muted" style={{ transition: "transform 0.15s", transform: isOpen ? "rotate(180deg)" : "none", display: "inline-block", marginLeft: 6 }}>&#x25BC;</span>
                 )}
               </button>
+              {onSaveOne && (
+                <button
+                  className="ref-inline-edit"
+                  onClick={(e) => { e.stopPropagation(); setCardEdit({ idx, draft: { ...c } }); }}
+                  title="单独编辑这个角色"
+                  aria-label="单独编辑这个角色"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" strokeWidth="2"
+                       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                  </svg>
+                </button>
+              )}
               {isOpen && (
                 <div style={{ padding: "0 10px 10px" }}>
                   {c.intro && (
@@ -1289,19 +1379,20 @@ export function PlotOutlineEditor({
                                     title="点击展开隐藏的真相"
                                   >[隐] 展开</button>
                                 )}
-                                <button
-                                  className="btn-ghost ref-event-edit"
-                                  onClick={() => startEventEdit(ei, pi, evi, ev)}
-                                  title="单独编辑这条事件"
-                                  style={{
-                                    marginLeft: 6, padding: "1px 7px", fontSize: 10,
-                                    borderRadius: 3,
-                                    color: "var(--text-tertiary)",
-                                    background: "transparent",
-                                    border: "1px solid var(--border)",
-                                  }}
-                                >编辑</button>
                               </div>
+                              <button
+                                className="ref-inline-edit"
+                                onClick={() => startEventEdit(ei, pi, evi, ev)}
+                                title="编辑这条事件"
+                                aria-label="编辑这条事件"
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                     stroke="currentColor" strokeWidth="2"
+                                     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                  <path d="M12 20h9" />
+                                  <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                                </svg>
+                              </button>
                               {ev.hidden && showHidden && (
                                 <div style={{ fontSize: 12, lineHeight: 1.6, marginTop: 2, color: "var(--gold)" }}>
                                   <span

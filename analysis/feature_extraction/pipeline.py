@@ -13,6 +13,31 @@ from typing import Any
 logger = logging.getLogger("inkoctobot.analysis.feature_extraction.pipeline")
 
 
+def _diagnose_ai_error(e: Exception) -> str:
+    """Translate a raw exception from the LLM call into an actionable hint
+    the user can act on without reading a stack trace. Empty string when no
+    hint applies."""
+    cls = type(e).__name__
+    msg = str(e).lower()
+    if cls in ("ConnectionError", "ConnectError", "ReadTimeout", "ConnectTimeout"):
+        return "无法连接到模型服务，请检查 Ollama 是否运行或网络连接"
+    if "connection" in msg or "refused" in msg or "11434" in msg:
+        return "Ollama 服务可能未启动（默认端口 11434）；运行 `ollama serve` 后重试"
+    if ("api key" in msg or "apikey" in msg or "api_key" in msg
+            or "unauthorized" in msg or "401" in msg or "invalid_api_key" in msg
+            or cls == "AuthenticationError"):
+        return "API Key 未配置或无效，请到「设置 → 模型供应商」检查"
+    if "not found" in msg and "model" in msg:
+        return "所配置的模型名不存在；请到「设置 → 模型供应商」选择已安装的模型"
+    if "rate limit" in msg or "rate_limit" in msg or cls == "RateLimitError":
+        return "请求频率过高被服务商限流，请稍后重试"
+    if cls == "JSONDecodeError" or "json" in msg and ("expecting" in msg or "decode" in msg):
+        return "模型返回的内容不是合法 JSON；可在「设置 → LLM Prompt」中加严输出格式约束"
+    if cls in ("ModuleNotFoundError", "ImportError"):
+        return "依赖缺失，请在服务器侧 pip install 对应 SDK（如 openai/anthropic）"
+    return ""
+
+
 def _enrich_characters_with_appearance(chars: list[dict], chapters: list[dict]) -> list[dict]:
     """For each character returned by the AI extractor, compute deterministic
     appearance_chapters / appearance_word_count by scanning chapter content,
@@ -309,6 +334,7 @@ class FeatureExtractionPipeline:
     async def compute_segment(self, ref_id: str, segment_index: int,
                                 segment_chars: int | None = None,
                                 use_ai: bool = True,
+                                use_web_search: bool = False,
                                 prompt_overrides: dict[str, str] | None = None) -> dict[str, Any]:
         """Extract features for one segment but DO NOT persist anything.
 
@@ -368,7 +394,12 @@ class FeatureExtractionPipeline:
                 from models.router import ModelRouter
                 router = ModelRouter()
             except Exception as e:
-                warnings.append(f"AI 不可用（{e}），所有项回退到 NLP")
+                detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
+                hint = _diagnose_ai_error(e)
+                msg = f"AI 不可用，所有项回退 NLP · {detail}"
+                if hint:
+                    msg += f" · 提示：{hint}"
+                warnings.append(msg)
 
         ai_methods_used: list[str] = []
         ai_methods_fallback: list[str] = []
@@ -376,21 +407,28 @@ class FeatureExtractionPipeline:
         async def _ai_or_nlp(name: str, ai_fn, nlp_fn, *, prompt_key: str | None = None):
             """Try AI; on failure, fall back to NLP and record a warning.
             When prompt_key is set, the per-call override (if any) is
-            passed through to the AI extractor as `prompt_override`."""
+            passed through to the AI extractor as `prompt_override`.
+            When the segment-level use_web_search flag is set, the call
+            is routed through the reference_web_search role."""
             if router is None:
                 ai_methods_fallback.append(name)
                 return nlp_fn()
             try:
                 override = (prompt_overrides or {}).get(prompt_key) if prompt_key else None
+                kw: dict[str, Any] = {"use_web_search": use_web_search}
                 if override is not None:
-                    result = await ai_fn(seg_chapters, router, prompt_override=override)
-                else:
-                    result = await ai_fn(seg_chapters, router)
+                    kw["prompt_override"] = override
+                result = await ai_fn(seg_chapters, router, **kw)
                 ai_methods_used.append(name)
                 return result
             except Exception as e:
                 logger.warning("[ai_extractor] %s failed (%s); falling back to NLP", name, e)
-                warnings.append(f"{name}: AI 失败 → NLP（{type(e).__name__}）")
+                detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
+                hint = _diagnose_ai_error(e)
+                msg = f"{name}: AI 失败 → 回退 NLP · {detail}"
+                if hint:
+                    msg += f" · 提示：{hint}"
+                warnings.append(msg)
                 ai_methods_fallback.append(name)
                 return nlp_fn()
 
@@ -416,16 +454,21 @@ class FeatureExtractionPipeline:
             if router is not None:
                 try:
                     settings_override = (prompt_overrides or {}).get("reference.settings")
+                    kw: dict[str, Any] = {"use_web_search": use_web_search}
                     if settings_override is not None:
-                        settings_items = await ai_extractor.ai_extract_settings(
-                            seg_chapters, router, prompt_override=settings_override,
-                        )
-                    else:
-                        settings_items = await ai_extractor.ai_extract_settings(seg_chapters, router)
+                        kw["prompt_override"] = settings_override
+                    settings_items = await ai_extractor.ai_extract_settings(
+                        seg_chapters, router, **kw,
+                    )
                     ai_methods_used.append("settings")
                 except Exception as e:
                     logger.warning("[ai_extractor] settings failed: %s", e)
-                    warnings.append(f"settings: AI 失败（{type(e).__name__}），返回空")
+                    detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
+                    hint = _diagnose_ai_error(e)
+                    msg = f"settings: AI 失败，返回空 · {detail}"
+                    if hint:
+                        msg += f" · 提示：{hint}"
+                    warnings.append(msg)
                     ai_methods_fallback.append("settings")
             else:
                 ai_methods_fallback.append("settings")
@@ -555,11 +598,12 @@ class FeatureExtractionPipeline:
     async def run_segment(self, ref_id: str, segment_index: int,
                             segment_chars: int | None = None,
                             use_ai: bool = True,
+                            use_web_search: bool = False,
                             prompt_overrides: dict[str, str] | None = None) -> dict[str, Any]:
         """Compute + persist in one call (kept for backwards compat)."""
         result = await self.compute_segment(
             ref_id, segment_index, segment_chars=segment_chars, use_ai=use_ai,
-            prompt_overrides=prompt_overrides,
+            use_web_search=use_web_search, prompt_overrides=prompt_overrides,
         )
         if "error" in result and len(result) <= 2:
             return {"ref_id": ref_id, **result}

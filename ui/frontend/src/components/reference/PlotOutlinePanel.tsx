@@ -68,6 +68,8 @@ export default function PlotOutlinePanel({
   const { toast } = useToast();
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
+  const [useWebSearch, setUseWebSearch] = useState(false);
+  const [webSearchCap, setWebSearchCap] = useState<{ enabled: boolean; reason: string; provider: string; model: string } | null>(null);
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const [preview, setPreview] = useState<SegmentResult | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -95,6 +97,17 @@ export default function PlotOutlinePanel({
   }, [refId, hasFullText]);
 
   useEffect(() => { loadPlan(); }, [loadPlan]);
+
+  // Capability probe so we can disable the web-search toggle with a
+  // useful tooltip when the user hasn't configured a search-capable model.
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ enabled: boolean; reason: string; provider: string; model: string }>(
+      "/api/references/web_search/capability",
+    ).then(r => { if (!cancelled) setWebSearchCap(r); })
+     .catch(() => { /* no-op; toggle stays disabled */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const total = plan?.segments.length || 0;
   const completed = new Set(plan?.completed || []);
@@ -128,8 +141,8 @@ export default function PlotOutlinePanel({
     try {
       const r = await apiPost<SegmentResult>(
         `/api/references/works/${refId}/segments/preview`,
-        { segment_index: idx, use_ai: true },
-        { timeoutMs: 600_000 },
+        { segment_index: idx, use_ai: true, use_web_search: useWebSearch && !!webSearchCap?.enabled },
+        { timeoutMs: 900_000 },
       );
       setPreview(r);
       setChatMessages([]);
@@ -230,6 +243,32 @@ export default function PlotOutlinePanel({
               </div>
             </div>
             <div className="flex items-center gap-8" style={{ flexWrap: "wrap" }}>
+              <label
+                className="flex items-center gap-6"
+                style={{
+                  fontSize: 11,
+                  cursor: webSearchCap?.enabled ? "pointer" : "not-allowed",
+                  color: webSearchCap?.enabled ? "var(--text-secondary)" : "var(--text-tertiary)",
+                  padding: "3px 8px",
+                  borderRadius: 3,
+                  border: `1px solid ${useWebSearch && webSearchCap?.enabled ? "var(--accent)" : "var(--border)"}`,
+                  background: useWebSearch && webSearchCap?.enabled ? "var(--accent-subtle)" : "transparent",
+                }}
+                title={
+                  webSearchCap?.enabled
+                    ? `开启后 AI 会用 ${webSearchCap.provider}/${webSearchCap.model} 联网验证抽取结果，降低幻觉。`
+                    : (webSearchCap?.reason || "未配置联网模型；请到「设置 → Pipeline 配置 → 参考作品 AI 联网补全」选择支持 web search 的模型")
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={useWebSearch && !!webSearchCap?.enabled}
+                  onChange={e => setUseWebSearch(e.target.checked)}
+                  disabled={!webSearchCap?.enabled}
+                  style={{ width: 13, height: 13 }}
+                />
+                AI 联网验证
+              </label>
               {doneCount > 0 && !allDone && (
                 <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }} onClick={reset} disabled={committing || merging}>
                   重置
@@ -339,8 +378,22 @@ export default function PlotOutlinePanel({
                         </div>
                       </div>
                       {preview.warnings && preview.warnings.length > 0 && (
-                        <div className="text-xs" style={{ color: "var(--gold)", marginBottom: 6 }}>
-                          {preview.warnings.join("; ")}
+                        <div style={{
+                          padding: "8px 10px",
+                          marginBottom: 8,
+                          background: "var(--bg-surface)",
+                          border: "1px solid var(--gold)",
+                          borderRadius: 4,
+                          fontSize: 11,
+                          color: "var(--gold)",
+                          lineHeight: 1.55,
+                        }}>
+                          <div style={{ fontWeight: 600, marginBottom: 4 }}>AI 提取警告</div>
+                          <ul style={{ margin: 0, paddingLeft: 16 }}>
+                            {preview.warnings.map((w, i) => (
+                              <li key={i} style={{ marginBottom: 2 }}>{w}</li>
+                            ))}
+                          </ul>
                         </div>
                       )}
                       {preview.errors && preview.errors.length > 0 && (
