@@ -398,6 +398,49 @@ def reset_segment_plan(ref_id: str):
     return {"ok": True}
 
 
+class SegmentTitleUpdate(BaseModel):
+    title: str
+
+
+@router.patch("/works/{ref_id}/segments/{index}/title")
+def rename_segment_title(ref_id: str, index: int, body: SegmentTitleUpdate):
+    """Rename a single segment title in-place (does NOT reset completion).
+    Used for inline title edits in the timeline — "第 1–8 章" → "1954 年"."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        return pipe.rename_segment_title(ref_id, index, body.title)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"重命名失败: {e}")
+
+
+@router.get("/works/{ref_id}/segments/plan/auto_suggest")
+def auto_suggest_plan(ref_id: str):
+    """Return an auto-detected plan (volume markers OR ~100k-char chunks)
+    WITHOUT persisting it. The UI uses this as the source for the
+    「自动检测分卷」 button; the user can then save it as their custom
+    plan via the regular PUT endpoint."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        return pipe.suggest_auto_plan(ref_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"自动检测失败: {e}")
+
+
+
 class SegmentRunRequest(BaseModel):
     segment_index: int
     segment_chars: Optional[int] = None

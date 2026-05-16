@@ -115,3 +115,7 @@ export function apiPut<T>(path: string, body: any, opts?: { timeoutMs?: number }
 export function apiDelete<T>(path: string): Promise<T> {
   return request<T>(path, { method: "DELETE" });
 }
+
+export function apiPatch<T>(path: string, body: any, opts?: { timeoutMs?: number }): Promise<T> {
+  return request<T>(path, { method: "PATCH", body: JSON.stringify(body ?? {}), ...opts });
+}

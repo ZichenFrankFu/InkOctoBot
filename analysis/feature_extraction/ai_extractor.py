@@ -130,24 +130,58 @@ def _build_segment_text(chapters: list[dict]) -> tuple[str, int]:
 
 
 def _strip_json(raw: str) -> str:
-    """Strip markdown fences / preambles from an LLM response."""
-    s = raw.strip()
-    # Remove ```json ... ``` or ``` ... ```
+    """Extract a JSON payload from an LLM response.
+
+    Handles:
+      - DeepSeek R1 / OpenAI o1 / Qwen-thinking style ``<think>…</think>``
+        reasoning blocks emitted before the answer (sometimes the closing
+        tag is dropped — we also handle a lone leading ``<think>`` by
+        skipping past it to the first JSON delimiter).
+      - markdown ``` fences (``` or ```json ... ```).
+      - free text preceding or trailing the JSON object/array — we lock
+        onto the first ``[``/``{`` and trim back to the last ``]``/``}``.
+    """
+    s = (raw or "").strip()
+
+    # 1) Strip reasoning-token blocks.
+    s = re.sub(r"<think>.*?</think>", "", s, flags=re.DOTALL | re.IGNORECASE).strip()
+    # If a lone <think> opened but never closed, just delete the tag so
+    # the JSON-locator below can still find the payload.
+    s = re.sub(r"<think>", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"</think>", "", s, flags=re.IGNORECASE).strip()
+
+    # 2) Strip a ```...``` fence if the WHOLE response is wrapped in one.
     fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", s, re.DOTALL)
     if fence:
         s = fence.group(1).strip()
-    # If model produced text before the JSON, try to find the first { or [
+    # Also handle a partial fence (model started a fence but didn't close).
+    inner = re.search(r"```(?:json)?\s*(.+)$", s, re.DOTALL)
+    if inner and not s.startswith("[") and not s.startswith("{"):
+        s = inner.group(1).strip()
+        # If a closing fence appears in the captured body, trim there.
+        end = s.find("```")
+        if end > 0:
+            s = s[:end].strip()
+
+    # 3) Lock onto the earliest JSON start (no 200-char cap — reasoning
+    #    prefixes can be much longer than that).
+    earliest = -1
     for ch in "[{":
         idx = s.find(ch)
-        if idx > 0 and idx < 200:
-            s = s[idx:]
-            break
-    # Trim trailing junk after last } or ]
+        if idx >= 0 and (earliest < 0 or idx < earliest):
+            earliest = idx
+    if earliest > 0:
+        s = s[earliest:]
+
+    # 4) Trim back to the last closing delimiter (last ] or last }).
+    last = -1
     for ch in "}]":
         idx = s.rfind(ch)
-        if idx >= 0:
-            s = s[: idx + 1]
-            break
+        if idx > last:
+            last = idx
+    if last >= 0:
+        s = s[: last + 1]
+
     return s
 
 

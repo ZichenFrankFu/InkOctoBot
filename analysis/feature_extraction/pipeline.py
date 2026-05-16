@@ -31,8 +31,12 @@ def _diagnose_ai_error(e: Exception) -> str:
         return "所配置的模型名不存在；请到「设置 → 模型供应商」选择已安装的模型"
     if "rate limit" in msg or "rate_limit" in msg or cls == "RateLimitError":
         return "请求频率过高被服务商限流，请稍后重试"
-    if cls == "JSONDecodeError" or "json" in msg and ("expecting" in msg or "decode" in msg):
-        return "模型返回的内容不是合法 JSON；可在「设置 → LLM Prompt」中加严输出格式约束"
+    if (cls == "JSONDecodeError"
+            or "expecting value" in msg
+            or ("json" in msg and ("expecting" in msg or "decode" in msg))):
+        return ("模型返回的内容不是合法 JSON。常见原因：DeepSeek-R1 / o1 / Qwen-thinking "
+                "类模型把 <think>...</think> 推理放在了答案前——更新到最新版本通常会自动剥离；"
+                "也可换一个非 thinking 模型，或在「设置 → LLM Prompt」中加严输出格式约束。")
     if cls in ("ModuleNotFoundError", "ImportError"):
         return "依赖缺失，请在服务器侧 pip install 对应 SDK（如 openai/anthropic）"
     return ""
@@ -331,9 +335,66 @@ class FeatureExtractionPipeline:
                         }
         except Exception as e:
             logger.warning("[plan] custom_plan read failed: %s", e)
+        # No saved custom plan → return an EMPTY plan so the user creates
+        # their own volumes. The auto-detected layout is still available
+        # on demand via /segments/plan/auto_detect (it's a one-click
+        # button, not the silent default).
+        return {
+            "type": "custom",
+            "segments": [],
+            "total_chapters": len(chapters),
+            "is_custom": False,
+        }
+
+    def suggest_auto_plan(self, ref_id: str,
+                           segment_chars: int | None = None) -> dict[str, Any]:
+        """Compute the auto-detected plan (第X卷 markers OR ~100k-char chunks)
+        without persisting it. The UI uses this for the "auto-suggest"
+        button so users can adopt the suggestion as a starting point."""
+        from rag.reference_db import ReferenceDB
+        rdb = ReferenceDB(self.db_path)
+        work = rdb.get_work(ref_id)
+        if not work:
+            raise ValueError(f"reference work not found: {ref_id}")
+        text = self._load_text(work)
+        chapters = self._split_chapters(text) if text else []
         plan = self.plan_segments(chapters, segment_chars=segment_chars)
         plan["is_custom"] = False
+        plan["total_chapters"] = len(chapters)
         return plan
+
+    def rename_segment_title(self, ref_id: str, index: int, title: str) -> dict[str, Any]:
+        """Rename a single segment's title in-place without resetting any
+        already-completed extraction results. Used by inline title edit in
+        the timeline so renaming "第 1–8 章" → "1954 年" is non-destructive."""
+        from rag.reference_db import ReferenceDB
+        rdb = ReferenceDB(self.db_path)
+        work = rdb.get_work(ref_id)
+        if not work:
+            raise ValueError(f"reference work not found: {ref_id}")
+        try:
+            state = json.loads(work.get("segments_json") or "{}")
+        except Exception:
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        cp = state.get("custom_plan")
+        if not isinstance(cp, list) or not cp:
+            raise ValueError("no custom plan to rename; create one first")
+        if index < 0 or index >= len(cp):
+            raise ValueError(f"segment index {index} out of range (0..{len(cp) - 1})")
+        new_title = (title or "").strip()
+        if not new_title:
+            seg = cp[index]
+            sc = int(seg.get("start_chapter") or 1)
+            ec = int(seg.get("end_chapter") or sc)
+            new_title = f"第 {sc}–{ec} 章"
+        cp[index] = {**cp[index], "title": new_title}
+        state["custom_plan"] = cp
+        if isinstance(state.get("plan"), list) and index < len(state["plan"]):
+            state["plan"][index] = {**state["plan"][index], "title": new_title}
+        rdb.update_work(ref_id, segments_json=json.dumps(state, ensure_ascii=False))
+        return {"ok": True, "index": index, "title": new_title}
 
     def save_custom_plan(self, ref_id: str, segments: list[dict],
                           plan_type: str = "custom") -> dict[str, Any]:
