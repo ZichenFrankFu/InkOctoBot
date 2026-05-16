@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost, apiPut, apiPatch, apiDelete } from "../../api/client";
+import { apiGet, apiPost, apiPatch } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { PlotOutlineEditor } from "./AnalysisEditors";
 import type { PlotOutline, ChronicleEpoch, ChroniclePeriod } from "./AnalysisEditors";
@@ -54,6 +54,9 @@ interface Props {
   onAfterMerge: () => Promise<void> | void;
   onRegenerateFromText?: () => void;
   regenerating?: boolean;
+  /** Switch to the "预处理" tab — used by the "编辑分卷" button now that
+   * volume creation/editing lives in the preprocess tab. */
+  onGoToPreprocess?: () => void;
 }
 
 export default function PlotOutlinePanel({
@@ -65,16 +68,12 @@ export default function PlotOutlinePanel({
   onAfterMerge,
   onRegenerateFromText,
   regenerating,
+  onGoToPreprocess,
 }: Props) {
   const { toast } = useToast();
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [useWebSearch, setUseWebSearch] = useState(false);
-  // Plan editor state — user can rename volumes + adjust chapter ranges
-  // before any extraction. `planDraft != null` puts the segment list
-  // into edit mode (no extraction buttons rendered).
-  const [planDraft, setPlanDraft] = useState<{ title: string; start_chapter: number; end_chapter: number }[] | null>(null);
-  const [planSaving, setPlanSaving] = useState(false);
   const [webSearchCap, setWebSearchCap] = useState<{ enabled: boolean; reason: string; provider: string; model: string } | null>(null);
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const [preview, setPreview] = useState<SegmentResult | null>(null);
@@ -239,111 +238,6 @@ export default function PlotOutlinePanel({
     }
   };
 
-  // ── Plan editor ──
-
-  const startPlanEdit = () => {
-    if (!plan) return;
-    if (plan.segments.length === 0) {
-      // Empty plan → seed with one default volume covering all chapters
-      const total = plan.total_chapters || 1;
-      setPlanDraft([{
-        title: `第 1–${total} 章`,
-        start_chapter: 1,
-        end_chapter: total,
-      }]);
-    } else {
-      setPlanDraft(plan.segments.map(s => ({
-        title: s.title || `第 ${s.start_chapter}–${s.end_chapter} 章`,
-        start_chapter: s.start_chapter,
-        end_chapter: s.end_chapter,
-      })));
-    }
-  };
-
-  const loadAutoSuggest = async () => {
-    if (!plan) return;
-    try {
-      const sug = await apiGet<SegmentPlan>(
-        `/api/references/works/${refId}/segments/plan/auto_suggest`,
-      );
-      if (!sug.segments || sug.segments.length === 0) {
-        toast("自动检测未识别到可分卷的结构", "info");
-        return;
-      }
-      setPlanDraft(sug.segments.map(s => ({
-        title: s.title || `第 ${s.start_chapter}–${s.end_chapter} 章`,
-        start_chapter: s.start_chapter,
-        end_chapter: s.end_chapter,
-      })));
-      toast(`已载入 ${sug.segments.length} 段建议，请检查后保存`, "success");
-    } catch (e: any) {
-      toast(e?.message || "自动检测失败", "error");
-    }
-  };
-
-  const cancelPlanEdit = () => setPlanDraft(null);
-
-  const savePlan = async () => {
-    if (!planDraft) return;
-    // Local validation: at least one segment, all ranges valid
-    const cleaned = planDraft.map(s => ({
-      title: (s.title || "").trim(),
-      start_chapter: Math.max(1, Math.floor(s.start_chapter || 1)),
-      end_chapter: Math.max(1, Math.floor(s.end_chapter || 1)),
-    }));
-    if (cleaned.some(s => s.end_chapter < s.start_chapter)) {
-      toast("某段的结束章号小于起始章号", "error");
-      return;
-    }
-    if (!confirm("保存自定义分段会清空所有已完成的提取结果。继续？")) return;
-    setPlanSaving(true);
-    try {
-      await apiPut(`/api/references/works/${refId}/segments/plan`,
-        { segments: cleaned, plan_type: cleaned.length > 1 ? "volumes" : "custom" },
-        { timeoutMs: 60_000 },
-      );
-      toast("分段计划已保存", "success");
-      setPlanDraft(null);
-      await loadPlan();
-    } catch (e: any) {
-      toast(e?.message || "保存失败", "error");
-    } finally { setPlanSaving(false); }
-  };
-
-  const revertPlanToAuto = async () => {
-    if (!confirm("放弃自定义分段并恢复自动检测？相关提取结果将一并清空。")) return;
-    try {
-      await apiDelete(`/api/references/works/${refId}/segments/plan`);
-      toast("已恢复自动检测", "success");
-      setPlanDraft(null);
-      await loadPlan();
-    } catch (e: any) {
-      toast(e?.message || "重置失败", "error");
-    }
-  };
-
-  const addPlanRow = (afterIdx: number) => {
-    if (!planDraft) return;
-    const total = plan?.total_chapters || 0;
-    const prev = afterIdx >= 0 ? planDraft[afterIdx] : null;
-    const newStart = prev ? prev.end_chapter + 1 : 1;
-    const newEnd = total > 0 ? Math.min(total, newStart) : newStart;
-    const next = [...planDraft];
-    next.splice(afterIdx + 1, 0, {
-      title: `第 ${newStart}–${newEnd} 章`,
-      start_chapter: newStart,
-      end_chapter: newEnd,
-    });
-    setPlanDraft(next);
-  };
-
-  const removePlanRow = (idx: number) => {
-    if (!planDraft) return;
-    // Allow removing down to 0 — the user can then create a new volume
-    // or use auto-detection to seed the draft.
-    setPlanDraft(planDraft.filter((_, i) => i !== idx));
-  };
-
   // ── Inline title edit (timeline view, non-destructive) ──
 
   const beginTitleEdit = (idx: number, current: string) => {
@@ -439,28 +333,20 @@ export default function PlotOutlinePanel({
                 />
                 AI 联网验证
               </label>
-              {!planDraft && total > 0 && (
+              {onGoToPreprocess && (
                 <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                        onClick={startPlanEdit}
+                        onClick={onGoToPreprocess}
                         disabled={committing || merging || previewLoading}
-                        title="自定义每卷/每段的标题和章节范围">
+                        title="到「预处理」tab 新建 / 编辑分卷">
                   编辑分段
                 </button>
               )}
-              {plan.is_custom && !planDraft && (
-                <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }}
-                        onClick={revertPlanToAuto}
-                        disabled={committing || merging}
-                        title="恢复自动检测的分段（卷标记或 ~10 万字切块）">
-                  恢复自动
-                </button>
-              )}
-              {doneCount > 0 && !allDone && !planDraft && (
+              {doneCount > 0 && !allDone && (
                 <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }} onClick={reset} disabled={committing || merging}>
                   重置
                 </button>
               )}
-              {allDone && !planDraft && (
+              {allDone && (
                 <button className="btn-primary" style={{ fontSize: 12, padding: "4px 12px" }} onClick={finalize} disabled={merging}>
                   {merging ? "合并中..." : "合并到全书"}
                 </button>
@@ -475,132 +361,26 @@ export default function PlotOutlinePanel({
             </div>
           )}
 
-          {/* EMPTY STATE — no volumes yet. Two paths: manual create vs. auto-detect. */}
-          {total === 0 && !planDraft && (
+          {/* EMPTY STATE — no volumes yet. Direct user to the 预处理 tab. */}
+          {total === 0 && (
             <div style={{
               padding: 16, textAlign: "center",
               border: "1px dashed var(--border)", borderRadius: 4,
               background: "var(--bg-surface)",
             }}>
               <div className="text-xs text-muted" style={{ marginBottom: 12, lineHeight: 1.6 }}>
-                还没有分卷。请先新建至少一个分卷，再分段提取特征。
-                <br />分卷的标题代表故事中的时间（如「1954 年」），无明确时间时填写章节范围即可。
+                还没有分卷。请到「预处理」tab 划分卷后再进行特征提取。
               </div>
-              <div className="flex gap-8" style={{ justifyContent: "center", flexWrap: "wrap" }}>
+              {onGoToPreprocess && (
                 <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }}
-                        onClick={startPlanEdit}
-                        disabled={committing || merging}>
-                  新建卷
+                        onClick={onGoToPreprocess}>
+                  去「预处理」tab 编辑分卷
                 </button>
-                <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }}
-                        onClick={loadAutoSuggest}
-                        disabled={committing || merging}
-                        title="按文中「第 X 卷」标记或 ~10 万字切块自动建议分卷">
-                  自动检测分卷
-                </button>
-              </div>
+              )}
             </div>
           )}
 
-          {/* PLAN EDIT MODE — render editable rows instead of the normal list */}
-          {planDraft ? (
-            <div>
-              <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
-                <div className="text-xs text-muted" style={{ lineHeight: 1.55, flex: 1, minWidth: 220 }}>
-                  分卷的标题代表故事中的时间（如「1954 年」），无明确时间时填写章节范围。共 {plan.total_chapters} 章。
-                  {plan.segments.length > 0 && <><br />保存后会清空已有的提取结果。</>}
-                </div>
-                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                        onClick={loadAutoSuggest}
-                        disabled={planSaving}
-                        title="按文中「第 X 卷」标记或 ~10 万字切块自动建议分卷（覆盖当前草稿）">
-                  自动检测分卷
-                </button>
-              </div>
-              {planDraft.length > 0 && (
-                <div className="flex flex-col gap-6" style={{ marginBottom: 10 }}>
-                  {planDraft.map((s, i) => (
-                    <div key={i} className="flex gap-6 items-center" style={{
-                      padding: 6, border: "1px solid var(--border)", borderRadius: 4,
-                    }}>
-                      <span className="text-xs text-muted" style={{
-                        minWidth: 30, textAlign: "center",
-                        fontFamily: "var(--font-mono)",
-                      }}>#{i + 1}</span>
-                      <input
-                        className="input"
-                        placeholder='故事时间（如 "1954 年"，无则填 "第 1–8 章"）'
-                        value={s.title}
-                        onChange={e => {
-                          const next = [...planDraft];
-                          next[i] = { ...s, title: e.target.value };
-                          setPlanDraft(next);
-                        }}
-                        style={{ flex: 1, fontSize: 12 }}
-                      />
-                      <input
-                        className="input" type="number" min={1} max={plan.total_chapters || undefined}
-                        value={s.start_chapter}
-                        onChange={e => {
-                          const next = [...planDraft];
-                          next[i] = { ...s, start_chapter: parseInt(e.target.value, 10) || 1 };
-                          setPlanDraft(next);
-                        }}
-                        style={{ width: 70, fontSize: 12 }}
-                        title="起始章号"
-                      />
-                      <span className="text-xs text-muted">–</span>
-                      <input
-                        className="input" type="number" min={1} max={plan.total_chapters || undefined}
-                        value={s.end_chapter}
-                        onChange={e => {
-                          const next = [...planDraft];
-                          next[i] = { ...s, end_chapter: parseInt(e.target.value, 10) || 1 };
-                          setPlanDraft(next);
-                        }}
-                        style={{ width: 70, fontSize: 12 }}
-                        title="结束章号"
-                      />
-                      <span className="text-xs text-muted"
-                            style={{ minWidth: 56, textAlign: "right", fontFamily: "var(--font-mono)" }}
-                            title="本卷章节数">
-                        {Math.max(0, (s.end_chapter || 0) - (s.start_chapter || 0) + 1)} 章
-                      </span>
-                      <button className="btn"
-                              style={{ fontSize: 11, padding: "3px 8px" }}
-                              onClick={() => addPlanRow(i)}
-                              title="在该段后新建一个分卷">新建卷</button>
-                      <button className="btn-icon"
-                              onClick={() => removePlanRow(i)}
-                              style={{ fontSize: 14 }}
-                              title="删除该段">&times;</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {planDraft.length === 0 && (
-                <div className="text-xs text-muted" style={{
-                  padding: 12, marginBottom: 10, textAlign: "center",
-                  border: "1px dashed var(--border)", borderRadius: 4,
-                }}>
-                  当前没有分卷。点击下方「新建卷」开始添加。
-                </div>
-              )}
-              <div className="flex gap-6" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
-                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                        onClick={() => addPlanRow(planDraft.length - 1)}
-                        disabled={planSaving}
-                        title="在末尾新建一个分卷">+ 新建卷</button>
-                <div className="flex gap-6">
-                  <button className="btn" onClick={cancelPlanEdit} disabled={planSaving}>取消</button>
-                  <button className="btn-primary" onClick={savePlan}
-                          disabled={planSaving || planDraft.length === 0}>
-                    {planSaving ? "保存中..." : "保存分段计划"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : (
+          {total > 0 && (
           <div className="flex flex-col gap-4">
             {plan.segments.map(s => {
               const isDone = completed.has(s.index);

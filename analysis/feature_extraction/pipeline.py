@@ -233,37 +233,22 @@ class FeatureExtractionPipeline:
 
     @staticmethod
     def _split_chapters(text: str) -> list[dict]:
-        chap_pat = re.compile(
-            r"^[　\s]*第[零一二三四五六七八九十百千万\d]+章[\s：:　]*(.*)",
-            re.MULTILINE,
-        )
-        vol_pat = re.compile(
-            r"^[　\s]*第[零一二三四五六七八九十百千万\d]+卷[\s：:　]*(.*)",
-            re.MULTILINE,
-        )
-        matches = list(chap_pat.finditer(text))
-        if len(matches) < 2:
-            # fallback: chunk by ~3000 chars
-            return [
-                {"index": i, "title": f"段落{i+1}",
-                 "content": text[i*3000:(i+1)*3000]}
-                for i in range(max(1, len(text) // 3000))
-            ]
-        vol_marks = [(m.start(), m.group(0).strip()[:60]) for m in vol_pat.finditer(text)]
-        chapters: list[dict] = []
-        cur_vol = ""
-        for i, m in enumerate(matches):
-            end = matches[i+1].start() if i+1 < len(matches) else len(text)
-            # advance cur_vol to the latest volume marker that appears before this chapter
-            while vol_marks and vol_marks[0][0] <= m.start():
-                cur_vol = vol_marks.pop(0)[1]
-            chapters.append({
-                "index": i,
-                "title": m.group(0).strip()[:60],
-                "volume": cur_vol,
-                "content": text[m.end():end].strip(),
+        """Smart chapter splitter — tries multiple formats (第N章 / 第N回 /
+        1、标题 / Chapter N / …) and picks the best-scoring one. Falls back
+        to ~3000-char chunks when no clear structure exists."""
+        from analysis.feature_extraction.chapter_parser import detect_chapters
+        result = detect_chapters(text)
+        # Strip extra metadata to keep the shape compatible with existing
+        # callers that only read {index, title, volume, content}.
+        out: list[dict] = []
+        for c in result["chapters"]:
+            out.append({
+                "index": c.get("index"),
+                "title": c.get("title") or "",
+                "volume": c.get("volume") or "",
+                "content": c.get("content") or "",
             })
-        return chapters
+        return out
 
     # ── Segment planning & per-segment extraction (incremental) ──
 

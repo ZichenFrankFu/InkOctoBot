@@ -446,6 +446,178 @@ def reset_segment_plan(ref_id: str):
     return {"ok": True}
 
 
+# ───────────────────── Preprocess job (chapter detection + author-note flagging) ─────────────────────
+
+
+@router.post("/works/{ref_id}/preprocess/start")
+def preprocess_start(ref_id: str):
+    """Kick off (or return the existing) preprocess job for this work.
+
+    The job:
+      1. Re-detects chapters using the multi-format parser (第N章 / 第N回 /
+         "1、标题" / Chapter N / 中文数字 …).
+      2. Flags chapters that look like author asides via heuristic.
+      3. Reports progress chapter-by-chapter (UI polls /status).
+    Idempotent — calling again while running returns the same job."""
+    from analysis.feature_extraction import preprocess_jobs
+    from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
+    job = preprocess_jobs.start_job(ref_id, text)
+    return job.to_status()
+
+
+@router.post("/works/{ref_id}/preprocess/pause")
+def preprocess_pause(ref_id: str):
+    from analysis.feature_extraction import preprocess_jobs
+    ok = preprocess_jobs.pause_job(ref_id)
+    if not ok:
+        raise HTTPException(400, "当前无运行中的预处理任务")
+    return {"ok": True, "state": "paused"}
+
+
+@router.post("/works/{ref_id}/preprocess/resume")
+def preprocess_resume(ref_id: str):
+    from analysis.feature_extraction import preprocess_jobs
+    ok = preprocess_jobs.resume_job(ref_id)
+    if not ok:
+        raise HTTPException(400, "当前无暂停的预处理任务")
+    return {"ok": True, "state": "running"}
+
+
+@router.post("/works/{ref_id}/preprocess/cancel")
+def preprocess_cancel(ref_id: str):
+    from analysis.feature_extraction import preprocess_jobs
+    ok = preprocess_jobs.cancel_job(ref_id)
+    if not ok:
+        raise HTTPException(400, "无任务可取消")
+    return {"ok": True}
+
+
+@router.get("/works/{ref_id}/preprocess/status")
+def preprocess_status(ref_id: str):
+    """Returns the live job status (state, current_chapter, log tail).
+    Also includes the persisted detection result from segments_json
+    when no in-process job is running — so the UI can render the last
+    completed run after a server restart."""
+    from analysis.feature_extraction import preprocess_jobs
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    job = preprocess_jobs.get_job(ref_id)
+    if job:
+        # If a job just finished, persist its result so future requests
+        # (after this server restarts) still see the chapter list.
+        if job.state == "done" and job.chapters:
+            try:
+                preprocess_jobs.persist_result_to_segments(
+                    ref_id, db.db_path, job.chapters,
+                )
+            except Exception:
+                pass
+        out = job.to_status()
+        # Include the full chapter list when the job finished
+        if job.state in ("done", "cancelled", "error"):
+            out["chapters"] = [
+                {**{k: v for k, v in c.items() if k != "content"},
+                 "char_count": len(c.get("content") or "")}
+                for c in job.chapters
+            ]
+        return out
+    # No in-memory job — return persisted result if any
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    pre = (state or {}).get("preprocess") if isinstance(state, dict) else None
+    if pre:
+        return {
+            "state": "done",
+            "current_chapter": pre.get("total_chapters") or 0,
+            "total_chapters": pre.get("total_chapters") or 0,
+            "flagged_count": pre.get("flagged_count") or 0,
+            "log": [],
+            "chapters": pre.get("chapters") or [],
+            "persisted": True,
+        }
+    return {
+        "state": "idle",
+        "current_chapter": 0,
+        "total_chapters": 0,
+        "flagged_count": 0,
+        "log": [],
+        "chapters": [],
+    }
+
+
+class ApplyExclusionsRequest(BaseModel):
+    excluded_chapters: list[int]
+
+
+@router.post("/works/{ref_id}/preprocess/apply_exclusions")
+def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
+    """Physically delete the excluded chapters from the on-disk text and
+    re-save. Subsequent _split_chapters / segment plans see the cleaned
+    text. **Irreversible** — does not back up the original (user chose
+    this trade-off for cleanliness)."""
+    from analysis.feature_extraction import preprocess_jobs
+    from analysis.feature_extraction.chapter_parser import (
+        detect_chapters, apply_exclusions,
+    )
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
+    detect = detect_chapters(text)
+    excluded = set(int(n) for n in (body.excluded_chapters or []))
+    new_text = apply_exclusions(text, detect["chapters"], excluded)
+    if not new_text.strip():
+        raise HTTPException(400, "排除后文本为空，操作已取消")
+    # Re-save to the work's file
+    file_path = w.get("file_path")
+    if not file_path:
+        raise HTTPException(400, "作品没有关联的文件路径")
+    try:
+        Path(file_path).write_text(new_text, encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(500, f"写入文件失败：{e}")
+    # Clear any prior preprocess + segments state, since the text changed.
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    if isinstance(state, dict):
+        state.pop("preprocess", None)
+        state.pop("custom_plan", None)
+        state.pop("plan", None)
+        state["results"] = {}
+        state["completed"] = []
+    db.update_work(
+        ref_id,
+        segments_json=json.dumps(state, ensure_ascii=False),
+        preprocessing_status="pending",
+    )
+    # Drop any in-memory job state
+    preprocess_jobs.clear(ref_id)
+    return {
+        "ok": True,
+        "removed_chapters": sorted(excluded),
+        "new_char_count": len(new_text),
+    }
+
+
 class SegmentTitleUpdate(BaseModel):
     title: str
 

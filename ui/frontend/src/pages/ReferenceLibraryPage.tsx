@@ -776,6 +776,7 @@ function WorkDetail({
           refId={sel.ref_id}
           hasFullText={Boolean(sel.has_full_text)}
           onUpload={onUpload}
+          onAfterApplyExclusions={onAfterMerge}
         />
       )}
 
@@ -787,6 +788,7 @@ function WorkDetail({
           plotOutline={plot}
           onSavePlot={d => onSaveAnalysisField("plot_outline_json", d)}
           onAfterMerge={onAfterMerge}
+          onGoToPreprocess={() => setTab("preprocess")}
         />
       )}
 
