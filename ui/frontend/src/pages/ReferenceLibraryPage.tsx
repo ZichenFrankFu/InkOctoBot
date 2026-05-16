@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import useDebounce from "../hooks/useDebounce";
@@ -13,35 +13,6 @@ import {
 } from "../components/reference/AnalysisEditors";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
-
-/* ── Extraction types ── */
-interface ExtractionProgress {
-  total_novels: number;
-  phases: Record<string, Record<string, number>>;
-  patterns: Record<string, number>;
-  skills_emitted: number;
-}
-interface ExtPattern {
-  pattern_id: string; category: string; subcategory: string;
-  pattern_name: string; description: string; frequency: number;
-  quality_score: number; skill_emitted: boolean; examples: any[];
-}
-interface PipelineStatus {
-  status: string; progress?: string; error?: string; result?: any;
-}
-const CATEGORY_LABELS: Record<string, string> = {
-  writing_technique: "写作手法", chapter_design: "章节设计", story_arc: "剧情设计",
-};
-const PHASE_LABELS: Record<string, string> = {
-  clean: "数据清洗", chapter_extract: "章节提取", novel_aggregate: "全书聚合", pattern_mine: "模式挖掘",
-};
-function fmtChars(n: number | null | undefined): string {
-  if (!n) return "0";
-  if (n >= 10000) return (n / 10000).toFixed(1) + "万";
-  return n.toLocaleString();
-}
-
-type PageTab = "works" | "extraction" | "patterns";
 
 const MEDIA_TYPES: { value: MediaType; label: string; color: string }[] = [
   { value: "web_novel", label: "网文", color: "var(--accent)" },
@@ -97,22 +68,12 @@ function StarRating({ value, onChange }: { value: number; onChange: (n: number) 
 
 export default function ReferenceLibraryPage() {
   const { toast } = useToast();
-  const [pageTab, setPageTab] = useState<PageTab>("works");
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
   const [filterMedia, setFilterMedia] = useState("");
   const [sel, setSel] = useState<ReferenceWork | null>(null);
   const [loading, setLoading] = useState(false);
-
-  // Extraction pipeline state
-  const [extProgress, setExtProgress] = useState<ExtractionProgress | null>(null);
-  const [pipeStatus, setPipeStatus] = useState<PipelineStatus>({ status: "idle" });
-  const [extPatterns, setExtPatterns] = useState<ExtPattern[]>([]);
-  const [extPatternsTotal, setExtPatternsTotal] = useState(0);
-  const [extPatternCat, setExtPatternCat] = useState("");
-  const [ingesting, setIngesting] = useState(false);
-  const corpusFileRef = useRef<HTMLInputElement>(null);
 
   // Add work modal
   const [showAddWork, setShowAddWork] = useState(false);
@@ -140,7 +101,28 @@ export default function ReferenceLibraryPage() {
   // Plot outline re-extraction
   const [extractingPlot, setExtractingPlot] = useState(false);
 
-  const leftPanel = useResizable({ direction: "horizontal", initialSize: 360, minSize: 260, maxSize: 560 });
+  const leftPanel = useResizable({ direction: "horizontal", initialSize: 280, minSize: 220, maxSize: 480 });
+
+  // ── DB overview stats (computed from the current `works` list) ──
+  const dbStats = useMemo(() => {
+    const byMedia: Record<string, number> = {};
+    let withFullText = 0, processed = 0, withPlot = 0;
+    let totalRatings = 0, ratedCount = 0;
+    for (const w of works) {
+      byMedia[w.media_type] = (byMedia[w.media_type] || 0) + 1;
+      if (w.has_full_text) withFullText++;
+      if (w.preprocessing_status === "done") processed++;
+      if (w.plot_outline_json) withPlot++;
+      if (w.user_rating) { totalRatings += w.user_rating; ratedCount++; }
+    }
+    return {
+      total: works.length,
+      filteredTotal: total,
+      byMedia,
+      withFullText, processed, withPlot,
+      avgRating: ratedCount > 0 ? totalRatings / ratedCount : null,
+    };
+  }, [works, total]);
 
   /* ---- Data loading ---- */
   const debouncedSearch = useDebounce(search, 300);
@@ -163,76 +145,6 @@ export default function ReferenceLibraryPage() {
   useEffect(() => {
     load();
   }, [load]);
-
-  /* ---- Extraction data loading ---- */
-  const loadExtProgress = useCallback(async () => {
-    try {
-      const [prog, st] = await Promise.all([
-        apiGet<ExtractionProgress>("/api/extraction/progress"),
-        apiGet<PipelineStatus>("/api/extraction/run/status"),
-      ]);
-      setExtProgress(prog); setPipeStatus(st);
-    } catch { /* ignore */ }
-  }, []);
-
-  const loadExtPatterns = useCallback(async () => {
-    try {
-      const url = `/api/extraction/patterns?limit=100${extPatternCat ? `&category=${extPatternCat}` : ""}`;
-      const r = await apiGet<{ items: ExtPattern[]; total: number }>(url);
-      setExtPatterns(r.items || []); setExtPatternsTotal(r.total || 0);
-    } catch { /* ignore */ }
-  }, [extPatternCat]);
-
-  useEffect(() => {
-    if (pageTab === "extraction") loadExtProgress();
-    if (pageTab === "patterns") loadExtPatterns();
-  }, [pageTab, loadExtProgress, loadExtPatterns]);
-
-  useEffect(() => {
-    if (pipeStatus.status !== "running") return;
-    const id = setInterval(loadExtProgress, 3000);
-    return () => clearInterval(id);
-  }, [pipeStatus.status, loadExtProgress]);
-
-  const handleIngestCorpus = async () => {
-    setIngesting(true);
-    try {
-      const r = await apiPost<{ ingested: number }>("/api/extraction/ingest", {}, { timeoutMs: 300_000 });
-      toast(`已导入 ${r.ingested} 本小说`, "success");
-      load();
-    } catch (e: any) { toast(e.message, "error"); }
-    finally { setIngesting(false); }
-  };
-
-  const handleCorpusUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const fd = new FormData(); fd.append("file", file);
-      const res = await fetch("/api/extraction/ingest/upload", { method: "POST", body: fd });
-      if (!res.ok) { const err = await res.json().catch(() => ({ detail: "上传失败" })); throw new Error(err.detail || "上传失败"); }
-      const r = await res.json();
-      toast(`已导入《${r.title}》(${r.chapters}章)`, "success");
-      load();
-    } catch (err: any) { toast(err.message, "error"); }
-    finally { e.target.value = ""; }
-  };
-
-  const handleRunPipeline = async (phases?: string[]) => {
-    try {
-      await apiPost("/api/extraction/run", { phases, resume: true });
-      toast("提取流程已启动", "success");
-      setPipeStatus({ status: "running", progress: "初始化..." });
-    } catch (e: any) { toast(e.message, "error"); }
-  };
-
-  const handleEmitSkills = async () => {
-    try {
-      const r = await apiPost<{ skills_emitted: any }>("/api/extraction/emit", {});
-      toast(`Skill生成完成: ${JSON.stringify(r.skills_emitted)}`, "success");
-      loadExtProgress();
-    } catch (e: any) { toast(e.message, "error"); }
-  };
 
   function selectWork(w: ReferenceWork) {
     setSel(w);
@@ -420,34 +332,16 @@ export default function ReferenceLibraryPage() {
         <div className="page-header-row">
           <div>
             <h2>参考作品库</h2>
-            <p>录入你喜欢的作品 &middot; 批量导入小说语料 &middot; 自动提取写作技巧为Skill</p>
+            <p>录入你喜欢的作品 · 上传正文 · 提取风格/角色/剧情大纲</p>
           </div>
           <div className="flex gap-8">
-            <label className="btn" style={{ cursor: "pointer" }}>
-              上传小说
-              <input ref={corpusFileRef} type="file" accept=".txt" onChange={handleCorpusUpload} hidden />
-            </label>
-            <button className="btn" onClick={handleIngestCorpus} disabled={ingesting}>
-              {ingesting ? "导入中..." : "批量导入语料"}
-            </button>
             <button className="btn-primary" onClick={() => setShowAddWork(true)}>+ 添加作品</button>
           </div>
         </div>
       </div>
+      {/* DB stats summary */}
+      <DbStatsBar stats={dbStats} />
 
-      {/* Page-level tabs */}
-      <div className="flex gap-8 items-center" style={{ padding: "0 0 8px", borderBottom: "1px solid var(--border)" }}>
-        {([["works", "作品库"], ["extraction", "提取进度"], ["patterns", "模式库"]] as [PageTab, string][]).map(([k, l]) => (
-          <button key={k} className="btn-ghost" style={{
-            padding: "6px 16px", fontWeight: pageTab === k ? 600 : 400,
-            color: pageTab === k ? "var(--accent)" : "var(--text-secondary)",
-            borderBottom: pageTab === k ? "2px solid var(--accent)" : "2px solid transparent",
-          }} onClick={() => setPageTab(k)}>{l}</button>
-        ))}
-      </div>
-
-      {/* ════════ Works Tab ════════ */}
-      {pageTab === "works" && <>
       {/* Toolbar */}
       <div className="flex gap-8 items-center" style={{ padding: "10px 0 14px", flexWrap: "wrap" }}>
         <input
@@ -688,131 +582,18 @@ export default function ReferenceLibraryPage() {
                 </div>
               </div>
             ) : (
-              <div className="empty-state" style={{ paddingTop: 80 }}>
-                <h4>选择一部作品查看详情</h4>
-                <p>或点击上方添加新的参考作品</p>
-              </div>
+              <LibraryOverview
+                stats={dbStats}
+                works={works}
+                onSelect={selectWork}
+                onAdd={() => setShowAddWork(true)}
+              />
             )}
           </div>
-          {/* LoRA Training Panel */}
-          <LoRATrainingPanel works={works} />
         </div>
       </div>
 
-      </>}
 
-      {/* ════════ Extraction Tab ════════ */}
-      {pageTab === "extraction" && (
-        <div style={{ padding: "16px 0" }}>
-          {/* Pipeline controls */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 16, padding: 12, background: "var(--bg-surface)", borderRadius: 6, border: "1px solid var(--border)", alignItems: "center", flexWrap: "wrap" }}>
-            <span style={{ fontSize: 12, color: "var(--text-secondary)", marginRight: 8 }}>
-              流程状态:
-              <span style={{ marginLeft: 6, fontWeight: 600, color: pipeStatus.status === "running" ? "var(--gold)" : pipeStatus.status === "done" ? "var(--jade)" : pipeStatus.status === "error" ? "var(--error)" : "var(--text-tertiary)" }}>
-                {pipeStatus.status === "idle" ? "空闲" : pipeStatus.progress || pipeStatus.status}
-              </span>
-            </span>
-            <div style={{ flex: 1 }} />
-            {(["chapter", "novel", "pattern"] as const).map(p => (
-              <button key={p} className="btn" onClick={() => handleRunPipeline([p])} disabled={pipeStatus.status === "running"} style={{ fontSize: 11 }}>
-                {{chapter: "章节提取", novel: "全书聚合", pattern: "模式挖掘"}[p]}
-              </button>
-            ))}
-            <button className="btn-primary" onClick={() => handleRunPipeline()} disabled={pipeStatus.status === "running"} style={{ fontSize: 11 }}>全部运行</button>
-            <button className="btn" onClick={handleEmitSkills} disabled={pipeStatus.status === "running"} style={{ fontSize: 11 }}>生成Skill</button>
-          </div>
-
-          {pipeStatus.error && (
-            <div style={{ padding: "8px 12px", marginBottom: 12, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, color: "var(--error)", fontSize: 12 }}>
-              {pipeStatus.error}
-            </div>
-          )}
-
-          {extProgress && (
-            <div>
-              <div style={{ marginBottom: 12, fontSize: 13, color: "var(--text-secondary)" }}>已注册小说: <strong>{extProgress.total_novels}</strong></div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginBottom: 20 }}>
-                {Object.entries(PHASE_LABELS).map(([phase, label]) => {
-                  const ps = extProgress.phases[phase] || {};
-                  const completed = ps["completed"] || 0, failed = ps["failed"] || 0, pending = ps["pending"] || 0, inProg = ps["in_progress"] || 0;
-                  const tot = completed + failed + pending + inProg;
-                  return (
-                    <div key={phase} style={{ padding: 16, background: "var(--bg-surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{label}</div>
-                      {tot === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>尚未开始</div> : <>
-                        <div style={{ height: 6, background: "var(--bg-surface-2)", borderRadius: 3, overflow: "hidden", marginBottom: 6 }}>
-                          <div style={{ height: "100%", width: `${(completed / tot) * 100}%`, background: "var(--jade)", borderRadius: 3, transition: "width 0.3s" }} />
-                        </div>
-                        <div style={{ display: "flex", gap: 12, fontSize: 11, color: "var(--text-secondary)" }}>
-                          <span style={{ color: "var(--jade)" }}>{completed} 完成</span>
-                          {inProg > 0 && <span style={{ color: "var(--gold)" }}>{inProg} 进行中</span>}
-                          {failed > 0 && <span style={{ color: "var(--error)" }}>{failed} 失败</span>}
-                          {pending > 0 && <span>{pending} 待处理</span>}
-                        </div>
-                      </>}
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-                <div style={{ padding: 16, background: "var(--bg-surface)", borderRadius: 8, border: "1px solid var(--border)", minWidth: 200 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>已挖掘模式</div>
-                  {Object.keys(extProgress.patterns).length === 0
-                    ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div>
-                    : Object.entries(extProgress.patterns).map(([cat, cnt]) => (
-                      <div key={cat} style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 2 }}>{CATEGORY_LABELS[cat] || cat}: <strong>{cnt}</strong></div>
-                    ))
-                  }
-                </div>
-                <div style={{ padding: 16, background: "var(--bg-surface)", borderRadius: 8, border: "1px solid var(--border)", minWidth: 200 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>已生成Skill</div>
-                  <div style={{ fontSize: 24, fontWeight: 700, color: "var(--accent)" }}>{extProgress.skills_emitted}</div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ════════ Patterns Tab ════════ */}
-      {pageTab === "patterns" && (
-        <div style={{ padding: "16px 0" }}>
-          <div className="flex gap-8 items-center" style={{ marginBottom: 12 }}>
-            <select className="select" value={extPatternCat} onChange={e => setExtPatternCat(e.target.value)}>
-              <option value="">全部类别</option>
-              {Object.entries(CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-            <span className="text-xs text-muted">共 {extPatternsTotal} 个模式</span>
-          </div>
-          {extPatterns.length === 0 ? (
-            <div className="empty-state" style={{ padding: 40 }}>暂无模式。请先在"提取进度"中运行模式挖掘。</div>
-          ) : (
-            <div className="flex flex-col gap-8">
-              {extPatterns.map(p => (
-                <div key={p.pattern_id} style={{ padding: 12, background: "var(--bg-surface)", borderRadius: 6, border: "1px solid var(--border)" }}>
-                  <div className="flex justify-between items-center" style={{ marginBottom: 4 }}>
-                    <div className="flex gap-8 items-center">
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>{p.pattern_name}</span>
-                      <span className="tag" style={{ fontSize: 10 }}>{CATEGORY_LABELS[p.category] || p.category}</span>
-                      {p.subcategory && <span className="text-xs text-muted">/ {p.subcategory}</span>}
-                    </div>
-                    <div className="flex gap-12 text-xs text-muted">
-                      <span>出现: {p.frequency}本</span>
-                      <span>质量: {(p.quality_score || 0).toFixed(1)}</span>
-                      {p.skill_emitted && <span style={{ color: "var(--jade)" }}>已生成Skill</span>}
-                    </div>
-                  </div>
-                  {p.description && (
-                    <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                      {p.description.length > 200 ? p.description.slice(0, 200) + "..." : p.description}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* ======== Add Work Modal ======== */}
       {showAddWork && (
@@ -984,126 +765,192 @@ export default function ReferenceLibraryPage() {
   );
 }
 
-/* ---- LoRA Training Panel ---- */
-function LoRATrainingPanel({ works }: { works: ReferenceWork[] }) {
-  const [open, setOpen] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [baseModel, setBaseModel] = useState("Qwen/Qwen2-1.5B");
-  const [rank, setRank] = useState(16);
-  const [alpha, setAlpha] = useState(32);
-  const [epochs, setEpochs] = useState(3);
-  const [lr, setLr] = useState(0.0002);
-  const [status, setStatus] = useState<any>(null);
-  const [training, setTraining] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+/* ───────────────── DB Stats Bar (top of works tab) ───────────────── */
 
-  const doneWorks = works.filter(w => w.preprocessing_status === "done");
+interface DbStats {
+  total: number;
+  filteredTotal: number;
+  byMedia: Record<string, number>;
+  withFullText: number;
+  processed: number;
+  withPlot: number;
+  avgRating: number | null;
+}
 
-  const toggleWork = (refId: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(refId)) next.delete(refId); else next.add(refId);
-      return next;
-    });
-  };
-
-  const startTraining = async () => {
-    if (selectedIds.size === 0) return;
-    setTraining(true);
-    try {
-      await apiPost("/api/references/lora/train", {
-        work_ids: Array.from(selectedIds),
-        base_model: baseModel, rank, alpha, epochs, learning_rate: lr,
-      });
-      // Start polling status
-      pollRef.current = setInterval(async () => {
-        try {
-          const s = await apiGet<any>("/api/references/lora/status");
-          setStatus(s);
-          if (s.status === "done" || s.status === "error" || s.status === "idle") {
-            if (pollRef.current) clearInterval(pollRef.current);
-            setTraining(false);
-          }
-        } catch { /* ignore */ }
-      }, 2000);
-    } catch (e: any) {
-      setStatus({ status: "error", error: e?.message || "启动失败" });
-      setTraining(false);
-    }
-  };
-
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
-
+function DbStatsBar({ stats }: { stats: DbStats }) {
+  if (stats.total === 0) return null;
+  const tiles = [
+    { label: "作品总数", value: stats.filteredTotal, hint: "当前筛选条件下" },
+    { label: "已上传正文", value: stats.withFullText, hint: `${stats.total > 0 ? Math.round(stats.withFullText / stats.total * 100) : 0}%` },
+    { label: "已完成提取", value: stats.processed, hint: `${stats.total > 0 ? Math.round(stats.processed / stats.total * 100) : 0}%` },
+    { label: "已生成大纲", value: stats.withPlot, hint: `${stats.total > 0 ? Math.round(stats.withPlot / stats.total * 100) : 0}%` },
+    { label: "平均评分", value: stats.avgRating == null ? "—" : stats.avgRating.toFixed(1), hint: "用户已评分作品" },
+  ];
   return (
-    <div style={{ borderTop: "1px solid var(--border)", flexShrink: 0 }}>
-      <button
-        className="btn-ghost w-full"
-        style={{ padding: "10px 20px", justifyContent: "space-between", fontWeight: 600, fontSize: 13, borderRadius: 0 }}
-        onClick={() => setOpen(!open)}
-      >
-        <span>LoRA 风格训练</span>
-        <span className="text-xs text-muted" style={{ transition: "transform 0.15s", transform: open ? "rotate(180deg)" : "none", display: "inline-block" }}>&#x25BC;</span>
-      </button>
-      {open && (
-        <div style={{ padding: "12px 20px" }}>
-          <div className="label mb-8">选择参考作品（需已完成特征提取）</div>
-          <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, marginBottom: 12 }}>
-            {doneWorks.length === 0 ? (
-              <div className="text-xs text-muted" style={{ padding: 16, textAlign: "center" }}>没有已完成特征提取的作品</div>
-            ) : doneWorks.map(w => (
-              <label key={w.ref_id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", cursor: "pointer", borderBottom: "1px solid var(--border)" }}>
-                <input type="checkbox" checked={selectedIds.has(w.ref_id)} onChange={() => toggleWork(w.ref_id)} />
-                <span style={{ fontSize: 12, flex: 1 }}>{w.title}</span>
-                <span className="text-xs text-muted">{w.genre || w.media_type}</span>
-              </label>
-            ))}
+    <div style={{ display: "flex", gap: 8, padding: "12px 0 6px", flexWrap: "wrap" }}>
+      {tiles.map((t, i) => (
+        <div key={i} style={{
+          flex: "1 1 140px",
+          minWidth: 130,
+          padding: "10px 14px",
+          background: "var(--bg-surface)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-sm)",
+        }}>
+          <div className="text-xs text-muted" style={{ marginBottom: 4 }}>{t.label}</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+            <span style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary)" }}>{t.value}</span>
+            <span className="text-xs text-muted">{t.hint}</span>
           </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
-            <div className="field">
-              <label className="label">基础模型</label>
-              <select className="select w-full" value={baseModel} onChange={e => setBaseModel(e.target.value)}>
-                <option value="Qwen/Qwen2-1.5B">Qwen2-1.5B</option>
-                <option value="Qwen/Qwen2-7B">Qwen2-7B</option>
-                <option value="meta-llama/Llama-3-8B">Llama-3-8B</option>
-              </select>
-            </div>
-            <div className="field">
-              <label className="label">Epochs</label>
-              <input className="input" type="number" value={epochs} onChange={e => setEpochs(Number(e.target.value))} min={1} max={20} />
-            </div>
-            <div className="field">
-              <label className="label">Rank</label>
-              <input className="input" type="number" value={rank} onChange={e => setRank(Number(e.target.value))} min={4} max={128} />
-            </div>
-            <div className="field">
-              <label className="label">Alpha</label>
-              <input className="input" type="number" value={alpha} onChange={e => setAlpha(Number(e.target.value))} min={4} max={256} />
-            </div>
-          </div>
-
-          <button
-            className="btn-primary w-full"
-            onClick={startTraining}
-            disabled={selectedIds.size === 0 || training}
-            style={{ marginBottom: 8 }}
-          >
-            {training ? "训练中..." : `开始训练 (${selectedIds.size} 部作品)`}
-          </button>
-
-          {status && (
-            <div style={{
-              padding: "8px 12px", borderRadius: 6, fontSize: 12,
-              background: status.status === "error" ? "rgba(255,100,100,0.1)" : status.status === "done" ? "rgba(52,168,83,0.1)" : "var(--bg-surface-2)",
-              color: status.status === "error" ? "var(--error)" : status.status === "done" ? "var(--jade)" : "var(--text-secondary)",
-            }}>
-              {status.status === "running" && <div>{status.progress || "训练进行中..."}</div>}
-              {status.status === "done" && <div>训练完成！使用了 {status.samples_used} 个样本。</div>}
-              {status.status === "error" && <div>训练失败: {status.error}</div>}
-            </div>
-          )}
         </div>
-      )}
+      ))}
+      {/* media-type breakdown bar */}
+      <div style={{
+        flex: "2 1 280px",
+        minWidth: 240,
+        padding: "10px 14px",
+        background: "var(--bg-surface)",
+        border: "1px solid var(--border)",
+        borderRadius: "var(--radius-sm)",
+      }}>
+        <div className="text-xs text-muted" style={{ marginBottom: 6 }}>按类型分布</div>
+        {Object.keys(stats.byMedia).length === 0 ? (
+          <div className="text-xs text-muted">—</div>
+        ) : (
+          <>
+            <div style={{ display: "flex", height: 12, borderRadius: 3, overflow: "hidden", background: "var(--bg-surface-2)", marginBottom: 6 }}>
+              {Object.entries(stats.byMedia).map(([mt, n]) => (
+                <div key={mt} title={`${mediaLabel(mt)} · ${n}`} style={{
+                  width: `${(n / Math.max(stats.total, 1)) * 100}%`,
+                  background: mediaColor(mt),
+                }} />
+              ))}
+            </div>
+            <div className="flex gap-8" style={{ flexWrap: "wrap", fontSize: 11 }}>
+              {Object.entries(stats.byMedia).map(([mt, n]) => (
+                <span key={mt} className="flex items-center gap-4">
+                  <span style={{ width: 8, height: 8, borderRadius: 2, background: mediaColor(mt), display: "inline-block" }} />
+                  <span style={{ color: "var(--text-secondary)" }}>{mediaLabel(mt)} {n}</span>
+                </span>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
+
+/* ───────────────── Library Overview (right-panel empty state) ───────────────── */
+
+function LibraryOverview({
+  stats, works, onSelect, onAdd,
+}: {
+  stats: DbStats; works: ReferenceWork[];
+  onSelect: (w: ReferenceWork) => void; onAdd: () => void;
+}) {
+  if (stats.total === 0) {
+    return (
+      <div className="empty-state" style={{ paddingTop: 60 }}>
+        <h4>参考库空空如也</h4>
+        <p>添加你喜欢的作品作为创作参考。可手动录入或上传正文，随后提取风格 / 角色 / 剧情大纲。</p>
+        <button className="btn-primary" style={{ marginTop: 16 }} onClick={onAdd}>
+          + 添加第一部作品
+        </button>
+      </div>
+    );
+  }
+
+  // Sort: rated first (desc), then most recently updated
+  const sorted = [...works].sort((a, b) => {
+    const ra = a.user_rating || 0, rb = b.user_rating || 0;
+    if (rb !== ra) return rb - ra;
+    const ua = a.updated_at || "", ub = b.updated_at || "";
+    return ub.localeCompare(ua);
+  });
+  const top = sorted.slice(0, 12);
+
+  return (
+    <div style={{ padding: "8px 4px" }}>
+      <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
+        <div>
+          <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>参考库概览</h3>
+          <p className="text-xs text-muted">
+            点击左侧任意作品查看详情，或浏览下方按评分排序的近期参考。
+          </p>
+        </div>
+        <button className="btn-primary" onClick={onAdd}>+ 添加作品</button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+        {top.map(w => {
+          const plot = pj(w.plot_outline_json);
+          const previewText: string =
+            (plot?.logline as string) ||
+            (() => {
+              const epochs: any[] = (plot?.epochs as any[]) || [];
+              for (const ep of epochs) {
+                for (const per of (ep.periods || [])) {
+                  for (const ev of (per.events || [])) {
+                    if (ev.description) return ev.description;
+                  }
+                }
+              }
+              return "";
+            })();
+          const charCount = (() => {
+            try { return JSON.parse(w.extracted_characters_json || "[]").length; } catch { return 0; }
+          })();
+          return (
+            <div
+              key={w.ref_id}
+              onClick={() => onSelect(w)}
+              style={{
+                padding: 12,
+                background: "var(--bg-surface)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)",
+                cursor: "pointer",
+                transition: "border-color 0.15s",
+              }}
+              onMouseEnter={e => (e.currentTarget.style.borderColor = "var(--accent)")}
+              onMouseLeave={e => (e.currentTarget.style.borderColor = "var(--border)")}
+            >
+              <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                <span className="truncate" style={{ fontWeight: 600, fontSize: 14 }}>{w.title}</span>
+                <span className="text-xs" style={{ color: mediaColor(w.media_type) }}>{mediaLabel(w.media_type)}</span>
+              </div>
+              <div className="flex gap-6 text-xs text-muted" style={{ marginBottom: 8, flexWrap: "wrap" }}>
+                {w.creator && <span>{w.creator}</span>}
+                {w.genre && <span>· {w.genre}</span>}
+                {w.user_rating ? <span style={{ color: "var(--gold)" }}>{stars(w.user_rating)}</span> : null}
+              </div>
+              {previewText && (
+                <div style={{
+                  fontSize: 12, lineHeight: 1.55,
+                  color: "var(--text-secondary)",
+                  display: "-webkit-box",
+                  WebkitBoxOrient: "vertical",
+                  WebkitLineClamp: 3,
+                  overflow: "hidden",
+                }}>{previewText}</div>
+              )}
+              {!previewText && (
+                <div className="text-xs text-muted" style={{ fontStyle: "italic" }}>
+                  {w.has_full_text ? "尚未提取大纲" : "未上传正文"}
+                </div>
+              )}
+              {(charCount > 0 || w.preprocessing_status === "done") && (
+                <div className="flex gap-6 text-xs text-muted" style={{ marginTop: 8 }}>
+                  {charCount > 0 && <span>{charCount} 角色</span>}
+                  {w.preprocessing_status === "done" && <span style={{ color: "var(--jade)" }}>已分析</span>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+

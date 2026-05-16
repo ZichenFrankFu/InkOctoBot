@@ -794,6 +794,10 @@ export function PlotOutlineEditor({
   const [draft, setDraft] = useState<PlotOutline>(data || { epochs: [] });
   const [saving, setSaving] = useState(false);
   const [openEpoch, setOpenEpoch] = useState<Record<number, boolean>>({});
+  // Read-view mode: "full" = 全时间线 (god view, all info inline);
+  //                 "iceberg" = 冰山理论 (reader POV, [隐] hidden behind click).
+  const [viewMode, setViewMode] = useState<"full" | "iceberg">("iceberg");
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
 
   const start = () => { setDraft(data ? { ...data, epochs: data.epochs || [] } : { epochs: [] }); setEditing(true); };
   const cancel = () => { setDraft(data ? { ...data, epochs: data.epochs || [] } : { epochs: [] }); setEditing(false); };
@@ -1030,6 +1034,42 @@ export function PlotOutlineEditor({
             </div>
           )}
 
+          {/* View-mode toggle: 全时间线 vs 冰山理论 */}
+          <div style={{
+            display: "flex",
+            gap: 0,
+            marginBottom: 12,
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+            overflow: "hidden",
+            width: "fit-content",
+          }}>
+            {([
+              { key: "full", label: "全时间线剧情", hint: "按作品中的时间顺序，包含所有信息（含隐藏真相）" },
+              { key: "iceberg", label: "冰山理论视角", hint: "与读者视角一致，隐藏信息点击展开" },
+            ] as const).map(opt => (
+              <button
+                key={opt.key}
+                className="btn-ghost"
+                title={opt.hint}
+                onClick={() => setViewMode(opt.key)}
+                style={{
+                  padding: "5px 14px",
+                  fontSize: 12,
+                  fontWeight: viewMode === opt.key ? 600 : 400,
+                  color: viewMode === opt.key ? "var(--accent)" : "var(--text-secondary)",
+                  background: viewMode === opt.key ? "var(--accent-subtle)" : "transparent",
+                  borderRadius: 0,
+                }}
+              >{opt.label}</button>
+            ))}
+          </div>
+          <div className="text-xs text-muted" style={{ marginBottom: 10, marginTop: -6 }}>
+            {viewMode === "full"
+              ? "按作品内时间顺序排列，所有信息（含 [隐] 隐藏真相）直接展示。"
+              : "采用冰山理论 · 主视角阅读 · 隐藏信息默认折叠，点击 [隐] 标签展开。"}
+          </div>
+
           <div className="flex flex-col gap-12">
             {epochs.map((ep, ei) => {
               const isOpen = openEpoch[ei] !== false; // default open
@@ -1051,21 +1091,48 @@ export function PlotOutlineEditor({
                         {per.time || "(未填写时间)"}
                       </div>
                       <div className="flex flex-col gap-6" style={{ paddingLeft: 8, borderLeft: "2px solid var(--border)" }}>
-                        {(per.events || []).map((ev, evi) => (
-                          <div key={evi} style={{ paddingLeft: 8 }}>
-                            <div style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-primary)" }}>
-                              <span style={{ fontWeight: 600, color: "var(--accent)" }}>
-                                【{ev.subject}·{ev.category}·{ev.name}】
-                              </span>
-                              <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
-                            </div>
-                            {ev.hidden && (
-                              <div style={{ fontSize: 12, lineHeight: 1.6, marginTop: 2, color: "var(--gold)" }}>
-                                <span style={{ fontWeight: 600 }}>[隐]</span> {ev.hidden}
+                        {(per.events || []).map((ev, evi) => {
+                          const key = `${ei}-${pi}-${evi}`;
+                          const showHidden = viewMode === "full" || revealed[key];
+                          return (
+                            <div key={evi} style={{ paddingLeft: 8 }}>
+                              <div style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-primary)" }}>
+                                <span style={{ fontWeight: 600, color: "var(--accent)" }}>
+                                  【{ev.subject}·{ev.category}·{ev.name}】
+                                </span>
+                                <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
+                                {ev.hidden && viewMode === "iceberg" && !showHidden && (
+                                  <button
+                                    className="btn-ghost"
+                                    onClick={() => setRevealed(prev => ({ ...prev, [key]: true }))}
+                                    style={{
+                                      marginLeft: 6,
+                                      padding: "1px 8px",
+                                      fontSize: 10,
+                                      borderRadius: 3,
+                                      background: "var(--bg-surface-2)",
+                                      border: "1px dashed var(--gold)",
+                                      color: "var(--gold)",
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      lineHeight: 1.4,
+                                    }}
+                                    title="点击展开隐藏的真相"
+                                  >[隐] 展开</button>
+                                )}
                               </div>
-                            )}
-                          </div>
-                        ))}
+                              {ev.hidden && showHidden && (
+                                <div style={{ fontSize: 12, lineHeight: 1.6, marginTop: 2, color: "var(--gold)" }}>
+                                  <span
+                                    style={{ fontWeight: 600, cursor: viewMode === "iceberg" ? "pointer" : "default" }}
+                                    onClick={() => viewMode === "iceberg" && setRevealed(prev => ({ ...prev, [key]: false }))}
+                                    title={viewMode === "iceberg" ? "点击重新隐藏" : undefined}
+                                  >[隐]</span> {ev.hidden}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                         {(per.events || []).length === 0 && (
                           <div className="text-xs text-muted" style={{ paddingLeft: 8 }}>（无事件）</div>
                         )}
