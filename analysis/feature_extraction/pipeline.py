@@ -308,7 +308,8 @@ class FeatureExtractionPipeline:
 
     async def compute_segment(self, ref_id: str, segment_index: int,
                                 segment_chars: int | None = None,
-                                use_ai: bool = True) -> dict[str, Any]:
+                                use_ai: bool = True,
+                                prompt_overrides: dict[str, str] | None = None) -> dict[str, Any]:
         """Extract features for one segment but DO NOT persist anything.
 
         Style fingerprint uses NLP (rule-based, fast, deterministic).
@@ -372,13 +373,19 @@ class FeatureExtractionPipeline:
         ai_methods_used: list[str] = []
         ai_methods_fallback: list[str] = []
 
-        async def _ai_or_nlp(name: str, ai_fn, nlp_fn):
-            """Try AI; on failure, fall back to NLP and record a warning."""
+        async def _ai_or_nlp(name: str, ai_fn, nlp_fn, *, prompt_key: str | None = None):
+            """Try AI; on failure, fall back to NLP and record a warning.
+            When prompt_key is set, the per-call override (if any) is
+            passed through to the AI extractor as `prompt_override`."""
             if router is None:
                 ai_methods_fallback.append(name)
                 return nlp_fn()
             try:
-                result = await ai_fn(seg_chapters, router)
+                override = (prompt_overrides or {}).get(prompt_key) if prompt_key else None
+                if override is not None:
+                    result = await ai_fn(seg_chapters, router, prompt_override=override)
+                else:
+                    result = await ai_fn(seg_chapters, router)
                 ai_methods_used.append(name)
                 return result
             except Exception as e:
@@ -397,6 +404,7 @@ class FeatureExtractionPipeline:
                 "characters",
                 ai_extractor.ai_extract_characters,
                 lambda: extract_characters(seg_chapters),
+                prompt_key="reference.characters",
             )
             chars = _enrich_characters_with_appearance(chars, seg_chapters)
         except Exception as e:
@@ -407,7 +415,13 @@ class FeatureExtractionPipeline:
         try:
             if router is not None:
                 try:
-                    settings_items = await ai_extractor.ai_extract_settings(seg_chapters, router)
+                    settings_override = (prompt_overrides or {}).get("reference.settings")
+                    if settings_override is not None:
+                        settings_items = await ai_extractor.ai_extract_settings(
+                            seg_chapters, router, prompt_override=settings_override,
+                        )
+                    else:
+                        settings_items = await ai_extractor.ai_extract_settings(seg_chapters, router)
                     ai_methods_used.append("settings")
                 except Exception as e:
                     logger.warning("[ai_extractor] settings failed: %s", e)
@@ -428,6 +442,7 @@ class FeatureExtractionPipeline:
                 "rhythm",
                 ai_extractor.ai_extract_rhythm_v2,
                 lambda: extract_rhythm_v2(seg_chapters),
+                prompt_key="reference.rhythm",
             )
         except Exception as e:
             errors.append(f"rhythm: {e}")
@@ -520,10 +535,12 @@ class FeatureExtractionPipeline:
 
     async def run_segment(self, ref_id: str, segment_index: int,
                             segment_chars: int | None = None,
-                            use_ai: bool = True) -> dict[str, Any]:
+                            use_ai: bool = True,
+                            prompt_overrides: dict[str, str] | None = None) -> dict[str, Any]:
         """Compute + persist in one call (kept for backwards compat)."""
         result = await self.compute_segment(
             ref_id, segment_index, segment_chars=segment_chars, use_ai=use_ai,
+            prompt_overrides=prompt_overrides,
         )
         if "error" in result and len(result) <= 2:
             return {"ref_id": ref_id, **result}

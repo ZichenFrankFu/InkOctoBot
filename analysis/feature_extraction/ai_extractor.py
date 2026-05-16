@@ -173,12 +173,15 @@ def _parse_obj(raw: str) -> dict:
 # ── Public API ──────────────────────────────────────────────────────
 
 
-async def ai_extract_characters(chapters: list[dict], router: Any) -> list[dict]:
-    """Returns list of {name, mentions, intro, speech_samples} dicts.
+async def ai_extract_characters(chapters: list[dict], router: Any,
+                                   *, prompt_override: str | None = None) -> list[dict]:
+    """Returns list of {name, mentions, intro, speech_samples, first_seen_at}.
     appearance_chapters / appearance_word_count are filled in by the caller
     after intersecting with chapter texts (rule-based, deterministic)."""
+    from analysis.feature_extraction.prompts import render
     text, nchars = _build_segment_text(chapters)
-    prompt = _CHARACTERS_PROMPT.format(
+    prompt = render(
+        "reference.characters", override=prompt_override,
         n_chapters=len(chapters), n_chars=nchars, text=text,
     )
     raw = await _invoke(router, prompt)
@@ -198,10 +201,13 @@ async def ai_extract_characters(chapters: list[dict], router: Any) -> list[dict]
     return out
 
 
-async def ai_extract_settings(chapters: list[dict], router: Any) -> list[dict]:
-    """Returns list of {category, title, content, hidden} dicts."""
+async def ai_extract_settings(chapters: list[dict], router: Any,
+                                *, prompt_override: str | None = None) -> list[dict]:
+    """Returns list of {category, title, content, hidden, first_introduced_at}."""
+    from analysis.feature_extraction.prompts import render
     text, nchars = _build_segment_text(chapters)
-    prompt = _SETTINGS_PROMPT.format(
+    prompt = render(
+        "reference.settings", override=prompt_override,
         n_chapters=len(chapters), n_chars=nchars, text=text,
     )
     raw = await _invoke(router, prompt)
@@ -277,11 +283,16 @@ _CHAPTER_TYPES_VALID = frozenset({
 })
 
 
-async def ai_extract_rhythm_v2(chapters: list[dict], router: Any) -> dict:
+async def ai_extract_rhythm_v2(chapters: list[dict], router: Any,
+                                  *, prompt_override: str | None = None) -> dict:
     """Single AI call that produces the consolidated rhythm_json shape
     (replaces ai_extract_narrative + ai_extract_rhythm)."""
+    from analysis.feature_extraction.prompts import render
     text, _ = _build_segment_text(chapters)
-    prompt = _RHYTHM_V2_PROMPT.format(n_chapters=len(chapters), text=text)
+    prompt = render(
+        "reference.rhythm", override=prompt_override,
+        n_chapters=len(chapters), text=text,
+    )
     raw = await _invoke(router, prompt, max_tokens=4096)
     obj = _parse_obj(raw)
 

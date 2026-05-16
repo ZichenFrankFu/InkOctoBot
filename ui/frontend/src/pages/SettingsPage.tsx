@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import type { AppSettings } from "../api/types";
+import PromptPreview from "../components/reference/PromptPreview";
 
 const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string; desc: string }[] }[] = [
   {
@@ -67,7 +68,7 @@ const PROVIDER_GROUPS: { key: string; label: string }[] = [
   { key: "self_hosted", label: "自部署" },
 ];
 
-type Tab = "pipeline" | "providers" | "system";
+type Tab = "pipeline" | "providers" | "prompts" | "system";
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>("pipeline");
@@ -196,6 +197,7 @@ export default function SettingsPage() {
   const TABS: { key: Tab; label: string; icon: string }[] = [
     { key: "pipeline", label: "Pipeline 配置", icon: "\u2699" },
     { key: "providers", label: "模型供应商", icon: "\u2261" },
+    { key: "prompts", label: "LLM Prompt", icon: "\u270E" },
     { key: "system", label: "系统设置", icon: "\u2638" },
   ];
 
@@ -341,6 +343,9 @@ export default function SettingsPage() {
           onSettingsChange={(s) => { setSettings(s); setDirty(true); }}
         />
       )}
+
+      {/* ===== Prompts Tab ===== */}
+      {tab === "prompts" && <PromptsTab />}
 
       {/* ===== System Tab ===== */}
       {tab === "system" && (
@@ -914,6 +919,92 @@ function SystemTab({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ───────────────── LLM Prompt 模板管理 ───────────────── */
+
+interface PromptItem {
+  key: string;
+  description: string;
+  vars: string[];
+  has_override: boolean;
+}
+
+function PromptsTab() {
+  const [items, setItems] = useState<PromptItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await apiGet<{ items: PromptItem[] }>("/api/references/prompts");
+      setItems(r.items || []);
+    } catch (e) {
+      console.error("prompts list failed:", e);
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
+        参考作品 LLM 调用使用的 prompt 模板。点击「编辑」可查看出厂默认 + 当前内容、修改、并保存为新默认。
+        每次提取/对话时可单独覆盖（不影响保存的默认）。
+      </div>
+
+      {loading ? (
+        <div className="text-xs text-muted" style={{ padding: 20, textAlign: "center" }}>加载中...</div>
+      ) : (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-body" style={{ padding: 0 }}>
+            {items.map((it, idx) => (
+              <div key={it.key} style={{
+                padding: "14px 18px",
+                borderBottom: idx < items.length - 1 ? "1px solid var(--border-subtle)" : "none",
+                display: "flex", alignItems: "center", gap: 12,
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+                      {it.key}
+                    </span>
+                    {it.has_override && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px",
+                        color: "var(--gold)", background: "var(--bg-surface-2)",
+                        border: "1px solid var(--gold)",
+                      }}>已覆盖</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted">{it.description || "—"}</div>
+                  {it.vars.length > 0 && (
+                    <div className="text-xs text-muted" style={{ marginTop: 2, fontFamily: "var(--font-mono)" }}>
+                      vars: {it.vars.join(", ")}
+                    </div>
+                  )}
+                </div>
+                <button
+                  className={selected === it.key ? "btn-primary" : "btn"}
+                  style={{ fontSize: 12, padding: "4px 12px" }}
+                  onClick={() => setSelected(selected === it.key ? null : it.key)}
+                >{selected === it.key ? "关闭" : "编辑"}</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {selected && (
+        <PromptPreview
+          promptKey={selected}
+          onSaved={load}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </div>
   );
 }

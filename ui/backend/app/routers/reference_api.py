@@ -350,6 +350,10 @@ class SegmentRunRequest(BaseModel):
     segment_index: int
     segment_chars: Optional[int] = None
     use_ai: bool = True
+    # Per-call prompt overrides — keys are registry keys ("reference.characters",
+    # "reference.settings", "reference.rhythm"). Values are full prompt text.
+    # Not persisted; affects this call only.
+    prompt_overrides: Optional[dict[str, str]] = None
 
 
 class SegmentCommitRequest(BaseModel):
@@ -371,6 +375,7 @@ async def preview_segment(ref_id: str, body: SegmentRunRequest):
             ref_id, body.segment_index,
             segment_chars=body.segment_chars,
             use_ai=body.use_ai,
+            prompt_overrides=body.prompt_overrides,
         )
         if "error" in result and len(result) <= 2:
             raise HTTPException(400, result.get("error") or "提取失败")
@@ -414,6 +419,7 @@ async def run_segment(ref_id: str, body: SegmentRunRequest):
             ref_id, body.segment_index,
             segment_chars=body.segment_chars,
             use_ai=body.use_ai,
+            prompt_overrides=body.prompt_overrides,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -462,6 +468,7 @@ class SegmentChatRequest(BaseModel):
     segment_index: int
     messages: list[ChatMessage]
     current_result: Optional[dict] = None  # the previewed extraction the user is iterating on
+    system_prompt_override: Optional[str] = None  # per-call override of the chat system prompt
 
 
 _CHAT_SYSTEM_PROMPT = """你是参考作品分段提取的协作助手。用户正在审阅一个剧情段落的自动提取结果（编年史大纲、角色、设定），并希望与你对话调整。
@@ -531,10 +538,15 @@ async def chat_segment(ref_id: str, body: SegmentChatRequest):
     )
 
     try:
+        from analysis.feature_extraction.prompts import render as _render_prompt
+        system_prompt = _render_prompt(
+            "reference.chat_system",
+            override=body.system_prompt_override,
+        )
         provider = router_inst._get_provider("reference_extractor")
         resp = await provider.generate(
             [
-                LLMMessage(role="system", content=_CHAT_SYSTEM_PROMPT),
+                LLMMessage(role="system", content=system_prompt),
                 LLMMessage(role="user", content=user_msg),
             ],
             temperature=0.4, max_tokens=4096,
@@ -783,6 +795,162 @@ _MEDIA_ZH = {
 }
 
 
+# ─── Prompt template registry (read / write / preview) ───
+
+class PromptUpdateRequest(BaseModel):
+    template: Optional[str] = None  # non-null = persist; null = reset to factory
+
+
+@router.get("/prompts")
+def list_prompts():
+    """List every registered prompt key with description + has_override flag."""
+    from analysis.feature_extraction.prompts import list_keys
+    return {"items": list_keys()}
+
+
+@router.get("/prompts/{key}")
+def get_prompt(key: str):
+    """Return the factory default + the current (possibly overridden) text."""
+    from analysis.feature_extraction.prompts import (
+        DEFAULT_PROMPTS, get_default, get_template,
+    )
+    if key not in DEFAULT_PROMPTS:
+        raise HTTPException(404, f"unknown prompt key: {key}")
+    entry = DEFAULT_PROMPTS[key]
+    default = get_default(key)
+    current = get_template(key)
+    return {
+        "key": key,
+        "description": entry.get("description", ""),
+        "vars": list(entry.get("vars") or []),
+        "default": default,
+        "current": current,
+        "has_override": current != default,
+    }
+
+
+@router.put("/prompts/{key}")
+def update_prompt(key: str, body: PromptUpdateRequest):
+    """Persist a new override (template != null) or reset to factory (null)."""
+    from analysis.feature_extraction.prompts import (
+        DEFAULT_PROMPTS, set_template, reset,
+    )
+    if key not in DEFAULT_PROMPTS:
+        raise HTTPException(404, f"unknown prompt key: {key}")
+    if body.template is None:
+        reset(key)
+    else:
+        set_template(key, body.template)
+    return get_prompt(key)
+
+
+class PromptPreviewRequest(BaseModel):
+    vars: dict[str, Any] = {}
+    override: Optional[str] = None
+
+
+@router.post("/prompts/{key}/render")
+def render_prompt(key: str, body: PromptPreviewRequest):
+    """Render the prompt with explicit vars (used by the preview UI). The
+    `override` field, if set, takes precedence over the persisted override
+    for THIS call only — nothing is saved."""
+    from analysis.feature_extraction.prompts import DEFAULT_PROMPTS, render
+    if key not in DEFAULT_PROMPTS:
+        raise HTTPException(404, f"unknown prompt key: {key}")
+    try:
+        rendered = render(key, override=body.override, **(body.vars or {}))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"key": key, "rendered": rendered}
+
+
+@router.get("/prompts/{key}/preview")
+def preview_prompt(
+    key: str,
+    ref_id: Optional[str] = None,
+    segment_index: Optional[int] = None,
+):
+    """Render the prompt with the real `vars` for a specific upcoming call.
+
+    For segment-scoped prompts (characters/settings/rhythm/chat_system),
+    the server loads the work, builds the segment text and splices it in,
+    so the UI shows EXACTLY what the model will see.
+    """
+    from analysis.feature_extraction.prompts import DEFAULT_PROMPTS, render, get_template
+    if key not in DEFAULT_PROMPTS:
+        raise HTTPException(404, f"unknown prompt key: {key}")
+
+    template = get_template(key)
+    entry = DEFAULT_PROMPTS[key]
+    required_vars = list(entry.get("vars") or [])
+
+    # If the prompt has no vars (e.g. chat_system), return as-is
+    if not required_vars:
+        return {"key": key, "template": template, "rendered": template, "vars": {}}
+
+    # Segment-scoped: need ref_id + segment_index → build chapter text
+    if key in {"reference.characters", "reference.settings", "reference.rhythm"}:
+        if not ref_id or segment_index is None:
+            raise HTTPException(400, "ref_id + segment_index required for this prompt")
+        db = _db()
+        w = db.get_work(ref_id)
+        if not w:
+            raise HTTPException(404, "参考作品不存在")
+        try:
+            from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+            pipe = FeatureExtractionPipeline(db.db_path)
+            text = pipe._load_text(w)
+            if not text:
+                raise HTTPException(400, "作品尚未上传正文")
+            all_chapters = pipe._split_chapters(text)
+            plan = pipe.plan_segments(all_chapters)
+            segs = plan["segments"]
+            if segment_index < 0 or segment_index >= len(segs):
+                raise HTTPException(400, "segment_index 超出范围")
+            seg = segs[segment_index]
+            seg_chapters = [
+                all_chapters[j - 1]
+                for j in range(seg["start_chapter"], seg["end_chapter"] + 1)
+            ]
+            from analysis.feature_extraction.ai_extractor import _build_segment_text
+            seg_text, nchars = _build_segment_text(seg_chapters)
+            vars_ = {
+                "n_chapters": len(seg_chapters),
+                "n_chars": nchars,
+                "text": seg_text,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, f"构建预览失败: {e}")
+        rendered = render(key, **vars_)
+        return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
+
+    # ai_complete: ref_id is enough
+    if key == "reference.ai_complete":
+        if not ref_id:
+            raise HTTPException(400, "ref_id required for this prompt")
+        db = _db()
+        w = db.get_work(ref_id)
+        if not w:
+            raise HTTPException(404, "参考作品不存在")
+        author_hint = (
+            f"已知作者：{w['creator']}（可用作辅助检索；如有更准确的全名请覆盖）"
+            if w.get("creator") else "作者未知，请通过标题检索"
+        )
+        vars_ = {
+            "media_type_zh": _MEDIA_ZH.get(w.get("media_type", ""), "作品"),
+            "title": w.get("title", ""),
+            "author_hint": author_hint,
+        }
+        rendered = render(key, **vars_)
+        return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
+
+    # Fallback: render with empty vars (will probably raise)
+    rendered = render(key)
+    return {"key": key, "template": template, "rendered": rendered, "vars": {}}
+
+
 @router.get("/web_search/capability")
 def web_search_capability():
     """Return whether the configured ``reference_web_search`` role's
@@ -818,8 +986,12 @@ def _strip_json_blob(raw: str) -> str:
     return s
 
 
+class AiCompleteRequest(BaseModel):
+    prompt_override: Optional[str] = None  # per-call override
+
+
 @router.post("/works/{ref_id}/ai_complete")
-async def ai_complete_work(ref_id: str):
+async def ai_complete_work(ref_id: str, body: AiCompleteRequest | None = None):
     """Use the configured ``reference_web_search`` model to fill in
     metadata fields (creator/genre/serial_status/user_summary). Only
     fills fields the user hasn't already set; user edits are preserved."""
@@ -843,7 +1015,10 @@ async def ai_complete_work(ref_id: str):
         f"已知作者：{w['creator']}（可用作辅助检索；如有更准确的全名请覆盖）"
         if w.get("creator") else "作者未知，请通过标题检索"
     )
-    prompt = _AI_COMPLETE_PROMPT.format(
+    from analysis.feature_extraction.prompts import render as _render_prompt
+    prompt = _render_prompt(
+        "reference.ai_complete",
+        override=(body.prompt_override if body else None),
         media_type_zh=_MEDIA_ZH.get(w.get("media_type", ""), "作品"),
         title=w.get("title", ""),
         author_hint=author_hint,
