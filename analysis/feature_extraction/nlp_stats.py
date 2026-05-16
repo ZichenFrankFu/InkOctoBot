@@ -134,16 +134,41 @@ def extract_characters(chapters: list[dict], min_mentions: int = 2,
                     dlg_by[nm].append(txt)
                     break
 
-    # appearance counts per character
+    # appearance counts + first-seen marker per character
     appearance_chapters: dict[str, int] = defaultdict(int)
     appearance_word_count: dict[str, int] = defaultdict(int)
-    for ch in chapters:
+    first_seen_chapter: dict[str, int] = {}
+    cumulative_chars = 0
+    cumulative_at_first: dict[str, int] = {}
+    for i, ch in enumerate(chapters, start=1):
         content = ch.get("content", "")
         clen = len(content)
         for nm in name_set:
             if nm in content:
                 appearance_chapters[nm] += 1
                 appearance_word_count[nm] += clen
+                if nm not in first_seen_chapter:
+                    first_seen_chapter[nm] = i
+                    cumulative_at_first[nm] = cumulative_chars
+        cumulative_chars += clen
+
+    # Format first_seen marker: prefer date hint in the first chapter's
+    # opening 200 chars; else "第 N 章"; else "约 M 万字处".
+    try:
+        from analysis.feature_extraction.narrative_extractor import _DATE_HINT_PAT
+    except ImportError:
+        _DATE_HINT_PAT = None  # type: ignore
+
+    def _format_first_seen(nm: str) -> str:
+        ch_idx = first_seen_chapter.get(nm)
+        if not ch_idx:
+            return ""
+        if _DATE_HINT_PAT is not None and ch_idx - 1 < len(chapters):
+            head = (chapters[ch_idx - 1].get("content") or "")[:200]
+            m = _DATE_HINT_PAT.search(head)
+            if m:
+                return m.group(1).strip()
+        return f"第 {ch_idx} 章"
 
     results = []
     for name, count in top:
@@ -154,5 +179,6 @@ def extract_characters(chapters: list[dict], min_mentions: int = 2,
             "speech_samples": dlg_by.get(name, [])[:3],
             "appearance_chapters": appearance_chapters.get(name, 0),
             "appearance_word_count": appearance_word_count.get(name, 0),
+            "first_seen_at": _format_first_seen(name),
         })
     return results

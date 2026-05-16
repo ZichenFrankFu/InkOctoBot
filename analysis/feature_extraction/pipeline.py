@@ -15,8 +15,17 @@ logger = logging.getLogger("inkoctobot.analysis.feature_extraction.pipeline")
 
 def _enrich_characters_with_appearance(chars: list[dict], chapters: list[dict]) -> list[dict]:
     """For each character returned by the AI extractor, compute deterministic
-    appearance_chapters and appearance_word_count by scanning chapter content.
-    Preserves the AI-provided intro and speech_samples."""
+    appearance_chapters / appearance_word_count by scanning chapter content,
+    and fill `first_seen_at` if the AI didn't provide one.
+
+    Time-marker fallback: first chapter that contains the name → look for a
+    date regex in its opening 200 chars; if found, use that; else "第 N 章".
+    """
+    try:
+        from analysis.feature_extraction.narrative_extractor import _DATE_HINT_PAT
+    except ImportError:
+        _DATE_HINT_PAT = None  # type: ignore
+
     out: list[dict] = []
     for c in chars:
         name = (c.get("name") or "").strip()
@@ -24,11 +33,26 @@ def _enrich_characters_with_appearance(chars: list[dict], chapters: list[dict]) 
             continue
         ap_chapters = 0
         ap_chars = 0
-        for ch in chapters:
+        first_seen_idx: int | None = None
+        for i, ch in enumerate(chapters, start=1):
             content = ch.get("content", "")
             if name in content:
                 ap_chapters += 1
                 ap_chars += len(content)
+                if first_seen_idx is None:
+                    first_seen_idx = i
+
+        # Time marker: prefer AI-provided, else derive from chapter scan
+        first_seen = (c.get("first_seen_at") or "").strip()
+        if not first_seen and first_seen_idx is not None:
+            head = (chapters[first_seen_idx - 1].get("content") or "")[:200]
+            if _DATE_HINT_PAT is not None:
+                m = _DATE_HINT_PAT.search(head)
+                if m:
+                    first_seen = m.group(1).strip()
+            if not first_seen:
+                first_seen = f"第 {first_seen_idx} 章"
+
         out.append({
             "name": name,
             "mentions": int(c.get("mentions") or 0),
@@ -36,7 +60,22 @@ def _enrich_characters_with_appearance(chars: list[dict], chapters: list[dict]) 
             "speech_samples": list(c.get("speech_samples") or [])[:3],
             "appearance_chapters": ap_chapters,
             "appearance_word_count": ap_chars,
+            "first_seen_at": first_seen,
         })
+    return out
+
+
+def _enrich_settings_with_timestamp(settings_items: list[dict], chapters: list[dict],
+                                      segment_start_chapter: int) -> list[dict]:
+    """Fill `first_introduced_at` on settings items when AI didn't provide one.
+    Falls back to the segment's start chapter — we can't reliably localize
+    a setting within a segment, but at least the marker is honest."""
+    out: list[dict] = []
+    for s in settings_items:
+        ts = (s.get("first_introduced_at") or "").strip()
+        if not ts:
+            ts = f"第 {segment_start_chapter} 章"
+        out.append({**s, "first_introduced_at": ts})
     return out
 
 
@@ -375,6 +414,9 @@ class FeatureExtractionPipeline:
                     ai_methods_fallback.append("settings")
             else:
                 ai_methods_fallback.append("settings")
+            settings_items = _enrich_settings_with_timestamp(
+                settings_items, seg_chapters, seg.get("start_chapter") or 1,
+            )
         except Exception as e:
             errors.append(f"settings: {e}")
 

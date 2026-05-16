@@ -442,6 +442,7 @@ interface CharacterItem {
   speech_samples?: string[];
   appearance_chapters?: number;
   appearance_word_count?: number;
+  first_seen_at?: string; // 首次出场的时间锚点
 }
 
 function fmtAppearance(c: CharacterItem): string {
@@ -521,13 +522,23 @@ export function CharactersEditor({ data, onSave }: { data: CharacterItem[] | nul
                   list[i] = { ...c, speech_samples: e.target.value.split("\n").map(s => s.trim()).filter(Boolean) };
                   setDraft(list);
                 }}
+                style={{ marginBottom: 6 }}
+              />
+              <input
+                className="input"
+                placeholder='首次出场时间锚点 (如 "1954 年" / "第 3 章" / "约 5 万字处")'
+                value={c.first_seen_at || ""}
+                onChange={e => {
+                  const list = [...draft]; list[i] = { ...c, first_seen_at: e.target.value }; setDraft(list);
+                }}
+                style={{ fontSize: 12 }}
               />
             </div>
           ))}
           <button
             className="btn"
             style={{ fontSize: 12, padding: "4px 10px", alignSelf: "flex-start" }}
-            onClick={() => setDraft([...draft, { name: "", mentions: 0, intro: "", speech_samples: [], appearance_chapters: 0, appearance_word_count: 0 }])}
+            onClick={() => setDraft([...draft, { name: "", mentions: 0, intro: "", speech_samples: [], appearance_chapters: 0, appearance_word_count: 0, first_seen_at: "" }])}
           >+ 新增角色</button>
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -565,9 +576,17 @@ function CharactersReadOnlyList({ list, onEdit }: { list: CharacterItem[]; onEdi
                 disabled={!hasSpeech && !c.intro}
               >
                 <span style={{ flex: 1, minWidth: 0 }}>
-                  <span className="flex items-center gap-8" style={{ marginBottom: c.intro ? 4 : 0 }}>
+                  <span className="flex items-center gap-8" style={{ marginBottom: c.intro ? 4 : 0, flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 600 }}>{c.name || "(未命名)"}</span>
                     <span className="text-xs text-muted">{fmtAppearance(c)}</span>
+                    {c.first_seen_at && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px",
+                        color: "var(--accent)",
+                        background: "var(--accent-subtle)",
+                        border: "1px solid var(--accent)",
+                      }} title="首次出场时间锚点">{c.first_seen_at}</span>
+                    )}
                   </span>
                   {c.intro && !isOpen && (
                     <span className="truncate" style={{
@@ -761,6 +780,7 @@ export interface ChronicleEvent {
   name: string;        // 事件名
   description: string; // 客观描述,2-5 句
   hidden?: string;     // [隐] 当时无人知晓但作为史学家知道的真相
+  time_marker?: string; // 事件在文本中的时间锚点 (date | "第 N 章" | "约 M 万字处")
 }
 export interface ChroniclePeriod {
   time: string;        // 时间标题: "2030 年 2 月上旬" / "第一卷开篇" 等
@@ -786,7 +806,7 @@ function isLegacy(d: PlotOutline | null | undefined): boolean {
 }
 
 function emptyEvent(): ChronicleEvent {
-  return { subject: "", category: "", name: "", description: "", hidden: "" };
+  return { subject: "", category: "", name: "", description: "", hidden: "", time_marker: "" };
 }
 
 export function PlotOutlineEditor({
@@ -969,7 +989,14 @@ export function PlotOutlineEditor({
                             placeholder="[隐] 隐藏真相/动机（可选，留空则不显示）"
                             value={ev.hidden || ""}
                             onChange={e => updateEvent(ei, pi, evi, { hidden: e.target.value })}
-                            style={{ fontSize: 12, color: "var(--gold)" }}
+                            style={{ fontSize: 12, color: "var(--gold)", marginBottom: 4 }}
+                          />
+                          <input
+                            className="input"
+                            placeholder='事件时间锚点 (留空则用 period 的时间)'
+                            value={ev.time_marker || ""}
+                            onChange={e => updateEvent(ei, pi, evi, { time_marker: e.target.value })}
+                            style={{ fontSize: 12 }}
                           />
                         </div>
                       ))}
@@ -1108,7 +1135,7 @@ export function PlotOutlineEditor({
                             <div key={evi} style={{ paddingLeft: 8 }}>
                               <div style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-primary)" }}>
                                 <span style={{ fontWeight: 600, color: "var(--accent)" }}>
-                                  【{ev.subject}·{ev.category}·{ev.name}】
+                                  【{ev.subject}·{ev.category}·{ev.name}{ev.time_marker ? ` · ${ev.time_marker}` : ""}】
                                 </span>
                                 <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
                                 {ev.hidden && viewMode === "iceberg" && !showHidden && (
@@ -1184,6 +1211,7 @@ export interface SettingItem {
   title: string;
   content: string;
   hidden?: string;
+  first_introduced_at?: string; // 首次出现的时间锚点
 }
 
 export const SETTING_CATEGORIES: { key: string; label: string; color: string }[] = [
@@ -1265,14 +1293,21 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
                 placeholder="[隐] 该设定背后的真相 / 读者尚未知道的部分（可选）"
                 value={s.hidden || ""}
                 onChange={e => { const list = [...draft]; list[i] = { ...s, hidden: e.target.value }; setDraft(list); }}
-                style={{ color: "var(--gold)" }}
+                style={{ color: "var(--gold)", marginBottom: 6 }}
+              />
+              <input
+                className="input"
+                placeholder='首次出现的时间锚点 (如 "1954 年" / "第 3 章")'
+                value={s.first_introduced_at || ""}
+                onChange={e => { const list = [...draft]; list[i] = { ...s, first_introduced_at: e.target.value }; setDraft(list); }}
+                style={{ fontSize: 12 }}
               />
             </div>
           ))}
           <button
             className="btn"
             style={{ fontSize: 12, padding: "4px 10px", alignSelf: "flex-start" }}
-            onClick={() => setDraft([...draft, { category: "worldview", title: "", content: "", hidden: "" }])}
+            onClick={() => setDraft([...draft, { category: "worldview", title: "", content: "", hidden: "", first_introduced_at: "" }])}
           >+ 新增设定</button>
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -1341,8 +1376,18 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
                   borderRadius: 4,
                   border: "1px solid var(--border)",
                 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)", marginBottom: 4 }}>
-                    {item.title || "(未命名)"}
+                  <div className="flex items-center gap-6" style={{ marginBottom: 4, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>
+                      {item.title || "(未命名)"}
+                    </span>
+                    {item.first_introduced_at && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px",
+                        color: "var(--accent)",
+                        background: "var(--accent-subtle)",
+                        border: "1px solid var(--accent)",
+                      }} title="首次出现时间锚点">{item.first_introduced_at}</span>
+                    )}
                   </div>
                   {item.content && (
                     <div style={{ fontSize: 12, lineHeight: 1.55, color: "var(--text-secondary)" }}>

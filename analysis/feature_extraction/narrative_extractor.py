@@ -230,12 +230,18 @@ def extract_plot_outline(chapters: list[dict],
             sample_step = max(1, chap_count // 3)  # ≤3 placeholder events per period
             for j in range(seg_start, seg_end + 1, sample_step):
                 t = titles[j - 1] if j - 1 < len(titles) else ""
+                head = (chapters[j - 1].get("content") or "")[:200] if j - 1 < len(chapters) else ""
+                tm = ""
+                dm = _DATE_HINT_PAT.search(head)
+                if dm:
+                    tm = dm.group(1).strip()
                 events.append({
                     "subject": "正文",
                     "category": f"第{j}章",
                     "name": t[:30] or f"第{j}章节点",
                     "description": "（需作者依编年史规则改写：客观叙述本章发生的关键事实，避免对话/心理/场景细节。）",
                     "hidden": "",
+                    "time_marker": tm or f"第 {j} 章",
                 })
             # shuangdian falling in this segment
             for sd in shuangdian:
@@ -247,6 +253,7 @@ def extract_plot_outline(chapters: list[dict],
                         "name": f"第{ch}章爽点",
                         "description": "（自动检测的爽点节奏，需作者改写为该章的客观关键事实。）",
                         "hidden": "",
+                        "time_marker": f"第 {ch} 章",
                     })
             # climax marker
             for ch in sorted(climaxes):
@@ -257,6 +264,7 @@ def extract_plot_outline(chapters: list[dict],
                         "name": f"第{ch}章张力峰值",
                         "description": "（自动检测的张力峰值，需作者改写为该章的客观关键事实。）",
                         "hidden": "",
+                        "time_marker": f"第 {ch} 章",
                     })
             periods.append({"time": time_label, "events": events})
             cur_start = ci + 1
