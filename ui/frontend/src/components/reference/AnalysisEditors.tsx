@@ -438,8 +438,20 @@ export function NarrativeStructureEditor({ data, onSave }: { data: NarrativeStru
 interface CharacterItem {
   name: string;
   mentions?: number;
+  intro?: string;
   speech_samples?: string[];
-  relationships?: Record<string, string>;
+  appearance_chapters?: number;
+  appearance_word_count?: number;
+}
+
+function fmtAppearance(c: CharacterItem): string {
+  const ap = c.appearance_chapters || 0;
+  if (ap > 0) return `出场 ${ap} 章/集`;
+  const w = c.appearance_word_count || 0;
+  if (w >= 10000) return `约 ${(w / 10000).toFixed(1)} 万字`;
+  if (w > 0) return `约 ${w.toLocaleString()} 字`;
+  if (c.mentions) return `提及 ${c.mentions} 次`;
+  return "";
 }
 
 export function CharactersEditor({ data, onSave }: { data: CharacterItem[] | null; onSave: (d: CharacterItem[]) => Promise<void> | void }) {
@@ -475,12 +487,13 @@ export function CharactersEditor({ data, onSave }: { data: CharacterItem[] | nul
                 <input
                   className="input"
                   type="number"
-                  placeholder="出场次数"
-                  value={c.mentions ?? 0}
+                  placeholder="出场章数"
+                  value={c.appearance_chapters ?? 0}
                   onChange={e => {
-                    const list = [...draft]; list[i] = { ...c, mentions: parseInt(e.target.value, 10) || 0 }; setDraft(list);
+                    const list = [...draft]; list[i] = { ...c, appearance_chapters: parseInt(e.target.value, 10) || 0 }; setDraft(list);
                   }}
                   style={{ width: 110 }}
+                  title="该角色出现的章节/集数"
                 />
                 <button
                   className="btn-icon"
@@ -488,6 +501,16 @@ export function CharactersEditor({ data, onSave }: { data: CharacterItem[] | nul
                   style={{ fontSize: 14 }}
                 >&times;</button>
               </div>
+              <textarea
+                className="input"
+                rows={3}
+                placeholder="角色简介（身份 / 能力 / 关键设定，1-3 句）"
+                value={c.intro || ""}
+                onChange={e => {
+                  const list = [...draft]; list[i] = { ...c, intro: e.target.value }; setDraft(list);
+                }}
+                style={{ marginBottom: 6 }}
+              />
               <textarea
                 className="input"
                 rows={2}
@@ -498,30 +521,13 @@ export function CharactersEditor({ data, onSave }: { data: CharacterItem[] | nul
                   list[i] = { ...c, speech_samples: e.target.value.split("\n").map(s => s.trim()).filter(Boolean) };
                   setDraft(list);
                 }}
-                style={{ marginBottom: 6 }}
-              />
-              <textarea
-                className="input"
-                rows={2}
-                placeholder="关系（每行 “对象: 描述”）"
-                value={Object.entries(c.relationships || {}).map(([k, v]) => `${k}: ${v}`).join("\n")}
-                onChange={e => {
-                  const list = [...draft];
-                  const rels: Record<string, string> = {};
-                  for (const line of e.target.value.split("\n")) {
-                    const m = line.match(/^([^:：]+)[:：]\s*(.+)$/);
-                    if (m) rels[m[1].trim()] = m[2].trim();
-                  }
-                  list[i] = { ...c, relationships: rels };
-                  setDraft(list);
-                }}
               />
             </div>
           ))}
           <button
             className="btn"
             style={{ fontSize: 12, padding: "4px 10px", alignSelf: "flex-start" }}
-            onClick={() => setDraft([...draft, { name: "", mentions: 0, speech_samples: [], relationships: {} }])}
+            onClick={() => setDraft([...draft, { name: "", mentions: 0, intro: "", speech_samples: [], appearance_chapters: 0, appearance_word_count: 0 }])}
           >+ 新增角色</button>
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -549,43 +555,47 @@ function CharactersReadOnlyList({ list, onEdit }: { list: CharacterItem[]; onEdi
         {list.length === 0 && <div className="text-xs text-muted text-center" style={{ padding: 8 }}>暂无角色</div>}
         {visible.map((c, i) => {
           const isOpen = !!expanded[i];
-          const hasDetails = (c.speech_samples || []).length > 0 || Object.keys(c.relationships || {}).length > 0;
+          const hasSpeech = (c.speech_samples || []).length > 0;
           return (
             <div key={i} style={{ border: "1px solid var(--border)", borderRadius: 4 }}>
               <button
                 className="btn-ghost w-full"
-                style={{ justifyContent: "space-between", padding: "8px 10px", borderRadius: 0, fontWeight: 500 }}
+                style={{ justifyContent: "space-between", padding: "8px 10px", borderRadius: 0, fontWeight: 500, textAlign: "left" }}
                 onClick={() => setExpanded(prev => ({ ...prev, [i]: !prev[i] }))}
-                disabled={!hasDetails}
+                disabled={!hasSpeech && !c.intro}
               >
-                <span className="flex items-center gap-8">
-                  <span style={{ fontWeight: 600 }}>{c.name || "(未命名)"}</span>
-                  {typeof c.mentions === "number" && (
-                    <span className="text-xs text-muted">出场 {c.mentions} 次</span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span className="flex items-center gap-8" style={{ marginBottom: c.intro ? 4 : 0 }}>
+                    <span style={{ fontWeight: 600 }}>{c.name || "(未命名)"}</span>
+                    <span className="text-xs text-muted">{fmtAppearance(c)}</span>
+                  </span>
+                  {c.intro && !isOpen && (
+                    <span className="truncate" style={{
+                      display: "block",
+                      fontSize: 12, fontWeight: 400,
+                      color: "var(--text-secondary)",
+                      lineHeight: 1.4,
+                    }}>{c.intro}</span>
                   )}
                 </span>
-                {hasDetails && (
-                  <span className="text-xs text-muted" style={{ transition: "transform 0.15s", transform: isOpen ? "rotate(180deg)" : "none", display: "inline-block" }}>&#x25BC;</span>
+                {(hasSpeech || c.intro) && (
+                  <span className="text-xs text-muted" style={{ transition: "transform 0.15s", transform: isOpen ? "rotate(180deg)" : "none", display: "inline-block", marginLeft: 6 }}>&#x25BC;</span>
                 )}
               </button>
-              {isOpen && hasDetails && (
+              {isOpen && (
                 <div style={{ padding: "0 10px 10px" }}>
-                  {(c.speech_samples || []).length > 0 && (
-                    <div style={{ marginBottom: 6 }}>
+                  {c.intro && (
+                    <div style={{ marginBottom: 8 }}>
+                      <div className="text-xs text-muted" style={{ marginBottom: 2 }}>简介</div>
+                      <div style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-secondary)" }}>{c.intro}</div>
+                    </div>
+                  )}
+                  {hasSpeech && (
+                    <div>
                       <div className="text-xs text-muted" style={{ marginBottom: 2 }}>对白样本</div>
                       <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "var(--text-secondary)" }}>
                         {(c.speech_samples || []).slice(0, 3).map((s, j) => <li key={j} style={{ marginBottom: 2 }}>{s}</li>)}
                       </ul>
-                    </div>
-                  )}
-                  {Object.keys(c.relationships || {}).length > 0 && (
-                    <div>
-                      <div className="text-xs text-muted" style={{ marginBottom: 2 }}>关系</div>
-                      <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
-                        {Object.entries(c.relationships || {}).map(([k, v]) => (
-                          <span key={k} className="tag" style={{ fontSize: 11 }}>{k} · {v}</span>
-                        ))}
-                      </div>
                     </div>
                   )}
                 </div>
@@ -1159,6 +1169,219 @@ export function PlotOutlineEditor({
           )}
         </>
       )}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
+      </div>
+    </div>
+  );
+}
+
+/* ──────────────── Settings (设定) ──────────────── */
+
+export interface SettingItem {
+  category: string;
+  title: string;
+  content: string;
+  hidden?: string;
+}
+
+export const SETTING_CATEGORIES: { key: string; label: string; color: string }[] = [
+  { key: "power_system", label: "力量体系", color: "var(--accent)" },
+  { key: "factions",     label: "势力组织", color: "var(--purple)" },
+  { key: "geography",    label: "地理",     color: "var(--jade)" },
+  { key: "social_rules", label: "社会规则", color: "var(--indigo)" },
+  { key: "history",      label: "历史",     color: "var(--gold)" },
+  { key: "hard_rules",   label: "硬规则",   color: "#f472b6" },
+  { key: "worldview",    label: "世界观",   color: "var(--cyan)" },
+  { key: "other",        label: "其他",     color: "var(--text-tertiary)" },
+];
+
+function settingLabel(cat: string): string {
+  return SETTING_CATEGORIES.find(c => c.key === cat)?.label || cat;
+}
+function settingColor(cat: string): string {
+  return SETTING_CATEGORIES.find(c => c.key === cat)?.color || "var(--text-tertiary)";
+}
+
+export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; onSave: (d: SettingItem[]) => Promise<void> | void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<SettingItem[]>(data || []);
+  const [saving, setSaving] = useState(false);
+  const [filter, setFilter] = useState<string>("");
+  const [revealed, setRevealed] = useState<Record<number, boolean>>({});
+
+  const start = () => { setDraft(data || []); setEditing(true); };
+  const cancel = () => { setDraft(data || []); setEditing(false); };
+  const save = async () => {
+    setSaving(true);
+    try { await onSave(draft); setEditing(false); } finally { setSaving(false); }
+  };
+
+  const list = editing ? draft : (data || []);
+
+  if (editing) {
+    return (
+      <div>
+        <div className="text-xs text-muted" style={{ marginBottom: 10, lineHeight: 1.6 }}>
+          编辑作品的世界观与设定。类别用于分组；如设定背后有读者尚未知道的隐藏真相，写在「[隐]」字段中。
+        </div>
+        <div className="flex flex-col gap-8" style={{ marginBottom: 12 }}>
+          {draft.map((s, i) => (
+            <div key={i} style={{ border: "1px solid var(--border)", borderRadius: 4, padding: 10 }}>
+              <div className="flex gap-6 mb-6">
+                <select
+                  className="select"
+                  value={s.category}
+                  onChange={e => { const list = [...draft]; list[i] = { ...s, category: e.target.value }; setDraft(list); }}
+                  style={{ width: 130 }}
+                >
+                  {SETTING_CATEGORIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                </select>
+                <input
+                  className="input"
+                  placeholder="设定名称（如「灵能力」）"
+                  value={s.title}
+                  onChange={e => { const list = [...draft]; list[i] = { ...s, title: e.target.value }; setDraft(list); }}
+                  style={{ flex: 1 }}
+                />
+                <button
+                  className="btn-icon"
+                  onClick={() => { const list = [...draft]; list.splice(i, 1); setDraft(list); }}
+                  style={{ fontSize: 14 }}
+                >&times;</button>
+              </div>
+              <textarea
+                className="input"
+                rows={3}
+                placeholder="客观描述（2-4 句）"
+                value={s.content}
+                onChange={e => { const list = [...draft]; list[i] = { ...s, content: e.target.value }; setDraft(list); }}
+                style={{ marginBottom: 6 }}
+              />
+              <textarea
+                className="input"
+                rows={2}
+                placeholder="[隐] 该设定背后的真相 / 读者尚未知道的部分（可选）"
+                value={s.hidden || ""}
+                onChange={e => { const list = [...draft]; list[i] = { ...s, hidden: e.target.value }; setDraft(list); }}
+                style={{ color: "var(--gold)" }}
+              />
+            </div>
+          ))}
+          <button
+            className="btn"
+            style={{ fontSize: 12, padding: "4px 10px", alignSelf: "flex-start" }}
+            onClick={() => setDraft([...draft, { category: "worldview", title: "", content: "", hidden: "" }])}
+          >+ 新增设定</button>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button className="btn" onClick={cancel} disabled={saving}>取消</button>
+          <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "保存中..." : "保存"}</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (list.length === 0) {
+    return (
+      <div>
+        <div className="text-xs text-muted text-center" style={{ padding: 16 }}>
+          暂无设定。在分段提取大纲时勾选「使用 AI」会自动抽取设定，或点击「编辑」手动添加。
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
+        </div>
+      </div>
+    );
+  }
+
+  // group by category, in canonical order
+  const byCat: Record<string, { item: SettingItem; idx: number }[]> = {};
+  list.forEach((it, idx) => {
+    const cat = it.category || "other";
+    (byCat[cat] ||= []).push({ item: it, idx });
+  });
+  const categories = SETTING_CATEGORIES.filter(c => byCat[c.key]?.length);
+  const visible = filter ? categories.filter(c => c.key === filter) : categories;
+
+  return (
+    <div>
+      <div className="flex gap-4" style={{ marginBottom: 10, flexWrap: "wrap" }}>
+        <button
+          className={!filter ? "btn-primary" : "btn"}
+          style={{ fontSize: 11, padding: "3px 10px" }}
+          onClick={() => setFilter("")}
+        >全部 ({list.length})</button>
+        {categories.map(c => (
+          <button
+            key={c.key}
+            className={filter === c.key ? "btn-primary" : "btn"}
+            style={{ fontSize: 11, padding: "3px 10px" }}
+            onClick={() => setFilter(c.key === filter ? "" : c.key)}
+          >{c.label} ({byCat[c.key].length})</button>
+        ))}
+      </div>
+
+      <div className="flex flex-col gap-12">
+        {visible.map(c => (
+          <div key={c.key}>
+            <div style={{
+              fontSize: 12, fontWeight: 700,
+              color: c.color, marginBottom: 6,
+              paddingLeft: 6, borderLeft: `3px solid ${c.color}`,
+            }}>
+              {c.label}
+            </div>
+            <div className="flex flex-col gap-6" style={{ paddingLeft: 12 }}>
+              {byCat[c.key].map(({ item, idx }) => (
+                <div key={idx} style={{
+                  padding: "8px 10px",
+                  background: "var(--bg-surface)",
+                  borderRadius: 4,
+                  border: "1px solid var(--border)",
+                }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)", marginBottom: 4 }}>
+                    {item.title || "(未命名)"}
+                  </div>
+                  {item.content && (
+                    <div style={{ fontSize: 12, lineHeight: 1.55, color: "var(--text-secondary)" }}>
+                      {item.content}
+                    </div>
+                  )}
+                  {item.hidden && (
+                    revealed[idx] ? (
+                      <div style={{ fontSize: 12, lineHeight: 1.55, marginTop: 6, color: "var(--gold)" }}>
+                        <span
+                          style={{ fontWeight: 600, cursor: "pointer" }}
+                          onClick={() => setRevealed(prev => ({ ...prev, [idx]: false }))}
+                          title="点击重新隐藏"
+                        >[隐]</span> {item.hidden}
+                      </div>
+                    ) : (
+                      <button
+                        className="btn-ghost"
+                        onClick={() => setRevealed(prev => ({ ...prev, [idx]: true }))}
+                        style={{
+                          marginTop: 6,
+                          padding: "1px 8px",
+                          fontSize: 10,
+                          borderRadius: 3,
+                          background: "var(--bg-surface-2)",
+                          border: "1px dashed var(--gold)",
+                          color: "var(--gold)",
+                          fontWeight: 600,
+                          lineHeight: 1.4,
+                        }}
+                      >[隐] 展开</button>
+                    )
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
         <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>

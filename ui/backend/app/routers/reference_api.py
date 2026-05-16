@@ -295,6 +295,7 @@ _ANALYSIS_FIELDS = frozenset({
     "extracted_characters_json",
     "rhythm_template_json",
     "plot_outline_json",
+    "settings_json",
 })
 
 
@@ -336,6 +337,7 @@ def get_segment_plan(ref_id: str):
 class SegmentRunRequest(BaseModel):
     segment_index: int
     segment_chars: Optional[int] = None
+    use_ai: bool = True
 
 
 class SegmentCommitRequest(BaseModel):
@@ -343,7 +345,7 @@ class SegmentCommitRequest(BaseModel):
 
 
 @router.post("/works/{ref_id}/segments/preview")
-def preview_segment(ref_id: str, body: SegmentRunRequest):
+async def preview_segment(ref_id: str, body: SegmentRunRequest):
     """Run extraction for one segment WITHOUT persisting. Returns the full
     extracted payload so the user can review before committing."""
     db = _db()
@@ -353,7 +355,11 @@ def preview_segment(ref_id: str, body: SegmentRunRequest):
     try:
         from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
-        result = pipe.compute_segment(ref_id, body.segment_index, segment_chars=body.segment_chars)
+        result = await pipe.compute_segment(
+            ref_id, body.segment_index,
+            segment_chars=body.segment_chars,
+            use_ai=body.use_ai,
+        )
         if "error" in result and len(result) <= 2:
             raise HTTPException(400, result.get("error") or "提取失败")
         return result
@@ -383,7 +389,7 @@ def commit_segment(ref_id: str, body: SegmentCommitRequest):
 
 
 @router.post("/works/{ref_id}/segments/run")
-def run_segment(ref_id: str, body: SegmentRunRequest):
+async def run_segment(ref_id: str, body: SegmentRunRequest):
     """Compute + persist in one call (legacy path)."""
     db = _db()
     w = db.get_work(ref_id)
@@ -392,7 +398,11 @@ def run_segment(ref_id: str, body: SegmentRunRequest):
     try:
         from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
-        return pipe.run_segment(ref_id, body.segment_index, segment_chars=body.segment_chars)
+        return await pipe.run_segment(
+            ref_id, body.segment_index,
+            segment_chars=body.segment_chars,
+            use_ai=body.use_ai,
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:

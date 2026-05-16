@@ -28,12 +28,21 @@ interface SegmentResult {
   char_count: number;
   elapsed_s: number;
   errors: string[];
+  warnings?: string[];
+  ai_methods_used?: string[];
+  ai_methods_fallback?: string[];
   plot_outline: { logline?: string; epochs?: ChronicleEpoch[] };
   characters?: any[];
+  settings?: any[];
   style_fingerprint?: any;
   narrative?: any;
   rhythm?: any;
 }
+
+const AI_METHOD_LABEL: Record<string, string> = {
+  characters: "角色", settings: "设定",
+  narrative: "叙事", rhythm: "节奏",
+};
 
 function fmtChars(n: number): string {
   if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`;
@@ -69,6 +78,7 @@ export default function PlotOutlinePanel({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [merging, setMerging] = useState(false);
+  const [useAi, setUseAi] = useState(true);
 
   const loadPlan = useCallback(async () => {
     if (!hasFullText) { setPlan(null); return; }
@@ -96,7 +106,7 @@ export default function PlotOutlinePanel({
     try {
       const r = await apiPost<SegmentResult>(
         `/api/references/works/${refId}/segments/preview`,
-        { segment_index: idx },
+        { segment_index: idx, use_ai: useAi },
         { timeoutMs: 600_000 },
       );
       setPreview(r);
@@ -152,7 +162,7 @@ export default function PlotOutlinePanel({
       {/* Segment plan + preview (only if work has full text and not in standalone manual mode) */}
       {hasFullText && plan && total > 0 && (
         <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
-          <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+          <div className="flex items-center justify-between" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
                 分段提取大纲
@@ -161,7 +171,16 @@ export default function PlotOutlinePanel({
                 {plan.type === "volumes" ? "按卷处理" : "按 ~10 万字分块"} · {doneCount}/{total} 已完成
               </div>
             </div>
-            <div className="flex gap-6">
+            <div className="flex items-center gap-12" style={{ flexWrap: "wrap" }}>
+              <label className="flex items-center gap-6" style={{ fontSize: 12, cursor: "pointer", color: "var(--text-secondary)" }} title="勾选时角色 / 设定 / 叙事 / 节奏 由 AI 提取；风格指纹始终用 NLP。AI 失败会自动回退。">
+                <input
+                  type="checkbox"
+                  checked={useAi}
+                  onChange={e => setUseAi(e.target.checked)}
+                  style={{ width: 14, height: 14 }}
+                />
+                使用 AI 提取
+              </label>
               {doneCount > 0 && !allDone && (
                 <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }} onClick={reset} disabled={committing || merging}>
                   重置
@@ -239,13 +258,14 @@ export default function PlotOutlinePanel({
                       borderRadius: 4,
                       background: "var(--bg-card)",
                     }}>
-                      <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+                      <div className="flex items-center justify-between" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
                         <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)" }}>
                           预览 · {preview.elapsed_s}s
                           <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
                             {(preview.plot_outline?.epochs || []).length} 大段 ·
                             {" "}{(preview.plot_outline?.epochs || []).reduce((n, ep) => n + (ep.periods?.length || 0), 0)} 时间段 ·
-                            {" "}{(preview.characters || []).length} 角色
+                            {" "}{(preview.characters || []).length} 角色 ·
+                            {" "}{(preview.settings || []).length} 设定
                           </span>
                         </div>
                         <div className="flex gap-6">
@@ -269,9 +289,42 @@ export default function PlotOutlinePanel({
                           >{committing ? "保存中..." : "确认保存"}</button>
                         </div>
                       </div>
+                      {/* AI extraction status badges */}
+                      {((preview.ai_methods_used && preview.ai_methods_used.length > 0) ||
+                        (preview.ai_methods_fallback && preview.ai_methods_fallback.length > 0)) && (
+                        <div className="flex gap-4 items-center" style={{ flexWrap: "wrap", marginBottom: 6 }}>
+                          {(preview.ai_methods_used || []).map(m => (
+                            <span key={m} className="tag" style={{
+                              fontSize: 10, padding: "1px 6px",
+                              color: "var(--accent)",
+                              background: "var(--accent-subtle)",
+                              border: "1px solid var(--accent)",
+                            }}>AI · {AI_METHOD_LABEL[m] || m}</span>
+                          ))}
+                          {(preview.ai_methods_fallback || []).map(m => (
+                            <span key={m} className="tag" style={{
+                              fontSize: 10, padding: "1px 6px",
+                              color: "var(--text-tertiary)",
+                              background: "var(--bg-surface-2)",
+                              border: "1px dashed var(--border)",
+                            }}>NLP · {AI_METHOD_LABEL[m] || m}</span>
+                          ))}
+                          <span className="tag" style={{
+                            fontSize: 10, padding: "1px 6px",
+                            color: "var(--text-tertiary)",
+                            background: "var(--bg-surface-2)",
+                            border: "1px dashed var(--border)",
+                          }}>NLP · 风格指纹</span>
+                        </div>
+                      )}
+                      {preview.warnings && preview.warnings.length > 0 && (
+                        <div className="text-xs" style={{ color: "var(--gold)", marginBottom: 6 }}>
+                          {preview.warnings.join("; ")}
+                        </div>
+                      )}
                       {preview.errors && preview.errors.length > 0 && (
                         <div className="text-xs" style={{ color: "var(--error)", marginBottom: 6 }}>
-                          警告：{preview.errors.join("; ")}
+                          错误：{preview.errors.join("; ")}
                         </div>
                       )}
                       <ChroniclePreview epochs={preview.plot_outline?.epochs || []} />

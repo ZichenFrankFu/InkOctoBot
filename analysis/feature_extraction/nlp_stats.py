@@ -97,7 +97,14 @@ _SPEAKER_RE = re.compile(
 
 def extract_characters(chapters: list[dict], min_mentions: int = 2,
                        max_chars: int = 30) -> list[dict]:
-    """Extract characters from chapter text."""
+    """Extract characters from chapter text.
+
+    Returns per-character dicts with:
+        name, mentions, intro, speech_samples,
+        appearance_chapters (number of chapters/episodes the name appears in),
+        appearance_word_count (sum of chars in those chapters, fallback metric).
+    The intro field is left empty by the NLP extractor; the AI extractor fills it.
+    """
     full = "\n".join(ch.get("content", "") for ch in chapters)
 
     try:
@@ -127,27 +134,25 @@ def extract_characters(chapters: list[dict], min_mentions: int = 2,
                     dlg_by[nm].append(txt)
                     break
 
-    # co-occurrence
-    cooc: Counter = Counter()
+    # appearance counts per character
+    appearance_chapters: dict[str, int] = defaultdict(int)
+    appearance_word_count: dict[str, int] = defaultdict(int)
     for ch in chapters:
-        present = sorted(n for n in name_set if n in ch.get("content", ""))
-        for i in range(len(present)):
-            for j in range(i + 1, len(present)):
-                cooc[(present[i], present[j])] += 1
+        content = ch.get("content", "")
+        clen = len(content)
+        for nm in name_set:
+            if nm in content:
+                appearance_chapters[nm] += 1
+                appearance_word_count[nm] += clen
 
     results = []
     for name, count in top:
-        rels = {}
-        for other in name_set:
-            if other == name:
-                continue
-            pair = tuple(sorted([name, other]))
-            freq = cooc.get(pair, 0)
-            if freq >= 2:
-                rels[other] = f"共现{freq}次"
         results.append({
-            "name": name, "mentions": count,
+            "name": name,
+            "mentions": count,
+            "intro": "",
             "speech_samples": dlg_by.get(name, [])[:3],
-            "relationships": rels,
+            "appearance_chapters": appearance_chapters.get(name, 0),
+            "appearance_word_count": appearance_word_count.get(name, 0),
         })
     return results

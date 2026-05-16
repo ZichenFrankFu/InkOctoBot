@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import useDebounce from "../hooks/useDebounce";
@@ -10,6 +10,7 @@ import {
   NarrativeStructureEditor,
   CharactersEditor,
   RhythmTemplateEditor,
+  SettingsEditor,
 } from "../components/reference/AnalysisEditors";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
@@ -103,26 +104,6 @@ export default function ReferenceLibraryPage() {
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 280, minSize: 220, maxSize: 480 });
 
-  // ── DB overview stats (computed from the current `works` list) ──
-  const dbStats = useMemo(() => {
-    const byMedia: Record<string, number> = {};
-    let withFullText = 0, processed = 0, withPlot = 0;
-    let totalRatings = 0, ratedCount = 0;
-    for (const w of works) {
-      byMedia[w.media_type] = (byMedia[w.media_type] || 0) + 1;
-      if (w.has_full_text) withFullText++;
-      if (w.preprocessing_status === "done") processed++;
-      if (w.plot_outline_json) withPlot++;
-      if (w.user_rating) { totalRatings += w.user_rating; ratedCount++; }
-    }
-    return {
-      total: works.length,
-      filteredTotal: total,
-      byMedia,
-      withFullText, processed, withPlot,
-      avgRating: ratedCount > 0 ? totalRatings / ratedCount : null,
-    };
-  }, [works, total]);
 
   /* ---- Data loading ---- */
   const debouncedSearch = useDebounce(search, 300);
@@ -331,7 +312,7 @@ export default function ReferenceLibraryPage() {
       <div className="page-header" style={{ paddingBottom: 8 }}>
         <div className="page-header-row">
           <div>
-            <h2>参考作品库</h2>
+            <h2>参考作品详情</h2>
             <p>录入你喜欢的作品 · 上传正文 · 提取风格/角色/剧情大纲</p>
           </div>
           <div className="flex gap-8">
@@ -473,12 +454,18 @@ export default function ReferenceLibraryPage() {
                 extractingPlot={extractingPlot}
               />
                         ) : (
-              <LibraryOverview
-                stats={dbStats}
-                works={works}
-                onSelect={selectWork}
-                onAdd={() => setShowAddWork(true)}
-              />
+              <div className="empty-state" style={{ paddingTop: 80, maxWidth: 420, margin: "0 auto", textAlign: "center" }}>
+                <h4>从左侧选择一部作品</h4>
+                <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+                  在左侧列表中选择任意作品查看详情、编辑大纲、调整角色与设定。<br />
+                  浏览全部参考作品的统计请前往「数据库概览」。
+                </p>
+                {works.length === 0 && (
+                  <button className="btn-primary" style={{ marginTop: 16 }} onClick={() => setShowAddWork(true)}>
+                    + 添加第一部作品
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -656,133 +643,9 @@ export default function ReferenceLibraryPage() {
   );
 }
 
-/* ───────────────── Library Overview (right-panel empty state) ───────────────── */
-
-interface LibraryStats {
-  total: number;
-  filteredTotal: number;
-  byMedia: Record<string, number>;
-  withFullText: number;
-  processed: number;
-  withPlot: number;
-  avgRating: number | null;
-}
-
-function LibraryOverview({
-  stats, works, onSelect, onAdd,
-}: {
-  stats: LibraryStats; works: ReferenceWork[];
-  onSelect: (w: ReferenceWork) => void; onAdd: () => void;
-}) {
-  if (stats.total === 0) {
-    return (
-      <div className="empty-state" style={{ paddingTop: 60 }}>
-        <h4>参考库空空如也</h4>
-        <p>添加你喜欢的作品作为创作参考。可手动录入或上传正文，随后提取风格 / 角色 / 剧情大纲。</p>
-        <button className="btn-primary" style={{ marginTop: 16 }} onClick={onAdd}>
-          + 添加第一部作品
-        </button>
-      </div>
-    );
-  }
-
-  // Sort: rated first (desc), then most recently updated
-  const sorted = [...works].sort((a, b) => {
-    const ra = a.user_rating || 0, rb = b.user_rating || 0;
-    if (rb !== ra) return rb - ra;
-    const ua = a.updated_at || "", ub = b.updated_at || "";
-    return ub.localeCompare(ua);
-  });
-  const top = sorted.slice(0, 12);
-
-  return (
-    <div style={{ padding: "8px 4px" }}>
-      <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
-        <div>
-          <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>参考库概览</h3>
-          <p className="text-xs text-muted">
-            点击左侧任意作品查看详情，或浏览下方按评分排序的近期参考。
-          </p>
-        </div>
-        <button className="btn-primary" onClick={onAdd}>+ 添加作品</button>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-        {top.map(w => {
-          const plot = pj(w.plot_outline_json);
-          const previewText: string =
-            (plot?.logline as string) ||
-            (() => {
-              const epochs: any[] = (plot?.epochs as any[]) || [];
-              for (const ep of epochs) {
-                for (const per of (ep.periods || [])) {
-                  for (const ev of (per.events || [])) {
-                    if (ev.description) return ev.description;
-                  }
-                }
-              }
-              return "";
-            })();
-          const charCount = (() => {
-            try { return JSON.parse(w.extracted_characters_json || "[]").length; } catch { return 0; }
-          })();
-          return (
-            <div
-              key={w.ref_id}
-              onClick={() => onSelect(w)}
-              style={{
-                padding: 12,
-                background: "var(--bg-surface)",
-                border: "1px solid var(--border)",
-                borderRadius: "var(--radius-sm)",
-                cursor: "pointer",
-                transition: "border-color 0.15s",
-              }}
-              onMouseEnter={e => (e.currentTarget.style.borderColor = "var(--accent)")}
-              onMouseLeave={e => (e.currentTarget.style.borderColor = "var(--border)")}
-            >
-              <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
-                <span className="truncate" style={{ fontWeight: 600, fontSize: 14 }}>{w.title}</span>
-                <span className="text-xs" style={{ color: mediaColor(w.media_type) }}>{mediaLabel(w.media_type)}</span>
-              </div>
-              <div className="flex gap-6 text-xs text-muted" style={{ marginBottom: 8, flexWrap: "wrap" }}>
-                {w.creator && <span>{w.creator}</span>}
-                {w.genre && <span>· {w.genre}</span>}
-                {w.user_rating ? <span style={{ color: "var(--gold)" }}>{stars(w.user_rating)}</span> : null}
-              </div>
-              {previewText && (
-                <div style={{
-                  fontSize: 12, lineHeight: 1.55,
-                  color: "var(--text-secondary)",
-                  display: "-webkit-box",
-                  WebkitBoxOrient: "vertical",
-                  WebkitLineClamp: 3,
-                  overflow: "hidden",
-                }}>{previewText}</div>
-              )}
-              {!previewText && (
-                <div className="text-xs text-muted" style={{ fontStyle: "italic" }}>
-                  {w.has_full_text ? "尚未提取大纲" : "未上传正文"}
-                </div>
-              )}
-              {(charCount > 0 || w.preprocessing_status === "done") && (
-                <div className="flex gap-6 text-xs text-muted" style={{ marginTop: 8 }}>
-                  {charCount > 0 && <span>{charCount} 角色</span>}
-                  {w.preprocessing_status === "done" && <span style={{ color: "var(--jade)" }}>已分析</span>}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-
 /* ───────────────── Work Detail (horizontal tabs) ───────────────── */
 
-type WorkDetailTab = "plot" | "characters" | "features" | "info";
+type WorkDetailTab = "plot" | "characters" | "settings" | "features" | "info";
 
 const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   done: { label: "已分析", color: "var(--jade)" },
@@ -828,10 +691,13 @@ function WorkDetail({
     0,
   );
   const charCount = (chars || []).length;
+  const settings = pj(sel.settings_json) as any[] | null;
+  const settingsCount = (settings || []).length;
 
   const TABS: { key: WorkDetailTab; label: string; count?: number | string }[] = [
     { key: "plot", label: "剧情大纲", count: eventCount || undefined },
     { key: "characters", label: "角色", count: charCount || undefined },
+    { key: "settings", label: "设定", count: settingsCount || undefined },
     { key: "features", label: "文本特征" },
     { key: "info", label: "信息与笔记" },
   ];
@@ -944,9 +810,16 @@ function WorkDetail({
           />
         ) : (
           <div className="empty-state" style={{ padding: 32 }}>
-            <p>暂无角色数据。请先上传正文并提取特征。</p>
+            <p>暂无角色数据。前往「剧情大纲」分段提取（勾选「使用 AI」可得到带简介的角色）。</p>
           </div>
         )
+      )}
+
+      {tab === "settings" && (
+        <SettingsEditor
+          data={settings || []}
+          onSave={d => onSaveAnalysisField("settings_json", d)}
+        />
       )}
 
       {tab === "features" && (
@@ -996,6 +869,7 @@ function WorkDetail({
                 <Stat label="时间段" value={periodCount} />
                 <Stat label="事件" value={eventCount} />
                 <Stat label="角色" value={charCount} />
+                <Stat label="设定" value={settingsCount} />
                 <Stat label="评分" value={sel.user_rating ? stars(sel.user_rating) : "—"} />
               </div>
             </div>

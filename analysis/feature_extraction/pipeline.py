@@ -13,6 +13,33 @@ from typing import Any
 logger = logging.getLogger("inkoctobot.analysis.feature_extraction.pipeline")
 
 
+def _enrich_characters_with_appearance(chars: list[dict], chapters: list[dict]) -> list[dict]:
+    """For each character returned by the AI extractor, compute deterministic
+    appearance_chapters and appearance_word_count by scanning chapter content.
+    Preserves the AI-provided intro and speech_samples."""
+    out: list[dict] = []
+    for c in chars:
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        ap_chapters = 0
+        ap_chars = 0
+        for ch in chapters:
+            content = ch.get("content", "")
+            if name in content:
+                ap_chapters += 1
+                ap_chars += len(content)
+        out.append({
+            "name": name,
+            "mentions": int(c.get("mentions") or 0),
+            "intro": (c.get("intro") or "").strip(),
+            "speech_samples": list(c.get("speech_samples") or [])[:3],
+            "appearance_chapters": ap_chapters,
+            "appearance_word_count": ap_chars,
+        })
+    return out
+
+
 class FeatureExtractionPipeline:
     """Run feature extraction on a single reference work or batch."""
 
@@ -240,14 +267,19 @@ class FeatureExtractionPipeline:
                 cur_chars = 0
         return {"type": "chunks", "segments": segments, "total_chapters": len(chapters)}
 
-    def compute_segment(self, ref_id: str, segment_index: int,
-                          segment_chars: int | None = None) -> dict[str, Any]:
+    async def compute_segment(self, ref_id: str, segment_index: int,
+                                segment_chars: int | None = None,
+                                use_ai: bool = True) -> dict[str, Any]:
         """Extract features for one segment but DO NOT persist anything.
 
-        Returns the same shape that gets stored, so the caller can preview
-        and then call persist_segment to save.
+        Style fingerprint uses NLP (rule-based, fast, deterministic).
+        Characters / settings / narrative / rhythm use AI via ModelRouter
+        when use_ai is True, falling back to NLP rules on failure.
+        Plot outline (chronicle skeleton) uses NLP rules and is then
+        enriched by the AI characters/settings results.
         """
         from rag.reference_db import ReferenceDB
+        import asyncio
 
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
@@ -272,6 +304,7 @@ class FeatureExtractionPipeline:
 
         t0 = time.perf_counter()
         errors: list[str] = []
+        warnings: list[str] = []
 
         from analysis.feature_extraction.nlp_stats import (
             compute_style_fingerprint, extract_characters,
@@ -280,21 +313,99 @@ class FeatureExtractionPipeline:
             extract_narrative, extract_rhythm, extract_plot_outline,
         )
 
+        # Style: ALWAYS NLP (per spec)
         fp: dict = {}
-        try: fp = compute_style_fingerprint(seg_chapters)
-        except Exception as e: errors.append(f"style: {e}")
-        narr: dict = {}
-        try: narr = extract_narrative(seg_chapters)
-        except Exception as e: errors.append(f"narrative: {e}")
+        try:
+            fp = compute_style_fingerprint(seg_chapters)
+        except Exception as e:
+            errors.append(f"style: {e}")
+
+        # Get an AI router (lazy import; may fail if no LLM configured)
+        router = None
+        if use_ai:
+            try:
+                from models.router import ModelRouter
+                router = ModelRouter()
+            except Exception as e:
+                warnings.append(f"AI 不可用（{e}），所有项回退到 NLP")
+
+        ai_methods_used: list[str] = []
+        ai_methods_fallback: list[str] = []
+
+        async def _ai_or_nlp(name: str, ai_fn, nlp_fn):
+            """Try AI; on failure, fall back to NLP and record a warning."""
+            if router is None:
+                ai_methods_fallback.append(name)
+                return nlp_fn()
+            try:
+                result = await ai_fn(seg_chapters, router)
+                ai_methods_used.append(name)
+                return result
+            except Exception as e:
+                logger.warning("[ai_extractor] %s failed (%s); falling back to NLP", name, e)
+                warnings.append(f"{name}: AI 失败 → NLP（{type(e).__name__}）")
+                ai_methods_fallback.append(name)
+                return nlp_fn()
+
+        from analysis.feature_extraction import ai_extractor
+
+        # Characters (AI preferred). After AI, intersect with chapter texts
+        # to compute appearance_chapters / appearance_word_count deterministically.
         chars: list = []
-        try: chars = extract_characters(seg_chapters)
-        except Exception as e: errors.append(f"characters: {e}")
+        try:
+            chars = await _ai_or_nlp(
+                "characters",
+                ai_extractor.ai_extract_characters,
+                lambda: extract_characters(seg_chapters),
+            )
+            chars = _enrich_characters_with_appearance(chars, seg_chapters)
+        except Exception as e:
+            errors.append(f"characters: {e}")
+
+        # Settings (AI preferred). No NLP fallback — return empty if AI fails.
+        settings_items: list = []
+        try:
+            if router is not None:
+                try:
+                    settings_items = await ai_extractor.ai_extract_settings(seg_chapters, router)
+                    ai_methods_used.append("settings")
+                except Exception as e:
+                    logger.warning("[ai_extractor] settings failed: %s", e)
+                    warnings.append(f"settings: AI 失败（{type(e).__name__}），返回空")
+                    ai_methods_fallback.append("settings")
+            else:
+                ai_methods_fallback.append("settings")
+        except Exception as e:
+            errors.append(f"settings: {e}")
+
+        # Narrative (AI preferred)
+        narr: dict = {}
+        try:
+            narr = await _ai_or_nlp(
+                "narrative",
+                ai_extractor.ai_extract_narrative,
+                lambda: extract_narrative(seg_chapters),
+            )
+        except Exception as e:
+            errors.append(f"narrative: {e}")
+
+        # Rhythm (AI preferred)
         rhythm: dict = {}
-        try: rhythm = extract_rhythm(seg_chapters)
-        except Exception as e: errors.append(f"rhythm: {e}")
+        try:
+            rhythm = await _ai_or_nlp(
+                "rhythm",
+                ai_extractor.ai_extract_rhythm,
+                lambda: extract_rhythm(seg_chapters),
+            )
+        except Exception as e:
+            errors.append(f"rhythm: {e}")
+
+        # Plot outline (chronicle skeleton — always NLP, uses narrative output)
         plot: dict = {}
-        try: plot = extract_plot_outline(seg_chapters, narrative=narr)
-        except Exception as e: errors.append(f"plot_outline: {e}")
+        try:
+            plot = extract_plot_outline(seg_chapters, narrative=narr)
+        except Exception as e:
+            errors.append(f"plot_outline: {e}")
 
         return {
             "index": segment_index,
@@ -304,11 +415,15 @@ class FeatureExtractionPipeline:
             "char_count": seg.get("char_count"),
             "elapsed_s": round(time.perf_counter() - t0, 2),
             "errors": errors,
+            "warnings": warnings,
+            "ai_methods_used": ai_methods_used,
+            "ai_methods_fallback": ai_methods_fallback,
             "style_fingerprint": fp,
             "narrative": narr,
             "characters": chars,
             "rhythm": rhythm,
             "plot_outline": plot,
+            "settings": settings_items,
         }
 
     def persist_segment(self, ref_id: str, result: dict) -> dict[str, Any]:
@@ -365,10 +480,13 @@ class FeatureExtractionPipeline:
             "all_done": new_status == "done",
         }
 
-    def run_segment(self, ref_id: str, segment_index: int,
-                     segment_chars: int | None = None) -> dict[str, Any]:
+    async def run_segment(self, ref_id: str, segment_index: int,
+                            segment_chars: int | None = None,
+                            use_ai: bool = True) -> dict[str, Any]:
         """Compute + persist in one call (kept for backwards compat)."""
-        result = self.compute_segment(ref_id, segment_index, segment_chars=segment_chars)
+        result = await self.compute_segment(
+            ref_id, segment_index, segment_chars=segment_chars, use_ai=use_ai,
+        )
         if "error" in result and len(result) <= 2:
             return {"ref_id": ref_id, **result}
         info = self.persist_segment(ref_id, result)
@@ -446,7 +564,7 @@ class FeatureExtractionPipeline:
         hd_sum = sum(((it.get("narrative") or {}).get("hook_density", 0.0) or 0.0) * max(it.get("char_count") or 1, 1) for it in items)
         agg_narr["hook_density"] = round(hd_sum / total_chars, 3)
 
-        # ── characters: merge by name ──
+        # ── characters: merge by name (sum mentions/appearances, longest intro wins) ──
         char_map: dict[str, dict] = {}
         for it in items:
             for ch in (it.get("characters") or []):
@@ -455,14 +573,20 @@ class FeatureExtractionPipeline:
                     continue
                 entry = char_map.setdefault(name, {
                     "name": name, "mentions": 0,
-                    "speech_samples": [], "relationships": {},
+                    "intro": "",
+                    "speech_samples": [],
+                    "appearance_chapters": 0,
+                    "appearance_word_count": 0,
                 })
                 entry["mentions"] += int(ch.get("mentions") or 0)
+                entry["appearance_chapters"] += int(ch.get("appearance_chapters") or 0)
+                entry["appearance_word_count"] += int(ch.get("appearance_word_count") or 0)
+                new_intro = (ch.get("intro") or "").strip()
+                if new_intro and len(new_intro) > len(entry["intro"]):
+                    entry["intro"] = new_intro
                 for s in (ch.get("speech_samples") or [])[:5]:
                     if s and s not in entry["speech_samples"] and len(entry["speech_samples"]) < 5:
                         entry["speech_samples"].append(s)
-                for k, v in (ch.get("relationships") or {}).items():
-                    entry["relationships"].setdefault(k, v)
         agg_chars = sorted(char_map.values(), key=lambda x: -x.get("mentions", 0))
 
         # ── rhythm: concat tension curve, concat pacing segments with offsets ──
@@ -488,6 +612,27 @@ class FeatureExtractionPipeline:
                 agg_plot_epochs.append({"title": title, "periods": ep.get("periods") or []})
         agg_plot = {"logline": "", "epochs": agg_plot_epochs}
 
+        # ── settings: dedupe by (category, title); longest content wins ──
+        settings_map: dict[tuple[str, str], dict] = {}
+        for it in items:
+            for s in (it.get("settings") or []):
+                if not isinstance(s, dict):
+                    continue
+                key = ((s.get("category") or "other"), (s.get("title") or "").strip())
+                if not key[1]:
+                    continue
+                cur = settings_map.get(key)
+                if cur is None or len((s.get("content") or "")) > len(cur.get("content") or ""):
+                    settings_map[key] = {
+                        "category": key[0],
+                        "title": key[1],
+                        "content": (s.get("content") or "").strip(),
+                        "hidden": (s.get("hidden") or "").strip(),
+                    }
+                elif s.get("hidden") and not cur.get("hidden"):
+                    cur["hidden"] = (s.get("hidden") or "").strip()
+        agg_settings = list(settings_map.values())
+
         rdb.update_work(
             ref_id,
             style_fingerprint_json=json.dumps(agg_fp, ensure_ascii=False),
@@ -495,10 +640,12 @@ class FeatureExtractionPipeline:
             extracted_characters_json=json.dumps(agg_chars, ensure_ascii=False),
             rhythm_template_json=json.dumps(agg_rhythm, ensure_ascii=False),
             plot_outline_json=json.dumps(agg_plot, ensure_ascii=False),
+            settings_json=json.dumps(agg_settings, ensure_ascii=False),
             preprocessing_status="done",
         )
         return {
             "ref_id": ref_id,
             "merged_segments": len(items),
             "characters_count": len(agg_chars),
+            "settings_count": len(agg_settings),
         }
