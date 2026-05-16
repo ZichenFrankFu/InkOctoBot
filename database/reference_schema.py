@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS reference_works (
     style_fingerprint_json TEXT, narrative_structure_json TEXT,
     extracted_characters_json TEXT, rhythm_template_json TEXT,
     plot_outline_json TEXT, segments_json TEXT, settings_json TEXT,
+    rhythm_json TEXT,
     serial_status TEXT CHECK (serial_status IN ('ongoing','completed','hiatus','unknown')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"""
@@ -54,4 +55,6 @@ def ensure_reference_tables(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE reference_works ADD COLUMN settings_json TEXT")
     if "serial_status" not in cols:
         conn.execute("ALTER TABLE reference_works ADD COLUMN serial_status TEXT")
+    if "rhythm_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN rhythm_json TEXT")
     conn.commit()

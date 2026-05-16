@@ -35,13 +35,12 @@ interface SegmentResult {
   characters?: any[];
   settings?: any[];
   style_fingerprint?: any;
-  narrative?: any;
   rhythm?: any;
 }
 
 const AI_METHOD_LABEL: Record<string, string> = {
   characters: "角色", settings: "设定",
-  narrative: "叙事", rhythm: "节奏",
+  rhythm: "节奏",
 };
 
 function fmtChars(n: number): string {

@@ -108,6 +108,7 @@ export interface ReferenceWork {
   plot_outline_json?: string;
   segments_json?: string;
   settings_json?: string;
+  rhythm_json?: string;
   serial_status?: "ongoing" | "completed" | "hiatus" | "unknown" | null;
   created_at?: string;
   updated_at?: string;

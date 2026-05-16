@@ -82,6 +82,29 @@ _RHYTHM_PROMPT = """你是专业的节奏分析师。请分析下面的小说文
 """
 
 
+_RHYTHM_V2_PROMPT = """你是专业的小说叙事+节奏分析师。请分析下面的小说文本，输出**一个**合并后的 JSON 对象，
+覆盖叙事结构 + 节奏 + 每章特征。章号都使用本段内的相对章号（1-base）。
+
+字段：
+- opening_pattern: 字符串，从 in_medias_res | dialogue_open | worldbuilding | character_intro 选一个
+- climax_positions: 整数列表，本段高潮所在章号
+- shuangdian: 爽点列表 [{{chapter, type}}], type 从 face_slap | power_reveal | treasure_gain | mystery_reveal | other 选
+- chapter_features: 每章一个对象的列表，长度严格 == {n_chapters}，按章节顺序：
+    - chapter: 整数章号 (1-base)
+    - types: **字符串数组**, 至少 1 个，从这 10 个值中**多选**: 日常 / 战斗 / 高潮 / 角色个人回 / 主线事件 / 支线事件 / 伏笔铺垫 / 收束 / 转折 / 其他。一章可以同时是多个 type（例如「主线事件 + 战斗 + 高潮」）。
+    - info_density: 0-1 的浮点数，**信息密度** (本章传递新信息的密度，包括新角色/新设定/新冲突；替代过去的「张力」)
+    - summary: 1-2 句客观描述本章发生的关键事实
+    - hooks: 钩子列表 [{{position, content}}], position 从 章首 / 段中 / 章末 选, content 是钩子句原文摘录 (≤ 80 字)
+- info_density_curve: 长度 == {n_chapters} 的浮点数组，与 chapter_features[i].info_density 一致
+- pacing_segments: 节奏分段 [{{start, end, pacing, avg_info_density}}], pacing 从 fast | medium | slow 选
+
+只返回 JSON 对象，不要 markdown 包装、不要解释。
+
+文本（{n_chapters} 章）：
+{text}
+"""
+
+
 def _build_segment_text(chapters: list[dict]) -> tuple[str, int]:
     """Concatenate chapter titles + content; truncate to keep prompt size sane.
     Returns (text, n_chars)."""
@@ -241,6 +264,88 @@ async def ai_extract_rhythm(chapters: list[dict], router: Any) -> dict:
                 "end": int(s.get("end") or 1),
                 "pacing": str(s.get("pacing") or "medium"),
                 "avg_tension": float(s.get("avg_tension") or 0.5),
+            }
+            for s in (obj.get("pacing_segments") or []) if isinstance(s, dict)
+        ],
+    }
+
+
+_CHAPTER_TYPES_VALID = frozenset({
+    "日常", "战斗", "高潮", "角色个人回",
+    "主线事件", "支线事件", "伏笔铺垫", "收束",
+    "转折", "其他",
+})
+
+
+async def ai_extract_rhythm_v2(chapters: list[dict], router: Any) -> dict:
+    """Single AI call that produces the consolidated rhythm_json shape
+    (replaces ai_extract_narrative + ai_extract_rhythm)."""
+    text, _ = _build_segment_text(chapters)
+    prompt = _RHYTHM_V2_PROMPT.format(n_chapters=len(chapters), text=text)
+    raw = await _invoke(router, prompt, max_tokens=4096)
+    obj = _parse_obj(raw)
+
+    valid_openings = {"in_medias_res", "dialogue_open", "worldbuilding", "character_intro"}
+    op = obj.get("opening_pattern")
+    if op not in valid_openings:
+        op = "character_intro"
+
+    def _clean_types(raw_types: Any) -> list[str]:
+        if not isinstance(raw_types, list):
+            return ["其他"]
+        out: list[str] = []
+        seen: set[str] = set()
+        for t in raw_types:
+            if not isinstance(t, str):
+                continue
+            s = t.strip()
+            if s in _CHAPTER_TYPES_VALID and s not in seen:
+                seen.add(s); out.append(s)
+        return out or ["其他"]
+
+    chap_feats_raw = obj.get("chapter_features") or []
+    chapter_features: list[dict] = []
+    for cf in chap_feats_raw:
+        if not isinstance(cf, dict):
+            continue
+        chapter_features.append({
+            "chapter": int(cf.get("chapter") or 0),
+            "types": _clean_types(cf.get("types")),
+            "info_density": float(cf.get("info_density") or 0.0),
+            "summary": str(cf.get("summary") or "").strip()[:200],
+            "hooks": [
+                {
+                    "position": str(h.get("position") or "段中"),
+                    "content": str(h.get("content") or "").strip()[:80],
+                }
+                for h in (cf.get("hooks") or [])
+                if isinstance(h, dict)
+            ],
+        })
+
+    return {
+        "coverage": {
+            "chapters": len(chapters),
+            "chars": sum(len(ch.get("content") or "") for ch in chapters),
+        },
+        "opening_pattern": op,
+        "climax_positions": [int(x) for x in (obj.get("climax_positions") or []) if isinstance(x, (int, float))],
+        "shuangdian": [
+            {"chapter": int(s.get("chapter") or 0), "type": str(s.get("type") or "other")}
+            for s in (obj.get("shuangdian") or []) if isinstance(s, dict)
+        ],
+        "chapter_features": chapter_features,
+        "info_density_curve": [
+            float(x) for x in (obj.get("info_density_curve") or []) if isinstance(x, (int, float))
+        ],
+        "pacing_segments": [
+            {
+                "start": int(s.get("start") or 1),
+                "end": int(s.get("end") or 1),
+                "pacing": str(s.get("pacing") or "medium"),
+                "avg_info_density": float(
+                    s.get("avg_info_density") or s.get("avg_tension") or 0.5
+                ),
             }
             for s in (obj.get("pacing_segments") or []) if isinstance(s, dict)
         ],

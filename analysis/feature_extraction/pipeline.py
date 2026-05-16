@@ -349,7 +349,8 @@ class FeatureExtractionPipeline:
             compute_style_fingerprint, extract_characters,
         )
         from analysis.feature_extraction.narrative_extractor import (
-            extract_narrative, extract_rhythm, extract_plot_outline,
+            extract_narrative, extract_rhythm, extract_rhythm_v2,
+            extract_plot_outline,
         )
 
         # Style: ALWAYS NLP (per spec)
@@ -420,32 +421,28 @@ class FeatureExtractionPipeline:
         except Exception as e:
             errors.append(f"settings: {e}")
 
-        # Narrative (AI preferred)
-        narr: dict = {}
-        try:
-            narr = await _ai_or_nlp(
-                "narrative",
-                ai_extractor.ai_extract_narrative,
-                lambda: extract_narrative(seg_chapters),
-            )
-        except Exception as e:
-            errors.append(f"narrative: {e}")
-
-        # Rhythm (AI preferred)
+        # Rhythm v2 (AI preferred, merges narrative + rhythm + per-chapter features)
         rhythm: dict = {}
         try:
             rhythm = await _ai_or_nlp(
                 "rhythm",
-                ai_extractor.ai_extract_rhythm,
-                lambda: extract_rhythm(seg_chapters),
+                ai_extractor.ai_extract_rhythm_v2,
+                lambda: extract_rhythm_v2(seg_chapters),
             )
         except Exception as e:
             errors.append(f"rhythm: {e}")
 
-        # Plot outline (chronicle skeleton — always NLP, uses narrative output)
+        # Plot outline (chronicle skeleton — always NLP)
+        # extract_plot_outline expects the legacy narrative shape; derive
+        # it from the unified rhythm so the chronicle skeleton stays correct.
         plot: dict = {}
         try:
-            plot = extract_plot_outline(seg_chapters, narrative=narr)
+            narr_compat = {
+                "opening_pattern": rhythm.get("opening_pattern", "character_intro"),
+                "climax_positions": rhythm.get("climax_positions", []),
+                "shuangdian": rhythm.get("shuangdian", []),
+            }
+            plot = extract_plot_outline(seg_chapters, narrative=narr_compat)
         except Exception as e:
             errors.append(f"plot_outline: {e}")
 
@@ -461,9 +458,8 @@ class FeatureExtractionPipeline:
             "ai_methods_used": ai_methods_used,
             "ai_methods_fallback": ai_methods_fallback,
             "style_fingerprint": fp,
-            "narrative": narr,
             "characters": chars,
-            "rhythm": rhythm,
+            "rhythm": rhythm,  # NOTE: rhythm now carries the unified narrative+rhythm shape
             "plot_outline": plot,
             "settings": settings_items,
         }
@@ -582,30 +578,6 @@ class FeatureExtractionPipeline:
         pacing_total = sum(pacing_acc.values()) or 1.0
         agg_fp["pacing_profile"] = {k: round(v / pacing_total, 3) for k, v in pacing_acc.items()}
 
-        # ── narrative: concat with chapter offsets ──
-        agg_narr = {
-            "opening_pattern": (items[0].get("narrative") or {}).get("opening_pattern", ""),
-            "climax_positions": [],
-            "hook_density": 0.0,
-            "shuangdian": [],
-            "chapter_beats": [],
-        }
-        for it in items:
-            offset = (it.get("start_chapter") or 1) - 1
-            n = it.get("narrative") or {}
-            for c in (n.get("climax_positions") or []):
-                if isinstance(c, int):
-                    agg_narr["climax_positions"].append(c + offset)
-            for sd in (n.get("shuangdian") or []):
-                if isinstance(sd, dict) and isinstance(sd.get("chapter"), int):
-                    agg_narr["shuangdian"].append({"chapter": sd["chapter"] + offset, "type": sd.get("type", "")})
-            for b in (n.get("chapter_beats") or []):
-                if isinstance(b, dict) and isinstance(b.get("chapter"), int):
-                    agg_narr["chapter_beats"].append({**b, "chapter": b["chapter"] + offset})
-        # hook density = char-weighted average
-        hd_sum = sum(((it.get("narrative") or {}).get("hook_density", 0.0) or 0.0) * max(it.get("char_count") or 1, 1) for it in items)
-        agg_narr["hook_density"] = round(hd_sum / total_chars, 3)
-
         # ── characters: merge by name (sum mentions/appearances, longest intro wins) ──
         char_map: dict[str, dict] = {}
         for it in items:
@@ -626,17 +598,53 @@ class FeatureExtractionPipeline:
                 new_intro = (ch.get("intro") or "").strip()
                 if new_intro and len(new_intro) > len(entry["intro"]):
                     entry["intro"] = new_intro
+                # Earliest first_seen_at wins (defined as the longest non-empty
+                # value seen — AI tends to give richer date strings).
+                fs = (ch.get("first_seen_at") or "").strip()
+                if fs and not entry.get("first_seen_at"):
+                    entry["first_seen_at"] = fs
                 for s in (ch.get("speech_samples") or [])[:5]:
                     if s and s not in entry["speech_samples"] and len(entry["speech_samples"]) < 5:
                         entry["speech_samples"].append(s)
         agg_chars = sorted(char_map.values(), key=lambda x: -x.get("mentions", 0))
 
-        # ── rhythm: concat tension curve, concat pacing segments with offsets ──
-        agg_rhythm = {"tension_curve": [], "pacing_segments": []}
+        # ── rhythm_json (unified): merge per-segment rhythm v2 blocks with
+        # chapter offsets so the resulting structure references global chapter
+        # numbers across the whole work.
+        agg_rhythm: dict = {
+            "coverage": {"chapters": 0, "chars": 0},
+            "opening_pattern": "",
+            "climax_positions": [],
+            "shuangdian": [],
+            "chapter_features": [],
+            "info_density_curve": [],
+            "pacing_segments": [],
+        }
+        opening_set = False
         for it in items:
             offset = (it.get("start_chapter") or 1) - 1
             r = it.get("rhythm") or {}
-            agg_rhythm["tension_curve"].extend(r.get("tension_curve") or [])
+            if not opening_set:
+                op = r.get("opening_pattern")
+                if op:
+                    agg_rhythm["opening_pattern"] = op
+                    opening_set = True
+            for c in (r.get("climax_positions") or []):
+                if isinstance(c, int):
+                    agg_rhythm["climax_positions"].append(c + offset)
+            for sd in (r.get("shuangdian") or []):
+                if isinstance(sd, dict) and isinstance(sd.get("chapter"), int):
+                    agg_rhythm["shuangdian"].append({
+                        "chapter": sd["chapter"] + offset,
+                        "type": sd.get("type", ""),
+                    })
+            for cf in (r.get("chapter_features") or []):
+                if isinstance(cf, dict) and isinstance(cf.get("chapter"), int):
+                    agg_rhythm["chapter_features"].append({
+                        **cf,
+                        "chapter": cf["chapter"] + offset,
+                    })
+            agg_rhythm["info_density_curve"].extend(r.get("info_density_curve") or [])
             for ps in (r.get("pacing_segments") or []):
                 if isinstance(ps, dict):
                     agg_rhythm["pacing_segments"].append({
@@ -644,6 +652,12 @@ class FeatureExtractionPipeline:
                         "start": (ps.get("start") or 1) + offset,
                         "end": (ps.get("end") or 1) + offset,
                     })
+        agg_rhythm["coverage"] = {
+            "chapters": max(
+                (it.get("end_chapter") or 0) for it in items
+            ),
+            "chars": sum(int(it.get("char_count") or 0) for it in items),
+        }
 
         # ── plot outline: each segment becomes its own epoch ──
         agg_plot_epochs: list[dict] = []
@@ -664,23 +678,27 @@ class FeatureExtractionPipeline:
                 if not key[1]:
                     continue
                 cur = settings_map.get(key)
+                fi = (s.get("first_introduced_at") or "").strip()
                 if cur is None or len((s.get("content") or "")) > len(cur.get("content") or ""):
                     settings_map[key] = {
                         "category": key[0],
                         "title": key[1],
                         "content": (s.get("content") or "").strip(),
                         "hidden": (s.get("hidden") or "").strip(),
+                        "first_introduced_at": fi or (cur.get("first_introduced_at") if cur else ""),
                     }
-                elif s.get("hidden") and not cur.get("hidden"):
-                    cur["hidden"] = (s.get("hidden") or "").strip()
+                else:
+                    if s.get("hidden") and not cur.get("hidden"):
+                        cur["hidden"] = (s.get("hidden") or "").strip()
+                    if fi and not cur.get("first_introduced_at"):
+                        cur["first_introduced_at"] = fi
         agg_settings = list(settings_map.values())
 
         rdb.update_work(
             ref_id,
             style_fingerprint_json=json.dumps(agg_fp, ensure_ascii=False),
-            narrative_structure_json=json.dumps(agg_narr, ensure_ascii=False),
             extracted_characters_json=json.dumps(agg_chars, ensure_ascii=False),
-            rhythm_template_json=json.dumps(agg_rhythm, ensure_ascii=False),
+            rhythm_json=json.dumps(agg_rhythm, ensure_ascii=False),
             plot_outline_json=json.dumps(agg_plot, ensure_ascii=False),
             settings_json=json.dumps(agg_settings, ensure_ascii=False),
             preprocessing_status="done",

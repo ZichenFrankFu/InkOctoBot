@@ -307,6 +307,7 @@ _ANALYSIS_FIELDS = frozenset({
     "rhythm_template_json",
     "plot_outline_json",
     "settings_json",
+    "rhythm_json",
 })
 
 

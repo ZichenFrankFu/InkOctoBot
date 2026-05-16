@@ -7,10 +7,9 @@ import type { ReferenceWork, MediaType } from "../api/types";
 import {
   Section,
   StyleFingerprintEditor,
-  NarrativeStructureEditor,
   CharactersEditor,
-  RhythmTemplateEditor,
   SettingsEditor,
+  RhythmEditor,
 } from "../components/reference/AnalysisEditors";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
@@ -863,24 +862,14 @@ function WorkDetail({
               onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
             />
           </Section>
-          <Section title="叙事结构" subtitle="开篇 / 高潮 / 钩子 / 爽点"
-            empty={!pj(sel.narrative_structure_json)}
-            emptyHint="暂无叙事结构。请先提取特征。"
-            defaultOpen={false}
+          <Section title="节奏" subtitle="每章特征 · 信息密度 · 钩子 · 节奏分段（含叙事结构）"
+            defaultOpen
           >
-            <NarrativeStructureEditor
-              data={pj(sel.narrative_structure_json)}
-              onSave={d => onSaveAnalysisField("narrative_structure_json", d)}
-            />
-          </Section>
-          <Section title="节奏模板" subtitle="张力曲线 / 分段"
-            empty={!pj(sel.rhythm_template_json)}
-            emptyHint="暂无节奏数据。请先提取特征。"
-            defaultOpen={false}
-          >
-            <RhythmTemplateEditor
-              data={pj(sel.rhythm_template_json)}
-              onSave={d => onSaveAnalysisField("rhythm_template_json", d)}
+            <RhythmEditor
+              data={pj(sel.rhythm_json) as any}
+              legacyNarrative={pj(sel.narrative_structure_json)}
+              legacyRhythm={pj(sel.rhythm_template_json)}
+              onSave={d => onSaveAnalysisField("rhythm_json", d)}
             />
           </Section>
         </div>

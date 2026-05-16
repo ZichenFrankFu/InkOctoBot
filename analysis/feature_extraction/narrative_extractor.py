@@ -324,3 +324,219 @@ def extract_rhythm(chapters: list[dict]) -> dict[str, Any]:
         })
 
     return {"tension_curve": tensions, "pacing_segments": segments}
+
+# ════════════════════════════════════════════════════════════════════
+# Rhythm v2 — consolidated narrative + rhythm extraction
+# ════════════════════════════════════════════════════════════════════
+
+# Keyword buckets for multi-label chapter type classification
+_TYPE_BATTLE   = set("杀血战斗刀剑拳枪箭招式爆崩裂攻破败逃")
+_TYPE_DAILY    = set("修炼打坐冥想吃饭聊天休息散步沉思微笑点头睡觉")
+_TYPE_PROTAG_HINTS = ("回忆", "心里想", "暗自", "独自")
+# Match a date hint anywhere in the chapter
+_TURNING_RATIO = 0.35  # info_density swing > this triggers 转折
+
+CHAPTER_TYPES_ENUM = (
+    "日常", "战斗", "高潮", "角色个人回",
+    "主线事件", "支线事件", "伏笔铺垫", "收束",
+    "转折", "其他",
+)
+
+
+def _info_density(text: str) -> float:
+    """Same shape as _tension but renamed for clarity."""
+    return _tension(text)
+
+
+def _classify_chapter_types(
+    *, text: str, chapter_index: int, total_chapters: int,
+    info_density: float, avg_density: float, prev_density: float | None,
+    is_climax: bool, has_shuangdian: bool,
+) -> list[str]:
+    """Multi-label chapter classification — returns ALL matching tags
+    (at least 1; falls back to ['其他']). See plan B3 for the rules."""
+    types: list[str] = []
+    n = max(len(text), 1)
+    battle_hits = sum(1 for c in text if c in _TYPE_BATTLE)
+    daily_hits  = sum(1 for c in text if c in _TYPE_DAILY)
+    battle_density = battle_hits / (n / 100)
+    daily_density  = daily_hits  / (n / 100)
+
+    if is_climax or info_density > avg_density * 1.4:
+        types.append("高潮")
+    if battle_density > 2:
+        types.append("战斗")
+    if daily_density > 1.5 and battle_density < 1:
+        types.append("日常")
+    if any(h in text for h in _TYPE_PROTAG_HINTS) and len(text) > 1000:
+        types.append("角色个人回")
+    if has_shuangdian or is_climax:
+        if "主线事件" not in types:
+            types.append("主线事件")
+    # 支线: chapter explicitly mentions secondary locations/cast — heuristic
+    # left intentionally loose; the AI extractor refines this.
+    # 伏笔铺垫: hook hits at the end of the chapter with low density
+    tail = text[-300:] if len(text) > 300 else text
+    hook_hits = sum(1 for p in _HOOK_PATS if p.search(tail))
+    if hook_hits and info_density < avg_density:
+        types.append("伏笔铺垫")
+    if total_chapters > 0 and chapter_index >= int(total_chapters * 0.9):
+        types.append("收束")
+    if prev_density is not None and abs(info_density - prev_density) > _TURNING_RATIO:
+        types.append("转折")
+
+    if not types:
+        types.append("其他")
+    # dedup while preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in types:
+        if t not in seen:
+            seen.add(t); out.append(t)
+    return out
+
+
+def _extract_hooks(text: str) -> list[dict]:
+    """Detect hook sentences with position labels. Returns [{position, content}]."""
+    if not text:
+        return []
+    hooks: list[dict] = []
+    L = len(text)
+    head = text[:300]
+    tail = text[-300:] if L > 300 else ""
+    middle = text[300:-300] if L > 600 else ""
+
+    def _scan(region: str, label: str):
+        for p in _HOOK_PATS:
+            for m in p.finditer(region):
+                content = m.group(0).strip()
+                if not content:
+                    continue
+                # Cap content length and dedup against existing
+                snippet = content[:80]
+                if any(h["content"] == snippet for h in hooks):
+                    continue
+                hooks.append({"position": label, "content": snippet})
+
+    _scan(head, "章首")
+    _scan(middle, "段中")
+    _scan(tail, "章末")
+    return hooks
+
+
+def _chapter_summary(ch: dict) -> str:
+    """Best-effort 1-line summary for NLP fallback — uses title; AI overrides."""
+    title = (ch.get("title") or "").strip()
+    if title:
+        return title[:60]
+    body = (ch.get("content") or "").strip()
+    if not body:
+        return ""
+    # First sentence, trimmed
+    import re as _re
+    first = _re.split(r"[。！？\n]", body, maxsplit=1)[0]
+    return (first or body)[:60]
+
+
+def extract_rhythm_v2(chapters: list[dict]) -> dict[str, Any]:
+    """Unified narrative + rhythm extractor. Returns RhythmJson shape.
+
+    Replaces extract_narrative + extract_rhythm. The old functions are
+    retained for any callers that haven't migrated yet.
+    """
+    if not chapters:
+        return {
+            "coverage": {"chapters": 0, "chars": 0},
+            "opening_pattern": "character_intro",
+            "climax_positions": [],
+            "shuangdian": [],
+            "chapter_features": [],
+            "info_density_curve": [],
+            "pacing_segments": [],
+        }
+
+    densities = [_info_density(ch.get("content", "")) for ch in chapters]
+    avg_density = sum(densities) / max(len(densities), 1)
+    total = len(chapters)
+
+    # opening pattern (reused from extract_narrative logic)
+    first = chapters[0].get("content", "")[:500]
+    opening = "character_intro"
+    for name, pat in _OPENING.items():
+        if pat.search(first):
+            opening = name
+            break
+
+    # climaxes — local peaks
+    climaxes: list[int] = []
+    for i in range(1, len(densities) - 1):
+        if (densities[i] > densities[i-1] and densities[i] > densities[i+1]
+                and densities[i] > avg_density * 1.4):
+            climaxes.append(i + 1)
+    climax_set = set(climaxes)
+
+    # shuangdian
+    sd_positions: list[dict] = []
+    for i, ch in enumerate(chapters):
+        c = ch.get("content", "")
+        for cat, pats in _SHUANGDIAN.items():
+            if any(p.search(c) for p in pats):
+                sd_positions.append({"chapter": i + 1, "type": cat})
+                break
+    sd_chapters = {sd["chapter"] for sd in sd_positions}
+
+    # per-chapter features (multi-label types)
+    chapter_features: list[dict] = []
+    prev_d: float | None = None
+    for i, ch in enumerate(chapters):
+        content = ch.get("content", "")
+        d = densities[i]
+        chap_no = i + 1
+        types = _classify_chapter_types(
+            text=content, chapter_index=chap_no, total_chapters=total,
+            info_density=d, avg_density=avg_density, prev_density=prev_d,
+            is_climax=(chap_no in climax_set),
+            has_shuangdian=(chap_no in sd_chapters),
+        )
+        chapter_features.append({
+            "chapter": chap_no,
+            "types": types,
+            "info_density": d,
+            "summary": _chapter_summary(ch),
+            "hooks": _extract_hooks(content),
+        })
+        prev_d = d
+
+    # pacing segments (same algorithm, now keyed off info_density)
+    def _pace(t: float) -> str:
+        return "fast" if t > 0.6 else ("slow" if t < 0.3 else "medium")
+    pacing_segments: list[dict] = []
+    if densities:
+        cur = _pace(densities[0])
+        start = 0
+        for i in range(1, len(densities)):
+            p = _pace(densities[i])
+            if p != cur:
+                pacing_segments.append({
+                    "start": start + 1, "end": i, "pacing": cur,
+                    "avg_info_density": round(
+                        sum(densities[start:i]) / max(i - start, 1), 3),
+                })
+                cur = p
+                start = i
+        pacing_segments.append({
+            "start": start + 1, "end": len(densities), "pacing": cur,
+            "avg_info_density": round(
+                sum(densities[start:]) / max(len(densities) - start, 1), 3),
+        })
+
+    total_chars = sum(len(ch.get("content") or "") for ch in chapters)
+    return {
+        "coverage": {"chapters": total, "chars": total_chars},
+        "opening_pattern": opening,
+        "climax_positions": climaxes,
+        "shuangdian": sd_positions,
+        "chapter_features": chapter_features,
+        "info_density_curve": densities,
+        "pacing_segments": pacing_segments,
+    }

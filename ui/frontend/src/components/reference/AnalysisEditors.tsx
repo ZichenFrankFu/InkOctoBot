@@ -1434,3 +1434,394 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
     </div>
   );
 }
+
+/* ──────────────── Rhythm v2 (合并节奏 + 叙事结构) ──────────────── */
+
+export const CHAPTER_TYPE_VALUES = [
+  "日常", "战斗", "高潮", "角色个人回",
+  "主线事件", "支线事件", "伏笔铺垫", "收束",
+  "转折", "其他",
+] as const;
+export type ChapterType = typeof CHAPTER_TYPE_VALUES[number];
+
+const CHAPTER_TYPE_COLOR: Record<ChapterType, string> = {
+  日常:       "var(--text-tertiary)",
+  战斗:       "var(--accent)",
+  高潮:       "var(--gold)",
+  角色个人回: "var(--purple)",
+  主线事件:   "var(--jade)",
+  支线事件:   "var(--cyan)",
+  伏笔铺垫:   "var(--indigo)",
+  收束:       "#f472b6",
+  转折:       "#e88c2e",
+  其他:       "var(--text-tertiary)",
+};
+
+interface RhythmHook { position: "章首" | "段中" | "章末"; content: string }
+interface RhythmChapterFeature {
+  chapter: number;
+  types: ChapterType[];
+  info_density: number;
+  summary: string;
+  hooks: RhythmHook[];
+}
+export interface RhythmJson {
+  coverage: { chapters: number; chars: number };
+  opening_pattern: string;
+  climax_positions: number[];
+  shuangdian: { chapter: number; type: string }[];
+  chapter_features: RhythmChapterFeature[];
+  info_density_curve: number[];
+  pacing_segments: { start: number; end: number; pacing: string; avg_info_density: number }[];
+}
+
+const _SHUANGDIAN_LABEL_RHYTHM: Record<string, string> = {
+  face_slap: "打脸/反转",
+  power_reveal: "实力展现",
+  treasure_gain: "突破/晋级",
+  mystery_reveal: "谜底揭开",
+};
+
+function _fmtChars(n: number): string {
+  if (!n) return "0 字";
+  if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`;
+  return `${n.toLocaleString()} 字`;
+}
+
+function ChapterTypeChips({ types }: { types: ChapterType[] }) {
+  return (
+    <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
+      {types.map(t => (
+        <span key={t} className="tag" style={{
+          fontSize: 10, padding: "1px 7px",
+          color: CHAPTER_TYPE_COLOR[t],
+          background: "var(--bg-surface-2)",
+          border: `1px solid ${CHAPTER_TYPE_COLOR[t]}`,
+        }}>{t}</span>
+      ))}
+    </div>
+  );
+}
+
+function ChapterTypePicker({ value, onChange }: { value: ChapterType[]; onChange: (next: ChapterType[]) => void }) {
+  const toggle = (t: ChapterType) => {
+    if (value.includes(t)) {
+      const next = value.filter(x => x !== t);
+      onChange(next.length ? next : ["其他"]);
+    } else {
+      onChange([...value, t]);
+    }
+  };
+  return (
+    <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
+      {CHAPTER_TYPE_VALUES.map(t => {
+        const on = value.includes(t);
+        return (
+          <button
+            key={t}
+            className="btn-ghost"
+            onClick={() => toggle(t)}
+            style={{
+              fontSize: 10, padding: "1px 7px", borderRadius: 3, cursor: "pointer",
+              color: on ? "white" : CHAPTER_TYPE_COLOR[t],
+              background: on ? CHAPTER_TYPE_COLOR[t] : "transparent",
+              border: `1px solid ${CHAPTER_TYPE_COLOR[t]}`,
+              fontWeight: on ? 600 : 400,
+            }}
+          >{t}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+function InfoDensitySparkline({ data }: { data: number[] }) {
+  if (!data || data.length === 0) return null;
+  const w = 600, h = 50;
+  const step = data.length > 1 ? w / (data.length - 1) : w;
+  const pts = data.map((v, i) => `${i * step},${h - Math.max(0, Math.min(1, v)) * h}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: "100%", height: 50, background: "var(--bg-surface-2)", borderRadius: 4 }}>
+      <polyline points={pts} fill="none" stroke="var(--accent)" strokeWidth={1.5} />
+    </svg>
+  );
+}
+
+export function RhythmEditor({ data, legacyNarrative, legacyRhythm, onSave }: {
+  data: RhythmJson | null;
+  legacyNarrative?: any;            // narrative_structure_json (legacy)
+  legacyRhythm?: any;               // rhythm_template_json (legacy)
+  onSave: (d: RhythmJson) => Promise<void> | void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<RhythmJson | null>(data);
+  const [saving, setSaving] = useState(false);
+
+  const start = () => { setDraft(data); setEditing(true); };
+  const cancel = () => { setDraft(data); setEditing(false); };
+  const save = async () => {
+    if (!draft) return;
+    setSaving(true);
+    try { await onSave(draft); setEditing(false); } finally { setSaving(false); }
+  };
+
+  // ── Empty + legacy fallback ──
+  if (!data) {
+    const hasLegacy = legacyNarrative || legacyRhythm;
+    if (hasLegacy) {
+      return (
+        <div>
+          <div style={{
+            padding: "8px 10px", marginBottom: 10,
+            background: "var(--bg-surface)", border: "1px dashed var(--border)",
+            borderRadius: 4, fontSize: 11, color: "var(--text-tertiary)",
+          }}>
+            检测到旧版节奏 + 叙事数据。重新提取后将自动迁移到统一的「节奏」结构（含每章特征 + 信息密度 + 钩子内容）。
+          </div>
+          {legacyNarrative && (
+            <details style={{ marginBottom: 8 }}>
+              <summary className="text-xs text-muted" style={{ cursor: "pointer" }}>查看旧版叙事结构</summary>
+              <pre className="font-mono" style={{
+                margin: "6px 0 0", padding: 8, fontSize: 11, lineHeight: 1.4,
+                background: "var(--bg-surface)", borderRadius: 4,
+                color: "var(--text-tertiary)", maxHeight: 220, overflow: "auto",
+                whiteSpace: "pre-wrap", wordBreak: "break-all",
+              }}>{JSON.stringify(legacyNarrative, null, 2)}</pre>
+            </details>
+          )}
+          {legacyRhythm && (
+            <details>
+              <summary className="text-xs text-muted" style={{ cursor: "pointer" }}>查看旧版节奏模板</summary>
+              <pre className="font-mono" style={{
+                margin: "6px 0 0", padding: 8, fontSize: 11, lineHeight: 1.4,
+                background: "var(--bg-surface)", borderRadius: 4,
+                color: "var(--text-tertiary)", maxHeight: 220, overflow: "auto",
+                whiteSpace: "pre-wrap", wordBreak: "break-all",
+              }}>{JSON.stringify(legacyRhythm, null, 2)}</pre>
+            </details>
+          )}
+        </div>
+      );
+    }
+    return (
+      <div className="text-xs text-muted text-center" style={{ padding: 14 }}>
+        暂无节奏数据。请先在「剧情大纲」中分段提取（提取过程会同时生成节奏 + 叙事 + 信息密度）。
+      </div>
+    );
+  }
+
+  if (editing && draft) {
+    const updateCF = (i: number, patch: Partial<RhythmChapterFeature>) => {
+      const list = [...draft.chapter_features];
+      list[i] = { ...list[i], ...patch };
+      setDraft({ ...draft, chapter_features: list });
+    };
+    return (
+      <div>
+        <div className="text-xs text-muted" style={{ marginBottom: 10, lineHeight: 1.6 }}>
+          编辑每章的类型（多选）、信息密度（0-1）、摘要和钩子。开篇模式、高潮章节由系统计算，重新提取时刷新。
+        </div>
+        <div style={{ maxHeight: 460, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+          <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+            <thead style={{ position: "sticky", top: 0, background: "var(--bg-surface)", zIndex: 1 }}>
+              <tr style={{ color: "var(--text-tertiary)" }}>
+                <th style={{ textAlign: "left", padding: "6px 8px", width: 36 }}>章</th>
+                <th style={{ textAlign: "left", padding: "6px 8px" }}>类型 (多选)</th>
+                <th style={{ textAlign: "left", padding: "6px 8px", width: 90 }}>信息密度</th>
+                <th style={{ textAlign: "left", padding: "6px 8px" }}>摘要</th>
+              </tr>
+            </thead>
+            <tbody>
+              {draft.chapter_features.map((cf, i) => (
+                <tr key={cf.chapter} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ padding: "6px 8px", verticalAlign: "top" }}>{cf.chapter}</td>
+                  <td style={{ padding: "6px 8px", verticalAlign: "top" }}>
+                    <ChapterTypePicker value={cf.types} onChange={types => updateCF(i, { types })} />
+                  </td>
+                  <td style={{ padding: "6px 8px", verticalAlign: "top" }}>
+                    <input type="range" min={0} max={1} step={0.01}
+                      value={cf.info_density}
+                      onChange={e => updateCF(i, { info_density: parseFloat(e.target.value) || 0 })}
+                      style={{ width: 70, accentColor: "var(--accent)" }} />
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, marginLeft: 6, color: "var(--accent)" }}>
+                      {cf.info_density.toFixed(2)}
+                    </span>
+                  </td>
+                  <td style={{ padding: "6px 8px", verticalAlign: "top" }}>
+                    <input className="input" value={cf.summary}
+                      onChange={e => updateCF(i, { summary: e.target.value })}
+                      style={{ fontSize: 11, padding: "2px 6px" }} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+          <button className="btn" onClick={cancel} disabled={saving}>取消</button>
+          <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "保存中..." : "保存"}</button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Read view ──
+  const cov = data.coverage || { chapters: 0, chars: 0 };
+  return (
+    <div>
+      <div style={{
+        padding: "6px 10px", marginBottom: 10,
+        background: "var(--accent-subtle)", border: "1px solid var(--accent)",
+        borderRadius: 4, fontSize: 12,
+        color: "var(--accent)", fontWeight: 600,
+      }}>
+        本数据截止到第 {cov.chapters} 章（约 {_fmtChars(cov.chars)}）
+      </div>
+
+      <div className="flex gap-12" style={{ flexWrap: "wrap", fontSize: 12, marginBottom: 10 }}>
+        <div>
+          <span className="text-xs text-muted">开篇模式：</span>
+          <span style={{ fontWeight: 600 }}>{OPENING_LABELS[data.opening_pattern] || data.opening_pattern || "—"}</span>
+        </div>
+        <div>
+          <span className="text-xs text-muted">高潮章：</span>
+          {data.climax_positions.length === 0 ? (
+            <span className="text-xs text-muted">—</span>
+          ) : (
+            <div className="flex gap-4" style={{ display: "inline-flex", flexWrap: "wrap" }}>
+              {data.climax_positions.map(c => (
+                <span key={c} className="tag accent" style={{ fontSize: 10, padding: "1px 6px" }}>第{c}章</span>
+              ))}
+            </div>
+          )}
+        </div>
+        {data.shuangdian.length > 0 && (
+          <div>
+            <span className="text-xs text-muted">爽点：</span>
+            <div className="flex gap-4" style={{ display: "inline-flex", flexWrap: "wrap" }}>
+              {data.shuangdian.map((s, i) => (
+                <span key={i} className="tag" style={{ fontSize: 10, padding: "1px 6px" }}>
+                  第{s.chapter}章 · {_SHUANGDIAN_LABEL_RHYTHM[s.type] || s.type}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {data.info_density_curve.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div className="text-xs text-muted" style={{ marginBottom: 4 }}>
+            信息密度曲线（共 {data.info_density_curve.length} 章）
+          </div>
+          <InfoDensitySparkline data={data.info_density_curve} />
+        </div>
+      )}
+
+      <div className="label" style={{ marginBottom: 6 }}>章节特征</div>
+      <div style={{ maxHeight: 340, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+        <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+          <thead style={{ position: "sticky", top: 0, background: "var(--bg-surface)", zIndex: 1 }}>
+            <tr style={{ color: "var(--text-tertiary)" }}>
+              <th style={{ textAlign: "left", padding: "6px 8px", width: 36 }}>章</th>
+              <th style={{ textAlign: "left", padding: "6px 8px" }}>类型</th>
+              <th style={{ textAlign: "left", padding: "6px 8px", width: 120 }}>信息密度</th>
+              <th style={{ textAlign: "left", padding: "6px 8px" }}>摘要</th>
+              <th style={{ textAlign: "left", padding: "6px 8px", width: 60 }}>钩子</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.chapter_features.map(cf => (
+              <RhythmChapterRow key={cf.chapter} cf={cf} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {data.pacing_segments.length > 0 && (
+        <>
+          <div className="label" style={{ marginTop: 12, marginBottom: 6 }}>节奏分段</div>
+          <div className="flex flex-col gap-4">
+            {data.pacing_segments.map((s, i) => (
+              <div key={i} className="flex items-center gap-8" style={{
+                padding: "5px 10px", background: "var(--bg-surface)", borderRadius: 4,
+                borderLeft: `3px solid ${PACING_COLOR[s.pacing] || "var(--border)"}`,
+              }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: PACING_COLOR[s.pacing] || "var(--text-primary)" }}>
+                  {PACING_LABEL[s.pacing] || s.pacing}
+                </span>
+                <span className="text-xs text-muted">第 {s.start} – {s.end} 章</span>
+                <span className="text-xs text-muted" style={{ marginLeft: "auto" }}>
+                  平均信息密度 {s.avg_info_density?.toFixed(2)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
+      </div>
+    </div>
+  );
+}
+
+function RhythmChapterRow({ cf }: { cf: RhythmChapterFeature }) {
+  const [openHooks, setOpenHooks] = useState(false);
+  const density = Math.max(0, Math.min(1, cf.info_density));
+  return (
+    <>
+      <tr style={{ borderTop: "1px solid var(--border)" }}>
+        <td style={{ padding: "6px 8px", verticalAlign: "top", fontWeight: 600 }}>{cf.chapter}</td>
+        <td style={{ padding: "6px 8px", verticalAlign: "top" }}>
+          <ChapterTypeChips types={cf.types} />
+        </td>
+        <td style={{ padding: "6px 8px", verticalAlign: "middle" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ flex: 1, height: 6, background: "var(--bg-surface-2)", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${density * 100}%`, background: "var(--accent)", borderRadius: 3 }} />
+            </div>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, minWidth: 30, textAlign: "right", color: "var(--accent)" }}>
+              {density.toFixed(2)}
+            </span>
+          </div>
+        </td>
+        <td style={{ padding: "6px 8px", verticalAlign: "top", color: "var(--text-secondary)" }}>
+          {cf.summary || "—"}
+        </td>
+        <td style={{ padding: "6px 8px", verticalAlign: "top" }}>
+          {(cf.hooks || []).length === 0 ? (
+            <span className="text-xs text-muted">—</span>
+          ) : (
+            <button
+              className="btn-ghost"
+              onClick={() => setOpenHooks(!openHooks)}
+              style={{ fontSize: 10, padding: "1px 6px", color: "var(--gold)" }}
+            >
+              {cf.hooks.length} {openHooks ? "▲" : "▼"}
+            </button>
+          )}
+        </td>
+      </tr>
+      {openHooks && (cf.hooks || []).length > 0 && (
+        <tr>
+          <td colSpan={5} style={{ padding: "0 8px 8px 8px", background: "var(--bg-surface)" }}>
+            <ul style={{ margin: 0, paddingLeft: 20, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+              {cf.hooks.map((h, i) => (
+                <li key={i}>
+                  <span className="tag" style={{
+                    fontSize: 9, padding: "0px 5px", marginRight: 6,
+                    background: "var(--bg-surface-2)", color: "var(--gold)",
+                    border: "1px solid var(--gold)",
+                  }}>{h.position}</span>
+                  {h.content}
+                </li>
+              ))}
+            </ul>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
