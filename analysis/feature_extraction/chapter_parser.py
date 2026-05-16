@@ -18,6 +18,7 @@ suspected of being author asides (求收藏 / 求订阅 / 章节缺失 / 请假 
 from __future__ import annotations
 
 import re
+from re import error as error_re
 import statistics
 from typing import Any
 
@@ -165,8 +166,16 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         while vol_marks and vol_marks[0][0] <= m.start():
             cur_vol = vol_marks.pop(0)[1]
-        num_text = m.group(1)
-        title_text = (m.group(2) or "").strip()
+        # Tolerate user regexes that capture <2 groups — fall back to
+        # the index + raw line as the number/title source.
+        try:
+            num_text = m.group(1)
+        except (IndexError, error_re):
+            num_text = str(i + 1)
+        try:
+            title_text = (m.group(2) or "").strip()
+        except (IndexError, error_re):
+            title_text = ""
         raw_marker = m.group(0).strip()
         normalized = cn2int(num_text) or (i + 1)
         chapters.append({
@@ -182,26 +191,60 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
     return chapters
 
 
-def detect_chapters(text: str) -> dict[str, Any]:
-    """Run all patterns, pick the best by score, return chapters + diagnostics.
+def _compile_extra(raw_patterns: list[dict] | None) -> list[tuple[str, re.Pattern[str]]]:
+    """Compile user-supplied chapter patterns. Each entry is
+    ``{name, regex, enabled?}``. Silently drops entries whose regex
+    fails to compile — they're surfaced via the candidates list at
+    score 0 so the UI can flag them, but we never raise."""
+    out: list[tuple[str, re.Pattern[str]]] = []
+    for p in (raw_patterns or []):
+        if not isinstance(p, dict):
+            continue
+        if p.get("enabled") is False:
+            continue
+        name = (p.get("name") or "自定义").strip()
+        regex = p.get("regex") or ""
+        if not regex:
+            continue
+        try:
+            out.append((name, re.compile(regex, re.MULTILINE | re.IGNORECASE)))
+        except re.error:
+            continue
+    return out
+
+
+def detect_chapters(text: str,
+                     extra_patterns: list[dict] | None = None) -> dict[str, Any]:
+    """Run all patterns (built-in + user-supplied), pick the best by score,
+    return chapters + diagnostics.
+
+    ``extra_patterns`` lets users add their own format (e.g. "卷X-Y") via
+    settings.json["chapter_patterns"]. Each user regex must capture two
+    groups: ``(number, title)``. If a user pattern wins the scoring, the
+    chapters use it.
 
     Returns: {
       "chapters": [...],
       "pattern": "第N章" | "数字、标题" | ... | None,
-      "candidates": [{name, count, score}, ...],   # for debugging in UI
+      "candidates": [{name, count, score, custom?}, ...],
       "fallback_used": bool,
     }
-    The fallback is the legacy ~3000-char chunker; it's only used when no
-    pattern scores high enough (< 1.0).
     """
+    builtin = list(_PATTERNS)
+    custom = _compile_extra(extra_patterns)
+    all_patterns = builtin + custom
+    custom_names = {n for n, _ in custom}
     candidates: list[dict] = []
     best_name: str | None = None
     best_matches: list[re.Match[str]] = []
     best_score = 0.0
-    for name, pat in _PATTERNS:
+    for name, pat in all_patterns:
         ms = list(pat.finditer(text))
         score = _score_pattern(ms, len(text))
-        candidates.append({"name": name, "count": len(ms), "score": round(score, 3)})
+        candidates.append({
+            "name": name, "count": len(ms), "score": round(score, 3),
+            "custom": name in custom_names,
+        })
         if score > best_score:
             best_score = score
             best_matches = ms

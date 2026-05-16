@@ -128,21 +128,72 @@ async def upload_work(
 
 
 @router.post("/works/{ref_id}/upload")
-async def upload_text_for_work(ref_id: str, file: UploadFile = File(...)):
+async def upload_text_for_work(
+    ref_id: str,
+    file: UploadFile = File(...),
+    append: bool = Form(False),
+    separator: str = Form("\n\n"),
+):
+    """Upload a .txt file for the work. By default REPLACES the existing
+    file. When ``append=true`` the new content is appended to the existing
+    on-disk text (separated by ``separator``) — useful for serialized works
+    that arrive in multiple .txt files (e.g. one per volume).
+
+    Only .txt is accepted."""
     w = _db().get_work(ref_id)
     if not w:
         raise HTTPException(404, "not found")
-    
+    fname = file.filename or "upload.txt"
+    if not fname.lower().endswith(".txt"):
+        raise HTTPException(400, "仅支持 .txt 文件")
+
+    raw = await file.read()
+    try:
+        new_text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # Common fallback for legacy Chinese encodings.
+        try:
+            new_text = raw.decode("gb18030")
+        except UnicodeDecodeError:
+            raise HTTPException(400, "无法解析文件编码（请使用 UTF-8 或 GB18030）")
+
     refs_dir = settings.repo_root / "data" / "references"
     refs_dir.mkdir(parents=True, exist_ok=True)
-    dest = refs_dir / f"{ref_id}_{file.filename or 'upload.txt'}"
-    dest.write_bytes(await file.read())
-    
+
+    if append and w.get("file_path") and Path(w["file_path"]).exists():
+        # Append to the existing file in place — keeps file_path stable so
+        # downstream code that cached it sees the longer text on next read.
+        dest = Path(w["file_path"])
+        try:
+            existing = dest.read_text(encoding="utf-8")
+        except Exception:
+            existing = ""
+        combined = (existing.rstrip() + (separator or "\n\n") + new_text.lstrip()).strip()
+        dest.write_text(combined, encoding="utf-8")
+    else:
+        dest = refs_dir / f"{ref_id}_{fname}"
+        dest.write_text(new_text, encoding="utf-8")
+
+    # Wipe any prior preprocess / segment state — the underlying text changed.
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    if isinstance(state, dict):
+        state.pop("preprocess", None)
+        state.pop("custom_plan", None)
+        state.pop("plan", None)
+        state["results"] = {}
+        state["completed"] = []
+    from analysis.feature_extraction import preprocess_jobs
+    preprocess_jobs.clear(ref_id)
+
     w = _db().update_work(
         ref_id,
         file_path=str(dest),
         has_full_text=True,
-        preprocessing_status="pending"
+        preprocessing_status="pending",
+        segments_json=json.dumps(state, ensure_ascii=False),
     )
     return w
 
@@ -450,7 +501,7 @@ def reset_segment_plan(ref_id: str):
 
 
 @router.post("/works/{ref_id}/preprocess/start")
-def preprocess_start(ref_id: str):
+async def preprocess_start(ref_id: str):
     """Kick off (or return the existing) preprocess job for this work.
 
     The job:
@@ -458,7 +509,11 @@ def preprocess_start(ref_id: str):
          "1、标题" / Chapter N / 中文数字 …).
       2. Flags chapters that look like author asides via heuristic.
       3. Reports progress chapter-by-chapter (UI polls /status).
-    Idempotent — calling again while running returns the same job."""
+    Idempotent — calling again while running returns the same job.
+
+    Must be ``async def`` so ``asyncio.create_task`` (inside ``start_job``)
+    has a running event loop to attach the worker task to.
+    """
     from analysis.feature_extraction import preprocess_jobs
     from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
     db = _db()
@@ -469,12 +524,119 @@ def preprocess_start(ref_id: str):
     text = pipe._load_text(w)
     if not text:
         raise HTTPException(400, "尚未上传正文")
-    job = preprocess_jobs.start_job(ref_id, text)
+    from analysis.feature_extraction.pipeline import _load_chapter_patterns
+    extras = _load_chapter_patterns()
+    job = await preprocess_jobs.start_job(ref_id, text, extra_patterns=extras)
     return job.to_status()
 
 
+# ── User-defined chapter patterns (stored in settings.json) ──
+
+def _chapter_patterns_path():
+    from pathlib import Path
+    return Path(__file__).resolve().parents[4] / "data" / "settings.json"
+
+
+def _read_settings_dict() -> dict:
+    p = _chapter_patterns_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def _write_settings_dict(d: dict) -> None:
+    p = _chapter_patterns_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@router.get("/chapter_patterns")
+def get_chapter_patterns():
+    """Return the user's custom chapter patterns. Each entry:
+    ``{name: str, regex: str, enabled: bool}``. The regex should capture
+    two groups: (number, title). Title group may be omitted."""
+    data = _read_settings_dict()
+    raw = data.get("chapter_patterns")
+    return {"patterns": raw if isinstance(raw, list) else []}
+
+
+class ChapterPatternsBody(BaseModel):
+    patterns: list[dict]
+
+
+@router.put("/chapter_patterns")
+def put_chapter_patterns(body: ChapterPatternsBody):
+    """Replace the entire custom-pattern list. Each entry is validated
+    (regex must compile) before saving — invalid entries return 400."""
+    import re as _re
+    cleaned: list[dict] = []
+    for i, p in enumerate(body.patterns or []):
+        if not isinstance(p, dict):
+            raise HTTPException(400, f"第 {i + 1} 项格式错误")
+        name = (p.get("name") or "").strip() or f"自定义 {i + 1}"
+        regex = (p.get("regex") or "").strip()
+        if not regex:
+            continue
+        try:
+            _re.compile(regex)
+        except _re.error as e:
+            raise HTTPException(400, f"「{name}」正则编译失败：{e}")
+        cleaned.append({
+            "name": name,
+            "regex": regex,
+            "enabled": bool(p.get("enabled", True)),
+        })
+    data = _read_settings_dict()
+    data["chapter_patterns"] = cleaned
+    _write_settings_dict(data)
+    return {"patterns": cleaned}
+
+
+class ChapterPatternTestBody(BaseModel):
+    regex: str
+    ref_id: str | None = None
+    sample_text: str | None = None
+
+
+@router.post("/chapter_patterns/test")
+def test_chapter_pattern(body: ChapterPatternTestBody):
+    """Compile + run a candidate pattern against either the given
+    sample text or the full text of a specific work. Returns the
+    match count + first few preview matches so the user can sanity-check
+    before saving."""
+    import re as _re
+    try:
+        pat = _re.compile(body.regex, _re.MULTILINE | _re.IGNORECASE)
+    except _re.error as e:
+        raise HTTPException(400, f"正则编译失败：{e}")
+    if body.sample_text:
+        text = body.sample_text
+    elif body.ref_id:
+        db = _db()
+        w = db.get_work(body.ref_id)
+        if not w:
+            raise HTTPException(404, "参考作品不存在")
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        text = pipe._load_text(w) or ""
+    else:
+        raise HTTPException(400, "请提供 ref_id 或 sample_text")
+    ms = list(pat.finditer(text))
+    preview = []
+    for m in ms[:8]:
+        preview.append({
+            "match": m.group(0)[:60],
+            "groups": [g for g in m.groups()[:2]],
+            "pos": m.start(),
+        })
+    return {"count": len(ms), "preview": preview}
+
+
 @router.post("/works/{ref_id}/preprocess/pause")
-def preprocess_pause(ref_id: str):
+async def preprocess_pause(ref_id: str):
     from analysis.feature_extraction import preprocess_jobs
     ok = preprocess_jobs.pause_job(ref_id)
     if not ok:
@@ -483,7 +645,7 @@ def preprocess_pause(ref_id: str):
 
 
 @router.post("/works/{ref_id}/preprocess/resume")
-def preprocess_resume(ref_id: str):
+async def preprocess_resume(ref_id: str):
     from analysis.feature_extraction import preprocess_jobs
     ok = preprocess_jobs.resume_job(ref_id)
     if not ok:
@@ -492,7 +654,7 @@ def preprocess_resume(ref_id: str):
 
 
 @router.post("/works/{ref_id}/preprocess/cancel")
-def preprocess_cancel(ref_id: str):
+async def preprocess_cancel(ref_id: str):
     from analysis.feature_extraction import preprocess_jobs
     ok = preprocess_jobs.cancel_job(ref_id)
     if not ok:

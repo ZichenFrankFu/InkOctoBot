@@ -2,6 +2,12 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut } from "../../api/client";
 import { useToast } from "../shared/Toast";
 
+interface ChapterPattern {
+  name: string;
+  regex: string;
+  enabled: boolean;
+}
+
 interface Chapter {
   number: number;
   title: string;
@@ -71,6 +77,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
   const [planDraft, setPlanDraft] = useState<{ title: string; start_chapter: number; end_chapter: number }[] | null>(null);
   const [planSaving, setPlanSaving] = useState(false);
+  // Custom chapter patterns
+  const [patterns, setPatterns] = useState<ChapterPattern[]>([]);
+  const [patternsOpen, setPatternsOpen] = useState(false);
+  const [patternTesting, setPatternTesting] = useState<{ idx: number; count: number; preview: any[] } | null>(null);
+  // Multi-file upload (append mode)
+  const appendFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [appending, setAppending] = useState(false);
 
   const pollTimerRef = useRef<number | null>(null);
 
@@ -98,7 +111,83 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     } catch { /* silent */ }
   }, [refId, hasFullText]);
 
-  useEffect(() => { fetchStatus(); fetchPlan(); }, [fetchStatus, fetchPlan]);
+  const fetchPatterns = useCallback(async () => {
+    try {
+      const r = await apiGet<{ patterns: ChapterPattern[] }>("/api/references/chapter_patterns");
+      setPatterns(r.patterns || []);
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { fetchStatus(); fetchPlan(); fetchPatterns(); }, [fetchStatus, fetchPlan, fetchPatterns]);
+
+  const savePatterns = async (next: ChapterPattern[]) => {
+    try {
+      const r = await apiPut<{ patterns: ChapterPattern[] }>(
+        "/api/references/chapter_patterns", { patterns: next },
+      );
+      setPatterns(r.patterns || []);
+      toast("已保存自定义章节格式", "success");
+    } catch (e: any) {
+      toast(e?.message || "保存失败", "error");
+    }
+  };
+
+  const addPattern = () => {
+    const next = [...patterns, { name: `自定义 ${patterns.length + 1}`, regex: "", enabled: true }];
+    setPatterns(next);
+  };
+
+  const removePattern = (idx: number) => {
+    const next = patterns.filter((_, i) => i !== idx);
+    setPatterns(next);
+    savePatterns(next);
+  };
+
+  const updatePattern = (idx: number, patch: Partial<ChapterPattern>) => {
+    const next = patterns.map((p, i) => i === idx ? { ...p, ...patch } : p);
+    setPatterns(next);
+  };
+
+  const testPattern = async (idx: number) => {
+    const p = patterns[idx];
+    if (!p?.regex) { toast("请先填写正则", "info"); return; }
+    try {
+      const r = await apiPost<{ count: number; preview: any[] }>(
+        "/api/references/chapter_patterns/test",
+        { regex: p.regex, ref_id: refId },
+      );
+      setPatternTesting({ idx, count: r.count, preview: r.preview });
+    } catch (e: any) {
+      toast(e?.message || "测试失败", "error");
+    }
+  };
+
+  const appendFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith(".txt")) {
+      toast("仅支持 .txt 文件", "error");
+      return;
+    }
+    setAppending(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("append", "true");
+      const resp = await fetch(`/api/references/works/${refId}/upload`, {
+        method: "POST", body: fd,
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      toast(`已追加 ${file.name}`, "success");
+      setStatus(null);
+      await fetchStatus();
+      await fetchPlan();
+      await onAfterApplyExclusions?.();
+    } catch (e: any) {
+      toast(e?.message || "追加失败", "error");
+    } finally {
+      setAppending(false);
+      if (appendFileInputRef.current) appendFileInputRef.current.value = "";
+    }
+  };
 
   // Poll while a job is running/paused
   useEffect(() => {
@@ -339,6 +428,22 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={onUpload}>
               重新上传
             </button>
+            <input
+              ref={appendFileInputRef}
+              type="file"
+              accept=".txt"
+              style={{ display: "none" }}
+              onChange={e => {
+                const f = e.target.files?.[0];
+                if (f) appendFile(f);
+              }}
+            />
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                    onClick={() => appendFileInputRef.current?.click()}
+                    disabled={appending}
+                    title="将另一个 .txt 文件追加到当前正文末尾（适合分卷上传）">
+              {appending ? "追加中..." : "追加文件"}
+            </button>
           </div>
         </div>
 
@@ -394,6 +499,119 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         {status?.error && (
           <div className="text-xs" style={{ color: "var(--error)", marginTop: 6 }}>{status.error}</div>
         )}
+
+        {/* Custom chapter patterns (collapsible) */}
+        <div style={{ marginTop: 10, borderTop: "1px dashed var(--border)", paddingTop: 8 }}>
+          <button className="btn-ghost w-full"
+                  onClick={() => setPatternsOpen(o => !o)}
+                  style={{
+                    justifyContent: "space-between", padding: "4px 0",
+                    fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
+                    borderRadius: 0,
+                  }}>
+            <span>自定义章节格式（{patterns.length}）</span>
+            <span className="text-xs text-muted" style={{
+              transition: "transform 0.15s",
+              transform: patternsOpen ? "rotate(180deg)" : "none",
+              display: "inline-block",
+            }}>&#x25BC;</span>
+          </button>
+          {patternsOpen && (
+            <div style={{ marginTop: 6 }}>
+              <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
+                内置「第N章」「第N回」「1、标题」「Chapter N」等格式。若你的小说用了不同的章节标记，可在这里添加正则，应捕获 2 个组：
+                <code style={{ background: "var(--bg-card)", padding: "1px 4px", borderRadius: 2 }}>(章节号)</code> 和
+                <code style={{ background: "var(--bg-card)", padding: "1px 4px", borderRadius: 2 }}>(标题)</code>。
+                示例：<code style={{ background: "var(--bg-card)", padding: "1px 4px", borderRadius: 2 }}>{'^[\\s　]*卷([0-9]+)[\\s.、]+(.{1,60})$'}</code>
+              </div>
+              {patterns.length > 0 && (
+                <div className="flex flex-col gap-6" style={{ marginBottom: 8 }}>
+                  {patterns.map((p, i) => (
+                    <div key={i} style={{
+                      padding: 6, border: "1px solid var(--border)", borderRadius: 4,
+                    }}>
+                      <div className="flex gap-6 items-center" style={{ marginBottom: 4 }}>
+                        <input
+                          type="checkbox" checked={p.enabled}
+                          onChange={e => updatePattern(i, { enabled: e.target.checked })}
+                          style={{ flexShrink: 0, width: 13, height: 13 }}
+                          title="启用此格式"
+                        />
+                        <input
+                          className="input"
+                          placeholder="名称（如：卷N格式）"
+                          value={p.name}
+                          onChange={e => updatePattern(i, { name: e.target.value })}
+                          style={{ width: 140, fontSize: 12 }}
+                        />
+                        <input
+                          className="input font-mono"
+                          placeholder="^[\s　]*卷([0-9]+)[\s.、]+(.{1,60})$"
+                          value={p.regex}
+                          onChange={e => updatePattern(i, { regex: e.target.value })}
+                          style={{ flex: 1, fontSize: 11 }}
+                        />
+                        <button className="btn" style={{ fontSize: 11, padding: "3px 8px" }}
+                                onClick={() => testPattern(i)}
+                                title="对当前作品的正文测试匹配数">
+                          测试
+                        </button>
+                        <button className="btn-icon"
+                                onClick={() => removePattern(i)}
+                                style={{ fontSize: 14, color: "var(--error)" }}
+                                title="删除">&times;</button>
+                      </div>
+                      {patternTesting?.idx === i && (
+                        <div className="text-xs" style={{
+                          padding: 6, marginTop: 4,
+                          background: "var(--bg-card)", borderRadius: 3,
+                          color: "var(--text-secondary)", lineHeight: 1.55,
+                        }}>
+                          匹配 <span style={{
+                            color: patternTesting.count > 5 ? "var(--jade)" : "var(--gold)",
+                            fontWeight: 600,
+                          }}>{patternTesting.count}</span> 处。
+                          {patternTesting.preview.length > 0 && (
+                            <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
+                              {patternTesting.preview.map((m, k) => (
+                                <li key={k} style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                                  {m.match}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-6" style={{ justifyContent: "space-between" }}>
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={addPattern}>
+                  + 添加格式
+                </button>
+                <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
+                        onClick={() => savePatterns(patterns)}>
+                  保存格式
+                </button>
+              </div>
+              {/* Show what each candidate scored last run, useful for debugging custom pats */}
+              {status?.candidates && status.candidates.length > 0 && (
+                <div className="text-xs text-muted" style={{ marginTop: 8, lineHeight: 1.6 }}>
+                  上次识别评分：
+                  {status.candidates.map((c, i) => (
+                    <span key={i} className="tag" style={{
+                      marginLeft: 4, fontSize: 10, padding: "1px 6px",
+                      background: c.score > 1.0 ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+                      color: c.score > 1.0 ? "var(--accent)" : "var(--text-tertiary)",
+                      border: `1px solid ${c.score > 1.0 ? "var(--accent)" : "var(--border)"}`,
+                    }}>{c.name}: {c.count}/score {c.score}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Section 2: chapter list + author-note flags */}

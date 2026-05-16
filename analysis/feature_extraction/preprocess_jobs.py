@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -53,8 +54,10 @@ class PreprocessJob:
     candidates: list[dict] = field(default_factory=list)
     fallback_used: bool = False
 
-    # Control primitives (not serialized)
-    _resume: Optional[asyncio.Event] = None
+    # Control primitives (not serialized). threading.Event is loop-agnostic,
+    # so the endpoint handlers (which run in FastAPI's threadpool) can flip
+    # pause/resume without needing to interact with the asyncio loop directly.
+    _resume: Optional[threading.Event] = None
     _cancel: bool = False
     _task: Optional[asyncio.Task] = None
 
@@ -98,7 +101,8 @@ def clear(ref_id: str) -> None:
 
 
 async def _run_detection(job: PreprocessJob, text: str,
-                          per_chapter_delay_ms: int = 0) -> None:
+                          per_chapter_delay_ms: int = 0,
+                          extra_patterns: list[dict] | None = None) -> None:
     """Body of the preprocess job. Runs in its own task. Honors job._cancel
     and job._resume between chapters so the UI's pause/resume controls
     take effect at chapter boundaries (per user's chosen granularity)."""
@@ -112,7 +116,7 @@ async def _run_detection(job: PreprocessJob, text: str,
         job.append_log("开始解析章节…")
 
         # Phase 1: chapter detection (single regex pass per pattern; fast)
-        result = detect_chapters(text)
+        result = detect_chapters(text, extra_patterns=extra_patterns)
         chapters = result["chapters"]
         job.detected_pattern = result["pattern"]
         job.fallback_used = result["fallback_used"]
@@ -179,19 +183,27 @@ async def _run_detection(job: PreprocessJob, text: str,
         job.append_log(f"出错：{e}")
 
 
-def start_job(ref_id: str, text: str,
-              per_chapter_delay_ms: int = 0) -> PreprocessJob:
+async def start_job(ref_id: str, text: str,
+                     per_chapter_delay_ms: int = 0,
+                     extra_patterns: list[dict] | None = None) -> PreprocessJob:
     """Idempotent: returns the existing running/paused job for ref_id, or
-    creates a fresh one and schedules it."""
+    creates a fresh one and schedules it on the current event loop.
+
+    Must be awaited from an async context (FastAPI ``async def`` handler)
+    so ``asyncio.create_task`` has a running loop to attach to.
+    """
     job = _jobs.get(ref_id)
     if job and job.state in ("running", "paused"):
         return job
     # Reset for a fresh run
     job = PreprocessJob(ref_id=ref_id)
-    job._resume = asyncio.Event()
+    job._resume = threading.Event()
     job._resume.set()  # not paused
+    job.state = "running"  # set before scheduling so the first status poll already shows running
     _jobs[ref_id] = job
-    job._task = asyncio.create_task(_run_detection(job, text, per_chapter_delay_ms))
+    job._task = asyncio.create_task(
+        _run_detection(job, text, per_chapter_delay_ms, extra_patterns),
+    )
     return job
 
 

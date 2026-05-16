@@ -94,6 +94,24 @@ def _enrich_characters_with_appearance(chars: list[dict], chapters: list[dict]) 
     return out
 
 
+def _load_chapter_patterns() -> list[dict]:
+    """Return the user's custom chapter patterns from settings.json (key
+    ``chapter_patterns``). Empty list when none configured or unreadable —
+    never raises, so a missing/corrupt settings file doesn't break
+    chapter splitting."""
+    try:
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[2]
+        p = root / "data" / "settings.json"
+        if not p.exists():
+            return []
+        data = json.loads(p.read_text(encoding="utf-8"))
+        pats = data.get("chapter_patterns")
+        return [x for x in pats if isinstance(x, dict)] if isinstance(pats, list) else []
+    except Exception:
+        return []
+
+
 def _enrich_settings_with_timestamp(settings_items: list[dict], chapters: list[dict],
                                       segment_start_chapter: int) -> list[dict]:
     """Fill `first_introduced_at` on settings items when AI didn't provide one.
@@ -235,9 +253,14 @@ class FeatureExtractionPipeline:
     def _split_chapters(text: str) -> list[dict]:
         """Smart chapter splitter — tries multiple formats (第N章 / 第N回 /
         1、标题 / Chapter N / …) and picks the best-scoring one. Falls back
-        to ~3000-char chunks when no clear structure exists."""
+        to ~3000-char chunks when no clear structure exists.
+
+        Also honors user-defined patterns from
+        ``settings.json["chapter_patterns"]`` so users can add their own
+        format without code changes."""
         from analysis.feature_extraction.chapter_parser import detect_chapters
-        result = detect_chapters(text)
+        extras = _load_chapter_patterns()
+        result = detect_chapters(text, extra_patterns=extras)
         # Strip extra metadata to keep the shape compatible with existing
         # callers that only read {index, title, volume, content}.
         out: list[dict] = []
