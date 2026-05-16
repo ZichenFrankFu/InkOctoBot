@@ -103,7 +103,7 @@ export default function ReferenceLibraryPage() {
   // Plot outline re-extraction
   const [extractingPlot, setExtractingPlot] = useState(false);
 
-  const leftPanel = useResizable({ direction: "horizontal", initialSize: 280, minSize: 220, maxSize: 480 });
+  const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 180, maxSize: 420 });
 
 
   /* ---- Data loading ---- */

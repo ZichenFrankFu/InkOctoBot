@@ -450,6 +450,138 @@ def reset_segments(ref_id: str):
     return {"ok": True}
 
 
+# ─── Segment chat (refine a previewed extraction conversationally) ───
+
+class ChatMessage(BaseModel):
+    role: str   # "user" | "assistant"
+    content: str
+
+
+class SegmentChatRequest(BaseModel):
+    segment_index: int
+    messages: list[ChatMessage]
+    current_result: Optional[dict] = None  # the previewed extraction the user is iterating on
+
+
+_CHAT_SYSTEM_PROMPT = """你是参考作品分段提取的协作助手。用户正在审阅一个剧情段落的自动提取结果（编年史大纲、角色、设定），并希望与你对话调整。
+
+当用户提出修改诉求时：
+1. 用中文简短回复（≤ 3 句话）说明你做了什么调整或为什么不能调整。
+2. 如果做了任何对结果的修改，必须在回复**末尾**追加一行严格的 JSON 块：
+   ```json
+   {"plot_outline": {...}, "characters": [...], "settings": [...]}
+   ```
+   JSON 中只列出**被修改的字段**（其他字段保持当前不变）。不要附加 markdown 代码块以外的字符。
+3. 如果用户问问题不要求修改，回复一段文字即可，**不附 JSON 块**。
+
+格式约束：
+- plot_outline 的形态保持「epochs[].periods[].events[]」，每个 event 字段为 {subject, category, name, description, hidden?}。
+- characters 项形态 {name, mentions?, intro?, speech_samples?[], appearance_chapters?, appearance_word_count?}。
+- settings 项形态 {category, title, content, hidden?}。category 必须为 power_system/factions/geography/social_rules/history/hard_rules/worldview/other 之一。"""
+
+
+def _serialize_for_chat(current: dict | None) -> str:
+    if not current:
+        return "（当前预览为空，请先生成预览或直接讨论）"
+    keep = {
+        "title": current.get("title"),
+        "start_chapter": current.get("start_chapter"),
+        "end_chapter": current.get("end_chapter"),
+        "plot_outline": current.get("plot_outline"),
+        "characters": current.get("characters"),
+        "settings": current.get("settings"),
+    }
+    return json.dumps(keep, ensure_ascii=False, indent=2)
+
+
+@router.post("/works/{ref_id}/segments/chat")
+async def chat_segment(ref_id: str, body: SegmentChatRequest):
+    """Conversational refinement of a previewed segment result.
+
+    The client passes the current preview + the chat history; the model
+    can revise plot_outline / characters / settings and the route returns
+    both the assistant's natural-language reply and an updated result
+    object the client can apply to its preview state (and later commit).
+    """
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    if not body.messages:
+        raise HTTPException(400, "对话内容为空")
+
+    try:
+        from models.router import ModelRouter
+        from models.base import LLMMessage
+        router_inst = ModelRouter()
+    except Exception as e:
+        raise HTTPException(500, f"模型路由初始化失败：{e}")
+
+    history_lines: list[str] = []
+    for m in body.messages[:-1]:
+        role = "用户" if m.role == "user" else "助手"
+        history_lines.append(f"【{role}】{m.content}")
+    last_user = body.messages[-1].content if body.messages[-1].role == "user" else ""
+
+    user_msg = (
+        f"当前段落提取结果（JSON）：\n```\n{_serialize_for_chat(body.current_result)}\n```\n\n"
+        + ("对话历史：\n" + "\n".join(history_lines) + "\n\n" if history_lines else "")
+        + f"用户新的指令：{last_user}"
+    )
+
+    try:
+        provider = router_inst._get_provider("reference_extractor")
+        resp = await provider.generate(
+            [
+                LLMMessage(role="system", content=_CHAT_SYSTEM_PROMPT),
+                LLMMessage(role="user", content=user_msg),
+            ],
+            temperature=0.4, max_tokens=4096,
+        )
+        raw = resp.content or ""
+    except Exception as e:
+        raise HTTPException(502, f"AI 对话失败：{e}")
+
+    import re as _re
+    revised: dict = {}
+    # Look for a fenced ```json … ``` block; fall back to "first { … last }"
+    m = _re.search(r"```json\s*(\{[\s\S]*?\})\s*```", raw)
+    if not m:
+        m = _re.search(r"```\s*(\{[\s\S]*?\})\s*```", raw)
+    blob = ""
+    if m:
+        blob = m.group(1)
+        message = (raw[:m.start()] + raw[m.end():]).strip()
+    else:
+        # Try last top-level object
+        a, b = raw.find("{"), raw.rfind("}")
+        if 0 <= a < b:
+            tail = raw[a:b+1]
+            try:
+                json.loads(tail)
+                blob = tail
+                message = (raw[:a] + raw[b+1:]).strip()
+            except Exception:
+                message = raw.strip()
+        else:
+            message = raw.strip()
+
+    if blob:
+        try:
+            parsed = json.loads(blob)
+            if isinstance(parsed, dict):
+                for k in ("plot_outline", "characters", "settings"):
+                    if k in parsed:
+                        revised[k] = parsed[k]
+        except Exception:
+            pass
+
+    return {
+        "assistant_message": message or "（已应用修改）" if revised else (message or "无回复"),
+        "revised": revised,
+    }
+
+
 @router.post("/works/{ref_id}/plot_outline/extract")
 def extract_plot_outline_only(ref_id: str):
     """Re-extract plot outline from chapter splits + existing narrative analysis.

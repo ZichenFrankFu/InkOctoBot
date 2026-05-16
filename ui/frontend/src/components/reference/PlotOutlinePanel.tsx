@@ -78,7 +78,10 @@ export default function PlotOutlinePanel({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [merging, setMerging] = useState(false);
-  const [useAi, setUseAi] = useState(true);
+  // Chat-with-AI state for the currently-previewed segment
+  const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatSending, setChatSending] = useState(false);
 
   const loadPlan = useCallback(async () => {
     if (!hasFullText) { setPlan(null); return; }
@@ -106,10 +109,11 @@ export default function PlotOutlinePanel({
     try {
       const r = await apiPost<SegmentResult>(
         `/api/references/works/${refId}/segments/preview`,
-        { segment_index: idx, use_ai: useAi },
+        { segment_index: idx, use_ai: true },
         { timeoutMs: 600_000 },
       );
       setPreview(r);
+      setChatMessages([]);
     } catch (e: any) {
       toast(e?.message || "预览失败", "error");
       setPreviewIdx(null);
@@ -127,10 +131,45 @@ export default function PlotOutlinePanel({
       toast(`第 ${(preview.index ?? 0) + 1} 段已保存（${r.completed_count}/${r.total_segments}）`, "success");
       setPreview(null);
       setPreviewIdx(null);
+      setChatMessages([]);
       await loadPlan();
     } catch (e: any) {
       toast(e?.message || "保存失败", "error");
     } finally { setCommitting(false); }
+  };
+
+  const sendChat = async () => {
+    const text = chatInput.trim();
+    if (!text || !preview || previewIdx === null || chatSending) return;
+    const userMsg = { role: "user" as const, content: text };
+    const next = [...chatMessages, userMsg];
+    setChatMessages(next);
+    setChatInput("");
+    setChatSending(true);
+    try {
+      const r = await apiPost<{ assistant_message: string; revised: { plot_outline?: any; characters?: any[]; settings?: any[] } }>(
+        `/api/references/works/${refId}/segments/chat`,
+        {
+          segment_index: previewIdx,
+          messages: next,
+          current_result: preview,
+        },
+        { timeoutMs: 300_000 },
+      );
+      setChatMessages([...next, { role: "assistant", content: r.assistant_message || "（无回复）" }]);
+      // If the AI returned a revision, merge it into the preview so the
+      // user sees the updated chronicle / characters / settings inline.
+      if (r.revised && Object.keys(r.revised).length > 0) {
+        setPreview(cur => cur ? {
+          ...cur,
+          plot_outline: r.revised.plot_outline ?? cur.plot_outline,
+          characters: r.revised.characters ?? cur.characters,
+          settings: r.revised.settings ?? cur.settings,
+        } : cur);
+      }
+    } catch (e: any) {
+      setChatMessages([...next, { role: "assistant", content: `（出错）${e?.message || "对话失败"}` }]);
+    } finally { setChatSending(false); }
   };
 
   const finalize = async () => {
@@ -171,16 +210,7 @@ export default function PlotOutlinePanel({
                 {plan.type === "volumes" ? "按卷处理" : "按 ~10 万字分块"} · {doneCount}/{total} 已完成
               </div>
             </div>
-            <div className="flex items-center gap-12" style={{ flexWrap: "wrap" }}>
-              <label className="flex items-center gap-6" style={{ fontSize: 12, cursor: "pointer", color: "var(--text-secondary)" }} title="勾选时角色 / 设定 / 叙事 / 节奏 由 AI 提取；风格指纹始终用 NLP。AI 失败会自动回退。">
-                <input
-                  type="checkbox"
-                  checked={useAi}
-                  onChange={e => setUseAi(e.target.checked)}
-                  style={{ width: 14, height: 14 }}
-                />
-                使用 AI 提取
-              </label>
+            <div className="flex items-center gap-8" style={{ flexWrap: "wrap" }}>
               {doneCount > 0 && !allDone && (
                 <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }} onClick={reset} disabled={committing || merging}>
                   重置
@@ -328,6 +358,82 @@ export default function PlotOutlinePanel({
                         </div>
                       )}
                       <ChroniclePreview epochs={preview.plot_outline?.epochs || []} />
+
+                      {/* AI chat box — refine this segment conversationally */}
+                      <div style={{
+                        marginTop: 12,
+                        borderTop: "1px dashed var(--border)",
+                        paddingTop: 10,
+                      }}>
+                        <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)" }}>
+                            与 AI 对话调整本段
+                          </span>
+                          <span className="text-xs text-muted">
+                            修改会即时应用到上方预览
+                          </span>
+                        </div>
+                        {chatMessages.length > 0 && (
+                          <div style={{
+                            maxHeight: 220,
+                            overflowY: "auto",
+                            border: "1px solid var(--border)",
+                            borderRadius: 4,
+                            padding: 8,
+                            marginBottom: 8,
+                            background: "var(--bg-surface)",
+                          }}>
+                            {chatMessages.map((m, i) => (
+                              <div key={i} style={{
+                                marginBottom: i === chatMessages.length - 1 ? 0 : 8,
+                                display: "flex",
+                                flexDirection: m.role === "user" ? "row-reverse" : "row",
+                              }}>
+                                <div style={{
+                                  maxWidth: "85%",
+                                  padding: "6px 10px",
+                                  borderRadius: 6,
+                                  fontSize: 12,
+                                  lineHeight: 1.55,
+                                  whiteSpace: "pre-wrap",
+                                  background: m.role === "user" ? "var(--accent-subtle)" : "var(--bg-card)",
+                                  color: m.role === "user" ? "var(--accent)" : "var(--text-primary)",
+                                  border: `1px solid ${m.role === "user" ? "var(--accent)" : "var(--border)"}`,
+                                }}>{m.content}</div>
+                              </div>
+                            ))}
+                            {chatSending && (
+                              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 6, fontStyle: "italic" }}>
+                                AI 正在回复...
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        <div className="flex gap-6">
+                          <textarea
+                            className="input"
+                            placeholder="例：把第 3 章的「打脸」事件改名为「初次出手」；或者添加一个 [隐]：……"
+                            value={chatInput}
+                            rows={2}
+                            onChange={e => setChatInput(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                                e.preventDefault();
+                                sendChat();
+                              }
+                            }}
+                            style={{ flex: 1, fontSize: 12, resize: "vertical" }}
+                            disabled={chatSending || committing}
+                          />
+                          <button
+                            className="btn-primary"
+                            style={{ fontSize: 11, padding: "3px 12px", alignSelf: "stretch" }}
+                            onClick={sendChat}
+                            disabled={!chatInput.trim() || chatSending || committing}
+                            title="发送（⌘/Ctrl + Enter）"
+                          >{chatSending ? "发送中" : "发送"}</button>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>

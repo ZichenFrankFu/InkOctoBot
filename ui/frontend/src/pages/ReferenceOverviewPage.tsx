@@ -124,6 +124,7 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
   const [loading, setLoading] = useState(true);
   const [capability, setCapability] = useState<Capability | null>(null);
   const [genreFilter, setGenreFilter] = useState<string>("");
+  const [genreOpen, setGenreOpen] = useState<boolean>(true);
   const [completingIds, setCompletingIds] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
@@ -218,7 +219,7 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
   };
 
   return (
-    <div className="page-full">
+    <div className="page-full" style={{ overflow: "auto" }}>
       <div className="page-header" style={{ paddingBottom: 12 }}>
         <div className="page-header-row">
           <div>
@@ -295,13 +296,24 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
             </div>
           </div>
 
-          {/* Genre bar chart (clickable to filter) */}
+          {/* Genre bar chart — dashboard style; collapsible */}
           {Object.keys(stats.byGenre).length > 0 && (
             <div className="card" style={{ marginBottom: 18 }}>
-              <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <h3>题材分布</h3>
+              <div
+                className="card-header"
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}
+                onClick={() => setGenreOpen(o => !o)}
+                title={genreOpen ? "点击收起" : "点击展开"}
+              >
+                <h3 className="flex items-center gap-8">
+                  <span style={{ transition: "transform 0.15s", transform: genreOpen ? "rotate(0deg)" : "rotate(-90deg)", display: "inline-block", fontSize: 10, color: "var(--text-tertiary)" }}>&#x25BC;</span>
+                  题材分布
+                  <span className="text-xs text-muted" style={{ fontWeight: 400, marginLeft: 6 }}>
+                    {Object.keys(stats.byGenre).length} 个标签
+                  </span>
+                </h3>
                 {genreFilter && (
-                  <div className="flex items-center gap-8">
+                  <div className="flex items-center gap-8" onClick={e => e.stopPropagation()}>
                     <span className="text-xs text-muted">
                       已筛选: <span style={{ color: "var(--accent)", fontWeight: 600 }}>{genreFilter}</span>
                     </span>
@@ -313,13 +325,15 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
                   </div>
                 )}
               </div>
-              <div className="card-body">
-                <GenreBarChart
-                  byGenre={stats.byGenre}
-                  selected={genreFilter}
-                  onSelect={g => setGenreFilter(g === genreFilter ? "" : g)}
-                />
-              </div>
+              {genreOpen && (
+                <div className="card-body">
+                  <GenreBarChart
+                    byGenre={stats.byGenre}
+                    selected={genreFilter}
+                    onSelect={g => setGenreFilter(g === genreFilter ? "" : g)}
+                  />
+                </div>
+              )}
             </div>
           )}
 
@@ -398,6 +412,9 @@ function StackedBar({ total, segments }: { total: number; segments: { key: strin
   );
 }
 
+// Match the dashboard's 题材分布 visual style (.bar-chart / .bar-row / .bar-fill).
+const _BAR_COLORS = ["red", "indigo", "gold", "jade", "purple"];
+
 function GenreBarChart({ byGenre, selected, onSelect }: {
   byGenre: Record<string, number>;
   selected: string;
@@ -408,55 +425,34 @@ function GenreBarChart({ byGenre, selected, onSelect }: {
     .slice(0, 20);
   const max = rows[0]?.[1] || 1;
   return (
-    <div className="flex flex-col gap-4">
-      {rows.map(([g, n]) => {
+    <div className="bar-chart">
+      {rows.map(([g, n], idx) => {
         const isSel = g === selected;
-        const width = (n / max) * 100;
+        const width = Math.max(4, (n / max) * 100);
+        const colorClass = isSel ? "red" : _BAR_COLORS[idx % _BAR_COLORS.length];
         return (
-          <button
+          <div
+            className="bar-row"
             key={g}
             onClick={() => onSelect(g)}
-            className="btn-ghost"
             style={{
-              display: "grid",
-              gridTemplateColumns: "100px 1fr 36px",
-              alignItems: "center",
-              gap: 10,
-              padding: "4px 6px",
+              cursor: "pointer",
+              padding: "2px 4px",
               borderRadius: 3,
               background: isSel ? "var(--accent-subtle)" : "transparent",
-              cursor: "pointer",
-              width: "100%",
-              textAlign: "left",
             }}
+            title={isSel ? "点击清除筛选" : `点击按「${g}」筛选作品`}
           >
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: isSel ? 700 : 500,
-                color: isSel ? "var(--accent)" : "var(--text-primary)",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-              title={g}
-            >{g}</span>
-            <div style={{ height: 10, borderRadius: 3, background: "var(--bg-surface-2)", overflow: "hidden" }}>
-              <div style={{
-                height: "100%",
-                width: `${width}%`,
-                background: isSel ? "var(--accent)" : "var(--purple)",
-                borderRadius: 3,
-                transition: "width 0.2s",
-              }} />
+            <div
+              className="bar-label"
+              style={{ color: isSel ? "var(--accent)" : "var(--text-secondary)", fontWeight: isSel ? 600 : 400 }}
+            >{g}</div>
+            <div className="bar-track">
+              <div className={`bar-fill ${colorClass}`} style={{ width: `${width}%` }}>
+                {n}
+              </div>
             </div>
-            <span style={{
-              fontSize: 12, fontFamily: "var(--font-mono)",
-              fontWeight: 600,
-              color: isSel ? "var(--accent)" : "var(--text-secondary)",
-              textAlign: "right",
-            }}>{n}</span>
-          </button>
+          </div>
         );
       })}
     </div>

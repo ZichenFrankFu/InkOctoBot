@@ -5,6 +5,13 @@ import type { AppSettings } from "../api/types";
 
 const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string; desc: string }[] }[] = [
   {
+    group: "参考作品数据库",
+    roles: [
+      { key: "reference_extractor", label: "参考作品分段提取", desc: "角色 / 设定 / 叙事 / 节奏（无 AI 时回退 NLP）" },
+      { key: "reference_web_search", label: "参考作品 AI 联网补全", desc: "元数据补全；需要支持 web search 的模型（如 Claude Sonnet 4 / GPT-4o）" },
+    ],
+  },
+  {
     group: "开书（头脑风暴 & 校准）",
     roles: [
       { key: "scene_planner", label: "头脑风暴", desc: "大纲、角色、世界观综合构思" },
@@ -32,13 +39,6 @@ const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string
     group: "分析 Skills",
     roles: [
       { key: "analyzer", label: "分析器", desc: "文本分析与特征提取" },
-    ],
-  },
-  {
-    group: "参考作品数据库",
-    roles: [
-      { key: "reference_extractor", label: "参考作品分段提取", desc: "角色 / 设定 / 叙事 / 节奏（无 AI 时回退 NLP）" },
-      { key: "reference_web_search", label: "参考作品 AI 联网补全", desc: "元数据补全；需要支持 web search 的模型（如 Claude Sonnet 4 / GPT-4o）" },
     ],
   },
 ];
