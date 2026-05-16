@@ -119,6 +119,104 @@ def extract_narrative(chapters: list[dict]) -> dict[str, Any]:
     }
 
 
+_SHUANGDIAN_LABELS = {
+    "face_slap": "打脸/反转",
+    "power_reveal": "实力展现",
+    "treasure_gain": "突破/晋级",
+    "mystery_reveal": "谜底揭开",
+}
+_OPENING_LABELS = {
+    "in_medias_res": "高潮开局",
+    "dialogue_open": "对话开局",
+    "worldbuilding": "世界观铺陈",
+    "character_intro": "人物登场",
+}
+
+
+def extract_plot_outline(chapters: list[dict],
+                          narrative: dict | None = None) -> dict[str, Any]:
+    """Build a high-level plot outline from chapter list + narrative analysis.
+
+    Returns a structured outline that the user can review and edit:
+        logline, themes, arcs (start/end chapters), key_events.
+    """
+    if not chapters:
+        return {}
+
+    titles = [
+        (ch.get("title") or f"第{i+1}章").strip()
+        for i, ch in enumerate(chapters)
+    ]
+    total = len(chapters)
+
+    if narrative is None:
+        narrative = extract_narrative(chapters)
+
+    climaxes: list[int] = list(narrative.get("climax_positions") or [])
+    shuangdian: list[dict] = list(narrative.get("shuangdian") or [])
+    opening_pattern = narrative.get("opening_pattern") or "character_intro"
+
+    # Build arcs by splitting around climaxes (≤ 5 arcs)
+    arc_names = ["起", "承", "转", "合", "尾声"]
+    cuts = sorted({1, *[c for c in climaxes if 1 < c < total], total + 1})
+    # ensure we don't produce too many tiny arcs — keep up to 5 segments
+    if len(cuts) - 1 > 5:
+        # keep first 4 boundaries plus the end
+        cuts = cuts[:5] + [total + 1]
+    arcs: list[dict] = []
+    for i in range(len(cuts) - 1):
+        start = cuts[i]
+        end = cuts[i + 1] - 1
+        if start > end:
+            continue
+        name = arc_names[i] if i < len(arc_names) else f"第{i+1}幕"
+        first_title = titles[start - 1] if start - 1 < len(titles) else ""
+        last_title = titles[end - 1] if end - 1 < len(titles) else ""
+        summary = first_title
+        if last_title and last_title != first_title:
+            summary = f"{first_title} → {last_title}"
+        arcs.append({
+            "title": f"第{i+1}幕 · {name}",
+            "start_chapter": start,
+            "end_chapter": end,
+            "summary": summary,
+        })
+
+    # Key events: shuangdian + climax peaks (deduped on chapter)
+    events: dict[int, dict] = {}
+    for sd in shuangdian:
+        ch = sd.get("chapter")
+        if not isinstance(ch, int):
+            continue
+        events[ch] = {
+            "chapter": ch,
+            "type": _SHUANGDIAN_LABELS.get(sd.get("type", ""), str(sd.get("type") or "事件")),
+            "description": titles[ch - 1] if 0 < ch <= len(titles) else "",
+        }
+    for ch in climaxes:
+        events.setdefault(ch, {
+            "chapter": ch,
+            "type": "高潮",
+            "description": titles[ch - 1] if 0 < ch <= len(titles) else "",
+        })
+    key_events = sorted(events.values(), key=lambda e: e["chapter"])
+
+    # Build a default logline from work title + opening pattern (user can edit)
+    logline = ""
+    if titles:
+        logline = (
+            f"全书共 {total} 章，开篇采用「"
+            f"{_OPENING_LABELS.get(opening_pattern, opening_pattern)}」模式。"
+        )
+
+    return {
+        "logline": logline,
+        "themes": [],
+        "arcs": arcs,
+        "key_events": key_events,
+    }
+
+
 def extract_rhythm(chapters: list[dict]) -> dict[str, Any]:
     """Tension curve + pacing segments."""
     tensions = [_tension(ch.get("content", "")) for ch in chapters]

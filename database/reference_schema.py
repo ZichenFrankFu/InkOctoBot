@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS reference_works (
     preprocessing_status TEXT NOT NULL DEFAULT 'not_applicable' CHECK (preprocessing_status IN ('not_applicable','pending','processing','done','error')),
     style_fingerprint_json TEXT, narrative_structure_json TEXT,
     extracted_characters_json TEXT, rhythm_template_json TEXT,
+    plot_outline_json TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"""
 
@@ -42,4 +43,8 @@ ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS]
 
 def ensure_reference_tables(conn: sqlite3.Connection) -> None:
     for ddl in ALL_DDL: conn.executescript(ddl)
+    # Lightweight migrations for additive columns on pre-existing DBs
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(reference_works)").fetchall()}
+    if "plot_outline_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN plot_outline_json TEXT")
     conn.commit()

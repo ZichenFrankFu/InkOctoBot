@@ -105,6 +105,7 @@ export interface ReferenceWork {
   narrative_structure_json?: string;
   extracted_characters_json?: string;
   rhythm_template_json?: string;
+  plot_outline_json?: string;
   created_at?: string;
   updated_at?: string;
 }

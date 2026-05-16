@@ -71,12 +71,21 @@ class FeatureExtractionPipeline:
         except Exception as e:
             errors.append(f"rhythm: {e}")
 
+        # plot outline (depends on narrative analysis)
+        plot: dict = {}
+        try:
+            from analysis.feature_extraction.narrative_extractor import extract_plot_outline
+            plot = extract_plot_outline(chapters, narrative=narr)
+        except Exception as e:
+            errors.append(f"plot_outline: {e}")
+
         rdb.update_work(
             ref_id,
             style_fingerprint_json=json.dumps(fp, ensure_ascii=False),
             narrative_structure_json=json.dumps(narr, ensure_ascii=False),
             extracted_characters_json=json.dumps(chars, ensure_ascii=False),
             rhythm_template_json=json.dumps(rhythm, ensure_ascii=False),
+            plot_outline_json=json.dumps(plot, ensure_ascii=False),
             preprocessing_status="done",
         )
 
@@ -87,6 +96,7 @@ class FeatureExtractionPipeline:
             "chapters": len(chapters),
             "elapsed_s": round(elapsed, 2),
             "style_fingerprint": fp, "narrative": narr,
+            "plot_outline": plot,
             "characters_count": len(chars), "errors": errors,
         }
 

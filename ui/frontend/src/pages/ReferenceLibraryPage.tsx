@@ -4,6 +4,15 @@ import { useResizable } from "../hooks/useResizable";
 import useDebounce from "../hooks/useDebounce";
 import { useToast } from "../components/shared/Toast";
 import type { ReferenceWork, ReferenceEntry, MediaType } from "../api/types";
+import {
+  Section,
+  StyleFingerprintEditor,
+  NarrativeStructureEditor,
+  CharactersEditor,
+  RhythmTemplateEditor,
+  PlotOutlineEditor,
+} from "../components/reference/AnalysisEditors";
+import type { PlotOutline } from "../components/reference/AnalysisEditors";
 
 /* ── Extraction types ── */
 interface ExtractionProgress {
@@ -142,6 +151,9 @@ export default function ReferenceLibraryPage() {
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
+  // Plot outline re-extraction
+  const [extractingPlot, setExtractingPlot] = useState(false);
+
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 360, minSize: 260, maxSize: 560 });
 
   /* ---- Data loading ---- */
@@ -243,6 +255,20 @@ export default function ReferenceLibraryPage() {
       setEntries(r.items || []);
     } catch {
       setEntries([]);
+    }
+  }
+
+  async function extractPlotOutline(refId: string) {
+    setExtractingPlot(true);
+    try {
+      const updated = await apiPost<ReferenceWork>(`/api/references/works/${refId}/plot_outline/extract`, {}, { timeoutMs: 300_000 });
+      setSel(updated);
+      setWorks(prev => prev.map(w => w.ref_id === updated.ref_id ? updated : w));
+      toast("剧情大纲已重新提取", "success");
+    } catch (e: any) {
+      toast(e?.message || "操作失败", "error");
+    } finally {
+      setExtractingPlot(false);
     }
   }
 
@@ -635,16 +661,60 @@ export default function ReferenceLibraryPage() {
                   </div>
                 </div>
 
-                {/* Analysis results */}
-                {sel.preprocessing_status === "done" && (
+                {/* Analysis results — structured editors */}
+                {(sel.preprocessing_status === "done" || sel.plot_outline_json) && (
                   <div className="card mb-16">
                     <div className="card-body">
                       <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>特征提取结果</div>
                       <div className="flex flex-col gap-8">
-                        <AnalysisSection title="风格指纹" data={pj(sel.style_fingerprint_json)} fieldKey="style_fingerprint_json" onSave={saveAnalysisField} />
-                        <AnalysisSection title="叙事结构" data={pj(sel.narrative_structure_json)} fieldKey="narrative_structure_json" onSave={saveAnalysisField} />
-                        <AnalysisSection title="提取角色" data={pj(sel.extracted_characters_json)} fieldKey="extracted_characters_json" onSave={saveAnalysisField} />
-                        <AnalysisSection title="节奏模板" data={pj(sel.rhythm_template_json)} fieldKey="rhythm_template_json" onSave={saveAnalysisField} />
+                        <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏"
+                          empty={!pj(sel.style_fingerprint_json)}
+                          emptyHint="暂无风格指纹。请先提取特征。"
+                        >
+                          <StyleFingerprintEditor
+                            data={pj(sel.style_fingerprint_json)}
+                            onSave={d => saveAnalysisField("style_fingerprint_json", d)}
+                          />
+                        </Section>
+
+                        <Section title="叙事结构" subtitle="开篇 / 高潮 / 钩子 / 爽点"
+                          empty={!pj(sel.narrative_structure_json)}
+                          emptyHint="暂无叙事结构。请先提取特征。"
+                        >
+                          <NarrativeStructureEditor
+                            data={pj(sel.narrative_structure_json)}
+                            onSave={d => saveAnalysisField("narrative_structure_json", d)}
+                          />
+                        </Section>
+
+                        <Section title="剧情大纲" subtitle="梗概 / 主题 / 幕 / 关键事件">
+                          <PlotOutlineEditor
+                            data={pj(sel.plot_outline_json) as PlotOutline | null}
+                            onSave={d => saveAnalysisField("plot_outline_json", d)}
+                            onExtract={Boolean(sel.has_full_text) ? () => extractPlotOutline(sel.ref_id) : undefined}
+                            extracting={extractingPlot}
+                          />
+                        </Section>
+
+                        <Section title="提取角色" subtitle="姓名 / 对白 / 关系"
+                          empty={!pj(sel.extracted_characters_json)}
+                          emptyHint="暂无角色数据。请先提取特征。"
+                        >
+                          <CharactersEditor
+                            data={pj(sel.extracted_characters_json)}
+                            onSave={d => saveAnalysisField("extracted_characters_json", d)}
+                          />
+                        </Section>
+
+                        <Section title="节奏模板" subtitle="张力曲线 / 分段"
+                          empty={!pj(sel.rhythm_template_json)}
+                          emptyHint="暂无节奏数据。请先提取特征。"
+                        >
+                          <RhythmTemplateEditor
+                            data={pj(sel.rhythm_template_json)}
+                            onSave={d => saveAnalysisField("rhythm_template_json", d)}
+                          />
+                        </Section>
                       </div>
                     </div>
                   </div>
@@ -1034,97 +1104,6 @@ export default function ReferenceLibraryPage() {
             </div>
           </div>
         </>
-      )}
-    </div>
-  );
-}
-
-/* ---- Analysis Section (collapsible + editable) ---- */
-function AnalysisSection({ title, data, fieldKey, onSave }: {
-  title: string; data: any; fieldKey?: string; onSave?: (fieldKey: string, data: any) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState("");
-  const [editError, setEditError] = useState("");
-  if (!data) return null;
-
-  const startEdit = () => {
-    setEditText(JSON.stringify(data, null, 2));
-    setEditError("");
-    setEditing(true);
-  };
-  const cancelEdit = () => { setEditing(false); setEditError(""); };
-  const saveEdit = () => {
-    try {
-      const parsed = JSON.parse(editText);
-      if (onSave && fieldKey) onSave(fieldKey, parsed);
-      setEditing(false);
-      setEditError("");
-    } catch (e: any) {
-      setEditError("JSON 格式错误: " + (e.message || "解析失败"));
-    }
-  };
-
-  return (
-    <div style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", overflow: "hidden" }}>
-      <button
-        className="btn-ghost w-full"
-        style={{
-          justifyContent: "space-between",
-          padding: "8px 12px",
-          background: "var(--bg-surface)",
-          fontWeight: 500,
-          borderRadius: 0,
-        }}
-        onClick={() => setOpen(!open)}
-      >
-        <span>{title}</span>
-        <span
-          className="text-xs text-muted"
-          style={{ transition: "transform 0.15s", transform: open ? "rotate(180deg)" : "none", display: "inline-block" }}
-        >
-          &#x25BC;
-        </span>
-      </button>
-      {open && (
-        <div style={{ background: "var(--bg-card)" }}>
-          {editing ? (
-            <div style={{ padding: 8 }}>
-              <textarea
-                className="input font-mono"
-                value={editText}
-                onChange={e => setEditText(e.target.value)}
-                style={{ width: "100%", minHeight: 200, maxHeight: 400, fontSize: 11, lineHeight: 1.5, resize: "vertical", boxSizing: "border-box" }}
-              />
-              {editError && <div style={{ fontSize: 11, color: "var(--error)", marginTop: 4 }}>{editError}</div>}
-              <div style={{ display: "flex", gap: 6, marginTop: 6, justifyContent: "flex-end" }}>
-                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={cancelEdit}>取消</button>
-                <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} onClick={saveEdit}>保存</button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <pre
-                className="font-mono"
-                style={{
-                  margin: 0, padding: 12, fontSize: 11, lineHeight: 1.5,
-                  color: "var(--text-secondary)", whiteSpace: "pre-wrap",
-                  wordBreak: "break-all", maxHeight: 260, overflow: "auto",
-                }}
-              >
-                {JSON.stringify(data, null, 2)}
-              </pre>
-              {fieldKey && onSave && (
-                <div style={{ padding: "4px 12px 8px", textAlign: "right" }}>
-                  <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }} onClick={startEdit}>
-                    编辑
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </div>
       )}
     </div>
   );

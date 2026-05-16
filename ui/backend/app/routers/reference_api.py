@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 from ..settings import settings
 from ..utils import load_repo_config, get_db_path
 
@@ -294,12 +294,50 @@ _ANALYSIS_FIELDS = frozenset({
     "narrative_structure_json",
     "extracted_characters_json",
     "rhythm_template_json",
+    "plot_outline_json",
 })
 
 
 class AnalysisUpdate(BaseModel):
     field: str
-    data: dict
+    # Accept dicts or lists (characters is a list)
+    data: Any
+
+
+@router.post("/works/{ref_id}/plot_outline/extract")
+def extract_plot_outline_only(ref_id: str):
+    """Re-extract plot outline from chapter splits + existing narrative analysis.
+    Useful for iterating on the outline without re-running the whole pipeline.
+    """
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from analysis.feature_extraction.narrative_extractor import (
+            extract_narrative, extract_plot_outline,
+        )
+        pipe = FeatureExtractionPipeline(db.db_path)
+        text = pipe._load_text(w)
+        if not text:
+            raise HTTPException(400, "缺少正文文本，无法提取大纲")
+        chapters = pipe._split_chapters(text)
+        narr = None
+        if w.get("narrative_structure_json"):
+            try:
+                narr = json.loads(w["narrative_structure_json"])
+            except Exception:
+                narr = None
+        if not narr:
+            narr = extract_narrative(chapters)
+        plot = extract_plot_outline(chapters, narrative=narr)
+        updated = db.update_work(ref_id, plot_outline_json=json.dumps(plot, ensure_ascii=False))
+        return updated
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"剧情大纲提取失败: {e}")
 
 
 @router.put("/works/{ref_id}/analysis")
