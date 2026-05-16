@@ -219,7 +219,11 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
   };
 
   return (
-    <div className="page-full" style={{ overflow: "auto" }}>
+    // Wrap as a plain block so the outer .main-content (which already
+    // has overflow-y: auto) handles scrolling. Using `.page-full` here
+    // imposes height: 100% + flex column which clipped long content at
+    // the viewport edge regardless of inline overflow overrides.
+    <div style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto" }}>
       <div className="page-header" style={{ paddingBottom: 12 }}>
         <div className="page-header-row">
           <div>
@@ -228,7 +232,6 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
           </div>
           <div className="flex gap-8">
             <button className="btn" onClick={() => { load(); loadCapability(); }}>刷新</button>
-            <button className="btn-primary" onClick={open}>进入参考作品详情</button>
           </div>
         </div>
       </div>

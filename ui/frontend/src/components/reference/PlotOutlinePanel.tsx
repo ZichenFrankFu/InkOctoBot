@@ -38,10 +38,6 @@ interface SegmentResult {
   rhythm?: any;
 }
 
-const AI_METHOD_LABEL: Record<string, string> = {
-  characters: "角色", settings: "设定",
-  rhythm: "节奏",
-};
 
 function fmtChars(n: number): string {
   if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`;
@@ -77,6 +73,11 @@ export default function PlotOutlinePanel({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [merging, setMerging] = useState(false);
+  // Prompt-display state — surfaces the EXACT text being sent to the LLM
+  // for the currently-previewing segment so the user can audit.
+  const [shownPrompt, setShownPrompt] = useState<{ key: string; rendered: string } | null>(null);
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
   // Chat-with-AI state for the currently-previewed segment
   const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -101,10 +102,29 @@ export default function PlotOutlinePanel({
   const allDone = total > 0 && doneCount >= total;
   const nextIdx = plan?.segments.find(s => !completed.has(s.index))?.index;
 
+  const fetchSegmentPrompt = useCallback(async (idx: number) => {
+    setPromptLoading(true);
+    try {
+      const params = new URLSearchParams({
+        ref_id: refId, segment_index: String(idx),
+      });
+      // We surface the rhythm prompt by default — it's the heaviest one
+      // and most representative of what the model sees for the segment.
+      const r = await apiGet<{ key: string; rendered: string }>(
+        `/api/references/prompts/reference.rhythm/preview?${params}`,
+      );
+      setShownPrompt({ key: r.key, rendered: r.rendered });
+    } catch (e: any) {
+      setShownPrompt({ key: "reference.rhythm", rendered: `（获取 prompt 失败：${e?.message || "未知错误"}）` });
+    } finally { setPromptLoading(false); }
+  }, [refId]);
+
   const generatePreview = async (idx: number) => {
     setPreviewIdx(idx);
     setPreview(null);
     setPreviewLoading(true);
+    // Fetch the exact rendered prompt in parallel so the user can audit.
+    fetchSegmentPrompt(idx);
     try {
       const r = await apiPost<SegmentResult>(
         `/api/references/works/${refId}/segments/preview`,
@@ -318,34 +338,6 @@ export default function PlotOutlinePanel({
                           >{committing ? "保存中..." : "确认保存"}</button>
                         </div>
                       </div>
-                      {/* AI extraction status badges */}
-                      {((preview.ai_methods_used && preview.ai_methods_used.length > 0) ||
-                        (preview.ai_methods_fallback && preview.ai_methods_fallback.length > 0)) && (
-                        <div className="flex gap-4 items-center" style={{ flexWrap: "wrap", marginBottom: 6 }}>
-                          {(preview.ai_methods_used || []).map(m => (
-                            <span key={m} className="tag" style={{
-                              fontSize: 10, padding: "1px 6px",
-                              color: "var(--accent)",
-                              background: "var(--accent-subtle)",
-                              border: "1px solid var(--accent)",
-                            }}>AI · {AI_METHOD_LABEL[m] || m}</span>
-                          ))}
-                          {(preview.ai_methods_fallback || []).map(m => (
-                            <span key={m} className="tag" style={{
-                              fontSize: 10, padding: "1px 6px",
-                              color: "var(--text-tertiary)",
-                              background: "var(--bg-surface-2)",
-                              border: "1px dashed var(--border)",
-                            }}>NLP · {AI_METHOD_LABEL[m] || m}</span>
-                          ))}
-                          <span className="tag" style={{
-                            fontSize: 10, padding: "1px 6px",
-                            color: "var(--text-tertiary)",
-                            background: "var(--bg-surface-2)",
-                            border: "1px dashed var(--border)",
-                          }}>NLP · 风格指纹</span>
-                        </div>
-                      )}
                       {preview.warnings && preview.warnings.length > 0 && (
                         <div className="text-xs" style={{ color: "var(--gold)", marginBottom: 6 }}>
                           {preview.warnings.join("; ")}
@@ -356,6 +348,43 @@ export default function PlotOutlinePanel({
                           错误：{preview.errors.join("; ")}
                         </div>
                       )}
+
+                      {/* Exact prompt sent to the LLM (collapsible) */}
+                      <div style={{ marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4 }}>
+                        <button
+                          className="btn-ghost w-full"
+                          onClick={() => setPromptOpen(o => !o)}
+                          style={{
+                            justifyContent: "space-between",
+                            padding: "6px 10px",
+                            fontSize: 11, fontWeight: 600,
+                            color: "var(--text-secondary)", borderRadius: 0,
+                          }}
+                        >
+                          <span>查看本次发送给 LLM 的 prompt（{shownPrompt?.key || "reference.rhythm"}）</span>
+                          <span className="text-xs text-muted" style={{
+                            transition: "transform 0.15s",
+                            transform: promptOpen ? "rotate(180deg)" : "none",
+                            display: "inline-block",
+                          }}>&#x25BC;</span>
+                        </button>
+                        {promptOpen && (
+                          <div style={{ padding: 8, background: "var(--bg-surface)" }}>
+                            {promptLoading ? (
+                              <div className="text-xs text-muted" style={{ padding: 6 }}>加载中…</div>
+                            ) : (
+                              <pre className="font-mono" style={{
+                                margin: 0, padding: 8, fontSize: 11, lineHeight: 1.55,
+                                background: "var(--bg-card)", borderRadius: 3,
+                                color: "var(--text-secondary)",
+                                maxHeight: 320, overflow: "auto",
+                                whiteSpace: "pre-wrap", wordBreak: "break-word",
+                              }}>{shownPrompt?.rendered || "（无）"}</pre>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
                       <ChroniclePreview epochs={preview.plot_outline?.epochs || []} />
 
                       {/* AI chat box — refine this segment conversationally */}

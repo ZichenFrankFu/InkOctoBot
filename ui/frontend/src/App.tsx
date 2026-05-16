@@ -44,8 +44,8 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     section: "参考作品数据库",
     items: [
       { key: "references-overview", icon: "\u25A6", label: "数据库概览" },
+      { key: "references-search", icon: "\u2315", label: "灵感搜索" },
       { key: "references", icon: "\u229E", label: "参考作品详情" },
-      { key: "references-search", icon: "\u2315", label: "相似搜索" },
     ],
   },
   {

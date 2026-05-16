@@ -29,13 +29,16 @@ _CHARACTERS_PROMPT = """你是专业的小说分析师。请从下面的小说�
 
 输出 JSON 列表，每个角色一个对象：
 - name: 角色姓名/称呼（必填，2-4 字最佳）
+- role_tag: 该角色在本段中的定位标签，从以下选**一个**（找不到合适的就用 "其他"）：
+            主角 / 女主角 / 男配 / 女配 / 反派 / 师长 / 重要配角 / 路人 / 其他
+            如果文本中明确有一个主视角主角，请把他/她标为「主角」；如果出现明显的恋爱/搭档主线女性角色，标为「女主角」。
 - intro: 1-3 句客观简介，包括身份、能力、关键背景；不写主观评价或剧透
 - speech_samples: 最多 3 条具有代表性的对白原文（从文本中摘录，不要编造）
 - mentions: 该角色在文本中出现的大致次数（整数估计）
 - first_seen_at: 该角色首次出场的时间锚点。作品里有显式时间（如「1954 年」「2030 年 2 月」）就照写；
                 没有就写所在「第 N 章」；都不便确定时写「约 M 万字处」。**不要编造日期**，找不到就给章节号。
 
-只返回 JSON 数组，不要 markdown、不要解释。最多 30 个角色，按重要性排序。
+只返回 JSON 数组，不要 markdown、不要解释。最多 30 个角色，按重要性排序（主角第一）。
 
 文本（约 {n_chapters} 章，{n_chars} 字）：
 {text}
@@ -45,7 +48,7 @@ _SETTINGS_PROMPT = """你是专业的小说分析师。请从下面的小说文�
 
 输出 JSON 列表，每条设定一个对象：
 - category: 必填，从以下英文 key 选一个：power_system | factions | geography | social_rules | history | hard_rules | worldview | other
-- title: 设定名称（如「灵能力」「镇潮部队」）
+- title: 设定名称（如「魔法体系」「皇家骑士团」「时间法则」）
 - content: 2-4 句客观描述，写已知事实
 - hidden: 可选。该设定背后在本段中尚未对读者公开的真相、来源或动机
 - first_introduced_at: 该设定首次出现的时间锚点。作品里有显式时间就照写；没有就写所在「第 N 章」；
@@ -197,6 +200,7 @@ async def ai_extract_characters(chapters: list[dict], router: Any,
             "intro": (it.get("intro") or "").strip(),
             "speech_samples": [s for s in (it.get("speech_samples") or []) if isinstance(s, str)][:3],
             "first_seen_at": (it.get("first_seen_at") or "").strip(),
+            "role_tag": (it.get("role_tag") or "").strip(),
         })
     return out
 

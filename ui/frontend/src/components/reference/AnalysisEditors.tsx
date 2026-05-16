@@ -435,6 +435,23 @@ export function NarrativeStructureEditor({ data, onSave }: { data: NarrativeStru
 
 /* ──────────────── Characters ──────────────── */
 
+type CharacterRoleTag =
+  | "主角" | "女主角" | "反派"
+  | "男配" | "女配" | "师长"
+  | "重要配角" | "路人" | "其他" | "";
+
+const ROLE_TAG_COLOR: Record<string, string> = {
+  主角:     "var(--accent)",
+  女主角:   "#f472b6",
+  反派:     "var(--error)",
+  男配:     "var(--indigo)",
+  女配:     "var(--purple)",
+  师长:     "var(--gold)",
+  重要配角: "var(--jade)",
+  路人:     "var(--text-tertiary)",
+  其他:     "var(--text-tertiary)",
+};
+
 interface CharacterItem {
   name: string;
   mentions?: number;
@@ -443,6 +460,7 @@ interface CharacterItem {
   appearance_chapters?: number;
   appearance_word_count?: number;
   first_seen_at?: string; // 首次出场的时间锚点
+  role_tag?: CharacterRoleTag;
 }
 
 function fmtAppearance(c: CharacterItem): string {
@@ -502,6 +520,31 @@ export function CharactersEditor({ data, onSave }: { data: CharacterItem[] | nul
                   style={{ fontSize: 14 }}
                 >&times;</button>
               </div>
+              <div className="flex gap-6 mb-6">
+                <select
+                  className="select"
+                  value={c.role_tag || ""}
+                  onChange={e => {
+                    const list = [...draft]; list[i] = { ...c, role_tag: e.target.value as CharacterRoleTag }; setDraft(list);
+                  }}
+                  style={{ flex: "0 0 130px" }}
+                  title="角色定位"
+                >
+                  <option value="">（未标注）</option>
+                  {(["主角","女主角","反派","男配","女配","师长","重要配角","路人","其他"] as const).map(rt =>
+                    <option key={rt} value={rt}>{rt}</option>
+                  )}
+                </select>
+                <input
+                  className="input"
+                  placeholder='首次出场时间锚点'
+                  value={c.first_seen_at || ""}
+                  onChange={e => {
+                    const list = [...draft]; list[i] = { ...c, first_seen_at: e.target.value }; setDraft(list);
+                  }}
+                  style={{ flex: 1, fontSize: 12 }}
+                />
+              </div>
               <textarea
                 className="input"
                 rows={3}
@@ -522,16 +565,6 @@ export function CharactersEditor({ data, onSave }: { data: CharacterItem[] | nul
                   list[i] = { ...c, speech_samples: e.target.value.split("\n").map(s => s.trim()).filter(Boolean) };
                   setDraft(list);
                 }}
-                style={{ marginBottom: 6 }}
-              />
-              <input
-                className="input"
-                placeholder='首次出场时间锚点 (如 "1954 年" / "第 3 章" / "约 5 万字处")'
-                value={c.first_seen_at || ""}
-                onChange={e => {
-                  const list = [...draft]; list[i] = { ...c, first_seen_at: e.target.value }; setDraft(list);
-                }}
-                style={{ fontSize: 12 }}
               />
             </div>
           ))}
@@ -558,7 +591,25 @@ function CharactersReadOnlyList({ list, onEdit }: { list: CharacterItem[]; onEdi
   const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const INITIAL = 5;
-  const visible = showAll ? list : list.slice(0, INITIAL);
+
+  // Defensive sort on the client too: protagonist tags first, then by
+  // appearance_chapters desc, then mentions desc. (The backend sorts on
+  // merge, but legacy data + per-segment previews benefit from this.)
+  const _ROLE_ORDER: Record<string, number> = {
+    主角: 0, 女主角: 1, 反派: 2,
+    男配: 3, 女配: 3, 师长: 3,
+    重要配角: 4, 路人: 8, 其他: 9, "": 9,
+  };
+  const sorted = [...list].sort((a, b) => {
+    const ra = _ROLE_ORDER[a.role_tag || ""] ?? 9;
+    const rb = _ROLE_ORDER[b.role_tag || ""] ?? 9;
+    if (ra !== rb) return ra - rb;
+    const apA = a.appearance_chapters || 0;
+    const apB = b.appearance_chapters || 0;
+    if (apA !== apB) return apB - apA;
+    return (b.mentions || 0) - (a.mentions || 0);
+  });
+  const visible = showAll ? sorted : sorted.slice(0, INITIAL);
 
   return (
     <div>
@@ -578,6 +629,15 @@ function CharactersReadOnlyList({ list, onEdit }: { list: CharacterItem[]; onEdi
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span className="flex items-center gap-8" style={{ marginBottom: c.intro ? 4 : 0, flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 600 }}>{c.name || "(未命名)"}</span>
+                    {c.role_tag && c.role_tag !== "其他" && c.role_tag !== "路人" && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 7px",
+                        color: "white",
+                        background: ROLE_TAG_COLOR[c.role_tag] || "var(--text-tertiary)",
+                        border: `1px solid ${ROLE_TAG_COLOR[c.role_tag] || "var(--text-tertiary)"}`,
+                        fontWeight: 600,
+                      }}>{c.role_tag}</span>
+                    )}
                     <span className="text-xs text-muted">{fmtAppearance(c)}</span>
                     {c.first_seen_at && (
                       <span className="tag" style={{
@@ -828,6 +888,33 @@ export function PlotOutlineEditor({
   //                 "iceberg" = 冰山理论 (reader POV, [隐] hidden behind click).
   const [viewMode, setViewMode] = useState<"full" | "iceberg">("iceberg");
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  // Per-event inline edit state — "ei-pi-evi" key → ChronicleEvent draft.
+  // Editing one row at a time keeps the rest of the chronicle in read view.
+  const [eventEdit, setEventEdit] = useState<{ key: string; draft: ChronicleEvent } | null>(null);
+  const [eventEditSaving, setEventEditSaving] = useState(false);
+
+  const startEventEdit = (ei: number, pi: number, evi: number, ev: ChronicleEvent) => {
+    setEventEdit({ key: `${ei}-${pi}-${evi}`, draft: { ...ev } });
+  };
+  const cancelEventEdit = () => setEventEdit(null);
+  const saveEventEdit = async () => {
+    if (!eventEdit) return;
+    setEventEditSaving(true);
+    try {
+      const [ei, pi, evi] = eventEdit.key.split("-").map(n => parseInt(n, 10));
+      const base: PlotOutline = data ? { ...data, epochs: (data.epochs || []).map(e => ({
+        ...e, periods: (e.periods || []).map(p => ({
+          ...p, events: [...(p.events || [])],
+        })),
+      })) } : { epochs: [] };
+      const epochs = base.epochs || [];
+      if (epochs[ei] && epochs[ei].periods[pi]) {
+        epochs[ei].periods[pi].events[evi] = eventEdit.draft;
+      }
+      await onSave(base);
+      setEventEdit(null);
+    } finally { setEventEditSaving(false); }
+  };
 
   const start = () => { setDraft(data ? { ...data, epochs: data.epochs || [] } : { epochs: [] }); setEditing(true); };
   const cancel = () => { setDraft(data ? { ...data, epochs: data.epochs || [] } : { epochs: [] }); setEditing(false); };
@@ -1131,8 +1218,58 @@ export function PlotOutlineEditor({
                         {(per.events || []).map((ev, evi) => {
                           const key = `${ei}-${pi}-${evi}`;
                           const showHidden = viewMode === "full" || revealed[key];
+                          const isInlineEditing = eventEdit?.key === key;
+                          if (isInlineEditing) {
+                            const ed = eventEdit!.draft;
+                            const patch = (p: Partial<ChronicleEvent>) =>
+                              setEventEdit({ key, draft: { ...ed, ...p } });
+                            return (
+                              <div key={evi} style={{
+                                paddingLeft: 8,
+                                padding: 8,
+                                border: "1px solid var(--accent)",
+                                borderRadius: 4,
+                                background: "var(--bg-card)",
+                              }}>
+                                <div className="flex gap-4" style={{ marginBottom: 4 }}>
+                                  <input className="input" placeholder="主体" value={ed.subject}
+                                    onChange={e => patch({ subject: e.target.value })}
+                                    style={{ flex: 1, fontSize: 12 }} />
+                                  <input className="input" placeholder="分类" value={ed.category}
+                                    onChange={e => patch({ category: e.target.value })}
+                                    style={{ flex: 1, fontSize: 12 }} />
+                                  <input className="input" placeholder="事件名" value={ed.name}
+                                    onChange={e => patch({ name: e.target.value })}
+                                    style={{ flex: 1, fontSize: 12 }} />
+                                </div>
+                                <textarea className="input" rows={3}
+                                  placeholder="客观描述（2-5 句，不写对话/心理/场景细节）"
+                                  value={ed.description}
+                                  onChange={e => patch({ description: e.target.value })}
+                                  style={{ marginBottom: 4, fontSize: 12 }} />
+                                <textarea className="input" rows={1}
+                                  placeholder="[隐] 隐藏真相/动机（可选）"
+                                  value={ed.hidden || ""}
+                                  onChange={e => patch({ hidden: e.target.value })}
+                                  style={{ marginBottom: 4, fontSize: 12, color: "var(--gold)" }} />
+                                <input className="input"
+                                  placeholder='事件时间锚点 (留空则用 period 的时间)'
+                                  value={ed.time_marker || ""}
+                                  onChange={e => patch({ time_marker: e.target.value })}
+                                  style={{ marginBottom: 6, fontSize: 12 }} />
+                                <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
+                                  <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                                          onClick={cancelEventEdit} disabled={eventEditSaving}>取消</button>
+                                  <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
+                                          onClick={saveEventEdit} disabled={eventEditSaving}>
+                                    {eventEditSaving ? "保存中..." : "保存"}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          }
                           return (
-                            <div key={evi} style={{ paddingLeft: 8 }}>
+                            <div key={evi} className="ref-event-row" style={{ paddingLeft: 8, position: "relative" }}>
                               <div style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-primary)" }}>
                                 <span style={{ fontWeight: 600, color: "var(--accent)" }}>
                                   【{ev.subject}·{ev.category}·{ev.name}{ev.time_marker ? ` · ${ev.time_marker}` : ""}】
@@ -1143,20 +1280,27 @@ export function PlotOutlineEditor({
                                     className="btn-ghost"
                                     onClick={() => setRevealed(prev => ({ ...prev, [key]: true }))}
                                     style={{
-                                      marginLeft: 6,
-                                      padding: "1px 8px",
-                                      fontSize: 10,
-                                      borderRadius: 3,
-                                      background: "var(--bg-surface-2)",
+                                      marginLeft: 6, padding: "1px 8px", fontSize: 10,
+                                      borderRadius: 3, background: "var(--bg-surface-2)",
                                       border: "1px dashed var(--gold)",
-                                      color: "var(--gold)",
-                                      fontWeight: 600,
-                                      cursor: "pointer",
-                                      lineHeight: 1.4,
+                                      color: "var(--gold)", fontWeight: 600,
+                                      cursor: "pointer", lineHeight: 1.4,
                                     }}
                                     title="点击展开隐藏的真相"
                                   >[隐] 展开</button>
                                 )}
+                                <button
+                                  className="btn-ghost ref-event-edit"
+                                  onClick={() => startEventEdit(ei, pi, evi, ev)}
+                                  title="单独编辑这条事件"
+                                  style={{
+                                    marginLeft: 6, padding: "1px 7px", fontSize: 10,
+                                    borderRadius: 3,
+                                    color: "var(--text-tertiary)",
+                                    background: "transparent",
+                                    border: "1px solid var(--border)",
+                                  }}
+                                >编辑</button>
                               </div>
                               {ev.hidden && showHidden && (
                                 <div style={{ fontSize: 12, lineHeight: 1.6, marginTop: 2, color: "var(--gold)" }}>
@@ -1535,6 +1679,62 @@ function ChapterTypePicker({ value, onChange }: { value: ChapterType[]; onChange
   );
 }
 
+/**
+ * Convert a legacy narrative_structure_json + rhythm_template_json pair
+ * into the new RhythmJson shape so the read view can render them with
+ * the same human-readable layout. The output is best-effort.
+ */
+function _legacyToRhythmJson(narr: any, rhythm: any): RhythmJson | null {
+  if (!narr && !rhythm) return null;
+  const beats: any[] = (narr?.chapter_beats) || [];
+  const tensionCurve: number[] = (rhythm?.tension_curve) || [];
+  const _BEAT_TO_TYPE: Record<string, ChapterType> = {
+    intro: "其他",
+    rising: "其他",
+    climax: "高潮",
+    falling: "其他",
+    resolution: "收束",
+  };
+  const chapter_features: RhythmJson["chapter_features"] = beats.map((b, i) => {
+    const idx = (typeof b?.chapter === "number") ? b.chapter : (i + 1);
+    const fn = String(b?.function || "");
+    return {
+      chapter: idx,
+      types: [_BEAT_TO_TYPE[fn] || "其他"],
+      info_density: typeof b?.tension === "number" ? b.tension
+                  : (typeof tensionCurve[idx - 1] === "number" ? tensionCurve[idx - 1] : 0),
+      summary: "",
+      hooks: [],
+    };
+  });
+  if (chapter_features.length === 0 && tensionCurve.length > 0) {
+    for (let i = 0; i < tensionCurve.length; i++) {
+      chapter_features.push({
+        chapter: i + 1, types: ["其他"],
+        info_density: tensionCurve[i], summary: "", hooks: [],
+      });
+    }
+  }
+  return {
+    coverage: { chapters: chapter_features.length || tensionCurve.length, chars: 0 },
+    opening_pattern: String(narr?.opening_pattern || ""),
+    climax_positions: Array.isArray(narr?.climax_positions)
+      ? narr.climax_positions.filter((x: any) => typeof x === "number") : [],
+    shuangdian: Array.isArray(narr?.shuangdian) ? narr.shuangdian : [],
+    chapter_features,
+    info_density_curve: tensionCurve.length > 0
+      ? tensionCurve
+      : chapter_features.map(cf => cf.info_density || 0),
+    pacing_segments: (rhythm?.pacing_segments || []).map((p: any) => ({
+      start: Number(p.start || 1),
+      end: Number(p.end || 1),
+      pacing: String(p.pacing || "medium"),
+      avg_info_density: Number(p.avg_info_density ?? p.avg_tension ?? 0),
+    })),
+  };
+}
+
+
 function InfoDensitySparkline({ data }: { data: number[] }) {
   if (!data || data.length === 0) return null;
   const w = 600, h = 50;
@@ -1565,47 +1765,15 @@ export function RhythmEditor({ data, legacyNarrative, legacyRhythm, onSave }: {
     try { await onSave(draft); setEditing(false); } finally { setSaving(false); }
   };
 
-  // ── Empty + legacy fallback ──
-  if (!data) {
-    const hasLegacy = legacyNarrative || legacyRhythm;
-    if (hasLegacy) {
-      return (
-        <div>
-          <div style={{
-            padding: "8px 10px", marginBottom: 10,
-            background: "var(--bg-surface)", border: "1px dashed var(--border)",
-            borderRadius: 4, fontSize: 11, color: "var(--text-tertiary)",
-          }}>
-            检测到旧版节奏 + 叙事数据。重新提取后将自动迁移到统一的「节奏」结构（含每章特征 + 信息密度 + 钩子内容）。
-          </div>
-          {legacyNarrative && (
-            <details style={{ marginBottom: 8 }}>
-              <summary className="text-xs text-muted" style={{ cursor: "pointer" }}>查看旧版叙事结构</summary>
-              <pre className="font-mono" style={{
-                margin: "6px 0 0", padding: 8, fontSize: 11, lineHeight: 1.4,
-                background: "var(--bg-surface)", borderRadius: 4,
-                color: "var(--text-tertiary)", maxHeight: 220, overflow: "auto",
-                whiteSpace: "pre-wrap", wordBreak: "break-all",
-              }}>{JSON.stringify(legacyNarrative, null, 2)}</pre>
-            </details>
-          )}
-          {legacyRhythm && (
-            <details>
-              <summary className="text-xs text-muted" style={{ cursor: "pointer" }}>查看旧版节奏模板</summary>
-              <pre className="font-mono" style={{
-                margin: "6px 0 0", padding: 8, fontSize: 11, lineHeight: 1.4,
-                background: "var(--bg-surface)", borderRadius: 4,
-                color: "var(--text-tertiary)", maxHeight: 220, overflow: "auto",
-                whiteSpace: "pre-wrap", wordBreak: "break-all",
-              }}>{JSON.stringify(legacyRhythm, null, 2)}</pre>
-            </details>
-          )}
-        </div>
-      );
-    }
+  // If the new rhythm_json is empty but legacy columns are populated,
+  // upgrade them on the fly to the same shape so the user sees a
+  // consistent human-readable view (no JSON, no "legacy" banner).
+  const effective: RhythmJson | null = data || _legacyToRhythmJson(legacyNarrative, legacyRhythm);
+
+  if (!effective) {
     return (
       <div className="text-xs text-muted text-center" style={{ padding: 14 }}>
-        暂无节奏数据。请先在「剧情大纲」中分段提取（提取过程会同时生成节奏 + 叙事 + 信息密度）。
+        暂无节奏数据。请先在「剧情大纲」中分段提取。
       </div>
     );
   }
@@ -1666,7 +1834,7 @@ export function RhythmEditor({ data, legacyNarrative, legacyRhythm, onSave }: {
   }
 
   // ── Read view ──
-  const cov = data.coverage || { chapters: 0, chars: 0 };
+  const cov = effective.coverage || { chapters: 0, chars: 0 };
   return (
     <div>
       <div style={{
@@ -1681,25 +1849,25 @@ export function RhythmEditor({ data, legacyNarrative, legacyRhythm, onSave }: {
       <div className="flex gap-12" style={{ flexWrap: "wrap", fontSize: 12, marginBottom: 10 }}>
         <div>
           <span className="text-xs text-muted">开篇模式：</span>
-          <span style={{ fontWeight: 600 }}>{OPENING_LABELS[data.opening_pattern] || data.opening_pattern || "—"}</span>
+          <span style={{ fontWeight: 600 }}>{OPENING_LABELS[effective.opening_pattern] || effective.opening_pattern || "—"}</span>
         </div>
         <div>
           <span className="text-xs text-muted">高潮章：</span>
-          {data.climax_positions.length === 0 ? (
+          {effective.climax_positions.length === 0 ? (
             <span className="text-xs text-muted">—</span>
           ) : (
             <div className="flex gap-4" style={{ display: "inline-flex", flexWrap: "wrap" }}>
-              {data.climax_positions.map(c => (
+              {effective.climax_positions.map(c => (
                 <span key={c} className="tag accent" style={{ fontSize: 10, padding: "1px 6px" }}>第{c}章</span>
               ))}
             </div>
           )}
         </div>
-        {data.shuangdian.length > 0 && (
+        {effective.shuangdian.length > 0 && (
           <div>
             <span className="text-xs text-muted">爽点：</span>
             <div className="flex gap-4" style={{ display: "inline-flex", flexWrap: "wrap" }}>
-              {data.shuangdian.map((s, i) => (
+              {effective.shuangdian.map((s, i) => (
                 <span key={i} className="tag" style={{ fontSize: 10, padding: "1px 6px" }}>
                   第{s.chapter}章 · {_SHUANGDIAN_LABEL_RHYTHM[s.type] || s.type}
                 </span>
@@ -1709,12 +1877,12 @@ export function RhythmEditor({ data, legacyNarrative, legacyRhythm, onSave }: {
         )}
       </div>
 
-      {data.info_density_curve.length > 0 && (
+      {effective.info_density_curve.length > 0 && (
         <div style={{ marginBottom: 12 }}>
           <div className="text-xs text-muted" style={{ marginBottom: 4 }}>
-            信息密度曲线（共 {data.info_density_curve.length} 章）
+            信息密度曲线（共 {effective.info_density_curve.length} 章）
           </div>
-          <InfoDensitySparkline data={data.info_density_curve} />
+          <InfoDensitySparkline data={effective.info_density_curve} />
         </div>
       )}
 
@@ -1731,18 +1899,18 @@ export function RhythmEditor({ data, legacyNarrative, legacyRhythm, onSave }: {
             </tr>
           </thead>
           <tbody>
-            {data.chapter_features.map(cf => (
+            {effective.chapter_features.map(cf => (
               <RhythmChapterRow key={cf.chapter} cf={cf} />
             ))}
           </tbody>
         </table>
       </div>
 
-      {data.pacing_segments.length > 0 && (
+      {effective.pacing_segments.length > 0 && (
         <>
           <div className="label" style={{ marginTop: 12, marginBottom: 6 }}>节奏分段</div>
           <div className="flex flex-col gap-4">
-            {data.pacing_segments.map((s, i) => (
+            {effective.pacing_segments.map((s, i) => (
               <div key={i} className="flex items-center gap-8" style={{
                 padding: "5px 10px", background: "var(--bg-surface)", borderRadius: 4,
                 borderLeft: `3px solid ${PACING_COLOR[s.pacing] || "var(--border)"}`,

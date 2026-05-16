@@ -627,6 +627,7 @@ class FeatureExtractionPipeline:
                     "speech_samples": [],
                     "appearance_chapters": 0,
                     "appearance_word_count": 0,
+                    "role_tag": "",
                 })
                 entry["mentions"] += int(ch.get("mentions") or 0)
                 entry["appearance_chapters"] += int(ch.get("appearance_chapters") or 0)
@@ -634,15 +635,38 @@ class FeatureExtractionPipeline:
                 new_intro = (ch.get("intro") or "").strip()
                 if new_intro and len(new_intro) > len(entry["intro"]):
                     entry["intro"] = new_intro
-                # Earliest first_seen_at wins (defined as the longest non-empty
-                # value seen — AI tends to give richer date strings).
                 fs = (ch.get("first_seen_at") or "").strip()
                 if fs and not entry.get("first_seen_at"):
                     entry["first_seen_at"] = fs
+                # role_tag: stronger labels (主角/女主角/反派) trump weaker
+                # ones (路人/其他) when merging across segments.
+                rt = (ch.get("role_tag") or "").strip()
+                if rt:
+                    _RANK = {
+                        "主角": 100, "女主角": 90, "反派": 80,
+                        "男配": 60, "女配": 60, "师长": 60,
+                        "重要配角": 40, "路人": 20, "其他": 10,
+                    }
+                    if _RANK.get(rt, 30) >= _RANK.get(entry.get("role_tag") or "", 0):
+                        entry["role_tag"] = rt
                 for s in (ch.get("speech_samples") or [])[:5]:
                     if s and s not in entry["speech_samples"] and len(entry["speech_samples"]) < 5:
                         entry["speech_samples"].append(s)
-        agg_chars = sorted(char_map.values(), key=lambda x: -x.get("mentions", 0))
+        # Sort: protagonist tags first, then by appearance_chapters desc,
+        # then by mentions desc (so chapter-coverage outranks raw count).
+        _ROLE_ORDER = {
+            "主角": 0, "女主角": 1, "反派": 2,
+            "男配": 3, "女配": 3, "师长": 3,
+            "重要配角": 4, "路人": 8, "其他": 9, "": 9,
+        }
+        agg_chars = sorted(
+            char_map.values(),
+            key=lambda x: (
+                _ROLE_ORDER.get(x.get("role_tag") or "", 9),
+                -int(x.get("appearance_chapters") or 0),
+                -int(x.get("mentions") or 0),
+            ),
+        )
 
         # ── rhythm_json (unified): merge per-segment rhythm v2 blocks with
         # chapter offsets so the resulting structure references global chapter
