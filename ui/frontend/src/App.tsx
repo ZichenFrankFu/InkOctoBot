@@ -10,6 +10,7 @@ import GlobalSearch from "./components/shared/GlobalSearch";
 import DashboardPage from "./pages/DashboardPage";
 import RankingsPage from "./pages/RankingsPage";
 import ReferenceLibraryPage from "./pages/ReferenceLibraryPage";
+import ReferenceOverviewPage from "./pages/ReferenceOverviewPage";
 // TrendAnalysisPage merged into AnalysisDashboardPage
 import EditorPage from "./pages/EditorPage";
 import CharacterManagerPage from "./pages/CharacterManagerPage";
@@ -23,7 +24,7 @@ import SkillsPage from "./pages/SkillsPage";
 // DevToolsPage removed
 
 type Tab =
-  | "dashboard" | "rankings" | "references" | "analysis"
+  | "dashboard" | "rankings" | "references" | "references-overview" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
   | "skills" | "settings";
 
@@ -41,6 +42,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   {
     section: "参考作品数据库",
     items: [
+      { key: "references-overview", icon: "\u25A6", label: "数据库概览" },
       { key: "references", icon: "\u229E", label: "参考作品库" },
     ],
   },
@@ -177,6 +179,7 @@ function AppInner() {
       <main id="main-content" className="main-content" role="main" aria-label="Page content">
         {tab === "dashboard" && <ErrorBoundary key="dashboard"><DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} onSelectProject={setActiveProject} /></ErrorBoundary>}
         {tab === "rankings" && <ErrorBoundary key="rankings"><RankingsPage /></ErrorBoundary>}
+        {tab === "references-overview" && <ErrorBoundary key="references-overview"><ReferenceOverviewPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "references" && <ErrorBoundary key="references"><ReferenceLibraryPage /></ErrorBoundary>}
         {tab === "analysis" && <ErrorBoundary key="analysis"><AnalysisDashboardPage /></ErrorBoundary>}
         {tab === "projects" && <ErrorBoundary key="projects"><ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}

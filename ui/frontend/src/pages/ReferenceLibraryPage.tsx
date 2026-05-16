@@ -339,9 +339,6 @@ export default function ReferenceLibraryPage() {
           </div>
         </div>
       </div>
-      {/* DB stats summary */}
-      <DbStatsBar stats={dbStats} />
-
       {/* Toolbar */}
       <div className="flex gap-8 items-center" style={{ padding: "10px 0 14px", flexWrap: "wrap" }}>
         <input
@@ -403,7 +400,7 @@ export default function ReferenceLibraryPage() {
                 key={w.ref_id}
                 className={`report-list-item ${sel?.ref_id === w.ref_id ? "active" : ""}`}
                 onClick={() => selectWork(w)}
-                style={{ padding: "12px 14px", gap: 10 }}
+                style={{ padding: "10px 12px", gap: 8 }}
               >
                 {batchMode && (
                   <input
@@ -414,18 +411,22 @@ export default function ReferenceLibraryPage() {
                     style={{ flexShrink: 0, cursor: "pointer", width: 16, height: 16 }}
                   />
                 )}
+                <div style={{
+                  width: 3,
+                  alignSelf: "stretch",
+                  background: mediaColor(w.media_type),
+                  borderRadius: 2,
+                  flexShrink: 0,
+                }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="truncate" style={{ fontWeight: 600, fontSize: 14, color: "var(--text-primary)" }}>
-                      {w.title}
-                    </span>
-                    {statusBadge(w.preprocessing_status)}
+                  <div className="truncate" style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)", marginBottom: 4 }}>
+                    {w.title}
                   </div>
-                  <div className="flex gap-8 text-xs" style={{ flexWrap: "wrap" }}>
-                    <span style={{ color: mediaColor(w.media_type) }}>{mediaLabel(w.media_type)}</span>
-                    {w.creator && <span className="text-muted">{w.creator}</span>}
-                    {w.genre && <span className="text-muted" style={{ opacity: 0.7 }}>{w.genre}</span>}
-                    {w.user_rating && <span style={{ color: "var(--gold)" }}>{stars(w.user_rating)}</span>}
+                  <div className="flex items-center gap-6 text-xs" style={{ flexWrap: "wrap" }}>
+                    {w.creator && <span className="text-muted truncate" style={{ maxWidth: 100 }}>{w.creator}</span>}
+                    {w.user_rating ? <span style={{ color: "var(--gold)" }}>{stars(w.user_rating)}</span> : null}
+                    <div style={{ flex: 1 }} />
+                    {statusBadge(w.preprocessing_status)}
                   </div>
                 </div>
               </div>
@@ -446,142 +447,32 @@ export default function ReferenceLibraryPage() {
         <div className="panel flex-1" style={{ overflowY: "auto" }}>
           <div className="panel-body" style={{ padding: "16px 20px" }}>
             {sel ? (
-              <div>
-                {/* Work header */}
-                <div className="flex justify-between" style={{ alignItems: "flex-start", marginBottom: 16 }}>
-                  <div>
-                    <div className="flex items-center gap-10 mb-4">
-                      <h3 className="font-serif" style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary)" }}>
-                        {sel.title}
-                      </h3>
-                      <span
-                        className="tag"
-                        style={{ color: mediaColor(sel.media_type), background: "var(--bg-surface-2)" }}
-                      >
-                        {mediaLabel(sel.media_type)}
-                      </span>
-                    </div>
-                    <div className="flex gap-12 text-sm text-muted">
-                      {sel.creator && <span>{sel.creator}</span>}
-                      {sel.genre && <span>{sel.genre}</span>}
-                      <span>{sel.created_at?.split("T")[0] || "\u2014"}</span>
-                      {Boolean(sel.has_full_text) && (
-                        <span style={{ color: "var(--jade)", fontWeight: 500 }}>已上传正文</span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex gap-6" style={{ flexShrink: 0 }}>
-                    {!sel.has_full_text && (
-                      <button className="btn" onClick={() => { setUTitle(sel.title); setUCreator(sel.creator || ""); setUMedia(sel.media_type); setUGenre(sel.genre || ""); setShowUpload(true); }}>
-                        上传正文文本
-                      </button>
-                    )}
-                    {Boolean(sel.has_full_text) && sel.preprocessing_status !== "done" && (
-                      <button className="btn" onClick={() => runPreprocess(sel.ref_id)} style={{ color: "var(--jade)", borderColor: "var(--jade)" }}>
-                        提取特征
-                      </button>
-                    )}
-                    {Boolean(sel.has_full_text) && sel.preprocessing_status === "done" && (
-                      <button className="btn" onClick={() => runPreprocess(sel.ref_id)} style={{ fontSize: 12 }}>
-                        重新提取
-                      </button>
-                    )}
-                    <button className="btn" style={{ color: "var(--error)" }} onClick={() => delWork(sel.ref_id)}>删除</button>
-                  </div>
-                </div>
-
-                {/* User annotations / rating */}
-                <div className="card mb-16">
-                  <div className="card-body">
-                    <div className="label" style={{ color: "var(--accent)", marginBottom: 6 }}>我的审美笔记</div>
-                    <div style={{ marginBottom: 4 }}>
-                      <StarRating value={sel.user_rating || 0} onChange={updateRating} />
-                    </div>
-                    {sel.user_why_i_like && (
-                      <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                        {sel.user_why_i_like}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Analysis results — structured editors */}
-                <div className="card mb-16">
-                  <div className="card-body">
-                    <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>特征提取结果</div>
-                    <div className="flex flex-col gap-8">
-                      {/* 1. 剧情大纲 (with integrated segment workflow) */}
-                      <Section title="剧情大纲" subtitle="编年史格式 · 时间段 + 事件" defaultOpen>
-                        <PlotOutlinePanel
-                          refId={sel.ref_id}
-                          hasFullText={Boolean(sel.has_full_text)}
-                          preprocessingStatus={sel.preprocessing_status}
-                          plotOutline={pj(sel.plot_outline_json) as PlotOutline | null}
-                          onSavePlot={d => saveAnalysisField("plot_outline_json", d)}
-                          onAfterMerge={async () => {
-                            try {
-                              const w = await apiGet<ReferenceWork>(`/api/references/works/${sel.ref_id}`);
-                              setSel(w);
-                              setWorks(prev => prev.map(x => x.ref_id === w.ref_id ? w : x));
-                            } catch {}
-                          }}
-                          onRegenerateFromText={Boolean(sel.has_full_text) ? () => extractPlotOutline(sel.ref_id) : undefined}
-                          regenerating={extractingPlot}
-                        />
-                      </Section>
-
-                      {/* 2. 提取角色 */}
-                      <Section title="提取角色" subtitle="姓名 / 对白 / 关系"
-                        empty={!pj(sel.extracted_characters_json)}
-                        emptyHint="暂无角色数据。请先提取特征。"
-                        defaultOpen
-                      >
-                        <CharactersEditor
-                          data={pj(sel.extracted_characters_json)}
-                          onSave={d => saveAnalysisField("extracted_characters_json", d)}
-                        />
-                      </Section>
-
-                      {/* 3. 风格指纹 — collapsed by default */}
-                      <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏"
-                        empty={!pj(sel.style_fingerprint_json)}
-                        emptyHint="暂无风格指纹。请先提取特征。"
-                        defaultOpen={false}
-                      >
-                        <StyleFingerprintEditor
-                          data={pj(sel.style_fingerprint_json)}
-                          onSave={d => saveAnalysisField("style_fingerprint_json", d)}
-                        />
-                      </Section>
-
-                      {/* 4. 叙事结构 — collapsed by default */}
-                      <Section title="叙事结构" subtitle="开篇 / 高潮 / 钩子 / 爽点"
-                        empty={!pj(sel.narrative_structure_json)}
-                        emptyHint="暂无叙事结构。请先提取特征。"
-                        defaultOpen={false}
-                      >
-                        <NarrativeStructureEditor
-                          data={pj(sel.narrative_structure_json)}
-                          onSave={d => saveAnalysisField("narrative_structure_json", d)}
-                        />
-                      </Section>
-
-                      {/* 5. 节奏模板 — collapsed by default */}
-                      <Section title="节奏模板" subtitle="张力曲线 / 分段"
-                        empty={!pj(sel.rhythm_template_json)}
-                        emptyHint="暂无节奏数据。请先提取特征。"
-                        defaultOpen={false}
-                      >
-                        <RhythmTemplateEditor
-                          data={pj(sel.rhythm_template_json)}
-                          onSave={d => saveAnalysisField("rhythm_template_json", d)}
-                        />
-                      </Section>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : (
+              <WorkDetail
+                key={sel.ref_id}
+                sel={sel}
+                onUpload={() => { setUTitle(sel.title); setUCreator(sel.creator || ""); setUMedia(sel.media_type); setUGenre(sel.genre || ""); setShowUpload(true); }}
+                onRunPreprocess={() => runPreprocess(sel.ref_id)}
+                onDelete={() => delWork(sel.ref_id)}
+                onUpdateRating={updateRating}
+                onUpdateWhy={async (text) => {
+                  try {
+                    const updated = await apiPut<ReferenceWork>(`/api/references/works/${sel.ref_id}`, { user_why_i_like: text });
+                    setSel(updated);
+                    setWorks(prev => prev.map(x => x.ref_id === updated.ref_id ? updated : x));
+                  } catch (e: any) { toast(e.message || "保存失败", "error"); }
+                }}
+                onSaveAnalysisField={saveAnalysisField}
+                onAfterMerge={async () => {
+                  try {
+                    const w = await apiGet<ReferenceWork>(`/api/references/works/${sel.ref_id}`);
+                    setSel(w);
+                    setWorks(prev => prev.map(x => x.ref_id === w.ref_id ? w : x));
+                  } catch {}
+                }}
+                onExtractPlotOutline={() => extractPlotOutline(sel.ref_id)}
+                extractingPlot={extractingPlot}
+              />
+                        ) : (
               <LibraryOverview
                 stats={dbStats}
                 works={works}
@@ -765,9 +656,9 @@ export default function ReferenceLibraryPage() {
   );
 }
 
-/* ───────────────── DB Stats Bar (top of works tab) ───────────────── */
+/* ───────────────── Library Overview (right-panel empty state) ───────────────── */
 
-interface DbStats {
+interface LibraryStats {
   total: number;
   filteredTotal: number;
   byMedia: Record<string, number>;
@@ -777,76 +668,10 @@ interface DbStats {
   avgRating: number | null;
 }
 
-function DbStatsBar({ stats }: { stats: DbStats }) {
-  if (stats.total === 0) return null;
-  const tiles = [
-    { label: "作品总数", value: stats.filteredTotal, hint: "当前筛选条件下" },
-    { label: "已上传正文", value: stats.withFullText, hint: `${stats.total > 0 ? Math.round(stats.withFullText / stats.total * 100) : 0}%` },
-    { label: "已完成提取", value: stats.processed, hint: `${stats.total > 0 ? Math.round(stats.processed / stats.total * 100) : 0}%` },
-    { label: "已生成大纲", value: stats.withPlot, hint: `${stats.total > 0 ? Math.round(stats.withPlot / stats.total * 100) : 0}%` },
-    { label: "平均评分", value: stats.avgRating == null ? "—" : stats.avgRating.toFixed(1), hint: "用户已评分作品" },
-  ];
-  return (
-    <div style={{ display: "flex", gap: 8, padding: "12px 0 6px", flexWrap: "wrap" }}>
-      {tiles.map((t, i) => (
-        <div key={i} style={{
-          flex: "1 1 140px",
-          minWidth: 130,
-          padding: "10px 14px",
-          background: "var(--bg-surface)",
-          border: "1px solid var(--border)",
-          borderRadius: "var(--radius-sm)",
-        }}>
-          <div className="text-xs text-muted" style={{ marginBottom: 4 }}>{t.label}</div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-            <span style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary)" }}>{t.value}</span>
-            <span className="text-xs text-muted">{t.hint}</span>
-          </div>
-        </div>
-      ))}
-      {/* media-type breakdown bar */}
-      <div style={{
-        flex: "2 1 280px",
-        minWidth: 240,
-        padding: "10px 14px",
-        background: "var(--bg-surface)",
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius-sm)",
-      }}>
-        <div className="text-xs text-muted" style={{ marginBottom: 6 }}>按类型分布</div>
-        {Object.keys(stats.byMedia).length === 0 ? (
-          <div className="text-xs text-muted">—</div>
-        ) : (
-          <>
-            <div style={{ display: "flex", height: 12, borderRadius: 3, overflow: "hidden", background: "var(--bg-surface-2)", marginBottom: 6 }}>
-              {Object.entries(stats.byMedia).map(([mt, n]) => (
-                <div key={mt} title={`${mediaLabel(mt)} · ${n}`} style={{
-                  width: `${(n / Math.max(stats.total, 1)) * 100}%`,
-                  background: mediaColor(mt),
-                }} />
-              ))}
-            </div>
-            <div className="flex gap-8" style={{ flexWrap: "wrap", fontSize: 11 }}>
-              {Object.entries(stats.byMedia).map(([mt, n]) => (
-                <span key={mt} className="flex items-center gap-4">
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: mediaColor(mt), display: "inline-block" }} />
-                  <span style={{ color: "var(--text-secondary)" }}>{mediaLabel(mt)} {n}</span>
-                </span>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ───────────────── Library Overview (right-panel empty state) ───────────────── */
-
 function LibraryOverview({
   stats, works, onSelect, onAdd,
 }: {
-  stats: DbStats; works: ReferenceWork[];
+  stats: LibraryStats; works: ReferenceWork[];
   onSelect: (w: ReferenceWork) => void; onAdd: () => void;
 }) {
   if (stats.total === 0) {
@@ -954,3 +779,297 @@ function LibraryOverview({
   );
 }
 
+
+/* ───────────────── Work Detail (horizontal tabs) ───────────────── */
+
+type WorkDetailTab = "plot" | "characters" | "features" | "info";
+
+const STATUS_LABEL: Record<string, { label: string; color: string }> = {
+  done: { label: "已分析", color: "var(--jade)" },
+  processing: { label: "处理中", color: "var(--gold)" },
+  pending: { label: "待处理", color: "var(--accent)" },
+  error: { label: "出错", color: "var(--error)" },
+  not_applicable: { label: "手动维护", color: "var(--text-tertiary)" },
+};
+
+function WorkDetail({
+  sel, onUpload, onRunPreprocess, onDelete,
+  onUpdateRating, onUpdateWhy, onSaveAnalysisField, onAfterMerge,
+  onExtractPlotOutline, extractingPlot,
+}: {
+  sel: ReferenceWork;
+  onUpload: () => void;
+  onRunPreprocess: () => void;
+  onDelete: () => void;
+  onUpdateRating: (rating: number) => void;
+  onUpdateWhy: (text: string) => Promise<void> | void;
+  onSaveAnalysisField: (fieldKey: string, data: any) => Promise<void> | void;
+  onAfterMerge: () => Promise<void> | void;
+  onExtractPlotOutline: () => void;
+  extractingPlot?: boolean;
+}) {
+  const [tab, setTab] = useState<WorkDetailTab>("plot");
+  const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
+  const [editingWhy, setEditingWhy] = useState(false);
+
+  useEffect(() => {
+    setWhyDraft(sel.user_why_i_like || "");
+    setEditingWhy(false);
+  }, [sel.ref_id, sel.user_why_i_like]);
+
+  const status = STATUS_LABEL[sel.preprocessing_status] || STATUS_LABEL.not_applicable;
+  const plot = pj(sel.plot_outline_json) as PlotOutline | null;
+  const chars = pj(sel.extracted_characters_json) as any[] | null;
+  const epochCount = (plot?.epochs || []).length;
+  const periodCount = (plot?.epochs || []).reduce((n: number, ep: any) => n + (ep.periods?.length || 0), 0);
+  const eventCount = (plot?.epochs || []).reduce(
+    (n: number, ep: any) =>
+      n + (ep.periods || []).reduce((m: number, per: any) => m + (per.events?.length || 0), 0),
+    0,
+  );
+  const charCount = (chars || []).length;
+
+  const TABS: { key: WorkDetailTab; label: string; count?: number | string }[] = [
+    { key: "plot", label: "剧情大纲", count: eventCount || undefined },
+    { key: "characters", label: "角色", count: charCount || undefined },
+    { key: "features", label: "文本特征" },
+    { key: "info", label: "信息与笔记" },
+  ];
+
+  return (
+    <div>
+      {/* Compact, sticky work header */}
+      <div style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 5,
+        background: "var(--bg-app)",
+        paddingBottom: 10,
+        marginBottom: 12,
+        borderBottom: "1px solid var(--border)",
+      }}>
+        <div className="flex items-center" style={{ gap: 10, flexWrap: "wrap" }}>
+          <h3 className="font-serif" style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
+            {sel.title}
+          </h3>
+          <span className="tag" style={{
+            color: mediaColor(sel.media_type),
+            background: "var(--bg-surface-2)",
+            fontSize: 11, padding: "1px 8px",
+          }}>{mediaLabel(sel.media_type)}</span>
+          <span className="tag" style={{
+            fontSize: 11, padding: "1px 8px",
+            color: status.color,
+            background: "var(--bg-surface-2)",
+            border: `1px solid ${status.color}`,
+          }}>{status.label}</span>
+          <div style={{ flex: 1 }} />
+          <div className="flex gap-6" style={{ flexShrink: 0 }}>
+            {!sel.has_full_text && (
+              <button className="btn" onClick={onUpload}>上传正文</button>
+            )}
+            {Boolean(sel.has_full_text) && sel.preprocessing_status !== "done" && (
+              <button className="btn" onClick={onRunPreprocess} style={{ color: "var(--jade)", borderColor: "var(--jade)" }}>
+                提取特征
+              </button>
+            )}
+            {Boolean(sel.has_full_text) && sel.preprocessing_status === "done" && (
+              <button className="btn" onClick={onRunPreprocess} style={{ fontSize: 12 }}>
+                重新提取
+              </button>
+            )}
+            <button className="btn" style={{ color: "var(--error)" }} onClick={onDelete}>删除</button>
+          </div>
+        </div>
+        <div className="flex gap-12 text-xs text-muted" style={{ marginTop: 6, flexWrap: "wrap" }}>
+          {sel.creator && <span>{sel.creator}</span>}
+          {sel.genre && <span>· {sel.genre}</span>}
+          {sel.updated_at && <span>· 更新 {sel.updated_at.split("T")[0]}</span>}
+          {sel.user_rating ? <span style={{ color: "var(--gold)" }}>· {stars(sel.user_rating)}</span> : null}
+        </div>
+
+        {/* Horizontal tab bar */}
+        <div className="flex" style={{ marginTop: 12, gap: 4, borderBottom: "1px solid var(--border)" }}>
+          {TABS.map(t => (
+            <button
+              key={t.key}
+              className="btn-ghost"
+              onClick={() => setTab(t.key)}
+              style={{
+                padding: "8px 16px",
+                fontSize: 13,
+                fontWeight: tab === t.key ? 600 : 400,
+                color: tab === t.key ? "var(--accent)" : "var(--text-secondary)",
+                borderBottom: tab === t.key ? "2px solid var(--accent)" : "2px solid transparent",
+                marginBottom: -1,
+                borderRadius: 0,
+              }}
+            >
+              {t.label}
+              {t.count != null && (
+                <span style={{
+                  marginLeft: 6,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: tab === t.key ? "var(--accent)" : "var(--text-tertiary)",
+                  background: tab === t.key ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+                  padding: "1px 6px",
+                  borderRadius: 10,
+                }}>{t.count}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Tab content */}
+      {tab === "plot" && (
+        <PlotOutlinePanel
+          refId={sel.ref_id}
+          hasFullText={Boolean(sel.has_full_text)}
+          preprocessingStatus={sel.preprocessing_status}
+          plotOutline={plot}
+          onSavePlot={d => onSaveAnalysisField("plot_outline_json", d)}
+          onAfterMerge={onAfterMerge}
+          onRegenerateFromText={Boolean(sel.has_full_text) ? onExtractPlotOutline : undefined}
+          regenerating={extractingPlot}
+        />
+      )}
+
+      {tab === "characters" && (
+        chars && chars.length > 0 ? (
+          <CharactersEditor
+            data={chars}
+            onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+          />
+        ) : (
+          <div className="empty-state" style={{ padding: 32 }}>
+            <p>暂无角色数据。请先上传正文并提取特征。</p>
+          </div>
+        )
+      )}
+
+      {tab === "features" && (
+        <div className="flex flex-col gap-12">
+          <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏"
+            empty={!pj(sel.style_fingerprint_json)}
+            emptyHint="暂无风格指纹。请先提取特征。"
+            defaultOpen
+          >
+            <StyleFingerprintEditor
+              data={pj(sel.style_fingerprint_json)}
+              onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
+            />
+          </Section>
+          <Section title="叙事结构" subtitle="开篇 / 高潮 / 钩子 / 爽点"
+            empty={!pj(sel.narrative_structure_json)}
+            emptyHint="暂无叙事结构。请先提取特征。"
+            defaultOpen={false}
+          >
+            <NarrativeStructureEditor
+              data={pj(sel.narrative_structure_json)}
+              onSave={d => onSaveAnalysisField("narrative_structure_json", d)}
+            />
+          </Section>
+          <Section title="节奏模板" subtitle="张力曲线 / 分段"
+            empty={!pj(sel.rhythm_template_json)}
+            emptyHint="暂无节奏数据。请先提取特征。"
+            defaultOpen={false}
+          >
+            <RhythmTemplateEditor
+              data={pj(sel.rhythm_template_json)}
+              onSave={d => onSaveAnalysisField("rhythm_template_json", d)}
+            />
+          </Section>
+        </div>
+      )}
+
+      {tab === "info" && (
+        <div className="flex flex-col gap-12">
+          {/* Stats */}
+          <div className="card">
+            <div className="card-body">
+              <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>作品摘要</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
+                <Stat label="处理状态" value={status.label} accent={status.color} />
+                <Stat label="正文" value={sel.has_full_text ? "已上传" : "未上传"} />
+                <Stat label="时间段" value={periodCount} />
+                <Stat label="事件" value={eventCount} />
+                <Stat label="角色" value={charCount} />
+                <Stat label="评分" value={sel.user_rating ? stars(sel.user_rating) : "—"} />
+              </div>
+            </div>
+          </div>
+
+          {/* Rating */}
+          <div className="card">
+            <div className="card-body">
+              <div className="label" style={{ color: "var(--accent)", marginBottom: 6 }}>我的评分</div>
+              <StarRating value={sel.user_rating || 0} onChange={onUpdateRating} />
+            </div>
+          </div>
+
+          {/* Why I like it */}
+          <div className="card">
+            <div className="card-body">
+              <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+                <div className="label" style={{ color: "var(--accent)", margin: 0 }}>为什么喜欢</div>
+                {!editingWhy && (
+                  <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={() => setEditingWhy(true)}>编辑</button>
+                )}
+              </div>
+              {editingWhy ? (
+                <>
+                  <textarea
+                    className="input"
+                    rows={4}
+                    value={whyDraft}
+                    onChange={e => setWhyDraft(e.target.value)}
+                    placeholder="写作风格？世界观？角色塑造？情绪节奏？"
+                  />
+                  <div className="flex gap-6 mt-8" style={{ justifyContent: "flex-end" }}>
+                    <button className="btn" onClick={() => { setEditingWhy(false); setWhyDraft(sel.user_why_i_like || ""); }}>取消</button>
+                    <button className="btn-primary" onClick={async () => { await onUpdateWhy(whyDraft); setEditingWhy(false); }}>保存</button>
+                  </div>
+                </>
+              ) : sel.user_why_i_like ? (
+                <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
+                  {sel.user_why_i_like}
+                </div>
+              ) : (
+                <div className="text-xs text-muted" style={{ fontStyle: "italic" }}>
+                  暂无笔记。点击「编辑」记录你为什么喜欢这部作品。
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Metadata */}
+          <div className="card">
+            <div className="card-body">
+              <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>元数据</div>
+              <dl style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "6px 14px", fontSize: 12, margin: 0 }}>
+                <dt className="text-muted">作品 ID</dt>
+                <dd style={{ fontFamily: "var(--font-mono)", color: "var(--text-secondary)", margin: 0 }}>{sel.ref_id}</dd>
+                <dt className="text-muted">作者</dt><dd style={{ margin: 0 }}>{sel.creator || "—"}</dd>
+                <dt className="text-muted">题材</dt><dd style={{ margin: 0 }}>{sel.genre || "—"}</dd>
+                <dt className="text-muted">来源</dt><dd style={{ margin: 0 }}>{sel.source || "—"}</dd>
+                <dt className="text-muted">创建</dt><dd style={{ margin: 0 }}>{sel.created_at?.split("T")[0] || "—"}</dd>
+                <dt className="text-muted">更新</dt><dd style={{ margin: 0 }}>{sel.updated_at?.split("T")[0] || "—"}</dd>
+              </dl>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, accent }: { label: string; value: React.ReactNode; accent?: string }) {
+  return (
+    <div>
+      <div className="text-xs text-muted" style={{ marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 600, color: accent || "var(--text-primary)" }}>{value}</div>
+    </div>
+  );
+}
