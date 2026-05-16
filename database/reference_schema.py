@@ -41,7 +41,25 @@ CREATE TABLE IF NOT EXISTS project_reference_links (
     FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
 );"""
 
-ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS]
+# Per-work, per-level (L1/L2/L3) indexing progress so deep-indexing of
+# multi-million-token works can be resumed across restarts.
+_WORK_INDEX_PROGRESS = """
+CREATE TABLE IF NOT EXISTS work_index_progress (
+    ref_id TEXT NOT NULL,
+    level TEXT NOT NULL,                  -- 'L1' | 'L2' | 'L3'
+    backend TEXT NOT NULL,                -- embedding backend name
+    done INTEGER NOT NULL DEFAULT 0,      -- chunks/items embedded so far
+    total INTEGER NOT NULL DEFAULT 0,     -- expected total when known
+    last_ordinal INTEGER NOT NULL DEFAULT -1,  -- last chunk ord persisted (L3)
+    status TEXT NOT NULL DEFAULT 'pending', -- pending|running|done|error
+    error TEXT,
+    started_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (ref_id, level, backend),
+    FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
+);"""
+
+ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS]
 
 def ensure_reference_tables(conn: sqlite3.Connection) -> None:
     for ddl in ALL_DDL: conn.executescript(ddl)

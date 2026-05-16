@@ -11,6 +11,7 @@ import DashboardPage from "./pages/DashboardPage";
 import RankingsPage from "./pages/RankingsPage";
 import ReferenceLibraryPage from "./pages/ReferenceLibraryPage";
 import ReferenceOverviewPage from "./pages/ReferenceOverviewPage";
+import ReferenceSearchPage from "./pages/ReferenceSearchPage";
 // TrendAnalysisPage merged into AnalysisDashboardPage
 import EditorPage from "./pages/EditorPage";
 import CharacterManagerPage from "./pages/CharacterManagerPage";
@@ -24,7 +25,7 @@ import SkillsPage from "./pages/SkillsPage";
 // DevToolsPage removed
 
 type Tab =
-  | "dashboard" | "rankings" | "references" | "references-overview" | "analysis"
+  | "dashboard" | "rankings" | "references" | "references-overview" | "references-search" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
   | "skills" | "settings";
 
@@ -44,6 +45,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     items: [
       { key: "references-overview", icon: "\u25A6", label: "数据库概览" },
       { key: "references", icon: "\u229E", label: "参考作品详情" },
+      { key: "references-search", icon: "\u2315", label: "相似搜索" },
     ],
   },
   {
@@ -180,6 +182,7 @@ function AppInner() {
         {tab === "dashboard" && <ErrorBoundary key="dashboard"><DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} onSelectProject={setActiveProject} /></ErrorBoundary>}
         {tab === "rankings" && <ErrorBoundary key="rankings"><RankingsPage /></ErrorBoundary>}
         {tab === "references-overview" && <ErrorBoundary key="references-overview"><ReferenceOverviewPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {tab === "references-search" && <ErrorBoundary key="references-search"><ReferenceSearchPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "references" && <ErrorBoundary key="references"><ReferenceLibraryPage /></ErrorBoundary>}
         {tab === "analysis" && <ErrorBoundary key="analysis"><AnalysisDashboardPage /></ErrorBoundary>}
         {tab === "projects" && <ErrorBoundary key="projects"><ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}

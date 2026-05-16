@@ -405,6 +405,8 @@ export interface AppSettings {
   providers: Record<string, ProviderConfig>;
   pipeline: Record<string, PipelineRole>;
   crawler_db_path?: string;
+  embedding_backend?: "local" | "openai";
+  prompt_overrides?: Record<string, string>;
 }
 
 // ── Analysis ──

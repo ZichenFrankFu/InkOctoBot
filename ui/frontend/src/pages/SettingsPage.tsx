@@ -754,6 +754,47 @@ function SystemTab({
         </div>
       </div>
 
+      {/* Embedding backend (参考作品向量索引) */}
+      <div className="card">
+        <div className="card-header"><h3>参考作品 Embedding 后端</h3></div>
+        <div className="card-body">
+          <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10, lineHeight: 1.6 }}>
+            「相似搜索」与索引构建使用的 embedding 模型。本地后端在第一次加载时会下载 ~400MB 模型权重并在 CPU 上运行；OpenAI 后端使用上方配置的 OpenAI API Key。
+          </div>
+          <div className="flex gap-8" style={{ flexWrap: "wrap" }}>
+            {(["local", "openai"] as const).map(opt => {
+              const sel = (settings.embedding_backend || "local") === opt;
+              return (
+                <button
+                  key={opt}
+                  onClick={() => onUpdate({ embedding_backend: opt } as any)}
+                  style={{
+                    padding: "12px 18px", borderRadius: 8, cursor: "pointer",
+                    border: sel ? "2px solid var(--accent)" : "1px solid var(--border)",
+                    background: sel ? "var(--accent-subtle)" : "transparent",
+                    color: sel ? "var(--accent)" : "var(--text-secondary)",
+                    fontSize: 13, fontWeight: sel ? 700 : 400,
+                    flex: "1 1 200px", textAlign: "left",
+                  }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
+                    {opt === "local" ? "本地 sentence-transformers" : "OpenAI text-embedding-3-small"}
+                  </div>
+                  <div style={{ fontSize: 11, fontWeight: 400, opacity: 0.85 }}>
+                    {opt === "local"
+                      ? "shibing624/text2vec-base-chinese · 384 dim · 离线 · 中文优化"
+                      : "1536 dim · 联网 · 需 OpenAI API Key · 约 $0.02 / 百万字"}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 10, lineHeight: 1.6 }}>
+            切换后端会启用一个新的 ChromaDB collection（按 backend 命名）。已有作品在新 backend 上视为「未索引」，需要重新触发索引。
+          </div>
+        </div>
+      </div>
+
       {/* Cost confirm */}
       <div className="card">
         <div className="card-header"><h3>费用确认</h3></div>

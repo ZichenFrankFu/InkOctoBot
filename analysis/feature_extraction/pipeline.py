@@ -525,6 +525,25 @@ class FeatureExtractionPipeline:
             segments_json=json.dumps(new_state, ensure_ascii=False),
             preprocessing_status=new_status,
         )
+
+        # Fire-and-forget L1 indexing — best-effort, never blocks commit.
+        # On any failure (missing deps, no embedding backend, etc.) we
+        # log and move on; the user can re-trigger from the search page.
+        try:
+            import asyncio
+            async def _bg_index_l1():
+                try:
+                    from rag.work_index import make_indexer
+                    indexer = make_indexer(self.db_path)
+                    await indexer.index_l1(ref_id)
+                except Exception as e:
+                    logger.warning("[work_index] L1 auto-index skipped: %s", e)
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(_bg_index_l1())
+        except Exception as e:
+            logger.debug("[work_index] auto-index hook skipped: %s", e)
+
         return {
             "ref_id": ref_id,
             "segment_index": seg_index,

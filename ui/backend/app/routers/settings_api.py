@@ -88,6 +88,7 @@ def _defaults() -> dict:
             "reference_extractor": {"provider": "ollama", "model": "", "compare_models": []},
             "reference_web_search": {"provider": "", "model": "", "compare_models": []},
         },
+        "embedding_backend": "local",
     }
 
 
