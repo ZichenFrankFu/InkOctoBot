@@ -211,21 +211,65 @@ async def _invoke(router: Any, prompt: str, *,
             role=_ROLE, prompt=prompt,
             max_tokens=max_tokens, temperature=0.2,
         )
-    return raw or ""
+    raw = raw or ""
+    # Diagnostic: log a short snippet so the server log shows whether the
+    # model returned anything at all (vs empty string), useful when JSON
+    # parsing downstream fails on thinking models.
+    try:
+        snippet = raw[:200].replace("\n", " ")
+        logger.debug("[ai_extractor] raw response (%d chars): %r", len(raw), snippet)
+    except Exception:
+        pass
+    return raw
 
 
 def _parse_list(raw: str) -> list[dict]:
-    data = json.loads(_strip_json(raw))
+    stripped = _strip_json(raw)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as e:
+        raise ValueError(_format_parse_error("list", raw, stripped, e)) from e
     if not isinstance(data, list):
         raise ValueError(f"expected list, got {type(data).__name__}")
     return [x for x in data if isinstance(x, dict)]
 
 
 def _parse_obj(raw: str) -> dict:
-    data = json.loads(_strip_json(raw))
+    stripped = _strip_json(raw)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as e:
+        raise ValueError(_format_parse_error("object", raw, stripped, e)) from e
     if not isinstance(data, dict):
         raise ValueError(f"expected dict, got {type(data).__name__}")
     return data
+
+
+def _format_parse_error(want: str, raw: str, stripped: str,
+                          err: json.JSONDecodeError) -> str:
+    """Build a diagnostic that names WHY the response was unparseable. Two
+    common failure modes for thinking models (DeepSeek-R1, o1, Qwen-thinking):
+      A) The model burns its entire reasoning budget inside <think>…</think>
+         and never emits an answer → ``stripped`` is empty.
+      B) The model emits prose ("The list is as follows: …") with no JSON
+         delimiter at all → ``stripped`` still has no ``[`` / ``{``.
+    The snippet makes it actionable instead of just printing "Expecting value"."""
+    raw_s = (raw or "").strip()
+    if not raw_s:
+        return ("AI 返回了空字符串。可能模型超时或未配置；请检查模型连通性与"
+                "max_tokens 设置。")
+    snippet = raw_s[:300].replace("\n", " ")
+    if not stripped:
+        # Pure reasoning / no JSON at all
+        return (f"AI 返回中未找到任何 JSON（reason 块为空或截断）。"
+                f"原始内容片段：{snippet!r}（共 {len(raw_s)} 字符）。"
+                f"如果使用 DeepSeek-R1/o1 类 thinking 模型，请提高 max_tokens "
+                f"或换用非 thinking 模型。")
+    # Has SOMETHING that looked like JSON but failed to parse
+    stripped_snip = stripped[:200].replace("\n", " ")
+    return (f"AI 返回的 JSON 无法解析（{err.msg} at line {err.lineno} col {err.colno}）"
+            f"。已剥离 reasoning 后的内容片段：{stripped_snip!r}（共 {len(stripped)} 字符）。"
+            f"期望：{want}。")
 
 
 # ── Public API ──────────────────────────────────────────────────────

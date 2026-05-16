@@ -317,6 +317,54 @@ class AnalysisUpdate(BaseModel):
     data: Any
 
 
+@router.get("/works/{ref_id}/chapters")
+def list_chapters(ref_id: str, preview_chars: int = Query(120, ge=0, le=2000)):
+    """Return the parsed chapter structure for the work — what the preprocessor
+    pulled out of the uploaded raw novel. Each chapter carries number, title,
+    char_count, and an optional short preview (default 120 chars). Used by
+    the 预处理 tab to surface "did chapterization actually work?"."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        text = pipe._load_text(w)
+        if not text:
+            return {
+                "chapters": [],
+                "total_chapters": 0,
+                "total_chars": 0,
+                "has_full_text": False,
+            }
+        chapters = pipe._split_chapters(text)
+        out: list[dict] = []
+        for i, c in enumerate(chapters):
+            content = c.get("content") or ""
+            preview = ""
+            if preview_chars > 0:
+                head = content[:preview_chars].replace("\n", " ").strip()
+                preview = head + ("…" if len(content) > preview_chars else "")
+            out.append({
+                "number": i + 1,
+                "title": (c.get("title") or "").strip() or f"第 {i + 1} 章",
+                "volume": (c.get("volume") or "").strip() or None,
+                "char_count": len(content),
+                "preview": preview,
+            })
+        return {
+            "chapters": out,
+            "total_chapters": len(out),
+            "total_chars": sum(c["char_count"] for c in out),
+            "has_full_text": True,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"读取章节失败: {e}")
+
+
 @router.get("/works/{ref_id}/segments/plan")
 def get_segment_plan(ref_id: str):
     """Return the effective segmentation plan (user's saved custom plan if

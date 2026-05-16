@@ -561,6 +561,11 @@ export default function PlotOutlinePanel({
                         style={{ width: 70, fontSize: 12 }}
                         title="结束章号"
                       />
+                      <span className="text-xs text-muted"
+                            style={{ minWidth: 56, textAlign: "right", fontFamily: "var(--font-mono)" }}
+                            title="本卷章节数">
+                        {Math.max(0, (s.end_chapter || 0) - (s.start_chapter || 0) + 1)} 章
+                      </span>
                       <button className="btn"
                               style={{ fontSize: 11, padding: "3px 8px" }}
                               onClick={() => addPlanRow(i)}
@@ -658,7 +663,7 @@ export default function PlotOutlinePanel({
                         </div>
                       )}
                       <div className="text-xs text-muted">
-                        第 {s.start_chapter}–{s.end_chapter} 章 · {fmtChars(s.char_count)}
+                        第 {s.start_chapter}–{s.end_chapter} 章 · 共 {s.chapter_count ?? (s.end_chapter - s.start_chapter + 1)} 章 · {fmtChars(s.char_count)}
                       </div>
                     </div>
                     {isPreviewing && previewLoading ? (
