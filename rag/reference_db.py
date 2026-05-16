@@ -111,7 +111,8 @@ class ReferenceDB:
             "learning_dimensions_json", "has_full_text",
             "preprocessing_status", "style_fingerprint_json",
             "narrative_structure_json", "extracted_characters_json",
-            "rhythm_template_json", "plot_outline_json", "file_path",
+            "rhythm_template_json", "plot_outline_json", "segments_json",
+            "file_path",
         }
         sets = ["updated_at=CURRENT_TIMESTAMP"]
         params: list[Any] = []

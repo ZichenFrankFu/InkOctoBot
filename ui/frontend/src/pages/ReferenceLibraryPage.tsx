@@ -13,6 +13,7 @@ import {
   PlotOutlineEditor,
 } from "../components/reference/AnalysisEditors";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
+import SegmentExtractor from "../components/reference/SegmentExtractor";
 
 /* ── Extraction types ── */
 interface ExtractionProgress {
@@ -660,6 +661,22 @@ export default function ReferenceLibraryPage() {
                     )}
                   </div>
                 </div>
+
+                {/* Incremental segment-by-segment extraction */}
+                {Boolean(sel.has_full_text) && (
+                  <SegmentExtractor
+                    refId={sel.ref_id}
+                    hasFullText={Boolean(sel.has_full_text)}
+                    preprocessingStatus={sel.preprocessing_status}
+                    onWorkUpdated={async () => {
+                      try {
+                        const w = await apiGet<ReferenceWork>(`/api/references/works/${sel.ref_id}`);
+                        setSel(w);
+                        setWorks(prev => prev.map(x => x.ref_id === w.ref_id ? w : x));
+                      } catch {}
+                    }}
+                  />
+                )}
 
                 {/* Analysis results — structured editors */}
                 {(sel.preprocessing_status === "done" || sel.plot_outline_json) && (

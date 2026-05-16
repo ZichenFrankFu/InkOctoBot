@@ -133,15 +133,51 @@ _OPENING_LABELS = {
 }
 
 
+_VOLUME_PAT = re.compile(
+    r"^[　\s]*第[零一二三四五六七八九十百千万\d]+卷[\s：:　]*(.*)",
+    re.MULTILINE,
+)
+_DATE_HINT_PAT = re.compile(
+    r"(\d{2,4}\s*年(?:\s*\d{1,2}\s*月(?:[上中下]旬)?)?|"
+    r"[零一二三四五六七八九十百千]+\s*年代|"
+    r"远古|上古|纪元前|纪元后|\d+\s*周年)"
+)
+
+
+def _extract_time_hint(title: str, content_head: str = "") -> str:
+    """Try to find a time-ish label in chapter title or first sentence."""
+    for src in (title, content_head):
+        if not src:
+            continue
+        m = _DATE_HINT_PAT.search(src)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
 def extract_plot_outline(chapters: list[dict],
                           narrative: dict | None = None) -> dict[str, Any]:
-    """Build a high-level plot outline from chapter list + narrative analysis.
+    """Build a chronicle-format plot outline skeleton.
 
-    Returns a structured outline that the user can review and edit:
-        logline, themes, arcs (start/end chapters), key_events.
+    Produces { logline, epochs: [{title, periods: [{time, events: [...]}]}] }.
+    Each event uses the strict 编年史 schema (subject·category·name·description·hidden).
+
+    This is a *skeleton* extractor — given the strictness of the format
+    (no dialogue/psychology/scene-detail), the generated content is a
+    starting point and the user is expected to fill in details. Auto rules:
+
+    - Group consecutive chapters into periods, splitting at climaxes or
+      every ~K chapters, whichever comes first.
+    - Each period gets one placeholder event using chapter titles.
+    - If chapter title contains a date-like token (年/月/旬), use it as
+      the period's time label; otherwise fall back to a chapter-range label
+      (which the user is expected to rewrite per chronicle rules).
+    - Climaxes / shuangdian produce extra "concept" events under the
+      period they fall in.
+    - If text contains "第X卷" volume markers, split into epochs by volume.
     """
     if not chapters:
-        return {}
+        return {"logline": "", "epochs": []}
 
     titles = [
         (ch.get("title") or f"第{i+1}章").strip()
@@ -152,68 +188,103 @@ def extract_plot_outline(chapters: list[dict],
     if narrative is None:
         narrative = extract_narrative(chapters)
 
-    climaxes: list[int] = list(narrative.get("climax_positions") or [])
+    climaxes: set[int] = set(narrative.get("climax_positions") or [])
     shuangdian: list[dict] = list(narrative.get("shuangdian") or [])
-    opening_pattern = narrative.get("opening_pattern") or "character_intro"
 
-    # Build arcs by splitting around climaxes (≤ 5 arcs)
-    arc_names = ["起", "承", "转", "合", "尾声"]
-    cuts = sorted({1, *[c for c in climaxes if 1 < c < total], total + 1})
-    # ensure we don't produce too many tiny arcs — keep up to 5 segments
-    if len(cuts) - 1 > 5:
-        # keep first 4 boundaries plus the end
-        cuts = cuts[:5] + [total + 1]
-    arcs: list[dict] = []
-    for i in range(len(cuts) - 1):
-        start = cuts[i]
-        end = cuts[i + 1] - 1
-        if start > end:
-            continue
-        name = arc_names[i] if i < len(arc_names) else f"第{i+1}幕"
-        first_title = titles[start - 1] if start - 1 < len(titles) else ""
-        last_title = titles[end - 1] if end - 1 < len(titles) else ""
-        summary = first_title
-        if last_title and last_title != first_title:
-            summary = f"{first_title} → {last_title}"
-        arcs.append({
-            "title": f"第{i+1}幕 · {name}",
-            "start_chapter": start,
-            "end_chapter": end,
-            "summary": summary,
+    # Detect volume boundaries from chapter titles (some books prefix with 第X卷)
+    vol_boundaries: list[tuple[int, str]] = []  # (chapter index 1-based, vol title)
+    for i, t in enumerate(titles):
+        if _VOLUME_PAT.match(t):
+            vol_boundaries.append((i + 1, t[:40]))
+
+    # Build periods by walking chapters
+    K_PERIOD = max(3, total // 8)  # roughly 8 periods if no other signal
+
+    def _build_periods(start_idx: int, end_idx: int) -> list[dict]:
+        """start/end are 1-based inclusive chapter numbers."""
+        periods: list[dict] = []
+        cur_start = start_idx
+        for ci in range(start_idx, end_idx + 1):
+            should_cut = (
+                ci == end_idx
+                or (ci - cur_start + 1) >= K_PERIOD
+                or ci in climaxes
+            )
+            if not should_cut:
+                continue
+            seg_start = cur_start
+            seg_end = ci
+            # time label
+            time_hint = ""
+            if seg_start - 1 < len(chapters):
+                head = (chapters[seg_start - 1].get("content") or "")[:120]
+                time_hint = _extract_time_hint(titles[seg_start - 1], head)
+            time_label = time_hint or (
+                f"第 {seg_start} – {seg_end} 章"
+                if seg_end > seg_start else f"第 {seg_start} 章"
+            )
+
+            # events: one per (small) chapter, capped; plus shuangdian
+            events: list[dict] = []
+            chap_count = seg_end - seg_start + 1
+            sample_step = max(1, chap_count // 3)  # ≤3 placeholder events per period
+            for j in range(seg_start, seg_end + 1, sample_step):
+                t = titles[j - 1] if j - 1 < len(titles) else ""
+                events.append({
+                    "subject": "正文",
+                    "category": f"第{j}章",
+                    "name": t[:30] or f"第{j}章节点",
+                    "description": "（需作者依编年史规则改写：客观叙述本章发生的关键事实，避免对话/心理/场景细节。）",
+                    "hidden": "",
+                })
+            # shuangdian falling in this segment
+            for sd in shuangdian:
+                ch = sd.get("chapter")
+                if isinstance(ch, int) and seg_start <= ch <= seg_end:
+                    events.append({
+                        "subject": "结构",
+                        "category": _SHUANGDIAN_LABELS.get(sd.get("type", ""), str(sd.get("type") or "事件")),
+                        "name": f"第{ch}章爽点",
+                        "description": "（自动检测的爽点节奏，需作者改写为该章的客观关键事实。）",
+                        "hidden": "",
+                    })
+            # climax marker
+            for ch in sorted(climaxes):
+                if seg_start <= ch <= seg_end:
+                    events.append({
+                        "subject": "结构",
+                        "category": "高潮",
+                        "name": f"第{ch}章张力峰值",
+                        "description": "（自动检测的张力峰值，需作者改写为该章的客观关键事实。）",
+                        "hidden": "",
+                    })
+            periods.append({"time": time_label, "events": events})
+            cur_start = ci + 1
+        return periods
+
+    epochs: list[dict] = []
+    if vol_boundaries:
+        # Volume-based epochs
+        boundaries = vol_boundaries + [(total + 1, "")]
+        for i in range(len(boundaries) - 1):
+            v_start, v_title = boundaries[i]
+            v_end = boundaries[i + 1][0] - 1
+            if v_start > v_end:
+                continue
+            epochs.append({
+                "title": v_title or f"第{i+1}卷",
+                "periods": _build_periods(v_start, v_end),
+            })
+    else:
+        # Single unnamed epoch
+        epochs.append({
+            "title": "",
+            "periods": _build_periods(1, total),
         })
-
-    # Key events: shuangdian + climax peaks (deduped on chapter)
-    events: dict[int, dict] = {}
-    for sd in shuangdian:
-        ch = sd.get("chapter")
-        if not isinstance(ch, int):
-            continue
-        events[ch] = {
-            "chapter": ch,
-            "type": _SHUANGDIAN_LABELS.get(sd.get("type", ""), str(sd.get("type") or "事件")),
-            "description": titles[ch - 1] if 0 < ch <= len(titles) else "",
-        }
-    for ch in climaxes:
-        events.setdefault(ch, {
-            "chapter": ch,
-            "type": "高潮",
-            "description": titles[ch - 1] if 0 < ch <= len(titles) else "",
-        })
-    key_events = sorted(events.values(), key=lambda e: e["chapter"])
-
-    # Build a default logline from work title + opening pattern (user can edit)
-    logline = ""
-    if titles:
-        logline = (
-            f"全书共 {total} 章，开篇采用「"
-            f"{_OPENING_LABELS.get(opening_pattern, opening_pattern)}」模式。"
-        )
 
     return {
-        "logline": logline,
-        "themes": [],
-        "arcs": arcs,
-        "key_events": key_events,
+        "logline": "",
+        "epochs": epochs,
     }
 
 

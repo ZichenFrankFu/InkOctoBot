@@ -31,17 +31,17 @@ interface Project { id: string; name: string; genre?: string; }
 
 const NAV: { section: string; items: { key: Tab; icon: string; label: string }[] }[] = [
   {
-    section: "概览",
+    section: "市场信息",
     items: [
       { key: "dashboard", icon: "\u25A3", label: "首页" },
+      { key: "rankings", icon: "\u2261", label: "市场数据库" },
+      { key: "analysis", icon: "\u2197", label: "分析面板" },
     ],
   },
   {
-    section: "数据",
+    section: "参考作品数据库",
     items: [
-      { key: "rankings", icon: "\u2261", label: "市场数据库" },
       { key: "references", icon: "\u229E", label: "参考作品库" },
-      { key: "analysis", icon: "\u2197", label: "分析面板" },
     ],
   },
   {
@@ -52,11 +52,6 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "worldbook", icon: "\u2295", label: "世界书" },
       { key: "editor", icon: "\u270E", label: "编辑器" },
       { key: "storyline", icon: "\u2500", label: "剧情线" },
-    ],
-  },
-  {
-    section: "系统",
-    items: [
       { key: "skills", icon: "\u2699", label: "智能体" },
       { key: "settings", icon: "\u2638", label: "设置" },
     ],
@@ -133,7 +128,7 @@ function AppInner() {
           className="nav-btn"
           onClick={() => setSearchOpen(true)}
           aria-label="Search (Ctrl+K)"
-          style={{ margin: "4px 12px 4px", padding: "4px 8px", display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 28 }}
+          style={{ margin: "10px 8px 6px", padding: "5px 10px", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 30 }}
         >
           <span style={{ fontSize: 12, opacity: 0.6 }}>&#x2315;</span>
           <span style={{ flex: 1, textAlign: "left" }}>搜索...</span>

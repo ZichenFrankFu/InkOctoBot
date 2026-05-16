@@ -304,6 +304,88 @@ class AnalysisUpdate(BaseModel):
     data: Any
 
 
+@router.get("/works/{ref_id}/segments/plan")
+def get_segment_plan(ref_id: str):
+    """Return the segmentation plan (volumes if available, else ~100k char chunks)
+    and current progress (which segments have been processed)."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        text = pipe._load_text(w)
+        if not text:
+            return {"type": "chunks", "segments": [], "completed": [], "total_chapters": 0}
+        chapters = pipe._split_chapters(text)
+        plan = pipe.plan_segments(chapters)
+        completed: list[int] = []
+        try:
+            state = json.loads(w.get("segments_json") or "{}")
+            completed = sorted(int(k) for k in (state.get("results") or {}).keys())
+        except Exception:
+            pass
+        return {**plan, "completed": completed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"分段规划失败: {e}")
+
+
+class SegmentRunRequest(BaseModel):
+    segment_index: int
+    segment_chars: Optional[int] = None
+
+
+@router.post("/works/{ref_id}/segments/run")
+def run_segment(ref_id: str, body: SegmentRunRequest):
+    """Process one segment of a work. After all segments are done, call
+    /works/{ref_id}/segments/finalize to merge results into top-level fields."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        return pipe.run_segment(ref_id, body.segment_index, segment_chars=body.segment_chars)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"分段提取失败: {e}")
+
+
+@router.post("/works/{ref_id}/segments/finalize")
+def finalize_segments(ref_id: str):
+    """Merge all per-segment results into the top-level analysis fields."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        out = pipe.finalize_segments(ref_id)
+        updated = db.get_work(ref_id)
+        return {"merge": out, "work": updated}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"合并失败: {e}")
+
+
+@router.post("/works/{ref_id}/segments/reset")
+def reset_segments(ref_id: str):
+    """Clear per-segment progress so processing can start over."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    db.update_work(ref_id, segments_json=None, preprocessing_status="pending")
+    return {"ok": True}
+
+
 @router.post("/works/{ref_id}/plot_outline/extract")
 def extract_plot_outline_only(ref_id: str):
     """Re-extract plot outline from chapter splits + existing narrative analysis.

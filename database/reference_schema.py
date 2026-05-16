@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS reference_works (
     preprocessing_status TEXT NOT NULL DEFAULT 'not_applicable' CHECK (preprocessing_status IN ('not_applicable','pending','processing','done','error')),
     style_fingerprint_json TEXT, narrative_structure_json TEXT,
     extracted_characters_json TEXT, rhythm_template_json TEXT,
-    plot_outline_json TEXT,
+    plot_outline_json TEXT, segments_json TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"""
 
@@ -47,4 +47,6 @@ def ensure_reference_tables(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(reference_works)").fetchall()}
     if "plot_outline_json" not in cols:
         conn.execute("ALTER TABLE reference_works ADD COLUMN plot_outline_json TEXT")
+    if "segments_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN segments_json TEXT")
     conn.commit()
