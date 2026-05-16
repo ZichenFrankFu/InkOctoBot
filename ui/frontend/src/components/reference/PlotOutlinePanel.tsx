@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost } from "../../api/client";
+import { apiGet, apiPost, apiPut, apiDelete } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { PlotOutlineEditor } from "./AnalysisEditors";
 import type { PlotOutline, ChronicleEpoch, ChroniclePeriod } from "./AnalysisEditors";
@@ -14,10 +14,11 @@ interface SegmentInfo {
 }
 
 interface SegmentPlan {
-  type: "volumes" | "chunks";
+  type: "volumes" | "chunks" | "custom";
   segments: SegmentInfo[];
   completed: number[];
   total_chapters: number;
+  is_custom?: boolean;
 }
 
 interface SegmentResult {
@@ -69,6 +70,11 @@ export default function PlotOutlinePanel({
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [useWebSearch, setUseWebSearch] = useState(false);
+  // Plan editor state — user can rename volumes + adjust chapter ranges
+  // before any extraction. `planDraft != null` puts the segment list
+  // into edit mode (no extraction buttons rendered).
+  const [planDraft, setPlanDraft] = useState<{ title: string; start_chapter: number; end_chapter: number }[] | null>(null);
+  const [planSaving, setPlanSaving] = useState(false);
   const [webSearchCap, setWebSearchCap] = useState<{ enabled: boolean; reason: string; provider: string; model: string } | null>(null);
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const [preview, setPreview] = useState<SegmentResult | null>(null);
@@ -227,6 +233,77 @@ export default function PlotOutlinePanel({
     }
   };
 
+  // ── Plan editor ──
+
+  const startPlanEdit = () => {
+    if (!plan) return;
+    setPlanDraft(plan.segments.map(s => ({
+      title: s.title || `第 ${s.start_chapter}–${s.end_chapter} 章`,
+      start_chapter: s.start_chapter,
+      end_chapter: s.end_chapter,
+    })));
+  };
+
+  const cancelPlanEdit = () => setPlanDraft(null);
+
+  const savePlan = async () => {
+    if (!planDraft) return;
+    // Local validation: at least one segment, all ranges valid
+    const cleaned = planDraft.map(s => ({
+      title: (s.title || "").trim(),
+      start_chapter: Math.max(1, Math.floor(s.start_chapter || 1)),
+      end_chapter: Math.max(1, Math.floor(s.end_chapter || 1)),
+    }));
+    if (cleaned.some(s => s.end_chapter < s.start_chapter)) {
+      toast("某段的结束章号小于起始章号", "error");
+      return;
+    }
+    if (!confirm("保存自定义分段会清空所有已完成的提取结果。继续？")) return;
+    setPlanSaving(true);
+    try {
+      await apiPut(`/api/references/works/${refId}/segments/plan`,
+        { segments: cleaned, plan_type: cleaned.length > 1 ? "volumes" : "custom" },
+        { timeoutMs: 60_000 },
+      );
+      toast("分段计划已保存", "success");
+      setPlanDraft(null);
+      await loadPlan();
+    } catch (e: any) {
+      toast(e?.message || "保存失败", "error");
+    } finally { setPlanSaving(false); }
+  };
+
+  const revertPlanToAuto = async () => {
+    if (!confirm("放弃自定义分段并恢复自动检测？相关提取结果将一并清空。")) return;
+    try {
+      await apiDelete(`/api/references/works/${refId}/segments/plan`);
+      toast("已恢复自动检测", "success");
+      setPlanDraft(null);
+      await loadPlan();
+    } catch (e: any) {
+      toast(e?.message || "重置失败", "error");
+    }
+  };
+
+  const addPlanRow = (afterIdx: number) => {
+    if (!planDraft) return;
+    const prev = planDraft[afterIdx];
+    const newStart = prev ? prev.end_chapter + 1 : 1;
+    const newEnd = Math.max(newStart, newStart);
+    const next = [...planDraft];
+    next.splice(afterIdx + 1, 0, {
+      title: `第 ${newStart}–${newEnd} 章`,
+      start_chapter: newStart,
+      end_chapter: newEnd,
+    });
+    setPlanDraft(next);
+  };
+
+  const removePlanRow = (idx: number) => {
+    if (!planDraft || planDraft.length <= 1) return;
+    setPlanDraft(planDraft.filter((_, i) => i !== idx));
+  };
+
   // ── render ──
   return (
     <div className="flex flex-col gap-12">
@@ -235,11 +312,24 @@ export default function PlotOutlinePanel({
         <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
           <div className="flex items-center justify-between" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                分段提取大纲
+              <div className="flex items-center gap-8">
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  分段提取大纲
+                </span>
+                {plan.is_custom && (
+                  <span className="tag" style={{
+                    fontSize: 10, padding: "1px 6px",
+                    color: "var(--accent)",
+                    background: "var(--accent-subtle)",
+                    border: "1px solid var(--accent)",
+                  }} title="已使用自定义分段">已自定义</span>
+                )}
               </div>
               <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                {plan.type === "volumes" ? "按卷处理" : "按 ~10 万字分块"} · {doneCount}/{total} 已完成
+                {plan.is_custom
+                  ? `自定义 · ${plan.segments.length} 段 · ${doneCount}/${total} 已完成`
+                  : (plan.type === "volumes" ? "按卷处理" : "按 ~10 万字分块")
+                    + ` · ${doneCount}/${total} 已完成`}
               </div>
             </div>
             <div className="flex items-center gap-8" style={{ flexWrap: "wrap" }}>
@@ -269,12 +359,28 @@ export default function PlotOutlinePanel({
                 />
                 AI 联网验证
               </label>
-              {doneCount > 0 && !allDone && (
+              {!planDraft && (
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                        onClick={startPlanEdit}
+                        disabled={committing || merging || previewLoading}
+                        title="自定义每卷/每段的标题和章节范围">
+                  编辑分段
+                </button>
+              )}
+              {plan.is_custom && !planDraft && (
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }}
+                        onClick={revertPlanToAuto}
+                        disabled={committing || merging}
+                        title="恢复自动检测的分段（卷标记或 ~10 万字切块）">
+                  恢复自动
+                </button>
+              )}
+              {doneCount > 0 && !allDone && !planDraft && (
                 <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }} onClick={reset} disabled={committing || merging}>
                   重置
                 </button>
               )}
-              {allDone && (
+              {allDone && !planDraft && (
                 <button className="btn-primary" style={{ fontSize: 12, padding: "4px 12px" }} onClick={finalize} disabled={merging}>
                   {merging ? "合并中..." : "合并到全书"}
                 </button>
@@ -287,7 +393,75 @@ export default function PlotOutlinePanel({
             <div style={{ height: "100%", width: `${(doneCount / total) * 100}%`, background: "var(--jade)", borderRadius: 3, transition: "width 0.3s" }} />
           </div>
 
-          {/* segments list */}
+          {/* PLAN EDIT MODE — render editable rows instead of the normal list */}
+          {planDraft ? (
+            <div>
+              <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
+                自定义每段的标题和章节范围（1 – {total} 章）。保存后会清空已有的提取结果。
+              </div>
+              <div className="flex flex-col gap-6" style={{ marginBottom: 10 }}>
+                {planDraft.map((s, i) => (
+                  <div key={i} className="flex gap-6 items-center" style={{
+                    padding: 6, border: "1px solid var(--border)", borderRadius: 4,
+                  }}>
+                    <span className="text-xs text-muted" style={{
+                      minWidth: 30, textAlign: "center",
+                      fontFamily: "var(--font-mono)",
+                    }}>#{i + 1}</span>
+                    <input
+                      className="input"
+                      placeholder="段标题（例如：卷一 · 起源）"
+                      value={s.title}
+                      onChange={e => {
+                        const next = [...planDraft];
+                        next[i] = { ...s, title: e.target.value };
+                        setPlanDraft(next);
+                      }}
+                      style={{ flex: 1, fontSize: 12 }}
+                    />
+                    <input
+                      className="input" type="number" min={1} max={total}
+                      value={s.start_chapter}
+                      onChange={e => {
+                        const next = [...planDraft];
+                        next[i] = { ...s, start_chapter: parseInt(e.target.value, 10) || 1 };
+                        setPlanDraft(next);
+                      }}
+                      style={{ width: 70, fontSize: 12 }}
+                      title="起始章号"
+                    />
+                    <span className="text-xs text-muted">–</span>
+                    <input
+                      className="input" type="number" min={1} max={total}
+                      value={s.end_chapter}
+                      onChange={e => {
+                        const next = [...planDraft];
+                        next[i] = { ...s, end_chapter: parseInt(e.target.value, 10) || 1 };
+                        setPlanDraft(next);
+                      }}
+                      style={{ width: 70, fontSize: 12 }}
+                      title="结束章号"
+                    />
+                    <button className="btn"
+                            style={{ fontSize: 11, padding: "3px 8px" }}
+                            onClick={() => addPlanRow(i)}
+                            title="在该段后插入一段">+ 插入</button>
+                    <button className="btn-icon"
+                            onClick={() => removePlanRow(i)}
+                            disabled={planDraft.length <= 1}
+                            style={{ fontSize: 14 }}
+                            title="删除该段">&times;</button>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
+                <button className="btn" onClick={cancelPlanEdit} disabled={planSaving}>取消</button>
+                <button className="btn-primary" onClick={savePlan} disabled={planSaving}>
+                  {planSaving ? "保存中..." : "保存分段计划"}
+                </button>
+              </div>
+            </div>
+          ) : (
           <div className="flex flex-col gap-4">
             {plan.segments.map(s => {
               const isDone = completed.has(s.index);
@@ -521,6 +695,7 @@ export default function PlotOutlinePanel({
               );
             })}
           </div>
+          )}
         </div>
       )}
 

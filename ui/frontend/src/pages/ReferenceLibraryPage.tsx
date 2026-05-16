@@ -100,7 +100,6 @@ export default function ReferenceLibraryPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Plot outline re-extraction
-  const [extractingPlot, setExtractingPlot] = useState(false);
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 180, maxSize: 420 });
 
@@ -145,20 +144,6 @@ export default function ReferenceLibraryPage() {
 
   function selectWork(w: ReferenceWork) {
     setSel(w);
-  }
-
-  async function extractPlotOutline(refId: string) {
-    setExtractingPlot(true);
-    try {
-      const updated = await apiPost<ReferenceWork>(`/api/references/works/${refId}/plot_outline/extract`, {}, { timeoutMs: 300_000 });
-      setSel(updated);
-      setWorks(prev => prev.map(w => w.ref_id === updated.ref_id ? updated : w));
-      toast("剧情大纲已重新提取", "success");
-    } catch (e: any) {
-      toast(e?.message || "操作失败", "error");
-    } finally {
-      setExtractingPlot(false);
-    }
   }
 
   async function saveAnalysisField(fieldKey: string, data: any) {
@@ -291,22 +276,6 @@ export default function ReferenceLibraryPage() {
       setWorks(prev => prev.map(w => w.ref_id === sel.ref_id ? updated : w));
     } catch (e: any) {
       toast(e.message || "操作失败", "error");
-    }
-  }
-
-  async function runPreprocess(id: string) {
-    try {
-      const r = await apiPost<any>(`/api/references/preprocess/${id}`, {});
-      toast(`特征提取完成 (${r.chapters || 0} 章, ${r.errors?.length || 0} 错误)`, "success");
-    } catch (e: any) {
-      toast(e.message || "操作失败", "error");
-    }
-    load();
-    if (sel?.ref_id === id) {
-      try {
-        const w = await apiGet<ReferenceWork>(`/api/references/works/${id}`);
-        setSel(w);
-      } catch {}
     }
   }
 
@@ -460,7 +429,6 @@ export default function ReferenceLibraryPage() {
                 key={sel.ref_id}
                 sel={sel}
                 onUpload={() => { setUTitle(sel.title); setUCreator(sel.creator || ""); setUMedia(sel.media_type); setUGenre(sel.genre || ""); setShowUpload(true); }}
-                onRunPreprocess={() => runPreprocess(sel.ref_id)}
                 onDelete={() => delWork(sel.ref_id)}
                 onUpdateRating={updateRating}
                 onUpdateWhy={async (text) => {
@@ -478,8 +446,6 @@ export default function ReferenceLibraryPage() {
                     setWorks(prev => prev.map(x => x.ref_id === w.ref_id ? w : x));
                   } catch {}
                 }}
-                onExtractPlotOutline={() => extractPlotOutline(sel.ref_id)}
-                extractingPlot={extractingPlot}
               />
                         ) : (
               <div className="empty-state" style={{ paddingTop: 80, maxWidth: 420, margin: "0 auto", textAlign: "center" }}>
@@ -684,20 +650,16 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
 };
 
 function WorkDetail({
-  sel, onUpload, onRunPreprocess, onDelete,
+  sel, onUpload, onDelete,
   onUpdateRating, onUpdateWhy, onSaveAnalysisField, onAfterMerge,
-  onExtractPlotOutline, extractingPlot,
 }: {
   sel: ReferenceWork;
   onUpload: () => void;
-  onRunPreprocess: () => void;
   onDelete: () => void;
   onUpdateRating: (rating: number) => void;
   onUpdateWhy: (text: string) => Promise<void> | void;
   onSaveAnalysisField: (fieldKey: string, data: any) => Promise<void> | void;
   onAfterMerge: () => Promise<void> | void;
-  onExtractPlotOutline: () => void;
-  extractingPlot?: boolean;
 }) {
   const [tab, setTab] = useState<WorkDetailTab>("plot");
   const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
@@ -762,16 +724,6 @@ function WorkDetail({
             {!sel.has_full_text && (
               <button className="btn" onClick={onUpload}>上传正文</button>
             )}
-            {Boolean(sel.has_full_text) && sel.preprocessing_status !== "done" && (
-              <button className="btn" onClick={onRunPreprocess} style={{ color: "var(--jade)", borderColor: "var(--jade)" }}>
-                提取特征
-              </button>
-            )}
-            {Boolean(sel.has_full_text) && sel.preprocessing_status === "done" && (
-              <button className="btn" onClick={onRunPreprocess} style={{ fontSize: 12 }}>
-                重新提取
-              </button>
-            )}
             <button className="btn" style={{ color: "var(--error)" }} onClick={onDelete}>删除</button>
           </div>
         </div>
@@ -825,8 +777,6 @@ function WorkDetail({
           plotOutline={plot}
           onSavePlot={d => onSaveAnalysisField("plot_outline_json", d)}
           onAfterMerge={onAfterMerge}
-          onRegenerateFromText={Boolean(sel.has_full_text) ? onExtractPlotOutline : undefined}
-          regenerating={extractingPlot}
         />
       )}
 

@@ -1213,13 +1213,6 @@ export function PlotOutlineEditor({
 
   return (
     <div>
-      {onExtract && (
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
-          <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={onExtract} disabled={extracting}>
-            {extracting ? "提取中..." : "从正文重新提取"}
-          </button>
-        </div>
-      )}
 
       {legacy && (
         <div style={{
@@ -1231,13 +1224,13 @@ export function PlotOutlineEditor({
           fontSize: 11,
           color: "var(--text-tertiary)",
         }}>
-          检测到旧版大纲数据。点击「从正文重新提取」迁移到编年史格式，或点击「编辑」手动整理。
+          以下为旧版大纲数据。可在上方「分段提取大纲」逐段提取以替换为编年史格式，或点击「编辑」手动整理。
         </div>
       )}
 
       {!hasContent ? (
         <div className="text-xs text-muted text-center" style={{ padding: 12 }}>
-          暂无编年史。点击「从正文重新提取」自动生成骨架，或点击「编辑」手动添加。
+          暂无编年史。请在上方「分段提取大纲」逐段提取，或点击「编辑」手动添加。
         </div>
       ) : (
         <>

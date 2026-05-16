@@ -319,8 +319,9 @@ class AnalysisUpdate(BaseModel):
 
 @router.get("/works/{ref_id}/segments/plan")
 def get_segment_plan(ref_id: str):
-    """Return the segmentation plan (volumes if available, else ~100k char chunks)
-    and current progress (which segments have been processed)."""
+    """Return the effective segmentation plan (user's saved custom plan if
+    present, else auto-detected) along with extraction progress.
+    Result includes ``is_custom: bool`` so the UI can show "Edited" state."""
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -330,9 +331,9 @@ def get_segment_plan(ref_id: str):
         pipe = FeatureExtractionPipeline(db.db_path)
         text = pipe._load_text(w)
         if not text:
-            return {"type": "chunks", "segments": [], "completed": [], "total_chapters": 0}
+            return {"type": "chunks", "segments": [], "completed": [], "total_chapters": 0, "is_custom": False}
         chapters = pipe._split_chapters(text)
-        plan = pipe.plan_segments(chapters)
+        plan = pipe.get_effective_plan(ref_id, chapters)
         completed: list[int] = []
         try:
             state = json.loads(w.get("segments_json") or "{}")
@@ -344,6 +345,57 @@ def get_segment_plan(ref_id: str):
         raise
     except Exception as e:
         raise HTTPException(500, f"分段规划失败: {e}")
+
+
+class SegmentPlanSaveRequest(BaseModel):
+    segments: list[dict]
+    plan_type: Optional[str] = None
+
+
+@router.put("/works/{ref_id}/segments/plan")
+def save_segment_plan(ref_id: str, body: SegmentPlanSaveRequest):
+    """Save a user-edited segmentation plan. Each segment must have at
+    least {start_chapter, end_chapter}; title is optional. Saving clears
+    any prior per-segment extraction results because the segmentation
+    has changed."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    if not body.segments:
+        raise HTTPException(400, "请至少保留一个分段")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        plan = pipe.save_custom_plan(
+            ref_id, body.segments, plan_type=body.plan_type or "custom",
+        )
+        return {**plan, "completed": []}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"保存分段计划失败: {e}")
+
+
+@router.delete("/works/{ref_id}/segments/plan")
+def reset_segment_plan(ref_id: str):
+    """Discard the user's custom plan and revert to auto-detection."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    if isinstance(state, dict) and "custom_plan" in state:
+        del state["custom_plan"]
+        # Also clear results since they were computed against the custom plan
+        state["results"] = {}
+        state["completed"] = []
+        db.update_work(ref_id, segments_json=json.dumps(state, ensure_ascii=False),
+                       preprocessing_status="pending")
+    return {"ok": True}
 
 
 class SegmentRunRequest(BaseModel):

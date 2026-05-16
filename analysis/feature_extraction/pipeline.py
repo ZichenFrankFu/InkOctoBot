@@ -289,10 +289,128 @@ class FeatureExtractionPipeline:
             volumes.append({"title": title or f"第{i+1}卷", "start_chapter": start, "end_chapter": end})
         return volumes
 
+    def get_effective_plan(self, ref_id: str, chapters: list[dict],
+                            segment_chars: int | None = None) -> dict[str, Any]:
+        """Return the user's saved custom plan if present in segments_json,
+        else fall back to the auto-detected plan. Use this from any code
+        path that needs to honor user-edited volume titles / ranges."""
+        from rag.reference_db import ReferenceDB
+        try:
+            work = ReferenceDB(self.db_path).get_work(ref_id)
+            if work and work.get("segments_json"):
+                state = json.loads(work["segments_json"])
+                cp = state.get("custom_plan")
+                if isinstance(cp, list) and len(cp) > 0:
+                    # Re-derive char_count from the actual chapters so
+                    # the UI stays accurate after the user resizes ranges.
+                    cleaned: list[dict] = []
+                    for i, seg in enumerate(cp):
+                        if not isinstance(seg, dict):
+                            continue
+                        sc = max(1, int(seg.get("start_chapter") or 1))
+                        ec = max(sc, int(seg.get("end_chapter") or sc))
+                        ec = min(ec, len(chapters))
+                        chars = sum(
+                            len(chapters[j - 1].get("content") or "")
+                            for j in range(sc, ec + 1)
+                        )
+                        cleaned.append({
+                            "index": i,
+                            "title": (seg.get("title") or f"第 {sc}–{ec} 章").strip(),
+                            "start_chapter": sc,
+                            "end_chapter": ec,
+                            "chapter_count": ec - sc + 1,
+                            "char_count": chars,
+                        })
+                    if cleaned:
+                        return {
+                            "type": state.get("type") or "custom",
+                            "segments": cleaned,
+                            "total_chapters": len(chapters),
+                            "is_custom": True,
+                        }
+        except Exception as e:
+            logger.warning("[plan] custom_plan read failed: %s", e)
+        plan = self.plan_segments(chapters, segment_chars=segment_chars)
+        plan["is_custom"] = False
+        return plan
+
+    def save_custom_plan(self, ref_id: str, segments: list[dict],
+                          plan_type: str = "custom") -> dict[str, Any]:
+        """Persist a user-edited plan (volume titles + chapter ranges)
+        into segments_json["custom_plan"]. Clears any per-segment
+        extraction results because the segmentation has changed."""
+        from rag.reference_db import ReferenceDB
+        rdb = ReferenceDB(self.db_path)
+        work = rdb.get_work(ref_id)
+        if not work:
+            raise ValueError(f"reference work not found: {ref_id}")
+        # Validate the user payload — defensive, since clients may send
+        # overlapping / out-of-order ranges and we need stable behavior.
+        text = self._load_text(work)
+        chapters = self._split_chapters(text) if text else []
+        total = len(chapters)
+        cleaned: list[dict] = []
+        for i, seg in enumerate(segments):
+            if not isinstance(seg, dict):
+                continue
+            try:
+                sc = max(1, int(seg.get("start_chapter") or 1))
+                ec = int(seg.get("end_chapter") or sc)
+            except (TypeError, ValueError):
+                continue
+            if total > 0:
+                sc = min(sc, total)
+                ec = min(max(ec, sc), total)
+            else:
+                ec = max(ec, sc)
+            title = str(seg.get("title") or f"第 {sc}–{ec} 章").strip()
+            cleaned.append({
+                "index": i,
+                "title": title,
+                "start_chapter": sc,
+                "end_chapter": ec,
+            })
+        if not cleaned:
+            raise ValueError("segments list is empty after validation")
+        cleaned.sort(key=lambda x: x["start_chapter"])
+        for i, seg in enumerate(cleaned):
+            seg["index"] = i
+
+        # Editing the plan invalidates prior per-segment results.
+        new_state = {
+            "type": plan_type,
+            "plan": cleaned,
+            "custom_plan": cleaned,
+            "results": {},
+            "completed": [],
+        }
+        rdb.update_work(
+            ref_id,
+            segments_json=json.dumps(new_state, ensure_ascii=False),
+            preprocessing_status="pending",
+        )
+        return {
+            "type": plan_type,
+            "segments": [
+                {**s,
+                 "chapter_count": s["end_chapter"] - s["start_chapter"] + 1,
+                 "char_count": sum(
+                     len(chapters[j - 1].get("content") or "")
+                     for j in range(s["start_chapter"], s["end_chapter"] + 1)
+                 )}
+                for s in cleaned
+            ],
+            "total_chapters": total,
+            "is_custom": True,
+        }
+
     def plan_segments(self, chapters: list[dict],
                       segment_chars: int | None = None) -> dict[str, Any]:
-        """Plan segments for incremental processing. Returns:
-            {"type": "volumes"|"chunks", "segments": [{...}], "total_chapters": N}
+        """Auto-detect plan from chapter content. Use ``get_effective_plan``
+        when you want to honor the user's saved custom plan.
+
+        Returns ``{"type": "volumes"|"chunks", "segments": [{...}], "total_chapters": N}``.
         Volumes take priority; otherwise chapters are grouped into ~segment_chars chunks.
         """
         if not chapters:
@@ -357,7 +475,7 @@ class FeatureExtractionPipeline:
             return {"error": "no text content available"}
 
         all_chapters = self._split_chapters(text)
-        plan = self.plan_segments(all_chapters, segment_chars=segment_chars)
+        plan = self.get_effective_plan(ref_id, all_chapters, segment_chars=segment_chars)
         segs = plan["segments"]
         if segment_index < 0 or segment_index >= len(segs):
             raise ValueError(f"segment_index out of range: {segment_index} (have {len(segs)})")
@@ -533,10 +651,10 @@ class FeatureExtractionPipeline:
         if not isinstance(seg_index, int):
             raise ValueError("result.index missing or invalid")
 
-        # Refresh plan to know total
+        # Refresh plan to know total; honor any user-saved custom plan.
         text = self._load_text(work)
         chapters = self._split_chapters(text) if text else []
-        plan = self.plan_segments(chapters)
+        plan = self.get_effective_plan(ref_id, chapters)
         segs = plan["segments"]
 
         try:
@@ -559,6 +677,9 @@ class FeatureExtractionPipeline:
                 )}
                 for s in segs
             ],
+            # Preserve the user's saved custom plan across commits so it
+            # keeps overriding auto-detection on subsequent extractions.
+            **({"custom_plan": existing["custom_plan"]} if existing.get("custom_plan") else {}),
             "results": results,
             "completed": sorted(int(k) for k in results.keys()),
         }
