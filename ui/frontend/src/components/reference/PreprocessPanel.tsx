@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut, apiPatch } from "../../api/client";
 import { useToast } from "../shared/Toast";
+import { useConfirm } from "../shared/Confirm";
 
 interface ChapterPattern {
   name: string;
@@ -28,6 +29,8 @@ interface Chapter {
   is_split_piece?: boolean;
   is_edited?: boolean;
   had_asides_removed?: boolean;
+  is_garbled?: boolean;
+  garbled_reasons?: string[];
   preview_head?: string;
   preview_tail?: string;
 }
@@ -78,6 +81,14 @@ interface SegmentPlan {
   is_custom?: boolean;
 }
 
+/** Prefer the title-only text (just the chapter title without the
+ *  number prefix). Falls back to the raw marker, then a default. */
+function displayTitle(c: { title_only?: string; title?: string; number?: number }): string {
+  const t = (c.title_only || "").trim();
+  if (t) return t;
+  return (c.title || "").trim() || `第 ${c.number ?? "?"} 章`;
+}
+
 function fmtChars(n: number): string {
   if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`;
   return `${n.toLocaleString()} 字`;
@@ -92,6 +103,7 @@ interface Props {
 
 export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterApplyExclusions }: Props) {
   const { toast } = useToast();
+  const { confirm: confirmDialog, ConfirmHost } = useConfirm();
   const [status, setStatus] = useState<PreprocessStatus | null>(null);
   // ``excluded`` is purely user-driven. We do NOT auto-seed from the
   // is_author_note flag — that previously made the checkboxes feel
@@ -99,8 +111,9 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   // button below the filter bar lets the user bulk-select manually.
   const [excluded, setExcluded] = useState<Set<number>>(new Set());
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [filter, setFilter] = useState<"all" | "flagged" | "outlier" | "kept">("all");
+  const [filter, setFilter] = useState<"all" | "flagged" | "outlier" | "garbled" | "kept">("all");
   const [applying, setApplying] = useState(false);
+  const [cleaningGarbled, setCleaningGarbled] = useState(false);
   // Volume plan editor (moved here from PlotOutlinePanel)
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
   const [planDraft, setPlanDraft] = useState<{ title: string; start_chapter: number; end_chapter: number }[] | null>(null);
@@ -235,7 +248,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   };
 
   const resetKeywords = async () => {
-    if (!confirm("恢复默认题外话关键词列表？您自定义的列表会被清空。")) return;
+    if (!(await confirmDialog({
+      title: "恢复默认关键词",
+      message: "恢复默认题外话关键词列表？您自定义的列表会被清空。",
+      destructive: true,
+    }))) return;
     await saveKeywords([]);
   };
 
@@ -309,7 +326,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   // Delete a CUSTOM format by name (built-ins can't be deleted).
   // Used by the × button on each custom row in the format-confirm panel.
   const deleteCustomFormat = async (name: string) => {
-    if (!confirm(`删除自定义章节格式「${name}」？此操作会立即生效。`)) return;
+    if (!(await confirmDialog({
+      title: "删除自定义格式",
+      message: `删除自定义章节格式「${name}」？此操作会立即生效。`,
+      destructive: true,
+    }))) return;
     try {
       await fetch(`/api/references/chapter_patterns/${encodeURIComponent(name)}`, {
         method: "DELETE",
@@ -543,7 +564,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
 
   // CRUD: delete single chapter
   const deleteOneChapter = async (number: number) => {
-    if (!confirm(`确认从正文中删除第 ${number} 章？此操作可撤销一次。`)) return;
+    if (!(await confirmDialog({
+      title: "删除章节",
+      message: `确认从正文中删除第 ${number} 章？此操作可撤销一次。`,
+      destructive: true,
+    }))) return;
     try {
       await fetch(`/api/references/works/${refId}/preprocess/chapter/${number}`, {
         method: "DELETE",
@@ -576,7 +601,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   };
 
   const undoExclusions = async () => {
-    if (!confirm("撤销上一次清理？将从备份恢复正文。")) return;
+    if (!(await confirmDialog({
+      title: "撤销清理",
+      message: "撤销上一次清理？将从备份恢复正文。",
+    }))) return;
     try {
       const r = await apiPost<{ restored_char_count: number; restored_chapters: number[] }>(
         `/api/references/works/${refId}/preprocess/undo_exclusions`, {},
@@ -599,7 +627,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     catch (e: any) { toast(e?.message || "恢复失败", "error"); }
   };
   const cancelJob = async () => {
-    if (!confirm("确认取消当前预处理任务？")) return;
+    if (!(await confirmDialog({
+      title: "取消任务",
+      message: "确认取消当前预处理任务？",
+      destructive: true,
+    }))) return;
     try { await apiPost(`/api/references/works/${refId}/preprocess/cancel`, {}); await fetchStatus(); }
     catch (e: any) { toast(e?.message || "取消失败", "error"); }
   };
@@ -618,7 +650,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast("未选择任何要排除的章节", "info");
       return;
     }
-    if (!confirm(`将从正文中物理删除 ${excluded.size} 个章节，可撤销一次。继续？`)) return;
+    if (!(await confirmDialog({
+      title: "清理章节",
+      message: `将从正文中物理删除 ${excluded.size} 个章节，可撤销一次。继续？`,
+      destructive: true,
+    }))) return;
     setApplying(true);
     try {
       const r = await apiPost<{ ok: boolean; removed_chapters: number[]; new_char_count: number }>(
@@ -640,6 +676,29 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
 
   // Whole-chapter bulk clean — limited to chapters detected by the
   // 作者说章节 pattern (entries authored as standalone "chapters").
+  const cleanGarbled = async () => {
+    const garbledCount = chapters.filter(c => c.is_garbled).length;
+    if (garbledCount === 0) {
+      toast("没有检测到乱码", "info");
+      return;
+    }
+    setCleaningGarbled(true);
+    try {
+      const r = await apiPost<{ total_chapters: number; new_char_count: number; can_undo: boolean }>(
+        `/api/references/works/${refId}/preprocess/clean_garbled`, {},
+        { timeoutMs: 120_000 },
+      );
+      toast(`已清除乱码 · 剩 ${fmtChars(r.new_char_count)} · ${r.total_chapters} 章`, "success");
+      await onAfterApplyExclusions?.();
+      await fetchStatus();
+      await fetchPlan();
+    } catch (e: any) {
+      toast(e?.message || "清除失败", "error");
+    } finally {
+      setCleaningGarbled(false);
+    }
+  };
+
   const bulkCleanAuthorChapters = async () => {
     const nums = (status?.chapters || [])
       .filter(c => c.pattern === "作者说章节")
@@ -788,7 +847,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast("某段的结束章号小于起始章号", "error");
       return;
     }
-    if (!confirm("保存自定义分段会清空所有已完成的提取结果。继续？")) return;
+    if (!(await confirmDialog({
+      title: "保存分段",
+      message: "保存自定义分段会清空所有已完成的提取结果。继续？",
+    }))) return;
     setPlanSaving(true);
     try {
       await apiPut(`/api/references/works/${refId}/segments/plan`,
@@ -824,6 +886,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const filteredChapters = chapters.filter(c => {
     if (filter === "flagged") return !!c.is_author_note;
     if (filter === "outlier") return !!c.is_length_outlier;
+    if (filter === "garbled") return !!c.is_garbled;
     if (filter === "kept") return !excluded.has(c.number);
     return true;
   });
@@ -842,6 +905,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
 
   return (
     <div className="flex flex-col gap-12">
+      <ConfirmHost />
       {/* Section 1: chapter detection + status */}
       <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
         <div className="flex items-center justify-between" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
@@ -984,8 +1048,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                               style={{ fontSize: 10, padding: "2px 8px" }}
                               onClick={() => testCandidate(c.name)}
                               disabled={t?.loading}
-                              title="对当前作品快速测试此格式（截取前 2 MB）">
-                        {t?.loading ? "..." : "测试"}
+                              title="展示该格式在当前作品上匹配到的章节（截取前 2 MB）">
+                        {t?.loading ? "..." : "展示"}
                       </button>
                       {c.custom && (
                         <button className="btn-icon"
@@ -1001,7 +1065,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         color: "var(--text-secondary)", lineHeight: 1.55,
                       }}>
                         <div>
-                          <span className="text-muted">测试结果：</span>
+                          <span className="text-muted">匹配结果：</span>
                           <span style={{
                             fontWeight: 600,
                             color: t.count > 5 ? "var(--jade)" : t.count > 0 ? "var(--gold)" : "var(--text-tertiary)",
@@ -1184,7 +1248,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         )}
                         <button className="btn" style={{ fontSize: 11, padding: "3px 8px" }}
                                 onClick={() => testPattern(i)}
-                                title="对当前作品测试匹配数">
+                                title="展示该格式在当前作品上匹配到的章节">
                           测试
                         </button>
                         <button className="btn-icon"
@@ -1351,6 +1415,15 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       title="扫描所有正文章节内的题外话段落（如末尾的求月票），逐条预览后批量删除">
                 清除题外话段落
               </button>
+              {chapters.some(c => c.is_garbled) && (
+                <button className="btn"
+                        style={{ fontSize: 11, padding: "4px 12px", color: "var(--error)", borderColor: "var(--error)" }}
+                        onClick={cleanGarbled}
+                        disabled={cleaningGarbled}
+                        title="一次性删除所有 HTML 注释 / 转义 / BBCode 等乱码">
+                  {cleaningGarbled ? "清除中…" : `一键清除乱码（${chapters.filter(c => c.is_garbled).length}）`}
+                </button>
+              )}
               {(chapters.some(c => c.pattern === "作者说章节")) && (
                 <button className="btn"
                         style={{ fontSize: 11, padding: "4px 12px", color: "var(--gold)", borderColor: "var(--gold)" }}
@@ -1389,6 +1462,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               { k: "all", label: "全部", count: chapters.length },
               { k: "flagged", label: "疑似题外话", count: chapters.filter(c => c.is_author_note).length },
               { k: "outlier", label: "长度异常", count: chapters.filter(c => c.is_length_outlier).length },
+              { k: "garbled", label: "乱码", count: chapters.filter(c => c.is_garbled).length },
               { k: "kept", label: "正文章节", count: chapters.length - excluded.size },
             ] as const).map(o => (
               <button key={o.k}
@@ -1494,7 +1568,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         color: isExcluded ? "var(--text-tertiary)" : "var(--text-primary)",
                         textDecoration: isExcluded ? "line-through" : "none",
                         textAlign: "left",
-                      }}>{c.title}</div>
+                      }}>{displayTitle(c)}</div>
                     </button>
                     {isFlagged && (
                       <span className="tag" style={{
@@ -1525,6 +1599,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         color: "var(--jade)", background: "var(--bg-surface-2)",
                         border: "1px solid var(--jade)",
                       }} title="此章节有题外话段落被清理过">已清题外话</span>
+                    )}
+                    {c.is_garbled && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px", flexShrink: 0,
+                        color: "var(--error)", background: "var(--bg-surface-2)",
+                        border: "1px solid var(--error)",
+                      }} title={(c.garbled_reasons || []).join(" · ")}>乱码</span>
                     )}
                     {c.is_split_piece && (
                       <span className="tag" style={{
@@ -1604,11 +1685,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                                       + (gap.missing_count > previewNums.length ? "…" : "");
               const gapEl = (
                 <div key={`gap-${c.number}`} style={{
-                  border: "1px dashed var(--gold)",
+                  // Distinct cyan dashed marker so the gap row is
+                  // visually separate from the gold "题外话" chapter
+                  // chips and the purple "长度异常" chapters.
+                  border: "1px dashed #06b6d4",
                   borderRadius: 4,
                   padding: "4px 8px",
-                  background: "rgba(250,204,21,0.05)",
-                  color: "var(--gold)",
+                  background: "rgba(6,182,212,0.08)",
+                  color: "#06b6d4",
                   fontSize: 11,
                   display: "flex", alignItems: "center", gap: 8,
                 }}
@@ -1804,7 +1888,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         }}>#{c.number}</span>
                         <div className="truncate" style={{
                           fontSize: 12, fontWeight: 500, color: "var(--text-primary)", flex: 1, minWidth: 0,
-                        }}>{c.title}</div>
+                        }}>{displayTitle(c)}</div>
                         <span className="text-xs text-muted" style={{ fontFamily: "var(--font-mono)" }}>
                           {fmtChars(c.char_count)}
                         </span>

@@ -876,13 +876,13 @@ class NewChapterBody(BaseModel):
 
 
 @router.post("/works/{ref_id}/preprocess/chapter/new")
-def preprocess_add_chapter(ref_id: str, body: NewChapterBody):
+async def preprocess_add_chapter(ref_id: str, body: NewChapterBody):
     """Insert a brand-new chapter after the given ordinal (None / 0 =
     at start). The user supplies the heading line in whatever format
     the rest of the work uses — detection re-runs on the rebuilt file
     so the new chapter gets a sequential ordinal."""
     from analysis.feature_extraction.chapter_parser import insert_chapter
-    return _modify_and_redetect(
+    return await _modify_and_redetect(
         ref_id,
         modifier=lambda txt, chs: insert_chapter(
             txt, chs, body.after_number, body.heading, body.content,
@@ -896,11 +896,11 @@ class RenameChapterBody(BaseModel):
 
 
 @router.patch("/works/{ref_id}/preprocess/chapter/{number}/title")
-def preprocess_rename_chapter(ref_id: str, number: int, body: RenameChapterBody):
+async def preprocess_rename_chapter(ref_id: str, number: int, body: RenameChapterBody):
     """Replace the heading line of a chapter — body is preserved.
     Detection re-runs to pick up the new title."""
     from analysis.feature_extraction.chapter_parser import rename_chapter
-    return _modify_and_redetect(
+    return await _modify_and_redetect(
         ref_id,
         modifier=lambda txt, chs: rename_chapter(txt, chs, number, body.heading),
         op_label=f"rename chapter {number}",
@@ -908,35 +908,36 @@ def preprocess_rename_chapter(ref_id: str, number: int, body: RenameChapterBody)
 
 
 @router.delete("/works/{ref_id}/preprocess/chapter/{number}")
-def preprocess_delete_chapter(ref_id: str, number: int):
+async def preprocess_delete_chapter(ref_id: str, number: int):
     """Delete a single chapter from the file. Same backing logic as
     清理章节, just exposed as a per-row action."""
     from analysis.feature_extraction.chapter_parser import apply_exclusions
-    return _modify_and_redetect(
+    return await _modify_and_redetect(
         ref_id,
         modifier=lambda txt, chs: apply_exclusions(txt, chs, {number}),
         op_label=f"delete chapter {number}",
     )
 
 
-def _modify_and_redetect(ref_id: str, modifier, op_label: str):
-    """Shared helper for CRUD endpoints: load file → run modifier
-    (returns new text) → snapshot to .bak → write → re-detect →
-    update segments_json["preprocess"].
+async def _modify_and_redetect(ref_id: str, modifier, op_label: str):
+    """Shared helper for CRUD endpoints. All heavy I/O (file reads,
+    regex passes, file writes) is offloaded to a worker thread so the
+    UI's "清理中" / "保存中" spinner doesn't sit for 10+ seconds on
+    multi-MB works.
 
     Two important details:
-      1. The chapters list passed to ``modifier`` comes from the
-         PERSISTED preprocess state (what the UI shows), not a fresh
-         detect_chapters call. This guarantees that "after chapter N"
-         uses the ordinal the user sees on screen.
-      2. The re-detect after modification forces ALL built-in patterns
-         (plus custom) so a user-added chapter heading in a different
-         format than the rest of the work still registers.
+      1. The chapter list passed to ``modifier`` comes from the
+         PERSISTED preprocess state (what the UI shows). Skipping the
+         initial detect_chapters call saves seconds on every CRUD.
+      2. The re-detect after modification forces all numbered built-in
+         patterns + custom — but skips fallback patterns (短句标题 /
+         作者说章节) so a freshly-edited short body doesn't trigger a
+         phantom chapter.
     """
     from analysis.feature_extraction.chapter_parser import (
-        detect_chapters, flag_author_notes, flag_length_outliers,
+        detect_chapters, flag_author_notes, flag_length_outliers, flag_garbled_chapters,
         make_preview, visible_char_count, find_chapter_gaps,
-        _PATTERNS as _BUILTIN_PATTERNS,
+        _PATTERNS as _BUILTIN_PATTERNS, _UNNUMBERED_PATTERNS as _UNN,
     )
     from analysis.feature_extraction.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
@@ -947,17 +948,15 @@ def _modify_and_redetect(ref_id: str, modifier, op_label: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     pipe = FeatureExtractionPipeline(db.db_path)
-    text = pipe._load_text(w)
-    if not text:
-        raise HTTPException(400, "尚未上传正文")
     file_path = w.get("file_path")
     if not file_path:
         raise HTTPException(400, "作品没有关联的文件路径")
+    text = await asyncio.to_thread(pipe._load_text, w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
     extras = _load_chapter_patterns()
 
     # Build the chapter list for the modifier from PERSISTED state.
-    # Light entries lack raw_marker/content — hydrate from file via
-    # offsets so insert/rename/delete have everything they need.
     try:
         state = json.loads(w.get("segments_json") or "{}")
     except Exception:
@@ -972,8 +971,6 @@ def _modify_and_redetect(ref_id: str, modifier, op_label: str):
             body = ""
             if isinstance(cs, int) and isinstance(ce, int) and 0 <= cs <= ce <= len(text):
                 body = text[cs:ce].strip()
-            # raw_marker may be empty in lightweight persisted form; rebuild
-            # from the title (= the heading line).
             marker = (c.get("raw_marker") or c.get("title") or "").strip()
             modifier_chapters.append({
                 **c,
@@ -981,11 +978,13 @@ def _modify_and_redetect(ref_id: str, modifier, op_label: str):
                 "raw_marker": marker,
             })
     else:
-        # No prior preprocess — fall back to fresh detect.
-        modifier_chapters = detect_chapters(text, extra_patterns=extras)["chapters"]
+        # No prior preprocess — fall back to a (slow) fresh detect.
+        modifier_chapters = (await asyncio.to_thread(
+            detect_chapters, text, extra_patterns=extras,
+        ))["chapters"]
 
     try:
-        new_text = modifier(text, modifier_chapters)
+        new_text = await asyncio.to_thread(modifier, text, modifier_chapters)
     except ValueError as e:
         raise HTTPException(400, str(e))
     if not new_text.strip():
@@ -993,33 +992,29 @@ def _modify_and_redetect(ref_id: str, modifier, op_label: str):
     src = Path(file_path)
     bak = src.with_suffix(src.suffix + ".bak")
     try:
-        bak.write_text(text, encoding="utf-8")
-        src.write_text(new_text, encoding="utf-8")
+        await asyncio.to_thread(bak.write_text, text, encoding="utf-8")
+        await asyncio.to_thread(src.write_text, new_text, encoding="utf-8")
     except Exception as e:
         raise HTTPException(500, f"写入文件失败：{e}")
-    # Re-detect on the new text + refresh preprocess state.
-    #
-    # Strategy: force all NUMBERED built-in patterns + custom patterns
-    # — but NOT the 短句标题 / 作者说章节 fallback. This lets a
-    # user-added heading in any numbered format ("3.5、插入" → N. ;
-    # "147、新章节" → N、 ; "第三回 标题" → 第N回) show up after the
-    # modify, while still preventing the 短句标题 fallback from
-    # treating fresh short body content as phantom chapters.
-    from analysis.feature_extraction.chapter_parser import _UNNUMBERED_PATTERNS as _UNN
     numbered_builtin = [n for n, _ in _BUILTIN_PATTERNS if n not in _UNN]
     custom_names = [p.get("name") for p in (extras or []) if p.get("name")]
     force_for_redetect = numbered_builtin + [n for n in custom_names if n]
-    new_detect = detect_chapters(
-        new_text, extra_patterns=extras,
-        force_patterns=force_for_redetect,
-    )
-    new_chapters = new_detect["chapters"]
-    flag_author_notes(new_chapters, extra_keywords=_load_author_keywords())
-    flag_length_outliers(new_chapters)
-    for c in new_chapters:
-        pv = make_preview(c.get("content") or "")
-        c["preview_head"] = pv["head"]
-        c["preview_tail"] = pv["tail"]
+
+    def _redetect_and_flag():
+        nd = detect_chapters(
+            new_text, extra_patterns=extras,
+            force_patterns=force_for_redetect,
+        )
+        ncs = nd["chapters"]
+        flag_author_notes(ncs, extra_keywords=_load_author_keywords())
+        flag_length_outliers(ncs)
+        flag_garbled_chapters(ncs)
+        for cc in ncs:
+            pv = make_preview(cc.get("content") or "")
+            cc["preview_head"] = pv["head"]
+            cc["preview_tail"] = pv["tail"]
+        return ncs
+    new_chapters = await asyncio.to_thread(_redetect_and_flag)
     light = [
         {k: c.get(k) for k in (
             "number", "parsed_number", "title", "title_only", "raw_marker",
@@ -1027,6 +1022,8 @@ def _modify_and_redetect(ref_id: str, modifier, op_label: str):
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
             "is_split_piece", "is_edited", "had_asides_removed",
+            "is_garbled", "garbled_reasons",
+            "is_garbled", "garbled_reasons",
             "preview_head", "preview_tail",
             "content_start", "content_end",
         )} | {"char_count": visible_char_count(c.get("content") or "")}
@@ -1158,6 +1155,7 @@ def patch_chapter_content(ref_id: str, number: int, body: ChapterContentEdit):
                 "is_author_note", "author_note_score", "author_note_reasons",
                 "is_length_outlier", "outlier_kind",
                 "is_split_piece", "is_edited", "had_asides_removed",
+            "is_garbled", "garbled_reasons",
                 "preview_head", "preview_tail",
                 "content_start", "content_end",
             )} | {"char_count": visible_char_count(cc.get("content") or "")}
@@ -1581,111 +1579,38 @@ class ApplyExclusionsRequest(BaseModel):
 
 @router.post("/works/{ref_id}/preprocess/apply_exclusions")
 async def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
-    """Physically delete the excluded chapters from the on-disk text and
-    re-save. The pre-edit text is saved to ``{file_path}.bak`` (overwriting
-    any prior backup) so the user can undo via POST /preprocess/undo_exclusions
-    while the backup still exists."""
-    from analysis.feature_extraction import preprocess_jobs
-    from analysis.feature_extraction.chapter_parser import (
-        detect_chapters, apply_exclusions,
-    )
-    from analysis.feature_extraction.pipeline import (
-        FeatureExtractionPipeline, _load_chapter_patterns,
-    )
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    pipe = FeatureExtractionPipeline(db.db_path)
-    file_path = w.get("file_path")
-    if not file_path:
-        raise HTTPException(400, "作品没有关联的文件路径")
-    # Heavy I/O + regex pass — run in a thread so the event loop stays
-    # responsive (was the cause of the 「点击清理章节后 app 卡死」 bug).
-    text = await asyncio.to_thread(pipe._load_text, w)
-    if not text:
-        raise HTTPException(400, "尚未上传正文")
-    detect = await asyncio.to_thread(
-        detect_chapters, text, extra_patterns=_load_chapter_patterns(),
-    )
+    """Bulk-delete the excluded chapters from the on-disk text.
+    Routes through the same _modify_and_redetect fast path the CRUD
+    endpoints use — uses the persisted chapter list (no extra detect
+    pass at the start), runs the heavy I/O + regex in a thread, and
+    re-detects with only numbered patterns. Cuts the "清理中" spinner
+    from many seconds to a fraction on multi-MB works."""
+    from analysis.feature_extraction.chapter_parser import apply_exclusions
     excluded = set(int(n) for n in (body.excluded_chapters or []))
-    new_text = await asyncio.to_thread(
-        apply_exclusions, text, detect["chapters"], excluded,
-    )
-    if not new_text.strip():
-        raise HTTPException(400, "排除后文本为空，操作已取消")
-    src = Path(file_path)
-    bak = src.with_suffix(src.suffix + ".bak")
-    try:
-        # Snapshot the pre-edit file so we can restore on undo. Overwrites
-        # any prior .bak — only the most-recent apply is undoable.
-        await asyncio.to_thread(bak.write_text, text, encoding="utf-8")
-        await asyncio.to_thread(src.write_text, new_text, encoding="utf-8")
-    except Exception as e:
-        raise HTTPException(500, f"写入文件失败：{e}")
-    try:
-        state = json.loads(w.get("segments_json") or "{}")
-    except Exception:
-        state = {}
-    if not isinstance(state, dict):
-        state = {}
-    # Re-detect from the cleaned text so the persisted chapter list
-    # stays in sync. Without this the UI loses the chapter list and
-    # falls back to the empty "匹配章节格式" prompt.
-    from analysis.feature_extraction.chapter_parser import (
-        flag_author_notes, flag_length_outliers, make_preview, visible_char_count,
-        find_chapter_gaps,
-    )
-    def _redetect_and_flag():
-        nd = detect_chapters(new_text, extra_patterns=_load_chapter_patterns())
-        ncs = nd["chapters"]
-        flag_author_notes(ncs, extra_keywords=_load_author_keywords())
-        flag_length_outliers(ncs)
-        for cc in ncs:
-            pv = make_preview(cc.get("content") or "")
-            cc["preview_head"] = pv["head"]
-            cc["preview_tail"] = pv["tail"]
-        return ncs
-    new_chapters = await asyncio.to_thread(_redetect_and_flag)
-    light = [
-        {k: c.get(k) for k in (
-            "number", "parsed_number", "title", "title_only", "raw_marker",
-            "pattern", "volume",
-            "is_author_note", "author_note_score", "author_note_reasons",
-            "is_length_outlier", "outlier_kind",
-            "is_split_piece", "is_edited", "had_asides_removed",
-            "preview_head", "preview_tail",
-            "content_start", "content_end",
-        )} | {"char_count": visible_char_count(c.get("content") or "")}
-        for c in new_chapters
-    ]
-    state["preprocess"] = {
-        "chapters": light,
-        "total_chapters": len(light),
-        "flagged_count": sum(1 for c in light if c.get("is_author_note")),
-        "gaps": find_chapter_gaps(new_chapters),
-    }
-    state.pop("custom_plan", None)
-    state.pop("plan", None)
-    state["results"] = {}
-    state["completed"] = []
-    state["exclusion_backup"] = {
-        "path": str(bak),
-        "removed_chapters": sorted(excluded),
-        "prev_char_count": len(text),
-    }
-    db.update_work(
+    if not excluded:
+        raise HTTPException(400, "未选择任何章节")
+    result = await _modify_and_redetect(
         ref_id,
-        segments_json=json.dumps(state, ensure_ascii=False),
-        preprocessing_status="pending",
+        modifier=lambda txt, chs: apply_exclusions(txt, chs, excluded),
+        op_label=f"apply_exclusions {sorted(excluded)}",
     )
-    preprocess_jobs.clear(ref_id)
     return {
-        "ok": True,
+        **result,
         "removed_chapters": sorted(excluded),
-        "new_char_count": len(new_text),
-        "can_undo": True,
     }
+
+
+@router.post("/works/{ref_id}/preprocess/clean_garbled")
+async def preprocess_clean_garbled(ref_id: str):
+    """Strip all garbled patterns (HTML escapes, comments, BBCode, …)
+    from the on-disk text in one pass. Snapshots to .bak so the undo
+    works the same as for chapter exclusions."""
+    from analysis.feature_extraction.chapter_parser import strip_garbled
+    return await _modify_and_redetect(
+        ref_id,
+        modifier=lambda txt, chs: strip_garbled(txt),
+        op_label="clean_garbled",
+    )
 
 
 @router.get("/works/{ref_id}/preprocess/aside_paragraphs")
@@ -1805,6 +1730,7 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
             "is_split_piece", "is_edited", "had_asides_removed",
+            "is_garbled", "garbled_reasons",
             "preview_head", "preview_tail",
             "content_start", "content_end",
         )} | {"char_count": visible_char_count(c.get("content") or "")}

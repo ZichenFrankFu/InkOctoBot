@@ -112,18 +112,23 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # 1, 2, 3… numbers in document order.
     #
     # Negative lookaheads enforce MUTUAL EXCLUSION with the numbered
-    # patterns above: a line that already looks like "N、" / "第N章" /
-    # "Chapter N" won't double-match here. Without these, the same
-    # heading was counted by both 短句标题 and the more specific
-    # pattern, inflating candidate counts and over-matching when the
-    # user picked 短句标题 in the format-confirm panel.
-    ("短句标题", re.compile(
-        r"(?:^|\n[\s　]*\n)[\s　]*"
+    # 缩进对比: title line has NO leading indent + ends without
+    # terminal punctuation + the NEXT line begins with whitespace
+    # (typical web-novel layout: chapter title at column 0, body
+    # lines indented by 2 spaces / one 全角空格). Replaces the old
+    # 短句标题 fallback which was over-matching short narrative
+    # paragraphs.
+    #
+    # Negative lookaheads keep this format mutually exclusive with
+    # the numbered patterns above — a line that's already "N、" /
+    # "第N章" / "Chapter N" won't double-match here.
+    ("缩进对比", re.compile(
+        r"(?:^|\n)"
         r"(?![0-9０-９]+[\s　]*[、．])"
         r"(?!第\s*[零〇一二两三四五六七八九十百千万0-9０-９]+\s*[章回节卷])"
         r"(?!Chapter[\s　]+[0-9])"
-        r"([^\s。！？；，,.!?…：:　][^\n。！？；，,.!?…：:]{0,12}[^\s。！？；，,.!?…：:　])"
-        r"[\s　]*(?=\n[\s　]*\n)",
+        r"([^\s。！？；，,.!?…：:　][^\n。！？；，,.!?…：:]{0,40}[^\s。！？；，,.!?…：:　])"
+        r"\n[\s　]+\S",
         re.MULTILINE | re.IGNORECASE,
     )),
     # Author-aside "chapters" — paragraph-isolated lines that contain
@@ -235,7 +240,7 @@ def _clean_title(s: str) -> str:
     return out
 
 
-_UNNUMBERED_PATTERNS = {"短句标题", "作者说章节"}
+_UNNUMBERED_PATTERNS = {"缩进对比", "作者说章节"}
 
 
 def _build_chapters(text: str,
@@ -347,13 +352,56 @@ def _build_chapters(text: str,
                     drop_idx.add(j)
         # All substantial: keep all
 
-    # Adaptive short-gap dedup REMOVED. The earlier by_num pass already
-    # drops TOC duplicates (TOC entries share parsed numbers with body
-    # entries, and the longest-content rule keeps the body). Adding a
-    # gap-based pass on top kept catching legitimately short chapters
-    # (e.g. a freshly-edited chapter or an author-aside whose body got
-    # trimmed) and dropping them, which the user reported as "chapters
-    # disappearing after edit".
+    # Number-list filter: drop N、-style matches whose CAPTURED TITLE
+    # is itself dominated by "[digit]+、" pairs — e.g. the regex
+    # greedily matched "10、9、8、7、6、" as one chapter with
+    # title="9、8、7、6、". That's clearly a narrative countdown, not
+    # a real heading. Heuristic: title contains another N、 pattern.
+    for i in range(len(matches)):
+        if i in drop_idx:
+            continue
+        try:
+            t = (matches[i].group(2) or "").strip()
+        except (IndexError, error_re):
+            t = ""
+        if t and re.search(r"[0-9０-９]+\s*[、．]", t):
+            drop_idx.add(i)
+
+    # Tight-cluster list dedup: catches in-body number sequences like
+    # "10、9、8、…" that pattern-match as N、 headings but are really
+    # narrative countdown. Two passes:
+    #   (a) drop every empty-title match whose gap to next is < 20.
+    #   (b) drop the TRAILING empty-title match that closes such a
+    #       cluster (its gap to next is larger, but it's clearly the
+    #       last item of the list and not a real chapter heading).
+    TIGHT_GAP = 20
+    cluster_member: list[bool] = [False] * len(matches)
+    for i in range(len(matches)):
+        if i in drop_idx:
+            continue
+        if gap_to_next(i) >= TIGHT_GAP:
+            continue
+        try:
+            t = (matches[i].group(2) or "").strip()
+        except (IndexError, error_re):
+            t = ""
+        if not t:
+            drop_idx.add(i)
+            cluster_member[i] = True
+            if i + 1 < len(matches):
+                cluster_member[i + 1] = True
+    # Pass (b): empty-title matches flagged as "cluster trailer" — the
+    # match that came right after a dropped cluster member, which is
+    # the natural last item of the list.
+    for i in range(len(matches)):
+        if i in drop_idx or not cluster_member[i]:
+            continue
+        try:
+            t = (matches[i].group(2) or "").strip()
+        except (IndexError, error_re):
+            t = ""
+        if not t:
+            drop_idx.add(i)
 
     pruned_pairs = [named_matches[i] for i in range(len(named_matches)) if i not in drop_idx]
     if not pruned_pairs:
@@ -926,6 +974,54 @@ def flag_author_notes(chapters: list[dict],
         c["author_note_score"] = score
         c["author_note_reasons"] = reasons
     return chapters
+
+
+# Patterns for garbled / non-text noise commonly seen in scraped novel
+# files: HTML escapes, HTML comments, BBCode-style tags, template
+# placeholders. Stored as raw regex so apply_garbled_cleanup can reuse
+# the same set when stripping content.
+_GARBLED_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
+    ("HTML 注释", re.compile(r"<!--.*?-->", re.DOTALL)),
+    ("HTML 转义", re.compile(r"&(?:lt|gt|amp|quot|apos|nbsp|#\d+);")),
+    ("HTML 标签", re.compile(r"<\/?[a-zA-Z][a-zA-Z0-9]*[^>]*>")),
+    ("模板占位", re.compile(r"\{\{[^}]+\}\}")),
+    ("BBCode 标签", re.compile(r"\[/?[a-zA-Z][^\]]*\]")),
+    ("追书神器水印", re.compile(r"@追书神器|#追书神器|追书神器", re.IGNORECASE)),
+]
+
+
+def flag_garbled_chapters(chapters: list[dict]) -> list[dict]:
+    """Mark each chapter with ``is_garbled`` + ``garbled_reasons`` based
+    on whether its content contains noise like ``<!--go-->`` /
+    ``&lt;`` / HTML tags / BBCode left over from web scraping.
+    Reasons are short human-readable labels with the first matched
+    sample, suitable for tooltip + filter chip display."""
+    for c in chapters:
+        content = c.get("content") or ""
+        reasons: list[str] = []
+        for label, pat in _GARBLED_PATTERNS:
+            ms = pat.findall(content)
+            if not ms:
+                continue
+            first = ms[0]
+            if isinstance(first, tuple):
+                first = first[0] if first else ""
+            sample = first[:30].replace("\n", " ").strip()
+            reasons.append(f"{label}（{len(ms)}处｜样本：{sample}）")
+        c["is_garbled"] = bool(reasons)
+        c["garbled_reasons"] = reasons
+    return chapters
+
+
+def strip_garbled(text: str) -> str:
+    """Remove every garbled pattern from ``text``. Used by the
+    一键清除乱码 endpoint to clean a whole file in one pass."""
+    for _, pat in _GARBLED_PATTERNS:
+        text = pat.sub("", text)
+    # Collapse runs of whitespace that were created by removal.
+    text = re.sub(r"[ \t　]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def flag_length_outliers(chapters: list[dict]) -> list[dict]:

@@ -297,8 +297,8 @@ async def _run_detection(job: PreprocessJob, text: str,
     and job._resume between chapters so the UI's pause/resume controls
     take effect at chapter boundaries (per user's chosen granularity)."""
     from analysis.feature_extraction.chapter_parser import (
-        detect_chapters, flag_author_notes, flag_length_outliers, make_preview,
-        visible_char_count,
+        detect_chapters, flag_author_notes, flag_length_outliers,
+        flag_garbled_chapters, make_preview, visible_char_count,
     )
 
     try:
@@ -388,6 +388,7 @@ async def _run_detection(job: PreprocessJob, text: str,
         def _post_process():
             flag_author_notes(chapters, extra_keywords=extra_kw)
             flag_length_outliers(chapters)
+            flag_garbled_chapters(chapters)
             for c in chapters:
                 pv = make_preview(c.get("content") or "")
                 c["preview_head"] = pv["head"]
@@ -530,6 +531,7 @@ def persist_result_to_segments(ref_id: str, db_path: str,
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
             "is_split_piece", "is_edited", "had_asides_removed",
+            "is_garbled", "garbled_reasons",
             "preview_head", "preview_tail",
             "content_start", "content_end",
         )} | {"char_count": visible_char_count(c.get("content") or "")}
