@@ -71,37 +71,45 @@ def cn2int(s: str) -> int | None:
 # the listing is mostly cosmetic. Each pattern captures (number, title).
 
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    # 第N章 / 第N回 / 第N节 / 第N节 + arabic OR chinese
+    # All numbered patterns require:
+    #   - At least 1 char of title (so bare "147、" alone isn't a chapter)
+    #   - Title does NOT end with terminal punctuation (。！？，,…；;：:)
+    # — both per user request "章节标题都需要满足有章节标题、结尾没有
+    # 标点符号直接换行的 pattern".
     ("第N章", re.compile(
-        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9]+)\s*章[\s：:　.、，,．]*([^\n]{0,80})$",
+        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9]+)\s*章[\s：:　.、，,．]*"
+        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
         re.MULTILINE,
     )),
     ("第N回", re.compile(
-        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9]+)\s*回[\s：:　.、，,．]*([^\n]{0,80})$",
+        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9]+)\s*回[\s：:　.、，,．]*"
+        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
         re.MULTILINE,
     )),
     ("第N节", re.compile(
-        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9]+)\s*节[\s：:　.、，,．]*([^\n]{0,80})$",
+        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9]+)\s*节[\s：:　.、，,．]*"
+        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
         re.MULTILINE,
     )),
     # "Chapter N" English-style headings
     ("Chapter N", re.compile(
-        r"^[\s　]*Chapter\s+([0-9]+)[\s：:.,、，]*([^\n]{0,80})$",
+        r"^[\s　]*Chapter\s+([0-9]+)[\s：:.,、，]*"
+        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
         re.MULTILINE | re.IGNORECASE,
     )),
     # "1、标题" — arabic + 顿号 (very common in web novels).
-    # Title is optional ({0,80}) so bare "147、" lines also match —
-    # otherwise the chapter gets absorbed into the previous one and
-    # content lengths explode (e.g. a 2800-字 chapter shows as 387.6
-    # 万字 because it ate the rest of the document). Includes
-    # full-width digits ０-９ since web-novel uploads sometimes use them.
+    # Now REQUIRES a real title (1+ char, non-terminal-punct end) so
+    # bare "147、" lines + countdowns like "10、9、8、" no longer match.
+    # Full-width digits ０-９ supported.
     ("N、", re.compile(
-        r"^[\s　]*([0-9０-９]+)\s*[、．][\s　]*([^\n]{0,80})$",
+        r"^[\s　]*([0-9０-９]+)\s*[、．][\s　]*"
+        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
         re.MULTILINE,
     )),
     # "1.标题" — arabic + 句点 (.)
     ("N.", re.compile(
-        r"^[\s　]*([0-9０-９]+)[\s]*[.][\s　]*([^\n]{0,80})$",
+        r"^[\s　]*([0-9０-９]+)[\s]*[.][\s　]*"
+        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
         re.MULTILINE,
     )),
     # Short standalone heading lines without terminal punctuation
@@ -532,21 +540,32 @@ def _build_chapters(text: str,
     # If a chapter is unusually long, surface it via is_length_outlier
     # so the user can decide manually rather than auto-splitting.
 
-    # Preserve each numbered chapter's parsed value as ``parsed_number``
-    # (for display via the title), and re-assign ``number`` to a clean
-    # 1, 2, 3... ordinal so the UI list is monotone in reading order
-    # regardless of mixed numbered + unnumbered chapters.
+    # Assign ordinals. For NUMBERED chapters the ordinal IS the parsed
+    # number (so if "2、" is missing in the source, the chapter labeled
+    # "3、" shows as #3 and the gap detector flags the missing #2). For
+    # unnumbered chapters we synthesize a position-based ordinal that
+    # falls between its numbered neighbors — keeps document order
+    # while preserving the visible gap of numbered chapters.
+    last_numbered = 0
+    next_unnumbered_offset = 1
     for i, c in enumerate(deduped):
         c["index"] = i
-        # If parsed_number was explicitly set (e.g. cleared to None by
-        # rescue-split for derived pieces), preserve it. Otherwise
-        # capture the parser's original number for numbered patterns;
-        # leave None for unnumbered.
+        # Capture the parsed number once
         if "parsed_number" not in c:
             c["parsed_number"] = (
                 c["number"] if c["pattern"] not in _UNNUMBERED_PATTERNS else None
             )
-        c["number"] = i + 1
+        pn = c.get("parsed_number")
+        if isinstance(pn, int):
+            c["number"] = pn
+            last_numbered = pn
+            next_unnumbered_offset = 1
+        else:
+            # Unnumbered: park it just after the last numbered chapter
+            # we saw. Multiple unnumbered between two numbered get
+            # consecutive offsets.
+            c["number"] = last_numbered + next_unnumbered_offset
+            next_unnumbered_offset += 1
 
     return deduped
 
@@ -977,20 +996,35 @@ def flag_author_notes(chapters: list[dict],
 
 
 # Built-in patterns for garbled / non-text noise commonly seen in
-# scraped novel files: HTML escapes, comments, tags, BBCode, template
-# placeholders, random ID strings, watermarks.
+# scraped novel files. Each pattern is intentionally narrow so it
+# matches actual scrape leftovers without eating real Chinese text.
 _BUILTIN_GARBLED_PATTERNS: list[tuple[str, str]] = [
+    # HTML-style noise
     ("HTML 注释", r"<!--.*?-->"),
-    ("HTML 转义", r"&(?:lt|gt|amp|quot|apos|nbsp|#\d+);"),
-    ("HTML 标签", r"<\/?[a-zA-Z][a-zA-Z0-9]*[^>]*>"),
+    ("HTML 转义", r"&(?:lt|gt|amp|quot|apos|nbsp|#\d+|#x[0-9a-fA-F]+);"),
+    ("HTML 标签", r"<\/?[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?>"),
+    # Markup / template fragments
     ("模板占位", r"\{\{[^}]+\}\}"),
     ("BBCode 标签", r"\[/?[a-zA-Z][^\]]*\]"),
-    # Random alphanumeric IDs (mixed case + digits, 12+ chars) — e.g.
-    # the user reported "3Abq5FQkXVhYkEy8u3y" leftover from scraping
-    # watermarks. Require both letters AND digits to avoid catching
-    # English words.
+    # Random scrape-watermark IDs — mixed letters + digits, 12+ chars
+    # (catches "3Abq5FQkXVhYkEy8u3y"-style noise without matching
+    # English words or pure digit sequences).
     ("随机 ID", r"\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{12,}\b"),
+    # Known site watermarks
     ("追书神器水印", r"@追书神器|#追书神器|追书神器"),
+    # Classic Chinese mojibake fingerprints — these strings appear when
+    # the source bytes were decoded with the wrong codec. Their
+    # presence alone is strong evidence of mojibake.
+    ("锟斤拷", r"锟[斤拷]+"),
+    ("乱码替换符", r"[�￾￿]{2,}"),  # U+FFFD replacement etc.
+    # Box-drawing chars in CJK runs — often signal Latin-1 misdecode.
+    ("方块/控制字符", r"[■-◿]{3,}|[\x00-\x08\x0b\x0c\x0e-\x1f]+"),
+    # Zero-width / soft-hyphen artifacts (BOM, ZWNJ, ZWJ, …)
+    ("零宽字符", r"[​-‏‪-‮⁠-⁯﻿]+"),
+    # Stray Latin-1 high bytes that survived re-decode (Mojibake fingerprint)
+    ("Latin-1 残留", r"[À-ÿ]{4,}"),
+    # Long runs of ? at end of paragraph (often last-byte loss)
+    ("问号尾巴", r"\?{4,}"),
 ]
 
 
@@ -1113,7 +1147,9 @@ def detect_encoding_mojibake(text: str) -> dict | None:
         if not candidate or candidate == text:
             continue
         cand_density = _cjk_density(candidate)
-        if cand_density - base_density <= 0.05:
+        # Threshold loosened to 3% so subtle mojibake (e.g. a chapter
+        # with some misdecoded substrings) still gets caught.
+        if cand_density - base_density < 0.03:
             continue
         if not best or cand_density > best["after_cjk"]:
             best = {
@@ -1145,6 +1181,7 @@ def flag_garbled_chapters(chapters: list[dict]) -> list[dict]:
     for c in chapters:
         content = c.get("content") or ""
         reasons: list[str] = []
+        encoding_hint: str | None = None
         for label, pat in patterns:
             ms = pat.findall(content)
             if not ms:
@@ -1154,8 +1191,26 @@ def flag_garbled_chapters(chapters: list[dict]) -> list[dict]:
                 first = first[0] if first else ""
             sample = first[:30].replace("\n", " ").strip()
             reasons.append(f"{label}（{len(ms)}处｜样本：{sample}）")
+        # Per-chapter encoding-mojibake test — fires even when no regex
+        # matched (sometimes the whole chapter is mojibake'd but has
+        # no specific marker). We try the 6 repair transforms and if
+        # any one significantly improves CJK density, we flag.
+        if content and not reasons:
+            try:
+                guess = detect_encoding_mojibake(content)
+            except Exception:
+                guess = None
+            if guess:
+                encoding_hint = guess["transform"]
+                reasons.append(
+                    f"疑似编码乱码（建议：{guess['transform']}｜"
+                    f"CJK 密度 {int(guess['before_cjk']*100)}% → "
+                    f"{int(guess['after_cjk']*100)}%）"
+                )
         c["is_garbled"] = bool(reasons)
         c["garbled_reasons"] = reasons
+        if encoding_hint:
+            c["encoding_repair_hint"] = encoding_hint
     return chapters
 
 

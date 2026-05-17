@@ -1652,14 +1652,35 @@ async def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest)
 
 @router.post("/works/{ref_id}/preprocess/clean_garbled")
 async def preprocess_clean_garbled(ref_id: str):
-    """Strip all garbled patterns (HTML escapes, comments, BBCode, …)
-    from the on-disk text in one pass. Snapshots to .bak so the undo
-    works the same as for chapter exclusions."""
+    """Strip all garbled patterns (HTML escapes, comments, BBCode,
+    random IDs, …) from the on-disk text. Does NOT touch encoding —
+    use /repair_encoding for mojibake fixes."""
     from analysis.feature_extraction.chapter_parser import strip_garbled
     return await _modify_and_redetect(
         ref_id,
-        modifier=lambda txt, chs: strip_garbled(txt),
+        modifier=lambda txt, chs: strip_garbled(txt, try_encoding_repair=False),
         op_label="clean_garbled",
+    )
+
+
+@router.post("/works/{ref_id}/preprocess/repair_encoding")
+async def preprocess_repair_encoding(ref_id: str):
+    """Try the 6 mojibake-repair transforms on the file as a whole;
+    apply whichever yields the highest CJK density. Separate from
+    clean_garbled so the user can choose: scrape-noise cleanup vs.
+    encoding-corruption fix."""
+    from analysis.feature_extraction.chapter_parser import repair_encoding
+
+    def _fix(txt: str, _chs):
+        fixed, transform = repair_encoding(txt)
+        if not transform:
+            raise ValueError("未检测到可改善的编码问题")
+        return fixed
+
+    return await _modify_and_redetect(
+        ref_id,
+        modifier=_fix,
+        op_label="repair_encoding",
     )
 
 

@@ -114,6 +114,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [filter, setFilter] = useState<"all" | "flagged" | "outlier" | "garbled" | "kept">("all");
   const [applying, setApplying] = useState(false);
   const [cleaningGarbled, setCleaningGarbled] = useState(false);
+  const [repairingEncoding, setRepairingEncoding] = useState(false);
   // Volume plan editor (moved here from PlotOutlinePanel)
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
   const [planDraft, setPlanDraft] = useState<{ title: string; start_chapter: number; end_chapter: number }[] | null>(null);
@@ -754,6 +755,32 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast(e?.message || "清除失败", "error");
     } finally {
       setCleaningGarbled(false);
+    }
+  };
+
+  // Encoding mojibake repair — distinct from clean_garbled. This runs
+  // the 6 candidate transforms (GBK↔UTF-8, Latin-1 round-trips, etc.)
+  // against the whole text and re-encodes whichever recovers the most
+  // CJK density. Surfaces a clear toast if no improvement is detected.
+  const repairEncoding = async () => {
+    if (!(await confirmDialog({
+      title: "修复乱码编码",
+      message: "尝试自动修复整段文本的编码错乱（如 GBK↔UTF-8 错位、Latin-1 还原）。会备份原文，可撤销一次。继续？",
+    }))) return;
+    setRepairingEncoding(true);
+    try {
+      const r = await apiPost<{ total_chapters: number; new_char_count: number; can_undo: boolean }>(
+        `/api/references/works/${refId}/preprocess/repair_encoding`, {},
+        { timeoutMs: 120_000 },
+      );
+      toast(`已修复编码 · 剩 ${fmtChars(r.new_char_count)} · ${r.total_chapters} 章`, "success");
+      await onAfterApplyExclusions?.();
+      await fetchStatus();
+      await fetchPlan();
+    } catch (e: any) {
+      toast(e?.message || "未检测到可改善的编码问题", "info");
+    } finally {
+      setRepairingEncoding(false);
     }
   };
 
@@ -1589,6 +1616,19 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                   {cleaningGarbled ? "清除中…" : `一键清除乱码（${chapters.filter(c => c.is_garbled).length}）`}
                 </button>
               )}
+              <button
+                      style={{
+                        fontSize: 11, padding: "4px 12px",
+                        background: "var(--purple)", color: "#fff",
+                        border: "1px solid var(--purple)", borderRadius: 3,
+                        cursor: repairingEncoding ? "wait" : "pointer",
+                        opacity: repairingEncoding ? 0.7 : 1,
+                      }}
+                      onClick={repairEncoding}
+                      disabled={repairingEncoding}
+                      title="尝试自动还原 GBK↔UTF-8、Latin-1 等编码错乱（与「清除乱码」不同：这里是恢复字符，而不是删除）">
+                {repairingEncoding ? "修复中…" : "一键修复乱码编码"}
+              </button>
               {(chapters.some(c => c.pattern === "作者说章节")) && (
                 <button
                         style={{
