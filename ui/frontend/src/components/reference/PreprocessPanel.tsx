@@ -107,10 +107,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [editingChapter, setEditingChapter] = useState<{ number: number; title: string; content: string } | null>(null);
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
-  // Bulk clean-flagged modal
+  // Bulk-clean modals — one for paragraph-level asides, one for
+  // whole-chapter (作者说章节) asides.
+  const [paraCleanOpen, setParaCleanOpen] = useState(false);
+  const [paraCleanLoading, setParaCleanLoading] = useState(false);
+  const [paraCleanList, setParaCleanList] = useState<any[]>([]);
+  const [paraCleanSelected, setParaCleanSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
-  // Auto-trigger detection at most once per mount
-  const autoStartedRef = useRef(false);
 
   const pollTimerRef = useRef<number | null>(null);
 
@@ -140,38 +143,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   }, []);
 
   useEffect(() => { fetchStatus(); fetchPlan(); fetchPatterns(); }, [fetchStatus, fetchPlan, fetchPatterns]);
-
-  // Auto-run smart detection on first mount when:
-  //   - work has uploaded text
-  //   - no in-memory job is running
-  //   - no persisted preprocess result exists
-  // The two-step confirm flow remains available manually (重新识别).
-  useEffect(() => {
-    if (autoStartedRef.current) return;
-    if (!hasFullText || !status) return;
-    if (status.state !== "idle" || (status.chapters && status.chapters.length > 0)) {
-      autoStartedRef.current = true;  // already done previously
-      return;
-    }
-    autoStartedRef.current = true;
-    (async () => {
-      try {
-        const g = await apiGet<{ candidates: any[]; suggested: string | null }>(
-          `/api/references/works/${refId}/preprocess/guess_format`,
-        );
-        if (g.suggested) {
-          await startJob(g.suggested);
-        } else {
-          // Couldn't guess — open the confirm panel so the user can pick
-          setGuessCandidates(g.candidates);
-          if (g.candidates?.length) setChosenFormat(g.candidates[0].name);
-        }
-      } catch (e: any) {
-        toast(e?.message || "自动识别失败", "error");
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasFullText, status?.state, status?.chapters?.length, refId]);
 
   const savePatterns = async (next: ChapterPattern[]) => {
     try {
@@ -233,7 +204,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       if (!resp.ok) throw new Error(await resp.text());
       toast(`已追加 ${file.name}`, "success");
       setStatus(null);
-      autoStartedRef.current = false;
       await fetchStatus();
       await fetchPlan();
       await onAfterApplyExclusions?.();
@@ -319,7 +289,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast(`第 ${editingChapter.number} 章已保存`, "success");
       setEditingChapter(null);
       setStatus(null);
-      autoStartedRef.current = false;
       await fetchStatus();
       await fetchPlan();
     } catch (e: any) {
@@ -337,7 +306,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       toast(`已恢复 ${r.restored_chapters.length} 章（${fmtChars(r.restored_char_count)}）`, "success");
       setStatus(null);
-      autoStartedRef.current = false;
       await fetchStatus();
       await fetchPlan();
       await onAfterApplyExclusions?.();
@@ -385,7 +353,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast(`已删除 ${r.removed_chapters.length} 章，现剩 ${fmtChars(r.new_char_count)}`, "success");
       setExcluded(new Set());
       setStatus(null);
-      autoStartedRef.current = false;  // allow re-detect after text change
       await onAfterApplyExclusions?.();
       await fetchStatus();
       await fetchPlan();
@@ -396,26 +363,80 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     }
   };
 
-  const bulkCleanFlagged = async () => {
-    const flaggedNums = (status?.chapters || [])
-      .filter(c => c.is_author_note)
+  // Whole-chapter bulk clean — limited to chapters detected by the
+  // 作者说章节 pattern (entries authored as standalone "chapters").
+  const bulkCleanAuthorChapters = async () => {
+    const nums = (status?.chapters || [])
+      .filter(c => c.pattern === "作者说章节")
       .map(c => c.number);
-    if (flaggedNums.length === 0) {
-      toast("没有标记为题外话的章节", "info");
+    if (nums.length === 0) {
+      toast("没有「作者说章节」类型的章节", "info");
       return;
     }
     setApplying(true);
     try {
       const r = await apiPost<{ removed_chapters: number[]; new_char_count: number }>(
         `/api/references/works/${refId}/preprocess/apply_exclusions`,
-        { excluded_chapters: flaggedNums },
+        { excluded_chapters: nums },
         { timeoutMs: 120_000 },
       );
-      toast(`已删除 ${r.removed_chapters.length} 章疑似题外话`, "success");
+      toast(`已删除 ${r.removed_chapters.length} 章作者说章节`, "success");
       setBulkOpen(false);
       setExcluded(new Set());
       setStatus(null);
-      autoStartedRef.current = false;
+      await onAfterApplyExclusions?.();
+      await fetchStatus();
+      await fetchPlan();
+    } catch (e: any) {
+      toast(e?.message || "清除失败", "error");
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  // Paragraph-level cleanup — load detected aside paragraphs and let
+  // the user pick which to remove from their parent chapters.
+  const openParaCleanModal = async () => {
+    setParaCleanOpen(true);
+    setParaCleanLoading(true);
+    setParaCleanList([]);
+    try {
+      const r = await apiGet<{ asides: any[] }>(
+        `/api/references/works/${refId}/preprocess/aside_paragraphs`,
+      );
+      setParaCleanList(r.asides || []);
+      // Pre-select all by default — user can uncheck individually.
+      const keys = new Set<string>();
+      (r.asides || []).forEach((a: any) => keys.add(`${a.chapter_number}:${a.para_index}`));
+      setParaCleanSelected(keys);
+    } catch (e: any) {
+      toast(e?.message || "加载失败", "error");
+    } finally {
+      setParaCleanLoading(false);
+    }
+  };
+
+  const runParaCleanup = async () => {
+    const selected = paraCleanList.filter(a =>
+      paraCleanSelected.has(`${a.chapter_number}:${a.para_index}`),
+    );
+    if (selected.length === 0) {
+      toast("未选择任何段落", "info");
+      return;
+    }
+    if (!confirm(`将删除 ${selected.length} 个题外话段落（可撤销一次）。继续？`)) return;
+    setApplying(true);
+    try {
+      const r = await apiPost<{ removed_count: number; new_char_count: number }>(
+        `/api/references/works/${refId}/preprocess/clean_aside_paragraphs`,
+        { paragraphs: selected.map(a => ({ chapter_number: a.chapter_number, para_index: a.para_index })) },
+        { timeoutMs: 120_000 },
+      );
+      toast(`已删除 ${r.removed_count} 个段落，现剩 ${fmtChars(r.new_char_count)}`, "success");
+      setParaCleanOpen(false);
+      setParaCleanList([]);
+      setParaCleanSelected(new Set());
+      setStatus(null);
       await onAfterApplyExclusions?.();
       await fetchStatus();
       await fetchPlan();
@@ -665,11 +686,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       onClick={() => { setGuessCandidates(null); setChosenFormat(""); }}>
                 取消
               </button>
-              <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                      onClick={guessFormat} disabled={guessing}
-                      title="重新扫描全文">
-                重新猜测
-              </button>
               <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
                       onClick={() => { startJob(chosenFormat); setGuessCandidates(null); }}
                       disabled={!chosenFormat}>
@@ -886,12 +902,18 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                   撤销清理
                 </button>
               )}
-              {(status?.flagged_count || 0) > 0 && (
+              <button className="btn"
+                      style={{ fontSize: 11, padding: "4px 12px", color: "var(--accent)", borderColor: "var(--accent)" }}
+                      onClick={openParaCleanModal}
+                      title="扫描所有正文章节内的题外话段落（如末尾的求月票），逐条预览后批量删除">
+                清除题外话段落
+              </button>
+              {(chapters.some(c => c.pattern === "作者说章节")) && (
                 <button className="btn"
-                        style={{ fontSize: 11, padding: "4px 12px", color: "var(--accent)", borderColor: "var(--accent)" }}
+                        style={{ fontSize: 11, padding: "4px 12px", color: "var(--gold)", borderColor: "var(--gold)" }}
                         onClick={() => setBulkOpen(true)}
-                        title={`预览全部疑似题外话章节并一键清除`}>
-                  一键清除疑似题外话（{status?.flagged_count}）
+                        title="预览所有识别为「作者说章节」的整章并批量删除">
+                  清除作者说章节（{chapters.filter(c => c.pattern === "作者说章节").length}）
                 </button>
               )}
               <button className="btn-primary"
@@ -1088,6 +1110,125 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         </div>
       )}
 
+      {/* Paragraph-level aside cleanup modal */}
+      {paraCleanOpen && (
+        <div
+          style={{
+            position: "fixed", inset: 0, zIndex: 1000,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={e => { if (e.target === e.currentTarget && !applying) setParaCleanOpen(false); }}
+        >
+          <div style={{
+            width: "min(860px, 100%)", maxHeight: "90vh",
+            display: "flex", flexDirection: "column",
+            background: "var(--bg-app)",
+            border: "1px solid var(--border)", borderRadius: 6,
+          }}>
+            <div style={{
+              padding: "10px 14px", borderBottom: "1px solid var(--border)",
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  清除题外话段落
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  扫描正文章节内嵌的题外话段落（求月票/求订阅/感谢支持/PS 等）。逐条预览，取消勾选不想删除的段落，再点确认。
+                </div>
+              </div>
+              <button className="btn" onClick={() => setParaCleanOpen(false)} disabled={applying}>关闭</button>
+            </div>
+            <div style={{ padding: 14, flex: 1, overflow: "auto" }}>
+              {paraCleanLoading ? (
+                <div className="text-xs text-muted">扫描中…</div>
+              ) : paraCleanList.length === 0 ? (
+                <div className="text-xs text-muted">未在章节内嵌中找到题外话段落。</div>
+              ) : (
+                <div className="flex flex-col gap-6">
+                  {paraCleanList.map(a => {
+                    const key = `${a.chapter_number}:${a.para_index}`;
+                    const sel = paraCleanSelected.has(key);
+                    return (
+                      <div key={key} style={{
+                        border: `1px solid ${sel ? "var(--accent)" : "var(--border)"}`,
+                        borderRadius: 4, padding: 8,
+                        background: sel ? "rgba(74,144,226,0.06)" : "transparent",
+                      }}>
+                        <div className="flex items-center gap-8" style={{ marginBottom: 6 }}>
+                          <input type="checkbox" checked={sel}
+                                  onChange={() => {
+                                    setParaCleanSelected(prev => {
+                                      const n = new Set(prev);
+                                      if (n.has(key)) n.delete(key);
+                                      else n.add(key);
+                                      return n;
+                                    });
+                                  }}
+                                  style={{ width: 14, height: 14 }} />
+                          <span className="tag" style={{
+                            fontSize: 10, padding: "1px 6px", fontFamily: "var(--font-mono)",
+                            color: "var(--text-secondary)", background: "transparent",
+                            border: "1px solid var(--border)",
+                          }}>第 {a.chapter_number} 章</span>
+                          <div className="truncate" style={{
+                            fontSize: 12, fontWeight: 500, color: "var(--text-primary)",
+                            flex: 1, minWidth: 0,
+                          }}>{a.chapter_title}</div>
+                          <span className="text-xs text-muted">
+                            段落 {a.para_index + 1}/{a.para_total}
+                          </span>
+                        </div>
+                        {a.reasons && a.reasons.length > 0 && (
+                          <div style={{ marginBottom: 6 }}>
+                            {a.reasons.map((r: string, i: number) => (
+                              <span key={i} className="tag" style={{
+                                marginRight: 4, fontSize: 10, padding: "1px 6px",
+                                background: "var(--bg-surface-2)", color: "var(--text-secondary)",
+                                border: "1px solid var(--border)",
+                              }}>{r}</span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="text-xs" style={{
+                          padding: 6, background: "var(--bg-card)", borderRadius: 3,
+                          color: "var(--text-secondary)", lineHeight: 1.65,
+                          whiteSpace: "pre-wrap",
+                        }}>{a.text}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div style={{
+              padding: "10px 14px", borderTop: "1px solid var(--border)",
+              display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center",
+            }}>
+              <div className="flex gap-6">
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                        onClick={() => setParaCleanSelected(new Set(paraCleanList.map(a => `${a.chapter_number}:${a.para_index}`)))}>
+                  全选
+                </button>
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                        onClick={() => setParaCleanSelected(new Set())}>
+                  全不选
+                </button>
+              </div>
+              <div className="flex gap-6">
+                <button className="btn" onClick={() => setParaCleanOpen(false)} disabled={applying}>取消</button>
+                <button className="btn-primary" onClick={runParaCleanup}
+                        disabled={applying || paraCleanSelected.size === 0}>
+                  {applying ? "清除中…" : `确认删除 ${paraCleanSelected.size} 个段落`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Bulk clean-flagged modal */}
       {bulkOpen && (
         <div
@@ -1111,20 +1252,20 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             }}>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                  一键清除疑似题外话
+                  清除作者说章节
                 </div>
                 <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                  下方列出本作品中所有被识别为「题外话」的章节内容。确认后将批量从正文中删除，可撤销一次。
+                  下方列出所有由「作者说章节」格式识别的整章内容（如上架感言/请假说明/老书友请进等）。确认后将整章从正文中删除，可撤销一次。
                 </div>
               </div>
               <button className="btn" onClick={() => setBulkOpen(false)} disabled={applying}>关闭</button>
             </div>
             <div style={{ padding: 14, flex: 1, overflow: "auto" }}>
-              {(status?.chapters || []).filter(c => c.is_author_note).length === 0 ? (
-                <div className="text-xs text-muted">未识别到任何疑似题外话章节。</div>
+              {(status?.chapters || []).filter(c => c.pattern === "作者说章节").length === 0 ? (
+                <div className="text-xs text-muted">未识别到「作者说章节」类型的章节。</div>
               ) : (
                 <div className="flex flex-col gap-8">
-                  {(status?.chapters || []).filter(c => c.is_author_note).map(c => (
+                  {(status?.chapters || []).filter(c => c.pattern === "作者说章节").map(c => (
                     <div key={c.number} style={{
                       border: "1px solid var(--gold)", borderRadius: 4,
                       padding: 8, background: "rgba(250,204,21,0.06)",
@@ -1172,8 +1313,9 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               display: "flex", justifyContent: "flex-end", gap: 8,
             }}>
               <button className="btn" onClick={() => setBulkOpen(false)} disabled={applying}>取消</button>
-              <button className="btn-primary" onClick={bulkCleanFlagged} disabled={applying || (status?.flagged_count || 0) === 0}>
-                {applying ? "清除中…" : `确认清除 ${status?.flagged_count || 0} 章`}
+              <button className="btn-primary" onClick={bulkCleanAuthorChapters}
+                      disabled={applying || (status?.chapters || []).filter(c => c.pattern === "作者说章节").length === 0}>
+                {applying ? "清除中…" : `确认清除 ${(status?.chapters || []).filter(c => c.pattern === "作者说章节").length} 章`}
               </button>
             </div>
           </div>

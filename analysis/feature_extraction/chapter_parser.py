@@ -107,20 +107,20 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"[\s　]*(?=\n[\s　]*\n)",
         re.MULTILINE,
     )),
-    # Author-aside "chapters" — short paragraph-isolated lines that
-    # contain author-note keywords (求月票 / 老书友请进 / 通知 / 加更 ...).
-    # Many web novels intersperse these between real chapters; the
-    # primary numbered pattern misses them and they get absorbed into
-    # the previous chapter's body. This pattern is ALWAYS merged with
-    # the auto-picked primary (see detect_chapters) so author asides
-    # surface as their own chapters, flagged for cleanup.
+    # Author-aside "chapters" — paragraph-isolated lines that contain
+    # WHOLE-CHAPTER author markers (上架感言 / 老书友请进 / 请假说明 …).
+    # Deliberately STRICTER than _AUTHOR_KEYWORDS: only keywords that
+    # signal "this entire paragraph is an author chapter," not weak
+    # markers like 求月票 that show up as PS lines inside real chapters
+    # (those are handled by detect_aside_paragraphs / paragraph cleanup).
     ("作者说章节", re.compile(
         r"(?:^|\n[\s　]*\n)[\s　]*"
-        r"([^\n]{2,80}?"
-        r"(?:更新|通知|求月票|求订阅|求收藏|求推荐|推荐票|月票|打赏|"
-        r"感谢|道歉|致歉|抱歉|公告|请假|断更|休息|加更|拖更|多更|"
-        r"作者菌|作者大大|本作者|笔者|老书友|书友们|读者们|本章说|"
-        r"上架感言|完本感言|新书|码字|卡文|码完)"
+        r"([^\n]{0,80}?"
+        r"(?:上架感言|完本感言|请假说明|断更通知|新书发布|"
+        r"本书公告|作者公告|作者的话|作者说明|作者寄语|"
+        r"加更说明|更新说明|双更说明|明天恢复|"
+        r"老书友请进|书友通知|书友们请看|"
+        r"作者菌|作者大大)"
         r"[^\n]{0,80})[\s　]*(?=\n[\s　]*\n)",
         re.MULTILINE,
     )),
@@ -243,14 +243,28 @@ def _build_chapters(text: str,
     matches = [m for _, m in named_matches]
 
     def title_start(m: re.Match[str]) -> int:
-        """Position where the captured title begins. Differs from
-        ``m.start()`` when the pattern's prefix (e.g. ``(?:^|\\n\\n)``)
-        is part of the consumed match — without this, back-to-back
-        secondary matches produce 0-length content slices."""
+        """Position where the chapter heading effectively starts.
+
+        Splits on the nature of the pattern's prefix (the chars between
+        match start and group(1)):
+          - **Whitespace only** (``(?:^|\\n\\n)``-style): the prefix is
+            cosmetic — return group(1) start (the title proper).
+          - **Content** (``第`` / ``Chapter``): the prefix IS part of
+            the heading — return the trimmed full-match start so the
+            slice retains the heading prefix.
+        """
+        s0 = m.start()
         try:
-            return m.start(1)
+            s1 = m.start(1)
         except (IndexError, error_re):
-            return m.start()
+            return s0
+        if s1 == s0:
+            return s0
+        prefix = m.string[s0:s1]
+        if prefix.strip() == "":
+            return s1
+        leading_ws = len(prefix) - len(prefix.lstrip())
+        return s0 + leading_ws
 
     def gap_to_next(i: int) -> int:
         nxt = title_start(matches[i + 1]) if i + 1 < len(matches) else text_len
@@ -748,6 +762,85 @@ def replace_chapter_content(text: str, chapters: list[dict],
         parts.append(body)
     if not found:
         raise ValueError(f"chapter {chapter_number} not found")
+    return "\n\n".join(p for p in parts if p)
+
+
+def detect_aside_paragraphs(chapters: list[dict]) -> list[dict]:
+    """For every regular (non-作者说章节) chapter, find PARAGRAPHS that
+    look like author asides — short blocks (<= 300 chars) that contain
+    author-note keywords (求月票 / 求订阅 / 老书友 / 感谢 / …). These are
+    the trailing "求月票！" pleas embedded at the end of body chapters
+    that the user wants removed without losing the chapter itself.
+
+    Returns: list of {chapter_number, chapter_title, para_index,
+    para_total, text, reasons, score}. The UI shows these in a
+    preview-then-confirm modal so the user can verify before bulk
+    removal.
+    """
+    out: list[dict] = []
+    for c in chapters:
+        if c.get("pattern") == "作者说章节":
+            continue  # whole-chapter asides — handled by the other button
+        content = c.get("content") or ""
+        if not content:
+            continue
+        paragraphs = re.split(r"\n\s*\n", content)
+        n_paras = len(paragraphs)
+        for pi, para in enumerate(paragraphs):
+            ps = para.strip()
+            if not ps:
+                continue
+            # Skip long paragraphs — narrative, not asides.
+            if len(ps) > 300:
+                continue
+            hits = [kw for kw in _AUTHOR_KEYWORDS if kw in ps]
+            if not hits:
+                continue
+            reasons = ["命中：" + "、".join(hits[:3])
+                        + (f"…(+{len(hits) - 3})" if len(hits) > 3 else "")]
+            is_at_end = pi >= n_paras - 2
+            if is_at_end:
+                reasons.append("位于章节末尾")
+            score = len(hits) + (2 if is_at_end else 0) + (1 if len(ps) < 100 else 0)
+            out.append({
+                "chapter_number": c["number"],
+                "chapter_title": c["title"],
+                "para_index": pi,
+                "para_total": n_paras,
+                "text": ps,
+                "reasons": reasons,
+                "score": score,
+            })
+    return out
+
+
+def apply_aside_paragraph_cleanup(text: str, chapters: list[dict],
+                                    paragraphs_to_remove: list[dict]) -> str:
+    """Remove the specified ``{chapter_number, para_index}`` paragraphs
+    from their chapters and rebuild the full text. Chapters not touched
+    keep their original raw_marker + content concatenation."""
+    grouped: dict[int, set[int]] = {}
+    for p in paragraphs_to_remove:
+        try:
+            n = int(p.get("chapter_number"))
+            i = int(p.get("para_index"))
+        except (TypeError, ValueError):
+            continue
+        grouped.setdefault(n, set()).add(i)
+    parts: list[str] = []
+    for c in chapters:
+        marker = c.get("raw_marker") or c.get("title") or ""
+        body = c.get("content") or ""
+        if c["number"] in grouped and body:
+            paragraphs = re.split(r"\n\s*\n", body)
+            drop = grouped[c["number"]]
+            kept = [p.strip() for pi, p in enumerate(paragraphs)
+                     if pi not in drop and p.strip()]
+            body = "\n\n".join(kept)
+        if marker:
+            parts.append(marker)
+        if body:
+            parts.append(body)
     return "\n\n".join(p for p in parts if p)
 
 

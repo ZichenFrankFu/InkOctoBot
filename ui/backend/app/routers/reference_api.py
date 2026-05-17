@@ -1027,6 +1027,102 @@ def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
     }
 
 
+@router.get("/works/{ref_id}/preprocess/aside_paragraphs")
+def preprocess_aside_paragraphs(ref_id: str):
+    """Return author-aside PARAGRAPHS detected inside regular chapters
+    (short blocks containing 求月票 / 求订阅 / 推荐票 / 感谢 / … that the
+    user wants stripped from chapter bodies WITHOUT removing the whole
+    chapter). Whole-chapter author entries (作者说章节 pattern) are not
+    returned here — they have their own bulk-clean modal."""
+    from analysis.feature_extraction.chapter_parser import (
+        detect_chapters, detect_aside_paragraphs,
+    )
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, _load_chapter_patterns,
+    )
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
+    result = detect_chapters(text, extra_patterns=_load_chapter_patterns())
+    asides = detect_aside_paragraphs(result["chapters"])
+    return {"asides": asides, "total_chapters": len(result["chapters"])}
+
+
+class CleanAsideParagraphsBody(BaseModel):
+    paragraphs: list[dict]  # [{chapter_number, para_index}]
+
+
+@router.post("/works/{ref_id}/preprocess/clean_aside_paragraphs")
+def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBody):
+    """Remove the specified paragraphs from their chapters and rewrite
+    the file. Snapshots the original to .bak (same undo path as
+    apply_exclusions). Other paragraphs in those chapters are kept."""
+    from analysis.feature_extraction.chapter_parser import (
+        detect_chapters, apply_aside_paragraph_cleanup,
+    )
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, _load_chapter_patterns,
+    )
+    from analysis.feature_extraction import preprocess_jobs
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
+    file_path = w.get("file_path")
+    if not file_path:
+        raise HTTPException(400, "作品没有关联的文件路径")
+    result = detect_chapters(text, extra_patterns=_load_chapter_patterns())
+    new_text = apply_aside_paragraph_cleanup(
+        text, result["chapters"], body.paragraphs or [],
+    )
+    if not new_text.strip():
+        raise HTTPException(400, "清理后文本为空，操作已取消")
+    src = Path(file_path)
+    bak = src.with_suffix(src.suffix + ".bak")
+    try:
+        bak.write_text(text, encoding="utf-8")
+        src.write_text(new_text, encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(500, f"写入文件失败：{e}")
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    if isinstance(state, dict):
+        state.pop("preprocess", None)
+        state.pop("custom_plan", None)
+        state.pop("plan", None)
+        state["results"] = {}
+        state["completed"] = []
+        state["exclusion_backup"] = {
+            "path": str(bak),
+            "removed_chapters": [],
+            "removed_paragraphs": len(body.paragraphs or []),
+            "prev_char_count": len(text),
+        }
+    db.update_work(
+        ref_id,
+        segments_json=json.dumps(state, ensure_ascii=False),
+        preprocessing_status="pending",
+    )
+    preprocess_jobs.clear(ref_id)
+    return {
+        "ok": True,
+        "removed_count": len(body.paragraphs or []),
+        "new_char_count": len(new_text),
+        "can_undo": True,
+    }
+
+
 @router.post("/works/{ref_id}/preprocess/undo_exclusions")
 def preprocess_undo_exclusions(ref_id: str):
     """Restore the pre-apply text from the most recent .bak snapshot.
