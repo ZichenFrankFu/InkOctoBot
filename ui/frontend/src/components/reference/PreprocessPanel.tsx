@@ -129,6 +129,12 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [editingChapter, setEditingChapter] = useState<{ number: number; title: string; content: string } | null>(null);
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
+  // New-chapter modal (CRUD: add)
+  const [newChapter, setNewChapter] = useState<{ afterNumber: number | null; heading: string; content: string } | null>(null);
+  const [newChapterSaving, setNewChapterSaving] = useState(false);
+  // Per-chapter rename modal (CRUD: update title only)
+  const [renamingChapter, setRenamingChapter] = useState<{ number: number; heading: string } | null>(null);
+  const [renameSaving, setRenameSaving] = useState(false);
   // Bulk-clean modals — one for paragraph-level asides, one for
   // whole-chapter (作者说章节) asides.
   const [paraCleanOpen, setParaCleanOpen] = useState(false);
@@ -466,6 +472,81 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       setEditingChapter(null);
     } finally {
       setEditLoading(false);
+    }
+  };
+
+  // CRUD: add new chapter
+  const openNewChapterModal = (afterNumber: number | null) => {
+    setNewChapter({ afterNumber, heading: "", content: "" });
+  };
+  const saveNewChapter = async () => {
+    if (!newChapter || !newChapter.heading.trim()) {
+      toast("标题不能为空", "info");
+      return;
+    }
+    setNewChapterSaving(true);
+    try {
+      const r = await apiPost<{ total_chapters: number }>(
+        `/api/references/works/${refId}/preprocess/chapter/new`,
+        {
+          after_number: newChapter.afterNumber,
+          heading: newChapter.heading,
+          content: newChapter.content,
+        },
+        { timeoutMs: 120_000 },
+      );
+      toast(`已新增章节 · 现有 ${r.total_chapters} 章`, "success");
+      setNewChapter(null);
+      setStatus(null);
+      await fetchStatus();
+      await fetchPlan();
+    } catch (e: any) {
+      toast(e?.message || "新增失败", "error");
+    } finally {
+      setNewChapterSaving(false);
+    }
+  };
+
+  // CRUD: rename chapter (title only)
+  const openRenameModal = (number: number, currentTitle: string) => {
+    setRenamingChapter({ number, heading: currentTitle });
+  };
+  const saveRename = async () => {
+    if (!renamingChapter || !renamingChapter.heading.trim()) {
+      toast("标题不能为空", "info");
+      return;
+    }
+    setRenameSaving(true);
+    try {
+      await apiPatch(
+        `/api/references/works/${refId}/preprocess/chapter/${renamingChapter.number}/title`,
+        { heading: renamingChapter.heading },
+      );
+      toast(`第 ${renamingChapter.number} 章已改名`, "success");
+      setRenamingChapter(null);
+      setStatus(null);
+      await fetchStatus();
+      await fetchPlan();
+    } catch (e: any) {
+      toast(e?.message || "改名失败", "error");
+    } finally {
+      setRenameSaving(false);
+    }
+  };
+
+  // CRUD: delete single chapter
+  const deleteOneChapter = async (number: number) => {
+    if (!confirm(`确认从正文中删除第 ${number} 章？此操作可撤销一次。`)) return;
+    try {
+      await fetch(`/api/references/works/${refId}/preprocess/chapter/${number}`, {
+        method: "DELETE",
+      }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); });
+      toast(`第 ${number} 章已删除`, "success");
+      setStatus(null);
+      await fetchStatus();
+      await fetchPlan();
+    } catch (e: any) {
+      toast(e?.message || "删除失败", "error");
     }
   };
 
@@ -1258,6 +1339,12 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 </button>
               )}
               <button className="btn"
+                      style={{ fontSize: 11, padding: "4px 12px" }}
+                      onClick={() => openNewChapterModal(chapters.length > 0 ? chapters[chapters.length - 1].number : null)}
+                      title="在末尾新增一章；想在中间插入可点章节行末的「+ 插入」">
+                + 新建章节
+              </button>
+              <button className="btn"
                       style={{ fontSize: 11, padding: "4px 12px", color: "var(--accent)", borderColor: "var(--accent)" }}
                       onClick={openParaCleanModal}
                       title="扫描所有正文章节内的题外话段落（如末尾的求月票），逐条预览后批量删除">
@@ -1446,6 +1533,24 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                             onClick={e => { e.stopPropagation(); openChapterEdit(c.number, c.title); }}
                             title="编辑本章内容（如删除末尾「求月票」）">
                       编辑
+                    </button>
+                    <button className="btn"
+                            style={{ fontSize: 10, padding: "2px 6px", flexShrink: 0 }}
+                            onClick={e => { e.stopPropagation(); openRenameModal(c.number, c.title); }}
+                            title="只改本章标题（不改内容）">
+                      改名
+                    </button>
+                    <button className="btn"
+                            style={{ fontSize: 10, padding: "2px 6px", flexShrink: 0, color: "var(--text-tertiary)" }}
+                            onClick={e => { e.stopPropagation(); openNewChapterModal(c.number); }}
+                            title="在本章之后插入新章节">
+                      + 插入
+                    </button>
+                    <button className="btn"
+                            style={{ fontSize: 10, padding: "2px 6px", flexShrink: 0, color: "var(--error)" }}
+                            onClick={e => { e.stopPropagation(); deleteOneChapter(c.number); }}
+                            title="删除本章">
+                      ×
                     </button>
                   </div>
                   {isOpen && (
@@ -1699,6 +1804,113 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               <button className="btn-primary" onClick={bulkCleanAuthorChapters}
                       disabled={applying || (status?.chapters || []).filter(c => c.pattern === "作者说章节").length === 0}>
                 {applying ? "清除中…" : `确认清除 ${(status?.chapters || []).filter(c => c.pattern === "作者说章节").length} 章`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New-chapter modal */}
+      {newChapter && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 1000,
+          background: "rgba(0,0,0,0.55)",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+        }}
+          onClick={e => { if (e.target === e.currentTarget && !newChapterSaving) setNewChapter(null); }}
+        >
+          <div style={{
+            width: "min(720px, 100%)", maxHeight: "90vh",
+            display: "flex", flexDirection: "column",
+            background: "var(--bg-app)",
+            border: "1px solid var(--border)", borderRadius: 6,
+          }}>
+            <div style={{
+              padding: "10px 14px", borderBottom: "1px solid var(--border)",
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  新建章节
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  {newChapter.afterNumber === null
+                    ? "插入到正文开头"
+                    : `插入到第 ${newChapter.afterNumber} 章之后`}
+                </div>
+              </div>
+              <button className="btn" onClick={() => setNewChapter(null)} disabled={newChapterSaving}>关闭</button>
+            </div>
+            <div style={{ padding: 14, flex: 1, overflow: "auto" }}>
+              <div className="text-xs" style={{ marginBottom: 4, color: "var(--text-secondary)" }}>章节标题（与其他章节使用相同格式，如「6、新章节」「第六章 新章节」）</div>
+              <input className="input" value={newChapter.heading}
+                      placeholder="例：147、新章节"
+                      onChange={e => setNewChapter({ ...newChapter, heading: e.target.value })}
+                      style={{ width: "100%", fontSize: 12, marginBottom: 12 }}
+                      autoFocus />
+              <div className="text-xs" style={{ marginBottom: 4, color: "var(--text-secondary)" }}>章节内容</div>
+              <textarea className="input font-mono"
+                        value={newChapter.content}
+                        onChange={e => setNewChapter({ ...newChapter, content: e.target.value })}
+                        style={{ width: "100%", minHeight: 240, fontSize: 12, lineHeight: 1.7,
+                                  resize: "vertical", whiteSpace: "pre-wrap" }}
+                        disabled={newChapterSaving} />
+            </div>
+            <div style={{
+              padding: "10px 14px", borderTop: "1px solid var(--border)",
+              display: "flex", justifyContent: "flex-end", gap: 8,
+            }}>
+              <button className="btn" onClick={() => setNewChapter(null)} disabled={newChapterSaving}>取消</button>
+              <button className="btn-primary" onClick={saveNewChapter}
+                      disabled={newChapterSaving || !newChapter.heading.trim()}>
+                {newChapterSaving ? "保存中…" : "保存新章节"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename-chapter modal */}
+      {renamingChapter && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 1000,
+          background: "rgba(0,0,0,0.55)",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+        }}
+          onClick={e => { if (e.target === e.currentTarget && !renameSaving) setRenamingChapter(null); }}
+        >
+          <div style={{
+            width: "min(560px, 100%)",
+            background: "var(--bg-app)",
+            border: "1px solid var(--border)", borderRadius: 6,
+          }}>
+            <div style={{
+              padding: "10px 14px", borderBottom: "1px solid var(--border)",
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                重命名第 {renamingChapter.number} 章
+              </div>
+              <button className="btn" onClick={() => setRenamingChapter(null)} disabled={renameSaving}>关闭</button>
+            </div>
+            <div style={{ padding: 14 }}>
+              <div className="text-xs text-muted" style={{ marginBottom: 6 }}>
+                只改本章的标题行，本章内容保留。整行格式应与其他章节相同。
+              </div>
+              <input className="input" value={renamingChapter.heading}
+                      onChange={e => setRenamingChapter({ ...renamingChapter, heading: e.target.value })}
+                      onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); saveRename(); } }}
+                      style={{ width: "100%", fontSize: 12 }}
+                      autoFocus />
+            </div>
+            <div style={{
+              padding: "10px 14px", borderTop: "1px solid var(--border)",
+              display: "flex", justifyContent: "flex-end", gap: 8,
+            }}>
+              <button className="btn" onClick={() => setRenamingChapter(null)} disabled={renameSaving}>取消</button>
+              <button className="btn-primary" onClick={saveRename}
+                      disabled={renameSaving || !renamingChapter.heading.trim()}>
+                {renameSaving ? "保存中…" : "保存"}
               </button>
             </div>
           </div>

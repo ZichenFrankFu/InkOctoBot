@@ -106,16 +106,25 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     )),
     # Short standalone heading lines without terminal punctuation
     # (literary works that title chapters with a phrase but no number).
-    # Title cap shrunk to 16 chars to make this a "short sentence"
-    # filter — was 26, but that produced false positives on the user's
-    # web-novel uploads. Captures the whole title as group(1);
-    # _build_chapters detects this case (cn2int(group(1)) returns None)
-    # and synthesizes 1, 2, 3… numbers in document order.
+    # Title cap shrunk to 14 chars to make this a "short sentence"
+    # filter. Captures the whole title as group(1); _build_chapters
+    # detects this case (cn2int(group(1)) returns None) and synthesizes
+    # 1, 2, 3… numbers in document order.
+    #
+    # Negative lookaheads enforce MUTUAL EXCLUSION with the numbered
+    # patterns above: a line that already looks like "N、" / "第N章" /
+    # "Chapter N" won't double-match here. Without these, the same
+    # heading was counted by both 短句标题 and the more specific
+    # pattern, inflating candidate counts and over-matching when the
+    # user picked 短句标题 in the format-confirm panel.
     ("短句标题", re.compile(
         r"(?:^|\n[\s　]*\n)[\s　]*"
-        r"([^\s。！？；，,.!?…：:　][^\n。！？；，,.!?…：:]{0,14}[^\s。！？；，,.!?…：:　])"
+        r"(?![0-9０-９]+[\s　]*[、．])"
+        r"(?!第\s*[零〇一二两三四五六七八九十百千万0-9０-９]+\s*[章回节卷])"
+        r"(?!Chapter[\s　]+[0-9])"
+        r"([^\s。！？；，,.!?…：:　][^\n。！？；，,.!?…：:]{0,12}[^\s。！？；，,.!?…：:　])"
         r"[\s　]*(?=\n[\s　]*\n)",
-        re.MULTILINE,
+        re.MULTILINE | re.IGNORECASE,
     )),
     # Author-aside "chapters" — paragraph-isolated lines that contain
     # WHOLE-CHAPTER author markers (上架感言 / 老书友请进 / 请假说明 …).
@@ -295,13 +304,29 @@ def _build_chapters(text: str,
         by_num.setdefault(n, []).append(i)
 
     drop_idx: set[int] = set()
+    # Only drop a match when its body gap is tiny (TOC entry signature).
+    # If multiple matches with the same parsed number all have
+    # substantial bodies, they're legitimately separate chapters
+    # (e.g. a rename created a collision) — keep them all and let
+    # cross-list dedup + outer renumbering give unique ordinals.
+    TOC_GAP = 100
     for n, idxs in by_num.items():
         if len(idxs) < 2:
             continue
-        best = max(idxs, key=gap_to_next)
-        for j in idxs:
-            if j != best:
+        gaps = {j: gap_to_next(j) for j in idxs}
+        short = [j for j in idxs if gaps[j] < TOC_GAP]
+        long = [j for j in idxs if gaps[j] >= TOC_GAP]
+        if short and long:
+            # Mixed — drop the TOC-shaped ones, keep substantial bodies.
+            for j in short:
                 drop_idx.add(j)
+        elif short and not long:
+            # All look like TOC entries — keep the longest one only.
+            best = max(idxs, key=gap_to_next)
+            for j in idxs:
+                if j != best:
+                    drop_idx.add(j)
+        # All substantial: keep all (user's collision)
 
     # Adaptive short-gap dedup REMOVED. The earlier by_num pass already
     # drops TOC duplicates (TOC entries share parsed numbers with body
@@ -362,9 +387,13 @@ def _build_chapters(text: str,
             "content_end": content_end,
         })
 
-    # Chapters are already in document order. Final dedup: only collapse
-    # adjacent NUMBERED chapters with the same parsed number (TOC + body
-    # collision). Unnumbered chapters never collapse.
+    # Chapters are already in document order. Final adjacent dedup:
+    # only collapse adjacent NUMBERED chapters with the same parsed
+    # number AND one of them has very short content (TOC entry).
+    # If both have substantial bodies, they're two legit chapters
+    # (e.g. a renamed chapter that collides with a later one) — keep
+    # both, the cross-list pass below also preserves them.
+    SHORT_BODY = 100
     deduped: list[dict] = []
     for c in chapters:
         if (
@@ -373,15 +402,23 @@ def _build_chapters(text: str,
             and deduped[-1]["pattern"] == c["pattern"]
             and deduped[-1]["number"] == c["number"]
         ):
-            if len(c["content"]) > len(deduped[-1]["content"]):
-                deduped[-1] = c
-            continue
+            prev_len = len(deduped[-1]["content"])
+            cur_len = len(c["content"])
+            if prev_len <= SHORT_BODY or cur_len <= SHORT_BODY:
+                # At least one is short — treat as TOC dup, keep longer.
+                if cur_len > prev_len:
+                    deduped[-1] = c
+                continue
+            # Both substantial — keep both
         deduped.append(c)
 
     # Cross-list dedup: catch the case where TOC + body have the SAME
-    # parsed number but aren't adjacent (e.g. interspersed with other
-    # patterns or volume markers). For numbered chapters with the same
-    # parsed_number AND pattern, keep the one with the longest content.
+    # parsed number but aren't adjacent. Only fires when at least one
+    # of the collision candidates has near-empty content (the TOC
+    # signature). If BOTH have substantial bodies, they're two real
+    # chapters that happen to share a number (e.g. after a rename) —
+    # keep both, the outer renumbering assigns unique ordinals.
+    SHORT_CONTENT = 100
     seen_by_key: dict[tuple, int] = {}  # (pattern, parsed_number) -> idx
     keep_mask = [True] * len(deduped)
     for idx, c in enumerate(deduped):
@@ -390,8 +427,14 @@ def _build_chapters(text: str,
         key = (c["pattern"], c["number"])
         if key in seen_by_key:
             prev_idx = seen_by_key[key]
-            # Keep whichever has longer content; drop the other.
-            if len(c["content"]) > len(deduped[prev_idx]["content"]):
+            prev_len = len(deduped[prev_idx]["content"])
+            cur_len = len(c["content"])
+            if prev_len > SHORT_CONTENT and cur_len > SHORT_CONTENT:
+                # Both are real chapters — keep both, don't update
+                # seen_by_key so the original entry remains canonical.
+                continue
+            # One is a TOC entry — drop it, keep the longer one.
+            if cur_len > prev_len:
                 keep_mask[prev_idx] = False
                 seen_by_key[key] = idx
             else:
@@ -1066,6 +1109,71 @@ def apply_aside_paragraph_cleanup(text: str, chapters: list[dict],
             parts.append(marker)
         if body:
             parts.append(body)
+    return "\n\n".join(p for p in parts if p)
+
+
+def insert_chapter(text: str, chapters: list[dict],
+                    after_number: int | None,
+                    heading: str, content: str) -> str:
+    """Rebuild the file with a new chapter inserted after ``after_number``
+    (None or 0 = insert at the very start). The new chapter's heading
+    line is appended as-is — the user supplies the format they want
+    (e.g. "147、新章节" or "第一百四十七章 重生"). Detection re-runs on
+    the new file and assigns the chapter its sequential ordinal.
+    """
+    new_heading = (heading or "").strip()
+    new_body = (content or "").strip()
+    if not new_heading:
+        raise ValueError("章节标题不能为空")
+    parts: list[str] = []
+    inserted = False
+    if after_number in (None, 0):
+        parts.append(new_heading)
+        if new_body:
+            parts.append(new_body)
+        inserted = True
+    for c in chapters:
+        marker = c.get("raw_marker") or c.get("title") or ""
+        body = c.get("content") or ""
+        if marker:
+            parts.append(marker)
+        if body:
+            parts.append(body)
+        if not inserted and c.get("number") == after_number:
+            parts.append(new_heading)
+            if new_body:
+                parts.append(new_body)
+            inserted = True
+    if not inserted:
+        # after_number not found — append at end
+        parts.append(new_heading)
+        if new_body:
+            parts.append(new_body)
+    return "\n\n".join(p for p in parts if p)
+
+
+def rename_chapter(text: str, chapters: list[dict],
+                    chapter_number: int, new_heading: str) -> str:
+    """Replace the heading line of one chapter with ``new_heading``.
+    Body is preserved. Detection re-runs after to refresh the title.
+    """
+    nh = (new_heading or "").strip()
+    if not nh:
+        raise ValueError("章节标题不能为空")
+    parts: list[str] = []
+    found = False
+    for c in chapters:
+        marker = c.get("raw_marker") or c.get("title") or ""
+        if c.get("number") == chapter_number:
+            marker = nh
+            found = True
+        body = c.get("content") or ""
+        if marker:
+            parts.append(marker)
+        if body:
+            parts.append(body)
+    if not found:
+        raise ValueError(f"未找到第 {chapter_number} 章")
     return "\n\n".join(p for p in parts if p)
 
 

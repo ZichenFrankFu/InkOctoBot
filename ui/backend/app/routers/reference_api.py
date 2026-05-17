@@ -642,6 +642,203 @@ def get_chapter_content(ref_id: str, number: int):
     raise HTTPException(404, f"未找到第 {number} 章")
 
 
+class NewChapterBody(BaseModel):
+    after_number: int | None = None  # None or 0 = insert at start
+    heading: str  # e.g. "147、新章节" or "第一百四十七章 重生"
+    content: str = ""
+
+
+@router.post("/works/{ref_id}/preprocess/chapter/new")
+def preprocess_add_chapter(ref_id: str, body: NewChapterBody):
+    """Insert a brand-new chapter after the given ordinal (None / 0 =
+    at start). The user supplies the heading line in whatever format
+    the rest of the work uses — detection re-runs on the rebuilt file
+    so the new chapter gets a sequential ordinal."""
+    from analysis.feature_extraction.chapter_parser import insert_chapter
+    return _modify_and_redetect(
+        ref_id,
+        modifier=lambda txt, chs: insert_chapter(
+            txt, chs, body.after_number, body.heading, body.content,
+        ),
+        op_label=f"add chapter after {body.after_number}",
+    )
+
+
+class RenameChapterBody(BaseModel):
+    heading: str
+
+
+@router.patch("/works/{ref_id}/preprocess/chapter/{number}/title")
+def preprocess_rename_chapter(ref_id: str, number: int, body: RenameChapterBody):
+    """Replace the heading line of a chapter — body is preserved.
+    Detection re-runs to pick up the new title."""
+    from analysis.feature_extraction.chapter_parser import rename_chapter
+    return _modify_and_redetect(
+        ref_id,
+        modifier=lambda txt, chs: rename_chapter(txt, chs, number, body.heading),
+        op_label=f"rename chapter {number}",
+    )
+
+
+@router.delete("/works/{ref_id}/preprocess/chapter/{number}")
+def preprocess_delete_chapter(ref_id: str, number: int):
+    """Delete a single chapter from the file. Same backing logic as
+    清理章节, just exposed as a per-row action."""
+    from analysis.feature_extraction.chapter_parser import apply_exclusions
+    return _modify_and_redetect(
+        ref_id,
+        modifier=lambda txt, chs: apply_exclusions(txt, chs, {number}),
+        op_label=f"delete chapter {number}",
+    )
+
+
+def _modify_and_redetect(ref_id: str, modifier, op_label: str):
+    """Shared helper for CRUD endpoints: load file → run modifier
+    (returns new text) → snapshot to .bak → write → re-detect →
+    update segments_json["preprocess"].
+
+    Two important details:
+      1. The chapters list passed to ``modifier`` comes from the
+         PERSISTED preprocess state (what the UI shows), not a fresh
+         detect_chapters call. This guarantees that "after chapter N"
+         uses the ordinal the user sees on screen.
+      2. The re-detect after modification forces ALL built-in patterns
+         (plus custom) so a user-added chapter heading in a different
+         format than the rest of the work still registers.
+    """
+    from analysis.feature_extraction.chapter_parser import (
+        detect_chapters, flag_author_notes, flag_length_outliers,
+        make_preview, visible_char_count, _PATTERNS as _BUILTIN_PATTERNS,
+    )
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, _load_chapter_patterns,
+    )
+    from analysis.feature_extraction import preprocess_jobs
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
+    file_path = w.get("file_path")
+    if not file_path:
+        raise HTTPException(400, "作品没有关联的文件路径")
+    extras = _load_chapter_patterns()
+
+    # Build the chapter list for the modifier from PERSISTED state.
+    # Light entries lack raw_marker/content — hydrate from file via
+    # offsets so insert/rename/delete have everything they need.
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    pre = (state or {}).get("preprocess") if isinstance(state, dict) else None
+    persisted = (pre or {}).get("chapters") if isinstance(pre, dict) else None
+    if isinstance(persisted, list) and persisted:
+        modifier_chapters = []
+        for c in persisted:
+            cs = c.get("content_start")
+            ce = c.get("content_end")
+            body = ""
+            if isinstance(cs, int) and isinstance(ce, int) and 0 <= cs <= ce <= len(text):
+                body = text[cs:ce].strip()
+            # raw_marker may be empty in lightweight persisted form; rebuild
+            # from the title (= the heading line).
+            marker = (c.get("raw_marker") or c.get("title") or "").strip()
+            modifier_chapters.append({
+                **c,
+                "content": body,
+                "raw_marker": marker,
+            })
+    else:
+        # No prior preprocess — fall back to fresh detect.
+        modifier_chapters = detect_chapters(text, extra_patterns=extras)["chapters"]
+
+    try:
+        new_text = modifier(text, modifier_chapters)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not new_text.strip():
+        raise HTTPException(400, "操作后文本为空，已取消")
+    src = Path(file_path)
+    bak = src.with_suffix(src.suffix + ".bak")
+    try:
+        bak.write_text(text, encoding="utf-8")
+        src.write_text(new_text, encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(500, f"写入文件失败：{e}")
+    # Re-detect on the new text + refresh preprocess state. Force only
+    # the patterns the user was already using (one or more from the
+    # persisted chapter list) — NOT every built-in. Otherwise a CRUD
+    # operation that adds short body content silently triggers the
+    # 短句标题 fallback and creates a phantom chapter from the user's
+    # body text. If the user is e.g. on N、 format, the rebuild also
+    # stays on N、.
+    in_use_patterns = sorted({
+        c.get("pattern") for c in modifier_chapters
+        if c.get("pattern") and c.get("pattern") != "fallback"
+    })
+    new_detect = detect_chapters(
+        new_text, extra_patterns=extras,
+        force_patterns=in_use_patterns or None,
+    )
+    new_chapters = new_detect["chapters"]
+    flag_author_notes(new_chapters, extra_keywords=_load_author_keywords())
+    flag_length_outliers(new_chapters)
+    for c in new_chapters:
+        pv = make_preview(c.get("content") or "")
+        c["preview_head"] = pv["head"]
+        c["preview_tail"] = pv["tail"]
+    light = [
+        {k: c.get(k) for k in (
+            "number", "parsed_number", "title", "title_only", "raw_marker",
+            "pattern", "volume",
+            "is_author_note", "author_note_score", "author_note_reasons",
+            "is_length_outlier", "outlier_kind",
+            "is_split_piece", "is_edited", "had_asides_removed",
+            "preview_head", "preview_tail",
+            "content_start", "content_end",
+        )} | {"char_count": visible_char_count(c.get("content") or "")}
+        for c in new_chapters
+    ]
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    state["preprocess"] = {
+        "chapters": light,
+        "total_chapters": len(light),
+        "flagged_count": sum(1 for c in light if c.get("is_author_note")),
+    }
+    state.pop("custom_plan", None)
+    state.pop("plan", None)
+    state["results"] = {}
+    state["completed"] = []
+    state["exclusion_backup"] = {
+        "path": str(bak),
+        "removed_chapters": [],
+        "prev_char_count": len(text),
+        "op": op_label,
+    }
+    db.update_work(
+        ref_id,
+        segments_json=json.dumps(state, ensure_ascii=False),
+        preprocessing_status="pending",
+    )
+    preprocess_jobs.clear(ref_id)
+    return {
+        "ok": True,
+        "total_chapters": len(light),
+        "new_char_count": len(new_text),
+        "can_undo": True,
+        "op": op_label,
+    }
+
+
 @router.patch("/works/{ref_id}/preprocess/chapter/{number}/content")
 def patch_chapter_content(ref_id: str, number: int, body: ChapterContentEdit):
     """Replace a chapter's body with ``content``. Snapshots the file to
