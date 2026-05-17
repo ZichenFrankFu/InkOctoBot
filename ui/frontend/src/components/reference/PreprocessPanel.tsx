@@ -31,6 +31,7 @@ interface Chapter {
   had_asides_removed?: boolean;
   is_garbled?: boolean;
   garbled_reasons?: string[];
+  cannot_repair?: boolean;
   preview_head?: string;
   preview_tail?: string;
 }
@@ -114,7 +115,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [filter, setFilter] = useState<"all" | "flagged" | "outlier" | "garbled" | "kept">("all");
   const [applying, setApplying] = useState(false);
   const [cleaningGarbled, setCleaningGarbled] = useState(false);
-  const [repairingEncoding, setRepairingEncoding] = useState(false);
   // Volume plan editor (moved here from PlotOutlinePanel)
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
   const [planDraft, setPlanDraft] = useState<{ title: string; start_chapter: number; end_chapter: number }[] | null>(null);
@@ -733,9 +733,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     }
   };
 
-  // Whole-chapter bulk clean — limited to chapters detected by the
-  // 作者说章节 pattern (entries authored as standalone "chapters").
-  const cleanGarbled = async () => {
+  // 一键修复乱码: whole-file encoding mojibake repair + per-chapter
+  // fallback. Chapters that resist repair get marked `cannot_repair`
+  // by the backend so the UI can surface a 「无法修复」 label.
+  const repairGarbled = async () => {
     const garbledCount = chapters.filter(c => c.is_garbled).length;
     if (garbledCount === 0) {
       toast("没有检测到乱码", "info");
@@ -743,44 +744,18 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     }
     setCleaningGarbled(true);
     try {
-      const r = await apiPost<{ total_chapters: number; new_char_count: number; can_undo: boolean }>(
-        `/api/references/works/${refId}/preprocess/clean_garbled`, {},
+      const r = await apiPost<{ total_chapters: number; new_char_count: number }>(
+        `/api/references/works/${refId}/preprocess/repair_garbled`, {},
         { timeoutMs: 120_000 },
       );
-      toast(`已清除乱码 · 剩 ${fmtChars(r.new_char_count)} · ${r.total_chapters} 章`, "success");
+      toast(`已修复 · 剩 ${fmtChars(r.new_char_count)} · ${r.total_chapters} 章`, "success");
       await onAfterApplyExclusions?.();
       await fetchStatus();
       await fetchPlan();
     } catch (e: any) {
-      toast(e?.message || "清除失败", "error");
+      toast(e?.message || "修复失败", "error");
     } finally {
       setCleaningGarbled(false);
-    }
-  };
-
-  // Encoding mojibake repair — distinct from clean_garbled. This runs
-  // the 6 candidate transforms (GBK↔UTF-8, Latin-1 round-trips, etc.)
-  // against the whole text and re-encodes whichever recovers the most
-  // CJK density. Surfaces a clear toast if no improvement is detected.
-  const repairEncoding = async () => {
-    if (!(await confirmDialog({
-      title: "修复乱码编码",
-      message: "尝试自动修复整段文本的编码错乱（如 GBK↔UTF-8 错位、Latin-1 还原）。会备份原文，可撤销一次。继续？",
-    }))) return;
-    setRepairingEncoding(true);
-    try {
-      const r = await apiPost<{ total_chapters: number; new_char_count: number; can_undo: boolean }>(
-        `/api/references/works/${refId}/preprocess/repair_encoding`, {},
-        { timeoutMs: 120_000 },
-      );
-      toast(`已修复编码 · 剩 ${fmtChars(r.new_char_count)} · ${r.total_chapters} 章`, "success");
-      await onAfterApplyExclusions?.();
-      await fetchStatus();
-      await fetchPlan();
-    } catch (e: any) {
-      toast(e?.message || "未检测到可改善的编码问题", "info");
-    } finally {
-      setRepairingEncoding(false);
     }
   };
 
@@ -1605,30 +1580,17 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 <button
                         style={{
                           fontSize: 11, padding: "4px 12px",
-                          background: "var(--error)", color: "#fff",
-                          border: "1px solid var(--error)", borderRadius: 3,
+                          background: "var(--purple)", color: "#fff",
+                          border: "1px solid var(--purple)", borderRadius: 3,
                           cursor: cleaningGarbled ? "wait" : "pointer",
                           opacity: cleaningGarbled ? 0.7 : 1,
                         }}
-                        onClick={cleanGarbled}
+                        onClick={repairGarbled}
                         disabled={cleaningGarbled}
-                        title="一次性删除所有 HTML 注释 / 转义 / BBCode 等乱码">
-                  {cleaningGarbled ? "清除中…" : `一键清除乱码（${chapters.filter(c => c.is_garbled).length}）`}
+                        title="先尝试整本编码还原（GBK↔UTF-8、Latin-1 等），再逐章兜底修复；剩余无法修复的章节会被标注「无法修复」">
+                  {cleaningGarbled ? "修复中…" : `一键修复乱码（${chapters.filter(c => c.is_garbled).length}）`}
                 </button>
               )}
-              <button
-                      style={{
-                        fontSize: 11, padding: "4px 12px",
-                        background: "var(--purple)", color: "#fff",
-                        border: "1px solid var(--purple)", borderRadius: 3,
-                        cursor: repairingEncoding ? "wait" : "pointer",
-                        opacity: repairingEncoding ? 0.7 : 1,
-                      }}
-                      onClick={repairEncoding}
-                      disabled={repairingEncoding}
-                      title="尝试自动还原 GBK↔UTF-8、Latin-1 等编码错乱（与「清除乱码」不同：这里是恢复字符，而不是删除）">
-                {repairingEncoding ? "修复中…" : "一键修复乱码编码"}
-              </button>
               {(chapters.some(c => c.pattern === "作者说章节")) && (
                 <button
                         style={{
@@ -1811,6 +1773,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         color: "var(--error)", background: "var(--bg-surface-2)",
                         border: "1px solid var(--error)",
                       }} title={(c.garbled_reasons || []).join(" · ")}>乱码</span>
+                    )}
+                    {c.cannot_repair && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px", flexShrink: 0,
+                        color: "#fff", background: "var(--error)",
+                        border: "1px solid var(--error)",
+                      }} title="一键修复后仍残留无法识别的乱码，建议手动编辑该章">无法修复</span>
                     )}
                     {c.is_split_piece && (
                       <span className="tag" style={{

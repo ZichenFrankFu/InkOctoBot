@@ -937,7 +937,8 @@ async def preprocess_delete_chapter(ref_id: str, number: int):
     )
 
 
-async def _modify_and_redetect(ref_id: str, modifier, op_label: str):
+async def _modify_and_redetect(ref_id: str, modifier, op_label: str,
+                                 post_chapter_hook=None):
     """Shared helper for CRUD endpoints. All heavy I/O (file reads,
     regex passes, file writes) is offloaded to a worker thread so the
     UI's "清理中" / "保存中" spinner doesn't sit for 10+ seconds on
@@ -974,29 +975,51 @@ async def _modify_and_redetect(ref_id: str, modifier, op_label: str):
         raise HTTPException(400, "尚未上传正文")
     extras = _load_chapter_patterns()
 
-    # Build the chapter list for the modifier from PERSISTED state.
+    # Build the modifier's chapter list. Two paths:
+    #   1. Persisted offsets are VALID for current text → use them
+    #      (cheap, microseconds).
+    #   2. Persisted offsets are stale (a prior op rewrote the file,
+    #      e.g. encoding repair) → fall back to a fresh detection.
+    # The validity check anchors each persisted chapter's raw_marker
+    # at the byte just before content_start; if any chapter fails,
+    # the whole list is treated as stale to avoid mixing fresh + stale
+    # offsets (which is exactly the failure mode that produced the
+    # cross-chapter content duplication bug).
     try:
         state = json.loads(w.get("segments_json") or "{}")
     except Exception:
         state = {}
     pre = (state or {}).get("preprocess") if isinstance(state, dict) else None
     persisted = (pre or {}).get("chapters") if isinstance(pre, dict) else None
+    modifier_chapters: list[dict] | None = None
     if isinstance(persisted, list) and persisted:
-        modifier_chapters = []
+        candidate: list[dict] = []
+        stale = False
         for c in persisted:
             cs = c.get("content_start")
             ce = c.get("content_end")
-            body = ""
-            if isinstance(cs, int) and isinstance(ce, int) and 0 <= cs <= ce <= len(text):
-                body = text[cs:ce].strip()
             marker = (c.get("raw_marker") or c.get("title") or "").strip()
-            modifier_chapters.append({
+            if not (isinstance(cs, int) and isinstance(ce, int)
+                    and 0 <= cs <= ce <= len(text)):
+                stale = True
+                break
+            # Anchor check: the raw_marker should sit immediately
+            # before content_start (allowing trailing whitespace).
+            if marker:
+                lookback = max(0, cs - len(marker) - 8)
+                window = text[lookback:cs]
+                if marker not in window:
+                    stale = True
+                    break
+            candidate.append({
                 **c,
-                "content": body,
+                "content": text[cs:ce].strip(),
                 "raw_marker": marker,
             })
-    else:
-        # No prior preprocess — fall back to a (slow) fresh detect.
+        if not stale:
+            modifier_chapters = candidate
+    if modifier_chapters is None:
+        # No usable cache → fresh detect against current text.
         modifier_chapters = (await asyncio.to_thread(
             detect_chapters, text, extra_patterns=extras,
         ))["chapters"]
@@ -1031,6 +1054,8 @@ async def _modify_and_redetect(ref_id: str, modifier, op_label: str):
             pv = make_preview(cc.get("content") or "")
             cc["preview_head"] = pv["head"]
             cc["preview_tail"] = pv["tail"]
+        if post_chapter_hook is not None:
+            post_chapter_hook(ncs)
         return ncs
     new_chapters = await asyncio.to_thread(_redetect_and_flag)
     light = [
@@ -1040,8 +1065,7 @@ async def _modify_and_redetect(ref_id: str, modifier, op_label: str):
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
             "is_split_piece", "is_edited", "had_asides_removed",
-            "is_garbled", "garbled_reasons",
-            "is_garbled", "garbled_reasons",
+            "is_garbled", "garbled_reasons", "cannot_repair",
             "preview_head", "preview_tail",
             "content_start", "content_end",
         )} | {"char_count": visible_char_count(c.get("content") or "")}
@@ -1668,37 +1692,60 @@ async def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest)
     }
 
 
-@router.post("/works/{ref_id}/preprocess/clean_garbled")
-async def preprocess_clean_garbled(ref_id: str):
-    """Strip all garbled patterns (HTML escapes, comments, BBCode,
-    random IDs, …) from the on-disk text. Does NOT touch encoding —
-    use /repair_encoding for mojibake fixes."""
-    from analysis.feature_extraction.chapter_parser import strip_garbled
-    return await _modify_and_redetect(
-        ref_id,
-        modifier=lambda txt, chs: strip_garbled(txt, try_encoding_repair=False),
-        op_label="clean_garbled",
+@router.post("/works/{ref_id}/preprocess/repair_garbled")
+async def preprocess_repair_garbled(ref_id: str):
+    """One-shot 一键修复乱码 button.
+
+    Two-stage repair, then a survivor pass:
+      1. Whole-file encoding-mojibake fix — pick the transform that
+         best raises CJK density (GBK↔UTF-8, Latin-1 round-trips).
+      2. Per-chapter encoding repair on chapters that the whole-file
+         transform didn't help. A different chapter may need a
+         different transform if the file was assembled from
+         multiply-encoded sources.
+      3. Any chapter still flagged ``is_garbled`` after both passes
+         gets ``cannot_repair=true`` so the UI can show a 「无法修复」
+         label and the user can decide manually.
+    """
+    from analysis.feature_extraction.chapter_parser import (
+        repair_encoding, detect_encoding_mojibake,
     )
 
-
-@router.post("/works/{ref_id}/preprocess/repair_encoding")
-async def preprocess_repair_encoding(ref_id: str):
-    """Try the 6 mojibake-repair transforms on the file as a whole;
-    apply whichever yields the highest CJK density. Separate from
-    clean_garbled so the user can choose: scrape-noise cleanup vs.
-    encoding-corruption fix."""
-    from analysis.feature_extraction.chapter_parser import repair_encoding
-
     def _fix(txt: str, _chs):
-        fixed, transform = repair_encoding(txt)
-        if not transform:
-            raise ValueError("未检测到可改善的编码问题")
+        # Stage 1: whole-file repair. Falls through unchanged if no
+        # transform helps — we still proceed to per-chapter + label.
+        fixed, _transform = repair_encoding(txt)
         return fixed
+
+    def _mark_unrepairable(chapters: list[dict]) -> None:
+        # Stage 2 + 3: for each chapter still garbled, try a per-chapter
+        # encoding repair on its content. If a transform helps AND
+        # doesn't break the chapter, splice the fix in by rewriting
+        # the chapter's `content` field. If nothing helps, mark
+        # `cannot_repair`.
+        for c in chapters:
+            if not c.get("is_garbled"):
+                continue
+            content = c.get("content") or ""
+            if not content:
+                continue
+            guess = detect_encoding_mojibake(content)
+            if guess and guess.get("fixed_text"):
+                c["content"] = guess["fixed_text"]
+                # Re-flag this single chapter; if still garbled, mark.
+                from analysis.feature_extraction.chapter_parser import (
+                    flag_garbled_chapters as _fg,
+                )
+                _fg([c])
+                if not c.get("is_garbled"):
+                    continue
+            c["cannot_repair"] = True
 
     return await _modify_and_redetect(
         ref_id,
         modifier=_fix,
-        op_label="repair_encoding",
+        op_label="repair_garbled",
+        post_chapter_hook=_mark_unrepairable,
     )
 
 

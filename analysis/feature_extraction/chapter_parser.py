@@ -241,15 +241,35 @@ def _score_pattern(matches: list[re.Match[str]], text_len: int) -> float:
 
 # Strip parenthesized noise from chapter titles — e.g. "第一章 邂逅（求月票）"
 # becomes "第一章 邂逅". Matches both full-width and half-width brackets.
+# Sequential / part markers like "（一）" "(上)" "（1）" are PRESERVED —
+# they're how "后记（一）" / "后记（二）" disambiguate same-title chapters
+# split across parts.
 _PAREN_NOISE = re.compile(r"[（(]\s*[^（()）]*\s*[)）]")
+# Detect "part" markers — ≤ 4 chars of Chinese numeral / digit /
+# 上中下前后续完终. Examples kept: （一）(二)（上）(下)(中)（前）（后）
+# （1）（10）. Anything longer / containing words gets stripped as noise.
+_PART_MARKER = re.compile(
+    r"^[（(]\s*([零〇一二两三四五六七八九十百千0-9０-９上中下前后续完终之]{1,4})\s*[)）]$"
+)
+
+
+def _is_part_marker(paren_text: str) -> bool:
+    """True if ``paren_text`` (including its brackets) looks like a
+    sequential part marker — preserve in the cleaned title."""
+    return bool(_PART_MARKER.match(paren_text.strip()))
 
 
 def _clean_title(s: str) -> str:
     """Remove parenthesized asides like '（求月票）' / '(求收藏)' from chapter
-    titles, collapse whitespace, and trim."""
+    titles, collapse whitespace, and trim. Sequential part markers
+    like '（一）' / '(上)' / '（1）' are preserved so chapters that
+    differ only by part number remain distinguishable."""
     if not s:
         return s
-    out = _PAREN_NOISE.sub("", s)
+    def _sub(m: re.Match[str]) -> str:
+        whole = m.group(0)
+        return whole if _is_part_marker(whole) else ""
+    out = _PAREN_NOISE.sub(_sub, s)
     out = re.sub(r"\s+", " ", out).strip()
     return out
 
@@ -799,8 +819,13 @@ def detect_chapters(text: str,
     #     adding them)
     #   - the built-in 作者说章节 pattern (always merged — author asides
     #     don't compete for primary, they augment)
+    #   - OTHER numbered built-in patterns with ≥ 3 matches (catches
+    #     mixed-format files where e.g. 第N章 wins primary but the same
+    #     file ALSO has scattered "1、xx" / "Chapter N" sections that
+    #     the user wants surfaced — these were silently dropped before).
     # Sort by position, drop overlapping secondary matches that overlap
     # a primary match (within 50 chars to absorb whitespace differences).
+    _MIN_SECONDARY_HITS = 3
     primary_named: list[tuple[str, re.Match[str]]] = [
         (best_name or "", m) for m in best_matches
     ]
@@ -808,9 +833,17 @@ def detect_chapters(text: str,
     for name, pat in all_patterns:
         if name == best_name:
             continue
-        if name not in custom_names and name != "作者说章节":
+        if name in custom_names or name == "作者说章节":
+            for m in pat.finditer(text):
+                secondary_named.append((name, m))
             continue
-        for m in pat.finditer(text):
+        # Other built-in numbered patterns — merge only if substantial.
+        if name in _UNNUMBERED_PATTERNS:
+            continue
+        ms = list(pat.finditer(text))
+        if len(ms) < _MIN_SECONDARY_HITS:
+            continue
+        for m in ms:
             secondary_named.append((name, m))
 
     # Use TITLE bounds (group 1) for overlap math — secondary patterns
@@ -1353,6 +1386,10 @@ def detect_aside_paragraphs(chapters: list[dict],
     misalign indices.
     """
     keywords = get_effective_author_keywords(extra_keywords)
+    # Horizontal-rule markers signaling "everything after this is an
+    # author aside": ---/===/***/——/＝＝ runs of ≥ 3 chars on their own
+    # line. Web-novel authors use these to fence off PS / 求月票 etc.
+    rule_pat = re.compile(r"^[\s　]*([-=*＝—─]{3,})[\s　]*$")
     out: list[dict] = []
     for c in chapters:
         if c.get("pattern") == "作者说章节":
@@ -1362,6 +1399,18 @@ def detect_aside_paragraphs(chapters: list[dict],
             continue
         paragraphs = re.split(r"\n\s*\n", content)
         n_paras = len(paragraphs)
+        # Locate the FIRST horizontal-rule paragraph; everything after
+        # it (up to chapter end) is treated as author-aside trailing
+        # block — fence-style asides that web-novel authors append
+        # without using the keyword vocabulary.
+        fence_idx: int | None = None
+        for pi, para in enumerate(paragraphs):
+            for line in para.splitlines():
+                if rule_pat.match(line):
+                    fence_idx = pi
+                    break
+            if fence_idx is not None:
+                break
         for pi, para in enumerate(paragraphs):
             ps = para.strip()
             if not ps:
@@ -1370,14 +1419,28 @@ def detect_aside_paragraphs(chapters: list[dict],
             if len(ps) > max_para_chars:
                 continue
             hits = [kw for kw in keywords if kw in ps]
-            if not hits:
+            after_fence = fence_idx is not None and pi >= fence_idx
+            short_aside = after_fence and len(ps) < 200
+            if not hits and not short_aside:
                 continue
-            reasons = ["命中：" + "、".join(hits[:3])
-                        + (f"…(+{len(hits) - 3})" if len(hits) > 3 else "")]
+            reasons: list[str] = []
+            if hits:
+                reasons.append("命中：" + "、".join(hits[:3])
+                                + (f"…(+{len(hits) - 3})" if len(hits) > 3 else ""))
+            if after_fence:
+                reasons.append(
+                    "分割线（---）之后" if pi > (fence_idx or 0)
+                    else "章节末分割线"
+                )
             is_at_end = pi >= n_paras - 2
-            if is_at_end:
+            if is_at_end and "位于章节末尾" not in reasons:
                 reasons.append("位于章节末尾")
-            score = len(hits) + (2 if is_at_end else 0) + (1 if len(ps) < 100 else 0)
+            score = (
+                len(hits)
+                + (2 if is_at_end else 0)
+                + (1 if len(ps) < 100 else 0)
+                + (3 if after_fence else 0)
+            )
             out.append({
                 "chapter_number": c["number"],
                 "chapter_title": c["title"],
