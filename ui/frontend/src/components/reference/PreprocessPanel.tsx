@@ -1062,7 +1062,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 章节清理（共 {chapters.length} 章 · 已勾选排除 {excluded.size}）
               </div>
               <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                勾选要排除的章节 → 点「应用清理」会从正文中<span style={{ color: "var(--error)" }}>物理删除</span>（可撤销一次）。
+                勾选要排除的章节 → 点「清理章节」会从正文中<span style={{ color: "var(--error)" }}>物理删除</span>（可撤销一次）。
               </div>
             </div>
             <div className="flex items-center gap-6">
@@ -1093,7 +1093,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       onClick={applyExclusions}
                       disabled={applying || excluded.size === 0}
                       title={excluded.size === 0 ? "未选择任何章节" : `物理删除 ${excluded.size} 章（会备份原文）`}>
-                {applying ? "应用中…" : `应用清理（${excluded.size}）`}
+                {applying ? "清理中…" : `清理章节（${excluded.size}）`}
               </button>
             </div>
           </div>
@@ -1121,31 +1121,29 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               </button>
             ))}
             <div style={{ flex: 1 }} />
-            {/* Bulk-select helpers — explicit, predictable */}
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                    onClick={() => {
-                      const visible = filteredChapters.map(c => c.number);
-                      setExcluded(prev => {
-                        const next = new Set(prev);
-                        visible.forEach(n => next.add(n));
-                        return next;
-                      });
-                    }}
-                    title="把当前筛选下显示的所有章节加入排除列表">
-              勾选当前视图
-            </button>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                    onClick={() => {
-                      const visible = new Set(filteredChapters.map(c => c.number));
-                      setExcluded(prev => {
-                        const next = new Set(prev);
-                        visible.forEach(n => next.delete(n));
-                        return next;
-                      });
-                    }}
-                    title="取消当前视图的所有勾选">
-              取消当前视图
-            </button>
+            {/* Single 全选 toggle: first click selects all in current
+                view; second click clears them. Derived from whether
+                every visible chapter is currently excluded. */}
+            {(() => {
+              const allSelected = filteredChapters.length > 0
+                && filteredChapters.every(c => excluded.has(c.number));
+              return (
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                        onClick={() => {
+                          const visible = filteredChapters.map(c => c.number);
+                          setExcluded(prev => {
+                            const next = new Set(prev);
+                            if (allSelected) visible.forEach(n => next.delete(n));
+                            else visible.forEach(n => next.add(n));
+                            return next;
+                          });
+                        }}
+                        disabled={filteredChapters.length === 0}
+                        title={allSelected ? "取消当前视图的全部勾选" : "勾选当前视图的所有章节"}>
+                  {allSelected ? "全部取消" : "全选"}
+                </button>
+              );
+            })()}
           </div>
 
           <div className="flex flex-col gap-4" style={{
@@ -1522,7 +1520,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                   编辑第 {editingChapter.number} 章 · {editingChapter.title}
                 </div>
                 <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                  保存后会更新正文文件并备份原文（可在「应用清理」处撤销）。
+                  保存后会更新正文文件并备份原文（可在「清理章节」处撤销）。
                 </div>
               </div>
               <button className="btn" onClick={() => setEditingChapter(null)} disabled={editSaving}>

@@ -186,6 +186,33 @@ async def start_guess_job(ref_id: str, text: str,
     return job
 
 
+async def start_guess_job_for_path(ref_id: str, file_path: str,
+                                     extra_patterns: list[dict] | None = None) -> GuessJob:
+    """Like ``start_guess_job`` but defers the file read to the worker so
+    the calling endpoint returns immediately. Use this when the endpoint
+    only has the file path (not the full text), to avoid blocking the
+    event loop on a multi-MB read."""
+    job = _guess_jobs.get(ref_id)
+    if job and job.state == "running":
+        return job
+    job = GuessJob(ref_id=ref_id, state="running")
+    _guess_jobs[ref_id] = job
+
+    async def _wrapper():
+        try:
+            from pathlib import Path as _P
+            # Read file in a worker thread so the event loop stays free
+            text = await asyncio.to_thread(_P(file_path).read_text, encoding="utf-8")
+            await _run_guess(job, text, extra_patterns)
+        except Exception as e:
+            logger.exception("[preprocess] guess (lazy load) for %s failed", ref_id)
+            job.state = "error"
+            job.error = str(e)
+            job.ended_at = time.time()
+    job._task = asyncio.create_task(_wrapper())
+    return job
+
+
 def clear_guess_job(ref_id: str) -> None:
     _guess_jobs.pop(ref_id, None)
 
@@ -303,6 +330,39 @@ async def _run_detection(job: PreprocessJob, text: str,
         job.error = str(e)
         job.ended_at = time.time()
         job.append_log(f"出错：{e}")
+
+
+async def start_job_for_path(ref_id: str, file_path: str,
+                               per_chapter_delay_ms: int = 0,
+                               extra_patterns: list[dict] | None = None,
+                               force_pattern: str | None = None,
+                               force_patterns: list[str] | None = None) -> "PreprocessJob":
+    """Like ``start_job`` but defers the file read to the worker so the
+    endpoint returns immediately. Use this for any 多-MB work where
+    reading the file in the request handler would block the event loop
+    and freeze unrelated requests for hundreds of ms."""
+    job = _jobs.get(ref_id)
+    if job and job.state in ("running", "paused"):
+        return job
+    job = PreprocessJob(ref_id=ref_id)
+    job._resume = threading.Event()
+    job._resume.set()
+    job.state = "running"
+    _jobs[ref_id] = job
+
+    async def _wrapper():
+        try:
+            from pathlib import Path as _P
+            text = await asyncio.to_thread(_P(file_path).read_text, encoding="utf-8")
+            await _run_detection(job, text, per_chapter_delay_ms,
+                                  extra_patterns, force_pattern, force_patterns)
+        except Exception as e:
+            logger.exception("[preprocess] detection (lazy load) for %s failed", ref_id)
+            job.state = "error"
+            job.error = str(e)
+            job.ended_at = time.time()
+    job._task = asyncio.create_task(_wrapper())
+    return job
 
 
 async def start_job(ref_id: str, text: str,

@@ -503,22 +503,22 @@ def reset_segment_plan(ref_id: str):
 
 @router.post("/works/{ref_id}/preprocess/guess_start")
 async def preprocess_guess_start(ref_id: str):
-    """Kick off the async format-matching job. Frontend then polls
-    /guess_status for progress + final candidate list."""
+    """Kick off the async format-matching job. Returns immediately —
+    the file read happens in the worker so the endpoint never blocks
+    on multi-MB I/O. Frontend then polls /guess_status for progress."""
     from analysis.feature_extraction import preprocess_jobs
-    from analysis.feature_extraction.pipeline import (
-        FeatureExtractionPipeline, _load_chapter_patterns,
-    )
+    from analysis.feature_extraction.pipeline import _load_chapter_patterns
     db = _db()
     w = db.get_work(ref_id)
     if not w:
         raise HTTPException(404, "参考作品不存在")
-    pipe = FeatureExtractionPipeline(db.db_path)
-    text = pipe._load_text(w)
-    if not text:
+    file_path = w.get("file_path")
+    if not file_path:
         raise HTTPException(400, "尚未上传正文")
     extras = _load_chapter_patterns()
-    job = await preprocess_jobs.start_guess_job(ref_id, text, extra_patterns=extras)
+    job = await preprocess_jobs.start_guess_job_for_path(
+        ref_id, file_path, extra_patterns=extras,
+    )
     return job.to_status()
 
 
@@ -540,6 +540,8 @@ async def preprocess_start(ref_id: str,
                             force_pattern: Optional[str] = Query(None),
                             force_patterns: Optional[str] = Query(None)):
     """Kick off (or return the existing) preprocess job for this work.
+    Returns immediately — the file read + detection both happen in the
+    worker task so the endpoint never blocks on multi-MB I/O.
 
     Pattern selection:
       - ``force_patterns``: comma-separated list of pattern names to
@@ -549,21 +551,18 @@ async def preprocess_start(ref_id: str,
       - Neither: full auto-detect with auto-merge.
     """
     from analysis.feature_extraction import preprocess_jobs
-    from analysis.feature_extraction.pipeline import (
-        FeatureExtractionPipeline, _load_chapter_patterns,
-    )
+    from analysis.feature_extraction.pipeline import _load_chapter_patterns
     db = _db()
     w = db.get_work(ref_id)
     if not w:
         raise HTTPException(404, "参考作品不存在")
-    pipe = FeatureExtractionPipeline(db.db_path)
-    text = pipe._load_text(w)
-    if not text:
+    file_path = w.get("file_path")
+    if not file_path:
         raise HTTPException(400, "尚未上传正文")
     extras = _load_chapter_patterns()
     multi_list = [s.strip() for s in (force_patterns or "").split(",") if s.strip()] or None
-    job = await preprocess_jobs.start_job(
-        ref_id, text, extra_patterns=extras,
+    job = await preprocess_jobs.start_job_for_path(
+        ref_id, file_path, extra_patterns=extras,
         force_pattern=force_pattern, force_patterns=multi_list,
     )
     return job.to_status()
