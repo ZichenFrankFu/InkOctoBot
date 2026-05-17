@@ -304,29 +304,48 @@ def _build_chapters(text: str,
         by_num.setdefault(n, []).append(i)
 
     drop_idx: set[int] = set()
-    # Only drop a match when its body gap is tiny (TOC entry signature).
-    # If multiple matches with the same parsed number all have
-    # substantial bodies, they're legitimately separate chapters
-    # (e.g. a rename created a collision) — keep them all and let
-    # cross-list dedup + outer renumbering give unique ordinals.
+    # Step A: hard dedup by IDENTICAL raw_marker line. If two matches
+    # produce the exact same heading line (e.g. a chapter "1、想等的人"
+    # repeated by mistake in the source file), keep only the
+    # longest-body one — those are TRUE duplicates regardless of
+    # parsed number or content length.
+    by_marker: dict[str, list[int]] = {}
+    for i, m in enumerate(matches):
+        marker_text = m.group(0).strip().rstrip("\r")
+        if not marker_text:
+            continue
+        by_marker.setdefault(marker_text, []).append(i)
+    for marker_text, idxs in by_marker.items():
+        if len(idxs) < 2:
+            continue
+        best = max(idxs, key=gap_to_next)
+        for j in idxs:
+            if j != best:
+                drop_idx.add(j)
+
+    # Step B: numbered-collision dedup. Only drop when a candidate's
+    # body gap looks like a TOC entry (< 100 chars). If multiple
+    # matches with the same parsed number all have substantial bodies,
+    # they're legitimately separate chapters (e.g. a rename created a
+    # collision) — keep them all and let cross-list dedup + outer
+    # renumbering give unique ordinals.
     TOC_GAP = 100
     for n, idxs in by_num.items():
+        idxs = [i for i in idxs if i not in drop_idx]
         if len(idxs) < 2:
             continue
         gaps = {j: gap_to_next(j) for j in idxs}
         short = [j for j in idxs if gaps[j] < TOC_GAP]
         long = [j for j in idxs if gaps[j] >= TOC_GAP]
         if short and long:
-            # Mixed — drop the TOC-shaped ones, keep substantial bodies.
             for j in short:
                 drop_idx.add(j)
         elif short and not long:
-            # All look like TOC entries — keep the longest one only.
             best = max(idxs, key=gap_to_next)
             for j in idxs:
                 if j != best:
                     drop_idx.add(j)
-        # All substantial: keep all (user's collision)
+        # All substantial: keep all
 
     # Adaptive short-gap dedup REMOVED. The earlier by_num pass already
     # drops TOC duplicates (TOC entries share parsed numbers with body
@@ -412,16 +431,35 @@ def _build_chapters(text: str,
             # Both substantial — keep both
         deduped.append(c)
 
-    # Cross-list dedup: catch the case where TOC + body have the SAME
-    # parsed number but aren't adjacent. Only fires when at least one
-    # of the collision candidates has near-empty content (the TOC
-    # signature). If BOTH have substantial bodies, they're two real
-    # chapters that happen to share a number (e.g. after a rename) —
-    # keep both, the outer renumbering assigns unique ordinals.
+    # Cross-list dedup, two-tier:
+    #   Tier 1 (always): identical raw_marker line → keep longer body.
+    #   Tier 2 (TOC catch-all): same (pattern, parsed_number) where at
+    #          least one side has TOC-shaped (<100 char) body → drop
+    #          the TOC entry; otherwise both are kept.
     SHORT_CONTENT = 100
-    seen_by_key: dict[tuple, int] = {}  # (pattern, parsed_number) -> idx
     keep_mask = [True] * len(deduped)
+    # Tier 1: by raw_marker
+    seen_by_marker: dict[str, int] = {}
     for idx, c in enumerate(deduped):
+        mk = (c.get("raw_marker") or "").strip()
+        if not mk:
+            continue
+        if mk in seen_by_marker:
+            prev_idx = seen_by_marker[mk]
+            if len(c["content"]) > len(deduped[prev_idx]["content"]):
+                keep_mask[prev_idx] = False
+                seen_by_marker[mk] = idx
+            else:
+                keep_mask[idx] = False
+        else:
+            seen_by_marker[mk] = idx
+
+    # Tier 2: by (pattern, parsed_number) — only fires if a TOC entry
+    # snuck through (one side has very short content).
+    seen_by_key: dict[tuple, int] = {}
+    for idx, c in enumerate(deduped):
+        if not keep_mask[idx]:
+            continue
         if c["pattern"] in _UNNUMBERED_PATTERNS:
             continue
         key = (c["pattern"], c["number"])
@@ -430,10 +468,8 @@ def _build_chapters(text: str,
             prev_len = len(deduped[prev_idx]["content"])
             cur_len = len(c["content"])
             if prev_len > SHORT_CONTENT and cur_len > SHORT_CONTENT:
-                # Both are real chapters — keep both, don't update
-                # seen_by_key so the original entry remains canonical.
+                # Both real — keep both, don't update canonical.
                 continue
-            # One is a TOC entry — drop it, keep the longer one.
             if cur_len > prev_len:
                 keep_mask[prev_idx] = False
                 seen_by_key[key] = idx

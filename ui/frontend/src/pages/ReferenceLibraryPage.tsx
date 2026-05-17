@@ -14,6 +14,7 @@ import {
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
 import PreprocessPanel from "../components/reference/PreprocessPanel";
+import FilesPanel from "../components/reference/FilesPanel";
 import { splitGenres } from "../utils/genre";
 
 const MEDIA_TYPES: { value: MediaType; label: string; color: string }[] = [
@@ -641,7 +642,7 @@ export default function ReferenceLibraryPage() {
 
 /* ───────────────── Work Detail (horizontal tabs) ───────────────── */
 
-type WorkDetailTab = "preprocess" | "plot" | "characters" | "settings" | "features" | "info";
+type WorkDetailTab = "files" | "preprocess" | "plot" | "characters" | "settings" | "features" | "info";
 
 const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   done: { label: "已分析", color: "var(--jade)" },
@@ -663,7 +664,7 @@ function WorkDetail({
   onSaveAnalysisField: (fieldKey: string, data: any) => Promise<void> | void;
   onAfterMerge: () => Promise<void> | void;
 }) {
-  const [tab, setTab] = useState<WorkDetailTab>("preprocess");
+  const [tab, setTab] = useState<WorkDetailTab>("files");
   const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
   const [editingWhy, setEditingWhy] = useState(false);
 
@@ -687,6 +688,7 @@ function WorkDetail({
   const settingsCount = (settings || []).length;
 
   const TABS: { key: WorkDetailTab; label: string; count?: number | string }[] = [
+    { key: "files", label: "文件" },
     { key: "preprocess", label: "预处理" },
     { key: "plot", label: "剧情大纲", count: eventCount || undefined },
     { key: "characters", label: "角色", count: charCount || undefined },
@@ -772,11 +774,18 @@ function WorkDetail({
       </div>
 
       {/* Tab content */}
+      {tab === "files" && (
+        <FilesPanel
+          refId={sel.ref_id}
+          onAfterChange={onAfterMerge}
+        />
+      )}
+
       {tab === "preprocess" && (
         <PreprocessPanel
           refId={sel.ref_id}
           hasFullText={Boolean(sel.has_full_text)}
-          onUpload={onUpload}
+          onUpload={() => setTab("files")}
           onAfterApplyExclusions={onAfterMerge}
         />
       )}

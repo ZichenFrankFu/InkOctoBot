@@ -354,7 +354,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       });
       if (!resp.ok) throw new Error(await resp.text());
       toast(`已追加 ${file.name}`, "success");
-      setStatus(null);
       await fetchStatus();
       await fetchPlan();
       await onAfterApplyExclusions?.();
@@ -497,7 +496,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       toast(`已新增章节 · 现有 ${r.total_chapters} 章`, "success");
       setNewChapter(null);
-      setStatus(null);
       await fetchStatus();
       await fetchPlan();
     } catch (e: any) {
@@ -524,7 +522,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       toast(`第 ${renamingChapter.number} 章已改名`, "success");
       setRenamingChapter(null);
-      setStatus(null);
       await fetchStatus();
       await fetchPlan();
     } catch (e: any) {
@@ -542,7 +539,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         method: "DELETE",
       }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); });
       toast(`第 ${number} 章已删除`, "success");
-      setStatus(null);
       await fetchStatus();
       await fetchPlan();
     } catch (e: any) {
@@ -560,7 +556,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       toast(`第 ${editingChapter.number} 章已保存`, "success");
       setEditingChapter(null);
-      setStatus(null);
       await fetchStatus();
       await fetchPlan();
     } catch (e: any) {
@@ -577,7 +572,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         `/api/references/works/${refId}/preprocess/undo_exclusions`, {},
       );
       toast(`已恢复 ${r.restored_chapters.length} 章（${fmtChars(r.restored_char_count)}）`, "success");
-      setStatus(null);
       await fetchStatus();
       await fetchPlan();
       await onAfterApplyExclusions?.();
@@ -624,7 +618,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       toast(`已删除 ${r.removed_chapters.length} 章，现剩 ${fmtChars(r.new_char_count)}`, "success");
       setExcluded(new Set());
-      setStatus(null);
       await onAfterApplyExclusions?.();
       await fetchStatus();
       await fetchPlan();
@@ -655,7 +648,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast(`已删除 ${r.removed_chapters.length} 章作者说章节`, "success");
       setBulkOpen(false);
       setExcluded(new Set());
-      setStatus(null);
       await onAfterApplyExclusions?.();
       await fetchStatus();
       await fetchPlan();
@@ -711,7 +703,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       setParaCleanOpen(false);
       setParaCleanList([]);
       setParaCleanSelected(new Set());
-      setStatus(null);
       await onAfterApplyExclusions?.();
       await fetchStatus();
       await fetchPlan();
@@ -886,24 +877,9 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)" }} onClick={cancelJob}>取消</button>
               </>
             )}
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={onUpload}>
-              重新上传
-            </button>
-            <input
-              ref={appendFileInputRef}
-              type="file"
-              accept=".txt"
-              style={{ display: "none" }}
-              onChange={e => {
-                const f = e.target.files?.[0];
-                if (f) appendFile(f);
-              }}
-            />
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                    onClick={() => appendFileInputRef.current?.click()}
-                    disabled={appending}
-                    title="将另一个 .txt 文件追加到当前正文末尾（适合分卷上传）">
-              {appending ? "追加中..." : "追加文件"}
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={onUpload}
+                    title="到「文件」tab 管理上传">
+              管理文件
             </button>
           </div>
         </div>
@@ -1317,6 +1293,27 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         </div>
       </div>
 
+      {/* Empty-state CTA: when detection has been run but no chapters
+          exist (or never run on a fresh upload). */}
+      {chapters.length === 0 && (state === "idle" || state === "done") && hasFullText && (
+        <div style={{
+          padding: 20, textAlign: "center",
+          border: "1px dashed var(--border)", borderRadius: 4,
+          background: "var(--bg-surface)",
+        }}>
+          <div className="text-xs text-muted" style={{ marginBottom: 12, lineHeight: 1.6 }}>
+            {state === "done" ? "未识别到任何章节。" : "还没有章节。"}
+            <br />
+            可以点击上方「匹配章节格式」自动识别，或手动新建第一章。
+          </div>
+          <button className="btn-primary"
+                  style={{ fontSize: 12, padding: "5px 14px" }}
+                  onClick={() => openNewChapterModal(null)}>
+            新建第一章
+          </button>
+        </div>
+      )}
+
       {/* Section 2: chapter list + author-note flags + outlier flags */}
       {chapters.length > 0 && (
         <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
@@ -1338,12 +1335,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                   撤销清理
                 </button>
               )}
-              <button className="btn"
-                      style={{ fontSize: 11, padding: "4px 12px" }}
-                      onClick={() => openNewChapterModal(chapters.length > 0 ? chapters[chapters.length - 1].number : null)}
-                      title="在末尾新增一章；想在中间插入可点章节行末的「+ 插入」">
-                + 新建章节
-              </button>
               <button className="btn"
                       style={{ fontSize: 11, padding: "4px 12px", color: "var(--accent)", borderColor: "var(--accent)" }}
                       onClick={openParaCleanModal}
@@ -1543,8 +1534,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                     <button className="btn"
                             style={{ fontSize: 10, padding: "2px 6px", flexShrink: 0, color: "var(--text-tertiary)" }}
                             onClick={e => { e.stopPropagation(); openNewChapterModal(c.number); }}
-                            title="在本章之后插入新章节">
-                      + 插入
+                            title="在本章后新建一章">
+                      在本章后新建章节
                     </button>
                     <button className="btn"
                             style={{ fontSize: 10, padding: "2px 6px", flexShrink: 0, color: "var(--error)" }}

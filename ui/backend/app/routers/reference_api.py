@@ -2,6 +2,7 @@
 /api/references — 参考作品库 CRUD + 预处理触发 + 条目管理
 """
 from __future__ import annotations
+import asyncio
 import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
@@ -160,31 +161,48 @@ async def upload_text_for_work(
     refs_dir = settings.repo_root / "data" / "references"
     refs_dir.mkdir(parents=True, exist_ok=True)
 
+    # Track the upload in segments_json["uploads"] so the Files tab can
+    # list each upload separately and delete individual ones later.
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    uploads: list[dict] = state.get("uploads") if isinstance(state.get("uploads"), list) else []
+    import time as _time
     if append and w.get("file_path") and Path(w["file_path"]).exists():
-        # Append to the existing file in place — keeps file_path stable so
-        # downstream code that cached it sees the longer text on next read.
         dest = Path(w["file_path"])
         try:
             existing = dest.read_text(encoding="utf-8")
         except Exception:
             existing = ""
-        combined = (existing.rstrip() + (separator or "\n\n") + new_text.lstrip()).strip()
+        prefix = (existing.rstrip() + (separator or "\n\n")) if existing else ""
+        combined = (prefix + new_text.lstrip()).strip()
         dest.write_text(combined, encoding="utf-8")
+        char_start = len(prefix)
+        char_end = len(combined)
     else:
         dest = refs_dir / f"{ref_id}_{fname}"
         dest.write_text(new_text, encoding="utf-8")
+        # Replacement wipes the uploads ledger.
+        uploads = []
+        char_start = 0
+        char_end = len(new_text)
+    uploads.append({
+        "filename": fname,
+        "char_start": char_start,
+        "char_end": char_end,
+        "uploaded_at": _time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    state["uploads"] = uploads
 
     # Wipe any prior preprocess / segment state — the underlying text changed.
-    try:
-        state = json.loads(w.get("segments_json") or "{}")
-    except Exception:
-        state = {}
-    if isinstance(state, dict):
-        state.pop("preprocess", None)
-        state.pop("custom_plan", None)
-        state.pop("plan", None)
-        state["results"] = {}
-        state["completed"] = []
+    state.pop("preprocess", None)
+    state.pop("custom_plan", None)
+    state.pop("plan", None)
+    state["results"] = {}
+    state["completed"] = []
     from analysis.feature_extraction import preprocess_jobs
     preprocess_jobs.clear(ref_id)
 
@@ -196,6 +214,167 @@ async def upload_text_for_work(
         segments_json=json.dumps(state, ensure_ascii=False),
     )
     return w
+
+
+@router.get("/works/{ref_id}/files")
+async def list_work_files(ref_id: str, preview_chars: int = Query(200, ge=0, le=2000)):
+    """List uploaded files for the work. Each entry shows the upload's
+    char range + a head preview + char count. Uses the segments_json
+    "uploads" ledger; for legacy works (uploaded before tracking
+    existed) we emit a single synthetic entry covering the whole file."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    file_path = w.get("file_path")
+    total_chars = 0
+    full_text = ""
+    if file_path and Path(file_path).exists():
+        full_text = await asyncio.to_thread(Path(file_path).read_text, encoding="utf-8")
+        total_chars = len(full_text)
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    uploads = state.get("uploads") if isinstance(state, dict) else None
+    if not isinstance(uploads, list) or not uploads:
+        # Legacy fallback — synthesize a single entry covering the whole file.
+        if total_chars > 0 and file_path:
+            from os.path import basename as _bn
+            uploads = [{
+                "filename": _bn(file_path),
+                "char_start": 0,
+                "char_end": total_chars,
+                "uploaded_at": None,
+                "legacy": True,
+            }]
+        else:
+            uploads = []
+    out: list[dict] = []
+    for i, u in enumerate(uploads):
+        cs = int(u.get("char_start") or 0)
+        ce = int(u.get("char_end") or 0)
+        slice_text = full_text[cs:ce] if 0 <= cs <= ce <= len(full_text) else ""
+        head = slice_text[:preview_chars].replace("\n", " ").strip()
+        if len(slice_text) > preview_chars:
+            head += "…"
+        out.append({
+            "index": i,
+            "filename": u.get("filename") or f"file_{i}.txt",
+            "char_start": cs,
+            "char_end": ce,
+            "char_count": max(0, ce - cs),
+            "uploaded_at": u.get("uploaded_at"),
+            "legacy": bool(u.get("legacy")),
+            "preview": head,
+        })
+    return {
+        "files": out,
+        "total_chars": total_chars,
+        "has_full_text": bool(w.get("has_full_text")),
+        "file_path": file_path,
+    }
+
+
+@router.delete("/works/{ref_id}/files/{index}")
+async def delete_work_file(ref_id: str, index: int):
+    """Remove ONE uploaded file's char range from the combined text and
+    rebuild. Subsequent uploads' ranges are shifted left. Any
+    preprocess state is cleared since the text changed."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    file_path = w.get("file_path")
+    if not file_path or not Path(file_path).exists():
+        raise HTTPException(400, "尚未上传正文")
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    uploads = state.get("uploads") if isinstance(state.get("uploads"), list) else []
+    if not (0 <= index < len(uploads)):
+        raise HTTPException(404, f"未找到第 {index} 个文件")
+    target = uploads[index]
+    cs = int(target.get("char_start") or 0)
+    ce = int(target.get("char_end") or 0)
+    full_text = await asyncio.to_thread(Path(file_path).read_text, encoding="utf-8")
+    if not (0 <= cs <= ce <= len(full_text)):
+        raise HTTPException(400, "文件范围与正文不符；请重新上传")
+    removed_len = ce - cs
+    new_text = (full_text[:cs] + full_text[ce:]).strip()
+    # Update uploads ledger
+    updated_uploads: list[dict] = []
+    for i, u in enumerate(uploads):
+        if i == index:
+            continue
+        ucs = int(u.get("char_start") or 0)
+        uce = int(u.get("char_end") or 0)
+        if uce <= cs:
+            # Before removed range — unchanged
+            updated_uploads.append({**u})
+        elif ucs >= ce:
+            # After removed range — shift left
+            updated_uploads.append({
+                **u,
+                "char_start": ucs - removed_len,
+                "char_end": uce - removed_len,
+            })
+        # Else: overlapping range (shouldn't happen) — drop
+    state["uploads"] = updated_uploads
+    await asyncio.to_thread(Path(file_path).write_text, new_text, encoding="utf-8")
+    # Invalidate preprocess
+    state.pop("preprocess", None)
+    state.pop("custom_plan", None)
+    state.pop("plan", None)
+    state["results"] = {}
+    state["completed"] = []
+    from analysis.feature_extraction import preprocess_jobs
+    preprocess_jobs.clear(ref_id)
+    db.update_work(
+        ref_id,
+        segments_json=json.dumps(state, ensure_ascii=False),
+        preprocessing_status="pending",
+        has_full_text=bool(new_text),
+    )
+    return {"ok": True, "remaining_files": len(updated_uploads), "new_total_chars": len(new_text)}
+
+
+@router.delete("/works/{ref_id}/files")
+async def delete_all_work_files(ref_id: str):
+    """Wipe ALL uploaded content and the uploads ledger. The on-disk
+    file is truncated to empty (kept around so the file_path remains
+    valid). Preprocess state cleared."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    file_path = w.get("file_path")
+    if file_path and Path(file_path).exists():
+        await asyncio.to_thread(Path(file_path).write_text, "", encoding="utf-8")
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    state["uploads"] = []
+    state.pop("preprocess", None)
+    state.pop("custom_plan", None)
+    state.pop("plan", None)
+    state["results"] = {}
+    state["completed"] = []
+    from analysis.feature_extraction import preprocess_jobs
+    preprocess_jobs.clear(ref_id)
+    db.update_work(
+        ref_id,
+        segments_json=json.dumps(state, ensure_ascii=False),
+        preprocessing_status="pending",
+        has_full_text=False,
+    )
+    return {"ok": True}
 
 
 @router.put("/works/{ref_id}")
@@ -1346,7 +1525,7 @@ class ApplyExclusionsRequest(BaseModel):
 
 
 @router.post("/works/{ref_id}/preprocess/apply_exclusions")
-def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
+async def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
     """Physically delete the excluded chapters from the on-disk text and
     re-save. The pre-edit text is saved to ``{file_path}.bak`` (overwriting
     any prior backup) so the user can undo via POST /preprocess/undo_exclusions
@@ -1363,24 +1542,30 @@ def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     pipe = FeatureExtractionPipeline(db.db_path)
-    text = pipe._load_text(w)
-    if not text:
-        raise HTTPException(400, "尚未上传正文")
-    detect = detect_chapters(text, extra_patterns=_load_chapter_patterns())
-    excluded = set(int(n) for n in (body.excluded_chapters or []))
-    new_text = apply_exclusions(text, detect["chapters"], excluded)
-    if not new_text.strip():
-        raise HTTPException(400, "排除后文本为空，操作已取消")
     file_path = w.get("file_path")
     if not file_path:
         raise HTTPException(400, "作品没有关联的文件路径")
+    # Heavy I/O + regex pass — run in a thread so the event loop stays
+    # responsive (was the cause of the 「点击清理章节后 app 卡死」 bug).
+    text = await asyncio.to_thread(pipe._load_text, w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
+    detect = await asyncio.to_thread(
+        detect_chapters, text, extra_patterns=_load_chapter_patterns(),
+    )
+    excluded = set(int(n) for n in (body.excluded_chapters or []))
+    new_text = await asyncio.to_thread(
+        apply_exclusions, text, detect["chapters"], excluded,
+    )
+    if not new_text.strip():
+        raise HTTPException(400, "排除后文本为空，操作已取消")
     src = Path(file_path)
     bak = src.with_suffix(src.suffix + ".bak")
     try:
         # Snapshot the pre-edit file so we can restore on undo. Overwrites
         # any prior .bak — only the most-recent apply is undoable.
-        bak.write_text(text, encoding="utf-8")
-        src.write_text(new_text, encoding="utf-8")
+        await asyncio.to_thread(bak.write_text, text, encoding="utf-8")
+        await asyncio.to_thread(src.write_text, new_text, encoding="utf-8")
     except Exception as e:
         raise HTTPException(500, f"写入文件失败：{e}")
     try:
@@ -1395,14 +1580,17 @@ def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
     from analysis.feature_extraction.chapter_parser import (
         flag_author_notes, flag_length_outliers, make_preview, visible_char_count,
     )
-    new_detect = detect_chapters(new_text, extra_patterns=_load_chapter_patterns())
-    new_chapters = new_detect["chapters"]
-    flag_author_notes(new_chapters, extra_keywords=_load_author_keywords())
-    flag_length_outliers(new_chapters)
-    for c in new_chapters:
-        pv = make_preview(c.get("content") or "")
-        c["preview_head"] = pv["head"]
-        c["preview_tail"] = pv["tail"]
+    def _redetect_and_flag():
+        nd = detect_chapters(new_text, extra_patterns=_load_chapter_patterns())
+        ncs = nd["chapters"]
+        flag_author_notes(ncs, extra_keywords=_load_author_keywords())
+        flag_length_outliers(ncs)
+        for cc in ncs:
+            pv = make_preview(cc.get("content") or "")
+            cc["preview_head"] = pv["head"]
+            cc["preview_tail"] = pv["tail"]
+        return ncs
+    new_chapters = await asyncio.to_thread(_redetect_and_flag)
     light = [
         {k: c.get(k) for k in (
             "number", "parsed_number", "title", "title_only", "raw_marker",
@@ -1596,16 +1784,11 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
 
 
 @router.post("/works/{ref_id}/preprocess/save_all")
-def preprocess_save_all(ref_id: str):
+async def preprocess_save_all(ref_id: str):
     """Persist the current chapter list to the ``reference_chapters``
-    table. Source of truth = the in-memory job's chapters (if a job
-    just finished) or segments_json["preprocess"]. After this call,
-    downstream features (segment plan, feature extraction, vector
-    index) can read chapters directly from the table instead of
-    re-running detection.
-
-    Idempotent: each save replaces the prior saved chapter list for
-    this work."""
+    table. Async so the full-file read (for offset-based content
+    recovery) doesn't block the FastAPI event loop and freeze the
+    UI on multi-MB works."""
     from analysis.feature_extraction import preprocess_jobs
     from analysis.feature_extraction.chapter_parser import visible_char_count
     db = _db()
@@ -1634,12 +1817,16 @@ def preprocess_save_all(ref_id: str):
         raise HTTPException(400, "尚未识别到章节 — 请先点击「匹配章节格式」并完成识别")
 
     # Load full text once for offset-based content recovery (light path).
+    # Offloaded to a thread so a multi-MB read doesn't block the event
+    # loop (was freezing the UI for several seconds on big works).
     full_text = None
     if any("content" not in c or not c.get("content") for c in chapters_src):
         file_path = w.get("file_path")
         if file_path:
             try:
-                full_text = Path(file_path).read_text(encoding="utf-8")
+                full_text = await asyncio.to_thread(
+                    Path(file_path).read_text, encoding="utf-8",
+                )
             except Exception:
                 full_text = None
 
@@ -1667,20 +1854,24 @@ def preprocess_save_all(ref_id: str):
             c.get("content_end"),
         ))
 
-    with sqlite3.connect(db.db_path) as conn:
-        from database.reference_schema import ensure_reference_tables
-        ensure_reference_tables(conn)
-        conn.execute("DELETE FROM reference_chapters WHERE ref_id = ?", (ref_id,))
-        conn.executemany(
-            """
-            INSERT INTO reference_chapters
-              (ref_id, number, title, raw_marker, pattern, volume, parsed_number,
-               char_count, is_author_note, content, content_start, content_end)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        conn.commit()
+    # SQLite bulk insert can take a moment on thousands of rows; run in
+    # a thread too.
+    def _write_rows():
+        with sqlite3.connect(db.db_path) as conn:
+            from database.reference_schema import ensure_reference_tables
+            ensure_reference_tables(conn)
+            conn.execute("DELETE FROM reference_chapters WHERE ref_id = ?", (ref_id,))
+            conn.executemany(
+                """
+                INSERT INTO reference_chapters
+                  (ref_id, number, title, raw_marker, pattern, volume, parsed_number,
+                   char_count, is_author_note, content, content_start, content_end)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+    await asyncio.to_thread(_write_rows)
     return {
         "ok": True,
         "saved_count": len(rows),
