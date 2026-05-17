@@ -976,18 +976,163 @@ def flag_author_notes(chapters: list[dict],
     return chapters
 
 
-# Patterns for garbled / non-text noise commonly seen in scraped novel
-# files: HTML escapes, HTML comments, BBCode-style tags, template
-# placeholders. Stored as raw regex so apply_garbled_cleanup can reuse
-# the same set when stripping content.
-_GARBLED_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
-    ("HTML 注释", re.compile(r"<!--.*?-->", re.DOTALL)),
-    ("HTML 转义", re.compile(r"&(?:lt|gt|amp|quot|apos|nbsp|#\d+);")),
-    ("HTML 标签", re.compile(r"<\/?[a-zA-Z][a-zA-Z0-9]*[^>]*>")),
-    ("模板占位", re.compile(r"\{\{[^}]+\}\}")),
-    ("BBCode 标签", re.compile(r"\[/?[a-zA-Z][^\]]*\]")),
-    ("追书神器水印", re.compile(r"@追书神器|#追书神器|追书神器", re.IGNORECASE)),
+# Built-in patterns for garbled / non-text noise commonly seen in
+# scraped novel files: HTML escapes, comments, tags, BBCode, template
+# placeholders, random ID strings, watermarks.
+_BUILTIN_GARBLED_PATTERNS: list[tuple[str, str]] = [
+    ("HTML 注释", r"<!--.*?-->"),
+    ("HTML 转义", r"&(?:lt|gt|amp|quot|apos|nbsp|#\d+);"),
+    ("HTML 标签", r"<\/?[a-zA-Z][a-zA-Z0-9]*[^>]*>"),
+    ("模板占位", r"\{\{[^}]+\}\}"),
+    ("BBCode 标签", r"\[/?[a-zA-Z][^\]]*\]"),
+    # Random alphanumeric IDs (mixed case + digits, 12+ chars) — e.g.
+    # the user reported "3Abq5FQkXVhYkEy8u3y" leftover from scraping
+    # watermarks. Require both letters AND digits to avoid catching
+    # English words.
+    ("随机 ID", r"\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{12,}\b"),
+    ("追书神器水印", r"@追书神器|#追书神器|追书神器"),
 ]
+
+
+def _load_user_garbled_patterns() -> list[dict]:
+    """Read user-customized garbled patterns from settings.json.
+    Returns a list of {name, regex, enabled}. Empty list when none
+    configured."""
+    try:
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[2]
+        sp = root / "data" / "settings.json"
+        if not sp.exists():
+            return []
+        import json as _json
+        data = _json.loads(sp.read_text(encoding="utf-8"))
+        raw = data.get("garbled_patterns")
+        return [x for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
+    except Exception:
+        return []
+
+
+def _compile_garbled() -> list[tuple[str, "re.Pattern[str]"]]:
+    """Return the effective garbled-pattern list: built-ins + enabled
+    user patterns, all compiled."""
+    out: list[tuple[str, "re.Pattern[str]"]] = []
+    for name, pattern in _BUILTIN_GARBLED_PATTERNS:
+        try:
+            out.append((name, re.compile(pattern, re.DOTALL | re.IGNORECASE)))
+        except re.error:
+            continue
+    for p in _load_user_garbled_patterns():
+        if not isinstance(p, dict) or p.get("enabled") is False:
+            continue
+        name = (p.get("name") or "自定义").strip()
+        regex = (p.get("regex") or "").strip()
+        if not regex:
+            continue
+        try:
+            out.append((name, re.compile(regex, re.DOTALL | re.IGNORECASE)))
+        except re.error:
+            continue
+    return out
+
+
+# Live-recompiled list each access via the function; callers should
+# invoke ``_compile_garbled()`` to pick up CRUD changes without a
+# server restart.
+
+
+# ── Encoding-mojibake repair ──
+#
+# Six common Chinese-novel mojibake patterns the user listed:
+#   1. 古文夹杂日韩文     → GBK bytes read as UTF-8 → encode utf-8, decode gbk
+#   2. 方块形               → UTF-8 bytes read as GBK → encode gbk, decode utf-8
+#   3. 各种符号             → ISO8859-1 read as UTF-8 → encode latin-1, decode utf-8
+#   4. 拼音码（带声调）     → ISO8859-1 read as GBK → encode latin-1, decode gbk
+#   5. 奇数长度末尾问号     → GBK as UTF-8 then UTF-8 (double round trip)
+#   6. 大量"锟斤拷"         → UTF-8 as GBK then GBK (double round trip)
+
+
+def _try_decode(text: str, encode_with: str, decode_with: str) -> str | None:
+    """Attempt a faux-encode then decode round trip. Returns None when
+    either side fails — mojibake fixes that don't apply are skipped."""
+    try:
+        return text.encode(encode_with, errors="strict").decode(decode_with, errors="strict")
+    except (UnicodeEncodeError, UnicodeDecodeError, LookupError):
+        return None
+
+
+def _cjk_density(text: str) -> float:
+    """Fraction of CJK ideograph characters in ``text``. Used to score
+    mojibake-repair candidates — the winning transform should leave
+    the most Chinese readable."""
+    if not text:
+        return 0.0
+    cjk = sum(1 for c in text
+              if "一" <= c <= "鿿"
+              or "㐀" <= c <= "䶿")
+    return cjk / max(1, len(text))
+
+
+_ENCODING_REPAIRS: list[tuple[str, "callable"]] = [
+    # 1. Source was GBK, decoder was UTF-8
+    ("GBK→UTF-8 (古文夹杂日韩文)", lambda t: _try_decode(t, "utf-8", "gbk")),
+    # 2. Source was UTF-8, decoder was GBK
+    ("UTF-8→GBK (方块形)", lambda t: _try_decode(t, "gbk", "utf-8")),
+    # 3. Source was UTF-8, decoder was ISO-8859-1
+    ("UTF-8→Latin-1 (各种符号)", lambda t: _try_decode(t, "latin-1", "utf-8")),
+    # 4. Source was GBK, decoder was ISO-8859-1
+    ("GBK→Latin-1 (拼音码)", lambda t: _try_decode(t, "latin-1", "gbk")),
+    # 5. Double round trip for odd-length / trailing-? case
+    ("GBK→UTF-8 双次 (奇数长度问号)", lambda t: (
+        (lambda s1: _try_decode(s1, "utf-8", "utf-8") if s1 else None)(
+            _try_decode(t, "utf-8", "gbk")
+        )
+    )),
+    # 6. Double round trip for 锟斤拷-dominated text
+    ("UTF-8→GBK 双次 (锟斤拷)", lambda t: (
+        (lambda s1: _try_decode(s1, "gbk", "gbk") if s1 else None)(
+            _try_decode(t, "gbk", "utf-8")
+        )
+    )),
+]
+
+
+def detect_encoding_mojibake(text: str) -> dict | None:
+    """Try each of the 6 encoding-repair transforms and pick the one
+    that produces the highest CJK density INCREASE versus the input.
+
+    Returns ``{transform, before_cjk, after_cjk, fixed_text}`` when a
+    repair is worth applying, or None when no transform improves the
+    text materially (delta < 5% CJK)."""
+    base_density = _cjk_density(text)
+    best: dict | None = None
+    for name, fix in _ENCODING_REPAIRS:
+        try:
+            candidate = fix(text)
+        except Exception:
+            candidate = None
+        if not candidate or candidate == text:
+            continue
+        cand_density = _cjk_density(candidate)
+        if cand_density - base_density <= 0.05:
+            continue
+        if not best or cand_density > best["after_cjk"]:
+            best = {
+                "transform": name,
+                "before_cjk": base_density,
+                "after_cjk": cand_density,
+                "fixed_text": candidate,
+            }
+    return best
+
+
+def repair_encoding(text: str) -> tuple[str, str | None]:
+    """Best-effort encoding repair. Returns (fixed_text, transform_name).
+    transform_name is None when no transform helped (text is returned
+    unchanged)."""
+    result = detect_encoding_mojibake(text)
+    if not result:
+        return text, None
+    return result["fixed_text"], result["transform"]
 
 
 def flag_garbled_chapters(chapters: list[dict]) -> list[dict]:
@@ -996,10 +1141,11 @@ def flag_garbled_chapters(chapters: list[dict]) -> list[dict]:
     ``&lt;`` / HTML tags / BBCode left over from web scraping.
     Reasons are short human-readable labels with the first matched
     sample, suitable for tooltip + filter chip display."""
+    patterns = _compile_garbled()
     for c in chapters:
         content = c.get("content") or ""
         reasons: list[str] = []
-        for label, pat in _GARBLED_PATTERNS:
+        for label, pat in patterns:
             ms = pat.findall(content)
             if not ms:
                 continue
@@ -1013,12 +1159,22 @@ def flag_garbled_chapters(chapters: list[dict]) -> list[dict]:
     return chapters
 
 
-def strip_garbled(text: str) -> str:
-    """Remove every garbled pattern from ``text``. Used by the
-    一键清除乱码 endpoint to clean a whole file in one pass."""
-    for _, pat in _GARBLED_PATTERNS:
+def strip_garbled(text: str, try_encoding_repair: bool = True) -> str:
+    """Two-step cleanup:
+
+      1. Run each regex in the effective garbled-pattern set (built-in
+         + user CRUD) and ``sub("")`` the matches.
+      2. If ``try_encoding_repair`` is True, attempt the 6 mojibake
+         repairs and apply whichever one materially increases the CJK
+         density of the result.
+
+    Whitespace runs created by the deletions get collapsed before
+    returning."""
+    for _, pat in _compile_garbled():
         text = pat.sub("", text)
-    # Collapse runs of whitespace that were created by removal.
+    if try_encoding_repair:
+        fixed, _ = repair_encoding(text)
+        text = fixed
     text = re.sub(r"[ \t　]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()

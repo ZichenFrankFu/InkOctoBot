@@ -1317,6 +1317,56 @@ def put_author_note_keywords(body: AuthorKeywordsBody):
     }
 
 
+@router.get("/garbled_patterns")
+def get_garbled_patterns():
+    """Return BOTH the built-in garbled regex set and the user's
+    custom additions so the UI can show the full picture + offer
+    inline disable / delete."""
+    from analysis.feature_extraction.chapter_parser import (
+        _BUILTIN_GARBLED_PATTERNS, _load_user_garbled_patterns,
+    )
+    return {
+        "builtin": [{"name": n, "regex": p} for n, p in _BUILTIN_GARBLED_PATTERNS],
+        "user": _load_user_garbled_patterns(),
+    }
+
+
+class GarbledPatternsBody(BaseModel):
+    patterns: list[dict]  # [{name, regex, enabled}]
+
+
+@router.put("/garbled_patterns")
+def put_garbled_patterns(body: GarbledPatternsBody):
+    """Replace the user's custom garbled patterns. Each entry is
+    validated by attempting to compile its regex. Empty list resets
+    to defaults only (built-ins remain)."""
+    import re as _re
+    cleaned: list[dict] = []
+    for i, p in enumerate(body.patterns or []):
+        if not isinstance(p, dict):
+            raise HTTPException(400, f"第 {i + 1} 项格式错误")
+        regex = (p.get("regex") or "").strip()
+        if not regex:
+            continue
+        name = (p.get("name") or "").strip() or regex[:40]
+        try:
+            _re.compile(regex, _re.DOTALL | _re.IGNORECASE)
+        except _re.error as e:
+            raise HTTPException(400, f"「{name}」正则无效：{e}")
+        cleaned.append({
+            "name": name,
+            "regex": regex,
+            "enabled": bool(p.get("enabled", True)),
+        })
+    data = _read_settings_dict()
+    if cleaned:
+        data["garbled_patterns"] = cleaned
+    else:
+        data.pop("garbled_patterns", None)
+    _write_settings_dict(data)
+    return {"user": cleaned}
+
+
 @router.delete("/chapter_patterns/{name}")
 def delete_chapter_pattern(name: str):
     """Delete a custom chapter pattern by its saved name (URL-encoded).

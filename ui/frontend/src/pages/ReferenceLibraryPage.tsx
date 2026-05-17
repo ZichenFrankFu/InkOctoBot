@@ -699,15 +699,25 @@ function WorkDetail({
 
   return (
     <div>
-      {/* Compact, sticky work header */}
+      {/* Compact, sticky work header.
+       *
+       * paddingTop:10 + paddingBottom:10 keep the title chip visually
+       * centered AND extend the opaque background fully, so scrolling
+       * content can't peek through the top/bottom edges. marginBottom
+       * → marginTop:-1 + paddingBottom buffer because a real
+       * marginBottom outside the background was leaving a 12px see-
+       * through gap that the user reported. */}
       <div style={{
         position: "sticky",
         top: 0,
-        zIndex: 5,
+        zIndex: 10,
         background: "var(--bg-app)",
-        paddingBottom: 10,
-        marginBottom: 12,
+        padding: "10px 0",
         borderBottom: "1px solid var(--border)",
+        marginBottom: 12,
+        // Box-shadow so even a 1-2px gap from sub-pixel rendering
+        // gets visually covered.
+        boxShadow: "0 6px 6px -6px rgba(0,0,0,0.18)",
       }}>
         <div className="flex items-center" style={{ gap: 10, flexWrap: "wrap" }}>
           <h3 className="font-serif" style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>

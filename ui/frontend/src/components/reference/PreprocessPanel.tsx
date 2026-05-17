@@ -126,6 +126,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   // be either the user's customization or the built-in defaults.
   const [keywords, setKeywords] = useState<{ user: string[]; defaults: string[]; active: string[] }>({ user: [], defaults: [], active: [] });
   const [keywordsOpen, setKeywordsOpen] = useState(false);
+  // Garbled-pattern CRUD
+  const [garbledOpen, setGarbledOpen] = useState(false);
+  const [garbledData, setGarbledData] = useState<{ builtin: { name: string; regex: string }[]; user: { name: string; regex: string; enabled: boolean }[] }>({ builtin: [], user: [] });
+  const [newGarbled, setNewGarbled] = useState<{ name: string; regex: string }>({ name: "", regex: "" });
   const [keywordInput, setKeywordInput] = useState("");
   // Persisted-chapters summary (for the 保存全部章节 button label)
   const [savedSummary, setSavedSummary] = useState<{ saved_count: number; saved_at: string | null }>({ saved_count: 0, saved_at: null });
@@ -211,9 +215,63 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     } catch { /* silent */ }
   }, [refId]);
 
+  const fetchGarbledPatterns = useCallback(async () => {
+    try {
+      const r = await apiGet<{ builtin: { name: string; regex: string }[]; user: { name: string; regex: string; enabled: boolean }[] }>(
+        "/api/references/garbled_patterns",
+      );
+      setGarbledData(r);
+    } catch { /* silent */ }
+  }, []);
+
   useEffect(() => {
-    fetchStatus(); fetchPlan(); fetchPatterns(); fetchKeywords(); fetchSavedSummary();
-  }, [fetchStatus, fetchPlan, fetchPatterns, fetchKeywords, fetchSavedSummary]);
+    fetchStatus(); fetchPlan(); fetchPatterns(); fetchKeywords(); fetchSavedSummary(); fetchGarbledPatterns();
+  }, [fetchStatus, fetchPlan, fetchPatterns, fetchKeywords, fetchSavedSummary, fetchGarbledPatterns]);
+
+  // ── Garbled-pattern CRUD ──
+
+  const saveGarbledPatterns = async (next: { name: string; regex: string; enabled: boolean }[]) => {
+    try {
+      const r = await apiPut<{ user: { name: string; regex: string; enabled: boolean }[] }>(
+        "/api/references/garbled_patterns", { patterns: next },
+      );
+      setGarbledData(prev => ({ ...prev, user: r.user || [] }));
+      toast("已保存乱码模式", "success");
+    } catch (e: any) {
+      toast(e?.message || "保存失败", "error");
+    }
+  };
+
+  const addGarbledPattern = async () => {
+    const name = newGarbled.name.trim() || newGarbled.regex.trim().slice(0, 40);
+    const regex = newGarbled.regex.trim();
+    if (!regex) {
+      toast("请填写正则", "info");
+      return;
+    }
+    await saveGarbledPatterns([
+      ...garbledData.user,
+      { name, regex, enabled: true },
+    ]);
+    setNewGarbled({ name: "", regex: "" });
+  };
+
+  const removeGarbledPattern = async (idx: number) => {
+    if (!(await confirmDialog({
+      title: "删除乱码模式",
+      message: `删除「${garbledData.user[idx]?.name || ""}」？`,
+      destructive: true,
+    }))) return;
+    const next = garbledData.user.filter((_, i) => i !== idx);
+    await saveGarbledPatterns(next);
+  };
+
+  const toggleGarbledPattern = async (idx: number) => {
+    const next = garbledData.user.map((p, i) =>
+      i === idx ? { ...p, enabled: !p.enabled } : p,
+    );
+    await saveGarbledPatterns(next);
+  };
 
   // ── Author-keyword CRUD ──
 
@@ -1365,6 +1423,99 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
           )}
         </div>
+
+        {/* Garbled-pattern CRUD */}
+        <div style={{ marginTop: 10, borderTop: "1px dashed var(--border)", paddingTop: 8 }}>
+          <button className="btn-ghost w-full"
+                  onClick={() => setGarbledOpen(o => !o)}
+                  style={{
+                    justifyContent: "space-between", padding: "4px 0",
+                    fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
+                    borderRadius: 0,
+                  }}>
+            <span>乱码识别模式（内置 {garbledData.builtin.length} · 自定义 {garbledData.user.length}）</span>
+            <span className="text-xs text-muted" style={{
+              transition: "transform 0.15s",
+              transform: garbledOpen ? "rotate(180deg)" : "none",
+              display: "inline-block",
+            }}>&#x25BC;</span>
+          </button>
+          {garbledOpen && (
+            <div style={{ marginTop: 6 }}>
+              <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
+                这些正则用于识别和清除乱码（HTML 转义、随机 ID、BBCode 等）。
+                内置模式始终启用；下方可添加自定义模式，或临时禁用某条。
+                清除乱码时还会自动尝试 6 种常见编码修复（GBK↔UTF-8 / Latin-1↔GBK / 双重转换）。
+              </div>
+              {garbledData.builtin.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div className="text-xs text-muted" style={{ marginBottom: 4 }}>内置：</div>
+                  <div className="flex" style={{ flexWrap: "wrap", gap: 4 }}>
+                    {garbledData.builtin.map((b, i) => (
+                      <span key={i} className="tag" style={{
+                        fontSize: 11, padding: "2px 6px",
+                        background: "var(--bg-card)", border: "1px solid var(--border)",
+                        color: "var(--text-secondary)",
+                      }} title={b.regex}>{b.name}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {garbledData.user.length > 0 && (
+                <div className="flex flex-col gap-4" style={{ marginBottom: 8 }}>
+                  {garbledData.user.map((p, i) => (
+                    <div key={i} className="flex gap-6 items-center" style={{
+                      padding: "4px 6px",
+                      border: "1px solid var(--border)", borderRadius: 4,
+                      opacity: p.enabled ? 1 : 0.5,
+                    }}>
+                      <input
+                        type="checkbox" checked={p.enabled}
+                        onChange={() => toggleGarbledPattern(i)}
+                        style={{ flexShrink: 0, width: 13, height: 13 }}
+                        title={p.enabled ? "禁用此模式" : "启用此模式"}
+                      />
+                      <span style={{ fontSize: 11, minWidth: 100, color: "var(--text-secondary)" }}>{p.name}</span>
+                      <code style={{
+                        flex: 1, minWidth: 0, fontSize: 11,
+                        fontFamily: "var(--font-mono)",
+                        color: "var(--text-secondary)",
+                        background: "var(--bg-card)", padding: "1px 6px", borderRadius: 2,
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}>{p.regex}</code>
+                      <button className="btn-icon"
+                              onClick={() => removeGarbledPattern(i)}
+                              style={{ fontSize: 14, color: "var(--error)" }}
+                              title="删除">&times;</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-6" style={{ alignItems: "center" }}>
+                <input
+                  className="input"
+                  placeholder="名称（可选）"
+                  value={newGarbled.name}
+                  onChange={e => setNewGarbled({ ...newGarbled, name: e.target.value })}
+                  style={{ width: 120, fontSize: 12 }}
+                />
+                <input
+                  className="input font-mono"
+                  placeholder="正则（例：&lt;[^&gt;]+&gt; 或 [A-Z0-9]{12,}）"
+                  value={newGarbled.regex}
+                  onChange={e => setNewGarbled({ ...newGarbled, regex: e.target.value })}
+                  onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addGarbledPattern(); } }}
+                  style={{ flex: 1, fontSize: 11 }}
+                />
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                        onClick={addGarbledPattern}
+                        disabled={!newGarbled.regex.trim()}>
+                  + 添加
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Empty-state CTA: when detection has been run but no chapters
@@ -1409,15 +1560,29 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                   撤销清理
                 </button>
               )}
-              <button className="btn"
-                      style={{ fontSize: 11, padding: "4px 12px", color: "var(--accent)", borderColor: "var(--accent)" }}
+              {/* Cleanup actions use FILLED color so they're visually
+                  distinct from the filter chips at the bottom — they're
+                  destructive commits, not view toggles. */}
+              <button
+                      style={{
+                        fontSize: 11, padding: "4px 12px",
+                        background: "var(--accent)", color: "#fff",
+                        border: "1px solid var(--accent)", borderRadius: 3,
+                        cursor: "pointer",
+                      }}
                       onClick={openParaCleanModal}
                       title="扫描所有正文章节内的题外话段落（如末尾的求月票），逐条预览后批量删除">
                 清除题外话段落
               </button>
               {chapters.some(c => c.is_garbled) && (
-                <button className="btn"
-                        style={{ fontSize: 11, padding: "4px 12px", color: "var(--error)", borderColor: "var(--error)" }}
+                <button
+                        style={{
+                          fontSize: 11, padding: "4px 12px",
+                          background: "var(--error)", color: "#fff",
+                          border: "1px solid var(--error)", borderRadius: 3,
+                          cursor: cleaningGarbled ? "wait" : "pointer",
+                          opacity: cleaningGarbled ? 0.7 : 1,
+                        }}
                         onClick={cleanGarbled}
                         disabled={cleaningGarbled}
                         title="一次性删除所有 HTML 注释 / 转义 / BBCode 等乱码">
@@ -1425,32 +1590,32 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 </button>
               )}
               {(chapters.some(c => c.pattern === "作者说章节")) && (
-                <button className="btn"
-                        style={{ fontSize: 11, padding: "4px 12px", color: "var(--gold)", borderColor: "var(--gold)" }}
+                <button
+                        style={{
+                          fontSize: 11, padding: "4px 12px",
+                          background: "var(--gold)", color: "#fff",
+                          border: "1px solid var(--gold)", borderRadius: 3,
+                          cursor: "pointer",
+                        }}
                         onClick={() => setBulkOpen(true)}
                         title="预览所有识别为「作者说章节」的整章并批量删除">
                   清除作者说章节（{chapters.filter(c => c.pattern === "作者说章节").length}）
                 </button>
               )}
-              <button className="btn"
-                      style={{ fontSize: 11, padding: "4px 12px" }}
+              <button
+                      style={{
+                        fontSize: 11, padding: "4px 12px",
+                        background: excluded.size > 0 ? "var(--purple)" : "var(--bg-surface-2)",
+                        color: excluded.size > 0 ? "#fff" : "var(--text-tertiary)",
+                        border: `1px solid ${excluded.size > 0 ? "var(--purple)" : "var(--border)"}`,
+                        borderRadius: 3,
+                        cursor: (applying || excluded.size === 0) ? "not-allowed" : "pointer",
+                        opacity: applying ? 0.7 : 1,
+                      }}
                       onClick={applyExclusions}
                       disabled={applying || excluded.size === 0}
                       title={excluded.size === 0 ? "未选择任何章节" : `物理删除 ${excluded.size} 章（会备份原文）`}>
                 {applying ? "清理中…" : `清理章节（${excluded.size}）`}
-              </button>
-              <button className="btn-primary"
-                      style={{ fontSize: 11, padding: "4px 12px" }}
-                      onClick={saveAllChapters}
-                      disabled={savingAll || chapters.length === 0}
-                      title={savedSummary.saved_count > 0
-                        ? `已保存 ${savedSummary.saved_count} 章 · 再次点击会覆盖`
-                        : "把当前 N 章永久存入数据库"}>
-                {savingAll
-                  ? "保存中…"
-                  : savedSummary.saved_count > 0
-                    ? `重新保存全部章节（已存 ${savedSummary.saved_count}）`
-                    : `保存全部章节（${chapters.length}）`}
               </button>
             </div>
           </div>
@@ -1715,6 +1880,35 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               );
               return [chapterEl, gapEl];
             })}
+          </div>
+
+          {/* Save-all-to-database action — placed BELOW the chapter
+              list as the final step the user takes after reviewing
+              and cleaning. Filled primary styling matches the rest
+              of the "commit" actions. */}
+          <div style={{
+            marginTop: 12, padding: 12,
+            border: "1px solid var(--border)", borderRadius: 4,
+            background: "var(--bg-surface)",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: 12, flexWrap: "wrap",
+          }}>
+            <div className="text-xs text-muted" style={{ flex: 1, minWidth: 200 }}>
+              确认章节列表无误后，将完整章节结构写入数据库供后续提取使用。
+              {savedSummary.saved_count > 0 && (
+                <> · <strong style={{ color: "var(--text-secondary)" }}>已存 {savedSummary.saved_count} 章</strong>，再次点击会覆盖。</>
+              )}
+            </div>
+            <button className="btn-primary"
+                    style={{ fontSize: 12, padding: "5px 14px" }}
+                    onClick={saveAllChapters}
+                    disabled={savingAll || chapters.length === 0}>
+              {savingAll
+                ? "保存中…"
+                : savedSummary.saved_count > 0
+                  ? `重新写入数据库（${chapters.length} 章）`
+                  : `将全部章节保存写入数据库（${chapters.length}）`}
+            </button>
           </div>
         </div>
       )}
