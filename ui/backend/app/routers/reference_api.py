@@ -733,11 +733,13 @@ def put_chapter_patterns(body: ChapterPatternsBody):
     for i, p in enumerate(body.patterns or []):
         if not isinstance(p, dict):
             raise HTTPException(400, f"第 {i + 1} 项格式错误")
-        name = (p.get("name") or "").strip() or f"自定义 {i + 1}"
         fmt = (p.get("format") or "").strip()
         regex = (p.get("regex") or "").strip()
         if not fmt and not regex:
             continue
+        # Per user request: when no explicit name, use the format text
+        # itself as the name (the format IS the identifier).
+        name = (p.get("name") or "").strip() or fmt or f"自定义 {i + 1}"
         # Validate by compiling the effective regex
         effective = regex or format_to_regex(fmt)
         try:

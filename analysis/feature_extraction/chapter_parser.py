@@ -107,6 +107,23 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"[\s　]*(?=\n[\s　]*\n)",
         re.MULTILINE,
     )),
+    # Author-aside "chapters" — short paragraph-isolated lines that
+    # contain author-note keywords (求月票 / 老书友请进 / 通知 / 加更 ...).
+    # Many web novels intersperse these between real chapters; the
+    # primary numbered pattern misses them and they get absorbed into
+    # the previous chapter's body. This pattern is ALWAYS merged with
+    # the auto-picked primary (see detect_chapters) so author asides
+    # surface as their own chapters, flagged for cleanup.
+    ("作者说章节", re.compile(
+        r"(?:^|\n[\s　]*\n)[\s　]*"
+        r"([^\n]{2,80}?"
+        r"(?:更新|通知|求月票|求订阅|求收藏|求推荐|推荐票|月票|打赏|"
+        r"感谢|道歉|致歉|抱歉|公告|请假|断更|休息|加更|拖更|多更|"
+        r"作者菌|作者大大|本作者|笔者|老书友|书友们|读者们|本章说|"
+        r"上架感言|完本感言|新书|码字|卡文|码完)"
+        r"[^\n]{0,80})[\s　]*(?=\n[\s　]*\n)",
+        re.MULTILINE,
+    )),
 ]
 
 _VOLUME_PAT = re.compile(
@@ -199,42 +216,61 @@ def _clean_title(s: str) -> str:
     return out
 
 
-def _build_chapters(text: str, matches: list[re.Match[str]],
-                     pattern_name: str) -> list[dict]:
-    """Materialize matches into chapter records.
+_UNNUMBERED_PATTERNS = {"末尾无标点", "作者说章节"}
+
+
+def _build_chapters(text: str,
+                     named_matches: list[tuple[str, re.Match[str]]]) -> list[dict]:
+    """Materialize a merged list of (pattern_name, match) pairs into
+    chapter records.
+
+    Accepts mixed patterns so the primary numbered pattern (e.g.
+    第N章) and secondary patterns (作者说章节, custom user formats) can
+    coexist in one chapter list. Matches must already be sorted by
+    ``match.start()``.
 
     Deduplication strategy: when a chapter number appears more than once
     (TOC + body, or repeated mentions), keep the occurrence whose
-    *content gap to the next match* is longest. That's almost always the
-    real body chapter — TOC entries are tightly packed and have no body
-    after them. Also drop matches whose content is < 80 chars *and* a
-    duplicate exists, since those are almost certainly TOC entries even
-    when no duplicate is found in the same scan.
+    *content gap to the next match* is longest. That's almost always
+    the real body chapter — TOC entries are tightly packed and have no
+    body after them. Adaptive short-gap dedup also catches standalone
+    TOC entries.
     """
-    if not matches:
+    if not named_matches:
         return []
 
     text_len = len(text)
+    matches = [m for _, m in named_matches]
+
+    def title_start(m: re.Match[str]) -> int:
+        """Position where the captured title begins. Differs from
+        ``m.start()`` when the pattern's prefix (e.g. ``(?:^|\\n\\n)``)
+        is part of the consumed match — without this, back-to-back
+        secondary matches produce 0-length content slices."""
+        try:
+            return m.start(1)
+        except (IndexError, error_re):
+            return m.start()
 
     def gap_to_next(i: int) -> int:
-        nxt = matches[i + 1].start() if i + 1 < len(matches) else text_len
+        nxt = title_start(matches[i + 1]) if i + 1 < len(matches) else text_len
         return max(0, nxt - matches[i].end())
 
-    # Group matches by their parsed chapter number; pick the one with the
-    # longest content gap as the winner.
+    def is_unnumbered_at(i: int) -> bool:
+        return named_matches[i][0] in _UNNUMBERED_PATTERNS
+
+    # Number-based dedup only applies to NUMBERED matches (unnumbered
+    # patterns synthesize indices, so collisions are meaningless).
     by_num: dict[int, list[int]] = {}
     for i, m in enumerate(matches):
+        if is_unnumbered_at(i):
+            continue
         n = cn2int(m.group(1))
         if n is None:
             continue
         by_num.setdefault(n, []).append(i)
 
     drop_idx: set[int] = set()
-    # If the pattern is the no-numbering kind, group(1) is the TITLE
-    # not a number — every match has its own "synthetic" number, so
-    # by_num is empty and no dedup happens. That's intentional: literary
-    # chapter headings rarely collide.
-    is_unnumbered = pattern_name == "末尾无标点"
     for n, idxs in by_num.items():
         if len(idxs) < 2:
             continue
@@ -243,12 +279,13 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
             if j != best:
                 drop_idx.add(j)
 
-    # Adaptive short-gap dedup. Compute the median gap; drop matches
-    # whose gap is BOTH absolutely small (< 80 chars) AND less than 25%
-    # of the median gap. This catches TOC entries densely packed at the
-    # start while preserving genuine short chapters in a uniformly
-    # short-chapter book.
-    surviving = [i for i in range(len(matches)) if i not in drop_idx]
+    # Adaptive short-gap dedup — applied ONLY to numbered matches.
+    # Secondary patterns (作者说章节, 末尾无标点, custom) can legitimately
+    # cluster close together (author asides between two body chapters),
+    # so excluding them from the gap calculation prevents the dedup
+    # from sweeping them out as TOC noise.
+    surviving = [i for i in range(len(matches))
+                 if i not in drop_idx and not is_unnumbered_at(i)]
     if len(surviving) >= 4:
         gaps = sorted(gap_to_next(i) for i in surviving)
         median_gap = gaps[len(gaps) // 2]
@@ -257,25 +294,22 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
             if gap_to_next(i) < threshold:
                 drop_idx.add(i)
 
-    pruned = [m for i, m in enumerate(matches) if i not in drop_idx]
-    if not pruned:
-        # Pathological — every match looked like TOC. Fall back to taking
-        # the second half of the original matches (heuristic: body chapters
-        # are usually in the latter portion of the text).
-        pruned = matches[len(matches) // 2:]
-    if not pruned:
-        pruned = matches
+    pruned_pairs = [named_matches[i] for i in range(len(named_matches)) if i not in drop_idx]
+    if not pruned_pairs:
+        pruned_pairs = named_matches[len(named_matches) // 2:]
+    if not pruned_pairs:
+        pruned_pairs = list(named_matches)
 
     vol_marks = [(m.start(), m.group(0).strip()[:60], cn2int(m.group(1)))
                  for m in _VOLUME_PAT.finditer(text)]
     chapters: list[dict] = []
     cur_vol = ""
-    for i, m in enumerate(pruned):
-        end = pruned[i + 1].start() if i + 1 < len(pruned) else text_len
+    pruned_matches = [m for _, m in pruned_pairs]
+    for i, (pname, m) in enumerate(pruned_pairs):
+        end = title_start(pruned_matches[i + 1]) if i + 1 < len(pruned_matches) else text_len
         while vol_marks and vol_marks[0][0] <= m.start():
             cur_vol = vol_marks.pop(0)[1]
-        # Tolerate user regexes that capture <2 groups, and special-case
-        # the unnumbered pattern where group(1) IS the title.
+        is_unnumbered = pname in _UNNUMBERED_PATTERNS
         try:
             g1 = m.group(1)
         except (IndexError, error_re):
@@ -299,31 +333,34 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
             "title": display_title,
             "title_only": title_text,
             "raw_marker": raw_marker,
-            "pattern": pattern_name,
+            "pattern": pname,
             "volume": cur_vol,
             "content": content,
         })
 
-    # Sort by chapter number so the UI shows them in story order even
-    # when the parsed sequence is non-monotonic (e.g. side chapters
-    # numbered out of order, or the chosen pattern matched something
-    # weird). Stable sort preserves original order for ties.
-    chapters.sort(key=lambda c: (c.get("number") or 0))
-    # Reindex post-sort
-    for i, c in enumerate(chapters):
-        c["index"] = i
-
-    # Drop adjacent duplicate-number entries left over after sort.
+    # Chapters are already in document order. Final dedup: only collapse
+    # adjacent NUMBERED chapters with the same parsed number (TOC + body
+    # collision). Unnumbered chapters never collapse.
     deduped: list[dict] = []
     for c in chapters:
-        if deduped and deduped[-1]["number"] == c["number"]:
-            # Keep whichever has more content.
+        if (
+            deduped
+            and c["pattern"] not in _UNNUMBERED_PATTERNS
+            and deduped[-1]["pattern"] == c["pattern"]
+            and deduped[-1]["number"] == c["number"]
+        ):
             if len(c["content"]) > len(deduped[-1]["content"]):
                 deduped[-1] = c
             continue
         deduped.append(c)
+    # Preserve each numbered chapter's parsed value as ``parsed_number``
+    # (for display via the title), and re-assign ``number`` to a clean
+    # 1, 2, 3... ordinal so the UI list is monotone in reading order
+    # regardless of mixed numbered + unnumbered chapters.
     for i, c in enumerate(deduped):
         c["index"] = i
+        c["parsed_number"] = c["number"] if c["pattern"] not in _UNNUMBERED_PATTERNS else None
+        c["number"] = i + 1
 
     return deduped
 
@@ -475,14 +512,67 @@ def detect_chapters(text: str,
         return {
             "chapters": chapters,
             "pattern": None,
+            "merged_patterns": [],
             "candidates": candidates,
             "fallback_used": True,
         }
 
-    chapters = _build_chapters(text, best_matches, best_name or "")
+    # Merge primary winner with secondary patterns:
+    #   - all custom user patterns (always merged — that's the point of
+    #     adding them)
+    #   - the built-in 作者说章节 pattern (always merged — author asides
+    #     don't compete for primary, they augment)
+    # Sort by position, drop overlapping secondary matches that overlap
+    # a primary match (within 50 chars to absorb whitespace differences).
+    primary_named: list[tuple[str, re.Match[str]]] = [
+        (best_name or "", m) for m in best_matches
+    ]
+    secondary_named: list[tuple[str, re.Match[str]]] = []
+    for name, pat in all_patterns:
+        if name == best_name:
+            continue
+        if name not in custom_names and name != "作者说章节":
+            continue
+        for m in pat.finditer(text):
+            secondary_named.append((name, m))
+
+    # Use TITLE bounds (group 1) for overlap math — secondary patterns
+    # that consume \n\n prefixes have misleading whole-match ranges.
+    def title_bounds(m: re.Match[str]) -> tuple[int, int]:
+        try:
+            return m.start(1), m.end(1)
+        except (IndexError, re.error):
+            return m.start(), m.end()
+
+    primary_title_ranges = [title_bounds(m) for m in best_matches]
+    def overlaps_primary(m: re.Match[str]) -> bool:
+        s, e = title_bounds(m)
+        for ps, pe in primary_title_ranges:
+            if s < pe and e > ps:
+                return True
+        return False
+    secondary_named = [(n, m) for n, m in secondary_named if not overlaps_primary(m)]
+
+    merged_named = primary_named + secondary_named
+    merged_named.sort(key=lambda x: title_bounds(x[1])[0])
+    # Drop any remaining overlaps (titles starting inside a previous
+    # match's title range).
+    deduped_named: list[tuple[str, re.Match[str]]] = []
+    last_end = -1
+    for name, m in merged_named:
+        s, e = title_bounds(m)
+        if s < last_end:
+            continue
+        deduped_named.append((name, m))
+        last_end = e
+
+    chapters = _build_chapters(text, deduped_named)
+    # Which patterns actually contributed at least one chapter
+    contributing = sorted({c["pattern"] for c in chapters if c.get("pattern")})
     return {
         "chapters": chapters,
         "pattern": best_name,
+        "merged_patterns": contributing,
         "candidates": candidates,
         "fallback_used": False,
     }
@@ -536,8 +626,16 @@ def flag_author_notes(chapters: list[dict]) -> list[dict]:
         reasons: list[str] = []
         has_strong_signal = False
 
-        # A) Author keyword hits (STRONG signal)
-        hits = [kw for kw in _AUTHOR_KEYWORDS if kw in content]
+        # 0) If this chapter was detected by the 作者说章节 pattern, it's
+        # an author aside by construction — auto-flag with high score.
+        if c.get("pattern") == "作者说章节":
+            has_strong_signal = True
+            score += 6
+            reasons.append("由「作者说章节」格式识别")
+
+        # A) Author keyword hits in BOTH title and content (STRONG signal)
+        haystack = content + " " + (c.get("title") or "")
+        hits = [kw for kw in _AUTHOR_KEYWORDS if kw in haystack]
         if hits:
             has_strong_signal = True
             score += min(5, len(hits) * 2)

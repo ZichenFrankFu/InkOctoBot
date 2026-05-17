@@ -107,6 +107,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [editingChapter, setEditingChapter] = useState<{ number: number; title: string; content: string } | null>(null);
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
+  // Bulk clean-flagged modal
+  const [bulkOpen, setBulkOpen] = useState(false);
+  // Auto-trigger detection at most once per mount
+  const autoStartedRef = useRef(false);
 
   const pollTimerRef = useRef<number | null>(null);
 
@@ -136,6 +140,38 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   }, []);
 
   useEffect(() => { fetchStatus(); fetchPlan(); fetchPatterns(); }, [fetchStatus, fetchPlan, fetchPatterns]);
+
+  // Auto-run smart detection on first mount when:
+  //   - work has uploaded text
+  //   - no in-memory job is running
+  //   - no persisted preprocess result exists
+  // The two-step confirm flow remains available manually (重新识别).
+  useEffect(() => {
+    if (autoStartedRef.current) return;
+    if (!hasFullText || !status) return;
+    if (status.state !== "idle" || (status.chapters && status.chapters.length > 0)) {
+      autoStartedRef.current = true;  // already done previously
+      return;
+    }
+    autoStartedRef.current = true;
+    (async () => {
+      try {
+        const g = await apiGet<{ candidates: any[]; suggested: string | null }>(
+          `/api/references/works/${refId}/preprocess/guess_format`,
+        );
+        if (g.suggested) {
+          await startJob(g.suggested);
+        } else {
+          // Couldn't guess — open the confirm panel so the user can pick
+          setGuessCandidates(g.candidates);
+          if (g.candidates?.length) setChosenFormat(g.candidates[0].name);
+        }
+      } catch (e: any) {
+        toast(e?.message || "自动识别失败", "error");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasFullText, status?.state, status?.chapters?.length, refId]);
 
   const savePatterns = async (next: ChapterPattern[]) => {
     try {
@@ -197,6 +233,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       if (!resp.ok) throw new Error(await resp.text());
       toast(`已追加 ${file.name}`, "success");
       setStatus(null);
+      autoStartedRef.current = false;
       await fetchStatus();
       await fetchPlan();
       await onAfterApplyExclusions?.();
@@ -281,6 +318,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       toast(`第 ${editingChapter.number} 章已保存`, "success");
       setEditingChapter(null);
+      setStatus(null);
+      autoStartedRef.current = false;
       await fetchStatus();
       await fetchPlan();
     } catch (e: any) {
@@ -298,6 +337,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       toast(`已恢复 ${r.restored_chapters.length} 章（${fmtChars(r.restored_char_count)}）`, "success");
       setStatus(null);
+      autoStartedRef.current = false;
       await fetchStatus();
       await fetchPlan();
       await onAfterApplyExclusions?.();
@@ -334,7 +374,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast("未选择任何要排除的章节", "info");
       return;
     }
-    if (!confirm(`将从正文中物理删除 ${excluded.size} 个章节，无法撤销。继续？`)) return;
+    if (!confirm(`将从正文中物理删除 ${excluded.size} 个章节，可撤销一次。继续？`)) return;
     setApplying(true);
     try {
       const r = await apiPost<{ ok: boolean; removed_chapters: number[]; new_char_count: number }>(
@@ -345,12 +385,42 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast(`已删除 ${r.removed_chapters.length} 章，现剩 ${fmtChars(r.new_char_count)}`, "success");
       setExcluded(new Set());
       setStatus(null);
+      autoStartedRef.current = false;  // allow re-detect after text change
       await onAfterApplyExclusions?.();
-      // Re-fetch — the on-disk text changed so detection should be re-run
       await fetchStatus();
       await fetchPlan();
     } catch (e: any) {
       toast(e?.message || "应用失败", "error");
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const bulkCleanFlagged = async () => {
+    const flaggedNums = (status?.chapters || [])
+      .filter(c => c.is_author_note)
+      .map(c => c.number);
+    if (flaggedNums.length === 0) {
+      toast("没有标记为题外话的章节", "info");
+      return;
+    }
+    setApplying(true);
+    try {
+      const r = await apiPost<{ removed_chapters: number[]; new_char_count: number }>(
+        `/api/references/works/${refId}/preprocess/apply_exclusions`,
+        { excluded_chapters: flaggedNums },
+        { timeoutMs: 120_000 },
+      );
+      toast(`已删除 ${r.removed_chapters.length} 章疑似题外话`, "success");
+      setBulkOpen(false);
+      setExcluded(new Set());
+      setStatus(null);
+      autoStartedRef.current = false;
+      await onAfterApplyExclusions?.();
+      await fetchStatus();
+      await fetchPlan();
+    } catch (e: any) {
+      toast(e?.message || "清除失败", "error");
     } finally {
       setApplying(false);
     }
@@ -732,18 +802,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         />
                         <input
                           className="input"
-                          placeholder="名称（仅自己看，如：卷N）"
-                          value={p.name}
-                          onChange={e => updatePattern(i, { name: e.target.value })}
-                          style={{ width: 140, fontSize: 12 }}
-                        />
-                        <input
-                          className="input"
-                          placeholder="格式（如：第N章、N、、卷N）"
+                          placeholder="格式（如：第N章、N、、卷N）— 把章节号位置写成 N"
                           value={p.format || ""}
-                          onChange={e => updatePattern(i, { format: e.target.value, regex: "" })}
+                          onChange={e => updatePattern(i, { format: e.target.value, regex: "", name: e.target.value })}
                           style={{ flex: 1, fontSize: 12 }}
-                          title="把章节号位置写成 N，其它字符照写即可"
+                          title="格式即名字 — 把章节号位置写成 N，其它字符照写"
                         />
                         {isWinner && (
                           <span className="tag" style={{
@@ -821,6 +884,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         onClick={undoExclusions}
                         title={`撤销上一次清理（${status.last_removed_chapters?.length || 0} 章）`}>
                   撤销清理
+                </button>
+              )}
+              {(status?.flagged_count || 0) > 0 && (
+                <button className="btn"
+                        style={{ fontSize: 11, padding: "4px 12px", color: "var(--accent)", borderColor: "var(--accent)" }}
+                        onClick={() => setBulkOpen(true)}
+                        title={`预览全部疑似题外话章节并一键清除`}>
+                  一键清除疑似题外话（{status?.flagged_count}）
                 </button>
               )}
               <button className="btn-primary"
@@ -1013,6 +1084,98 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Bulk clean-flagged modal */}
+      {bulkOpen && (
+        <div
+          style={{
+            position: "fixed", inset: 0, zIndex: 1000,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={e => { if (e.target === e.currentTarget && !applying) setBulkOpen(false); }}
+        >
+          <div style={{
+            width: "min(820px, 100%)", maxHeight: "90vh",
+            display: "flex", flexDirection: "column",
+            background: "var(--bg-app)",
+            border: "1px solid var(--border)", borderRadius: 6,
+          }}>
+            <div style={{
+              padding: "10px 14px", borderBottom: "1px solid var(--border)",
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  一键清除疑似题外话
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  下方列出本作品中所有被识别为「题外话」的章节内容。确认后将批量从正文中删除，可撤销一次。
+                </div>
+              </div>
+              <button className="btn" onClick={() => setBulkOpen(false)} disabled={applying}>关闭</button>
+            </div>
+            <div style={{ padding: 14, flex: 1, overflow: "auto" }}>
+              {(status?.chapters || []).filter(c => c.is_author_note).length === 0 ? (
+                <div className="text-xs text-muted">未识别到任何疑似题外话章节。</div>
+              ) : (
+                <div className="flex flex-col gap-8">
+                  {(status?.chapters || []).filter(c => c.is_author_note).map(c => (
+                    <div key={c.number} style={{
+                      border: "1px solid var(--gold)", borderRadius: 4,
+                      padding: 8, background: "rgba(250,204,21,0.06)",
+                    }}>
+                      <div className="flex items-center gap-8" style={{ marginBottom: 6 }}>
+                        <span className="tag" style={{
+                          fontSize: 10, padding: "1px 6px",
+                          color: "var(--text-secondary)", border: "1px solid var(--border)",
+                          background: "transparent", fontFamily: "var(--font-mono)",
+                        }}>#{c.number}</span>
+                        <div className="truncate" style={{
+                          fontSize: 12, fontWeight: 500, color: "var(--text-primary)", flex: 1, minWidth: 0,
+                        }}>{c.title}</div>
+                        <span className="text-xs text-muted" style={{ fontFamily: "var(--font-mono)" }}>
+                          {fmtChars(c.char_count)}
+                        </span>
+                      </div>
+                      {c.author_note_reasons && c.author_note_reasons.length > 0 && (
+                        <div style={{ marginBottom: 6 }}>
+                          {c.author_note_reasons.map((r, i) => (
+                            <span key={i} className="tag" style={{
+                              marginRight: 4, fontSize: 10, padding: "1px 6px",
+                              background: "var(--bg-surface-2)", color: "var(--text-secondary)",
+                              border: "1px solid var(--border)",
+                            }}>{r}</span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="text-xs" style={{
+                        padding: 6, background: "var(--bg-card)", borderRadius: 3,
+                        color: "var(--text-secondary)", lineHeight: 1.65,
+                        whiteSpace: "pre-wrap",
+                      }}>
+                        {c.preview_head && <div><span className="text-muted">开头 </span>{c.preview_head}</div>}
+                        {c.preview_tail && <div style={{ marginTop: 4 }}><span className="text-muted">结尾 </span>{c.preview_tail}</div>}
+                        {(!c.preview_head && !c.preview_tail) && <div className="text-muted">（无内容预览 — 标题本身即为题外话）</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{
+              padding: "10px 14px", borderTop: "1px solid var(--border)",
+              display: "flex", justifyContent: "flex-end", gap: 8,
+            }}>
+              <button className="btn" onClick={() => setBulkOpen(false)} disabled={applying}>取消</button>
+              <button className="btn-primary" onClick={bulkCleanFlagged} disabled={applying || (status?.flagged_count || 0) === 0}>
+                {applying ? "清除中…" : `确认清除 ${status?.flagged_count || 0} 章`}
+              </button>
+            </div>
           </div>
         </div>
       )}
