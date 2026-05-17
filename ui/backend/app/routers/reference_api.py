@@ -397,11 +397,12 @@ def list_chapters(ref_id: str, preview_chars: int = Query(120, ge=0, le=2000)):
             if preview_chars > 0:
                 head = content[:preview_chars].replace("\n", " ").strip()
                 preview = head + ("…" if len(content) > preview_chars else "")
+            from analysis.feature_extraction.chapter_parser import visible_char_count
             out.append({
                 "number": i + 1,
                 "title": (c.get("title") or "").strip() or f"第 {i + 1} 章",
                 "volume": (c.get("volume") or "").strip() or None,
-                "char_count": len(content),
+                "char_count": visible_char_count(content),
                 "preview": preview,
             })
         return {
@@ -500,22 +501,18 @@ def reset_segment_plan(ref_id: str):
 # ───────────────────── Preprocess job (chapter detection + author-note flagging) ─────────────────────
 
 
-@router.post("/works/{ref_id}/preprocess/start")
-async def preprocess_start(ref_id: str):
-    """Kick off (or return the existing) preprocess job for this work.
-
-    The job:
-      1. Re-detects chapters using the multi-format parser (第N章 / 第N回 /
-         "1、标题" / Chapter N / 中文数字 …).
-      2. Flags chapters that look like author asides via heuristic.
-      3. Reports progress chapter-by-chapter (UI polls /status).
-    Idempotent — calling again while running returns the same job.
-
-    Must be ``async def`` so ``asyncio.create_task`` (inside ``start_job``)
-    has a running event loop to attach the worker task to.
-    """
-    from analysis.feature_extraction import preprocess_jobs
-    from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+@router.get("/works/{ref_id}/preprocess/guess_format")
+def preprocess_guess_format(ref_id: str):
+    """Quick scoring pass: returns every built-in + custom pattern with
+    its hit count and score against this work's text, sorted by score.
+    The UI uses this to present the user with the suggested format
+    before running full detection (the "猜测 → 确认 → 识别" flow)."""
+    from analysis.feature_extraction.chapter_parser import (
+        _PATTERNS as BUILTIN, _compile_extra, _score_pattern,
+    )
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, _load_chapter_patterns,
+    )
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -524,10 +521,168 @@ async def preprocess_start(ref_id: str):
     text = pipe._load_text(w)
     if not text:
         raise HTTPException(400, "尚未上传正文")
-    from analysis.feature_extraction.pipeline import _load_chapter_patterns
     extras = _load_chapter_patterns()
-    job = await preprocess_jobs.start_job(ref_id, text, extra_patterns=extras)
+    custom = _compile_extra(extras)
+    all_pats = list(BUILTIN) + custom
+    custom_names = {n for n, _ in custom}
+    out = []
+    for name, pat in all_pats:
+        ms = list(pat.finditer(text))
+        score = _score_pattern(ms, len(text))
+        out.append({
+            "name": name, "count": len(ms), "score": round(score, 3),
+            "custom": name in custom_names,
+        })
+    out.sort(key=lambda c: -c["score"])
+    suggested = out[0]["name"] if out and out[0]["score"] >= 1.0 else None
+    return {"candidates": out, "suggested": suggested, "text_len": len(text)}
+
+
+@router.post("/works/{ref_id}/preprocess/start")
+async def preprocess_start(ref_id: str,
+                            force_pattern: Optional[str] = Query(None)):
+    """Kick off (or return the existing) preprocess job for this work.
+
+    Pass ``force_pattern`` to skip auto-scoring and use a specific format
+    (built-in name or custom-pattern name). When omitted, the scorer
+    picks the best-matching format automatically.
+    """
+    from analysis.feature_extraction import preprocess_jobs
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, _load_chapter_patterns,
+    )
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
+    extras = _load_chapter_patterns()
+    job = await preprocess_jobs.start_job(
+        ref_id, text, extra_patterns=extras, force_pattern=force_pattern,
+    )
     return job.to_status()
+
+
+class ChapterContentEdit(BaseModel):
+    content: str
+
+
+@router.get("/works/{ref_id}/preprocess/chapter/{number}/content")
+def get_chapter_content(ref_id: str, number: int):
+    """Return the FULL content of one chapter. Used by the inline editor
+    so the user can trim a tail "求月票" aside without removing the whole
+    chapter."""
+    from analysis.feature_extraction.chapter_parser import (
+        detect_chapters, visible_char_count,
+    )
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, _load_chapter_patterns,
+    )
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
+    extras = _load_chapter_patterns()
+    result = detect_chapters(text, extra_patterns=extras)
+    for c in result["chapters"]:
+        if c["number"] == number:
+            return {
+                "number": number,
+                "title": c["title"],
+                "content": c["content"],
+                "char_count": visible_char_count(c["content"]),
+            }
+    raise HTTPException(404, f"未找到第 {number} 章")
+
+
+@router.patch("/works/{ref_id}/preprocess/chapter/{number}/content")
+def patch_chapter_content(ref_id: str, number: int, body: ChapterContentEdit):
+    """Replace a chapter's body with ``content``. Snapshots the file to
+    ``{path}.bak`` first (overwriting any earlier backup) so the user
+    can undo via the existing undo_exclusions endpoint. Other chapters
+    are left untouched."""
+    from analysis.feature_extraction.chapter_parser import (
+        detect_chapters, replace_chapter_content, visible_char_count,
+    )
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, _load_chapter_patterns,
+    )
+    from analysis.feature_extraction import preprocess_jobs
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
+    file_path = w.get("file_path")
+    if not file_path:
+        raise HTTPException(400, "作品没有关联的文件路径")
+    extras = _load_chapter_patterns()
+    result = detect_chapters(text, extra_patterns=extras)
+    try:
+        new_text = replace_chapter_content(
+            text, result["chapters"], number, body.content,
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    src = Path(file_path)
+    bak = src.with_suffix(src.suffix + ".bak")
+    try:
+        bak.write_text(text, encoding="utf-8")
+        src.write_text(new_text, encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(500, f"写入文件失败：{e}")
+    # Update the persisted preprocess result so the chapter list reflects
+    # the new content / char count without re-running detection.
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    if isinstance(state, dict):
+        pre = state.get("preprocess") or {}
+        chapters_list = pre.get("chapters") or []
+        from analysis.feature_extraction.chapter_parser import make_preview
+        for c in chapters_list:
+            if c.get("number") == number:
+                c["char_count"] = visible_char_count(body.content)
+                pv = make_preview(body.content)
+                c["preview_head"] = pv["head"]
+                c["preview_tail"] = pv["tail"]
+                break
+        pre["chapters"] = chapters_list
+        state["preprocess"] = pre
+        state["exclusion_backup"] = {
+            "path": str(bak),
+            "removed_chapters": [],
+            "prev_char_count": len(text),
+            "edited_chapter": number,
+        }
+        # Clear segment plan / completed results since text changed
+        state.pop("custom_plan", None)
+        state.pop("plan", None)
+        state["results"] = {}
+        state["completed"] = []
+    db.update_work(
+        ref_id,
+        segments_json=json.dumps(state, ensure_ascii=False),
+        preprocessing_status="pending",
+    )
+    preprocess_jobs.clear(ref_id)
+    return {
+        "ok": True,
+        "number": number,
+        "new_char_count": visible_char_count(body.content),
+        "can_undo": True,
+    }
 
 
 # ── User-defined chapter patterns (stored in settings.json) ──
@@ -750,9 +905,10 @@ def preprocess_status(ref_id: str):
                 pass
         out = job.to_status()
         if job.state in ("done", "cancelled", "error"):
+            from analysis.feature_extraction.chapter_parser import visible_char_count
             out["chapters"] = [
                 {**{k: v for k, v in c.items() if k != "content"},
-                 "char_count": len(c.get("content") or "")}
+                 "char_count": visible_char_count(c.get("content") or "")}
                 for c in job.chapters
             ]
         # Surface undo availability so the UI can show a "撤销清理" button

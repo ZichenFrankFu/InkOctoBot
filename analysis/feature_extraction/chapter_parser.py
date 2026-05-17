@@ -95,12 +95,34 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"^[\s　]*([0-9]+)[\s]*[.]\s*([^\n]{1,80})$",
         re.MULTILINE,
     )),
+    # No-numbering format: short paragraphs (1–26 chars) that don't end
+    # in terminal punctuation and stand alone between blank lines.
+    # Captures the WHOLE title as group(1); _build_chapters detects this
+    # case (cn2int(group(1)) returns None) and synthesizes 1, 2, 3…
+    # numbers in document order. Common in literary works that title
+    # chapters with a phrase but no chapter number.
+    ("末尾无标点", re.compile(
+        r"(?:^|\n[\s　]*\n)[\s　]*"
+        r"([^\s。！？；，,.!?…：:　][^\n。！？；，,.!?…：:]{0,24}[^\s。！？；，,.!?…：:　])"
+        r"[\s　]*(?=\n[\s　]*\n)",
+        re.MULTILINE,
+    )),
 ]
 
 _VOLUME_PAT = re.compile(
     r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9]+)\s*卷[\s：:　.、，,．]*([^\n]{0,80})$",
     re.MULTILINE,
 )
+
+
+def visible_char_count(s: str) -> int:
+    """Count meaningful characters: everything except whitespace (\\s).
+    Matches the standard Word-style 字数 convention — each CJK char,
+    each ASCII letter/digit, each punctuation mark counts; spaces /
+    tabs / newlines / full-width spaces do not."""
+    if not s:
+        return 0
+    return sum(1 for c in s if not c.isspace() and c != "　")
 
 
 def _score_pattern(matches: list[re.Match[str]], text_len: int) -> float:
@@ -127,11 +149,20 @@ def _score_pattern(matches: list[re.Match[str]], text_len: int) -> float:
             nums.append(ni)
         if len(m.group(0)) < 50:
             short_count += 1
-    ordered = 0
-    for i in range(1, len(nums)):
-        if nums[i] > nums[i - 1]:
-            ordered += 1
-    ordered_frac = ordered / max(1, len(nums) - 1)
+    if not nums:
+        # Pattern captures a title (not a number) — synthesized 1, 2, 3 …
+        # numbering is always monotonic, so ordered_frac is trivially 1.0.
+        # We penalize slightly via a 0.9 multiplier so a real numbered
+        # pattern with the same match count wins over an unnumbered one
+        # (avoids accidental hits in literary works that also have
+        # 第N章 markers).
+        ordered_frac = 0.9
+    else:
+        ordered = 0
+        for i in range(1, len(nums)):
+            if nums[i] > nums[i - 1]:
+                ordered += 1
+        ordered_frac = ordered / max(1, len(nums) - 1)
     short_frac = short_count / n
     # Spacing regularity
     starts = [m.start() for m in matches]
@@ -199,6 +230,11 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
         by_num.setdefault(n, []).append(i)
 
     drop_idx: set[int] = set()
+    # If the pattern is the no-numbering kind, group(1) is the TITLE
+    # not a number — every match has its own "synthetic" number, so
+    # by_num is empty and no dedup happens. That's intentional: literary
+    # chapter headings rarely collide.
+    is_unnumbered = pattern_name == "末尾无标点"
     for n, idxs in by_num.items():
         if len(idxs) < 2:
             continue
@@ -207,15 +243,19 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
             if j != best:
                 drop_idx.add(j)
 
-    # Also drop standalone short-gap matches (likely TOC entries with no
-    # duplicate yet because subsequent TOC entries pushed the body match
-    # out of the dedup pair). Threshold: gap < 80 chars is essentially
-    # no body at all.
-    for i in range(len(matches)):
-        if i in drop_idx:
-            continue
-        if gap_to_next(i) < 80:
-            drop_idx.add(i)
+    # Adaptive short-gap dedup. Compute the median gap; drop matches
+    # whose gap is BOTH absolutely small (< 80 chars) AND less than 25%
+    # of the median gap. This catches TOC entries densely packed at the
+    # start while preserving genuine short chapters in a uniformly
+    # short-chapter book.
+    surviving = [i for i in range(len(matches)) if i not in drop_idx]
+    if len(surviving) >= 4:
+        gaps = sorted(gap_to_next(i) for i in surviving)
+        median_gap = gaps[len(gaps) // 2]
+        threshold = min(80, max(0, median_gap * 0.25))
+        for i in surviving:
+            if gap_to_next(i) < threshold:
+                drop_idx.add(i)
 
     pruned = [m for i, m in enumerate(matches) if i not in drop_idx]
     if not pruned:
@@ -234,22 +274,29 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
         end = pruned[i + 1].start() if i + 1 < len(pruned) else text_len
         while vol_marks and vol_marks[0][0] <= m.start():
             cur_vol = vol_marks.pop(0)[1]
-        # Tolerate user regexes that capture <2 groups
+        # Tolerate user regexes that capture <2 groups, and special-case
+        # the unnumbered pattern where group(1) IS the title.
         try:
-            num_text = m.group(1)
+            g1 = m.group(1)
         except (IndexError, error_re):
-            num_text = str(i + 1)
-        try:
-            title_text = (m.group(2) or "").strip().rstrip("\r")
-        except (IndexError, error_re):
-            title_text = ""
+            g1 = ""
+        if is_unnumbered:
+            num_text = ""
+            title_text = (g1 or "").strip().rstrip("\r")
+        else:
+            num_text = g1 or ""
+            try:
+                title_text = (m.group(2) or "").strip().rstrip("\r")
+            except (IndexError, error_re):
+                title_text = ""
         title_text = _clean_title(title_text)
         raw_marker = _clean_title(m.group(0).strip().rstrip("\r"))
         normalized = cn2int(num_text) or (i + 1)
         content = text[m.end():end].strip()
+        display_title = title_text if is_unnumbered else raw_marker[:60]
         chapters.append({
             "number": normalized,
-            "title": raw_marker[:60],
+            "title": display_title,
             "title_only": title_text,
             "raw_marker": raw_marker,
             "pattern": pattern_name,
@@ -372,21 +419,19 @@ def _compile_extra(raw_patterns: list[dict] | None) -> list[tuple[str, re.Patter
 
 
 def detect_chapters(text: str,
-                     extra_patterns: list[dict] | None = None) -> dict[str, Any]:
-    """Run all patterns (built-in + user-supplied), pick the best by score,
+                     extra_patterns: list[dict] | None = None,
+                     force_pattern: str | None = None) -> dict[str, Any]:
+    """Run all patterns (built-in + user-supplied), pick the best by score
+    (or honor ``force_pattern`` if the user picked one explicitly),
     return chapters + diagnostics.
 
     ``extra_patterns`` lets users add their own format (e.g. "卷X-Y") via
-    settings.json["chapter_patterns"]. Each user regex must capture two
-    groups: ``(number, title)``. If a user pattern wins the scoring, the
-    chapters use it.
+    settings.json["chapter_patterns"].
 
-    Returns: {
-      "chapters": [...],
-      "pattern": "第N章" | "数字、标题" | ... | None,
-      "candidates": [{name, count, score, custom?}, ...],
-      "fallback_used": bool,
-    }
+    ``force_pattern`` overrides auto-scoring — useful when the user
+    confirmed a specific format in the UI (the "guess → confirm → run"
+    flow). Falls back to auto-scoring if the named pattern produces zero
+    matches.
     """
     builtin = list(_PATTERNS)
     custom = _compile_extra(extra_patterns)
@@ -396,6 +441,7 @@ def detect_chapters(text: str,
     best_name: str | None = None
     best_matches: list[re.Match[str]] = []
     best_score = 0.0
+    forced_hit = False
     for name, pat in all_patterns:
         ms = list(pat.finditer(text))
         score = _score_pattern(ms, len(text))
@@ -403,7 +449,13 @@ def detect_chapters(text: str,
             "name": name, "count": len(ms), "score": round(score, 3),
             "custom": name in custom_names,
         })
-        if score > best_score:
+        if force_pattern and name == force_pattern and ms:
+            # Honor the user's explicit pick (skip scoring tiebreak).
+            best_score = max(score, 1.0)
+            best_matches = ms
+            best_name = name
+            forced_hit = True
+        elif not forced_hit and score > best_score:
             best_score = score
             best_matches = ms
             best_name = name
@@ -576,6 +628,29 @@ def make_preview(content: str, head_chars: int = 180, tail_chars: int = 140) -> 
             tail = tail[idx + 1:]
             break
     return {"head": head.strip(), "tail": tail.strip()}
+
+
+def replace_chapter_content(text: str, chapters: list[dict],
+                              chapter_number: int, new_content: str) -> str:
+    """Return a new full-text where chapter ``chapter_number``'s body has
+    been swapped for ``new_content``. Reassembles by concatenating every
+    chapter's heading + body in order — same shape as ``apply_exclusions``
+    so the on-disk file format stays consistent across edits."""
+    parts: list[str] = []
+    found = False
+    for c in chapters:
+        marker = c.get("raw_marker") or c.get("title") or ""
+        if c.get("number") == chapter_number:
+            body = (new_content or "").strip()
+            found = True
+        else:
+            body = c.get("content") or ""
+        if marker:
+            parts.append(marker)
+        parts.append(body)
+    if not found:
+        raise ValueError(f"chapter {chapter_number} not found")
+    return "\n\n".join(p for p in parts if p)
 
 
 def apply_exclusions(text: str, chapters: list[dict], excluded_numbers: set[int]) -> str:

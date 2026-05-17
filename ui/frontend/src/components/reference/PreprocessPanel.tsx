@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { apiGet, apiPost, apiPut } from "../../api/client";
+import { apiGet, apiPost, apiPut, apiPatch } from "../../api/client";
 import { useToast } from "../shared/Toast";
 
 interface ChapterPattern {
@@ -97,6 +97,16 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   // Multi-file upload (append mode)
   const appendFileInputRef = useRef<HTMLInputElement | null>(null);
   const [appending, setAppending] = useState(false);
+  // Format-guess state — populated by /preprocess/guess_format before
+  // detection runs. ``chosenFormat`` is what the user confirmed (or
+  // the auto-suggested default until they pick something else).
+  const [guessCandidates, setGuessCandidates] = useState<{ name: string; count: number; score: number; custom: boolean }[] | null>(null);
+  const [chosenFormat, setChosenFormat] = useState<string>("");
+  const [guessing, setGuessing] = useState(false);
+  // Per-chapter content edit modal
+  const [editingChapter, setEditingChapter] = useState<{ number: number; title: string; content: string } | null>(null);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
 
   const pollTimerRef = useRef<number | null>(null);
 
@@ -212,14 +222,71 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     };
   }, [status?.state, fetchStatus]);
 
-  const startJob = async () => {
+  const guessFormat = useCallback(async () => {
+    setGuessing(true);
     try {
-      const r = await apiPost<PreprocessStatus>(`/api/references/works/${refId}/preprocess/start`, {});
+      const r = await apiGet<{ candidates: any[]; suggested: string | null; text_len: number }>(
+        `/api/references/works/${refId}/preprocess/guess_format`,
+      );
+      setGuessCandidates(r.candidates || []);
+      // Default the dropdown to the suggested winner so the user just
+      // has to confirm. Falls back to the first candidate.
+      if (r.suggested) setChosenFormat(r.suggested);
+      else if (r.candidates && r.candidates.length > 0) setChosenFormat(r.candidates[0].name);
+    } catch (e: any) {
+      toast(e?.message || "猜测失败", "error");
+    } finally {
+      setGuessing(false);
+    }
+  }, [refId, toast]);
+
+  const startJob = async (forcePattern?: string) => {
+    const fp = forcePattern || chosenFormat;
+    try {
+      const qs = fp ? `?force_pattern=${encodeURIComponent(fp)}` : "";
+      const r = await apiPost<PreprocessStatus>(
+        `/api/references/works/${refId}/preprocess/start${qs}`, {},
+      );
       setStatus(r);
       setExcluded(new Set());
-      toast("已开始智能识别章节", "info");
+      toast(fp ? `已用「${fp}」格式开始识别` : "已开始智能识别章节", "info");
     } catch (e: any) {
       toast(e?.message || "启动失败", "error");
+    }
+  };
+
+  const openChapterEdit = async (number: number, title: string) => {
+    setEditingChapter({ number, title, content: "" });
+    setEditLoading(true);
+    try {
+      const r = await apiGet<{ content: string }>(
+        `/api/references/works/${refId}/preprocess/chapter/${number}/content`,
+      );
+      setEditingChapter({ number, title, content: r.content || "" });
+    } catch (e: any) {
+      toast(e?.message || "加载章节内容失败", "error");
+      setEditingChapter(null);
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const saveChapterEdit = async () => {
+    if (!editingChapter) return;
+    setEditSaving(true);
+    try {
+      await apiPatch(
+        `/api/references/works/${refId}/preprocess/chapter/${editingChapter.number}/content`,
+        { content: editingChapter.content },
+      );
+      toast(`第 ${editingChapter.number} 章已保存`, "success");
+      setEditingChapter(null);
+      await fetchStatus();
+      await fetchPlan();
+    } catch (e: any) {
+      toast(e?.message || "保存失败", "error");
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -434,9 +501,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
           </div>
           <div className="flex items-center gap-6" style={{ flexWrap: "wrap" }}>
-            {state === "idle" && (
-              <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }} onClick={startJob}>
-                智能识别章节
+            {(state === "idle" || state === "done" || state === "cancelled" || state === "error") && !guessCandidates && (
+              <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }}
+                      onClick={guessFormat} disabled={guessing}
+                      title="先扫描全文猜测章节格式，再让你确认后进行识别">
+                {guessing ? "猜测中…" : (state === "idle" ? "猜测章节格式" : "重新识别")}
               </button>
             )}
             {state === "running" && (
@@ -450,11 +519,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} onClick={resumeJob}>恢复</button>
                 <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)" }} onClick={cancelJob}>取消</button>
               </>
-            )}
-            {(state === "done" || state === "cancelled" || state === "error") && (
-              <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={startJob}>
-                重新识别
-              </button>
             )}
             <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={onUpload}>
               重新上传
@@ -477,6 +541,73 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </button>
           </div>
         </div>
+
+        {/* Format-pick step — appears after "猜测章节格式", before detection runs */}
+        {guessCandidates && state !== "running" && state !== "paused" && (
+          <div style={{
+            padding: 10, marginBottom: 10,
+            border: "1px solid var(--accent)", borderRadius: 4,
+            background: "var(--accent-subtle)",
+          }}>
+            <div className="text-xs" style={{ marginBottom: 8, color: "var(--accent)", fontWeight: 600 }}>
+              请确认章节格式
+            </div>
+            <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
+              已扫描全文，下方是各候选格式在本作品中的匹配数。默认选中匹配最多的，可改选其他或先到「自定义章节格式」添加。
+            </div>
+            <div className="flex flex-col gap-4" style={{ marginBottom: 10 }}>
+              {guessCandidates.slice(0, 8).map(c => (
+                <label key={c.name} style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: "4px 8px",
+                  border: `1px solid ${chosenFormat === c.name ? "var(--accent)" : "var(--border)"}`,
+                  borderRadius: 3,
+                  background: chosenFormat === c.name ? "var(--bg-card)" : "transparent",
+                  cursor: c.count > 0 ? "pointer" : "not-allowed",
+                  opacity: c.count > 0 ? 1 : 0.5,
+                }}>
+                  <input
+                    type="radio"
+                    name="format-pick"
+                    checked={chosenFormat === c.name}
+                    disabled={c.count === 0}
+                    onChange={() => setChosenFormat(c.name)}
+                    style={{ width: 13, height: 13 }}
+                  />
+                  <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", minWidth: 110 }}>
+                    {c.name}
+                  </span>
+                  {c.custom && (
+                    <span className="tag" style={{
+                      fontSize: 10, padding: "1px 6px",
+                      color: "var(--purple)", border: "1px solid var(--purple)",
+                      background: "transparent",
+                    }}>自定义</span>
+                  )}
+                  <span className="text-xs text-muted" style={{ marginLeft: "auto", fontFamily: "var(--font-mono)" }}>
+                    匹配 {c.count} 处 · score {c.score}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
+              <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                      onClick={() => { setGuessCandidates(null); setChosenFormat(""); }}>
+                取消
+              </button>
+              <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                      onClick={guessFormat} disabled={guessing}
+                      title="重新扫描全文">
+                重新猜测
+              </button>
+              <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
+                      onClick={() => { startJob(chosenFormat); setGuessCandidates(null); }}
+                      disabled={!chosenFormat}>
+                使用「{chosenFormat || "?"}」开始识别
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Progress bar */}
         {(state === "running" || state === "paused") && (
@@ -837,6 +968,12 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                     <span className="text-xs text-muted" style={{ flexShrink: 0, fontFamily: "var(--font-mono)", minWidth: 64, textAlign: "right" }}>
                       {fmtChars(c.char_count)}
                     </span>
+                    <button className="btn"
+                            style={{ fontSize: 10, padding: "2px 6px", flexShrink: 0 }}
+                            onClick={e => { e.stopPropagation(); openChapterEdit(c.number, c.title); }}
+                            title="编辑本章内容（如删除末尾「求月票」）">
+                      编辑
+                    </button>
                   </div>
                   {isOpen && (
                     <div style={{
@@ -876,6 +1013,76 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Chapter-content edit modal */}
+      {editingChapter && (
+        <div
+          style={{
+            position: "fixed", inset: 0, zIndex: 1000,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={e => { if (e.target === e.currentTarget && !editSaving) setEditingChapter(null); }}
+        >
+          <div style={{
+            width: "min(900px, 100%)", maxHeight: "90vh",
+            display: "flex", flexDirection: "column",
+            background: "var(--bg-app)",
+            border: "1px solid var(--border)", borderRadius: 6,
+            boxShadow: "0 10px 40px rgba(0,0,0,0.4)",
+          }}>
+            <div style={{
+              padding: "10px 14px", borderBottom: "1px solid var(--border)",
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              gap: 8,
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  编辑第 {editingChapter.number} 章 · {editingChapter.title}
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  保存后会更新正文文件并备份原文（可在「应用清理」处撤销）。
+                </div>
+              </div>
+              <button className="btn" onClick={() => setEditingChapter(null)} disabled={editSaving}>
+                关闭
+              </button>
+            </div>
+            <div style={{ padding: 14, flex: 1, overflow: "auto" }}>
+              {editLoading ? (
+                <div className="text-xs text-muted">加载中…</div>
+              ) : (
+                <textarea
+                  className="input font-mono"
+                  value={editingChapter.content}
+                  onChange={e => setEditingChapter({ ...editingChapter, content: e.target.value })}
+                  style={{
+                    width: "100%", minHeight: 500, fontSize: 12, lineHeight: 1.7,
+                    resize: "vertical", whiteSpace: "pre-wrap",
+                  }}
+                  disabled={editSaving}
+                />
+              )}
+              <div className="text-xs text-muted" style={{ marginTop: 6, textAlign: "right" }}>
+                {editingChapter.content.replace(/\s/g, "").length} 字（不含空白）
+              </div>
+            </div>
+            <div style={{
+              padding: "10px 14px", borderTop: "1px solid var(--border)",
+              display: "flex", justifyContent: "flex-end", gap: 8,
+            }}>
+              <button className="btn" onClick={() => setEditingChapter(null)} disabled={editSaving}>
+                取消
+              </button>
+              <button className="btn-primary" onClick={saveChapterEdit}
+                      disabled={editSaving || editLoading || !editingChapter.content.trim()}>
+                {editSaving ? "保存中…" : "保存"}
+              </button>
+            </div>
           </div>
         </div>
       )}

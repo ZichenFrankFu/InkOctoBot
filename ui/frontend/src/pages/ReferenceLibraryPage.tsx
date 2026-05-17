@@ -663,7 +663,7 @@ function WorkDetail({
   onSaveAnalysisField: (fieldKey: string, data: any) => Promise<void> | void;
   onAfterMerge: () => Promise<void> | void;
 }) {
-  const [tab, setTab] = useState<WorkDetailTab>("plot");
+  const [tab, setTab] = useState<WorkDetailTab>("preprocess");
   const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
   const [editingWhy, setEditingWhy] = useState(false);
 

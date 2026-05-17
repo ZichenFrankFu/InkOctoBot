@@ -102,12 +102,14 @@ def clear(ref_id: str) -> None:
 
 async def _run_detection(job: PreprocessJob, text: str,
                           per_chapter_delay_ms: int = 0,
-                          extra_patterns: list[dict] | None = None) -> None:
+                          extra_patterns: list[dict] | None = None,
+                          force_pattern: str | None = None) -> None:
     """Body of the preprocess job. Runs in its own task. Honors job._cancel
     and job._resume between chapters so the UI's pause/resume controls
     take effect at chapter boundaries (per user's chosen granularity)."""
     from analysis.feature_extraction.chapter_parser import (
         detect_chapters, flag_author_notes, flag_length_outliers, make_preview,
+        visible_char_count,
     )
 
     try:
@@ -116,7 +118,8 @@ async def _run_detection(job: PreprocessJob, text: str,
         job.append_log("开始解析章节…")
 
         # Phase 1: chapter detection (single regex pass per pattern; fast)
-        result = detect_chapters(text, extra_patterns=extra_patterns)
+        result = detect_chapters(text, extra_patterns=extra_patterns,
+                                  force_pattern=force_pattern)
         chapters = result["chapters"]
         job.detected_pattern = result["pattern"]
         job.fallback_used = result["fallback_used"]
@@ -194,7 +197,8 @@ async def _run_detection(job: PreprocessJob, text: str,
 
 async def start_job(ref_id: str, text: str,
                      per_chapter_delay_ms: int = 0,
-                     extra_patterns: list[dict] | None = None) -> PreprocessJob:
+                     extra_patterns: list[dict] | None = None,
+                     force_pattern: str | None = None) -> PreprocessJob:
     """Idempotent: returns the existing running/paused job for ref_id, or
     creates a fresh one and schedules it on the current event loop.
 
@@ -211,7 +215,8 @@ async def start_job(ref_id: str, text: str,
     job.state = "running"  # set before scheduling so the first status poll already shows running
     _jobs[ref_id] = job
     job._task = asyncio.create_task(
-        _run_detection(job, text, per_chapter_delay_ms, extra_patterns),
+        _run_detection(job, text, per_chapter_delay_ms,
+                        extra_patterns, force_pattern),
     )
     return job
 
@@ -269,7 +274,7 @@ def persist_result_to_segments(ref_id: str, db_path: str,
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
             "preview_head", "preview_tail",
-        )} | {"char_count": len(c.get("content") or "")}
+        )} | {"char_count": visible_char_count(c.get("content") or "")}
         for c in chapters
     ]
     state["preprocess"] = {
