@@ -478,13 +478,11 @@ def _build_chapters(text: str,
         else:
             seen_by_key[key] = idx
     deduped = [c for i, c in enumerate(deduped) if keep_mask[i]]
-    # Rescue split: any chapter whose content is grossly larger than
-    # the median is almost certainly hiding a missed heading. Re-scan
-    # its content with the same pattern that built it, and split at any
-    # internal matches. Catches the "chapter 147 shows 387.6 万字"
-    # symptom even when the boundary missed for non-formatting reasons
-    # (full-width digits, stray whitespace, unrecognized variant).
-    deduped = _rescue_split_huge_chapters(text, deduped)
+    # Rescue split removed — was over-splitting normal long chapters
+    # into derived pieces, producing apparent "duplicate" chapter
+    # entries (e.g. user reported 1、 to 1000、 each appearing twice).
+    # If a chapter is unusually long, surface it via is_length_outlier
+    # so the user can decide manually rather than auto-splitting.
 
     # Preserve each numbered chapter's parsed value as ``parsed_number``
     # (for display via the title), and re-assign ``number`` to a clean
@@ -503,84 +501,6 @@ def _build_chapters(text: str,
         c["number"] = i + 1
 
     return deduped
-
-
-def _rescue_split_huge_chapters(text: str, chapters: list[dict]) -> list[dict]:
-    """Post-process: split any chapter whose content is > 4× median
-    chapter length (and > 30k chars absolute) at internal heading
-    matches. The internal scan re-runs ALL built-in patterns over the
-    chapter's content; matches re-establish the chapter boundaries
-    that the initial pass missed."""
-    if len(chapters) < 3:
-        return chapters
-    lengths = [len(c.get("content") or "") for c in chapters]
-    try:
-        median = statistics.median(lengths)
-    except statistics.StatisticsError:
-        return chapters
-    threshold = max(median * 4 if median else 0, 30000)
-    out: list[dict] = []
-    for c in chapters:
-        content = c.get("content") or ""
-        if len(content) <= threshold:
-            out.append(c)
-            continue
-        # Scan content with all numbered built-in patterns for any
-        # heading-shaped lines that should have split this chapter.
-        # Skip the no-number patterns since they'd over-split body
-        # text on random short lines.
-        rescue_matches: list[tuple[str, "re.Match[str]"]] = []
-        for name, pat in _PATTERNS:
-            if name in _UNNUMBERED_PATTERNS:
-                continue
-            for m in pat.finditer(content):
-                # Drop the very-first match if it starts at content[0] —
-                # that's just this chapter's own heading being re-detected.
-                if m.start() < 4:
-                    continue
-                rescue_matches.append((name, m))
-        if not rescue_matches:
-            out.append(c)
-            continue
-        rescue_matches.sort(key=lambda x: x[1].start())
-        base_offset = c.get("content_start") or 0
-        cursor = 0
-        last_marker = c.get("raw_marker") or c.get("title") or ""
-        first_piece = True
-        for name, rm in rescue_matches:
-            # First piece keeps the original chapter's marker AND its
-            # parsed_number / number. Subsequent pieces use the rescued
-            # heading as their marker and DROP the inherited number
-            # (parsed_number set to None to flag them as derived; the
-            # outer renumbering loop assigns fresh sequential ordinals).
-            sub_content = content[cursor:rm.start()].strip()
-            piece = {
-                **c,
-                "content": sub_content,
-                "raw_marker": last_marker,
-                "content_start": base_offset + cursor,
-                "content_end": base_offset + rm.start(),
-            }
-            if not first_piece:
-                piece["title"] = last_marker[:60]
-                piece["parsed_number"] = None
-                piece["is_split_piece"] = True
-            first_piece = False
-            out.append(piece)
-            last_marker = _clean_title(rm.group(0).strip().rstrip("\r"))
-            cursor = rm.end()
-        # Final piece — always derived, never inherits parent's number.
-        out.append({
-            **c,
-            "content": content[cursor:].strip(),
-            "raw_marker": last_marker,
-            "title": last_marker[:60],
-            "content_start": base_offset + cursor,
-            "content_end": base_offset + len(content),
-            "parsed_number": None,
-            "is_split_piece": True,
-        })
-    return out
 
 
 # ── Format-string → regex translation ──
@@ -866,6 +786,55 @@ _TITLE_AUTHOR_MARKERS = [
     "作者菌", "作者大大", "废话", "闲聊", "杂谈",
     "上架感言", "完本感言", "新书发布",
 ]
+
+
+def find_chapter_gaps(chapters: list[dict]) -> list[dict]:
+    """Scan the chapter list for parsed_number discontinuities. Returns
+    a list of gap descriptors so the UI can highlight where chapters
+    are missing.
+
+    A gap is a place where the parsed_number jumps by more than 1
+    (e.g. ..., 4, 6, ... → gap of 5 missing). Unnumbered chapters are
+    skipped — they don't define a sequence. The scan is per-pattern
+    (第N章 chapters compared to 第N章 chapters; N、 to N、) so mixing
+    formats doesn't produce false gaps.
+
+    Each gap descriptor:
+      {after_number, expected, missing_numbers, missing_count, pattern}
+    where ``after_number`` is the ordinal of the chapter the gap
+    appears after.
+    """
+    out: list[dict] = []
+    # Group by pattern so two different formats don't compare
+    by_pattern: dict[str, list[dict]] = {}
+    for c in chapters:
+        pat = c.get("pattern")
+        if not pat or pat in _UNNUMBERED_PATTERNS:
+            continue
+        pn = c.get("parsed_number")
+        if not isinstance(pn, int):
+            continue
+        by_pattern.setdefault(pat, []).append(c)
+    for pat_name, chs in by_pattern.items():
+        for i in range(1, len(chs)):
+            prev_pn = chs[i - 1].get("parsed_number")
+            cur_pn = chs[i].get("parsed_number")
+            if not (isinstance(prev_pn, int) and isinstance(cur_pn, int)):
+                continue
+            if cur_pn - prev_pn > 1:
+                missing = list(range(prev_pn + 1, cur_pn))
+                # Cap the displayed missing list so a huge jump doesn't
+                # render thousands of numbers in a chip.
+                preview_missing = missing[:8]
+                out.append({
+                    "after_number": chs[i - 1].get("number"),
+                    "before_number": chs[i].get("number"),
+                    "expected_next": prev_pn + 1,
+                    "missing_numbers": preview_missing,
+                    "missing_count": len(missing),
+                    "pattern": pat_name,
+                })
+    return out
 
 
 def get_effective_author_keywords(extra: list[str] | None = None) -> list[str]:

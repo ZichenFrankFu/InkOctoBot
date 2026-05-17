@@ -688,7 +688,7 @@ function WorkDetail({
   const settingsCount = (settings || []).length;
 
   const TABS: { key: WorkDetailTab; label: string; count?: number | string }[] = [
-    { key: "files", label: "文件" },
+    { key: "files", label: "原始文件" },
     { key: "preprocess", label: "预处理" },
     { key: "plot", label: "剧情大纲", count: eventCount || undefined },
     { key: "characters", label: "角色", count: charCount || undefined },

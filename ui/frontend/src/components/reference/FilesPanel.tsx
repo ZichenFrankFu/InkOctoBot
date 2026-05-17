@@ -10,7 +10,6 @@ interface UploadedFile {
   char_count: number;
   uploaded_at: string | null;
   legacy: boolean;
-  preview: string;
 }
 
 interface FilesResponse {
@@ -37,6 +36,7 @@ export default function FilesPanel({ refId, onAfterChange }: Props) {
   const [uploading, setUploading] = useState(false);
   const replaceInputRef = useRef<HTMLInputElement | null>(null);
   const appendInputRef = useRef<HTMLInputElement | null>(null);
+  const [viewer, setViewer] = useState<{ filename: string; content: string; charCount: number; loading?: boolean } | null>(null);
 
   const fetchFiles = useCallback(async () => {
     setLoading(true);
@@ -104,6 +104,19 @@ export default function FilesPanel({ refId, onAfterChange }: Props) {
     }
   };
 
+  const openViewer = async (index: number, filename: string) => {
+    setViewer({ filename, content: "", charCount: 0, loading: true });
+    try {
+      const r = await apiGet<{ content: string; char_count: number }>(
+        `/api/references/works/${refId}/files/${index}/content`,
+      );
+      setViewer({ filename, content: r.content || "", charCount: r.char_count || 0, loading: false });
+    } catch (e: any) {
+      toast(e?.message || "加载文件内容失败", "error");
+      setViewer(null);
+    }
+  };
+
   const onPickReplace = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (f) doUpload(f, false);
@@ -128,10 +141,10 @@ export default function FilesPanel({ refId, onAfterChange }: Props) {
         <div className="flex items-center justify-between" style={{ gap: 8, flexWrap: "wrap" }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-              上传的文件{hasFiles ? `（共 ${data!.files.length} 个 · ${fmtChars(data!.total_chars)}）` : ""}
+              原始文件{hasFiles ? `（共 ${data!.files.length} 个 · ${fmtChars(data!.total_chars)}）` : ""}
             </div>
             <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-              支持 .txt（UTF-8 / GB18030）。多个文件按上传顺序拼接为同一正文 — 删除某个文件会从正文中精确移除它的内容。
+              支持 .txt（UTF-8 / GB18030）。多个文件按上传顺序拼接为同一正文 — 点「查看」打开文件内容；删除某个文件会精确移除它的内容。
             </div>
           </div>
           <div className="flex gap-6" style={{ flexWrap: "wrap" }}>
@@ -164,7 +177,6 @@ export default function FilesPanel({ refId, onAfterChange }: Props) {
         <div className="text-xs text-muted" style={{ padding: 16 }}>加载中…</div>
       )}
 
-      {/* Empty state */}
       {data && !hasFiles && (
         <div style={{
           padding: 32, textAlign: "center",
@@ -174,52 +186,89 @@ export default function FilesPanel({ refId, onAfterChange }: Props) {
         </div>
       )}
 
-      {/* File list */}
       {hasFiles && (
         <div className="flex flex-col gap-8">
           {data!.files.map(f => (
             <div key={f.index} style={{
               border: "1px solid var(--border)", borderRadius: 4,
               padding: 12, background: "var(--bg-surface)",
+              display: "flex", alignItems: "center", gap: 12,
             }}>
-              <div className="flex items-center justify-between" style={{ marginBottom: 6, gap: 8 }}>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div className="truncate" style={{
-                    fontSize: 13, fontWeight: 600, color: "var(--text-primary)",
-                  }}>
-                    {f.filename}
-                    {f.legacy && (
-                      <span className="tag" style={{
-                        marginLeft: 8, fontSize: 10, padding: "1px 6px",
-                        color: "var(--text-tertiary)", border: "1px solid var(--border)",
-                        background: "transparent",
-                      }}>未跟踪</span>
-                    )}
-                  </div>
-                  <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                    {fmtChars(f.char_count)}
-                    {f.uploaded_at && ` · 上传于 ${f.uploaded_at}`}
-                    {` · 字符范围 ${f.char_start.toLocaleString()}–${f.char_end.toLocaleString()}`}
-                  </div>
-                </div>
-                <button className="btn"
-                        style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)" }}
-                        onClick={() => deleteFile(f.index, f.filename)}>
-                  删除
-                </button>
-              </div>
-              {f.preview && (
-                <div className="text-xs" style={{
-                  marginTop: 4, padding: 8,
-                  background: "var(--bg-card)", borderRadius: 3,
-                  color: "var(--text-secondary)", lineHeight: 1.65,
-                  whiteSpace: "pre-wrap", maxHeight: 120, overflow: "auto",
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="truncate" style={{
+                  fontSize: 13, fontWeight: 600, color: "var(--text-primary)",
                 }}>
-                  {f.preview}
+                  {f.filename}
+                  {f.legacy && (
+                    <span className="tag" style={{
+                      marginLeft: 8, fontSize: 10, padding: "1px 6px",
+                      color: "var(--text-tertiary)", border: "1px solid var(--border)",
+                      background: "transparent",
+                    }}>未跟踪</span>
+                  )}
                 </div>
-              )}
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  {fmtChars(f.char_count)}
+                  {f.uploaded_at && ` · 上传于 ${f.uploaded_at}`}
+                </div>
+              </div>
+              <button className="btn"
+                      style={{ fontSize: 11, padding: "3px 10px", flexShrink: 0 }}
+                      onClick={() => openViewer(f.index, f.filename)}>
+                查看内容
+              </button>
+              <button className="btn"
+                      style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)", flexShrink: 0 }}
+                      onClick={() => deleteFile(f.index, f.filename)}>
+                删除
+              </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Content viewer modal — close ONLY via X / 关闭 button (no
+          backdrop-click close, so accidental clicks don't lose the
+          viewer state). */}
+      {viewer && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 1000,
+          background: "rgba(0,0,0,0.55)",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+        }}>
+          <div style={{
+            width: "min(960px, 100%)", maxHeight: "90vh",
+            display: "flex", flexDirection: "column",
+            background: "var(--bg-app)",
+            border: "1px solid var(--border)", borderRadius: 6,
+          }}>
+            <div style={{
+              padding: "10px 14px", borderBottom: "1px solid var(--border)",
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  {viewer.filename}
+                </div>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  {viewer.loading ? "加载中…" : `共 ${fmtChars(viewer.charCount)}`}
+                </div>
+              </div>
+              <button className="btn" onClick={() => setViewer(null)}>关闭</button>
+            </div>
+            <div style={{ padding: 14, flex: 1, overflow: "auto" }}>
+              {viewer.loading ? (
+                <div className="text-xs text-muted">加载文件中…</div>
+              ) : (
+                <pre className="font-mono" style={{
+                  margin: 0, padding: 10, fontSize: 11, lineHeight: 1.65,
+                  background: "var(--bg-card)", borderRadius: 3,
+                  color: "var(--text-secondary)",
+                  whiteSpace: "pre-wrap", wordBreak: "break-word",
+                }}>{viewer.content}</pre>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -535,9 +535,11 @@ def persist_result_to_segments(ref_id: str, db_path: str,
         )} | {"char_count": visible_char_count(c.get("content") or "")}
         for c in chapters
     ]
+    from analysis.feature_extraction.chapter_parser import find_chapter_gaps
     state["preprocess"] = {
         "chapters": light,
         "total_chapters": len(light),
         "flagged_count": sum(1 for c in light if c.get("is_author_note")),
+        "gaps": find_chapter_gaps(chapters),
     }
     rdb.update_work(ref_id, segments_json=json.dumps(state, ensure_ascii=False))

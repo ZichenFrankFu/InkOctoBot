@@ -217,62 +217,110 @@ async def upload_text_for_work(
 
 
 @router.get("/works/{ref_id}/files")
-async def list_work_files(ref_id: str, preview_chars: int = Query(200, ge=0, le=2000)):
-    """List uploaded files for the work. Each entry shows the upload's
-    char range + a head preview + char count. Uses the segments_json
-    "uploads" ledger; for legacy works (uploaded before tracking
-    existed) we emit a single synthetic entry covering the whole file."""
+async def list_work_files(ref_id: str):
+    """Lightweight file listing — METADATA ONLY (filename, size, range,
+    timestamp). Does NOT read the file content. Tab switches stay
+    instant even on multi-MB works.
+
+    Per-file content is fetched lazily via ``/files/{index}/content``
+    when the user opens the viewer."""
     db = _db()
     w = db.get_work(ref_id)
     if not w:
         raise HTTPException(404, "参考作品不存在")
     file_path = w.get("file_path")
     total_chars = 0
-    full_text = ""
     if file_path and Path(file_path).exists():
-        full_text = await asyncio.to_thread(Path(file_path).read_text, encoding="utf-8")
-        total_chars = len(full_text)
+        # Use char count from the uploads ledger when possible —
+        # avoids reading the full file. Fall back to a quick stat
+        # if no ledger entries exist.
+        pass
     try:
         state = json.loads(w.get("segments_json") or "{}")
     except Exception:
         state = {}
     uploads = state.get("uploads") if isinstance(state, dict) else None
-    if not isinstance(uploads, list) or not uploads:
-        # Legacy fallback — synthesize a single entry covering the whole file.
-        if total_chars > 0 and file_path:
-            from os.path import basename as _bn
-            uploads = [{
-                "filename": _bn(file_path),
-                "char_start": 0,
-                "char_end": total_chars,
-                "uploaded_at": None,
-                "legacy": True,
-            }]
-        else:
-            uploads = []
     out: list[dict] = []
-    for i, u in enumerate(uploads):
-        cs = int(u.get("char_start") or 0)
-        ce = int(u.get("char_end") or 0)
-        slice_text = full_text[cs:ce] if 0 <= cs <= ce <= len(full_text) else ""
-        head = slice_text[:preview_chars].replace("\n", " ").strip()
-        if len(slice_text) > preview_chars:
-            head += "…"
+    if isinstance(uploads, list) and uploads:
+        for i, u in enumerate(uploads):
+            cs = int(u.get("char_start") or 0)
+            ce = int(u.get("char_end") or 0)
+            out.append({
+                "index": i,
+                "filename": u.get("filename") or f"file_{i}.txt",
+                "char_start": cs,
+                "char_end": ce,
+                "char_count": max(0, ce - cs),
+                "uploaded_at": u.get("uploaded_at"),
+                "legacy": bool(u.get("legacy")),
+            })
+            total_chars = max(total_chars, ce)
+    elif file_path and Path(file_path).exists():
+        # Legacy fallback — one synthetic entry. Use file stat for
+        # byte size to skip the read; show "未跟踪" so user knows.
+        try:
+            size_bytes = Path(file_path).stat().st_size
+        except Exception:
+            size_bytes = 0
+        from os.path import basename as _bn
         out.append({
-            "index": i,
-            "filename": u.get("filename") or f"file_{i}.txt",
-            "char_start": cs,
-            "char_end": ce,
-            "char_count": max(0, ce - cs),
-            "uploaded_at": u.get("uploaded_at"),
-            "legacy": bool(u.get("legacy")),
-            "preview": head,
+            "index": 0,
+            "filename": _bn(file_path),
+            "char_start": 0,
+            "char_end": size_bytes,  # rough upper bound — UI just shows it
+            "char_count": size_bytes,
+            "uploaded_at": None,
+            "legacy": True,
         })
+        total_chars = size_bytes
     return {
         "files": out,
         "total_chars": total_chars,
         "has_full_text": bool(w.get("has_full_text")),
         "file_path": file_path,
+    }
+
+
+@router.get("/works/{ref_id}/files/{index}/content")
+async def get_work_file_content(ref_id: str, index: int):
+    """Lazy-load the content of one uploaded file. Returns the
+    full text slice for the upload's char range. Reads the file once
+    in a worker thread."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    file_path = w.get("file_path")
+    if not file_path or not Path(file_path).exists():
+        raise HTTPException(400, "尚未上传正文")
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    uploads = state.get("uploads") if isinstance(state, dict) else []
+    full_text = await asyncio.to_thread(Path(file_path).read_text, encoding="utf-8")
+    if isinstance(uploads, list) and uploads:
+        if not (0 <= index < len(uploads)):
+            raise HTTPException(404, f"未找到第 {index} 个文件")
+        u = uploads[index]
+        cs = int(u.get("char_start") or 0)
+        ce = int(u.get("char_end") or len(full_text))
+        content = full_text[cs:ce] if 0 <= cs <= ce <= len(full_text) else ""
+        return {
+            "index": index,
+            "filename": u.get("filename") or f"file_{index}.txt",
+            "content": content,
+            "char_count": len(content),
+        }
+    # Legacy single-file
+    if index != 0:
+        raise HTTPException(404, "未找到该文件")
+    from os.path import basename as _bn
+    return {
+        "index": 0,
+        "filename": _bn(file_path),
+        "content": full_text,
+        "char_count": len(full_text),
     }
 
 
@@ -887,7 +935,8 @@ def _modify_and_redetect(ref_id: str, modifier, op_label: str):
     """
     from analysis.feature_extraction.chapter_parser import (
         detect_chapters, flag_author_notes, flag_length_outliers,
-        make_preview, visible_char_count, _PATTERNS as _BUILTIN_PATTERNS,
+        make_preview, visible_char_count, find_chapter_gaps,
+        _PATTERNS as _BUILTIN_PATTERNS,
     )
     from analysis.feature_extraction.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
@@ -948,20 +997,21 @@ def _modify_and_redetect(ref_id: str, modifier, op_label: str):
         src.write_text(new_text, encoding="utf-8")
     except Exception as e:
         raise HTTPException(500, f"写入文件失败：{e}")
-    # Re-detect on the new text + refresh preprocess state. Force only
-    # the patterns the user was already using (one or more from the
-    # persisted chapter list) — NOT every built-in. Otherwise a CRUD
-    # operation that adds short body content silently triggers the
-    # 短句标题 fallback and creates a phantom chapter from the user's
-    # body text. If the user is e.g. on N、 format, the rebuild also
-    # stays on N、.
-    in_use_patterns = sorted({
-        c.get("pattern") for c in modifier_chapters
-        if c.get("pattern") and c.get("pattern") != "fallback"
-    })
+    # Re-detect on the new text + refresh preprocess state.
+    #
+    # Strategy: force all NUMBERED built-in patterns + custom patterns
+    # — but NOT the 短句标题 / 作者说章节 fallback. This lets a
+    # user-added heading in any numbered format ("3.5、插入" → N. ;
+    # "147、新章节" → N、 ; "第三回 标题" → 第N回) show up after the
+    # modify, while still preventing the 短句标题 fallback from
+    # treating fresh short body content as phantom chapters.
+    from analysis.feature_extraction.chapter_parser import _UNNUMBERED_PATTERNS as _UNN
+    numbered_builtin = [n for n, _ in _BUILTIN_PATTERNS if n not in _UNN]
+    custom_names = [p.get("name") for p in (extras or []) if p.get("name")]
+    force_for_redetect = numbered_builtin + [n for n in custom_names if n]
     new_detect = detect_chapters(
         new_text, extra_patterns=extras,
-        force_patterns=in_use_patterns or None,
+        force_patterns=force_for_redetect,
     )
     new_chapters = new_detect["chapters"]
     flag_author_notes(new_chapters, extra_keywords=_load_author_keywords())
@@ -992,6 +1042,7 @@ def _modify_and_redetect(ref_id: str, modifier, op_label: str):
         "chapters": light,
         "total_chapters": len(light),
         "flagged_count": sum(1 for c in light if c.get("is_author_note")),
+        "gaps": find_chapter_gaps(new_chapters),
     }
     state.pop("custom_plan", None)
     state.pop("plan", None)
@@ -1472,12 +1523,15 @@ def preprocess_status(ref_id: str):
                 pass
         out = job.to_status()
         if job.state in ("done", "cancelled", "error"):
-            from analysis.feature_extraction.chapter_parser import visible_char_count
+            from analysis.feature_extraction.chapter_parser import (
+                visible_char_count, find_chapter_gaps,
+            )
             out["chapters"] = [
                 {**{k: v for k, v in c.items() if k != "content"},
                  "char_count": visible_char_count(c.get("content") or "")}
                 for c in job.chapters
             ]
+            out["gaps"] = find_chapter_gaps(job.chapters)
         # Surface undo availability so the UI can show a "撤销清理" button
         try:
             state2 = json.loads(w.get("segments_json") or "{}")
@@ -1504,6 +1558,7 @@ def preprocess_status(ref_id: str):
             "flagged_count": pre.get("flagged_count") or 0,
             "log": [],
             "chapters": pre.get("chapters") or [],
+            "gaps": pre.get("gaps") or [],
             "persisted": True,
             "can_undo": can_undo,
             "last_removed_chapters": last_removed,
@@ -1579,6 +1634,7 @@ async def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest)
     # falls back to the empty "匹配章节格式" prompt.
     from analysis.feature_extraction.chapter_parser import (
         flag_author_notes, flag_length_outliers, make_preview, visible_char_count,
+        find_chapter_gaps,
     )
     def _redetect_and_flag():
         nd = detect_chapters(new_text, extra_patterns=_load_chapter_patterns())
@@ -1607,6 +1663,7 @@ async def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest)
         "chapters": light,
         "total_chapters": len(light),
         "flagged_count": sum(1 for c in light if c.get("is_author_note")),
+        "gaps": find_chapter_gaps(new_chapters),
     }
     state.pop("custom_plan", None)
     state.pop("plan", None)
@@ -1712,6 +1769,7 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
     # chapter list and falls back to the "匹配章节格式" empty state.
     from analysis.feature_extraction.chapter_parser import (
         flag_author_notes, flag_length_outliers, make_preview, visible_char_count,
+        find_chapter_gaps,
     )
     new_detect = detect_chapters(new_text, extra_patterns=_load_chapter_patterns())
     new_chapters = new_detect["chapters"]
@@ -1756,6 +1814,7 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
         "chapters": light,
         "total_chapters": len(light),
         "flagged_count": sum(1 for c in light if c.get("is_author_note")),
+        "gaps": find_chapter_gaps(new_chapters),
     }
     # Plan/results are still invalidated since chapter numbers may have
     # shifted; user can re-run extraction from the cleaned text.

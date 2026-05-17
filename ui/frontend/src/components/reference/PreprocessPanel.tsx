@@ -34,6 +34,15 @@ interface Chapter {
 
 interface LogEntry { ts: number; message: string; chapter?: number | null; }
 
+interface GapEntry {
+  after_number: number;
+  before_number: number;
+  expected_next: number;
+  missing_numbers: number[];
+  missing_count: number;
+  pattern: string;
+}
+
 interface PreprocessStatus {
   state: "idle" | "running" | "paused" | "done" | "error" | "cancelled";
   phase?: "" | "loading" | "matching" | "tagging" | "finalizing";
@@ -43,6 +52,7 @@ interface PreprocessStatus {
   flagged_count: number;
   log: LogEntry[];
   chapters?: Chapter[];
+  gaps?: GapEntry[];
   candidates?: { name: string; count: number; score: number }[];
   fallback_used?: boolean;
   error?: string | null;
@@ -1429,7 +1439,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 当前筛选下没有章节。
               </div>
             )}
-            {filteredChapters.map(c => {
+            {/* Build a fast lookup of gap entries keyed by after_number
+                so we can render a "缺失 N 章" marker between
+                consecutive chapter rows in the timeline. */}
+            {filteredChapters.flatMap((c, fIdx) => {
               const isOpen = expanded.has(c.number);
               const isFlagged = !!c.is_author_note;
               const isOutlier = !!c.is_length_outlier;
@@ -1442,7 +1455,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                               : isFlagged ? "rgba(250,204,21,0.06)"
                               : isOutlier ? "rgba(168,85,247,0.06)"
                               : "transparent";
-              return (
+              // Look up a gap that starts after THIS chapter — rendered
+              // immediately below the chapter row to flag missing
+              // parsed_numbers (e.g. "1、" → "3、" with 2 missing).
+              const gap = (status?.gaps || []).find(g => g.after_number === c.number);
+              const chapterEl = (
                 <div key={c.number}
                   onClick={() => toggleExclude(c.number)}
                   title={isExcluded ? "已选择删除（点击取消）" : "点击以勾选删除此章节"}
@@ -1581,6 +1598,38 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                   )}
                 </div>
               );
+              if (!gap) return [chapterEl];
+              const previewNums = (gap.missing_numbers || []).slice(0, 8);
+              const missingPreview = previewNums.join("、")
+                                      + (gap.missing_count > previewNums.length ? "…" : "");
+              const gapEl = (
+                <div key={`gap-${c.number}`} style={{
+                  border: "1px dashed var(--gold)",
+                  borderRadius: 4,
+                  padding: "4px 8px",
+                  background: "rgba(250,204,21,0.05)",
+                  color: "var(--gold)",
+                  fontSize: 11,
+                  display: "flex", alignItems: "center", gap: 8,
+                }}
+                  title={`从第 ${gap.expected_next} 章开始 缺失 ${gap.missing_count} 章`}>
+                  <span>⚠</span>
+                  <span style={{ flex: 1 }}>
+                    缺失 <strong>{gap.missing_count}</strong> 章（{gap.pattern}）：
+                    <span style={{ fontFamily: "var(--font-mono)" }}>{missingPreview}</span>
+                  </span>
+                  <button className="btn"
+                          style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-secondary)" }}
+                          onClick={e => {
+                            e.stopPropagation();
+                            openNewChapterModal(c.number);
+                          }}
+                          title="在此处插入缺失章节">
+                    手动补充
+                  </button>
+                </div>
+              );
+              return [chapterEl, gapEl];
             })}
           </div>
         </div>
@@ -1595,7 +1644,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             display: "flex", alignItems: "center", justifyContent: "center",
             padding: 20,
           }}
-          onClick={e => { if (e.target === e.currentTarget && !applying) setParaCleanOpen(false); }}
         >
           <div style={{
             width: "min(860px, 100%)", maxHeight: "90vh",
@@ -1717,7 +1765,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             display: "flex", alignItems: "center", justifyContent: "center",
             padding: 20,
           }}
-          onClick={e => { if (e.target === e.currentTarget && !applying) setBulkOpen(false); }}
         >
           <div style={{
             width: "min(820px, 100%)", maxHeight: "90vh",
@@ -1808,7 +1855,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
           background: "rgba(0,0,0,0.55)",
           display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
         }}
-          onClick={e => { if (e.target === e.currentTarget && !newChapterSaving) setNewChapter(null); }}
         >
           <div style={{
             width: "min(720px, 100%)", maxHeight: "90vh",
@@ -1868,7 +1914,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
           background: "rgba(0,0,0,0.55)",
           display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
         }}
-          onClick={e => { if (e.target === e.currentTarget && !renameSaving) setRenamingChapter(null); }}
         >
           <div style={{
             width: "min(560px, 100%)",
@@ -1917,7 +1962,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             display: "flex", alignItems: "center", justifyContent: "center",
             padding: 20,
           }}
-          onClick={e => { if (e.target === e.currentTarget && !editSaving) setEditingChapter(null); }}
         >
           <div style={{
             width: "min(900px, 100%)", maxHeight: "90vh",
