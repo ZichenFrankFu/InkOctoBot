@@ -71,45 +71,51 @@ def cn2int(s: str) -> int | None:
 # the listing is mostly cosmetic. Each pattern captures (number, title).
 
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    # All numbered patterns require:
-    #   - At least 1 char of title (so bare "147、" alone isn't a chapter)
-    #   - Title does NOT end with terminal punctuation (。！？，,…；;：:)
-    # — both per user request "章节标题都需要满足有章节标题、结尾没有
-    # 标点符号直接换行的 pattern".
+    # 第N章 / 第N回 / 第N节 / Chapter N — title is OPTIONAL. When a title
+    # is present it must NOT end with terminal punctuation; trailing
+    # whitespace before \n is tolerated. CRLF endings are handled by
+    # normalizing \r\n → \n in detect_chapters BEFORE these run.
+    #
+    # N、 and N. require a non-empty title (bare "147、" countdowns
+    # should not match) — that's enforced below in those patterns only.
     ("第N章", re.compile(
-        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9]+)\s*章[\s：:　.、，,．]*"
-        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
+        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9０-９]+)\s*章"
+        r"(?:[\s：:　.、，,．]+([^\n]{0,79}?[^\s。！？，,.!?；;：:…]))?"
+        r"[\s　]*$",
         re.MULTILINE,
     )),
     ("第N回", re.compile(
-        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9]+)\s*回[\s：:　.、，,．]*"
-        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
+        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9０-９]+)\s*回"
+        r"(?:[\s：:　.、，,．]+([^\n]{0,79}?[^\s。！？，,.!?；;：:…]))?"
+        r"[\s　]*$",
         re.MULTILINE,
     )),
     ("第N节", re.compile(
-        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9]+)\s*节[\s：:　.、，,．]*"
-        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
+        r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9０-９]+)\s*节"
+        r"(?:[\s：:　.、，,．]+([^\n]{0,79}?[^\s。！？，,.!?；;：:…]))?"
+        r"[\s　]*$",
         re.MULTILINE,
     )),
     # "Chapter N" English-style headings
     ("Chapter N", re.compile(
-        r"^[\s　]*Chapter\s+([0-9]+)[\s：:.,、，]*"
-        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
+        r"^[\s　]*Chapter\s+([0-9]+)"
+        r"(?:[\s：:.,、，]+([^\n]{0,79}?[^\s。！？，,.!?；;：:…]))?"
+        r"[\s　]*$",
         re.MULTILINE | re.IGNORECASE,
     )),
     # "1、标题" — arabic + 顿号 (very common in web novels).
-    # Now REQUIRES a real title (1+ char, non-terminal-punct end) so
-    # bare "147、" lines + countdowns like "10、9、8、" no longer match.
-    # Full-width digits ０-９ supported.
+    # REQUIRES a non-empty title (1+ char, non-terminal-punct end) so
+    # bare "147、" lines + countdowns like "10、9、8、" don't match.
+    # Full-width digits ０-９ supported. Trailing whitespace OK.
     ("N、", re.compile(
         r"^[\s　]*([0-9０-９]+)\s*[、．][\s　]*"
-        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
+        r"([^\n]{0,79}?[^\s。！？，,.!?；;：:…])[\s　]*$",
         re.MULTILINE,
     )),
-    # "1.标题" — arabic + 句点 (.)
+    # "1.标题" — arabic + 句点 (.). Title required for same reason.
     ("N.", re.compile(
         r"^[\s　]*([0-9０-９]+)[\s]*[.][\s　]*"
-        r"([^\n]{0,79}[^\s。！？，,.!?；;：:…\n])$",
+        r"([^\n]{0,79}?[^\s。！？，,.!?；;：:…])[\s　]*$",
         re.MULTILINE,
     )),
     # Short standalone heading lines without terminal punctuation
@@ -382,10 +388,19 @@ def _build_chapters(text: str,
     #   (b) drop the TRAILING empty-title match that closes such a
     #       cluster (its gap to next is larger, but it's clearly the
     #       last item of the list and not a real chapter heading).
+    #
+    # IMPORTANT: only applies to N、 / N. patterns. 第N章 / 第N回 / 第N节 /
+    # Chapter N legitimately appear without a descriptive title (e.g.
+    # "第一章\n这是正文。" — a chapter heading is just "第一章"). Their
+    # short body gap is normal for terse-narrative works; treating
+    # those as countdown clusters drops real chapters.
+    _CLUSTER_PATTERNS = {"N、", "N."}
     TIGHT_GAP = 20
     cluster_member: list[bool] = [False] * len(matches)
     for i in range(len(matches)):
         if i in drop_idx:
+            continue
+        if named_matches[i][0] not in _CLUSTER_PATTERNS:
             continue
         if gap_to_next(i) >= TIGHT_GAP:
             continue
@@ -675,6 +690,12 @@ def detect_chapters(text: str,
          patterns still auto-merged.
       3. No force args — auto-score, pick primary, auto-merge secondaries.
     """
+    # Normalize Windows / classic-Mac line endings BEFORE pattern matching.
+    # Many uploaded novel files are CRLF — without this the `$` anchor
+    # never matched (the regex saw "第一章 序章\r\n" with a trailing \r
+    # that fails `[^\s…]$`). Patterns were silently 0-match on such files.
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
     builtin = list(_PATTERNS)
     custom = _compile_extra(extra_patterns)
     all_patterns = builtin + custom
@@ -1007,9 +1028,11 @@ _BUILTIN_GARBLED_PATTERNS: list[tuple[str, str]] = [
     ("模板占位", r"\{\{[^}]+\}\}"),
     ("BBCode 标签", r"\[/?[a-zA-Z][^\]]*\]"),
     # Random scrape-watermark IDs — mixed letters + digits, 12+ chars
-    # (catches "3Abq5FQkXVhYkEy8u3y"-style noise without matching
-    # English words or pure digit sequences).
-    ("随机 ID", r"\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{12,}\b"),
+    # (catches "3Abq5FQkXVhYkEy8u3y"-style noise even when adjacent to
+    # CJK text). NOTE: Python `\w` includes Chinese chars, so we cannot
+    # use `\b` here — it fails between CJK and ASCII. Use explicit
+    # alphanumeric-or-start/end-of-string lookarounds instead.
+    ("随机 ID", r"(?:^|[^A-Za-z0-9])((?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{12,})(?:[^A-Za-z0-9]|$)"),
     # Known site watermarks
     ("追书神器水印", r"@追书神器|#追书神器|追书神器"),
     # Classic Chinese mojibake fingerprints — these strings appear when

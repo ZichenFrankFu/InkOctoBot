@@ -189,6 +189,15 @@ async def upload_text_for_work(
         uploads = []
         char_start = 0
         char_end = len(new_text)
+
+    # Immutable raw companion — used by preprocess_start / re-detect so
+    # detection ALWAYS runs against the pristine upload, never the
+    # working file (which gets mutated by 清理章节 / rename / etc.).
+    # On append, we re-snapshot the combined working text as raw so the
+    # new appended bytes are also discoverable on re-detect.
+    raw_text = dest.read_text(encoding="utf-8")
+    raw_path = Path(str(dest) + ".raw.txt")
+    raw_path.write_text(raw_text, encoding="utf-8")
     uploads.append({
         "filename": fname,
         "char_start": char_start,
@@ -742,9 +751,12 @@ async def preprocess_guess_start(ref_id: str):
     file_path = w.get("file_path")
     if not file_path:
         raise HTTPException(400, "尚未上传正文")
+    # Match preprocess_start: scan the immutable raw companion.
+    raw_path = Path(str(file_path) + ".raw.txt")
+    scan_path = str(raw_path) if raw_path.exists() else file_path
     extras = _load_chapter_patterns()
     job = await preprocess_jobs.start_guess_job_for_path(
-        ref_id, file_path, extra_patterns=extras,
+        ref_id, scan_path, extra_patterns=extras,
     )
     return job.to_status()
 
@@ -786,10 +798,16 @@ async def preprocess_start(ref_id: str,
     file_path = w.get("file_path")
     if not file_path:
         raise HTTPException(400, "尚未上传正文")
+    # Detection ALWAYS reads the immutable raw companion (if present),
+    # never the working file. The working file gets mutated by 清理章节 /
+    # rename / etc., which would otherwise make 重新识别 see drifted
+    # text. The .raw.txt file is the pristine upload snapshot.
+    raw_path = Path(str(file_path) + ".raw.txt")
+    detect_path = str(raw_path) if raw_path.exists() else file_path
     extras = _load_chapter_patterns()
     multi_list = [s.strip() for s in (force_patterns or "").split(",") if s.strip()] or None
     job = await preprocess_jobs.start_job_for_path(
-        ref_id, file_path, extra_patterns=extras,
+        ref_id, detect_path, extra_patterns=extras,
         force_pattern=force_pattern, force_patterns=multi_list,
     )
     return job.to_status()

@@ -701,22 +701,24 @@ function WorkDetail({
     <div>
       {/* Compact, sticky work header.
        *
-       * paddingTop:10 + paddingBottom:10 keep the title chip visually
-       * centered AND extend the opaque background fully, so scrolling
-       * content can't peek through the top/bottom edges. marginBottom
-       * → marginTop:-1 + paddingBottom buffer because a real
-       * marginBottom outside the background was leaving a 12px see-
-       * through gap that the user reported. */}
+       * The parent .panel-body has padding:16px 20px so the sticky
+       * region must EXTEND past that padding — otherwise during scroll
+       * there's a narrow strip above the bar where panel-body content
+       * leaks through (the bug user reported as "和搜索bar有空隙").
+       *
+       * margin:-16px -20px 12px pulls the sticky region edge-to-edge
+       * within the scroll container; padding:16px 20px 10px restores
+       * the visual inset for the bar's content. This way the opaque
+       * background fully covers the scroll container's top during
+       * scroll, regardless of intermediate sub-pixel positioning. */}
       <div style={{
         position: "sticky",
         top: 0,
         zIndex: 10,
         background: "var(--bg-app)",
-        padding: "10px 0",
+        margin: "-16px -20px 12px",
+        padding: "16px 20px 10px",
         borderBottom: "1px solid var(--border)",
-        marginBottom: 12,
-        // Box-shadow so even a 1-2px gap from sub-pixel rendering
-        // gets visually covered.
         boxShadow: "0 6px 6px -6px rgba(0,0,0,0.18)",
       }}>
         <div className="flex items-center" style={{ gap: 10, flexWrap: "wrap" }}>
