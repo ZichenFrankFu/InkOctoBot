@@ -506,14 +506,24 @@ def detect_chapters(text: str,
     if chosen_set:
         named_matches: list[tuple[str, re.Match[str]]] = []
         for name, pat in all_patterns:
+            if name not in chosen_set:
+                # Skip the regex scan entirely for non-chosen patterns —
+                # surface in candidates with count=-1 so the UI can show
+                # "(未扫描)" instead of a misleading 0. This is the main
+                # optimization for big works: scanning every built-in
+                # pattern against a 10 MB text used to take seconds.
+                candidates.append({
+                    "name": name, "count": -1, "score": 0.0,
+                    "custom": name in custom_names,
+                })
+                continue
             ms = list(pat.finditer(text))
             candidates.append({
                 "name": name, "count": len(ms), "score": 0.0,
                 "custom": name in custom_names,
             })
-            if name in chosen_set:
-                for m in ms:
-                    named_matches.append((name, m))
+            for m in ms:
+                named_matches.append((name, m))
         named_matches.sort(key=lambda x: title_bounds(x[1])[0])
         # Drop overlapping matches (e.g., two formats hitting the same heading)
         deduped: list[tuple[str, re.Match[str]]] = []

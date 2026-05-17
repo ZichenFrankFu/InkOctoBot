@@ -761,9 +761,27 @@ def put_chapter_patterns(body: ChapterPatternsBody):
     return {"patterns": cleaned}
 
 
+@router.delete("/chapter_patterns/{name}")
+def delete_chapter_pattern(name: str):
+    """Delete a custom chapter pattern by its saved name (URL-encoded).
+    Built-in patterns can't be deleted via this endpoint."""
+    data = _read_settings_dict()
+    raw = data.get("chapter_patterns")
+    if not isinstance(raw, list):
+        raise HTTPException(404, f"未找到格式「{name}」")
+    before = len(raw)
+    cleaned = [p for p in raw if isinstance(p, dict) and (p.get("name") or "").strip() != name]
+    if len(cleaned) == before:
+        raise HTTPException(404, f"未找到格式「{name}」（内置格式不可删除）")
+    data["chapter_patterns"] = cleaned
+    _write_settings_dict(data)
+    return {"patterns": cleaned, "deleted": name}
+
+
 class ChapterPatternTestBody(BaseModel):
     regex: str | None = None
     format: str | None = None  # user-friendly template ("第N章", "N、", etc.)
+    pattern_name: str | None = None  # look up by name (built-in or custom)
     ref_id: str | None = None
     sample_text: str | None = None
 
@@ -771,20 +789,45 @@ class ChapterPatternTestBody(BaseModel):
 @router.post("/chapter_patterns/test")
 def test_chapter_pattern(body: ChapterPatternTestBody):
     """Compile + run a candidate pattern against either the given
-    sample text or the full text of a specific work. Accepts either a
-    user-friendly ``format`` template (e.g. "第N章") OR a raw ``regex``."""
+    sample text or the (capped) full text of a specific work. Accepts
+    either:
+      - ``pattern_name``: looks up a built-in or custom pattern by name
+        (used by the format-confirm panel's per-row 测试 button).
+      - ``format``: user-friendly template (e.g. "第N章").
+      - ``regex``: raw regex (advanced).
+    Capped at 2 MB scanned text for speed."""
     import re as _re
-    from analysis.feature_extraction.chapter_parser import format_to_regex
+    from analysis.feature_extraction.chapter_parser import (
+        format_to_regex, _PATTERNS as BUILTIN, _compile_extra,
+    )
+    from analysis.feature_extraction.pipeline import _load_chapter_patterns
     regex = (body.regex or "").strip()
     fmt = (body.format or "").strip()
-    if fmt and not regex:
-        regex = format_to_regex(fmt)
-    if not regex:
-        raise HTTPException(400, "请提供 format 或 regex")
-    try:
-        pat = _re.compile(regex, _re.MULTILINE | _re.IGNORECASE)
-    except _re.error as e:
-        raise HTTPException(400, f"正则编译失败：{e}")
+    pname = (body.pattern_name or "").strip()
+    pat = None
+    if pname:
+        # Built-in first
+        for n, p in BUILTIN:
+            if n == pname:
+                pat = p
+                break
+        # Then custom
+        if pat is None:
+            for n, p in _compile_extra(_load_chapter_patterns()):
+                if n == pname:
+                    pat = p
+                    break
+        if pat is None:
+            raise HTTPException(404, f"未找到格式「{pname}」")
+    else:
+        if fmt and not regex:
+            regex = format_to_regex(fmt)
+        if not regex:
+            raise HTTPException(400, "请提供 pattern_name / format / regex")
+        try:
+            pat = _re.compile(regex, _re.MULTILINE | _re.IGNORECASE)
+        except _re.error as e:
+            raise HTTPException(400, f"正则编译失败：{e}")
     if body.sample_text:
         text = body.sample_text
     elif body.ref_id:
@@ -797,7 +840,13 @@ def test_chapter_pattern(body: ChapterPatternTestBody):
         text = pipe._load_text(w) or ""
     else:
         raise HTTPException(400, "请提供 ref_id 或 sample_text")
-    ms = list(pat.finditer(text))
+    # Cap test scan at 2 MB so quick-test stays fast on large works.
+    # That's plenty to verify a format works — count saturates well
+    # before this.
+    MAX_TEST_SCAN = 2_000_000
+    truncated = len(text) > MAX_TEST_SCAN
+    scan_text = text[:MAX_TEST_SCAN] if truncated else text
+    ms = list(pat.finditer(scan_text))
     preview = []
     for m in ms[:8]:
         preview.append({
@@ -805,7 +854,10 @@ def test_chapter_pattern(body: ChapterPatternTestBody):
             "groups": [g for g in m.groups()[:2]],
             "pos": m.start(),
         })
-    return {"count": len(ms), "preview": preview}
+    return {
+        "count": len(ms), "preview": preview,
+        "scanned_chars": len(scan_text), "truncated": truncated,
+    }
 
 
 @router.post("/works/{ref_id}/preprocess/pause")

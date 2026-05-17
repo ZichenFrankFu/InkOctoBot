@@ -269,9 +269,12 @@ async def _run_detection(job: PreprocessJob, text: str,
 
             if per_chapter_delay_ms > 0:
                 await asyncio.sleep(per_chapter_delay_ms / 1000)
-            else:
-                # Yield control to event loop so pause/cancel signals are
-                # processed and other requests don't starve.
+            elif i % 50 == 0:
+                # Yield only every 50 chapters — the per-chapter pause/
+                # cancel check is already done at the top of the loop;
+                # awaiting on every iteration added significant overhead
+                # on 1000+ chapter works without buying any real
+                # responsiveness.
                 await asyncio.sleep(0)
 
         # Heuristic application (in-place; very fast)

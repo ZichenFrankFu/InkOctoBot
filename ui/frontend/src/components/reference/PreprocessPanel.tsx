@@ -106,6 +106,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [guessing, setGuessing] = useState(false);
   const [guessProgress, setGuessProgress] = useState<{ current: number; total: number } | null>(null);
   const guessPollRef = useRef<number | null>(null);
+  // Inline test results per format in the confirm panel
+  const [candidateTests, setCandidateTests] = useState<Record<string, { count: number; preview: any[]; truncated: boolean; loading?: boolean }>>({});
   // Per-chapter content edit modal
   const [editingChapter, setEditingChapter] = useState<{ number: number; title: string; content: string } | null>(null);
   const [editLoading, setEditLoading] = useState(false);
@@ -175,6 +177,54 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     setPatterns(next);
   };
 
+  // Quick-test a single format by name (built-in or custom) against
+  // the current work. Used by the per-row 测试 button in the format-
+  // confirm panel. Caps at 2 MB server-side so it stays snappy.
+  const testCandidate = async (name: string) => {
+    setCandidateTests(prev => ({ ...prev, [name]: { ...(prev[name] || { count: 0, preview: [], truncated: false }), loading: true } }));
+    try {
+      const r = await apiPost<{ count: number; preview: any[]; truncated: boolean }>(
+        "/api/references/chapter_patterns/test",
+        { pattern_name: name, ref_id: refId },
+      );
+      setCandidateTests(prev => ({ ...prev, [name]: { count: r.count, preview: r.preview || [], truncated: !!r.truncated, loading: false } }));
+    } catch (e: any) {
+      toast(e?.message || "测试失败", "error");
+      setCandidateTests(prev => {
+        const n = { ...prev };
+        delete n[name];
+        return n;
+      });
+    }
+  };
+
+  // Delete a CUSTOM format by name (built-ins can't be deleted).
+  // Used by the × button on each custom row in the format-confirm panel.
+  const deleteCustomFormat = async (name: string) => {
+    if (!confirm(`删除自定义章节格式「${name}」？此操作会立即生效。`)) return;
+    try {
+      await fetch(`/api/references/chapter_patterns/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); });
+      toast(`已删除「${name}」`, "success");
+      // Remove from local candidate list + chosen + tests
+      setGuessCandidates(prev => prev ? prev.filter(c => c.name !== name) : prev);
+      setChosenFormats(prev => {
+        const n = new Set(prev);
+        n.delete(name);
+        return n;
+      });
+      setCandidateTests(prev => {
+        const n = { ...prev };
+        delete n[name];
+        return n;
+      });
+      await fetchPatterns();
+    } catch (e: any) {
+      toast(e?.message || "删除失败", "error");
+    }
+  };
+
   const testPattern = async (idx: number) => {
     const p = patterns[idx];
     const fmt = (p?.format || "").trim();
@@ -236,6 +286,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     setGuessing(true);
     setGuessProgress({ current: 0, total: 0 });
     setGuessCandidates(null);
+    setCandidateTests({});
     try {
       // Kick off the async match job
       const init = await apiPost<{ state: string; current_pattern: number; total_patterns: number }>(
@@ -718,46 +769,87 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               下方是各候选格式在本作品中的匹配数。可以多选 — 例如选「第N章」+「作者说章节」会同时识别两种格式的章节。
             </div>
             <div className="flex flex-col gap-4" style={{ marginBottom: 10 }}>
-              {guessCandidates.slice(0, 10).map(c => {
+              {guessCandidates.slice(0, 12).map(c => {
                 const checked = chosenFormats.has(c.name);
+                const t = candidateTests[c.name];
                 return (
-                  <label key={c.name} style={{
-                    display: "flex", alignItems: "center", gap: 8,
-                    padding: "4px 8px",
+                  <div key={c.name} style={{
                     border: `1px solid ${checked ? "var(--accent)" : "var(--border)"}`,
                     borderRadius: 3,
                     background: checked ? "var(--bg-card)" : "transparent",
-                    cursor: c.count > 0 ? "pointer" : "not-allowed",
-                    opacity: c.count > 0 ? 1 : 0.5,
                   }}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={c.count === 0}
-                      onChange={() => {
-                        setChosenFormats(prev => {
-                          const n = new Set(prev);
-                          if (n.has(c.name)) n.delete(c.name);
-                          else n.add(c.name);
-                          return n;
-                        });
-                      }}
-                      style={{ width: 13, height: 13 }}
-                    />
-                    <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", minWidth: 110 }}>
-                      {c.name}
-                    </span>
-                    {c.custom && (
-                      <span className="tag" style={{
-                        fontSize: 10, padding: "1px 6px",
-                        color: "var(--purple)", border: "1px solid var(--purple)",
-                        background: "transparent",
-                      }}>自定义</span>
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      padding: "4px 8px",
+                      opacity: c.count === 0 ? 0.5 : 1,
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={c.count === 0}
+                        onChange={() => {
+                          setChosenFormats(prev => {
+                            const n = new Set(prev);
+                            if (n.has(c.name)) n.delete(c.name);
+                            else n.add(c.name);
+                            return n;
+                          });
+                        }}
+                        style={{ width: 13, height: 13, cursor: c.count === 0 ? "not-allowed" : "pointer" }}
+                      />
+                      <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", flex: 1, minWidth: 0 }}>
+                        {c.name}
+                      </span>
+                      {c.custom && (
+                        <span className="tag" style={{
+                          fontSize: 10, padding: "1px 6px",
+                          color: "var(--purple)", border: "1px solid var(--purple)",
+                          background: "transparent",
+                        }}>自定义</span>
+                      )}
+                      <span className="text-xs text-muted" style={{ fontFamily: "var(--font-mono)", minWidth: 70, textAlign: "right" }}>
+                        匹配 {c.count} 处
+                      </span>
+                      <button className="btn"
+                              style={{ fontSize: 10, padding: "2px 8px" }}
+                              onClick={() => testCandidate(c.name)}
+                              disabled={t?.loading}
+                              title="对当前作品快速测试此格式（截取前 2 MB）">
+                        {t?.loading ? "..." : "测试"}
+                      </button>
+                      {c.custom && (
+                        <button className="btn-icon"
+                                onClick={() => deleteCustomFormat(c.name)}
+                                style={{ fontSize: 14, color: "var(--error)" }}
+                                title="删除此自定义格式">&times;</button>
+                      )}
+                    </div>
+                    {t && !t.loading && (
+                      <div className="text-xs" style={{
+                        margin: "0 8px 6px 8px", padding: 6,
+                        background: "var(--bg-surface)", borderRadius: 3,
+                        color: "var(--text-secondary)", lineHeight: 1.55,
+                      }}>
+                        <div>
+                          <span className="text-muted">测试结果：</span>
+                          <span style={{
+                            fontWeight: 600,
+                            color: t.count > 5 ? "var(--jade)" : t.count > 0 ? "var(--gold)" : "var(--text-tertiary)",
+                          }}>匹配 {t.count} 处</span>
+                          {t.truncated && <span className="text-muted" style={{ marginLeft: 6 }}>（截取前 2 MB）</span>}
+                        </div>
+                        {t.preview.length > 0 && (
+                          <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
+                            {t.preview.slice(0, 5).map((m: any, k: number) => (
+                              <li key={k} style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                                {m.match}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     )}
-                    <span className="text-xs text-muted" style={{ marginLeft: "auto", fontFamily: "var(--font-mono)" }}>
-                      匹配 {c.count} 处
-                    </span>
-                  </label>
+                  </div>
                 );
               })}
             </div>
