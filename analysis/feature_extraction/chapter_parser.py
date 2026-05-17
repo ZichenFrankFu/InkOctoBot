@@ -107,14 +107,22 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # REQUIRES a non-empty title (1+ char, non-terminal-punct end) so
     # bare "147、" lines + countdowns like "10、9、8、" don't match.
     # Full-width digits ０-９ supported. Trailing whitespace OK.
+    # Title MUST NOT start with another digit — keeps "1.1 XXX"-style
+    # section numbers from being misread as N、 chapter 1 (the title
+    # would be "1 XXX", a clear section-number tell).
     ("N、", re.compile(
-        r"^[\s　]*([0-9０-９]+)\s*[、．][\s　]*"
+        r"^[\s　]*([0-9０-９]+)\s*[、][\s　]*"
+        r"(?![0-9０-９])"
         r"([^\n]{0,79}?[^\s。！？，,.!?；;：:…])[\s　]*$",
         re.MULTILINE,
     )),
-    # "1.标题" — arabic + 句点 (.). Title required for same reason.
+    # "1.标题" — arabic + 句点 (both regular `.` and full-width `．`).
+    # Same title-required + no-leading-digit rule as N、 so that
+    # "1.1 作者闲谈" / "1.2.3 …" / "２．１ XXX" don't masquerade as
+    # chapter 1 (they're section numbers, not chapter headings).
     ("N.", re.compile(
-        r"^[\s　]*([0-9０-９]+)[\s]*[.][\s　]*"
+        r"^[\s　]*([0-9０-９]+)[\s]*[.．][\s　]*"
+        r"(?![0-9０-９])"
         r"([^\n]{0,79}?[^\s。！？，,.!?；;：:…])[\s　]*$",
         re.MULTILINE,
     )),
@@ -601,6 +609,28 @@ def _build_chapters(text: str,
             # consecutive offsets.
             c["number"] = last_numbered + next_unnumbered_offset
             next_unnumbered_offset += 1
+
+    # FINAL pass: guarantee `number` uniqueness across the whole list.
+    # If two chapters from DIFFERENT patterns ended up with the same
+    # parsed_number (e.g. "Chapter 1" + "1、引子" — both ordinal 1),
+    # bump the later one by a fractional+integer offset so edit/delete
+    # endpoints can still uniquely target a chapter by number. Stable
+    # rule: first occurrence keeps the parsed number; subsequent
+    # duplicates get the next free integer that is BOTH > last_numbered
+    # AND not already used in the list. This preserves gap-visibility
+    # for the primary numbering while avoiding silent edit collisions.
+    used: set[int] = set()
+    for c in deduped:
+        n = c.get("number")
+        if not isinstance(n, int):
+            continue
+        if n in used:
+            bumped = n + 1
+            while bumped in used:
+                bumped += 1
+            c["number_collision"] = n  # what the source said
+            c["number"] = bumped
+        used.add(c["number"])
 
     return deduped
 

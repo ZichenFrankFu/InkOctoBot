@@ -111,10 +111,18 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   // stuck (auto-seed re-applied on every poll). A "勾选全部疑似题外话"
   // button below the filter bar lets the user bulk-select manually.
   const [excluded, setExcluded] = useState<Set<number>>(new Set());
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // INVERTED semantics: chapters default to expanded after a rescan.
+  // `collapsed` tracks per-chapter manual collapse. `allCollapsed`
+  // is a one-shot master toggle ("全部收起"); setting it puts every
+  // chapter into the collapsed set so they all close at once.
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const [filter, setFilter] = useState<"all" | "flagged" | "outlier" | "garbled" | "kept">("all");
   const [applying, setApplying] = useState(false);
   const [cleaningGarbled, setCleaningGarbled] = useState(false);
+  // Synchronous click-feedback flag for startJob. Toggled true the
+  // microsecond the user clicks "使用…开始识别" so the button label /
+  // disabled state updates before the network round-trip starts.
+  const [starting, setStarting] = useState(false);
   // Volume plan editor (moved here from PlotOutlinePanel)
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
   const [planDraft, setPlanDraft] = useState<{ title: string; start_chapter: number; end_chapter: number }[] | null>(null);
@@ -528,6 +536,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
 
   const startJob = async (forcePatterns?: string[]) => {
     const fps = forcePatterns ?? Array.from(chosenFormats);
+    setStarting(true);
     try {
       // Multi-select: pass force_patterns (plural). Server uses
       // EXACTLY those patterns with overlap dedup, so each chapter
@@ -540,11 +549,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       setStatus(r);
       setExcluded(new Set());
+      setCollapsed(new Set());  // re-expand all on fresh detection
       toast(fps.length > 0
         ? `已用「${fps.join(" + ")}」开始识别`
         : "已开始智能识别章节", "info");
     } catch (e: any) {
       toast(e?.message || "启动失败", "error");
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -952,11 +964,23 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   });
 
   const toggleExpand = (n: number) => {
-    setExpanded(prev => {
+    // INVERTED: toggle COLLAPSED membership. Default = expanded.
+    setCollapsed(prev => {
       const next = new Set(prev);
       if (next.has(n)) next.delete(n); else next.add(n);
       return next;
     });
+  };
+  const allCollapsed = (chs: Chapter[]): boolean =>
+    chs.length > 0 && chs.every(c => collapsed.has(c.number));
+  const toggleAllCollapse = () => {
+    if (chapters.length === 0) return;
+    if (allCollapsed(chapters)) {
+      // Currently all collapsed → expand all (clear set).
+      setCollapsed(new Set());
+    } else {
+      setCollapsed(new Set(chapters.map(c => c.number)));
+    }
   };
 
   const progress = status && status.total_chapters > 0
@@ -992,11 +1016,24 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
           </div>
           <div className="flex items-center gap-6" style={{ flexWrap: "wrap" }}>
-            {(state === "idle" || state === "done" || state === "cancelled" || state === "error") && !guessCandidates && !guessing && (
-              <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }}
+            {/* Keep the action button MOUNTED while guessing so the
+                user sees the click register instantly — swap label to
+                "匹配中…" + disable instead of unmounting the button
+                and rendering a separate progress panel below (which
+                was the source of the perceived lag on click). */}
+            {(state === "idle" || state === "done" || state === "cancelled" || state === "error") && !guessCandidates && (
+              <button className="btn-primary"
+                      style={{
+                        fontSize: 12, padding: "5px 14px",
+                        cursor: guessing ? "wait" : "pointer",
+                        opacity: guessing ? 0.7 : 1,
+                      }}
                       onClick={guessFormat}
+                      disabled={guessing}
                       title="先扫描全文匹配章节格式，再让你确认后进行识别">
-                {state === "idle" ? "匹配章节格式" : "重新识别"}
+                {guessing
+                  ? `匹配中… ${guessProgress?.total ? Math.round(((guessProgress.current || 0) / guessProgress.total) * 100) + "%" : ""}`
+                  : (state === "idle" ? "匹配章节格式" : "重新识别")}
               </button>
             )}
             {state === "running" && (
@@ -1152,12 +1189,19 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       onClick={() => { setGuessCandidates(null); setChosenFormats(new Set()); }}>
                 取消
               </button>
-              <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
+              <button className="btn-primary"
+                      style={{
+                        fontSize: 11, padding: "3px 10px",
+                        cursor: starting ? "wait" : "pointer",
+                        opacity: starting ? 0.7 : 1,
+                      }}
                       onClick={() => { startJob(Array.from(chosenFormats)); setGuessCandidates(null); }}
-                      disabled={chosenFormats.size === 0}>
-                {chosenFormats.size <= 1
-                  ? `使用「${Array.from(chosenFormats)[0] || "?"}」开始识别`
-                  : `使用所选 ${chosenFormats.size} 个格式开始识别`}
+                      disabled={starting || chosenFormats.size === 0}>
+                {starting
+                  ? "启动中…"
+                  : (chosenFormats.size <= 1
+                      ? `使用「${Array.from(chosenFormats)[0] || "?"}」开始识别`
+                      : `使用所选 ${chosenFormats.size} 个格式开始识别`)}
               </button>
             </div>
           </div>
@@ -1646,6 +1690,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               </button>
             ))}
             <div style={{ flex: 1 }} />
+            {chapters.length > 0 && (
+              <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                      onClick={toggleAllCollapse}
+                      title="一键收起或展开所有章节预览">
+                {allCollapsed(chapters) ? "全部展开" : "全部收起"}
+              </button>
+            )}
             {/* Single 全选 toggle: first click selects all in current
                 view; second click clears them. Derived from whether
                 every visible chapter is currently excluded. */}
@@ -1684,7 +1735,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 so we can render a "缺失 N 章" marker between
                 consecutive chapter rows in the timeline. */}
             {filteredChapters.flatMap((c, fIdx) => {
-              const isOpen = expanded.has(c.number);
+              // Default-expanded: open UNLESS user explicitly collapsed.
+              const isOpen = !collapsed.has(c.number);
               const isFlagged = !!c.is_author_note;
               const isOutlier = !!c.is_length_outlier;
               const isExcluded = excluded.has(c.number);
