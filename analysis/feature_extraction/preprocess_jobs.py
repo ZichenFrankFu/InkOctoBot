@@ -511,6 +511,7 @@ def persist_result_to_segments(ref_id: str, db_path: str,
     PreprocessPanel UI can pick them up on the next status poll without
     re-running the job."""
     from rag.reference_db import ReferenceDB
+    from analysis.feature_extraction.chapter_parser import visible_char_count
     rdb = ReferenceDB(db_path)
     work = rdb.get_work(ref_id)
     if not work:
@@ -524,9 +525,11 @@ def persist_result_to_segments(ref_id: str, db_path: str,
     # Strip heavy content — keep metadata only for the segments_json blob.
     light = [
         {k: c.get(k) for k in (
-            "number", "title", "title_only", "raw_marker", "pattern", "volume",
+            "number", "parsed_number", "title", "title_only", "raw_marker",
+            "pattern", "volume",
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
+            "is_split_piece", "is_edited", "had_asides_removed",
             "preview_head", "preview_tail",
             "content_start", "content_end",
         )} | {"char_count": visible_char_count(c.get("content") or "")}

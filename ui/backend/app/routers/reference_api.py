@@ -681,36 +681,78 @@ def patch_chapter_content(ref_id: str, number: int, body: ChapterContentEdit):
         src.write_text(new_text, encoding="utf-8")
     except Exception as e:
         raise HTTPException(500, f"写入文件失败：{e}")
-    # Update the persisted preprocess result so the chapter list reflects
-    # the new content / char count without re-running detection.
+    # Update the persisted preprocess result so the chapter list
+    # reflects the new content / char count without re-running
+    # detection. Falls back to a re-detect ONLY when no preprocess
+    # entry exists — guarantees the UI never loses the chapter list.
     try:
         state = json.loads(w.get("segments_json") or "{}")
     except Exception:
         state = {}
-    if isinstance(state, dict):
-        pre = state.get("preprocess") or {}
-        chapters_list = pre.get("chapters") or []
-        from analysis.feature_extraction.chapter_parser import make_preview
+    if not isinstance(state, dict):
+        state = {}
+    from analysis.feature_extraction.chapter_parser import make_preview
+    pre = state.get("preprocess") if isinstance(state.get("preprocess"), dict) else None
+    chapters_list = pre.get("chapters") if pre and isinstance(pre.get("chapters"), list) else None
+    if chapters_list:
+        # In-place update of the edited chapter + mark it
         for c in chapters_list:
             if c.get("number") == number:
                 c["char_count"] = visible_char_count(body.content)
                 pv = make_preview(body.content)
                 c["preview_head"] = pv["head"]
                 c["preview_tail"] = pv["tail"]
+                c["is_edited"] = True
                 break
-        pre["chapters"] = chapters_list
+        pre = {**(pre or {}), "chapters": chapters_list,
+                "total_chapters": len(chapters_list)}
         state["preprocess"] = pre
-        state["exclusion_backup"] = {
-            "path": str(bak),
-            "removed_chapters": [],
-            "prev_char_count": len(text),
-            "edited_chapter": number,
+    else:
+        # No prior preprocess — re-detect on the new text so the UI
+        # still has a chapter list to render.
+        from analysis.feature_extraction.chapter_parser import (
+            detect_chapters as _dc, flag_author_notes as _fan,
+            flag_length_outliers as _fol,
+        )
+        new_detect = _dc(new_text, extra_patterns=_load_chapter_patterns())
+        new_chapters = new_detect["chapters"]
+        _fan(new_chapters, extra_keywords=_load_author_keywords())
+        _fol(new_chapters)
+        for cc in new_chapters:
+            pvv = make_preview(cc.get("content") or "")
+            cc["preview_head"] = pvv["head"]
+            cc["preview_tail"] = pvv["tail"]
+            if cc.get("number") == number:
+                cc["is_edited"] = True
+        light = [
+            {k: cc.get(k) for k in (
+                "number", "parsed_number", "title", "title_only", "raw_marker",
+                "pattern", "volume",
+                "is_author_note", "author_note_score", "author_note_reasons",
+                "is_length_outlier", "outlier_kind",
+                "is_split_piece", "is_edited", "had_asides_removed",
+                "preview_head", "preview_tail",
+                "content_start", "content_end",
+            )} | {"char_count": visible_char_count(cc.get("content") or "")}
+            for cc in new_chapters
+        ]
+        state["preprocess"] = {
+            "chapters": light,
+            "total_chapters": len(light),
+            "flagged_count": sum(1 for cc in light if cc.get("is_author_note")),
         }
-        # Clear segment plan / completed results since text changed
-        state.pop("custom_plan", None)
-        state.pop("plan", None)
-        state["results"] = {}
-        state["completed"] = []
+    state["exclusion_backup"] = {
+        "path": str(bak),
+        "removed_chapters": [],
+        "prev_char_count": len(text),
+        "edited_chapter": number,
+    }
+    # Segment plan + completed results may reference chapter offsets
+    # that shifted; drop them so re-extraction starts clean.
+    state.pop("custom_plan", None)
+    state.pop("plan", None)
+    state["results"] = {}
+    state["completed"] = []
     db.update_work(
         ref_id,
         segments_json=json.dumps(state, ensure_ascii=False),
@@ -1166,9 +1208,11 @@ def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
         c["preview_tail"] = pv["tail"]
     light = [
         {k: c.get(k) for k in (
-            "number", "title", "title_only", "raw_marker", "pattern", "volume",
+            "number", "parsed_number", "title", "title_only", "raw_marker",
+            "pattern", "volume",
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
+            "is_split_piece", "is_edited", "had_asides_removed",
             "preview_head", "preview_tail",
             "content_start", "content_end",
         )} | {"char_count": visible_char_count(c.get("content") or "")}
@@ -1288,15 +1332,36 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
     new_chapters = new_detect["chapters"]
     flag_author_notes(new_chapters, extra_keywords=_load_author_keywords())
     flag_length_outliers(new_chapters)
+    # Compute which chapters had paragraphs removed so we can mark them
+    # in the new chapter list (matches by chapter title — robust to
+    # ordinal shifts after the rebuild).
+    edited_titles: set[str] = set()
+    prior_pre = state.get("preprocess") if isinstance(state.get("preprocess"), dict) else None
+    prior_chs = prior_pre.get("chapters") if prior_pre and isinstance(prior_pre.get("chapters"), list) else []
+    for p in (body.paragraphs or []):
+        try:
+            cn = int(p.get("chapter_number"))
+        except (TypeError, ValueError):
+            continue
+        for prior_c in prior_chs:
+            if prior_c.get("number") == cn:
+                t = (prior_c.get("title") or "").strip()
+                if t:
+                    edited_titles.add(t)
+                break
     for c in new_chapters:
         pv = make_preview(c.get("content") or "")
         c["preview_head"] = pv["head"]
         c["preview_tail"] = pv["tail"]
+        if (c.get("title") or "").strip() in edited_titles:
+            c["had_asides_removed"] = True
     light = [
         {k: c.get(k) for k in (
-            "number", "title", "title_only", "raw_marker", "pattern", "volume",
+            "number", "parsed_number", "title", "title_only", "raw_marker",
+            "pattern", "volume",
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
+            "is_split_piece", "is_edited", "had_asides_removed",
             "preview_head", "preview_tail",
             "content_start", "content_end",
         )} | {"char_count": visible_char_count(c.get("content") or "")}

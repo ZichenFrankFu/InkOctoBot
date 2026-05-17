@@ -13,6 +13,7 @@ interface ChapterPattern {
 
 interface Chapter {
   number: number;
+  parsed_number?: number | null;
   title: string;
   title_only?: string;
   raw_marker?: string;
@@ -24,6 +25,9 @@ interface Chapter {
   author_note_reasons?: string[];
   is_length_outlier?: boolean;
   outlier_kind?: "短" | "长" | null;
+  is_split_piece?: boolean;
+  is_edited?: boolean;
+  had_asides_removed?: boolean;
   preview_head?: string;
   preview_tail?: string;
 }
@@ -1412,6 +1416,27 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       }} title={`本章字数与全文中位数差异较大（${c.outlier_kind || ""}）；切分可能不准`}>
                         长度异常·{c.outlier_kind || ""}
                       </span>
+                    )}
+                    {c.is_edited && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px", flexShrink: 0,
+                        color: "var(--accent)", background: "var(--bg-surface-2)",
+                        border: "1px solid var(--accent)",
+                      }} title="此章节内容已被手动编辑过">已编辑</span>
+                    )}
+                    {c.had_asides_removed && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px", flexShrink: 0,
+                        color: "var(--jade)", background: "var(--bg-surface-2)",
+                        border: "1px solid var(--jade)",
+                      }} title="此章节有题外话段落被清理过">已清题外话</span>
+                    )}
+                    {c.is_split_piece && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px", flexShrink: 0,
+                        color: "var(--text-tertiary)", background: "var(--bg-surface-2)",
+                        border: "1px dashed var(--text-tertiary)",
+                      }} title="此章节由长度异常章节自动拆分而来">拆分</span>
                     )}
                     <span className="text-xs text-muted" style={{ flexShrink: 0, fontFamily: "var(--font-mono)", minWidth: 64, textAlign: "right" }}>
                       {fmtChars(c.char_count)}

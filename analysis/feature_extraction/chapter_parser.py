@@ -95,24 +95,25 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # content lengths explode (e.g. a 2800-字 chapter shows as 387.6
     # 万字 because it ate the rest of the document). Includes
     # full-width digits ０-９ since web-novel uploads sometimes use them.
-    ("数字、标题", re.compile(
+    ("N、", re.compile(
         r"^[\s　]*([0-9０-９]+)\s*[、．][\s　]*([^\n]{0,80})$",
         re.MULTILINE,
     )),
     # "1.标题" — arabic + 句点 (.)
-    ("数字.标题", re.compile(
+    ("N.", re.compile(
         r"^[\s　]*([0-9０-９]+)[\s]*[.][\s　]*([^\n]{0,80})$",
         re.MULTILINE,
     )),
-    # No-numbering format: short paragraphs (1–26 chars) that don't end
-    # in terminal punctuation and stand alone between blank lines.
-    # Captures the WHOLE title as group(1); _build_chapters detects this
-    # case (cn2int(group(1)) returns None) and synthesizes 1, 2, 3…
-    # numbers in document order. Common in literary works that title
-    # chapters with a phrase but no chapter number.
-    ("末尾无标点", re.compile(
+    # Short standalone heading lines without terminal punctuation
+    # (literary works that title chapters with a phrase but no number).
+    # Title cap shrunk to 16 chars to make this a "short sentence"
+    # filter — was 26, but that produced false positives on the user's
+    # web-novel uploads. Captures the whole title as group(1);
+    # _build_chapters detects this case (cn2int(group(1)) returns None)
+    # and synthesizes 1, 2, 3… numbers in document order.
+    ("短句标题", re.compile(
         r"(?:^|\n[\s　]*\n)[\s　]*"
-        r"([^\s。！？；，,.!?…：:　][^\n。！？；，,.!?…：:]{0,24}[^\s。！？；，,.!?…：:　])"
+        r"([^\s。！？；，,.!?…：:　][^\n。！？；，,.!?…：:]{0,14}[^\s。！？；，,.!?…：:　])"
         r"[\s　]*(?=\n[\s　]*\n)",
         re.MULTILINE,
     )),
@@ -225,7 +226,7 @@ def _clean_title(s: str) -> str:
     return out
 
 
-_UNNUMBERED_PATTERNS = {"末尾无标点", "作者说章节"}
+_UNNUMBERED_PATTERNS = {"短句标题", "作者说章节"}
 
 
 def _build_chapters(text: str,
@@ -302,20 +303,13 @@ def _build_chapters(text: str,
             if j != best:
                 drop_idx.add(j)
 
-    # Adaptive short-gap dedup — applied ONLY to numbered matches.
-    # Secondary patterns (作者说章节, 末尾无标点, custom) can legitimately
-    # cluster close together (author asides between two body chapters),
-    # so excluding them from the gap calculation prevents the dedup
-    # from sweeping them out as TOC noise.
-    surviving = [i for i in range(len(matches))
-                 if i not in drop_idx and not is_unnumbered_at(i)]
-    if len(surviving) >= 4:
-        gaps = sorted(gap_to_next(i) for i in surviving)
-        median_gap = gaps[len(gaps) // 2]
-        threshold = min(80, max(0, median_gap * 0.25))
-        for i in surviving:
-            if gap_to_next(i) < threshold:
-                drop_idx.add(i)
+    # Adaptive short-gap dedup REMOVED. The earlier by_num pass already
+    # drops TOC duplicates (TOC entries share parsed numbers with body
+    # entries, and the longest-content rule keeps the body). Adding a
+    # gap-based pass on top kept catching legitimately short chapters
+    # (e.g. a freshly-edited chapter or an author-aside whose body got
+    # trimmed) and dropping them, which the user reported as "chapters
+    # disappearing after edit".
 
     pruned_pairs = [named_matches[i] for i in range(len(named_matches)) if i not in drop_idx]
     if not pruned_pairs:
@@ -383,6 +377,28 @@ def _build_chapters(text: str,
                 deduped[-1] = c
             continue
         deduped.append(c)
+
+    # Cross-list dedup: catch the case where TOC + body have the SAME
+    # parsed number but aren't adjacent (e.g. interspersed with other
+    # patterns or volume markers). For numbered chapters with the same
+    # parsed_number AND pattern, keep the one with the longest content.
+    seen_by_key: dict[tuple, int] = {}  # (pattern, parsed_number) -> idx
+    keep_mask = [True] * len(deduped)
+    for idx, c in enumerate(deduped):
+        if c["pattern"] in _UNNUMBERED_PATTERNS:
+            continue
+        key = (c["pattern"], c["number"])
+        if key in seen_by_key:
+            prev_idx = seen_by_key[key]
+            # Keep whichever has longer content; drop the other.
+            if len(c["content"]) > len(deduped[prev_idx]["content"]):
+                keep_mask[prev_idx] = False
+                seen_by_key[key] = idx
+            else:
+                keep_mask[idx] = False
+        else:
+            seen_by_key[key] = idx
+    deduped = [c for i, c in enumerate(deduped) if keep_mask[i]]
     # Rescue split: any chapter whose content is grossly larger than
     # the median is almost certainly hiding a missed heading. Re-scan
     # its content with the same pattern that built it, and split at any
@@ -397,7 +413,14 @@ def _build_chapters(text: str,
     # regardless of mixed numbered + unnumbered chapters.
     for i, c in enumerate(deduped):
         c["index"] = i
-        c["parsed_number"] = c["number"] if c["pattern"] not in _UNNUMBERED_PATTERNS else None
+        # If parsed_number was explicitly set (e.g. cleared to None by
+        # rescue-split for derived pieces), preserve it. Otherwise
+        # capture the parser's original number for numbered patterns;
+        # leave None for unnumbered.
+        if "parsed_number" not in c:
+            c["parsed_number"] = (
+                c["number"] if c["pattern"] not in _UNNUMBERED_PATTERNS else None
+            )
         c["number"] = i + 1
 
     return deduped
@@ -444,20 +467,30 @@ def _rescue_split_huge_chapters(text: str, chapters: list[dict]) -> list[dict]:
         base_offset = c.get("content_start") or 0
         cursor = 0
         last_marker = c.get("raw_marker") or c.get("title") or ""
+        first_piece = True
         for name, rm in rescue_matches:
-            # First piece keeps the original chapter's marker, subsequent
-            # pieces use the rescued heading as their marker.
+            # First piece keeps the original chapter's marker AND its
+            # parsed_number / number. Subsequent pieces use the rescued
+            # heading as their marker and DROP the inherited number
+            # (parsed_number set to None to flag them as derived; the
+            # outer renumbering loop assigns fresh sequential ordinals).
             sub_content = content[cursor:rm.start()].strip()
-            out.append({
+            piece = {
                 **c,
                 "content": sub_content,
                 "raw_marker": last_marker,
                 "content_start": base_offset + cursor,
                 "content_end": base_offset + rm.start(),
-            })
+            }
+            if not first_piece:
+                piece["title"] = last_marker[:60]
+                piece["parsed_number"] = None
+                piece["is_split_piece"] = True
+            first_piece = False
+            out.append(piece)
             last_marker = _clean_title(rm.group(0).strip().rstrip("\r"))
             cursor = rm.end()
-        # Final piece
+        # Final piece — always derived, never inherits parent's number.
         out.append({
             **c,
             "content": content[cursor:].strip(),
@@ -465,6 +498,8 @@ def _rescue_split_huge_chapters(text: str, chapters: list[dict]) -> list[dict]:
             "title": last_marker[:60],
             "content_start": base_offset + cursor,
             "content_end": base_offset + len(content),
+            "parsed_number": None,
+            "is_split_piece": True,
         })
     return out
 
