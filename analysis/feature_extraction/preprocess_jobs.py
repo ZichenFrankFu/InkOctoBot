@@ -107,7 +107,7 @@ async def _run_detection(job: PreprocessJob, text: str,
     and job._resume between chapters so the UI's pause/resume controls
     take effect at chapter boundaries (per user's chosen granularity)."""
     from analysis.feature_extraction.chapter_parser import (
-        detect_chapters, flag_author_notes,
+        detect_chapters, flag_author_notes, flag_length_outliers, make_preview,
     )
 
     try:
@@ -166,10 +166,19 @@ async def _run_detection(job: PreprocessJob, text: str,
 
         # Heuristic application (in-place; very fast)
         flag_author_notes(chapters)
+        flag_length_outliers(chapters)
+        # Attach a head/tail preview snippet so the UI can render the
+        # first/last sentences without re-fetching the file.
+        for c in chapters:
+            pv = make_preview(c.get("content") or "")
+            c["preview_head"] = pv["head"]
+            c["preview_tail"] = pv["tail"]
         flagged = [c for c in chapters if c.get("is_author_note")]
+        outliers = [c for c in chapters if c.get("is_length_outlier")]
         job.flagged_count = len(flagged)
         job.append_log(
-            f"完成。识别 {len(chapters)} 章，疑似作者题外话 {len(flagged)} 章。"
+            f"完成。识别 {len(chapters)} 章，疑似作者题外话 {len(flagged)} 章，"
+            f"长度异常 {len(outliers)} 章。"
         )
 
         job.chapters = chapters
@@ -258,6 +267,8 @@ def persist_result_to_segments(ref_id: str, db_path: str,
         {k: c.get(k) for k in (
             "number", "title", "title_only", "raw_marker", "pattern", "volume",
             "is_author_note", "author_note_score", "author_note_reasons",
+            "is_length_outlier", "outlier_kind",
+            "preview_head", "preview_tail",
         )} | {"char_count": len(c.get("content") or "")}
         for c in chapters
     ]

@@ -22,6 +22,10 @@ interface Chapter {
   is_author_note?: boolean;
   author_note_score?: number;
   author_note_reasons?: string[];
+  is_length_outlier?: boolean;
+  outlier_kind?: "短" | "长" | null;
+  preview_head?: string;
+  preview_tail?: string;
 }
 
 interface LogEntry { ts: number; message: string; chapter?: number | null; }
@@ -74,13 +78,13 @@ interface Props {
 export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterApplyExclusions }: Props) {
   const { toast } = useToast();
   const [status, setStatus] = useState<PreprocessStatus | null>(null);
+  // ``excluded`` is purely user-driven. We do NOT auto-seed from the
+  // is_author_note flag — that previously made the checkboxes feel
+  // stuck (auto-seed re-applied on every poll). A "勾选全部疑似题外话"
+  // button below the filter bar lets the user bulk-select manually.
   const [excluded, setExcluded] = useState<Set<number>>(new Set());
-  // Set the first time we receive a chapters list for THIS job, so we
-  // don't keep re-auto-populating ``excluded`` on every status poll
-  // (which would clobber the user's manual changes).
-  const excludedSeededRef = useRef<string>("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [filter, setFilter] = useState<"all" | "flagged" | "kept">("all");
+  const [filter, setFilter] = useState<"all" | "flagged" | "outlier" | "kept">("all");
   const [applying, setApplying] = useState(false);
   // Volume plan editor (moved here from PlotOutlinePanel)
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
@@ -100,21 +104,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     try {
       const r = await apiGet<PreprocessStatus>(`/api/references/works/${refId}/preprocess/status`);
       setStatus(r);
-      // Seed ``excluded`` exactly once per detection run. ``seedKey`` is
-      // the detection signature — if it changes (new run), we re-seed.
-      const seedKey = r.state === "done"
-        ? `${r.total_chapters}:${r.flagged_count}`
-        : "";
-      if (
-        seedKey
-        && excludedSeededRef.current !== `${refId}:${seedKey}`
-        && r.chapters && r.chapters.length > 0
-      ) {
-        const initial = new Set<number>();
-        r.chapters.forEach(c => { if (c.is_author_note) initial.add(c.number); });
-        setExcluded(initial);
-        excludedSeededRef.current = `${refId}:${seedKey}`;
-      }
       return r;
     } catch (e) {
       return null;
@@ -228,7 +217,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       const r = await apiPost<PreprocessStatus>(`/api/references/works/${refId}/preprocess/start`, {});
       setStatus(r);
       setExcluded(new Set());
-      excludedSeededRef.current = "";  // allow re-seeding when the new run finishes
+      toast("已开始智能识别章节", "info");
     } catch (e: any) {
       toast(e?.message || "启动失败", "error");
     }
@@ -242,7 +231,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       toast(`已恢复 ${r.restored_chapters.length} 章（${fmtChars(r.restored_char_count)}）`, "success");
       setStatus(null);
-      excludedSeededRef.current = "";
       await fetchStatus();
       await fetchPlan();
       await onAfterApplyExclusions?.();
@@ -394,9 +382,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   }
 
   const state = status?.state || "idle";
-  const chapters = status?.chapters || [];
+  // Defensive sort by chapter number so the timeline is always low→high
+  // even if the backend response somehow arrives out of order.
+  const chapters = [...(status?.chapters || [])].sort(
+    (a, b) => (a.number || 0) - (b.number || 0),
+  );
   const filteredChapters = chapters.filter(c => {
-    if (filter === "flagged") return c.is_author_note;
+    if (filter === "flagged") return !!c.is_author_note;
+    if (filter === "outlier") return !!c.is_length_outlier;
     if (filter === "kept") return !excluded.has(c.number);
     return true;
   });
@@ -556,6 +549,19 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
           </button>
           {patternsOpen && (
             <div style={{ marginTop: 6 }}>
+              {status?.detected_pattern && (
+                <div className="text-xs" style={{
+                  marginBottom: 8, padding: "5px 8px",
+                  background: "var(--accent-subtle)", color: "var(--accent)",
+                  border: "1px solid var(--accent)", borderRadius: 4,
+                }}>
+                  当前作品识别到的章节格式：
+                  <span style={{ fontWeight: 700, marginLeft: 6 }}>{status.detected_pattern}</span>
+                  <span className="text-muted" style={{ marginLeft: 8 }}>
+                    （内置格式之一；如需自定义可在下方添加）
+                  </span>
+                </div>
+              )}
               <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.6 }}>
                 内置「第N章」「第N回」「1、标题」「1.标题」「Chapter N」等格式。
                 若你的小说用了不同的章节标记，可在这里添加。
@@ -577,9 +583,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               </div>
               {patterns.length > 0 && (
                 <div className="flex flex-col gap-6" style={{ marginBottom: 8 }}>
-                  {patterns.map((p, i) => (
+                  {patterns.map((p, i) => {
+                    const isWinner = status?.detected_pattern && p.name === status.detected_pattern;
+                    return (
                     <div key={i} style={{
-                      padding: 6, border: "1px solid var(--border)", borderRadius: 4,
+                      padding: 6,
+                      border: `1px solid ${isWinner ? "var(--accent)" : "var(--border)"}`,
+                      borderRadius: 4,
+                      background: isWinner ? "var(--accent-subtle)" : "transparent",
                     }}>
                       <div className="flex gap-6 items-center" style={{ marginBottom: 4 }}>
                         <input
@@ -603,6 +614,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                           style={{ flex: 1, fontSize: 12 }}
                           title="把章节号位置写成 N，其它字符照写即可"
                         />
+                        {isWinner && (
+                          <span className="tag" style={{
+                            fontSize: 10, padding: "1px 6px", flexShrink: 0,
+                            color: "var(--accent)", background: "var(--bg-card)",
+                            border: "1px solid var(--accent)",
+                          }}>已识别</span>
+                        )}
                         <button className="btn" style={{ fontSize: 11, padding: "3px 8px" }}
                                 onClick={() => testPattern(i)}
                                 title="对当前作品测试匹配数">
@@ -635,7 +653,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         </div>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
               <div className="flex gap-6" style={{ justifyContent: "space-between" }}>
@@ -652,37 +671,19 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         </div>
       </div>
 
-      {/* Section 2: chapter list + author-note flags */}
+      {/* Section 2: chapter list + author-note flags + outlier flags */}
       {chapters.length > 0 && (
         <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
           <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                章节清理（共 {chapters.length} 章）
+                章节清理（共 {chapters.length} 章 · 已勾选排除 {excluded.size}）
               </div>
               <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                勾选要排除的章节 → 点「应用清理」会从正文中<span style={{ color: "var(--error)" }}>物理删除</span>这些章节。
+                勾选要排除的章节 → 点「应用清理」会从正文中<span style={{ color: "var(--error)" }}>物理删除</span>（可撤销一次）。
               </div>
             </div>
             <div className="flex items-center gap-6">
-              <div className="flex gap-4" style={{
-                border: "1px solid var(--border)", borderRadius: 3, overflow: "hidden",
-              }}>
-                {[
-                  { k: "all", label: `全部 ${chapters.length}` },
-                  { k: "flagged", label: `疑似题外话 ${status?.flagged_count || 0}` },
-                  { k: "kept", label: `保留 ${chapters.length - excluded.size}` },
-                ].map(o => (
-                  <button key={o.k}
-                          onClick={() => setFilter(o.k as any)}
-                          className="btn-ghost"
-                          style={{
-                            fontSize: 10, padding: "3px 8px", borderRadius: 0,
-                            background: filter === o.k ? "var(--accent-subtle)" : "transparent",
-                            color: filter === o.k ? "var(--accent)" : "var(--text-secondary)",
-                          }}>{o.label}</button>
-                ))}
-              </div>
               {status?.can_undo && (
                 <button className="btn"
                         style={{ fontSize: 11, padding: "4px 12px", color: "var(--gold)" }}
@@ -701,8 +702,58 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
           </div>
 
+          {/* Filter bar — separate row so the buttons are obviously clickable */}
+          <div className="flex items-center" style={{ marginBottom: 8, gap: 6, flexWrap: "wrap" }}>
+            <span className="text-xs text-muted" style={{ marginRight: 4 }}>筛选：</span>
+            {([
+              { k: "all", label: "全部", count: chapters.length },
+              { k: "flagged", label: "疑似题外话", count: chapters.filter(c => c.is_author_note).length },
+              { k: "outlier", label: "长度异常", count: chapters.filter(c => c.is_length_outlier).length },
+              { k: "kept", label: "保留", count: chapters.length - excluded.size },
+            ] as const).map(o => (
+              <button key={o.k}
+                      type="button"
+                      onClick={() => setFilter(o.k)}
+                      className="btn"
+                      style={{
+                        fontSize: 11, padding: "3px 10px",
+                        background: filter === o.k ? "var(--accent-subtle)" : "var(--bg-card)",
+                        color: filter === o.k ? "var(--accent)" : "var(--text-secondary)",
+                        border: `1px solid ${filter === o.k ? "var(--accent)" : "var(--border)"}`,
+                      }}>
+                {o.label} <span style={{ opacity: 0.7, marginLeft: 4 }}>{o.count}</span>
+              </button>
+            ))}
+            <div style={{ flex: 1 }} />
+            {/* Bulk-select helpers — explicit, predictable */}
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                    onClick={() => {
+                      const visible = filteredChapters.map(c => c.number);
+                      setExcluded(prev => {
+                        const next = new Set(prev);
+                        visible.forEach(n => next.add(n));
+                        return next;
+                      });
+                    }}
+                    title="把当前筛选下显示的所有章节加入排除列表">
+              勾选当前视图
+            </button>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                    onClick={() => {
+                      const visible = new Set(filteredChapters.map(c => c.number));
+                      setExcluded(prev => {
+                        const next = new Set(prev);
+                        visible.forEach(n => next.delete(n));
+                        return next;
+                      });
+                    }}
+                    title="取消当前视图的所有勾选">
+              取消当前视图
+            </button>
+          </div>
+
           <div className="flex flex-col gap-4" style={{
-            maxHeight: 460, overflowY: "auto",
+            maxHeight: 540, overflowY: "auto",
             padding: 4, border: "1px solid var(--border)", borderRadius: 4,
           }}>
             {filteredChapters.length === 0 && (
@@ -713,35 +764,51 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             {filteredChapters.map(c => {
               const isOpen = expanded.has(c.number);
               const isFlagged = !!c.is_author_note;
+              const isOutlier = !!c.is_length_outlier;
               const isExcluded = excluded.has(c.number);
+              const borderColor = isExcluded ? "var(--error)"
+                                  : isFlagged ? "var(--gold)"
+                                  : isOutlier ? "var(--purple)"
+                                  : "var(--border)";
+              const bgColor = isExcluded ? "rgba(220,38,38,0.06)"
+                              : isFlagged ? "rgba(250,204,21,0.06)"
+                              : isOutlier ? "rgba(168,85,247,0.06)"
+                              : "transparent";
               return (
                 <div key={c.number} style={{
-                  border: `1px solid ${isExcluded ? "var(--error)" : isFlagged ? "var(--gold)" : "var(--border)"}`,
+                  border: `1px solid ${borderColor}`,
                   borderRadius: 4,
                   padding: "5px 8px",
-                  background: isExcluded ? "rgba(220,38,38,0.06)" : isFlagged ? "rgba(250,204,21,0.06)" : "transparent",
+                  background: bgColor,
                   opacity: isExcluded ? 0.7 : 1,
                 }}>
                   <div className="flex items-center gap-8" style={{ minWidth: 0 }}>
-                    <input
-                      type="checkbox"
-                      checked={isExcluded}
-                      onChange={() => toggleExclude(c.number)}
-                      style={{ flexShrink: 0, width: 14, height: 14, cursor: "pointer" }}
-                      title={isExcluded ? "已勾选排除" : "勾选以排除此章节"}
-                    />
+                    <label style={{
+                      display: "inline-flex", alignItems: "center",
+                      cursor: "pointer", padding: "2px 4px", margin: -2,
+                    }}
+                      title={isExcluded ? "已勾选排除（点击取消）" : "勾选以排除此章节"}>
+                      <input
+                        type="checkbox"
+                        checked={isExcluded}
+                        onChange={e => { e.stopPropagation(); toggleExclude(c.number); }}
+                        style={{ width: 14, height: 14, cursor: "pointer" }}
+                      />
+                    </label>
                     <span className="tag" style={{
-                      fontSize: 10, minWidth: 38, textAlign: "center", flexShrink: 0,
+                      fontSize: 10, minWidth: 42, textAlign: "center", flexShrink: 0,
                       color: "var(--text-secondary)",
                       background: "transparent",
                       border: "1px solid var(--border)",
+                      fontFamily: "var(--font-mono)",
                     }}>#{c.number}</span>
                     <button
+                      type="button"
                       className="btn-ghost"
                       onClick={() => toggleExpand(c.number)}
                       style={{
                         flex: 1, minWidth: 0,
-                        padding: 0, borderRadius: 0,
+                        padding: "2px 0", borderRadius: 0,
                         justifyContent: "flex-start",
                       }}>
                       <div className="truncate" style={{
@@ -758,28 +825,51 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         border: "1px solid var(--gold)",
                       }} title={(c.author_note_reasons || []).join(" · ")}>题外话?</span>
                     )}
-                    <span className="text-xs text-muted" style={{ flexShrink: 0, fontFamily: "var(--font-mono)" }}>
+                    {isOutlier && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px", flexShrink: 0,
+                        color: "var(--purple)", background: "var(--bg-surface-2)",
+                        border: "1px solid var(--purple)",
+                      }} title={`本章字数与全文中位数差异较大（${c.outlier_kind || ""}）；切分可能不准`}>
+                        长度异常·{c.outlier_kind || ""}
+                      </span>
+                    )}
+                    <span className="text-xs text-muted" style={{ flexShrink: 0, fontFamily: "var(--font-mono)", minWidth: 64, textAlign: "right" }}>
                       {fmtChars(c.char_count)}
                     </span>
                   </div>
-                  {isOpen && c.author_note_reasons && c.author_note_reasons.length > 0 && (
-                    <div className="text-xs" style={{
-                      marginTop: 4, padding: "4px 8px",
+                  {isOpen && (
+                    <div style={{
+                      marginTop: 6, padding: 8,
                       background: "var(--bg-card)", borderRadius: 3,
-                      color: "var(--text-secondary)", lineHeight: 1.5,
+                      color: "var(--text-secondary)", lineHeight: 1.6, fontSize: 11,
                     }}>
-                      <span className="text-muted">作者题外话信号：</span>
-                      {c.author_note_reasons.map((r, i) => (
-                        <span key={i} className="tag" style={{
-                          marginLeft: 4, fontSize: 10, padding: "1px 6px",
-                          background: "var(--bg-surface-2)", color: "var(--text-secondary)",
-                          border: "1px solid var(--border)",
-                        }}>{r}</span>
-                      ))}
-                      {c.author_note_score !== undefined && (
-                        <span className="text-xs text-muted" style={{ marginLeft: 8 }}>
-                          score = {c.author_note_score}
-                        </span>
+                      {c.preview_head && (
+                        <div style={{ marginBottom: c.preview_tail ? 6 : 0 }}>
+                          <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>开头</span>
+                          <span>{c.preview_head}</span>
+                        </div>
+                      )}
+                      {c.preview_tail && (
+                        <div>
+                          <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>结尾</span>
+                          <span>{c.preview_tail}</span>
+                        </div>
+                      )}
+                      {(!c.preview_head && !c.preview_tail) && (
+                        <div className="text-muted">（无预览内容）</div>
+                      )}
+                      {c.author_note_reasons && c.author_note_reasons.length > 0 && (
+                        <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed var(--border)" }}>
+                          <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>题外话信号</span>
+                          {c.author_note_reasons.map((r, i) => (
+                            <span key={i} className="tag" style={{
+                              marginLeft: 4, fontSize: 10, padding: "1px 6px",
+                              background: "var(--bg-surface-2)", color: "var(--text-secondary)",
+                              border: "1px solid var(--border)",
+                            }}>{r}</span>
+                          ))}
+                        </div>
                       )}
                     </div>
                   )}

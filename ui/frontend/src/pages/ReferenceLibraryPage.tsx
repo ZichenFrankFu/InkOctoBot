@@ -198,6 +198,7 @@ export default function ReferenceLibraryPage() {
         const updated = await resp.json();
         setSel(updated);
         setWorks(prev => prev.map(w => w.ref_id === updated.ref_id ? updated : w));
+        toast(`已上传正文：${uFile.name}`, "success");
       } catch (e: any) {
         toast(e.message || "操作失败", "error");
       }

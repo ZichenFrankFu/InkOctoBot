@@ -675,6 +675,57 @@ async def preprocess_cancel(ref_id: str):
     return {"ok": True}
 
 
+@router.get("/works/{ref_id}/preprocess/diagnostics")
+def preprocess_diagnostics(ref_id: str):
+    """Dump what the chapter parser actually sees: per-pattern match
+    counts + sample first 8 matches, the detected winner, and the first
+    400 chars of the text. Use this when the chapter list looks wrong —
+    it tells you which pattern won and what it matched."""
+    from analysis.feature_extraction.chapter_parser import (
+        detect_chapters, _PATTERNS as BUILTIN, _compile_extra,
+    )
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, _load_chapter_patterns,
+    )
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "尚未上传正文")
+    extras = _load_chapter_patterns()
+    custom = _compile_extra(extras)
+    all_pats = list(BUILTIN) + custom
+    custom_names = {n for n, _ in custom}
+    per_pattern = []
+    for name, pat in all_pats:
+        ms = list(pat.finditer(text))
+        per_pattern.append({
+            "name": name,
+            "custom": name in custom_names,
+            "count": len(ms),
+            "samples": [
+                {"pos": m.start(), "match": m.group(0)[:80]}
+                for m in ms[:8]
+            ],
+        })
+    result = detect_chapters(text, extra_patterns=extras)
+    return {
+        "text_len": len(text),
+        "text_head": text[:400],
+        "patterns": per_pattern,
+        "winning_pattern": result["pattern"],
+        "fallback_used": result["fallback_used"],
+        "chapter_count": len(result["chapters"]),
+        "chapter_summary": [
+            {"number": c["number"], "title": c["title"], "len": len(c["content"])}
+            for c in result["chapters"][:30]
+        ],
+    }
+
+
 @router.get("/works/{ref_id}/preprocess/status")
 def preprocess_status(ref_id: str):
     """Returns the live job status (state, current_chapter, log tail).

@@ -172,48 +172,57 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
                      pattern_name: str) -> list[dict]:
     """Materialize matches into chapter records.
 
-    Also drops "TOC-style" duplicates: when the same chapter number
-    appears multiple times in the first ~3% of the document, only the
-    LAST occurrence wins (the rest are presumed to be a table of
-    contents reproduced before the body)."""
+    Deduplication strategy: when a chapter number appears more than once
+    (TOC + body, or repeated mentions), keep the occurrence whose
+    *content gap to the next match* is longest. That's almost always the
+    real body chapter — TOC entries are tightly packed and have no body
+    after them. Also drop matches whose content is < 80 chars *and* a
+    duplicate exists, since those are almost certainly TOC entries even
+    when no duplicate is found in the same scan.
+    """
     if not matches:
         return []
 
-    # Heuristic TOC pruning. If we have a cluster of matches all packed
-    # into the first 3% of text whose numbers already appear later in
-    # the document, drop those early matches — they're almost always a
-    # table of contents.
     text_len = len(text)
-    toc_zone = max(2000, int(text_len * 0.05))
-    seen_nums: dict[int, int] = {}  # number → last seen match index
-    keep: list[re.Match[str]] = []
-    for m in matches:
-        n = cn2int(m.group(1))
-        if n is None:
-            keep.append(m)
-            continue
-        if m.start() < toc_zone:
-            # Hold off — we may drop these later if duplicates appear past the TOC zone
-            pass
-        seen_nums.setdefault(n, -1)
 
-    # Two-pass dedup: collect all positions per number, then keep the
-    # LAST occurrence whenever there are duplicates inside the TOC zone.
+    def gap_to_next(i: int) -> int:
+        nxt = matches[i + 1].start() if i + 1 < len(matches) else text_len
+        return max(0, nxt - matches[i].end())
+
+    # Group matches by their parsed chapter number; pick the one with the
+    # longest content gap as the winner.
     by_num: dict[int, list[int]] = {}
     for i, m in enumerate(matches):
         n = cn2int(m.group(1))
         if n is None:
             continue
         by_num.setdefault(n, []).append(i)
+
     drop_idx: set[int] = set()
     for n, idxs in by_num.items():
         if len(idxs) < 2:
             continue
-        # Keep the last occurrence; drop earlier ones that fall in the TOC zone.
-        for j in idxs[:-1]:
-            if matches[j].start() < toc_zone:
+        best = max(idxs, key=gap_to_next)
+        for j in idxs:
+            if j != best:
                 drop_idx.add(j)
+
+    # Also drop standalone short-gap matches (likely TOC entries with no
+    # duplicate yet because subsequent TOC entries pushed the body match
+    # out of the dedup pair). Threshold: gap < 80 chars is essentially
+    # no body at all.
+    for i in range(len(matches)):
+        if i in drop_idx:
+            continue
+        if gap_to_next(i) < 80:
+            drop_idx.add(i)
+
     pruned = [m for i, m in enumerate(matches) if i not in drop_idx]
+    if not pruned:
+        # Pathological — every match looked like TOC. Fall back to taking
+        # the second half of the original matches (heuristic: body chapters
+        # are usually in the latter portion of the text).
+        pruned = matches[len(matches) // 2:]
     if not pruned:
         pruned = matches
 
@@ -222,34 +231,54 @@ def _build_chapters(text: str, matches: list[re.Match[str]],
     chapters: list[dict] = []
     cur_vol = ""
     for i, m in enumerate(pruned):
-        end = pruned[i + 1].start() if i + 1 < len(pruned) else len(text)
+        end = pruned[i + 1].start() if i + 1 < len(pruned) else text_len
         while vol_marks and vol_marks[0][0] <= m.start():
             cur_vol = vol_marks.pop(0)[1]
-        # Tolerate user regexes that capture <2 groups — fall back to
-        # the index + raw line as the number/title source.
+        # Tolerate user regexes that capture <2 groups
         try:
             num_text = m.group(1)
         except (IndexError, error_re):
             num_text = str(i + 1)
         try:
-            title_text = (m.group(2) or "").strip()
+            title_text = (m.group(2) or "").strip().rstrip("\r")
         except (IndexError, error_re):
             title_text = ""
-        # Strip parenthesized noise from both the title and the rendered marker
         title_text = _clean_title(title_text)
-        raw_marker = _clean_title(m.group(0).strip())
+        raw_marker = _clean_title(m.group(0).strip().rstrip("\r"))
         normalized = cn2int(num_text) or (i + 1)
+        content = text[m.end():end].strip()
         chapters.append({
-            "index": i,
             "number": normalized,
             "title": raw_marker[:60],
             "title_only": title_text,
             "raw_marker": raw_marker,
             "pattern": pattern_name,
             "volume": cur_vol,
-            "content": text[m.end():end].strip(),
+            "content": content,
         })
-    return chapters
+
+    # Sort by chapter number so the UI shows them in story order even
+    # when the parsed sequence is non-monotonic (e.g. side chapters
+    # numbered out of order, or the chosen pattern matched something
+    # weird). Stable sort preserves original order for ties.
+    chapters.sort(key=lambda c: (c.get("number") or 0))
+    # Reindex post-sort
+    for i, c in enumerate(chapters):
+        c["index"] = i
+
+    # Drop adjacent duplicate-number entries left over after sort.
+    deduped: list[dict] = []
+    for c in chapters:
+        if deduped and deduped[-1]["number"] == c["number"]:
+            # Keep whichever has more content.
+            if len(c["content"]) > len(deduped[-1]["content"]):
+                deduped[-1] = c
+            continue
+        deduped.append(c)
+    for i, c in enumerate(deduped):
+        c["index"] = i
+
+    return deduped
 
 
 # ── Format-string → regex translation ──
@@ -496,6 +525,57 @@ def flag_author_notes(chapters: list[dict]) -> list[dict]:
         c["author_note_score"] = score
         c["author_note_reasons"] = reasons
     return chapters
+
+
+def flag_length_outliers(chapters: list[dict]) -> list[dict]:
+    """Mark chapters whose content length is unusually short or long
+    relative to the median. Sets ``is_length_outlier: bool`` +
+    ``outlier_kind: "短" | "长" | None``. Lets the UI flag chapters
+    whose detected boundary may be wrong (e.g. a TOC entry that slipped
+    past dedup, or two adjacent chapters merged because a heading was
+    missed)."""
+    if not chapters:
+        return chapters
+    lengths = [len(c.get("content") or "") for c in chapters]
+    try:
+        median = statistics.median(lengths) if lengths else 0
+    except statistics.StatisticsError:
+        median = 0
+    for c in chapters:
+        n = len(c.get("content") or "")
+        kind: str | None = None
+        if median > 0:
+            if n < median * 0.3:
+                kind = "短"
+            elif n > median * 3.0:
+                kind = "长"
+        c["is_length_outlier"] = kind is not None
+        c["outlier_kind"] = kind
+    return chapters
+
+
+def make_preview(content: str, head_chars: int = 180, tail_chars: int = 140) -> dict:
+    """Return ``{head, tail}`` previews. Picks at sentence boundary where
+    possible so the preview reads cleanly. Empty for very short content."""
+    s = (content or "").strip()
+    if not s:
+        return {"head": "", "tail": ""}
+    head = s[:head_chars]
+    # Try to end the head at a sentence boundary close to the limit
+    for sep in ["。", "！", "？", "”", "」", "\n"]:
+        idx = head.rfind(sep)
+        if idx >= head_chars * 0.5:
+            head = head[: idx + 1]
+            break
+    if len(s) <= head_chars + tail_chars + 20:
+        return {"head": head.strip(), "tail": ""}
+    tail = s[-tail_chars:]
+    for sep in ["。", "！", "？", "”", "」", "\n"]:
+        idx = tail.find(sep)
+        if 0 <= idx <= tail_chars * 0.5:
+            tail = tail[idx + 1:]
+            break
+    return {"head": head.strip(), "tail": tail.strip()}
 
 
 def apply_exclusions(text: str, chapters: list[dict], excluded_numbers: set[int]) -> str:
