@@ -99,10 +99,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [appending, setAppending] = useState(false);
   // Format-matching (async with progress). guessProgress tracks the
   // currently-scanning pattern; UI shows a progress bar while running.
-  // chosenFormats is a Set so the user can multi-select formats to
+  // Single-select: only one chapter format may be primary at a time.
   // combine (e.g., 第N章 + 作者说章节 fired together).
   const [guessCandidates, setGuessCandidates] = useState<{ name: string; count: number; score: number; custom: boolean }[] | null>(null);
-  const [chosenFormats, setChosenFormats] = useState<Set<string>>(new Set());
+  // Single-select: chapter formats are mutually exclusive — the picked
+  // primary auto-merges with built-in 作者说章节 + any custom patterns
+  // server-side, so the user doesn't need to multi-pick.
+  const [chosenFormat, setChosenFormat] = useState<string>("");
   const [guessing, setGuessing] = useState(false);
   const [guessProgress, setGuessProgress] = useState<{ current: number; total: number } | null>(null);
   const guessPollRef = useRef<number | null>(null);
@@ -209,11 +212,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast(`已删除「${name}」`, "success");
       // Remove from local candidate list + chosen + tests
       setGuessCandidates(prev => prev ? prev.filter(c => c.name !== name) : prev);
-      setChosenFormats(prev => {
-        const n = new Set(prev);
-        n.delete(name);
-        return n;
-      });
+      if (chosenFormat === name) setChosenFormat("");
       setCandidateTests(prev => {
         const n = { ...prev };
         delete n[name];
@@ -304,10 +303,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             setGuessProgress({ current: s.current_pattern, total: s.total_patterns });
             if (s.state === "done") {
               setGuessCandidates(s.candidates || []);
-              const initial = new Set<string>();
-              if (s.suggested) initial.add(s.suggested);
-              else if (s.candidates && s.candidates.length > 0) initial.add(s.candidates[0].name);
-              setChosenFormats(initial);
+              // Default to the suggested winner; fall back to top
+              // candidate. Single-select.
+              if (s.suggested) setChosenFormat(s.suggested);
+              else if (s.candidates && s.candidates.length > 0) setChosenFormat(s.candidates[0].name);
               resolve();
               return;
             }
@@ -334,20 +333,18 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     }
   }, [refId, toast]);
 
-  const startJob = async (forcePatterns?: string[]) => {
-    const fps = forcePatterns ?? Array.from(chosenFormats);
+  const startJob = async (forcePattern?: string) => {
+    const fp = forcePattern ?? chosenFormat;
     try {
-      const qs = fps.length > 0
-        ? `?force_patterns=${encodeURIComponent(fps.join(","))}`
-        : "";
+      // Use force_pattern (singular) so the server auto-merges secondary
+      // patterns (作者说章节 + custom) with the chosen primary.
+      const qs = fp ? `?force_pattern=${encodeURIComponent(fp)}` : "";
       const r = await apiPost<PreprocessStatus>(
         `/api/references/works/${refId}/preprocess/start${qs}`, {},
       );
       setStatus(r);
       setExcluded(new Set());
-      toast(fps.length > 0
-        ? `已用「${fps.join(" + ")}」开始识别`
-        : "已开始智能识别章节", "info");
+      toast(fp ? `已用「${fp}」开始识别` : "已开始智能识别章节", "info");
     } catch (e: any) {
       toast(e?.message || "启动失败", "error");
     }
@@ -763,14 +760,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             background: "var(--accent-subtle)",
           }}>
             <div className="text-xs" style={{ marginBottom: 8, color: "var(--accent)", fontWeight: 600 }}>
-              请选择章节格式（可多选）
+              请选择章节格式
             </div>
             <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
-              下方是各候选格式在本作品中的匹配数。可以多选 — 例如选「第N章」+「作者说章节」会同时识别两种格式的章节。
+              下方是各候选格式在本作品中的匹配数。只能选一个为主格式 —「作者说章节」+ 自定义格式会自动作为辅助合并进来。
             </div>
             <div className="flex flex-col gap-4" style={{ marginBottom: 10 }}>
               {guessCandidates.slice(0, 12).map(c => {
-                const checked = chosenFormats.has(c.name);
+                const checked = chosenFormat === c.name;
                 const t = candidateTests[c.name];
                 return (
                   <div key={c.name} style={{
@@ -781,21 +778,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                     <div style={{
                       display: "flex", alignItems: "center", gap: 8,
                       padding: "4px 8px",
-                      opacity: c.count === 0 ? 0.5 : 1,
                     }}>
                       <input
-                        type="checkbox"
+                        type="radio"
+                        name="chapter-format-pick"
                         checked={checked}
-                        disabled={c.count === 0}
-                        onChange={() => {
-                          setChosenFormats(prev => {
-                            const n = new Set(prev);
-                            if (n.has(c.name)) n.delete(c.name);
-                            else n.add(c.name);
-                            return n;
-                          });
-                        }}
-                        style={{ width: 13, height: 13, cursor: c.count === 0 ? "not-allowed" : "pointer" }}
+                        onChange={() => setChosenFormat(c.name)}
+                        style={{ width: 13, height: 13, cursor: "pointer" }}
                       />
                       <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", flex: 1, minWidth: 0 }}>
                         {c.name}
@@ -807,7 +796,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                           background: "transparent",
                         }}>自定义</span>
                       )}
-                      <span className="text-xs text-muted" style={{ fontFamily: "var(--font-mono)", minWidth: 70, textAlign: "right" }}>
+                      <span className="text-xs text-muted" style={{
+                        fontFamily: "var(--font-mono)", minWidth: 70, textAlign: "right",
+                        color: c.count > 0 ? "var(--text-secondary)" : "var(--text-tertiary)",
+                      }}>
                         匹配 {c.count} 处
                       </span>
                       <button className="btn"
@@ -855,13 +847,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
             <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
               <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                      onClick={() => { setGuessCandidates(null); setChosenFormats(new Set()); }}>
+                      onClick={() => { setGuessCandidates(null); setChosenFormat(""); }}>
                 取消
               </button>
               <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
-                      onClick={() => { startJob(Array.from(chosenFormats)); setGuessCandidates(null); }}
-                      disabled={chosenFormats.size === 0}>
-                使用所选 {chosenFormats.size} 个格式开始识别
+                      onClick={() => { startJob(chosenFormat); setGuessCandidates(null); }}
+                      disabled={!chosenFormat}>
+                使用「{chosenFormat || "?"}」开始识别
               </button>
             </div>
           </div>

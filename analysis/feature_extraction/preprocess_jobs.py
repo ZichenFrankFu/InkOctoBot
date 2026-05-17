@@ -154,14 +154,17 @@ async def _run_guess(job: GuessJob, text: str, extra_patterns: list[dict] | None
         results: list[dict] = []
         for i, (name, pat) in enumerate(all_pats):
             job.current_pattern = i + 1
-            ms = list(pat.finditer(scan_text))
+            # Run the regex pass in a worker thread so status polls
+            # interleave with scanning. Each individual finditer on a
+            # 2 MB text can take 50–200 ms (especially patterns with
+            # lookbehinds); without this the event loop is blocked
+            # for the whole pass and the progress bar stalls.
+            ms = await asyncio.to_thread(lambda p=pat: list(p.finditer(scan_text)))
             score = _score_pattern(ms, len(scan_text))
             results.append({
                 "name": name, "count": len(ms), "score": round(score, 3),
                 "custom": name in custom_names,
             })
-            # Yield so the UI's status poll can return between patterns
-            await asyncio.sleep(0)
 
         results.sort(key=lambda c: -c["score"])
         job.candidates = results
@@ -250,10 +253,15 @@ async def _run_detection(job: PreprocessJob, text: str,
         job.started_at = time.time()
         job.append_log("开始解析章节…")
 
-        # Phase 1: chapter detection (single regex pass per pattern; fast)
-        result = detect_chapters(text, extra_patterns=extra_patterns,
-                                  force_pattern=force_pattern,
-                                  force_patterns=force_patterns)
+        # Phase 1: chapter detection (regex-heavy, can take 100ms+ per
+        # pattern on multi-MB texts). Run in a worker thread so the UI
+        # status poll stays responsive while patterns are scanning.
+        result = await asyncio.to_thread(
+            detect_chapters, text,
+            extra_patterns=extra_patterns,
+            force_pattern=force_pattern,
+            force_patterns=force_patterns,
+        )
         chapters = result["chapters"]
         job.detected_pattern = result["pattern"]
         job.fallback_used = result["fallback_used"]
