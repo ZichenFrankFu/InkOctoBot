@@ -34,10 +34,14 @@ _CN_DIGITS = {
 
 def cn2int(s: str) -> int | None:
     """Convert a Chinese-numeral string ("一", "十二", "二百零三") to int.
-    Returns None on failure. Accepts mixed-form ("12") too."""
+    Returns None on failure. Accepts mixed-form ("12") and full-width
+    digits ("１２") too — both common in web-novel uploads."""
     s = (s or "").strip()
     if not s:
         return None
+    # Normalize full-width digits to ASCII so str.isdigit / int parse.
+    fw_to_ascii = str.maketrans("０１２３４５６７８９", "0123456789")
+    s = s.translate(fw_to_ascii)
     if s.isdigit():
         try:
             return int(s)
@@ -89,14 +93,15 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # Title is optional ({0,80}) so bare "147、" lines also match —
     # otherwise the chapter gets absorbed into the previous one and
     # content lengths explode (e.g. a 2800-字 chapter shows as 387.6
-    # 万字 because it ate the rest of the document).
+    # 万字 because it ate the rest of the document). Includes
+    # full-width digits ０-９ since web-novel uploads sometimes use them.
     ("数字、标题", re.compile(
-        r"^[\s　]*([0-9]+)\s*[、．][\s　]*([^\n]{0,80})$",
+        r"^[\s　]*([0-9０-９]+)\s*[、．][\s　]*([^\n]{0,80})$",
         re.MULTILINE,
     )),
     # "1.标题" — arabic + 句点 (.)
     ("数字.标题", re.compile(
-        r"^[\s　]*([0-9]+)[\s]*[.][\s　]*([^\n]{0,80})$",
+        r"^[\s　]*([0-9０-９]+)[\s]*[.][\s　]*([^\n]{0,80})$",
         re.MULTILINE,
     )),
     # No-numbering format: short paragraphs (1–26 chars) that don't end
@@ -378,6 +383,14 @@ def _build_chapters(text: str,
                 deduped[-1] = c
             continue
         deduped.append(c)
+    # Rescue split: any chapter whose content is grossly larger than
+    # the median is almost certainly hiding a missed heading. Re-scan
+    # its content with the same pattern that built it, and split at any
+    # internal matches. Catches the "chapter 147 shows 387.6 万字"
+    # symptom even when the boundary missed for non-formatting reasons
+    # (full-width digits, stray whitespace, unrecognized variant).
+    deduped = _rescue_split_huge_chapters(text, deduped)
+
     # Preserve each numbered chapter's parsed value as ``parsed_number``
     # (for display via the title), and re-assign ``number`` to a clean
     # 1, 2, 3... ordinal so the UI list is monotone in reading order
@@ -388,6 +401,72 @@ def _build_chapters(text: str,
         c["number"] = i + 1
 
     return deduped
+
+
+def _rescue_split_huge_chapters(text: str, chapters: list[dict]) -> list[dict]:
+    """Post-process: split any chapter whose content is > 4× median
+    chapter length (and > 30k chars absolute) at internal heading
+    matches. The internal scan re-runs ALL built-in patterns over the
+    chapter's content; matches re-establish the chapter boundaries
+    that the initial pass missed."""
+    if len(chapters) < 3:
+        return chapters
+    lengths = [len(c.get("content") or "") for c in chapters]
+    try:
+        median = statistics.median(lengths)
+    except statistics.StatisticsError:
+        return chapters
+    threshold = max(median * 4 if median else 0, 30000)
+    out: list[dict] = []
+    for c in chapters:
+        content = c.get("content") or ""
+        if len(content) <= threshold:
+            out.append(c)
+            continue
+        # Scan content with all numbered built-in patterns for any
+        # heading-shaped lines that should have split this chapter.
+        # Skip the no-number patterns since they'd over-split body
+        # text on random short lines.
+        rescue_matches: list[tuple[str, "re.Match[str]"]] = []
+        for name, pat in _PATTERNS:
+            if name in _UNNUMBERED_PATTERNS:
+                continue
+            for m in pat.finditer(content):
+                # Drop the very-first match if it starts at content[0] —
+                # that's just this chapter's own heading being re-detected.
+                if m.start() < 4:
+                    continue
+                rescue_matches.append((name, m))
+        if not rescue_matches:
+            out.append(c)
+            continue
+        rescue_matches.sort(key=lambda x: x[1].start())
+        base_offset = c.get("content_start") or 0
+        cursor = 0
+        last_marker = c.get("raw_marker") or c.get("title") or ""
+        for name, rm in rescue_matches:
+            # First piece keeps the original chapter's marker, subsequent
+            # pieces use the rescued heading as their marker.
+            sub_content = content[cursor:rm.start()].strip()
+            out.append({
+                **c,
+                "content": sub_content,
+                "raw_marker": last_marker,
+                "content_start": base_offset + cursor,
+                "content_end": base_offset + rm.start(),
+            })
+            last_marker = _clean_title(rm.group(0).strip().rstrip("\r"))
+            cursor = rm.end()
+        # Final piece
+        out.append({
+            **c,
+            "content": content[cursor:].strip(),
+            "raw_marker": last_marker,
+            "title": last_marker[:60],
+            "content_start": base_offset + cursor,
+            "content_end": base_offset + len(content),
+        })
+    return out
 
 
 # ── Format-string → regex translation ──
@@ -660,10 +739,11 @@ _AUTHOR_KEYWORDS = [
     "新书", "推一本", "推荐一本", "互助榜", "本章说",
     "晚点更新", "明天更新", "今日两更", "今日三更", "求各位",
     "亲爱的读者", "亲们", "书友们", "对不起大家",
-    # Patreon-style sponsor markers — 盟主 is the canonical one in
-    # Chinese web novels, often appearing with names in PS asides.
-    "盟主", "舵主", "堂主", "护法", "长老", "执事", "白银盟", "豪掷",
-    "感谢盟主", "感谢打赏", "万赏", "万订", "月票榜",
+    # Sponsor / 盟主 markers — only the unambiguous ones. Removed
+    # 舵主/堂主/护法/长老/执事 since those are common character titles
+    # in cultivation / wuxia novels and triggered too many false
+    # positives (a chapter mentioning "长老说道:" got flagged).
+    "盟主", "白银盟", "感谢盟主", "感谢打赏", "万赏", "万订", "月票榜", "豪掷",
 ]
 
 
@@ -674,7 +754,20 @@ _TITLE_AUTHOR_MARKERS = [
 ]
 
 
-def flag_author_notes(chapters: list[dict]) -> list[dict]:
+def get_effective_author_keywords(extra: list[str] | None = None) -> list[str]:
+    """Return the keyword list used for author-note detection. If the
+    caller passes a non-empty ``extra`` list (typically loaded from
+    settings.json), it REPLACES the built-in defaults — letting the
+    user fully manage the keyword set via the UI."""
+    if isinstance(extra, list):
+        cleaned = [str(k).strip() for k in extra if k and str(k).strip()]
+        if cleaned:
+            return cleaned
+    return list(_AUTHOR_KEYWORDS)
+
+
+def flag_author_notes(chapters: list[dict],
+                       extra_keywords: list[str] | None = None) -> list[dict]:
     """Heuristic flagger. Mutates each chapter in-place to add:
 
       is_author_note: bool — final verdict
@@ -688,6 +781,7 @@ def flag_author_notes(chapters: list[dict]) -> list[dict]:
     """
     if not chapters:
         return chapters
+    keywords = get_effective_author_keywords(extra_keywords)
     lengths = [len(c.get("content") or "") for c in chapters]
     try:
         median_len = statistics.median(lengths) if lengths else 0
@@ -709,7 +803,7 @@ def flag_author_notes(chapters: list[dict]) -> list[dict]:
 
         # A) Author keyword hits in BOTH title and content (STRONG signal)
         haystack = content + " " + (c.get("title") or "")
-        hits = [kw for kw in _AUTHOR_KEYWORDS if kw in haystack]
+        hits = [kw for kw in keywords if kw in haystack]
         if hits:
             has_strong_signal = True
             score += min(5, len(hits) * 2)
@@ -830,7 +924,8 @@ def replace_chapter_content(text: str, chapters: list[dict],
 
 
 def detect_aside_paragraphs(chapters: list[dict],
-                              max_para_chars: int = 500) -> list[dict]:
+                              max_para_chars: int = 500,
+                              extra_keywords: list[str] | None = None) -> list[dict]:
     """For every regular (non-作者说章节) chapter, find PARAGRAPHS that
     look like author asides — short blocks containing author-note
     keywords (求月票 / 求订阅 / 老书友 / 感谢 / 盟主 / …) at any position
@@ -844,6 +939,7 @@ def detect_aside_paragraphs(chapters: list[dict],
     matches on it so minor detection drift between calls doesn't
     misalign indices.
     """
+    keywords = get_effective_author_keywords(extra_keywords)
     out: list[dict] = []
     for c in chapters:
         if c.get("pattern") == "作者说章节":
@@ -860,7 +956,7 @@ def detect_aside_paragraphs(chapters: list[dict],
             # Skip long paragraphs — narrative, not asides.
             if len(ps) > max_para_chars:
                 continue
-            hits = [kw for kw in _AUTHOR_KEYWORDS if kw in ps]
+            hits = [kw for kw in keywords if kw in ps]
             if not hits:
                 continue
             reasons = ["命中：" + "、".join(hits[:3])

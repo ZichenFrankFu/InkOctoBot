@@ -95,6 +95,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [patterns, setPatterns] = useState<ChapterPattern[]>([]);
   const [patternsOpen, setPatternsOpen] = useState(false);
   const [patternTesting, setPatternTesting] = useState<{ idx: number; count: number; preview: any[] } | null>(null);
+  // Author-note keywords (user-managed). active = the in-use list, may
+  // be either the user's customization or the built-in defaults.
+  const [keywords, setKeywords] = useState<{ user: string[]; defaults: string[]; active: string[] }>({ user: [], defaults: [], active: [] });
+  const [keywordsOpen, setKeywordsOpen] = useState(false);
+  const [keywordInput, setKeywordInput] = useState("");
+  // Persisted-chapters summary (for the 保存全部章节 button label)
+  const [savedSummary, setSavedSummary] = useState<{ saved_count: number; saved_at: string | null }>({ saved_count: 0, saved_at: null });
+  const [savingAll, setSavingAll] = useState(false);
   // Multi-file upload (append mode)
   const appendFileInputRef = useRef<HTMLInputElement | null>(null);
   const [appending, setAppending] = useState(false);
@@ -152,7 +160,82 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     } catch { /* silent */ }
   }, []);
 
-  useEffect(() => { fetchStatus(); fetchPlan(); fetchPatterns(); }, [fetchStatus, fetchPlan, fetchPatterns]);
+  const fetchKeywords = useCallback(async () => {
+    try {
+      const r = await apiGet<{ user: string[]; defaults: string[]; active: string[] }>(
+        "/api/references/author_note_keywords",
+      );
+      setKeywords(r);
+    } catch { /* silent */ }
+  }, []);
+
+  const fetchSavedSummary = useCallback(async () => {
+    try {
+      const r = await apiGet<{ saved_count: number; saved_at: string | null }>(
+        `/api/references/works/${refId}/preprocess/saved_summary`,
+      );
+      setSavedSummary(r);
+    } catch { /* silent */ }
+  }, [refId]);
+
+  useEffect(() => {
+    fetchStatus(); fetchPlan(); fetchPatterns(); fetchKeywords(); fetchSavedSummary();
+  }, [fetchStatus, fetchPlan, fetchPatterns, fetchKeywords, fetchSavedSummary]);
+
+  // ── Author-keyword CRUD ──
+
+  const saveKeywords = async (next: string[]) => {
+    try {
+      const r = await apiPut<{ user: string[]; defaults: string[]; active: string[] }>(
+        "/api/references/author_note_keywords", { keywords: next },
+      );
+      setKeywords(r);
+      toast(next.length === 0 ? "已恢复默认题外话关键词" : `已保存 ${next.length} 个关键词`, "success");
+    } catch (e: any) {
+      toast(e?.message || "保存失败", "error");
+    }
+  };
+
+  const addKeyword = async () => {
+    const kw = keywordInput.trim();
+    if (!kw) return;
+    if (keywords.active.includes(kw)) {
+      toast(`「${kw}」已在列表中`, "info");
+      setKeywordInput("");
+      return;
+    }
+    const base = keywords.user.length > 0 ? keywords.user : keywords.defaults;
+    await saveKeywords([...base, kw]);
+    setKeywordInput("");
+  };
+
+  const removeKeyword = async (kw: string) => {
+    const base = keywords.user.length > 0 ? keywords.user : keywords.defaults;
+    await saveKeywords(base.filter(k => k !== kw));
+  };
+
+  const resetKeywords = async () => {
+    if (!confirm("恢复默认题外话关键词列表？您自定义的列表会被清空。")) return;
+    await saveKeywords([]);
+  };
+
+  // ── Save-all to database ──
+
+  const saveAllChapters = async () => {
+    setSavingAll(true);
+    try {
+      const r = await apiPost<{ saved_count: number }>(
+        `/api/references/works/${refId}/preprocess/save_all`, {},
+        { timeoutMs: 300_000 },
+      );
+      toast(`已保存 ${r.saved_count} 章到数据库`, "success");
+      await fetchSavedSummary();
+    } catch (e: any) {
+      toast(e?.message || "保存失败", "error");
+    } finally {
+      setSavingAll(false);
+    }
+  };
 
   const savePatterns = async (next: ChapterPattern[]) => {
     try {
@@ -1076,6 +1159,77 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
           )}
         </div>
+
+        {/* Author-note keywords (collapsible CRUD) */}
+        <div style={{ marginTop: 10, borderTop: "1px dashed var(--border)", paddingTop: 8 }}>
+          <button className="btn-ghost w-full"
+                  onClick={() => setKeywordsOpen(o => !o)}
+                  style={{
+                    justifyContent: "space-between", padding: "4px 0",
+                    fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
+                    borderRadius: 0,
+                  }}>
+            <span>题外话关键词（{keywords.active.length}{keywords.user.length > 0 ? " · 自定义" : " · 默认"}）</span>
+            <span className="text-xs text-muted" style={{
+              transition: "transform 0.15s",
+              transform: keywordsOpen ? "rotate(180deg)" : "none",
+              display: "inline-block",
+            }}>&#x25BC;</span>
+          </button>
+          {keywordsOpen && (
+            <div style={{ marginTop: 6 }}>
+              <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
+                这些关键词用于识别题外话章节和段落（如「求月票」「盟主」）。可以增删任意条目；
+                {keywords.user.length > 0
+                  ? "目前使用的是您的自定义列表。"
+                  : "目前使用的是内置默认列表 — 一旦您增删任何条目即转为自定义。"}
+              </div>
+              <div className="flex" style={{ flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+                {keywords.active.map(kw => (
+                  <span key={kw} className="tag" style={{
+                    display: "inline-flex", alignItems: "center", gap: 4,
+                    fontSize: 11, padding: "2px 4px 2px 8px",
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    color: "var(--text-secondary)",
+                  }}>
+                    {kw}
+                    <button type="button"
+                            onClick={() => removeKeyword(kw)}
+                            title={`删除「${kw}」`}
+                            style={{
+                              padding: "0 4px", margin: 0, border: "none",
+                              background: "transparent",
+                              color: "var(--text-tertiary)", cursor: "pointer",
+                              fontSize: 13,
+                            }}>&times;</button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-6" style={{ alignItems: "center" }}>
+                <input
+                  className="input"
+                  placeholder="新增关键词（按 Enter 或点添加）"
+                  value={keywordInput}
+                  onChange={e => setKeywordInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addKeyword(); } }}
+                  style={{ flex: 1, fontSize: 12 }}
+                />
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                        onClick={addKeyword}
+                        disabled={!keywordInput.trim()}>
+                  + 添加
+                </button>
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }}
+                        onClick={resetKeywords}
+                        disabled={keywords.user.length === 0}
+                        title="恢复内置默认关键词">
+                  恢复默认
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Section 2: chapter list + author-note flags + outlier flags */}
@@ -1113,12 +1267,25 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                   清除作者说章节（{chapters.filter(c => c.pattern === "作者说章节").length}）
                 </button>
               )}
-              <button className="btn-primary"
+              <button className="btn"
                       style={{ fontSize: 11, padding: "4px 12px" }}
                       onClick={applyExclusions}
                       disabled={applying || excluded.size === 0}
                       title={excluded.size === 0 ? "未选择任何章节" : `物理删除 ${excluded.size} 章（会备份原文）`}>
                 {applying ? "清理中…" : `清理章节（${excluded.size}）`}
+              </button>
+              <button className="btn-primary"
+                      style={{ fontSize: 11, padding: "4px 12px" }}
+                      onClick={saveAllChapters}
+                      disabled={savingAll || chapters.length === 0}
+                      title={savedSummary.saved_count > 0
+                        ? `已保存 ${savedSummary.saved_count} 章 · 再次点击会覆盖`
+                        : "把当前 N 章永久存入数据库"}>
+                {savingAll
+                  ? "保存中…"
+                  : savedSummary.saved_count > 0
+                    ? `重新保存全部章节（已存 ${savedSummary.saved_count}）`
+                    : `保存全部章节（${chapters.length}）`}
               </button>
             </div>
           </div>

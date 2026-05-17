@@ -374,8 +374,19 @@ async def _run_detection(job: PreprocessJob, text: str,
         # of chapters or unusually long single chapters.
         job.phase = "finalizing"
         job.append_log("正在生成摘要与标记…")
+        # Load user-managed keyword list once so the post-processing
+        # heuristic respects the customized set.
+        try:
+            from pathlib import Path as _P
+            import json as _json
+            root = _P(__file__).resolve().parents[2]
+            sp = root / "data" / "settings.json"
+            settings_data = _json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
+            extra_kw = settings_data.get("author_note_keywords") if isinstance(settings_data, dict) else None
+        except Exception:
+            extra_kw = None
         def _post_process():
-            flag_author_notes(chapters)
+            flag_author_notes(chapters, extra_keywords=extra_kw)
             flag_length_outliers(chapters)
             for c in chapters:
                 pv = make_preview(c.get("content") or "")

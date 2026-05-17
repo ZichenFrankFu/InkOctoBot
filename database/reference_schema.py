@@ -59,7 +59,30 @@ CREATE TABLE IF NOT EXISTS work_index_progress (
     FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
 );"""
 
-ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS]
+# Persisted chapter list — populated when the user clicks 「保存全部章节」
+# after preprocessing. Holds the canonical chapter breakdown so
+# downstream features (segment plan, feature extraction, vector index)
+# can rely on stable boundaries instead of re-running detection.
+_REFERENCE_CHAPTERS = """
+CREATE TABLE IF NOT EXISTS reference_chapters (
+    ref_id TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    title TEXT,
+    raw_marker TEXT,
+    pattern TEXT,
+    volume TEXT,
+    parsed_number INTEGER,
+    char_count INTEGER,
+    is_author_note INTEGER NOT NULL DEFAULT 0,
+    content TEXT,
+    content_start INTEGER,
+    content_end INTEGER,
+    saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (ref_id, number),
+    FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
+);"""
+
+ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS, _REFERENCE_CHAPTERS]
 
 def ensure_reference_tables(conn: sqlite3.Connection) -> None:
     for ddl in ALL_DDL: conn.executescript(ddl)

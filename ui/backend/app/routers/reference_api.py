@@ -798,6 +798,58 @@ def put_chapter_patterns(body: ChapterPatternsBody):
     return {"patterns": cleaned}
 
 
+def _load_author_keywords() -> list[str]:
+    """Return user-managed author-note keywords from settings.json, or
+    an empty list when none configured (caller falls back to defaults)."""
+    data = _read_settings_dict()
+    raw = data.get("author_note_keywords")
+    return [str(k).strip() for k in raw if k and str(k).strip()] if isinstance(raw, list) else []
+
+
+@router.get("/author_note_keywords")
+def get_author_note_keywords():
+    """Return both the user-customized keyword list (if any) AND the
+    built-in defaults so the UI can show the active set and let the
+    user reset to defaults at will."""
+    from analysis.feature_extraction.chapter_parser import _AUTHOR_KEYWORDS
+    user = _load_author_keywords()
+    return {
+        "user": user,
+        "defaults": list(_AUTHOR_KEYWORDS),
+        "active": user if user else list(_AUTHOR_KEYWORDS),
+    }
+
+
+class AuthorKeywordsBody(BaseModel):
+    keywords: list[str]
+
+
+@router.put("/author_note_keywords")
+def put_author_note_keywords(body: AuthorKeywordsBody):
+    """Replace the user's keyword list. An empty list resets to defaults."""
+    cleaned = [k.strip() for k in (body.keywords or []) if k and k.strip()]
+    # Deduplicate but preserve insertion order so the UI list stays stable
+    seen = set()
+    ordered: list[str] = []
+    for k in cleaned:
+        if k in seen:
+            continue
+        seen.add(k)
+        ordered.append(k)
+    data = _read_settings_dict()
+    if ordered:
+        data["author_note_keywords"] = ordered
+    else:
+        data.pop("author_note_keywords", None)
+    _write_settings_dict(data)
+    from analysis.feature_extraction.chapter_parser import _AUTHOR_KEYWORDS
+    return {
+        "user": ordered,
+        "defaults": list(_AUTHOR_KEYWORDS),
+        "active": ordered if ordered else list(_AUTHOR_KEYWORDS),
+    }
+
+
 @router.delete("/chapter_patterns/{name}")
 def delete_chapter_pattern(name: str):
     """Delete a custom chapter pattern by its saved name (URL-encoded).
@@ -1096,18 +1148,46 @@ def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
         state = json.loads(w.get("segments_json") or "{}")
     except Exception:
         state = {}
-    if isinstance(state, dict):
-        state.pop("preprocess", None)
-        state.pop("custom_plan", None)
-        state.pop("plan", None)
-        state["results"] = {}
-        state["completed"] = []
-        # Track the undo backup so /undo_exclusions can find it.
-        state["exclusion_backup"] = {
-            "path": str(bak),
-            "removed_chapters": sorted(excluded),
-            "prev_char_count": len(text),
-        }
+    if not isinstance(state, dict):
+        state = {}
+    # Re-detect from the cleaned text so the persisted chapter list
+    # stays in sync. Without this the UI loses the chapter list and
+    # falls back to the empty "匹配章节格式" prompt.
+    from analysis.feature_extraction.chapter_parser import (
+        flag_author_notes, flag_length_outliers, make_preview, visible_char_count,
+    )
+    new_detect = detect_chapters(new_text, extra_patterns=_load_chapter_patterns())
+    new_chapters = new_detect["chapters"]
+    flag_author_notes(new_chapters, extra_keywords=_load_author_keywords())
+    flag_length_outliers(new_chapters)
+    for c in new_chapters:
+        pv = make_preview(c.get("content") or "")
+        c["preview_head"] = pv["head"]
+        c["preview_tail"] = pv["tail"]
+    light = [
+        {k: c.get(k) for k in (
+            "number", "title", "title_only", "raw_marker", "pattern", "volume",
+            "is_author_note", "author_note_score", "author_note_reasons",
+            "is_length_outlier", "outlier_kind",
+            "preview_head", "preview_tail",
+            "content_start", "content_end",
+        )} | {"char_count": visible_char_count(c.get("content") or "")}
+        for c in new_chapters
+    ]
+    state["preprocess"] = {
+        "chapters": light,
+        "total_chapters": len(light),
+        "flagged_count": sum(1 for c in light if c.get("is_author_note")),
+    }
+    state.pop("custom_plan", None)
+    state.pop("plan", None)
+    state["results"] = {}
+    state["completed"] = []
+    state["exclusion_backup"] = {
+        "path": str(bak),
+        "removed_chapters": sorted(excluded),
+        "prev_char_count": len(text),
+    }
     db.update_work(
         ref_id,
         segments_json=json.dumps(state, ensure_ascii=False),
@@ -1144,7 +1224,7 @@ def preprocess_aside_paragraphs(ref_id: str):
     if not text:
         raise HTTPException(400, "尚未上传正文")
     result = detect_chapters(text, extra_patterns=_load_chapter_patterns())
-    asides = detect_aside_paragraphs(result["chapters"])
+    asides = detect_aside_paragraphs(result["chapters"], extra_keywords=_load_author_keywords())
     return {"asides": asides, "total_chapters": len(result["chapters"])}
 
 
@@ -1196,18 +1276,49 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
         state = json.loads(w.get("segments_json") or "{}")
     except Exception:
         state = {}
-    if isinstance(state, dict):
-        state.pop("preprocess", None)
-        state.pop("custom_plan", None)
-        state.pop("plan", None)
-        state["results"] = {}
-        state["completed"] = []
-        state["exclusion_backup"] = {
-            "path": str(bak),
-            "removed_chapters": [],
-            "removed_paragraphs": len(body.paragraphs or []),
-            "prev_char_count": len(text),
-        }
+    if not isinstance(state, dict):
+        state = {}
+    # Re-detect from the new text so the persisted chapter list stays
+    # accurate after the cleanup. WITHOUT this the UI loses the
+    # chapter list and falls back to the "匹配章节格式" empty state.
+    from analysis.feature_extraction.chapter_parser import (
+        flag_author_notes, flag_length_outliers, make_preview, visible_char_count,
+    )
+    new_detect = detect_chapters(new_text, extra_patterns=_load_chapter_patterns())
+    new_chapters = new_detect["chapters"]
+    flag_author_notes(new_chapters, extra_keywords=_load_author_keywords())
+    flag_length_outliers(new_chapters)
+    for c in new_chapters:
+        pv = make_preview(c.get("content") or "")
+        c["preview_head"] = pv["head"]
+        c["preview_tail"] = pv["tail"]
+    light = [
+        {k: c.get(k) for k in (
+            "number", "title", "title_only", "raw_marker", "pattern", "volume",
+            "is_author_note", "author_note_score", "author_note_reasons",
+            "is_length_outlier", "outlier_kind",
+            "preview_head", "preview_tail",
+            "content_start", "content_end",
+        )} | {"char_count": visible_char_count(c.get("content") or "")}
+        for c in new_chapters
+    ]
+    state["preprocess"] = {
+        "chapters": light,
+        "total_chapters": len(light),
+        "flagged_count": sum(1 for c in light if c.get("is_author_note")),
+    }
+    # Plan/results are still invalidated since chapter numbers may have
+    # shifted; user can re-run extraction from the cleaned text.
+    state.pop("custom_plan", None)
+    state.pop("plan", None)
+    state["results"] = {}
+    state["completed"] = []
+    state["exclusion_backup"] = {
+        "path": str(bak),
+        "removed_chapters": [],
+        "removed_paragraphs": len(body.paragraphs or []),
+        "prev_char_count": len(text),
+    }
     db.update_work(
         ref_id,
         segments_json=json.dumps(state, ensure_ascii=False),
@@ -1220,6 +1331,117 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
         "new_char_count": len(new_text),
         "can_undo": True,
     }
+
+
+@router.post("/works/{ref_id}/preprocess/save_all")
+def preprocess_save_all(ref_id: str):
+    """Persist the current chapter list to the ``reference_chapters``
+    table. Source of truth = the in-memory job's chapters (if a job
+    just finished) or segments_json["preprocess"]. After this call,
+    downstream features (segment plan, feature extraction, vector
+    index) can read chapters directly from the table instead of
+    re-running detection.
+
+    Idempotent: each save replaces the prior saved chapter list for
+    this work."""
+    from analysis.feature_extraction import preprocess_jobs
+    from analysis.feature_extraction.chapter_parser import visible_char_count
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+
+    # Prefer the live job's full chapters (have full ``content``), else
+    # fall back to the persisted ``preprocess`` view in segments_json
+    # (light — no full content, only previews).
+    job = preprocess_jobs.get_job(ref_id)
+    chapters_src = None
+    if job and job.chapters:
+        chapters_src = job.chapters
+    else:
+        try:
+            state = json.loads(w.get("segments_json") or "{}")
+        except Exception:
+            state = {}
+        pre = (state or {}).get("preprocess") if isinstance(state, dict) else None
+        if isinstance(pre, dict) and isinstance(pre.get("chapters"), list):
+            chapters_src = pre["chapters"]
+            # Light entries lack ``content``; we'll need to slice from
+            # the file using stored offsets to populate it.
+    if not chapters_src:
+        raise HTTPException(400, "尚未识别到章节 — 请先点击「匹配章节格式」并完成识别")
+
+    # Load full text once for offset-based content recovery (light path).
+    full_text = None
+    if any("content" not in c or not c.get("content") for c in chapters_src):
+        file_path = w.get("file_path")
+        if file_path:
+            try:
+                full_text = Path(file_path).read_text(encoding="utf-8")
+            except Exception:
+                full_text = None
+
+    import sqlite3
+    rows = []
+    for c in chapters_src:
+        body = c.get("content")
+        if not body and full_text is not None:
+            cs = c.get("content_start")
+            ce = c.get("content_end")
+            if isinstance(cs, int) and isinstance(ce, int) and 0 <= cs < ce <= len(full_text):
+                body = full_text[cs:ce].strip()
+        body = body or ""
+        rows.append((
+            ref_id, int(c.get("number") or 0),
+            c.get("title") or "",
+            c.get("raw_marker") or "",
+            c.get("pattern") or "",
+            c.get("volume") or "",
+            c.get("parsed_number"),
+            visible_char_count(body),
+            1 if c.get("is_author_note") else 0,
+            body,
+            c.get("content_start"),
+            c.get("content_end"),
+        ))
+
+    with sqlite3.connect(db.db_path) as conn:
+        from database.reference_schema import ensure_reference_tables
+        ensure_reference_tables(conn)
+        conn.execute("DELETE FROM reference_chapters WHERE ref_id = ?", (ref_id,))
+        conn.executemany(
+            """
+            INSERT INTO reference_chapters
+              (ref_id, number, title, raw_marker, pattern, volume, parsed_number,
+               char_count, is_author_note, content, content_start, content_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+    return {
+        "ok": True,
+        "saved_count": len(rows),
+        "ref_id": ref_id,
+    }
+
+
+@router.get("/works/{ref_id}/preprocess/saved_summary")
+def preprocess_saved_summary(ref_id: str):
+    """Return whether (and how many) chapters are currently persisted
+    in ``reference_chapters`` for this work. The UI uses this to label
+    the 保存全部章节 button (e.g. "已保存 N 章 · 重新保存")."""
+    import sqlite3
+    db = _db()
+    with sqlite3.connect(db.db_path) as conn:
+        from database.reference_schema import ensure_reference_tables
+        ensure_reference_tables(conn)
+        row = conn.execute(
+            "SELECT COUNT(*), MAX(saved_at) FROM reference_chapters WHERE ref_id = ?",
+            (ref_id,),
+        ).fetchone()
+    cnt = int(row[0] or 0) if row else 0
+    return {"saved_count": cnt, "saved_at": row[1] if row else None}
 
 
 @router.post("/works/{ref_id}/preprocess/undo_exclusions")
