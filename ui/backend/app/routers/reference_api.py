@@ -828,23 +828,26 @@ def test_chapter_pattern(body: ChapterPatternTestBody):
         except _re.error as e:
             raise HTTPException(400, f"正则编译失败：{e}")
     if body.sample_text:
-        text = body.sample_text
+        scan_text = body.sample_text
+        truncated = False
     elif body.ref_id:
         db = _db()
         w = db.get_work(body.ref_id)
         if not w:
             raise HTTPException(404, "参考作品不存在")
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
-        pipe = FeatureExtractionPipeline(db.db_path)
-        text = pipe._load_text(w) or ""
+        file_path = w.get("file_path")
+        if not file_path:
+            raise HTTPException(400, "尚未上传正文")
+        # Sample-read so quick-test stays snappy on large works.
+        from analysis.feature_extraction.preprocess_jobs import read_sample
+        scan_text = read_sample(file_path, 2_500_000)
+        from pathlib import Path as _P
+        try:
+            truncated = _P(file_path).stat().st_size > len(scan_text.encode("utf-8"))
+        except Exception:
+            truncated = False
     else:
         raise HTTPException(400, "请提供 ref_id 或 sample_text")
-    # Cap test scan at 2 MB so quick-test stays fast on large works.
-    # That's plenty to verify a format works — count saturates well
-    # before this.
-    MAX_TEST_SCAN = 2_000_000
-    truncated = len(text) > MAX_TEST_SCAN
-    scan_text = text[:MAX_TEST_SCAN] if truncated else text
     ms = list(pat.finditer(scan_text))
     preview = []
     for m in ms[:8]:

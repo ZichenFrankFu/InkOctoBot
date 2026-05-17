@@ -86,6 +86,50 @@ class PreprocessJob:
 _jobs: dict[str, PreprocessJob] = {}
 
 
+# ── Sample-based file reading (for fast format guessing on big works) ──
+
+def _safe_decode(raw: bytes) -> str:
+    """Decode UTF-8 ignoring partial chars at chunk boundaries. Falls
+    back to GB18030, then errors='ignore' as last resort."""
+    if not raw:
+        return ""
+    for trim in (0, 1, 2, 3, 4):
+        try:
+            return raw[:len(raw) - trim].decode("utf-8") if trim else raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    try:
+        return raw.decode("gb18030")
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="ignore")
+
+
+def read_sample(file_path: str, total_bytes: int = 2_500_000) -> str:
+    """Read 3 disjoint chunks (head / middle / tail) totalling ~``total_bytes``
+    and concatenate with paragraph breaks. For format detection — most
+    works have consistent chapter markers throughout, so sampling three
+    windows gives a more representative view than reading the head only,
+    while still capping I/O on multi-MB files."""
+    from pathlib import Path as _P
+    p = _P(file_path)
+    try:
+        size = p.stat().st_size
+    except FileNotFoundError:
+        return ""
+    if size <= total_bytes:
+        return _safe_decode(p.read_bytes())
+    chunk = total_bytes // 3
+    with p.open("rb") as f:
+        head = f.read(chunk)
+        f.seek(max(0, size // 2 - chunk // 2))
+        mid = f.read(chunk)
+        f.seek(max(0, size - chunk))
+        tail = f.read(chunk)
+    # Join with paragraph breaks so the patterns that anchor on \n\n
+    # still work at chunk boundaries.
+    return "\n\n".join(s for s in (_safe_decode(head), _safe_decode(mid), _safe_decode(tail)) if s)
+
+
 # ── Guess-format job (async, with progress) ──
 
 @dataclass
@@ -203,9 +247,11 @@ async def start_guess_job_for_path(ref_id: str, file_path: str,
 
     async def _wrapper():
         try:
-            from pathlib import Path as _P
-            # Read file in a worker thread so the event loop stays free
-            text = await asyncio.to_thread(_P(file_path).read_text, encoding="utf-8")
+            # Sample-read instead of full-file read: head + middle + tail
+            # totaling ~2.5 MB. On a 50 MB work this saves seconds of I/O
+            # without losing format-recognition quality — chapter markers
+            # are consistent across the document.
+            text = await asyncio.to_thread(read_sample, file_path, 2_500_000)
             await _run_guess(job, text, extra_patterns)
         except Exception as e:
             logger.exception("[preprocess] guess (lazy load) for %s failed", ref_id)

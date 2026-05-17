@@ -102,10 +102,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   // Single-select: only one chapter format may be primary at a time.
   // combine (e.g., 第N章 + 作者说章节 fired together).
   const [guessCandidates, setGuessCandidates] = useState<{ name: string; count: number; score: number; custom: boolean }[] | null>(null);
-  // Single-select: chapter formats are mutually exclusive — the picked
-  // primary auto-merges with built-in 作者说章节 + any custom patterns
-  // server-side, so the user doesn't need to multi-pick.
-  const [chosenFormat, setChosenFormat] = useState<string>("");
+  // Multi-select: a single work can be analyzed under multiple chapter
+  // formats simultaneously. Overlap dedup at the parser level ensures
+  // any given chapter heading is claimed by only ONE format, so the
+  // results never double-count.
+  const [chosenFormats, setChosenFormats] = useState<Set<string>>(new Set());
   const [guessing, setGuessing] = useState(false);
   const [guessProgress, setGuessProgress] = useState<{ current: number; total: number } | null>(null);
   const guessPollRef = useRef<number | null>(null);
@@ -212,7 +213,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast(`已删除「${name}」`, "success");
       // Remove from local candidate list + chosen + tests
       setGuessCandidates(prev => prev ? prev.filter(c => c.name !== name) : prev);
-      if (chosenFormat === name) setChosenFormat("");
+      setChosenFormats(prev => {
+        const n = new Set(prev);
+        n.delete(name);
+        return n;
+      });
       setCandidateTests(prev => {
         const n = { ...prev };
         delete n[name];
@@ -302,11 +307,16 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             }>(`/api/references/works/${refId}/preprocess/guess_status`);
             setGuessProgress({ current: s.current_pattern, total: s.total_patterns });
             if (s.state === "done") {
-              setGuessCandidates(s.candidates || []);
-              // Default to the suggested winner; fall back to top
-              // candidate. Single-select.
-              if (s.suggested) setChosenFormat(s.suggested);
-              else if (s.candidates && s.candidates.length > 0) setChosenFormat(s.candidates[0].name);
+              // Hide zero-count formats per user request — they add
+              // visual noise without offering anything to pick.
+              const visible = (s.candidates || []).filter((c: any) => (c.count || 0) > 0);
+              setGuessCandidates(visible);
+              // Default-select the suggested winner so the user can
+              // confirm-with-one-click. Multi-select still allowed.
+              const initial = new Set<string>();
+              if (s.suggested) initial.add(s.suggested);
+              else if (visible.length > 0) initial.add(visible[0].name);
+              setChosenFormats(initial);
               resolve();
               return;
             }
@@ -333,18 +343,23 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     }
   }, [refId, toast]);
 
-  const startJob = async (forcePattern?: string) => {
-    const fp = forcePattern ?? chosenFormat;
+  const startJob = async (forcePatterns?: string[]) => {
+    const fps = forcePatterns ?? Array.from(chosenFormats);
     try {
-      // Use force_pattern (singular) so the server auto-merges secondary
-      // patterns (作者说章节 + custom) with the chosen primary.
-      const qs = fp ? `?force_pattern=${encodeURIComponent(fp)}` : "";
+      // Multi-select: pass force_patterns (plural). Server uses
+      // EXACTLY those patterns with overlap dedup, so each chapter
+      // heading is claimed by only one format.
+      const qs = fps.length > 0
+        ? `?force_patterns=${encodeURIComponent(fps.join(","))}`
+        : "";
       const r = await apiPost<PreprocessStatus>(
         `/api/references/works/${refId}/preprocess/start${qs}`, {},
       );
       setStatus(r);
       setExcluded(new Set());
-      toast(fp ? `已用「${fp}」开始识别` : "已开始智能识别章节", "info");
+      toast(fps.length > 0
+        ? `已用「${fps.join(" + ")}」开始识别`
+        : "已开始智能识别章节", "info");
     } catch (e: any) {
       toast(e?.message || "启动失败", "error");
     }
@@ -760,14 +775,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             background: "var(--accent-subtle)",
           }}>
             <div className="text-xs" style={{ marginBottom: 8, color: "var(--accent)", fontWeight: 600 }}>
-              请选择章节格式
+              请选择章节格式（可多选）
             </div>
             <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
-              下方是各候选格式在本作品中的匹配数。只能选一个为主格式 —「作者说章节」+ 自定义格式会自动作为辅助合并进来。
+              下方是本作品中匹配到内容的格式（仅显示非零匹配）。可多选 — 不同格式 match 到的章节标题互不重叠。
             </div>
             <div className="flex flex-col gap-4" style={{ marginBottom: 10 }}>
               {guessCandidates.slice(0, 12).map(c => {
-                const checked = chosenFormat === c.name;
+                const checked = chosenFormats.has(c.name);
                 const t = candidateTests[c.name];
                 return (
                   <div key={c.name} style={{
@@ -780,10 +795,16 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       padding: "4px 8px",
                     }}>
                       <input
-                        type="radio"
-                        name="chapter-format-pick"
+                        type="checkbox"
                         checked={checked}
-                        onChange={() => setChosenFormat(c.name)}
+                        onChange={() => {
+                          setChosenFormats(prev => {
+                            const n = new Set(prev);
+                            if (n.has(c.name)) n.delete(c.name);
+                            else n.add(c.name);
+                            return n;
+                          });
+                        }}
                         style={{ width: 13, height: 13, cursor: "pointer" }}
                       />
                       <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", flex: 1, minWidth: 0 }}>
@@ -798,7 +819,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       )}
                       <span className="text-xs text-muted" style={{
                         fontFamily: "var(--font-mono)", minWidth: 70, textAlign: "right",
-                        color: c.count > 0 ? "var(--text-secondary)" : "var(--text-tertiary)",
                       }}>
                         匹配 {c.count} 处
                       </span>
@@ -847,13 +867,15 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
             <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
               <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                      onClick={() => { setGuessCandidates(null); setChosenFormat(""); }}>
+                      onClick={() => { setGuessCandidates(null); setChosenFormats(new Set()); }}>
                 取消
               </button>
               <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
-                      onClick={() => { startJob(chosenFormat); setGuessCandidates(null); }}
-                      disabled={!chosenFormat}>
-                使用「{chosenFormat || "?"}」开始识别
+                      onClick={() => { startJob(Array.from(chosenFormats)); setGuessCandidates(null); }}
+                      disabled={chosenFormats.size === 0}>
+                {chosenFormats.size <= 1
+                  ? `使用「${Array.from(chosenFormats)[0] || "?"}」开始识别`
+                  : `使用所选 ${chosenFormats.size} 个格式开始识别`}
               </button>
             </div>
           </div>
