@@ -574,9 +574,14 @@ class ChapterContentEdit(BaseModel):
 
 @router.get("/works/{ref_id}/preprocess/chapter/{number}/content")
 def get_chapter_content(ref_id: str, number: int):
-    """Return the FULL content of one chapter. Used by the inline editor
-    so the user can trim a tail "求月票" aside without removing the whole
-    chapter."""
+    """Return the FULL content of one chapter for inline editing.
+
+    Fast path: use the cached ``content_start`` / ``content_end`` byte
+    offsets from segments_json["preprocess"] and slice the file
+    directly. Saves seconds of re-running detect_chapters on a multi-MB
+    work every time the user opens the editor.
+
+    Slow path (no cached offsets): falls back to full detect_chapters."""
     from analysis.feature_extraction.chapter_parser import (
         detect_chapters, visible_char_count,
     )
@@ -587,6 +592,39 @@ def get_chapter_content(ref_id: str, number: int):
     w = db.get_work(ref_id)
     if not w:
         raise HTTPException(404, "参考作品不存在")
+
+    # Fast path: cached offsets
+    try:
+        state = json.loads(w.get("segments_json") or "{}")
+    except Exception:
+        state = {}
+    pre = (state or {}).get("preprocess") if isinstance(state, dict) else None
+    cached_chapters = (pre or {}).get("chapters") if isinstance(pre, dict) else None
+    file_path = w.get("file_path")
+    if isinstance(cached_chapters, list) and file_path:
+        for c in cached_chapters:
+            if c.get("number") != number:
+                continue
+            cs = c.get("content_start")
+            ce = c.get("content_end")
+            if isinstance(cs, int) and isinstance(ce, int) and ce > cs:
+                # Read just the chapter's slice. Read enough to cover the
+                # range (chars, not bytes — Python str slicing is by
+                # codepoint, so we have to decode at least up to ce).
+                try:
+                    full = Path(file_path).read_text(encoding="utf-8")
+                except Exception:
+                    full = None
+                if full is not None and ce <= len(full):
+                    body = full[cs:ce].strip()
+                    return {
+                        "number": number,
+                        "title": c.get("title") or "",
+                        "content": body,
+                        "char_count": visible_char_count(body),
+                    }
+
+    # Slow path: re-detect from scratch
     pipe = FeatureExtractionPipeline(db.db_path)
     text = pipe._load_text(w)
     if not text:
@@ -1111,7 +1149,11 @@ def preprocess_aside_paragraphs(ref_id: str):
 
 
 class CleanAsideParagraphsBody(BaseModel):
-    paragraphs: list[dict]  # [{chapter_number, para_index}]
+    # Each entry: {chapter_number, para_index, text}. Text is the
+    # paragraph content captured at detection time — used for
+    # robust matching at apply time (indices alone can drift if
+    # detection re-runs between fetch and apply).
+    paragraphs: list[dict]
 
 
 @router.post("/works/{ref_id}/preprocess/clean_aside_paragraphs")

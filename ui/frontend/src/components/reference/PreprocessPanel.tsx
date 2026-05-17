@@ -32,6 +32,7 @@ interface LogEntry { ts: number; message: string; chapter?: number | null; }
 
 interface PreprocessStatus {
   state: "idle" | "running" | "paused" | "done" | "error" | "cancelled";
+  phase?: "" | "loading" | "matching" | "tagging" | "finalizing";
   current_chapter: number;
   total_chapters: number;
   detected_pattern?: string | null;
@@ -527,12 +528,15 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast("未选择任何段落", "info");
       return;
     }
-    if (!confirm(`将删除 ${selected.length} 个题外话段落（可撤销一次）。继续？`)) return;
     setApplying(true);
     try {
       const r = await apiPost<{ removed_count: number; new_char_count: number }>(
         `/api/references/works/${refId}/preprocess/clean_aside_paragraphs`,
-        { paragraphs: selected.map(a => ({ chapter_number: a.chapter_number, para_index: a.para_index })) },
+        { paragraphs: selected.map(a => ({
+          chapter_number: a.chapter_number,
+          para_index: a.para_index,
+          text: a.text,  // robust matching at apply time
+        })) },
         { timeoutMs: 120_000 },
       );
       toast(`已删除 ${r.removed_count} 个段落，现剩 ${fmtChars(r.new_char_count)}`, "success");
@@ -889,7 +893,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               marginBottom: 4,
               display: "flex", justifyContent: "space-between",
             }}>
-              <span>{state === "paused" ? "已暂停" : "处理中"} · 第 {status?.current_chapter} / {status?.total_chapters} 章</span>
+              <span>{state === "paused" ? "已暂停" : (
+                status?.phase === "loading" ? "正在读取正文文件…" :
+                status?.phase === "matching" ? "正在匹配章节格式…" :
+                status?.phase === "finalizing" ? "正在生成摘要…" :
+                (status?.total_chapters || 0) > 0
+                  ? `处理中 · 第 ${status?.current_chapter || 0} / ${status?.total_chapters || 0} 章`
+                  : "准备中…"
+              )}</span>
               <span>{progress.toFixed(0)}%</span>
             </div>
             <div style={{ height: 5, background: "var(--bg-surface-2)", borderRadius: 3, overflow: "hidden" }}>
@@ -1119,7 +1130,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               { k: "all", label: "全部", count: chapters.length },
               { k: "flagged", label: "疑似题外话", count: chapters.filter(c => c.is_author_note).length },
               { k: "outlier", label: "长度异常", count: chapters.filter(c => c.is_length_outlier).length },
-              { k: "kept", label: "保留", count: chapters.length - excluded.size },
+              { k: "kept", label: "正文章节", count: chapters.length - excluded.size },
             ] as const).map(o => (
               <button key={o.k}
                       type="button"
@@ -1183,37 +1194,30 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                               : isOutlier ? "rgba(168,85,247,0.06)"
                               : "transparent";
               return (
-                <div key={c.number} style={{
-                  border: `1px solid ${borderColor}`,
-                  borderRadius: 4,
-                  padding: "5px 8px",
-                  background: bgColor,
-                  opacity: isExcluded ? 0.7 : 1,
-                }}>
+                <div key={c.number}
+                  onClick={() => toggleExclude(c.number)}
+                  title={isExcluded ? "已选择删除（点击取消）" : "点击以勾选删除此章节"}
+                  style={{
+                    border: `1px solid ${borderColor}`,
+                    borderRadius: 4,
+                    padding: "5px 8px",
+                    background: bgColor,
+                    cursor: "pointer",
+                    boxShadow: isExcluded ? "inset 0 0 0 1px var(--error)" : "none",
+                    transition: "background 0.1s",
+                  }}>
                   <div className="flex items-center gap-8" style={{ minWidth: 0 }}>
-                    <label style={{
-                      display: "inline-flex", alignItems: "center",
-                      cursor: "pointer", padding: "2px 4px", margin: -2,
-                    }}
-                      title={isExcluded ? "已勾选排除（点击取消）" : "勾选以排除此章节"}>
-                      <input
-                        type="checkbox"
-                        checked={isExcluded}
-                        onChange={e => { e.stopPropagation(); toggleExclude(c.number); }}
-                        style={{ width: 14, height: 14, cursor: "pointer" }}
-                      />
-                    </label>
                     <span className="tag" style={{
                       fontSize: 10, minWidth: 42, textAlign: "center", flexShrink: 0,
-                      color: "var(--text-secondary)",
+                      color: isExcluded ? "var(--error)" : "var(--text-secondary)",
                       background: "transparent",
-                      border: "1px solid var(--border)",
+                      border: `1px solid ${isExcluded ? "var(--error)" : "var(--border)"}`,
                       fontFamily: "var(--font-mono)",
                     }}>#{c.number}</span>
                     <button
                       type="button"
                       className="btn-ghost"
-                      onClick={() => toggleExpand(c.number)}
+                      onClick={e => { e.stopPropagation(); toggleExpand(c.number); }}
                       style={{
                         flex: 1, minWidth: 0,
                         padding: "2px 0", borderRadius: 0,
@@ -1336,26 +1340,29 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                     const key = `${a.chapter_number}:${a.para_index}`;
                     const sel = paraCleanSelected.has(key);
                     return (
-                      <div key={key} style={{
-                        border: `1px solid ${sel ? "var(--accent)" : "var(--border)"}`,
-                        borderRadius: 4, padding: 8,
-                        background: sel ? "rgba(74,144,226,0.06)" : "transparent",
-                      }}>
+                      <div key={key}
+                        onClick={() => {
+                          setParaCleanSelected(prev => {
+                            const n = new Set(prev);
+                            if (n.has(key)) n.delete(key);
+                            else n.add(key);
+                            return n;
+                          });
+                        }}
+                        title={sel ? "已选择删除（点击取消）" : "点击勾选此段落"}
+                        style={{
+                          border: `1px solid ${sel ? "var(--accent)" : "var(--border)"}`,
+                          borderRadius: 4, padding: 8,
+                          background: sel ? "var(--accent-subtle)" : "transparent",
+                          cursor: "pointer",
+                          transition: "background 0.1s",
+                        }}>
                         <div className="flex items-center gap-8" style={{ marginBottom: 6 }}>
-                          <input type="checkbox" checked={sel}
-                                  onChange={() => {
-                                    setParaCleanSelected(prev => {
-                                      const n = new Set(prev);
-                                      if (n.has(key)) n.delete(key);
-                                      else n.add(key);
-                                      return n;
-                                    });
-                                  }}
-                                  style={{ width: 14, height: 14 }} />
                           <span className="tag" style={{
                             fontSize: 10, padding: "1px 6px", fontFamily: "var(--font-mono)",
-                            color: "var(--text-secondary)", background: "transparent",
-                            border: "1px solid var(--border)",
+                            color: sel ? "var(--accent)" : "var(--text-secondary)",
+                            background: "transparent",
+                            border: `1px solid ${sel ? "var(--accent)" : "var(--border)"}`,
                           }}>第 {a.chapter_number} 章</span>
                           <div className="truncate" style={{
                             fontSize: 12, fontWeight: 500, color: "var(--text-primary)",

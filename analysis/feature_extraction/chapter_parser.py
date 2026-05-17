@@ -85,14 +85,18 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"^[\s　]*Chapter\s+([0-9]+)[\s：:.,、，]*([^\n]{0,80})$",
         re.MULTILINE | re.IGNORECASE,
     )),
-    # "1、标题" — arabic + 顿号 (very common in web novels)
+    # "1、标题" — arabic + 顿号 (very common in web novels).
+    # Title is optional ({0,80}) so bare "147、" lines also match —
+    # otherwise the chapter gets absorbed into the previous one and
+    # content lengths explode (e.g. a 2800-字 chapter shows as 387.6
+    # 万字 because it ate the rest of the document).
     ("数字、标题", re.compile(
-        r"^[\s　]*([0-9]+)\s*[、．]\s*([^\n]{1,80})$",
+        r"^[\s　]*([0-9]+)\s*[、．][\s　]*([^\n]{0,80})$",
         re.MULTILINE,
     )),
     # "1.标题" — arabic + 句点 (.)
     ("数字.标题", re.compile(
-        r"^[\s　]*([0-9]+)[\s]*[.]\s*([^\n]{1,80})$",
+        r"^[\s　]*([0-9]+)[\s]*[.][\s　]*([^\n]{0,80})$",
         re.MULTILINE,
     )),
     # No-numbering format: short paragraphs (1–26 chars) that don't end
@@ -340,7 +344,9 @@ def _build_chapters(text: str,
         title_text = _clean_title(title_text)
         raw_marker = _clean_title(m.group(0).strip().rstrip("\r"))
         normalized = cn2int(num_text) or (i + 1)
-        content = text[m.end():end].strip()
+        content_start = m.end()
+        content_end = end
+        content = text[content_start:content_end].strip()
         display_title = title_text if is_unnumbered else raw_marker[:60]
         chapters.append({
             "number": normalized,
@@ -350,6 +356,11 @@ def _build_chapters(text: str,
             "pattern": pname,
             "volume": cur_vol,
             "content": content,
+            # CHAR offsets into the source text — let the chapter-edit
+            # endpoint slice the file directly instead of re-running
+            # detect_chapters on the full text.
+            "content_start": content_start,
+            "content_end": content_end,
         })
 
     # Chapters are already in document order. Final dedup: only collapse
@@ -649,6 +660,10 @@ _AUTHOR_KEYWORDS = [
     "新书", "推一本", "推荐一本", "互助榜", "本章说",
     "晚点更新", "明天更新", "今日两更", "今日三更", "求各位",
     "亲爱的读者", "亲们", "书友们", "对不起大家",
+    # Patreon-style sponsor markers — 盟主 is the canonical one in
+    # Chinese web novels, often appearing with names in PS asides.
+    "盟主", "舵主", "堂主", "护法", "长老", "执事", "白银盟", "豪掷",
+    "感谢盟主", "感谢打赏", "万赏", "万订", "月票榜",
 ]
 
 
@@ -765,20 +780,24 @@ def flag_length_outliers(chapters: list[dict]) -> list[dict]:
 
 def make_preview(content: str, head_chars: int = 180, tail_chars: int = 140) -> dict:
     """Return ``{head, tail}`` previews. Picks at sentence boundary where
-    possible so the preview reads cleanly. Empty for very short content."""
-    s = (content or "").strip()
-    if not s:
+    possible so the preview reads cleanly.
+
+    Avoids ``content.strip()`` on huge content — for a 4M-char chapter
+    (which signals a missed boundary anyway) the strip alone took
+    hundreds of ms and contributed to the post-detection freeze. We
+    only need to trim whitespace off the actual head + tail slices."""
+    if not content:
         return {"head": "", "tail": ""}
-    head = s[:head_chars]
-    # Try to end the head at a sentence boundary close to the limit
+    n = len(content)
+    head = content[:head_chars].lstrip()
     for sep in ["。", "！", "？", "”", "」", "\n"]:
         idx = head.rfind(sep)
         if idx >= head_chars * 0.5:
             head = head[: idx + 1]
             break
-    if len(s) <= head_chars + tail_chars + 20:
+    if n <= head_chars + tail_chars + 20:
         return {"head": head.strip(), "tail": ""}
-    tail = s[-tail_chars:]
+    tail = content[-tail_chars:].rstrip()
     for sep in ["。", "！", "？", "”", "」", "\n"]:
         idx = tail.find(sep)
         if 0 <= idx <= tail_chars * 0.5:
@@ -810,17 +829,20 @@ def replace_chapter_content(text: str, chapters: list[dict],
     return "\n\n".join(p for p in parts if p)
 
 
-def detect_aside_paragraphs(chapters: list[dict]) -> list[dict]:
+def detect_aside_paragraphs(chapters: list[dict],
+                              max_para_chars: int = 500) -> list[dict]:
     """For every regular (non-作者说章节) chapter, find PARAGRAPHS that
-    look like author asides — short blocks (<= 300 chars) that contain
-    author-note keywords (求月票 / 求订阅 / 老书友 / 感谢 / …). These are
-    the trailing "求月票！" pleas embedded at the end of body chapters
-    that the user wants removed without losing the chapter itself.
+    look like author asides — short blocks containing author-note
+    keywords (求月票 / 求订阅 / 老书友 / 感谢 / 盟主 / …) at any position
+    in the chapter. These are the trailing "求月票！" pleas embedded
+    at the end of body chapters that the user wants removed without
+    losing the chapter itself.
 
     Returns: list of {chapter_number, chapter_title, para_index,
-    para_total, text, reasons, score}. The UI shows these in a
-    preview-then-confirm modal so the user can verify before bulk
-    removal.
+    para_total, text, reasons, score}. The ``text`` field is the
+    authoritative identifier for removal — apply_aside_paragraph_cleanup
+    matches on it so minor detection drift between calls doesn't
+    misalign indices.
     """
     out: list[dict] = []
     for c in chapters:
@@ -836,7 +858,7 @@ def detect_aside_paragraphs(chapters: list[dict]) -> list[dict]:
             if not ps:
                 continue
             # Skip long paragraphs — narrative, not asides.
-            if len(ps) > 300:
+            if len(ps) > max_para_chars:
                 continue
             hits = [kw for kw in _AUTHOR_KEYWORDS if kw in ps]
             if not hits:
@@ -861,26 +883,53 @@ def detect_aside_paragraphs(chapters: list[dict]) -> list[dict]:
 
 def apply_aside_paragraph_cleanup(text: str, chapters: list[dict],
                                     paragraphs_to_remove: list[dict]) -> str:
-    """Remove the specified ``{chapter_number, para_index}`` paragraphs
-    from their chapters and rebuild the full text. Chapters not touched
-    keep their original raw_marker + content concatenation."""
-    grouped: dict[int, set[int]] = {}
+    """Remove the specified paragraphs from their chapters and rebuild
+    the full text. Each entry in ``paragraphs_to_remove`` should have
+    ``chapter_number`` + ``para_index`` AND ``text`` — we match by
+    text content first (robust against minor detection drift between
+    the modal-fetch call and the apply call) and fall back to index.
+    Chapters not touched keep their original raw_marker + content
+    concatenation.
+    """
+    by_chapter_text: dict[int, set[str]] = {}
+    by_chapter_idx: dict[int, set[int]] = {}
     for p in paragraphs_to_remove:
         try:
             n = int(p.get("chapter_number"))
-            i = int(p.get("para_index"))
         except (TypeError, ValueError):
             continue
-        grouped.setdefault(n, set()).add(i)
+        t = (p.get("text") or "").strip()
+        if t:
+            by_chapter_text.setdefault(n, set()).add(t)
+        try:
+            i = int(p.get("para_index"))
+            by_chapter_idx.setdefault(n, set()).add(i)
+        except (TypeError, ValueError):
+            pass
+
     parts: list[str] = []
+    removed = 0
     for c in chapters:
         marker = c.get("raw_marker") or c.get("title") or ""
         body = c.get("content") or ""
-        if c["number"] in grouped and body:
+        n = c.get("number")
+        if body and (n in by_chapter_text or n in by_chapter_idx):
             paragraphs = re.split(r"\n\s*\n", body)
-            drop = grouped[c["number"]]
-            kept = [p.strip() for pi, p in enumerate(paragraphs)
-                     if pi not in drop and p.strip()]
+            target_texts = by_chapter_text.get(n, set())
+            target_idxs = by_chapter_idx.get(n, set())
+            kept: list[str] = []
+            for pi, p in enumerate(paragraphs):
+                ps = p.strip()
+                if not ps:
+                    continue
+                # Prefer text match; fall back to index when text didn't match.
+                if ps in target_texts:
+                    removed += 1
+                    continue
+                if pi in target_idxs and not target_texts:
+                    removed += 1
+                    continue
+                kept.append(ps)
             body = "\n\n".join(kept)
         if marker:
             parts.append(marker)

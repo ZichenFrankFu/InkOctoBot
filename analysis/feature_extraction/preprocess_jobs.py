@@ -41,6 +41,12 @@ class LogEntry:
 class PreprocessJob:
     ref_id: str
     state: str = "idle"  # idle | running | paused | done | error | cancelled
+    # Sub-phase within ``running``. Lets the UI distinguish "still
+    # loading the file" from "scanning patterns" from "tagging chapters"
+    # — without phases the user sees state="running" with 0/0 progress
+    # while a big file is being read in a thread and assumes the app
+    # is frozen.
+    phase: str = ""  # loading | matching | tagging | finalizing | ""
     current_chapter: int = 0
     total_chapters: int = 0
     detected_pattern: Optional[str] = None
@@ -70,6 +76,7 @@ class PreprocessJob:
     def to_status(self) -> dict[str, Any]:
         return {
             "state": self.state,
+            "phase": self.phase,
             "current_chapter": self.current_chapter,
             "total_chapters": self.total_chapters,
             "detected_pattern": self.detected_pattern,
@@ -296,8 +303,10 @@ async def _run_detection(job: PreprocessJob, text: str,
 
     try:
         job.state = "running"
-        job.started_at = time.time()
-        job.append_log("开始解析章节…")
+        if not job.started_at:
+            job.started_at = time.time()
+        job.phase = "matching"
+        job.append_log("正在匹配章节格式…")
 
         # Phase 1: chapter detection (regex-heavy, can take 100ms+ per
         # pattern on multi-MB texts). Run in a worker thread so the UI
@@ -324,6 +333,7 @@ async def _run_detection(job: PreprocessJob, text: str,
 
         # Phase 2: author-note heuristic, walked chapter-by-chapter so the
         # UI can show progress and the user can pause/cancel.
+        job.phase = "tagging"
         for i, c in enumerate(chapters):
             # Pause / cancel check at chapter boundary
             if job._cancel:
@@ -358,15 +368,20 @@ async def _run_detection(job: PreprocessJob, text: str,
                 # responsiveness.
                 await asyncio.sleep(0)
 
-        # Heuristic application (in-place; very fast)
-        flag_author_notes(chapters)
-        flag_length_outliers(chapters)
-        # Attach a head/tail preview snippet so the UI can render the
-        # first/last sentences without re-fetching the file.
-        for c in chapters:
-            pv = make_preview(c.get("content") or "")
-            c["preview_head"] = pv["head"]
-            c["preview_tail"] = pv["tail"]
+        # Heuristic application + preview generation. These are all
+        # synchronous Python operations; offload to a thread so the
+        # status poll stays responsive even on works with thousands
+        # of chapters or unusually long single chapters.
+        job.phase = "finalizing"
+        job.append_log("正在生成摘要与标记…")
+        def _post_process():
+            flag_author_notes(chapters)
+            flag_length_outliers(chapters)
+            for c in chapters:
+                pv = make_preview(c.get("content") or "")
+                c["preview_head"] = pv["head"]
+                c["preview_tail"] = pv["tail"]
+        await asyncio.to_thread(_post_process)
         flagged = [c for c in chapters if c.get("is_author_note")]
         outliers = [c for c in chapters if c.get("is_length_outlier")]
         job.flagged_count = len(flagged)
@@ -407,7 +422,10 @@ async def start_job_for_path(ref_id: str, file_path: str,
     async def _wrapper():
         try:
             from pathlib import Path as _P
+            job.phase = "loading"
+            job.append_log("正在读取正文文件…")
             text = await asyncio.to_thread(_P(file_path).read_text, encoding="utf-8")
+            job.append_log(f"已读取 {len(text):,} 字符")
             await _run_detection(job, text, per_chapter_delay_ms,
                                   extra_patterns, force_pattern, force_patterns)
         except Exception as e:
@@ -499,6 +517,7 @@ def persist_result_to_segments(ref_id: str, db_path: str,
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
             "preview_head", "preview_tail",
+            "content_start", "content_end",
         )} | {"char_count": visible_char_count(c.get("content") or "")}
         for c in chapters
     ]
