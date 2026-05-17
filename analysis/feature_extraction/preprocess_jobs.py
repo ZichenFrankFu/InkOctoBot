@@ -86,6 +86,111 @@ class PreprocessJob:
 _jobs: dict[str, PreprocessJob] = {}
 
 
+# ── Guess-format job (async, with progress) ──
+
+@dataclass
+class GuessJob:
+    """Async format-matching job. The guess phase scans every built-in
+    + custom pattern against the work's text and reports progress so
+    the UI can show a real progress bar (replaces the old sync
+    "猜测中…" spinner that froze for several seconds on large texts).
+    """
+    ref_id: str
+    state: str = "running"  # running | done | error
+    current_pattern: int = 0
+    total_patterns: int = 0
+    candidates: list[dict] = field(default_factory=list)
+    suggested: Optional[str] = None
+    text_len: int = 0
+    scanned_len: int = 0
+    error: Optional[str] = None
+    started_at: float = 0.0
+    ended_at: float = 0.0
+    _task: Optional[asyncio.Task] = None
+
+    def to_status(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "current_pattern": self.current_pattern,
+            "total_patterns": self.total_patterns,
+            "candidates": self.candidates,
+            "suggested": self.suggested,
+            "text_len": self.text_len,
+            "scanned_len": self.scanned_len,
+            "error": self.error,
+        }
+
+
+_guess_jobs: dict[str, GuessJob] = {}
+
+
+def get_guess_job(ref_id: str) -> Optional[GuessJob]:
+    return _guess_jobs.get(ref_id)
+
+
+async def _run_guess(job: GuessJob, text: str, extra_patterns: list[dict] | None) -> None:
+    """Body of the guess job. Scans patterns one by one, yielding to
+    the loop between each so the UI's progress polls stay responsive
+    and other endpoints don't starve. Caps scanned text length so very
+    large works don't make the guess feel laggy — the actual detection
+    job re-scans the FULL text with the chosen pattern."""
+    from analysis.feature_extraction.chapter_parser import (
+        _PATTERNS as BUILTIN, _compile_extra, _score_pattern,
+    )
+    try:
+        job.state = "running"
+        job.started_at = time.time()
+        job.text_len = len(text)
+        # Cap scan to ~2 MB — score-relevant signals (count / spacing /
+        # short-line-fraction) saturate well before this on real novels.
+        MAX_SCAN = 2_000_000
+        scan_text = text[:MAX_SCAN] if len(text) > MAX_SCAN else text
+        job.scanned_len = len(scan_text)
+        custom = _compile_extra(extra_patterns)
+        all_pats = list(BUILTIN) + custom
+        custom_names = {n for n, _ in custom}
+        job.total_patterns = len(all_pats)
+
+        results: list[dict] = []
+        for i, (name, pat) in enumerate(all_pats):
+            job.current_pattern = i + 1
+            ms = list(pat.finditer(scan_text))
+            score = _score_pattern(ms, len(scan_text))
+            results.append({
+                "name": name, "count": len(ms), "score": round(score, 3),
+                "custom": name in custom_names,
+            })
+            # Yield so the UI's status poll can return between patterns
+            await asyncio.sleep(0)
+
+        results.sort(key=lambda c: -c["score"])
+        job.candidates = results
+        job.suggested = results[0]["name"] if results and results[0]["score"] >= 1.0 else None
+        job.state = "done"
+        job.ended_at = time.time()
+    except Exception as e:
+        logger.exception("[preprocess] guess job for %s failed", job.ref_id)
+        job.state = "error"
+        job.error = str(e)
+        job.ended_at = time.time()
+
+
+async def start_guess_job(ref_id: str, text: str,
+                           extra_patterns: list[dict] | None = None) -> GuessJob:
+    job = _guess_jobs.get(ref_id)
+    if job and job.state == "running":
+        return job
+    job = GuessJob(ref_id=ref_id, state="running")
+    _guess_jobs[ref_id] = job
+    job._task = asyncio.create_task(_run_guess(job, text, extra_patterns))
+    return job
+
+
+def clear_guess_job(ref_id: str) -> None:
+    _guess_jobs.pop(ref_id, None)
+
+
+
 def get_job(ref_id: str) -> Optional[PreprocessJob]:
     return _jobs.get(ref_id)
 
@@ -103,7 +208,8 @@ def clear(ref_id: str) -> None:
 async def _run_detection(job: PreprocessJob, text: str,
                           per_chapter_delay_ms: int = 0,
                           extra_patterns: list[dict] | None = None,
-                          force_pattern: str | None = None) -> None:
+                          force_pattern: str | None = None,
+                          force_patterns: list[str] | None = None) -> None:
     """Body of the preprocess job. Runs in its own task. Honors job._cancel
     and job._resume between chapters so the UI's pause/resume controls
     take effect at chapter boundaries (per user's chosen granularity)."""
@@ -119,7 +225,8 @@ async def _run_detection(job: PreprocessJob, text: str,
 
         # Phase 1: chapter detection (single regex pass per pattern; fast)
         result = detect_chapters(text, extra_patterns=extra_patterns,
-                                  force_pattern=force_pattern)
+                                  force_pattern=force_pattern,
+                                  force_patterns=force_patterns)
         chapters = result["chapters"]
         job.detected_pattern = result["pattern"]
         job.fallback_used = result["fallback_used"]
@@ -198,7 +305,8 @@ async def _run_detection(job: PreprocessJob, text: str,
 async def start_job(ref_id: str, text: str,
                      per_chapter_delay_ms: int = 0,
                      extra_patterns: list[dict] | None = None,
-                     force_pattern: str | None = None) -> PreprocessJob:
+                     force_pattern: str | None = None,
+                     force_patterns: list[str] | None = None) -> PreprocessJob:
     """Idempotent: returns the existing running/paused job for ref_id, or
     creates a fresh one and schedules it on the current event loop.
 
@@ -216,7 +324,7 @@ async def start_job(ref_id: str, text: str,
     _jobs[ref_id] = job
     job._task = asyncio.create_task(
         _run_detection(job, text, per_chapter_delay_ms,
-                        extra_patterns, force_pattern),
+                        extra_patterns, force_pattern, force_patterns),
     )
     return job
 

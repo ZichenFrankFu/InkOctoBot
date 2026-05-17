@@ -471,18 +471,18 @@ def _compile_extra(raw_patterns: list[dict] | None) -> list[tuple[str, re.Patter
 
 def detect_chapters(text: str,
                      extra_patterns: list[dict] | None = None,
-                     force_pattern: str | None = None) -> dict[str, Any]:
-    """Run all patterns (built-in + user-supplied), pick the best by score
-    (or honor ``force_pattern`` if the user picked one explicitly),
-    return chapters + diagnostics.
+                     force_pattern: str | None = None,
+                     force_patterns: list[str] | None = None) -> dict[str, Any]:
+    """Run all patterns, pick the best by score (or honor the user's
+    explicit pick), return chapters + diagnostics.
 
-    ``extra_patterns`` lets users add their own format (e.g. "卷X-Y") via
-    settings.json["chapter_patterns"].
-
-    ``force_pattern`` overrides auto-scoring — useful when the user
-    confirmed a specific format in the UI (the "guess → confirm → run"
-    flow). Falls back to auto-scoring if the named pattern produces zero
-    matches.
+    Pattern selection priority:
+      1. ``force_patterns`` (multi-select) — use EXACTLY these patterns,
+         merging their matches in document order. No secondary auto-merge.
+         Empty list ⇒ falls back to auto-pick.
+      2. ``force_pattern`` (single, legacy) — sets primary, secondary
+         patterns still auto-merged.
+      3. No force args — auto-score, pick primary, auto-merge secondaries.
     """
     builtin = list(_PATTERNS)
     custom = _compile_extra(extra_patterns)
@@ -493,6 +493,47 @@ def detect_chapters(text: str,
     best_matches: list[re.Match[str]] = []
     best_score = 0.0
     forced_hit = False
+
+    # Need this helper for the multi-select branch below
+    def title_bounds(m: re.Match[str]) -> tuple[int, int]:
+        try:
+            return m.start(1), m.end(1)
+        except (IndexError, re.error):
+            return m.start(), m.end()
+
+    # ── Multi-select fast path ──
+    chosen_set = set(p for p in (force_patterns or []) if p)
+    if chosen_set:
+        named_matches: list[tuple[str, re.Match[str]]] = []
+        for name, pat in all_patterns:
+            ms = list(pat.finditer(text))
+            candidates.append({
+                "name": name, "count": len(ms), "score": 0.0,
+                "custom": name in custom_names,
+            })
+            if name in chosen_set:
+                for m in ms:
+                    named_matches.append((name, m))
+        named_matches.sort(key=lambda x: title_bounds(x[1])[0])
+        # Drop overlapping matches (e.g., two formats hitting the same heading)
+        deduped: list[tuple[str, re.Match[str]]] = []
+        last_end = -1
+        for name, m in named_matches:
+            s, e = title_bounds(m)
+            if s < last_end:
+                continue
+            deduped.append((name, m))
+            last_end = e
+        chapters = _build_chapters(text, deduped)
+        contributing = sorted({c["pattern"] for c in chapters if c.get("pattern")})
+        return {
+            "chapters": chapters,
+            "pattern": next(iter(chosen_set)) if len(chosen_set) == 1 else None,
+            "merged_patterns": contributing,
+            "candidates": candidates,
+            "fallback_used": False,
+        }
+
     for name, pat in all_patterns:
         ms = list(pat.finditer(text))
         score = _score_pattern(ms, len(text))
@@ -552,12 +593,6 @@ def detect_chapters(text: str,
 
     # Use TITLE bounds (group 1) for overlap math — secondary patterns
     # that consume \n\n prefixes have misleading whole-match ranges.
-    def title_bounds(m: re.Match[str]) -> tuple[int, int]:
-        try:
-            return m.start(1), m.end(1)
-        except (IndexError, re.error):
-            return m.start(), m.end()
-
     primary_title_ranges = [title_bounds(m) for m in best_matches]
     def overlaps_primary(m: re.Match[str]) -> bool:
         s, e = title_bounds(m)

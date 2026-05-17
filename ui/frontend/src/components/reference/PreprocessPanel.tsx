@@ -97,12 +97,15 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   // Multi-file upload (append mode)
   const appendFileInputRef = useRef<HTMLInputElement | null>(null);
   const [appending, setAppending] = useState(false);
-  // Format-guess state — populated by /preprocess/guess_format before
-  // detection runs. ``chosenFormat`` is what the user confirmed (or
-  // the auto-suggested default until they pick something else).
+  // Format-matching (async with progress). guessProgress tracks the
+  // currently-scanning pattern; UI shows a progress bar while running.
+  // chosenFormats is a Set so the user can multi-select formats to
+  // combine (e.g., 第N章 + 作者说章节 fired together).
   const [guessCandidates, setGuessCandidates] = useState<{ name: string; count: number; score: number; custom: boolean }[] | null>(null);
-  const [chosenFormat, setChosenFormat] = useState<string>("");
+  const [chosenFormats, setChosenFormats] = useState<Set<string>>(new Set());
   const [guessing, setGuessing] = useState(false);
+  const [guessProgress, setGuessProgress] = useState<{ current: number; total: number } | null>(null);
+  const guessPollRef = useRef<number | null>(null);
   // Per-chapter content edit modal
   const [editingChapter, setEditingChapter] = useState<{ number: number; title: string; content: string } | null>(null);
   const [editLoading, setEditLoading] = useState(false);
@@ -231,32 +234,69 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
 
   const guessFormat = useCallback(async () => {
     setGuessing(true);
+    setGuessProgress({ current: 0, total: 0 });
+    setGuessCandidates(null);
     try {
-      const r = await apiGet<{ candidates: any[]; suggested: string | null; text_len: number }>(
-        `/api/references/works/${refId}/preprocess/guess_format`,
+      // Kick off the async match job
+      const init = await apiPost<{ state: string; current_pattern: number; total_patterns: number }>(
+        `/api/references/works/${refId}/preprocess/guess_start`, {},
       );
-      setGuessCandidates(r.candidates || []);
-      // Default the dropdown to the suggested winner so the user just
-      // has to confirm. Falls back to the first candidate.
-      if (r.suggested) setChosenFormat(r.suggested);
-      else if (r.candidates && r.candidates.length > 0) setChosenFormat(r.candidates[0].name);
+      setGuessProgress({ current: init.current_pattern, total: init.total_patterns });
+      // Poll until done
+      await new Promise<void>((resolve) => {
+        const tick = async () => {
+          try {
+            const s = await apiGet<{
+              state: string; current_pattern: number; total_patterns: number;
+              candidates: any[]; suggested: string | null;
+            }>(`/api/references/works/${refId}/preprocess/guess_status`);
+            setGuessProgress({ current: s.current_pattern, total: s.total_patterns });
+            if (s.state === "done") {
+              setGuessCandidates(s.candidates || []);
+              const initial = new Set<string>();
+              if (s.suggested) initial.add(s.suggested);
+              else if (s.candidates && s.candidates.length > 0) initial.add(s.candidates[0].name);
+              setChosenFormats(initial);
+              resolve();
+              return;
+            }
+            if (s.state === "error") {
+              toast("匹配失败", "error");
+              resolve();
+              return;
+            }
+            guessPollRef.current = window.setTimeout(tick, 150);
+          } catch (e) {
+            resolve();
+          }
+        };
+        tick();
+      });
     } catch (e: any) {
-      toast(e?.message || "猜测失败", "error");
+      toast(e?.message || "匹配失败", "error");
     } finally {
       setGuessing(false);
+      if (guessPollRef.current) {
+        clearTimeout(guessPollRef.current);
+        guessPollRef.current = null;
+      }
     }
   }, [refId, toast]);
 
-  const startJob = async (forcePattern?: string) => {
-    const fp = forcePattern || chosenFormat;
+  const startJob = async (forcePatterns?: string[]) => {
+    const fps = forcePatterns ?? Array.from(chosenFormats);
     try {
-      const qs = fp ? `?force_pattern=${encodeURIComponent(fp)}` : "";
+      const qs = fps.length > 0
+        ? `?force_patterns=${encodeURIComponent(fps.join(","))}`
+        : "";
       const r = await apiPost<PreprocessStatus>(
         `/api/references/works/${refId}/preprocess/start${qs}`, {},
       );
       setStatus(r);
       setExcluded(new Set());
-      toast(fp ? `已用「${fp}」格式开始识别` : "已开始智能识别章节", "info");
+      toast(fps.length > 0
+        ? `已用「${fps.join(" + ")}」开始识别`
+        : "已开始智能识别章节", "info");
     } catch (e: any) {
       toast(e?.message || "启动失败", "error");
     }
@@ -592,11 +632,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
           </div>
           <div className="flex items-center gap-6" style={{ flexWrap: "wrap" }}>
-            {(state === "idle" || state === "done" || state === "cancelled" || state === "error") && !guessCandidates && (
+            {(state === "idle" || state === "done" || state === "cancelled" || state === "error") && !guessCandidates && !guessing && (
               <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }}
-                      onClick={guessFormat} disabled={guessing}
-                      title="先扫描全文猜测章节格式，再让你确认后进行识别">
-                {guessing ? "猜测中…" : (state === "idle" ? "猜测章节格式" : "重新识别")}
+                      onClick={guessFormat}
+                      title="先扫描全文匹配章节格式，再让你确认后进行识别">
+                {state === "idle" ? "匹配章节格式" : "重新识别"}
               </button>
             )}
             {state === "running" && (
@@ -633,63 +673,103 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
           </div>
         </div>
 
-        {/* Format-pick step — appears after "猜测章节格式", before detection runs */}
-        {guessCandidates && state !== "running" && state !== "paused" && (
+        {/* Live match progress — while the format-matching job is running */}
+        {guessing && (
+          <div style={{
+            padding: 10, marginBottom: 10,
+            border: "1px solid var(--accent)", borderRadius: 4,
+            background: "var(--accent-subtle)",
+          }}>
+            <div className="text-xs" style={{
+              marginBottom: 6, color: "var(--accent)", fontWeight: 600,
+              display: "flex", justifyContent: "space-between",
+            }}>
+              <span>匹配中… 扫描第 {guessProgress?.current || 0} / {guessProgress?.total || "?"} 个格式</span>
+              <span>{guessProgress && guessProgress.total > 0
+                ? Math.round((guessProgress.current / guessProgress.total) * 100) + "%"
+                : ""}</span>
+            </div>
+            <div style={{ height: 5, background: "var(--bg-surface-2)", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{
+                height: "100%",
+                width: `${guessProgress && guessProgress.total > 0
+                  ? (guessProgress.current / guessProgress.total) * 100
+                  : 0}%`,
+                background: "var(--accent)",
+                transition: "width 0.15s",
+              }} />
+            </div>
+          </div>
+        )}
+
+        {/* Format-pick step — appears after matching, before detection runs.
+            Checkboxes (multi-select) — combine multiple formats e.g.
+            第N章 + 作者说章节. No score column per user feedback. */}
+        {guessCandidates && !guessing && state !== "running" && state !== "paused" && (
           <div style={{
             padding: 10, marginBottom: 10,
             border: "1px solid var(--accent)", borderRadius: 4,
             background: "var(--accent-subtle)",
           }}>
             <div className="text-xs" style={{ marginBottom: 8, color: "var(--accent)", fontWeight: 600 }}>
-              请确认章节格式
+              请选择章节格式（可多选）
             </div>
             <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
-              已扫描全文，下方是各候选格式在本作品中的匹配数。默认选中匹配最多的，可改选其他或先到「自定义章节格式」添加。
+              下方是各候选格式在本作品中的匹配数。可以多选 — 例如选「第N章」+「作者说章节」会同时识别两种格式的章节。
             </div>
             <div className="flex flex-col gap-4" style={{ marginBottom: 10 }}>
-              {guessCandidates.slice(0, 8).map(c => (
-                <label key={c.name} style={{
-                  display: "flex", alignItems: "center", gap: 8,
-                  padding: "4px 8px",
-                  border: `1px solid ${chosenFormat === c.name ? "var(--accent)" : "var(--border)"}`,
-                  borderRadius: 3,
-                  background: chosenFormat === c.name ? "var(--bg-card)" : "transparent",
-                  cursor: c.count > 0 ? "pointer" : "not-allowed",
-                  opacity: c.count > 0 ? 1 : 0.5,
-                }}>
-                  <input
-                    type="radio"
-                    name="format-pick"
-                    checked={chosenFormat === c.name}
-                    disabled={c.count === 0}
-                    onChange={() => setChosenFormat(c.name)}
-                    style={{ width: 13, height: 13 }}
-                  />
-                  <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", minWidth: 110 }}>
-                    {c.name}
-                  </span>
-                  {c.custom && (
-                    <span className="tag" style={{
-                      fontSize: 10, padding: "1px 6px",
-                      color: "var(--purple)", border: "1px solid var(--purple)",
-                      background: "transparent",
-                    }}>自定义</span>
-                  )}
-                  <span className="text-xs text-muted" style={{ marginLeft: "auto", fontFamily: "var(--font-mono)" }}>
-                    匹配 {c.count} 处 · score {c.score}
-                  </span>
-                </label>
-              ))}
+              {guessCandidates.slice(0, 10).map(c => {
+                const checked = chosenFormats.has(c.name);
+                return (
+                  <label key={c.name} style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "4px 8px",
+                    border: `1px solid ${checked ? "var(--accent)" : "var(--border)"}`,
+                    borderRadius: 3,
+                    background: checked ? "var(--bg-card)" : "transparent",
+                    cursor: c.count > 0 ? "pointer" : "not-allowed",
+                    opacity: c.count > 0 ? 1 : 0.5,
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={c.count === 0}
+                      onChange={() => {
+                        setChosenFormats(prev => {
+                          const n = new Set(prev);
+                          if (n.has(c.name)) n.delete(c.name);
+                          else n.add(c.name);
+                          return n;
+                        });
+                      }}
+                      style={{ width: 13, height: 13 }}
+                    />
+                    <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", minWidth: 110 }}>
+                      {c.name}
+                    </span>
+                    {c.custom && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px",
+                        color: "var(--purple)", border: "1px solid var(--purple)",
+                        background: "transparent",
+                      }}>自定义</span>
+                    )}
+                    <span className="text-xs text-muted" style={{ marginLeft: "auto", fontFamily: "var(--font-mono)" }}>
+                      匹配 {c.count} 处
+                    </span>
+                  </label>
+                );
+              })}
             </div>
             <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
               <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                      onClick={() => { setGuessCandidates(null); setChosenFormat(""); }}>
+                      onClick={() => { setGuessCandidates(null); setChosenFormats(new Set()); }}>
                 取消
               </button>
               <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
-                      onClick={() => { startJob(chosenFormat); setGuessCandidates(null); }}
-                      disabled={!chosenFormat}>
-                使用「{chosenFormat || "?"}」开始识别
+                      onClick={() => { startJob(Array.from(chosenFormats)); setGuessCandidates(null); }}
+                      disabled={chosenFormats.size === 0}>
+                使用所选 {chosenFormats.size} 个格式开始识别
               </button>
             </div>
           </div>

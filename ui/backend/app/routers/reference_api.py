@@ -501,15 +501,11 @@ def reset_segment_plan(ref_id: str):
 # ───────────────────── Preprocess job (chapter detection + author-note flagging) ─────────────────────
 
 
-@router.get("/works/{ref_id}/preprocess/guess_format")
-def preprocess_guess_format(ref_id: str):
-    """Quick scoring pass: returns every built-in + custom pattern with
-    its hit count and score against this work's text, sorted by score.
-    The UI uses this to present the user with the suggested format
-    before running full detection (the "猜测 → 确认 → 识别" flow)."""
-    from analysis.feature_extraction.chapter_parser import (
-        _PATTERNS as BUILTIN, _compile_extra, _score_pattern,
-    )
+@router.post("/works/{ref_id}/preprocess/guess_start")
+async def preprocess_guess_start(ref_id: str):
+    """Kick off the async format-matching job. Frontend then polls
+    /guess_status for progress + final candidate list."""
+    from analysis.feature_extraction import preprocess_jobs
     from analysis.feature_extraction.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
@@ -522,30 +518,35 @@ def preprocess_guess_format(ref_id: str):
     if not text:
         raise HTTPException(400, "尚未上传正文")
     extras = _load_chapter_patterns()
-    custom = _compile_extra(extras)
-    all_pats = list(BUILTIN) + custom
-    custom_names = {n for n, _ in custom}
-    out = []
-    for name, pat in all_pats:
-        ms = list(pat.finditer(text))
-        score = _score_pattern(ms, len(text))
-        out.append({
-            "name": name, "count": len(ms), "score": round(score, 3),
-            "custom": name in custom_names,
-        })
-    out.sort(key=lambda c: -c["score"])
-    suggested = out[0]["name"] if out and out[0]["score"] >= 1.0 else None
-    return {"candidates": out, "suggested": suggested, "text_len": len(text)}
+    job = await preprocess_jobs.start_guess_job(ref_id, text, extra_patterns=extras)
+    return job.to_status()
+
+
+@router.get("/works/{ref_id}/preprocess/guess_status")
+def preprocess_guess_status(ref_id: str):
+    """Return the live status of the format-matching job: progress
+    (current_pattern / total_patterns), the candidate list once done,
+    and the suggested winner."""
+    from analysis.feature_extraction import preprocess_jobs
+    job = preprocess_jobs.get_guess_job(ref_id)
+    if not job:
+        return {"state": "idle", "current_pattern": 0, "total_patterns": 0,
+                "candidates": [], "suggested": None}
+    return job.to_status()
 
 
 @router.post("/works/{ref_id}/preprocess/start")
 async def preprocess_start(ref_id: str,
-                            force_pattern: Optional[str] = Query(None)):
+                            force_pattern: Optional[str] = Query(None),
+                            force_patterns: Optional[str] = Query(None)):
     """Kick off (or return the existing) preprocess job for this work.
 
-    Pass ``force_pattern`` to skip auto-scoring and use a specific format
-    (built-in name or custom-pattern name). When omitted, the scorer
-    picks the best-matching format automatically.
+    Pattern selection:
+      - ``force_patterns``: comma-separated list of pattern names to
+        use exclusively (multi-select). Takes precedence over
+        ``force_pattern`` and auto-detection.
+      - ``force_pattern``: single pattern (legacy). Auto-merges secondaries.
+      - Neither: full auto-detect with auto-merge.
     """
     from analysis.feature_extraction import preprocess_jobs
     from analysis.feature_extraction.pipeline import (
@@ -560,8 +561,10 @@ async def preprocess_start(ref_id: str,
     if not text:
         raise HTTPException(400, "尚未上传正文")
     extras = _load_chapter_patterns()
+    multi_list = [s.strip() for s in (force_patterns or "").split(",") if s.strip()] or None
     job = await preprocess_jobs.start_job(
-        ref_id, text, extra_patterns=extras, force_pattern=force_pattern,
+        ref_id, text, extra_patterns=extras,
+        force_pattern=force_pattern, force_patterns=multi_list,
     )
     return job.to_status()
 
