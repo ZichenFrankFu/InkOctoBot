@@ -526,6 +526,7 @@ def persist_result_to_segments(ref_id: str, db_path: str,
     # Strip heavy content — keep metadata only for the segments_json blob.
     light = [
         {k: c.get(k) for k in (
+            "chapter_id", "display_number",
             "number", "parsed_number", "title", "title_only", "raw_marker",
             "pattern", "volume",
             "is_author_note", "author_note_score", "author_note_reasons",

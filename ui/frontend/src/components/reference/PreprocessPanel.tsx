@@ -13,7 +13,16 @@ interface ChapterPattern {
 }
 
 interface Chapter {
+  // chapter_id: stable per-detection unique key. ALL state (excluded,
+  // collapsed, editing, etc.) and ALL API calls use this — `number`
+  // alone can collide when two patterns produce the same parsed numeral.
+  // Older persisted states may not have chapter_id; we fall back to
+  // String(number) for backward compat.
+  chapter_id?: string;
   number: number;
+  // display_number is what to render as "第N章" — the original parsed
+  // numeral. Same as number EXCEPT when a collision-bump rewrote it.
+  display_number?: number;
   parsed_number?: number | null;
   title: string;
   title_only?: string;
@@ -82,6 +91,19 @@ interface SegmentPlan {
   is_custom?: boolean;
 }
 
+/** Stable key for a chapter — chapter_id when present, else
+ *  String(number) as a legacy fallback for stale persisted state. */
+function cid(c: Chapter): string {
+  return c.chapter_id || String(c.number);
+}
+
+/** The numeral to show in "#N" / "第N章" labels. Prefer
+ *  display_number (which preserves the original parsed numeral even
+ *  after a collision-bump). */
+function displayNum(c: Chapter): number {
+  return c.display_number ?? c.number;
+}
+
 /** Prefer the title-only text (just the chapter title without the
  *  number prefix). Falls back to the raw marker, then a default. */
 function displayTitle(c: { title_only?: string; title?: string; number?: number }): string {
@@ -110,12 +132,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   // is_author_note flag — that previously made the checkboxes feel
   // stuck (auto-seed re-applied on every poll). A "勾选全部疑似题外话"
   // button below the filter bar lets the user bulk-select manually.
-  const [excluded, setExcluded] = useState<Set<number>>(new Set());
-  // INVERTED semantics: chapters default to expanded after a rescan.
-  // `collapsed` tracks per-chapter manual collapse. `allCollapsed`
-  // is a one-shot master toggle ("全部收起"); setting it puts every
-  // chapter into the collapsed set so they all close at once.
-  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  // ALL chapter-keyed sets now hold chapter_id strings (not numbers)
+  // so collisions like "1.1" / "1、" — which both could resolve to
+  // number=1 — stay distinguishable. Use cid(c) to derive the key.
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<"all" | "flagged" | "outlier" | "garbled" | "kept">("all");
   const [applying, setApplying] = useState(false);
   const [cleaningGarbled, setCleaningGarbled] = useState(false);
@@ -162,14 +183,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   // Inline test results per format in the confirm panel
   const [candidateTests, setCandidateTests] = useState<Record<string, { count: number; preview: any[]; truncated: boolean; loading?: boolean }>>({});
   // Per-chapter content edit modal
-  const [editingChapter, setEditingChapter] = useState<{ number: number; title: string; content: string } | null>(null);
+  const [editingChapter, setEditingChapter] = useState<{ chapter_id: string; display_number: number; title: string; content: string } | null>(null);
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   // New-chapter modal (CRUD: add)
   const [newChapter, setNewChapter] = useState<{ afterNumber: number | null; heading: string; content: string } | null>(null);
   const [newChapterSaving, setNewChapterSaving] = useState(false);
   // Per-chapter rename modal (CRUD: update title only)
-  const [renamingChapter, setRenamingChapter] = useState<{ number: number; heading: string } | null>(null);
+  const [renamingChapter, setRenamingChapter] = useState<{ chapter_id: string; display_number: number; heading: string } | null>(null);
   const [renameSaving, setRenameSaving] = useState(false);
   // Bulk-clean modals — one for paragraph-level asides, one for
   // whole-chapter (作者说章节) asides.
@@ -560,14 +581,16 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     }
   };
 
-  const openChapterEdit = async (number: number, title: string) => {
-    setEditingChapter({ number, title, content: "" });
+  const openChapterEdit = async (c: Chapter) => {
+    const chapter_id = cid(c);
+    const display_number = displayNum(c);
+    setEditingChapter({ chapter_id, display_number, title: c.title, content: "" });
     setEditLoading(true);
     try {
       const r = await apiGet<{ content: string }>(
-        `/api/references/works/${refId}/preprocess/chapter/${number}/content`,
+        `/api/references/works/${refId}/preprocess/chapter/${encodeURIComponent(chapter_id)}/content`,
       );
-      setEditingChapter({ number, title, content: r.content || "" });
+      setEditingChapter({ chapter_id, display_number, title: c.title, content: r.content || "" });
     } catch (e: any) {
       toast(e?.message || "加载章节内容失败", "error");
       setEditingChapter(null);
@@ -608,8 +631,12 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   };
 
   // CRUD: rename chapter (title only)
-  const openRenameModal = (number: number, currentTitle: string) => {
-    setRenamingChapter({ number, heading: currentTitle });
+  const openRenameModal = (c: Chapter) => {
+    setRenamingChapter({
+      chapter_id: cid(c),
+      display_number: displayNum(c),
+      heading: c.title,
+    });
   };
   const saveRename = async () => {
     if (!renamingChapter || !renamingChapter.heading.trim()) {
@@ -619,10 +646,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     setRenameSaving(true);
     try {
       await apiPatch(
-        `/api/references/works/${refId}/preprocess/chapter/${renamingChapter.number}/title`,
+        `/api/references/works/${refId}/preprocess/chapter/${encodeURIComponent(renamingChapter.chapter_id)}/title`,
         { heading: renamingChapter.heading },
       );
-      toast(`第 ${renamingChapter.number} 章已改名`, "success");
+      toast(`第 ${renamingChapter.display_number} 章已改名`, "success");
       setRenamingChapter(null);
       await fetchStatus();
       await fetchPlan();
@@ -634,17 +661,17 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   };
 
   // CRUD: delete single chapter
-  const deleteOneChapter = async (number: number) => {
+  const deleteOneChapter = async (c: Chapter) => {
     if (!(await confirmDialog({
       title: "删除章节",
-      message: `确认从正文中删除第 ${number} 章？此操作可撤销一次。`,
+      message: `确认从正文中删除第 ${displayNum(c)} 章？此操作可撤销一次。`,
       destructive: true,
     }))) return;
     try {
-      await fetch(`/api/references/works/${refId}/preprocess/chapter/${number}`, {
+      await fetch(`/api/references/works/${refId}/preprocess/chapter/${encodeURIComponent(cid(c))}`, {
         method: "DELETE",
       }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); });
-      toast(`第 ${number} 章已删除`, "success");
+      toast(`第 ${displayNum(c)} 章已删除`, "success");
       await fetchStatus();
       await fetchPlan();
     } catch (e: any) {
@@ -657,10 +684,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     setEditSaving(true);
     try {
       await apiPatch(
-        `/api/references/works/${refId}/preprocess/chapter/${editingChapter.number}/content`,
+        `/api/references/works/${refId}/preprocess/chapter/${encodeURIComponent(editingChapter.chapter_id)}/content`,
         { content: editingChapter.content },
       );
-      toast(`第 ${editingChapter.number} 章已保存`, "success");
+      toast(`第 ${editingChapter.display_number} 章已保存`, "success");
       setEditingChapter(null);
       await fetchStatus();
       await fetchPlan();
@@ -707,7 +734,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     catch (e: any) { toast(e?.message || "取消失败", "error"); }
   };
 
-  const toggleExclude = (n: number) => {
+  const toggleExclude = (n: string) => {
     setExcluded(prev => {
       const next = new Set(prev);
       if (next.has(n)) next.delete(n);
@@ -728,7 +755,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     }))) return;
     setApplying(true);
     try {
-      const r = await apiPost<{ ok: boolean; removed_chapters: number[]; new_char_count: number }>(
+      const r = await apiPost<{ ok: boolean; removed_chapters: string[]; new_char_count: number }>(
         `/api/references/works/${refId}/preprocess/apply_exclusions`,
         { excluded_chapters: Array.from(excluded) },
         { timeoutMs: 120_000 },
@@ -772,18 +799,18 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   };
 
   const bulkCleanAuthorChapters = async () => {
-    const nums = (status?.chapters || [])
+    const ids = (status?.chapters || [])
       .filter(c => c.pattern === "作者说章节")
-      .map(c => c.number);
-    if (nums.length === 0) {
+      .map(c => cid(c));
+    if (ids.length === 0) {
       toast("没有「作者说章节」类型的章节", "info");
       return;
     }
     setApplying(true);
     try {
-      const r = await apiPost<{ removed_chapters: number[]; new_char_count: number }>(
+      const r = await apiPost<{ removed_chapters: string[]; new_char_count: number }>(
         `/api/references/works/${refId}/preprocess/apply_exclusions`,
-        { excluded_chapters: nums },
+        { excluded_chapters: ids },
         { timeoutMs: 120_000 },
       );
       toast(`已删除 ${r.removed_chapters.length} 章作者说章节`, "success");
@@ -959,11 +986,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     if (filter === "flagged") return !!c.is_author_note;
     if (filter === "outlier") return !!c.is_length_outlier;
     if (filter === "garbled") return !!c.is_garbled;
-    if (filter === "kept") return !excluded.has(c.number);
+    if (filter === "kept") return !excluded.has(cid(c));
     return true;
   });
 
-  const toggleExpand = (n: number) => {
+  const toggleExpand = (n: string) => {
     // INVERTED: toggle COLLAPSED membership. Default = expanded.
     setCollapsed(prev => {
       const next = new Set(prev);
@@ -972,14 +999,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     });
   };
   const allCollapsed = (chs: Chapter[]): boolean =>
-    chs.length > 0 && chs.every(c => collapsed.has(c.number));
+    chs.length > 0 && chs.every(c => collapsed.has(cid(c)));
   const toggleAllCollapse = () => {
     if (chapters.length === 0) return;
     if (allCollapsed(chapters)) {
-      // Currently all collapsed → expand all (clear set).
       setCollapsed(new Set());
     } else {
-      setCollapsed(new Set(chapters.map(c => c.number)));
+      setCollapsed(new Set(chapters.map(c => cid(c))));
     }
   };
 
@@ -1026,13 +1052,27 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       style={{
                         fontSize: 12, padding: "5px 14px",
                         cursor: guessing ? "wait" : "pointer",
-                        opacity: guessing ? 0.7 : 1,
+                        background: guessing ? "var(--gold)" : undefined,
+                        color: guessing ? "#000" : undefined,
+                        borderColor: guessing ? "var(--gold)" : undefined,
                       }}
-                      onClick={guessFormat}
+                      onClick={() => { void guessFormat(); }}
                       disabled={guessing}
                       title="先扫描全文匹配章节格式，再让你确认后进行识别">
                 {guessing
-                  ? `匹配中… ${guessProgress?.total ? Math.round(((guessProgress.current || 0) / guessProgress.total) * 100) + "%" : ""}`
+                  ? <><span className="spinner-inline" style={{
+                        display: "inline-block",
+                        width: 10, height: 10, marginRight: 6,
+                        border: "2px solid #000",
+                        borderTopColor: "transparent",
+                        borderRadius: "50%",
+                        animation: "spin 0.7s linear infinite",
+                        verticalAlign: "middle",
+                      }} />
+                      匹配中… {guessProgress?.total
+                        ? Math.round(((guessProgress.current || 0) / guessProgress.total) * 100) + "%"
+                        : ""}
+                    </>
                   : (state === "idle" ? "匹配章节格式" : "重新识别")}
               </button>
             )}
@@ -1702,15 +1742,15 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 every visible chapter is currently excluded. */}
             {(() => {
               const allSelected = filteredChapters.length > 0
-                && filteredChapters.every(c => excluded.has(c.number));
+                && filteredChapters.every(c => excluded.has(cid(c)));
               return (
                 <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
                         onClick={() => {
-                          const visible = filteredChapters.map(c => c.number);
+                          const visible = filteredChapters.map(c => cid(c));
                           setExcluded(prev => {
                             const next = new Set(prev);
-                            if (allSelected) visible.forEach(n => next.delete(n));
-                            else visible.forEach(n => next.add(n));
+                            if (allSelected) visible.forEach(k => next.delete(k));
+                            else visible.forEach(k => next.add(k));
                             return next;
                           });
                         }}
@@ -1735,11 +1775,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 so we can render a "缺失 N 章" marker between
                 consecutive chapter rows in the timeline. */}
             {filteredChapters.flatMap((c, fIdx) => {
+              const key = cid(c);
+              const dnum = displayNum(c);
               // Default-expanded: open UNLESS user explicitly collapsed.
-              const isOpen = !collapsed.has(c.number);
+              const isOpen = !collapsed.has(key);
               const isFlagged = !!c.is_author_note;
               const isOutlier = !!c.is_length_outlier;
-              const isExcluded = excluded.has(c.number);
+              const isExcluded = excluded.has(key);
               const borderColor = isExcluded ? "var(--error)"
                                   : isFlagged ? "var(--gold)"
                                   : isOutlier ? "var(--purple)"
@@ -1748,13 +1790,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                               : isFlagged ? "rgba(250,204,21,0.06)"
                               : isOutlier ? "rgba(168,85,247,0.06)"
                               : "transparent";
-              // Look up a gap that starts after THIS chapter — rendered
-              // immediately below the chapter row to flag missing
-              // parsed_numbers (e.g. "1、" → "3、" with 2 missing).
-              const gap = (status?.gaps || []).find(g => g.after_number === c.number);
+              // Gap lookup uses the DISPLAY numeral so missing chapters
+              // line up with what the user sees (e.g. "1、" → "3、"
+              // with 2 missing displays correctly under #1).
+              const gap = (status?.gaps || []).find(g => g.after_number === dnum);
               const chapterEl = (
-                <div key={c.number}
-                  onClick={() => toggleExclude(c.number)}
+                <div key={key}
+                  onClick={() => toggleExclude(key)}
                   title={isExcluded ? "已选择删除（点击取消）" : "点击以勾选删除此章节"}
                   style={{
                     border: `1px solid ${borderColor}`,
@@ -1772,11 +1814,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       background: "transparent",
                       border: `1px solid ${isExcluded ? "var(--error)" : "var(--border)"}`,
                       fontFamily: "var(--font-mono)",
-                    }}>#{c.number}</span>
+                    }}>#{dnum}</span>
                     <button
                       type="button"
                       className="btn-ghost"
-                      onClick={e => { e.stopPropagation(); toggleExpand(c.number); }}
+                      onClick={e => { e.stopPropagation(); toggleExpand(key); }}
                       style={{
                         flex: 1, minWidth: 0,
                         padding: "2px 0", borderRadius: 0,
@@ -1845,25 +1887,25 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                     </span>
                     <button className="btn"
                             style={{ fontSize: 10, padding: "2px 6px", flexShrink: 0 }}
-                            onClick={e => { e.stopPropagation(); openChapterEdit(c.number, c.title); }}
+                            onClick={e => { e.stopPropagation(); openChapterEdit(c); }}
                             title="编辑本章内容（如删除末尾「求月票」）">
                       编辑
                     </button>
                     <button className="btn"
                             style={{ fontSize: 10, padding: "2px 6px", flexShrink: 0 }}
-                            onClick={e => { e.stopPropagation(); openRenameModal(c.number, c.title); }}
+                            onClick={e => { e.stopPropagation(); openRenameModal(c); }}
                             title="只改本章标题（不改内容）">
                       改名
                     </button>
                     <button className="btn"
                             style={{ fontSize: 10, padding: "2px 6px", flexShrink: 0, color: "var(--text-tertiary)" }}
-                            onClick={e => { e.stopPropagation(); openNewChapterModal(c.number); }}
+                            onClick={e => { e.stopPropagation(); openNewChapterModal(dnum); }}
                             title="在本章后新建一章">
                       在本章后新建章节
                     </button>
                     <button className="btn"
                             style={{ fontSize: 10, padding: "2px 6px", flexShrink: 0, color: "var(--error)" }}
-                            onClick={e => { e.stopPropagation(); deleteOneChapter(c.number); }}
+                            onClick={e => { e.stopPropagation(); deleteOneChapter(c); }}
                             title="删除本章">
                       ×
                     </button>
@@ -1910,7 +1952,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               const missingPreview = previewNums.join("、")
                                       + (gap.missing_count > previewNums.length ? "…" : "");
               const gapEl = (
-                <div key={`gap-${c.number}`} style={{
+                <div key={`gap-${key}`} style={{
                   // Distinct cyan dashed marker so the gap row is
                   // visually separate from the gold "题外话" chapter
                   // chips and the purple "长度异常" chapters.
@@ -1932,7 +1974,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                           style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-secondary)" }}
                           onClick={e => {
                             e.stopPropagation();
-                            openNewChapterModal(c.number);
+                            openNewChapterModal(dnum);
                           }}
                           title="在此处插入缺失章节">
                     手动补充
@@ -2131,7 +2173,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               ) : (
                 <div className="flex flex-col gap-8">
                   {(status?.chapters || []).filter(c => c.pattern === "作者说章节").map(c => (
-                    <div key={c.number} style={{
+                    <div key={cid(c)} style={{
                       border: "1px solid var(--gold)", borderRadius: 4,
                       padding: 8, background: "rgba(250,204,21,0.06)",
                     }}>
@@ -2140,7 +2182,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                           fontSize: 10, padding: "1px 6px",
                           color: "var(--text-secondary)", border: "1px solid var(--border)",
                           background: "transparent", fontFamily: "var(--font-mono)",
-                        }}>#{c.number}</span>
+                        }}>#{displayNum(c)}</span>
                         <div className="truncate" style={{
                           fontSize: 12, fontWeight: 500, color: "var(--text-primary)", flex: 1, minWidth: 0,
                         }}>{displayTitle(c)}</div>
@@ -2264,7 +2306,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               display: "flex", alignItems: "center", justifyContent: "space-between",
             }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                重命名第 {renamingChapter.number} 章
+                重命名第 {renamingChapter.display_number} 章
               </div>
               <button className="btn" onClick={() => setRenamingChapter(null)} disabled={renameSaving}>关闭</button>
             </div>
@@ -2316,7 +2358,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             }}>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                  编辑第 {editingChapter.number} 章 · {editingChapter.title}
+                  编辑第 {editingChapter.display_number} 章 · {editingChapter.title}
                 </div>
                 <div className="text-xs text-muted" style={{ marginTop: 2 }}>
                   保存后会更新正文文件并备份原文（可在「清理章节」处撤销）。

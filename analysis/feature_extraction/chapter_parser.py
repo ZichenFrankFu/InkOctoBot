@@ -150,7 +150,12 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"(?!第\s*[零〇一二两三四五六七八九十百千万0-9０-９]+\s*[章回节卷])"
         r"(?!Chapter[\s　]+[0-9])"
         r"([^\s。！？；，,.!?…：:　][^\n。！？；，,.!?…：:]{0,40}[^\s。！？；，,.!?…：:　])"
-        r"\n[\s　]+\S",
+        # Next line must start with REAL indent (space/tab/全角空格)
+        # WITHOUT crossing a blank line first. Previously `[\s　]+`
+        # accepted "\n\n1、章节1" — a blank line plus the next chapter
+        # heading — as if it were indented body, so every preceding
+        # paragraph got mis-flagged as a title.
+        r"\n[ \t　]+\S",
         re.MULTILINE | re.IGNORECASE,
     )),
     # Author-aside "chapters" — paragraph-isolated lines that contain
@@ -610,15 +615,23 @@ def _build_chapters(text: str,
             c["number"] = last_numbered + next_unnumbered_offset
             next_unnumbered_offset += 1
 
-    # FINAL pass: guarantee `number` uniqueness across the whole list.
-    # If two chapters from DIFFERENT patterns ended up with the same
-    # parsed_number (e.g. "Chapter 1" + "1、引子" — both ordinal 1),
-    # bump the later one by a fractional+integer offset so edit/delete
-    # endpoints can still uniquely target a chapter by number. Stable
-    # rule: first occurrence keeps the parsed number; subsequent
-    # duplicates get the next free integer that is BOTH > last_numbered
-    # AND not already used in the list. This preserves gap-visibility
-    # for the primary numbering while avoiding silent edit collisions.
+    # Unique chapter_id per record — stable within this detection run
+    # and used by edit / delete endpoints to address a specific chapter
+    # without depending on `number` (which can collide when two
+    # patterns produce the same parsed numeral). Format: "c{ord}" where
+    # ord is the position in the final deduped list. Cheaper than
+    # UUIDs, easier to debug, perfectly unique per session.
+    for i, c in enumerate(deduped):
+        c["chapter_id"] = f"c{i + 1}"
+        # `display_number` is the parsed numeral the user sees as
+        # "第N章" / "N、". Identical to `number` UNLESS we had to bump
+        # `number` to break a uniqueness collision (kept for back-compat
+        # with the legacy /chapter/{number} endpoints).
+        c["display_number"] = c.get("number")
+
+    # FINAL legacy `number` uniqueness pass — kept so any code path
+    # still keyed on `number` doesn't silently collide. New code should
+    # use `chapter_id` instead.
     used: set[int] = set()
     for c in deduped:
         n = c.get("number")
@@ -628,7 +641,7 @@ def _build_chapters(text: str,
             bumped = n + 1
             while bumped in used:
                 bumped += 1
-            c["number_collision"] = n  # what the source said
+            c["number_collision"] = n
             c["number"] = bumped
         used.add(c["number"])
 
@@ -849,13 +862,12 @@ def detect_chapters(text: str,
     #     adding them)
     #   - the built-in 作者说章节 pattern (always merged — author asides
     #     don't compete for primary, they augment)
-    #   - OTHER numbered built-in patterns with ≥ 3 matches (catches
-    #     mixed-format files where e.g. 第N章 wins primary but the same
-    #     file ALSO has scattered "1、xx" / "Chapter N" sections that
-    #     the user wants surfaced — these were silently dropped before).
-    # Sort by position, drop overlapping secondary matches that overlap
-    # a primary match (within 50 chars to absorb whitespace differences).
-    _MIN_SECONDARY_HITS = 3
+    #   - OTHER numbered built-in patterns with ≥ 1 match. Even a
+    #     single 第740章 in a file dominated by 1、-style headings
+    #     deserves to surface; our patterns are tight enough now that
+    #     body-text false positives are very rare. Cross-pattern
+    #     overlap dedup below drops anything that collides with a
+    #     primary match.
     primary_named: list[tuple[str, re.Match[str]]] = [
         (best_name or "", m) for m in best_matches
     ]
@@ -867,13 +879,10 @@ def detect_chapters(text: str,
             for m in pat.finditer(text):
                 secondary_named.append((name, m))
             continue
-        # Other built-in numbered patterns — merge only if substantial.
+        # Other built-in numbered patterns — merge ALL matches.
         if name in _UNNUMBERED_PATTERNS:
             continue
-        ms = list(pat.finditer(text))
-        if len(ms) < _MIN_SECONDARY_HITS:
-            continue
-        for m in ms:
+        for m in pat.finditer(text):
             secondary_named.append((name, m))
 
     # Use TITLE bounds (group 1) for overlap math — secondary patterns

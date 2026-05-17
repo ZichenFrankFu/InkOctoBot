@@ -817,16 +817,15 @@ class ChapterContentEdit(BaseModel):
     content: str
 
 
-@router.get("/works/{ref_id}/preprocess/chapter/{number}/content")
-def get_chapter_content(ref_id: str, number: int):
+@router.get("/works/{ref_id}/preprocess/chapter/{chapter_id}/content")
+def get_chapter_content(ref_id: str, chapter_id: str):
     """Return the FULL content of one chapter for inline editing.
+    Identified by stable per-detection ``chapter_id`` (not the display
+    `number`, which can repeat across patterns).
 
-    Fast path: use the cached ``content_start`` / ``content_end`` byte
-    offsets from segments_json["preprocess"] and slice the file
-    directly. Saves seconds of re-running detect_chapters on a multi-MB
-    work every time the user opens the editor.
-
-    Slow path (no cached offsets): falls back to full detect_chapters."""
+    Fast path: cached ``content_start`` / ``content_end`` offsets from
+    segments_json["preprocess"] — slice the file directly.
+    Slow path: re-detect, match by chapter_id."""
     from analysis.feature_extraction.chapter_parser import (
         detect_chapters, visible_char_count,
     )
@@ -838,7 +837,9 @@ def get_chapter_content(ref_id: str, number: int):
     if not w:
         raise HTTPException(404, "参考作品不存在")
 
-    # Fast path: cached offsets
+    # Fast path: cached offsets, lookup by chapter_id (with legacy
+    # number-string fallback so old persisted state without chapter_id
+    # still works).
     try:
         state = json.loads(w.get("segments_json") or "{}")
     except Exception:
@@ -846,16 +847,24 @@ def get_chapter_content(ref_id: str, number: int):
     pre = (state or {}).get("preprocess") if isinstance(state, dict) else None
     cached_chapters = (pre or {}).get("chapters") if isinstance(pre, dict) else None
     file_path = w.get("file_path")
+
+    def _match(c: dict) -> bool:
+        cid = c.get("chapter_id")
+        if cid and cid == chapter_id:
+            return True
+        # Legacy fallback — old persisted state may not carry chapter_id.
+        try:
+            return c.get("number") == int(chapter_id)
+        except (TypeError, ValueError):
+            return False
+
     if isinstance(cached_chapters, list) and file_path:
         for c in cached_chapters:
-            if c.get("number") != number:
+            if not _match(c):
                 continue
             cs = c.get("content_start")
             ce = c.get("content_end")
             if isinstance(cs, int) and isinstance(ce, int) and ce > cs:
-                # Read just the chapter's slice. Read enough to cover the
-                # range (chars, not bytes — Python str slicing is by
-                # codepoint, so we have to decode at least up to ce).
                 try:
                     full = Path(file_path).read_text(encoding="utf-8")
                 except Exception:
@@ -863,7 +872,9 @@ def get_chapter_content(ref_id: str, number: int):
                 if full is not None and ce <= len(full):
                     body = full[cs:ce].strip()
                     return {
-                        "number": number,
+                        "chapter_id": c.get("chapter_id") or str(c.get("number")),
+                        "number": c.get("number"),
+                        "display_number": c.get("display_number") or c.get("number"),
                         "title": c.get("title") or "",
                         "content": body,
                         "char_count": visible_char_count(body),
@@ -877,14 +888,16 @@ def get_chapter_content(ref_id: str, number: int):
     extras = _load_chapter_patterns()
     result = detect_chapters(text, extra_patterns=extras)
     for c in result["chapters"]:
-        if c["number"] == number:
+        if _match(c):
             return {
-                "number": number,
+                "chapter_id": c.get("chapter_id"),
+                "number": c["number"],
+                "display_number": c.get("display_number") or c["number"],
                 "title": c["title"],
                 "content": c["content"],
                 "char_count": visible_char_count(c["content"]),
             }
-    raise HTTPException(404, f"未找到第 {number} 章")
+    raise HTTPException(404, f"未找到章节 {chapter_id}")
 
 
 class NewChapterBody(BaseModel):
@@ -913,27 +926,50 @@ class RenameChapterBody(BaseModel):
     heading: str
 
 
-@router.patch("/works/{ref_id}/preprocess/chapter/{number}/title")
-async def preprocess_rename_chapter(ref_id: str, number: int, body: RenameChapterBody):
+def _resolve_chapter_number(chapters: list[dict], chapter_id: str) -> int:
+    """Resolve a chapter_id (or legacy number string) to its unique
+    `number` field within the given chapter list. Raises HTTP 404 when
+    no match. The modifier helpers (rename/apply_exclusions/insert)
+    still key on `number` — chapter_id is the public identifier."""
+    for c in chapters:
+        if c.get("chapter_id") == chapter_id:
+            return c["number"]
+    # Legacy: chapter_id might be a stringified number from old UIs.
+    try:
+        as_int = int(chapter_id)
+    except (TypeError, ValueError):
+        raise HTTPException(404, f"未找到章节 {chapter_id}")
+    for c in chapters:
+        if c.get("number") == as_int:
+            return as_int
+    raise HTTPException(404, f"未找到章节 {chapter_id}")
+
+
+@router.patch("/works/{ref_id}/preprocess/chapter/{chapter_id}/title")
+async def preprocess_rename_chapter(ref_id: str, chapter_id: str, body: RenameChapterBody):
     """Replace the heading line of a chapter — body is preserved.
     Detection re-runs to pick up the new title."""
     from analysis.feature_extraction.chapter_parser import rename_chapter
     return await _modify_and_redetect(
         ref_id,
-        modifier=lambda txt, chs: rename_chapter(txt, chs, number, body.heading),
-        op_label=f"rename chapter {number}",
+        modifier=lambda txt, chs: rename_chapter(
+            txt, chs, _resolve_chapter_number(chs, chapter_id), body.heading,
+        ),
+        op_label=f"rename chapter {chapter_id}",
     )
 
 
-@router.delete("/works/{ref_id}/preprocess/chapter/{number}")
-async def preprocess_delete_chapter(ref_id: str, number: int):
+@router.delete("/works/{ref_id}/preprocess/chapter/{chapter_id}")
+async def preprocess_delete_chapter(ref_id: str, chapter_id: str):
     """Delete a single chapter from the file. Same backing logic as
     清理章节, just exposed as a per-row action."""
     from analysis.feature_extraction.chapter_parser import apply_exclusions
     return await _modify_and_redetect(
         ref_id,
-        modifier=lambda txt, chs: apply_exclusions(txt, chs, {number}),
-        op_label=f"delete chapter {number}",
+        modifier=lambda txt, chs: apply_exclusions(
+            txt, chs, {_resolve_chapter_number(chs, chapter_id)},
+        ),
+        op_label=f"delete chapter {chapter_id}",
     )
 
 
@@ -1060,7 +1096,7 @@ async def _modify_and_redetect(ref_id: str, modifier, op_label: str,
     new_chapters = await asyncio.to_thread(_redetect_and_flag)
     light = [
         {k: c.get(k) for k in (
-            "number", "parsed_number", "title", "title_only", "raw_marker",
+            "chapter_id", "display_number", "number", "parsed_number", "title", "title_only", "raw_marker",
             "pattern", "volume",
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
@@ -1108,8 +1144,8 @@ async def _modify_and_redetect(ref_id: str, modifier, op_label: str,
     }
 
 
-@router.patch("/works/{ref_id}/preprocess/chapter/{number}/content")
-def patch_chapter_content(ref_id: str, number: int, body: ChapterContentEdit):
+@router.patch("/works/{ref_id}/preprocess/chapter/{chapter_id}/content")
+def patch_chapter_content(ref_id: str, chapter_id: str, body: ChapterContentEdit):
     """Replace a chapter's body with ``content``. Snapshots the file to
     ``{path}.bak`` first (overwriting any earlier backup) so the user
     can undo via the existing undo_exclusions endpoint. Other chapters
@@ -1134,6 +1170,7 @@ def patch_chapter_content(ref_id: str, number: int, body: ChapterContentEdit):
         raise HTTPException(400, "作品没有关联的文件路径")
     extras = _load_chapter_patterns()
     result = detect_chapters(text, extra_patterns=extras)
+    number = _resolve_chapter_number(result["chapters"], chapter_id)
     try:
         new_text = replace_chapter_content(
             text, result["chapters"], number, body.content,
@@ -1192,7 +1229,7 @@ def patch_chapter_content(ref_id: str, number: int, body: ChapterContentEdit):
                 cc["is_edited"] = True
         light = [
             {k: cc.get(k) for k in (
-                "number", "parsed_number", "title", "title_only", "raw_marker",
+                "chapter_id", "display_number", "number", "parsed_number", "title", "title_only", "raw_marker",
                 "pattern", "volume",
                 "is_author_note", "author_note_score", "author_note_reasons",
                 "is_length_outlier", "outlier_kind",
@@ -1666,29 +1703,60 @@ def preprocess_status(ref_id: str):
 
 
 class ApplyExclusionsRequest(BaseModel):
-    excluded_chapters: list[int]
+    # Accept EITHER chapter_ids (preferred, collision-safe) OR
+    # legacy numeric numbers. Frontend now sends chapter_ids by
+    # default; older clients may still send numbers in this field.
+    excluded_chapters: list[str | int] = []
 
 
 @router.post("/works/{ref_id}/preprocess/apply_exclusions")
 async def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest):
-    """Bulk-delete the excluded chapters from the on-disk text.
+    """Bulk-delete the excluded chapters from the on-disk text. Each
+    entry may be a chapter_id (e.g. "c12") or a legacy numeric number.
+    The modifier path resolves them per-call against its chapter list.
     Routes through the same _modify_and_redetect fast path the CRUD
     endpoints use — uses the persisted chapter list (no extra detect
     pass at the start), runs the heavy I/O + regex in a thread, and
-    re-detects with only numbered patterns. Cuts the "清理中" spinner
-    from many seconds to a fraction on multi-MB works."""
+    re-detects with only numbered patterns."""
     from analysis.feature_extraction.chapter_parser import apply_exclusions
-    excluded = set(int(n) for n in (body.excluded_chapters or []))
-    if not excluded:
+    raw_keys = [k for k in (body.excluded_chapters or []) if k != ""]
+    if not raw_keys:
         raise HTTPException(400, "未选择任何章节")
+
+    def _modify(txt: str, chs: list[dict]) -> str:
+        nums: set[int] = set()
+        for key in raw_keys:
+            # Try chapter_id match first
+            sk = str(key)
+            matched = False
+            for c in chs:
+                if c.get("chapter_id") == sk:
+                    nums.add(c["number"])
+                    matched = True
+                    break
+            if matched:
+                continue
+            # Fallback: numeric `number` match (legacy clients).
+            try:
+                n_int = int(sk)
+            except (TypeError, ValueError):
+                continue
+            for c in chs:
+                if c.get("number") == n_int:
+                    nums.add(n_int)
+                    break
+        if not nums:
+            raise ValueError("未匹配到任何章节")
+        return apply_exclusions(txt, chs, nums)
+
     result = await _modify_and_redetect(
         ref_id,
-        modifier=lambda txt, chs: apply_exclusions(txt, chs, excluded),
-        op_label=f"apply_exclusions {sorted(excluded)}",
+        modifier=_modify,
+        op_label=f"apply_exclusions {len(raw_keys)} entries",
     )
     return {
         **result,
-        "removed_chapters": sorted(excluded),
+        "removed_chapters": raw_keys,
     }
 
 
@@ -1861,7 +1929,7 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
             c["had_asides_removed"] = True
     light = [
         {k: c.get(k) for k in (
-            "number", "parsed_number", "title", "title_only", "raw_marker",
+            "chapter_id", "display_number", "number", "parsed_number", "title", "title_only", "raw_marker",
             "pattern", "volume",
             "is_author_note", "author_note_score", "author_note_reasons",
             "is_length_outlier", "outlier_kind",
