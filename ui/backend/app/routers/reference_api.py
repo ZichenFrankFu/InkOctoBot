@@ -859,38 +859,71 @@ def get_chapter_content(ref_id: str, chapter_id: str):
             return False
 
     if isinstance(cached_chapters, list) and file_path:
-        # Find this chapter and its NEXT-CHAPTER sibling so we can
-        # re-apply the safety net (truncate at next raw_marker) on the
-        # slice — guards against stale cached ce from older parser runs.
+        # Re-anchor BOTH content_start and content_end from raw_marker
+        # positions in the file, the same way the status endpoint does.
+        # Guards against stale persisted offsets where either:
+        #   - body overshoots into next chapter (content_end too large)
+        #   - body skips its own opening (content_start too large)
         for idx, c in enumerate(cached_chapters):
             if not _match(c):
                 continue
-            cs = c.get("content_start")
-            ce = c.get("content_end")
-            if isinstance(cs, int) and isinstance(ce, int) and ce > cs:
-                try:
-                    full = Path(file_path).read_text(encoding="utf-8")
-                except Exception:
-                    full = None
-                if full is not None and ce <= len(full):
-                    nxt_marker = ""
-                    if idx + 1 < len(cached_chapters):
-                        nxt_marker = (cached_chapters[idx + 1].get("raw_marker") or "").strip()
-                    if nxt_marker:
-                        slice_text = full[cs:ce]
-                        rel = slice_text.find("\n" + nxt_marker)
-                        if rel >= 0:
-                            ce = cs + rel + 1
-                    body = full[cs:ce].strip()
-                    return {
-                        "chapter_id": c.get("chapter_id") or str(c.get("number")),
-                        "number": c.get("number"),
-                        "display_number": c.get("display_number") or c.get("number"),
-                        "title": c.get("title") or "",
-                        "raw_marker": c.get("raw_marker") or "",
-                        "content": body,
-                        "char_count": visible_char_count(body),
-                    }
+            this_marker = (c.get("raw_marker") or "").strip()
+            nxt_marker = ""
+            if idx + 1 < len(cached_chapters):
+                nxt_marker = (cached_chapters[idx + 1].get("raw_marker") or "").strip()
+            try:
+                full = Path(file_path).read_text(encoding="utf-8")
+            except Exception:
+                full = None
+            if full is None:
+                continue
+            tlen = len(full)
+            # Locate THIS chapter's marker. Search from the previous
+            # chapter's marker (to avoid TOC matches earlier in the file).
+            search_from = 0
+            for prev_idx in range(idx):
+                prev_marker = (cached_chapters[prev_idx].get("raw_marker") or "").strip()
+                if not prev_marker:
+                    continue
+                p = full.find("\n" + prev_marker, search_from)
+                if p < 0 and search_from == 0 and full.startswith(prev_marker):
+                    p = 0
+                if p >= 0:
+                    search_from = p + len(prev_marker) + (1 if full[p:p+1] == "\n" else 0)
+            this_pos = -1
+            if this_marker:
+                pos_lf = full.find("\n" + this_marker, search_from)
+                if pos_lf >= 0:
+                    this_pos = pos_lf + 1
+                elif search_from == 0 and full.startswith(this_marker):
+                    this_pos = 0
+            if this_pos < 0:
+                # Marker not findable — fall back to cached offsets.
+                cs = c.get("content_start")
+                ce = c.get("content_end")
+                if not (isinstance(cs, int) and isinstance(ce, int) and ce > cs and ce <= tlen):
+                    continue
+            else:
+                # Body starts on the line AFTER the marker's line.
+                line_break = full.find("\n", this_pos + len(this_marker))
+                cs = (line_break + 1) if line_break >= 0 else tlen
+                # Body ends at the next chapter's marker line-start, or
+                # end of text if last.
+                ce = tlen
+                if nxt_marker:
+                    nxt_lf = full.find("\n" + nxt_marker, cs)
+                    if nxt_lf >= 0:
+                        ce = nxt_lf + 1  # keep the \n on previous side
+            body = full[cs:ce].strip()
+            return {
+                "chapter_id": c.get("chapter_id") or str(c.get("number")),
+                "number": c.get("number"),
+                "display_number": c.get("display_number") or c.get("number"),
+                "title": c.get("title") or "",
+                "raw_marker": c.get("raw_marker") or "",
+                "content": body,
+                "char_count": visible_char_count(body),
+            }
 
     # Slow path: re-detect from scratch
     pipe = FeatureExtractionPipeline(db.db_path)
@@ -1699,12 +1732,19 @@ def preprocess_status(ref_id: str):
     can_undo = bool(bak_info and bak_info.get("path") and Path(bak_info["path"]).exists())
     last_removed = (bak_info or {}).get("removed_chapters") or []
     if pre:
-        # Defensive read-time fix-up: if the persisted chapters were
-        # generated by an older parser version, their content_end /
-        # preview may overshoot through subsequent chapter markers.
-        # We re-apply the safety net (truncate each body at the next
-        # chapter's raw_marker line-start) here so the UI shows clean
-        # bodies even before the user clicks 重新检测.
+        # Defensive read-time fix-up: re-anchor every chapter's
+        # content_start AND content_end by finding the chapter's
+        # persisted raw_marker in the file. This corrects BOTH:
+        #   (a) overshoot — body of chapter N includes chapter N+1's
+        #       heading + opening paragraphs (my previous read-time
+        #       trim handled this case).
+        #   (b) undershoot — body of chapter N+1 SKIPS its opening
+        #       paragraphs because content_start was stale and
+        #       pointed mid-body. The previous trim didn't fix this.
+        # Both happen when persisted state was generated by an older
+        # parser version. We re-derive cs/ce from raw_marker text
+        # positions in the file so the slice corresponds exactly to
+        # 「raw_marker 这一行的下一行 → 下一章 raw_marker 之前」.
         chapters = pre.get("chapters") or []
         try:
             from analysis.feature_extraction.chapter_parser import make_preview as _mp
@@ -1712,34 +1752,67 @@ def preprocess_status(ref_id: str):
             raw_path = Path(str(file_path) + ".raw.txt") if file_path else None
             read_path = (raw_path if raw_path and raw_path.exists() else
                           (Path(file_path) if file_path else None))
-            if read_path is not None and read_path.exists():
+            if read_path is not None and read_path.exists() and chapters:
                 full_text = read_path.read_text(encoding="utf-8", errors="replace")
+                tlen = len(full_text)
+                # Pass 1: locate each chapter's marker line in document order.
+                marker_starts: list[int | None] = []
+                search_from = 0
+                for c in chapters:
+                    marker = (c.get("raw_marker") or "").strip()
+                    if not marker:
+                        marker_starts.append(None)
+                        continue
+                    # Look for the marker at a line start: either preceded
+                    # by \n, or sitting at position 0.
+                    pos_lf = full_text.find("\n" + marker, search_from)
+                    pos_sof = -1
+                    if search_from == 0 and full_text.startswith(marker):
+                        pos_sof = 0
+                    if pos_lf >= 0 and (pos_sof < 0 or pos_lf + 1 <= pos_sof):
+                        ms = pos_lf + 1
+                    elif pos_sof >= 0:
+                        ms = pos_sof
+                    else:
+                        marker_starts.append(None)
+                        continue
+                    marker_starts.append(ms)
+                    search_from = ms + len(marker)
+                # Pass 2: derive content_start (right after the marker's
+                # own line) and content_end (start of next located marker
+                # OR end of text if last).
                 fixed = False
-                for i in range(len(chapters) - 1):
-                    cur = chapters[i]
-                    nxt = chapters[i + 1]
-                    cs = cur.get("content_start")
-                    ce = cur.get("content_end")
-                    marker = (nxt.get("raw_marker") or "").strip()
-                    if not isinstance(cs, int) or not isinstance(ce, int) or not marker:
+                for i, c in enumerate(chapters):
+                    ms = marker_starts[i]
+                    if ms is None:
                         continue
-                    if cs >= ce or ce > len(full_text):
+                    marker = c.get("raw_marker") or ""
+                    # End of the marker's line: the first \n at or after
+                    # the marker's end. Body starts right after that \n.
+                    line_break = full_text.find("\n", ms + len(marker))
+                    new_cs = (line_break + 1) if line_break >= 0 else tlen
+                    new_ce = tlen
+                    for j in range(i + 1, len(chapters)):
+                        if marker_starts[j] is not None:
+                            new_ce = marker_starts[j]
+                            break
+                    if new_cs > new_ce:
+                        # Defensive: a chapter whose body would be
+                        # negative (markers in wrong order). Skip.
                         continue
-                    slice_text = full_text[cs:ce]
-                    rel = slice_text.find("\n" + marker)
-                    if rel < 0:
-                        continue
-                    new_ce = cs + rel + 1
-                    if new_ce < ce:
-                        cur["content_end"] = new_ce
-                        truncated = full_text[cs:new_ce].strip()
-                        pv = _mp(truncated)
-                        cur["preview_head"] = pv["head"]
-                        cur["preview_tail"] = pv["tail"]
+                    if c.get("content_start") != new_cs or c.get("content_end") != new_ce:
+                        c["content_start"] = new_cs
+                        c["content_end"] = new_ce
+                        body = full_text[new_cs:new_ce].strip()
+                        pv = _mp(body)
+                        c["preview_head"] = pv["head"]
+                        c["preview_tail"] = pv["tail"]
+                        from analysis.feature_extraction.chapter_parser import (
+                            visible_char_count as _vcc,
+                        )
+                        c["char_count"] = _vcc(body)
                         fixed = True
                 if fixed:
-                    # Persist the corrected state so subsequent calls
-                    # don't have to re-trim (cheap one-time fix).
                     state["preprocess"]["chapters"] = chapters
                     try:
                         db.update_work(ref_id, segments_json=json.dumps(state, ensure_ascii=False))
