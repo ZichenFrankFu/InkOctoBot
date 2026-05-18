@@ -74,6 +74,7 @@ class PreprocessJob:
             self.log = self.log[-800:]
 
     def to_status(self) -> dict[str, Any]:
+        import time as _time
         return {
             "state": self.state,
             "phase": self.phase,
@@ -87,6 +88,13 @@ class PreprocessJob:
             "ended_at": self.ended_at,
             "fallback_used": self.fallback_used,
             "candidates": self.candidates,
+            # "上次识别 …" timestamp — set once when the job's first
+            # detection result is materialized so the UI keeps showing
+            # the same time across subsequent polls.
+            "parsed_at": (
+                _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(self.ended_at))
+                if self.ended_at else None
+            ),
         }
 
 
@@ -552,5 +560,9 @@ def persist_result_to_segments(ref_id: str, db_path: str,
         "total_chapters": len(light),
         "flagged_count": sum(1 for c in light if c.get("is_author_note")),
         "gaps": find_chapter_gaps(chapters),
+        # Wall-clock stamp of when this parse completed. Lets the UI
+        # show "上次识别 2026-05-18 14:32" so the user can tell at a
+        # glance whether the displayed chapter list is fresh.
+        "parsed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     rdb.update_work(ref_id, segments_json=json.dumps(state, ensure_ascii=False))

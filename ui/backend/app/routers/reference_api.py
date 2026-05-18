@@ -858,18 +858,6 @@ def get_chapter_content(ref_id: str, chapter_id: str):
         except (TypeError, ValueError):
             return False
 
-    def _format(marker: str, body: str) -> str:
-        """Format chapter content for the editor: heading line first,
-        then a blank line, then the body. The user requested that every
-        chapter's content start with its title (e.g. '1、标题')."""
-        marker = (marker or "").strip()
-        body = (body or "").strip()
-        if not marker:
-            return body
-        if not body:
-            return marker
-        return f"{marker}\n\n{body}"
-
     if isinstance(cached_chapters, list) and file_path:
         for c in cached_chapters:
             if not _match(c):
@@ -883,15 +871,14 @@ def get_chapter_content(ref_id: str, chapter_id: str):
                     full = None
                 if full is not None and ce <= len(full):
                     body = full[cs:ce].strip()
-                    formatted = _format(c.get("raw_marker") or c.get("title") or "", body)
                     return {
                         "chapter_id": c.get("chapter_id") or str(c.get("number")),
                         "number": c.get("number"),
                         "display_number": c.get("display_number") or c.get("number"),
                         "title": c.get("title") or "",
                         "raw_marker": c.get("raw_marker") or "",
-                        "content": formatted,
-                        "char_count": visible_char_count(formatted),
+                        "content": body,
+                        "char_count": visible_char_count(body),
                     }
 
     # Slow path: re-detect from scratch
@@ -903,15 +890,14 @@ def get_chapter_content(ref_id: str, chapter_id: str):
     result = detect_chapters(text, extra_patterns=extras)
     for c in result["chapters"]:
         if _match(c):
-            formatted = _format(c.get("raw_marker") or c.get("title") or "", c["content"])
             return {
                 "chapter_id": c.get("chapter_id"),
                 "number": c["number"],
                 "display_number": c.get("display_number") or c["number"],
                 "title": c["title"],
                 "raw_marker": c.get("raw_marker") or "",
-                "content": formatted,
-                "char_count": visible_char_count(formatted),
+                "content": c["content"],
+                "char_count": visible_char_count(c["content"]),
             }
     raise HTTPException(404, f"未找到章节 {chapter_id}")
 
@@ -1129,11 +1115,13 @@ async def _modify_and_redetect(ref_id: str, modifier, op_label: str,
         state = {}
     if not isinstance(state, dict):
         state = {}
+    import time as _time
     state["preprocess"] = {
         "chapters": light,
         "total_chapters": len(light),
         "flagged_count": sum(1 for c in light if c.get("is_author_note")),
         "gaps": find_chapter_gaps(new_chapters),
+        "parsed_at": _time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     state.pop("custom_plan", None)
     state.pop("plan", None)
@@ -1709,6 +1697,7 @@ def preprocess_status(ref_id: str):
             "chapters": pre.get("chapters") or [],
             "gaps": pre.get("gaps") or [],
             "persisted": True,
+            "parsed_at": pre.get("parsed_at") or None,
             "can_undo": can_undo,
             "last_removed_chapters": last_removed,
         }

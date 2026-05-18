@@ -471,8 +471,23 @@ def _build_chapters(text: str,
     chapters: list[dict] = []
     cur_vol = ""
     pruned_matches = [m for _, m in pruned_pairs]
+    # Boundary list: ALL heading positions found by ALL patterns, even
+    # the ones dedup decided to drop. Used so a kept chapter's body
+    # terminates at the NEXT heading IN THE FILE — not the next KEPT
+    # heading. Without this, when dedup drops a real chapter (e.g. a
+    # heading the user typed twice, or a TOC entry that wasn't perfectly
+    # identical to its body counterpart), the previous kept chapter's
+    # content overshoots through the dropped heading, producing the
+    # "第一章结尾出现了第二章的开头" symptom the user reported.
+    all_starts = sorted({title_start(m) for _, m in named_matches})
+    def _next_boundary(after: int) -> int:
+        for s in all_starts:
+            if s > after:
+                return s
+        return text_len
     for i, (pname, m) in enumerate(pruned_pairs):
-        end = title_start(pruned_matches[i + 1]) if i + 1 < len(pruned_matches) else text_len
+        # End at the next heading in the FULL list (kept or dropped).
+        end = _next_boundary(title_start(m))
         while vol_marks and vol_marks[0][0] <= m.start():
             cur_vol = vol_marks.pop(0)[1]
         is_unnumbered = pname in _UNNUMBERED_PATTERNS
@@ -1412,27 +1427,19 @@ def make_preview(content: str, head_chars: int = 180, tail_chars: int = 140) -> 
 
 def replace_chapter_content(text: str, chapters: list[dict],
                               chapter_number: int, new_content: str) -> str:
-    """Return a new full-text where chapter ``chapter_number``'s WHOLE
-    block (heading + body) is swapped for ``new_content``. The editor
-    UI gives the user a single textarea that starts with the chapter
-    heading (e.g. "1、标题"), so the payload already contains the
-    heading — emit it verbatim and skip the separate raw_marker
-    prepend that would otherwise duplicate the title. For the rest of
-    the chapters we still emit ``marker + body`` since their content
-    field is body-only. Detection re-runs after this so a user-edited
-    heading line gets re-parsed into the new raw_marker."""
+    """Return a new full-text where chapter ``chapter_number``'s body has
+    been swapped for ``new_content`` (body only, no heading — the editor
+    sends body-only payload). Reassembles by concatenating every
+    chapter's heading + body in order."""
     parts: list[str] = []
     found = False
     for c in chapters:
         marker = c.get("raw_marker") or c.get("title") or ""
         if c.get("number") == chapter_number:
-            block = (new_content or "").strip()
-            if not block:
-                raise ValueError("章节内容不能为空")
-            parts.append(block)
+            body = (new_content or "").strip()
             found = True
-            continue
-        body = c.get("content") or ""
+        else:
+            body = c.get("content") or ""
         if marker:
             parts.append(marker)
         if body:

@@ -70,6 +70,7 @@ interface PreprocessStatus {
   fallback_used?: boolean;
   error?: string | null;
   persisted?: boolean;
+  parsed_at?: string | null;
   can_undo?: boolean;
   last_removed_chapters?: number[];
 }
@@ -1079,6 +1080,15 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             <div className="text-xs text-muted" style={{ marginTop: 2 }}>
               支持「第N章」「第N回」「1、标题」「Chapter N」等多种格式（含阿拉伯/中文数字）；自动标记疑似作者题外话。
             </div>
+            {status?.parsed_at && (
+              <div className="text-xs text-muted" style={{
+                marginTop: 4,
+                color: "var(--text-tertiary)",
+                fontFamily: "var(--font-mono)",
+              }}>
+                上次识别：{status.parsed_at}
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-6" style={{ flexWrap: "wrap" }}>
             {/* Keep the action button MOUNTED while guessing so the
@@ -2031,22 +2041,9 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         )
                       ) : (
                         <>
-                          {/* First line is always the chapter heading — per
-                              user request that "每一章的内容中第一行都是
-                              章节标题，如 1、标题，随后是正文". */}
-                          {c.raw_marker && (
-                            <div style={{
-                              marginBottom: 6,
-                              fontWeight: 600,
-                              color: "var(--text-primary)",
-                              fontFamily: "var(--font-mono)",
-                            }}>
-                              {c.raw_marker}
-                            </div>
-                          )}
                           {c.preview_head && (
                             <div style={{ marginBottom: c.preview_tail ? 6 : 0 }}>
-                              <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>正文开头</span>
+                              <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>开头</span>
                               <span>{c.preview_head}</span>
                             </div>
                           )}
