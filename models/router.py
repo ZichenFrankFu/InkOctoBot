@@ -234,15 +234,51 @@ class ModelRouter:
         prompt: str,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        system: str | None = None,
+        **kwargs: Any,
     ) -> str:
-        """Simplified invoke for Skill execution (prompt-in, text-out)."""
-        messages = [LLMMessage(role="user", content=prompt)]
-        resp = await self.generate(
-            agent_role=role,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        """Simplified invoke for Skill execution (prompt-in, text-out).
+
+        Extra ``kwargs`` (e.g. ``response_format={"type": "json_object"}``)
+        are forwarded to the underlying provider. Providers that don't
+        understand a keyword silently ignore it — but if the OpenAI SDK
+        rejects an unknown arg we catch the error and retry without it,
+        so callers can opportunistically request JSON mode without having
+        to know the active provider."""
+        messages: list[LLMMessage] = []
+        if system:
+            messages.append(LLMMessage(role="system", content=system))
+        messages.append(LLMMessage(role="user", content=prompt))
+        try:
+            resp = await self.generate(
+                agent_role=role,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+        except TypeError:
+            # Provider doesn't accept one of the kwargs — retry plain.
+            resp = await self.generate(
+                agent_role=role,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception as e:
+            # Some OpenAI-compat servers (e.g., older DeepSeek) raise
+            # BadRequestError on `response_format`. Strip and retry.
+            if kwargs and "response_format" in str(e).lower():
+                kwargs.pop("response_format", None)
+                resp = await self.generate(
+                    agent_role=role,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                )
+            else:
+                raise
         return resp.content
 
     async def invoke_with_web_search(

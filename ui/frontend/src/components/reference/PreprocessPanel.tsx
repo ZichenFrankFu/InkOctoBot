@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut, apiPatch } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { useConfirm } from "../shared/Confirm";
@@ -117,6 +117,44 @@ function fmtChars(n: number): string {
   if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`;
   return `${n.toLocaleString()} 字`;
 }
+
+/** Live status log tail.
+ *
+ * Split out + memoized because the parent re-renders on every status
+ * poll (600ms), and `toLocaleTimeString()` is locale-formatted (slow)
+ * being called once per visible entry. The memo keys on the log
+ * entries' timestamps so only new entries trigger reformatting. */
+const LogTail = React.memo(function LogTail({
+  status, state,
+}: {
+  status: { log?: { ts: number; message: string }[] } | null | undefined;
+  state: string;
+}) {
+  const log = status?.log;
+  const formatted = useMemo(() => {
+    if (!log || log.length === 0) return [] as { time: string; message: string }[];
+    return log.slice(-30).map(e => ({
+      time: new Date(e.ts * 1000).toLocaleTimeString(),
+      message: e.message,
+    }));
+  }, [log]);
+  if (formatted.length === 0 || (state !== "running" && state !== "paused")) return null;
+  return (
+    <div style={{
+      maxHeight: 120, overflowY: "auto",
+      border: "1px solid var(--border)", borderRadius: 3,
+      background: "var(--bg-card)", padding: 6,
+      fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.5,
+      color: "var(--text-secondary)",
+    }}>
+      {formatted.map((e, i) => (
+        <div key={i} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          <span style={{ color: "var(--text-tertiary)" }}>{e.time}</span>{" "}{e.message}
+        </div>
+      ))}
+    </div>
+  );
+});
 
 interface Props {
   refId: string;
@@ -1364,23 +1402,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         )}
 
         {/* Live log tail */}
-        {status && status.log && status.log.length > 0 && (state === "running" || state === "paused") && (
-          <div style={{
-            maxHeight: 120, overflowY: "auto",
-            border: "1px solid var(--border)", borderRadius: 3,
-            background: "var(--bg-card)", padding: 6,
-            fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.5,
-            color: "var(--text-secondary)",
-          }}>
-            {status.log.slice(-30).map((e, i) => (
-              <div key={i} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                <span style={{ color: "var(--text-tertiary)" }}>
-                  {new Date(e.ts * 1000).toLocaleTimeString()}
-                </span>{" "}{e.message}
-              </div>
-            ))}
-          </div>
-        )}
+        <LogTail status={status} state={state} />
+
 
         {status?.error && (
           <div className="text-xs" style={{ color: "var(--error)", marginTop: 6 }}>{status.error}</div>
@@ -2703,20 +2726,18 @@ function VolumeEditor(p: VolumeEditorProps) {
               padding: 12, marginBottom: 10, textAlign: "center",
               border: "1px dashed var(--border)", borderRadius: 4,
             }}>
-              当前没有分卷。点击下方「新建卷」开始添加。
+              <div style={{ marginBottom: 8 }}>当前没有分卷。</div>
+              <button className="btn-primary" style={{ fontSize: 12, padding: "4px 14px" }}
+                      onClick={() => p.addPlanRow(-1)}
+                      disabled={planSaving}>新建卷</button>
             </div>
           )}
-          <div className="flex gap-6" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                    onClick={() => p.addPlanRow(planDraft.length - 1)}
-                    disabled={planSaving}>+ 新建卷</button>
-            <div className="flex gap-6">
-              <button className="btn" onClick={p.cancelPlanEdit} disabled={planSaving}>取消</button>
-              <button className="btn-primary" onClick={p.savePlan}
-                      disabled={planSaving || planDraft.length === 0}>
-                {planSaving ? "保存中..." : "保存分段计划"}
-              </button>
-            </div>
+          <div className="flex gap-6" style={{ justifyContent: "flex-end", flexWrap: "wrap" }}>
+            <button className="btn" onClick={p.cancelPlanEdit} disabled={planSaving}>取消</button>
+            <button className="btn-primary" onClick={p.savePlan}
+                    disabled={planSaving || planDraft.length === 0}>
+              {planSaving ? "保存中..." : "保存分段计划"}
+            </button>
           </div>
         </div>
       )}

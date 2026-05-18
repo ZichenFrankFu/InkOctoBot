@@ -25,87 +25,41 @@ _MAX_PROMPT_CHARS = 32_000   # cap input size to keep latency reasonable
 
 # ── Prompts ────────────────────────────────────────────────────────
 
-_CHARACTERS_PROMPT = """你是专业的小说分析师。请从下面的小说文本中提取主要角色。
+# Note: these in-file constants are only used by ai_extract_narrative and
+# ai_extract_rhythm (legacy entry points; the main pipeline uses
+# prompts.py's "reference.rhythm" template via the registry). Keep them
+# in sync with the strict JSON-only style used in prompts.py.
 
-输出 JSON 列表，每个角色一个对象：
-- name: 角色姓名/称呼（必填，2-4 字最佳）
-- role_tag: 该角色在本段中的定位标签，从以下选**一个**（找不到合适的就用 "其他"）：
-            主角 / 女主角 / 男配 / 女配 / 反派 / 师长 / 重要配角 / 路人 / 其他
-            如果文本中明确有一个主视角主角，请把他/她标为「主角」；如果出现明显的恋爱/搭档主线女性角色，标为「女主角」。
-- intro: 1-3 句客观简介，包括身份、能力、关键背景；不写主观评价或剧透
-- speech_samples: 最多 3 条具有代表性的对白原文（从文本中摘录，不要编造）
-- mentions: 该角色在文本中出现的大致次数（整数估计）
-- first_seen_at: 该角色首次出场的时间锚点。作品里有显式时间（如「1954 年」「2030 年 2 月」）就照写；
-                没有就写所在「第 N 章」；都不便确定时写「约 M 万字处」。**不要编造日期**，找不到就给章节号。
+_NARRATIVE_PROMPT = """[自动化数据抽取 · 不是对话] 输出将被 json.loads 直接解析。
 
-只返回 JSON 数组，不要 markdown、不要解释。最多 30 个角色，按重要性排序（主角第一）。
+分析下面的小说文本，输出**一个**描述叙事结构的 JSON 对象。
 
-文本（约 {n_chapters} 章，{n_chars} 字）：
-{text}
-"""
+只允许以 `{{` 开始、以 `}}` 结束的合法 JSON。禁止任何寒暄、解释、markdown 包装、思考块。
 
-_SETTINGS_PROMPT = """你是专业的小说分析师。请从下面的小说文本中提取世界观设定（power_system 力量体系、factions 势力组织、geography 地理、social_rules 社会规则、history 历史、hard_rules 硬规则、worldview 世界观、other 其他）。
-
-输出 JSON 列表，每条设定一个对象：
-- category: 必填，从以下英文 key 选一个：power_system | factions | geography | social_rules | history | hard_rules | worldview | other
-- title: 设定名称（如「魔法体系」「皇家骑士团」「时间法则」）
-- content: 2-4 句客观描述，写已知事实
-- hidden: 可选。该设定背后在本段中尚未对读者公开的真相、来源或动机
-- first_introduced_at: 该设定首次出现的时间锚点。作品里有显式时间就照写；没有就写所在「第 N 章」；
-                       都不便确定时写「约 M 万字处」。**不要编造日期**，找不到就给章节号。
-
-只返回 JSON 数组，不要 markdown。最多 25 条。
-
-文本（约 {n_chapters} 章，{n_chars} 字）：
-{text}
-"""
-
-_NARRATIVE_PROMPT = """你是专业的小说结构分析师。请分析下面的小说文本，输出 JSON 对象描述其叙事结构：
-
+字段：
 - opening_pattern: 字符串，从 in_medias_res | dialogue_open | worldbuilding | character_intro 选一个
-- climax_positions: 整数列表，高潮所在的章节序号（按本段内的相对章号 1-base）
-- hook_density: 0 到 1 之间的浮点数，每章末尾使用悬念钩子的密度
-- shuangdian: 列表，本段中的「爽点」事件，每项 {{chapter, type}}，type 选 face_slap | power_reveal | treasure_gain | mystery_reveal | other
-
-只返回 JSON 对象，不要 markdown。
+- climax_positions: 整数列表，高潮所在的章节序号（本段相对章号 1-base）
+- hook_density: 0-1 浮点数，每章末尾悬念钩子的密度
+- shuangdian: 列表，每项 {{chapter, type}}，type 选 face_slap | power_reveal | treasure_gain | mystery_reveal | other
 
 文本（约 {n_chapters} 章）：
 {text}
 """
 
-_RHYTHM_PROMPT = """你是专业的节奏分析师。请分析下面的小说文本，输出 JSON 对象：
+_RHYTHM_PROMPT = """[自动化数据抽取 · 不是对话] 输出将被 json.loads 直接解析。
 
-- tension_curve: 长度等于 {n_chapters} 的浮点数列表，按章节顺序，每项 0-1 表示该章的张力强度
-- pacing_segments: 节奏分段列表 {{start, end, pacing, avg_tension}}，pacing 选 fast | medium | slow，章号 1-base 闭区间
+分析下面的小说文本，输出**一个**节奏分析 JSON 对象。
 
-只返回 JSON 对象，不要 markdown。
+只允许以 `{{` 开始、以 `}}` 结束的合法 JSON。禁止任何寒暄、解释、markdown 包装、思考块。
+
+字段：
+- tension_curve: 长度等于 {n_chapters} 的浮点数列表，每项 0-1
+- pacing_segments: [{{start, end, pacing, avg_tension}}]，pacing 选 fast | medium | slow，章号 1-base 闭区间
 
 文本：
 {text}
 """
 
-
-_RHYTHM_V2_PROMPT = """你是专业的小说叙事+节奏分析师。请分析下面的小说文本，输出**一个**合并后的 JSON 对象，
-覆盖叙事结构 + 节奏 + 每章特征。章号都使用本段内的相对章号（1-base）。
-
-字段：
-- opening_pattern: 字符串，从 in_medias_res | dialogue_open | worldbuilding | character_intro 选一个
-- climax_positions: 整数列表，本段高潮所在章号
-- shuangdian: 爽点列表 [{{chapter, type}}], type 从 face_slap | power_reveal | treasure_gain | mystery_reveal | other 选
-- chapter_features: 每章一个对象的列表，长度严格 == {n_chapters}，按章节顺序：
-    - chapter: 整数章号 (1-base)
-    - types: **字符串数组**, 至少 1 个，从这 10 个值中**多选**: 日常 / 战斗 / 高潮 / 角色个人回 / 主线事件 / 支线事件 / 伏笔铺垫 / 收束 / 转折 / 其他。一章可以同时是多个 type（例如「主线事件 + 战斗 + 高潮」）。
-    - info_density: 0-1 的浮点数，**信息密度** (本章传递新信息的密度，包括新角色/新设定/新冲突；替代过去的「张力」)
-    - summary: 1-2 句客观描述本章发生的关键事实
-    - hooks: 钩子列表 [{{position, content}}], position 从 章首 / 段中 / 章末 选, content 是钩子句原文摘录 (≤ 80 字)
-- info_density_curve: 长度 == {n_chapters} 的浮点数组，与 chapter_features[i].info_density 一致
-- pacing_segments: 节奏分段 [{{start, end, pacing, avg_info_density}}], pacing 从 fast | medium | slow 选
-
-只返回 JSON 对象，不要 markdown 包装、不要解释。
-
-文本（{n_chapters} 章）：
-{text}
-"""
 
 
 def _build_segment_text(chapters: list[dict]) -> tuple[str, int]:
@@ -191,25 +145,62 @@ _WEB_VERIFY_HINT = (
     "或与文本表面信息相矛盾的项，**宁可留空也不要编造**。"
 )
 
+# A short, blunt system prompt — many models default to "helpful assistant
+# mode" and answer in prose ("你好！这个故事讲的是...") instead of JSON.
+# The system role tends to be obeyed much more strictly than user-content
+# instructions, especially for chat-tuned models.
+_JSON_SYSTEM_OBJ = (
+    "你是一个 JSON 数据抽取器。无论用户输入什么，你只能输出**一个合法的 JSON 对象**。"
+    "禁止任何寒暄、解释、markdown 包装、思考过程、```json 代码块。"
+    "禁止输出形如「你好」「这个故事讲的是」「让我告诉你」等任何对话语句。"
+    "你的整段响应必须以 `{` 开头、以 `}` 结尾。如果你无法完成抽取，"
+    "也必须返回符合 schema 的对象，对应字段留空或填 0/[]，**绝对不要返回自然语言**。"
+)
+_JSON_SYSTEM_LIST = (
+    "你是一个 JSON 数据抽取器。无论用户输入什么，你只能输出**一个合法的 JSON 数组**。"
+    "禁止任何寒暄、解释、markdown 包装、思考过程、```json 代码块。"
+    "禁止输出形如「你好」「这个故事讲的是」「让我告诉你」等任何对话语句。"
+    "你的整段响应必须以 `[` 开头、以 `]` 结尾。如果文本中找不到任何匹配项，"
+    "返回 `[]`，**绝对不要返回自然语言**。"
+)
+
 
 async def _invoke(router: Any, prompt: str, *,
                     max_tokens: int = 4096,
-                    use_web_search: bool = False) -> str:
+                    use_web_search: bool = False,
+                    expect: str = "object") -> str:
     """Single entry-point for AI calls. When ``use_web_search`` is True we
     route to the ``reference_web_search`` role and use the provider's
     ``generate_with_web_search`` path; otherwise the regular
-    ``reference_extractor`` invoke. The hint is prepended so the model
-    knows to cross-check facts when web search is available."""
+    ``reference_extractor`` invoke.
+
+    ``expect`` is "object" or "list" — selects the system prompt and
+    decides whether to opportunistically request JSON mode (only objects
+    are guaranteed; the list system prompt forces the model to emit ``[``).
+    """
+    system = _JSON_SYSTEM_LIST if expect == "list" else _JSON_SYSTEM_OBJ
     if use_web_search:
-        full_prompt = f"{_WEB_VERIFY_HINT}\n\n{prompt}"
+        # Web-search providers don't reliably honor response_format and
+        # the search-then-summarize flow can't be system-prompted.
+        # Keep the legacy path but still embed the cross-check hint.
+        full_prompt = (
+            f"{system}\n\n{_WEB_VERIFY_HINT}\n\n{prompt}\n\n"
+            "再次提醒：只输出纯 JSON，不要任何其他文字。"
+        )
         raw = await router.invoke_with_web_search(
             role="reference_web_search", prompt=full_prompt,
-            max_tokens=max_tokens, temperature=0.2,
+            max_tokens=max_tokens, temperature=0.1,
         )
     else:
+        # OpenAI-compatible JSON mode forces well-formed JSON for objects
+        # (chat.completions response_format). For list-mode we fall back
+        # to a stronger system prompt — JSON mode only accepts object roots.
+        kw: dict[str, Any] = {}
+        if expect == "object":
+            kw["response_format"] = {"type": "json_object"}
         raw = await router.invoke(
-            role=_ROLE, prompt=prompt,
-            max_tokens=max_tokens, temperature=0.2,
+            role=_ROLE, prompt=prompt, system=system,
+            max_tokens=max_tokens, temperature=0.1, **kw,
         )
     raw = raw or ""
     # Diagnostic: log a short snippet so the server log shows whether the
@@ -243,6 +234,41 @@ def _parse_obj(raw: str) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"expected dict, got {type(data).__name__}")
     return data
+
+
+# Common keys models use when wrapping a list inside an object — needed
+# because OpenAI/DeepSeek JSON mode only emits objects, so we may receive
+# {"characters": [...]} when we wanted just [...].
+_LIST_UNWRAP_KEYS = (
+    "items", "data", "result", "results", "list", "characters",
+    "settings", "entries", "values", "array",
+)
+
+
+def _parse_listish(raw: str) -> list[dict]:
+    """Parse a JSON list, also accepting a single-key object that wraps
+    the list (e.g. ``{"items": [...]}``). Strict-JSON modes only emit
+    objects; we still want list semantics at the call site."""
+    stripped = _strip_json(raw)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as e:
+        raise ValueError(_format_parse_error("list", raw, stripped, e)) from e
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        # Prefer a known wrapper key, else use the single value if it's a list
+        for k in _LIST_UNWRAP_KEYS:
+            v = data.get(k)
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+        if len(data) == 1:
+            only_v = next(iter(data.values()))
+            if isinstance(only_v, list):
+                return [x for x in only_v if isinstance(x, dict)]
+    raise ValueError(
+        f"expected list (or object wrapping a list), got {type(data).__name__}"
+    )
 
 
 def _format_parse_error(want: str, raw: str, stripped: str,
@@ -287,8 +313,8 @@ async def ai_extract_characters(chapters: list[dict], router: Any,
         "reference.characters", override=prompt_override,
         n_chapters=len(chapters), n_chars=nchars, text=text,
     )
-    raw = await _invoke(router, prompt, use_web_search=use_web_search)
-    items = _parse_list(raw)
+    raw = await _invoke(router, prompt, use_web_search=use_web_search, expect="list")
+    items = _parse_listish(raw)
     out: list[dict] = []
     for it in items:
         name = (it.get("name") or "").strip()
@@ -315,8 +341,8 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
         "reference.settings", override=prompt_override,
         n_chapters=len(chapters), n_chars=nchars, text=text,
     )
-    raw = await _invoke(router, prompt, use_web_search=use_web_search)
-    items = _parse_list(raw)
+    raw = await _invoke(router, prompt, use_web_search=use_web_search, expect="list")
+    items = _parse_listish(raw)
     valid_cats = {"power_system", "factions", "geography", "social_rules",
                   "history", "hard_rules", "worldview", "other"}
     out: list[dict] = []
@@ -342,7 +368,7 @@ async def ai_extract_narrative(chapters: list[dict], router: Any) -> dict:
     """Returns {opening_pattern, climax_positions, hook_density, shuangdian}."""
     text, _ = _build_segment_text(chapters)
     prompt = _NARRATIVE_PROMPT.format(n_chapters=len(chapters), text=text)
-    raw = await _invoke(router, prompt, max_tokens=2048)
+    raw = await _invoke(router, prompt, max_tokens=2048, expect="object")
     obj = _parse_obj(raw)
     valid_openings = {"in_medias_res", "dialogue_open", "worldbuilding", "character_intro"}
     op = obj.get("opening_pattern")
@@ -365,7 +391,7 @@ async def ai_extract_rhythm(chapters: list[dict], router: Any) -> dict:
     """Returns {tension_curve, pacing_segments}."""
     text, _ = _build_segment_text(chapters)
     prompt = _RHYTHM_PROMPT.format(n_chapters=len(chapters), text=text)
-    raw = await _invoke(router, prompt, max_tokens=2048)
+    raw = await _invoke(router, prompt, max_tokens=2048, expect="object")
     obj = _parse_obj(raw)
     return {
         "tension_curve": [float(x) for x in (obj.get("tension_curve") or []) if isinstance(x, (int, float))],
@@ -399,7 +425,8 @@ async def ai_extract_rhythm_v2(chapters: list[dict], router: Any,
         "reference.rhythm", override=prompt_override,
         n_chapters=len(chapters), text=text,
     )
-    raw = await _invoke(router, prompt, max_tokens=4096, use_web_search=use_web_search)
+    raw = await _invoke(router, prompt, max_tokens=4096,
+                          use_web_search=use_web_search, expect="object")
     obj = _parse_obj(raw)
 
     valid_openings = {"in_medias_res", "dialogue_open", "worldbuilding", "character_intro"}

@@ -526,13 +526,15 @@ class FeatureExtractionPipeline:
         """Extract features for one segment but DO NOT persist anything.
 
         Style fingerprint uses NLP (rule-based, fast, deterministic).
-        Characters / settings / narrative / rhythm use AI via ModelRouter
-        when use_ai is True, falling back to NLP rules on failure.
-        Plot outline (chronicle skeleton) uses NLP rules and is then
-        enriched by the AI characters/settings results.
+        Characters / settings / rhythm use AI via ModelRouter. If the AI
+        call fails (model unavailable, JSON parse error, etc.), the
+        failure is surfaced as an error — there is **no** NLP fallback,
+        because rule-based extraction was producing materially worse
+        results and silently masking model misconfiguration.
+        Plot outline (chronicle skeleton) uses NLP rules built off the
+        AI rhythm result; if AI rhythm failed, plot will be empty too.
         """
         from rag.reference_db import ReferenceDB
-        import asyncio
 
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
@@ -559,22 +561,19 @@ class FeatureExtractionPipeline:
         errors: list[str] = []
         warnings: list[str] = []
 
-        from analysis.feature_extraction.nlp_stats import (
-            compute_style_fingerprint, extract_characters,
-        )
-        from analysis.feature_extraction.narrative_extractor import (
-            extract_narrative, extract_rhythm, extract_rhythm_v2,
-            extract_plot_outline,
-        )
+        from analysis.feature_extraction.nlp_stats import compute_style_fingerprint
+        from analysis.feature_extraction.narrative_extractor import extract_plot_outline
 
-        # Style: ALWAYS NLP (per spec)
+        # Style: ALWAYS NLP (per spec — deterministic statistics, not LLM)
         fp: dict = {}
         try:
             fp = compute_style_fingerprint(seg_chapters)
         except Exception as e:
             errors.append(f"style: {e}")
 
-        # Get an AI router (lazy import; may fail if no LLM configured)
+        # Get an AI router (lazy import; may fail if no LLM configured).
+        # When AI is unavailable, the whole segment extraction fails fast —
+        # no silent NLP fallback. The user must configure a working model.
         router = None
         if use_ai:
             try:
@@ -583,23 +582,23 @@ class FeatureExtractionPipeline:
             except Exception as e:
                 detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
                 hint = _diagnose_ai_error(e)
-                msg = f"AI 不可用，所有项回退 NLP · {detail}"
+                msg = f"AI 路由初始化失败 · {detail}"
                 if hint:
                     msg += f" · 提示：{hint}"
-                warnings.append(msg)
+                errors.append(msg)
+        else:
+            errors.append("use_ai=False — 已禁用 AI，且未启用 NLP 回退；本段提取被跳过")
 
         ai_methods_used: list[str] = []
-        ai_methods_fallback: list[str] = []
+        ai_methods_fallback: list[str] = []  # kept for response-shape compat (always [])
 
-        async def _ai_or_nlp(name: str, ai_fn, nlp_fn, *, prompt_key: str | None = None):
-            """Try AI; on failure, fall back to NLP and record a warning.
-            When prompt_key is set, the per-call override (if any) is
-            passed through to the AI extractor as `prompt_override`.
-            When the segment-level use_web_search flag is set, the call
-            is routed through the reference_web_search role."""
+        async def _ai_only(name: str, ai_fn, *, prompt_key: str | None = None):
+            """Invoke an AI extractor; on failure, surface a structured
+            error and return an empty result. There is no NLP fallback —
+            extraction failures should NOT silently degrade to rule-based
+            output. Callers handle the empty result downstream."""
             if router is None:
-                ai_methods_fallback.append(name)
-                return nlp_fn()
+                return None
             try:
                 override = (prompt_overrides or {}).get(prompt_key) if prompt_key else None
                 kw: dict[str, Any] = {"use_web_search": use_web_search}
@@ -609,77 +608,58 @@ class FeatureExtractionPipeline:
                 ai_methods_used.append(name)
                 return result
             except Exception as e:
-                logger.warning("[ai_extractor] %s failed (%s); falling back to NLP", name, e)
+                logger.warning("[ai_extractor] %s failed: %s", name, e)
                 detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
                 hint = _diagnose_ai_error(e)
-                msg = f"{name}: AI 失败 → 回退 NLP · {detail}"
+                msg = f"{name}: AI 提取失败 · {detail}"
                 if hint:
                     msg += f" · 提示：{hint}"
-                warnings.append(msg)
-                ai_methods_fallback.append(name)
-                return nlp_fn()
+                errors.append(msg)
+                return None
 
         from analysis.feature_extraction import ai_extractor
 
-        # Characters (AI preferred). After AI, intersect with chapter texts
-        # to compute appearance_chapters / appearance_word_count deterministically.
+        # Characters — AI only, no NLP fallback.
         chars: list = []
-        try:
-            chars = await _ai_or_nlp(
-                "characters",
-                ai_extractor.ai_extract_characters,
-                lambda: extract_characters(seg_chapters),
-                prompt_key="reference.characters",
-            )
-            chars = _enrich_characters_with_appearance(chars, seg_chapters)
-        except Exception as e:
-            errors.append(f"characters: {e}")
+        ai_chars = await _ai_only(
+            "characters",
+            ai_extractor.ai_extract_characters,
+            prompt_key="reference.characters",
+        )
+        if ai_chars:
+            try:
+                chars = _enrich_characters_with_appearance(ai_chars, seg_chapters)
+            except Exception as e:
+                errors.append(f"characters enrichment: {e}")
 
-        # Settings (AI preferred). No NLP fallback — return empty if AI fails.
+        # Settings — AI only, no fallback.
         settings_items: list = []
-        try:
-            if router is not None:
-                try:
-                    settings_override = (prompt_overrides or {}).get("reference.settings")
-                    kw: dict[str, Any] = {"use_web_search": use_web_search}
-                    if settings_override is not None:
-                        kw["prompt_override"] = settings_override
-                    settings_items = await ai_extractor.ai_extract_settings(
-                        seg_chapters, router, **kw,
-                    )
-                    ai_methods_used.append("settings")
-                except Exception as e:
-                    logger.warning("[ai_extractor] settings failed: %s", e)
-                    detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
-                    hint = _diagnose_ai_error(e)
-                    msg = f"settings: AI 失败，返回空 · {detail}"
-                    if hint:
-                        msg += f" · 提示：{hint}"
-                    warnings.append(msg)
-                    ai_methods_fallback.append("settings")
-            else:
-                ai_methods_fallback.append("settings")
-            settings_items = _enrich_settings_with_timestamp(
-                settings_items, seg_chapters, seg.get("start_chapter") or 1,
-            )
-        except Exception as e:
-            errors.append(f"settings: {e}")
+        ai_settings = await _ai_only(
+            "settings",
+            ai_extractor.ai_extract_settings,
+            prompt_key="reference.settings",
+        )
+        if ai_settings:
+            try:
+                settings_items = _enrich_settings_with_timestamp(
+                    ai_settings, seg_chapters, seg.get("start_chapter") or 1,
+                )
+            except Exception as e:
+                errors.append(f"settings enrichment: {e}")
 
-        # Rhythm v2 (AI preferred, merges narrative + rhythm + per-chapter features)
+        # Rhythm v2 — AI only, no fallback.
         rhythm: dict = {}
-        try:
-            rhythm = await _ai_or_nlp(
-                "rhythm",
-                ai_extractor.ai_extract_rhythm_v2,
-                lambda: extract_rhythm_v2(seg_chapters),
-                prompt_key="reference.rhythm",
-            )
-        except Exception as e:
-            errors.append(f"rhythm: {e}")
+        ai_rhythm = await _ai_only(
+            "rhythm",
+            ai_extractor.ai_extract_rhythm_v2,
+            prompt_key="reference.rhythm",
+        )
+        if ai_rhythm:
+            rhythm = ai_rhythm
 
-        # Plot outline (chronicle skeleton — always NLP)
-        # extract_plot_outline expects the legacy narrative shape; derive
-        # it from the unified rhythm so the chronicle skeleton stays correct.
+        # Plot outline (chronicle skeleton — always NLP-derived, but it
+        # USES the AI rhythm output as input. If rhythm failed, we still
+        # build a minimal skeleton from chapter titles).
         plot: dict = {}
         try:
             narr_compat = {

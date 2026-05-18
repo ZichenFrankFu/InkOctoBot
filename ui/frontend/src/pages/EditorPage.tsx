@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import { useResizable } from "../hooks/useResizable";
+import useDebounce from "../hooks/useDebounce";
 import { computeDiff, groupIntoHunks, assembleFromHunks } from "../utils/simpleDiff";
 import type { DiffHunk } from "../utils/simpleDiff";
 import type { Volume, ChapterOutline, PipelineStatus, EvalResult, FollowUpQuestion, TextVersion } from "../api/types";
@@ -344,11 +345,27 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const commitRename = () => { if (!renamingId || !renameVal.trim()) { setRenamingId(null); return; } setVolumes(volumes.map(v => { if (v.id === renamingId) return { ...v, title: renameVal.trim() }; return { ...v, chapters: v.chapters.map(c => c.id === renamingId ? { ...c, title: renameVal.trim() } : c) }; })); setRenamingId(null); };
   const updateSynopsis = (val: string) => { setVolumes(volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, synopsis: val } : c) }))); };
 
+  // Debounce the search term used for filtering: typing fires character
+  // events but the filter pass scans every chapter's full text (can be
+  // 100k+ chars/chapter), so unthrottled filtering blocks the input.
+  const debouncedSearch = useDebounce(searchTerm, 200);
+  const searchLower = useMemo(
+    () => debouncedSearch.trim().toLowerCase(),
+    [debouncedSearch],
+  );
   const filteredVolumes = useMemo(() => {
-    if (!searchTerm.trim()) return volumes;
-    const term = searchTerm.trim().toLowerCase();
-    return volumes.map(v => ({ ...v, chapters: v.chapters.filter(c => c.title.toLowerCase().includes(term) || (c.content || "").toLowerCase().includes(term) || (c.synopsis || "").toLowerCase().includes(term)) })).filter(v => v.chapters.length > 0 || v.title.toLowerCase().includes(term));
-  }, [volumes, searchTerm]);
+    if (!searchLower) return volumes;
+    return volumes
+      .map(v => ({
+        ...v,
+        chapters: v.chapters.filter(c =>
+          c.title.toLowerCase().includes(searchLower)
+          || (c.content || "").toLowerCase().includes(searchLower)
+          || (c.synopsis || "").toLowerCase().includes(searchLower)
+        ),
+      }))
+      .filter(v => v.chapters.length > 0 || v.title.toLowerCase().includes(searchLower));
+  }, [volumes, searchLower]);
 
   const handleExport = () => {
     const lines: string[] = [];
@@ -1140,7 +1157,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                 </div>
                 {!v.collapsed && v.chapters.map(c => (
                   <div key={c.id} className={`chapter-tree-item indent ${c.id === activeChId ? "active" : ""}`} onClick={() => setActiveChId(c.id)}
-                    style={searchTerm.trim() && (c.content || "").toLowerCase().includes(searchTerm.trim().toLowerCase()) ? { background: "var(--accent-subtle, rgba(255,200,0,0.15))" } : undefined}>
+                    style={searchLower && (c.content || "").toLowerCase().includes(searchLower) ? { background: "var(--accent-subtle, rgba(255,200,0,0.15))" } : undefined}>
                     {renamingId === c.id ? <input className="input" value={renameVal} onChange={e => setRenameVal(e.target.value)} onBlur={commitRename} onKeyDown={e => e.key === "Enter" && commitRename()} autoFocus style={{ padding: "2px 6px", fontSize: 12, flex: 1 }} onClick={e => e.stopPropagation()} />
                       : <><span className="truncate" style={{ flex: 1 }} onDoubleClick={() => startRename(c.id, c.title)}>{c.title}</span><span className="font-mono text-xs text-muted">{wc(c.content || "")}字</span></>}
                     {totalCh > 1 && <button className="btn-icon" style={{ width: 18, height: 18, fontSize: 11 }} onClick={e => { e.stopPropagation(); deleteChapter(c.id); }}>&times;</button>}

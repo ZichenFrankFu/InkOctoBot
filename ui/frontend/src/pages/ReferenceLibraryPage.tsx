@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import useDebounce from "../hooks/useDebounce";
@@ -674,17 +674,34 @@ function WorkDetail({
   }, [sel.ref_id, sel.user_why_i_like]);
 
   const status = STATUS_LABEL[sel.preprocessing_status] || STATUS_LABEL.not_applicable;
-  const plot = pj(sel.plot_outline_json) as PlotOutline | null;
-  const chars = pj(sel.extracted_characters_json) as any[] | null;
-  const epochCount = (plot?.epochs || []).length;
-  const periodCount = (plot?.epochs || []).reduce((n: number, ep: any) => n + (ep.periods?.length || 0), 0);
-  const eventCount = (plot?.epochs || []).reduce(
-    (n: number, ep: any) =>
-      n + (ep.periods || []).reduce((m: number, per: any) => m + (per.events?.length || 0), 0),
-    0,
+  // Cache JSON.parse + .reduce work — the tab-bar re-renders on every
+  // setTab() click and these parsed blobs can be megabytes (a full plot
+  // outline with hundreds of events). Without memoization a single tab
+  // switch did 3 JSON.parse + 2 nested reduce passes.
+  const plot = useMemo(
+    () => pj(sel.plot_outline_json) as PlotOutline | null,
+    [sel.plot_outline_json],
   );
+  const chars = useMemo(
+    () => pj(sel.extracted_characters_json) as any[] | null,
+    [sel.extracted_characters_json],
+  );
+  const settings = useMemo(
+    () => pj(sel.settings_json) as any[] | null,
+    [sel.settings_json],
+  );
+  const { epochCount, periodCount, eventCount } = useMemo(() => {
+    const epochs = plot?.epochs || [];
+    let periods = 0;
+    let events = 0;
+    for (const ep of epochs) {
+      const eps = ep.periods || [];
+      periods += eps.length;
+      for (const per of eps) events += (per.events?.length || 0);
+    }
+    return { epochCount: epochs.length, periodCount: periods, eventCount: events };
+  }, [plot]);
   const charCount = (chars || []).length;
-  const settings = pj(sel.settings_json) as any[] | null;
   const settingsCount = (settings || []).length;
 
   const TABS: { key: WorkDetailTab; label: string; count?: number | string }[] = [
@@ -701,23 +718,26 @@ function WorkDetail({
     <div>
       {/* Compact, sticky work header.
        *
-       * The parent .panel-body has padding:16px 20px so the sticky
-       * region must EXTEND past that padding — otherwise during scroll
-       * there's a narrow strip above the bar where panel-body content
-       * leaks through (the bug user reported as "和搜索bar有空隙").
-       *
-       * margin:-16px -20px 12px pulls the sticky region edge-to-edge
-       * within the scroll container; padding:16px 20px 10px restores
-       * the visual inset for the bar's content. This way the opaque
-       * background fully covers the scroll container's top during
-       * scroll, regardless of intermediate sub-pixel positioning. */}
+       * Gap-during-scroll fix (the bug user reported as "向下 scroll 时
+       * 有一条缝隙把后面的页面漏出来")—the previous attempt used
+       * top:0 with margin:-16px and only covered the parent's padding
+       * cleanly when sub-pixel rounding agreed. Now:
+       *   - top:-1px parks the sticky 1px above the scroll-container
+       *     edge so any rounding has 1px to absorb.
+       *   - margin-top:-17px + padding-top:17px keeps the visible top
+       *     edge of content at panel-body's content-area top (where it
+       *     was originally) while extending the opaque background up
+       *     past the panel-body padding.
+       *   - margin-left/right:-20px makes the bar edge-to-edge inside
+       *     panel-body's 20px horizontal padding. */}
       <div style={{
         position: "sticky",
-        top: 0,
+        top: -1,
         zIndex: 10,
         background: "var(--bg-app)",
-        margin: "-16px -20px 12px",
-        padding: "16px 20px 10px",
+        margin: "-17px -20px 12px",
+        padding: "17px 20px 10px",
+        boxSizing: "border-box",
         borderBottom: "1px solid var(--border)",
         boxShadow: "0 6px 6px -6px rgba(0,0,0,0.18)",
       }}>
