@@ -1126,25 +1126,29 @@ export function RhythmTemplateEditor({ data, onSave }: { data: RhythmTemplate | 
 /**
  * Chronicle format. Reference: 编年史是作者查阅工具,世界内史学家视角。
  *   epochs[] → periods[] (按时间) → events[]
- *   event = 【主体·分类·事件名】描述。  [隐] (可选)
+ *   event = 【主体·分类·事件名】描述。颗粒度按章节弧标题级别（每章 1-3 条）。
+ *   Each event also carries two time anchors:
+ *     time_marker  = 故事中时间（in-fiction clock, e.g. 「1954 年」）
+ *     first_chapter = 首次出现章节（real-text reference, e.g. 「第 12 章」）
  *
- * Backwards-compat: also accepts older arcs/key_events shape and renders a hint
- * to re-extract in chronicle format.
+ * Backwards-compat: also accepts older arcs/key_events shape (and tolerates a
+ * legacy `hidden` field on events / settings, but never displays or edits it).
  */
 
 export interface ChronicleEvent {
   subject: string;     // 主体: 人物/组织/概念
   category: string;    // 分类
-  name: string;        // 事件名
-  description: string; // 客观描述,2-5 句
-  hidden?: string;     // [隐] 当时无人知晓但作为史学家知道的真相
+  name: string;        // 事件名（章节弧标题级别）
+  description: string; // 1 句客观描述
   // Two time anchors — shown side-by-side as tags in the read view.
-  // story-time: 「1954 年 3 月」 (in-fiction clock; what the world says)
-  // first_chapter: 「第 12 章」 (real-text reference; where this event is
-  //                 first described — useful for jumping back to the
-  //                 source passage in the editor).
+  // time_marker: 故事中时间 「1954 年 3 月」 (in-fiction clock)
+  // first_chapter: 首次出现章节 「第 12 章」 (real-text reference)
   time_marker?: string;
   first_chapter?: string;
+  /** @deprecated Legacy [隐] field from older chronicles. New events no
+   *  longer carry it; the editor still tolerates the key on existing
+   *  data but never displays or edits it. */
+  hidden?: string;
 }
 export interface ChroniclePeriod {
   time: string;        // 时间标题: "2030 年 2 月上旬" / "第一卷开篇" 等
@@ -1170,7 +1174,7 @@ function isLegacy(d: PlotOutline | null | undefined): boolean {
 }
 
 function emptyEvent(): ChronicleEvent {
-  return { subject: "", category: "", name: "", description: "", hidden: "", time_marker: "", first_chapter: "" };
+  return { subject: "", category: "", name: "", description: "", time_marker: "", first_chapter: "" };
 }
 
 /** Strip ```json fences and `<think>` blocks from raw LLM text so the
@@ -1201,7 +1205,7 @@ function stripJsonFences(s: string): string {
 
 const CHRONICLE_EVENT_KEYS = new Set([
   "subject", "category", "name", "description",
-  "hidden", "time_marker", "first_chapter",
+  "time_marker", "first_chapter",
 ]);
 function looksLikeEvent(o: any): boolean {
   if (!o || typeof o !== "object") return false;
@@ -1275,13 +1279,13 @@ const EVENT_CATEGORIES: { key: string; label: string }[] = [
 ];
 
 const CHRONICLE_INSTRUCTIONS = `编年史是「世界内史学家」的客观记录：
-1. 视角：第三人称客观史学家，只记录「发生了什么」。
-2. 不写：对话原文、心理活动、场景细节、章节结构、伏笔预告。
+1. 视角：第三人称客观史学家，只记录「发生了什么」——不写心理、不写对话原文、不写场景细节。
+2. 颗粒度：章节弧标题级别。「主角拜师」是一个事件；「主角拿茶杯/喝茶/放下」就太细，要合并成一个。每章 1-3 条为佳。
 3. 时间标签有两个：
-   • 故事中时间（time_marker）—— 故事世界里的时钟，如「1954 年 3 月」「春末」。没有就留空。
-   • 首次出现章节（first_chapter）—— 原文里这条事件被首次描写的章号，如「第 12 章」。建议都填。
-4. 「[隐] 隐藏真相」用于事件背后**当前章节读者还不知道**的动机或真相；冰山理论视角下会折叠。
-5. 删除事件：在阅读视图右上角的 × 按钮可以直接删除。删除时间段或大段需要进入「编辑」模式。`;
+   • 故事中时间（time_marker）—— 故事世界的时钟，如「1954 年 3 月」「春末」。没有就留空。
+   • 首次出现章节（first_chapter）—— 原文里事件首次描写的章号，如「第 12 章」。两个都尽量填。
+4. 删除：阅读视图每条事件右上角 × 直接删除；时间段或大段的 × 在它们各自的标题行。
+5. AI 提取分两步：先逐章抽事件（按文本顺序），再用「整理时间线」prompt 让 LLM 按故事时间重排（处理倒叙/插叙）。`;
 
 export function PlotOutlineEditor({
   data,
@@ -1298,10 +1302,6 @@ export function PlotOutlineEditor({
   const [draft, setDraft] = useState<PlotOutline>(data || { epochs: [] });
   const [saving, setSaving] = useState(false);
   const [openEpoch, setOpenEpoch] = useState<Record<number, boolean>>({});
-  // Read-view mode: "full" = 全时间线 (god view, all info inline);
-  //                 "iceberg" = 冰山理论 (reader POV, [隐] hidden behind click).
-  const [viewMode, setViewMode] = useState<"full" | "iceberg">("iceberg");
-  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   // Per-event inline edit state — "ei-pi-evi" key → ChronicleEvent draft.
   // Editing one row at a time keeps the rest of the chronicle in read view.
   const [eventEdit, setEventEdit] = useState<{ key: string; draft: ChronicleEvent } | null>(null);
@@ -1536,8 +1536,8 @@ export function PlotOutlineEditor({
           lineHeight: 1.6,
         }}>
           <strong>编年史格式提示：</strong>世界内史学家第三人称客观视角，只记录"发生了什么"。
-          条目格式 <code>【主体·分类·事件名】描述。</code> 隐藏动机/真相用 <code>[隐]</code> 独立标注。
-          不写对话原文、心理活动、场景细节、章节结构、伏笔预告。
+          条目格式 <code>【主体·分类·事件名】描述。</code>
+          颗粒度按「章节弧标题」级别（如「主角拜师」），不写心理/对话原文/场景细节；每章 1-3 条为佳。
         </div>
         <div className="field" style={{ marginBottom: 14 }}>
           <label className="label">一句话梗概（可选）</label>
@@ -1633,18 +1633,10 @@ export function PlotOutlineEditor({
                           <textarea
                             className="input"
                             rows={2}
-                            placeholder="客观描述（2-5 句，不写对话/心理/场景细节）"
+                            placeholder="1 句客观描述（章节弧标题级别）"
                             value={ev.description}
                             onChange={e => updateEvent(ei, pi, evi, { description: e.target.value })}
                             style={{ marginBottom: 4, fontSize: 12 }}
-                          />
-                          <textarea
-                            className="input"
-                            rows={1}
-                            placeholder="[隐] 隐藏真相/动机（可选，留空则不显示）"
-                            value={ev.hidden || ""}
-                            onChange={e => updateEvent(ei, pi, evi, { hidden: e.target.value })}
-                            style={{ fontSize: 12, color: "var(--gold)", marginBottom: 4 }}
                           />
                           <div className="flex gap-4">
                             <input
@@ -1759,42 +1751,6 @@ export function PlotOutlineEditor({
             </div>
           )}
 
-          {/* View-mode toggle: 全时间线 vs 冰山理论 */}
-          <div style={{
-            display: "flex",
-            gap: 0,
-            marginBottom: 12,
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-sm)",
-            overflow: "hidden",
-            width: "fit-content",
-          }}>
-            {([
-              { key: "full", label: "全时间线剧情", hint: "按作品中的时间顺序，包含所有信息（含隐藏真相）" },
-              { key: "iceberg", label: "冰山理论视角", hint: "与读者视角一致，隐藏信息点击展开" },
-            ] as const).map(opt => (
-              <button
-                key={opt.key}
-                className="btn-ghost"
-                title={opt.hint}
-                onClick={() => setViewMode(opt.key)}
-                style={{
-                  padding: "5px 14px",
-                  fontSize: 12,
-                  fontWeight: viewMode === opt.key ? 600 : 400,
-                  color: viewMode === opt.key ? "var(--accent)" : "var(--text-secondary)",
-                  background: viewMode === opt.key ? "var(--accent-subtle)" : "transparent",
-                  borderRadius: 0,
-                }}
-              >{opt.label}</button>
-            ))}
-          </div>
-          <div className="text-xs text-muted" style={{ marginBottom: 10, marginTop: -6 }}>
-            {viewMode === "full"
-              ? "按作品内时间顺序排列，所有信息（含 [隐] 隐藏真相）直接展示。"
-              : "采用冰山理论 · 主视角阅读 · 隐藏信息默认折叠，点击 [隐] 标签展开。"}
-          </div>
-
           <div className="flex flex-col gap-12">
             {epochs.map((ep, ei) => {
               const isOpen = openEpoch[ei] !== false; // default open
@@ -1834,7 +1790,6 @@ export function PlotOutlineEditor({
                       <div className="flex flex-col gap-6" style={{ paddingLeft: 8, borderLeft: "2px solid var(--border)" }}>
                         {(per.events || []).map((ev, evi) => {
                           const key = `${ei}-${pi}-${evi}`;
-                          const showHidden = viewMode === "full" || revealed[key];
                           const isInlineEditing = eventEdit?.key === key;
                           if (isInlineEditing) {
                             const ed = eventEdit!.draft;
@@ -1863,12 +1818,7 @@ export function PlotOutlineEditor({
                                   placeholder="客观描述（2-5 句，不写对话/心理/场景细节）"
                                   value={ed.description}
                                   onChange={e => patch({ description: e.target.value })}
-                                  style={{ marginBottom: 4, fontSize: 12 }} />
-                                <textarea className="input" rows={1}
-                                  placeholder="[隐] 隐藏真相/动机（可选）"
-                                  value={ed.hidden || ""}
-                                  onChange={e => patch({ hidden: e.target.value })}
-                                  style={{ marginBottom: 4, fontSize: 12, color: "var(--gold)" }} />
+                                  style={{ marginBottom: 6, fontSize: 12 }} />
                                 <div className="flex gap-4" style={{ marginBottom: 6 }}>
                                   <input className="input"
                                     placeholder='故事中时间（如「1954 年 3 月」）'
@@ -1921,20 +1871,6 @@ export function PlotOutlineEditor({
                                 )}
                                 {" "}
                                 <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
-                                {ev.hidden && viewMode === "iceberg" && !showHidden && (
-                                  <button
-                                    className="btn-ghost"
-                                    onClick={() => setRevealed(prev => ({ ...prev, [key]: true }))}
-                                    style={{
-                                      marginLeft: 6, padding: "1px 8px", fontSize: 10,
-                                      borderRadius: 3, background: "var(--bg-surface-2)",
-                                      border: "1px dashed var(--gold)",
-                                      color: "var(--gold)", fontWeight: 600,
-                                      cursor: "pointer", lineHeight: 1.4,
-                                    }}
-                                    title="点击展开隐藏的真相"
-                                  >[隐] 展开</button>
-                                )}
                               </div>
                               <div style={{
                                 position: "absolute", top: 0, right: 0,
@@ -1969,15 +1905,6 @@ export function PlotOutlineEditor({
                                   </svg>
                                 </button>
                               </div>
-                              {ev.hidden && showHidden && (
-                                <div style={{ fontSize: 12, lineHeight: 1.6, marginTop: 2, color: "var(--gold)" }}>
-                                  <span
-                                    style={{ fontWeight: 600, cursor: viewMode === "iceberg" ? "pointer" : "default" }}
-                                    onClick={() => viewMode === "iceberg" && setRevealed(prev => ({ ...prev, [key]: false }))}
-                                    title={viewMode === "iceberg" ? "点击重新隐藏" : undefined}
-                                  >[隐]</span> {ev.hidden}
-                                </div>
-                              )}
                             </div>
                           );
                         })}
@@ -2077,13 +2004,6 @@ export function PlotOutlineEditor({
                 <textarea className="input" rows={2}
                           value={quickEvent.description}
                           onChange={e => setQuickEvent({ ...quickEvent, description: e.target.value })} />
-              </div>
-              <div className="field">
-                <label className="label" style={{ color: "var(--gold)" }}>[隐] 隐藏真相（可选）</label>
-                <textarea className="input" rows={1} placeholder="本段读者还不知道的动机/真相"
-                          value={quickEvent.hidden || ""}
-                          onChange={e => setQuickEvent({ ...quickEvent, hidden: e.target.value })}
-                          style={{ color: "var(--gold)" }} />
               </div>
               <div className="flex gap-6">
                 <div className="field" style={{ flex: 1 }}>
@@ -2205,8 +2125,11 @@ export interface SettingItem {
   category: string;
   title: string;
   content: string;
+  first_introduced_at?: string; // 首次出现的故事中时间
+  first_chapter?: string;       // 首次出现的章号
+  /** @deprecated Legacy [隐] field. New extractions don't write it; the
+   *  editor no longer displays or edits the key. */
   hidden?: string;
-  first_introduced_at?: string; // 首次出现的时间锚点
 }
 
 export const SETTING_CATEGORIES: { key: string; label: string; color: string }[] = [
@@ -2232,7 +2155,6 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
   const [draft, setDraft] = useState<SettingItem[]>(data || []);
   const [saving, setSaving] = useState(false);
   const [filter, setFilter] = useState<string>("");
-  const [revealed, setRevealed] = useState<Record<number, boolean>>({});
 
   const start = () => { setDraft(data || []); setEditing(true); };
   const cancel = () => { setDraft(data || []); setEditing(false); };
@@ -2247,7 +2169,7 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
     return (
       <div>
         <div className="text-xs text-muted" style={{ marginBottom: 10, lineHeight: 1.6 }}>
-          编辑作品的世界观与设定。类别用于分组；如设定背后有读者尚未知道的隐藏真相，写在「[隐]」字段中。
+          编辑作品的世界观与设定。类别用于分组；尽量填上「首次出现的故事中时间」和「首次出现的章号」，方便定位。
         </div>
         <div className="flex flex-col gap-8" style={{ marginBottom: 12 }}>
           {draft.map((s, i) => (
@@ -2282,27 +2204,28 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
                 onChange={e => { const list = [...draft]; list[i] = { ...s, content: e.target.value }; setDraft(list); }}
                 style={{ marginBottom: 6 }}
               />
-              <textarea
-                className="input"
-                rows={2}
-                placeholder="[隐] 该设定背后的真相 / 读者尚未知道的部分（可选）"
-                value={s.hidden || ""}
-                onChange={e => { const list = [...draft]; list[i] = { ...s, hidden: e.target.value }; setDraft(list); }}
-                style={{ color: "var(--gold)", marginBottom: 6 }}
-              />
-              <input
-                className="input"
-                placeholder='首次出现的时间锚点 (如 "1954 年" / "第 3 章")'
-                value={s.first_introduced_at || ""}
-                onChange={e => { const list = [...draft]; list[i] = { ...s, first_introduced_at: e.target.value }; setDraft(list); }}
-                style={{ fontSize: 12 }}
-              />
+              <div className="flex gap-4">
+                <input
+                  className="input"
+                  placeholder='首次出现的故事中时间（如「1954 年」）'
+                  value={s.first_introduced_at || ""}
+                  onChange={e => { const list = [...draft]; list[i] = { ...s, first_introduced_at: e.target.value }; setDraft(list); }}
+                  style={{ flex: 1, fontSize: 12 }}
+                />
+                <input
+                  className="input"
+                  placeholder='首次出现的章号（如「第 3 章」）'
+                  value={s.first_chapter || ""}
+                  onChange={e => { const list = [...draft]; list[i] = { ...s, first_chapter: e.target.value }; setDraft(list); }}
+                  style={{ flex: 1, fontSize: 12 }}
+                />
+              </div>
             </div>
           ))}
           <button
             className="btn"
             style={{ fontSize: 12, padding: "4px 10px", alignSelf: "flex-start" }}
-            onClick={() => setDraft([...draft, { category: "worldview", title: "", content: "", hidden: "", first_introduced_at: "" }])}
+            onClick={() => setDraft([...draft, { category: "worldview", title: "", content: "", first_introduced_at: "", first_chapter: "" }])}
           >+ 新增设定</button>
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -2378,43 +2301,24 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
                     {item.first_introduced_at && (
                       <span className="tag" style={{
                         fontSize: 10, padding: "1px 6px",
-                        color: "var(--accent)",
-                        background: "var(--accent-subtle)",
-                        border: "1px solid var(--accent)",
-                      }} title="首次出现时间锚点">{item.first_introduced_at}</span>
+                        color: "var(--gold)",
+                        background: "var(--bg-surface-2)",
+                        border: "1px solid var(--gold)",
+                      }} title="故事中时间">⏱ {item.first_introduced_at}</span>
+                    )}
+                    {item.first_chapter && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px",
+                        color: "var(--jade)",
+                        background: "var(--bg-surface-2)",
+                        border: "1px solid var(--jade)",
+                      }} title="首次出现章节">📖 {item.first_chapter}</span>
                     )}
                   </div>
                   {item.content && (
                     <div style={{ fontSize: 12, lineHeight: 1.55, color: "var(--text-secondary)" }}>
                       {item.content}
                     </div>
-                  )}
-                  {item.hidden && (
-                    revealed[idx] ? (
-                      <div style={{ fontSize: 12, lineHeight: 1.55, marginTop: 6, color: "var(--gold)" }}>
-                        <span
-                          style={{ fontWeight: 600, cursor: "pointer" }}
-                          onClick={() => setRevealed(prev => ({ ...prev, [idx]: false }))}
-                          title="点击重新隐藏"
-                        >[隐]</span> {item.hidden}
-                      </div>
-                    ) : (
-                      <button
-                        className="btn-ghost"
-                        onClick={() => setRevealed(prev => ({ ...prev, [idx]: true }))}
-                        style={{
-                          marginTop: 6,
-                          padding: "1px 8px",
-                          fontSize: 10,
-                          borderRadius: 3,
-                          background: "var(--bg-surface-2)",
-                          border: "1px dashed var(--gold)",
-                          color: "var(--gold)",
-                          fontWeight: 600,
-                          lineHeight: 1.4,
-                        }}
-                      >[隐] 展开</button>
-                    )
                   )}
                 </div>
               ))}

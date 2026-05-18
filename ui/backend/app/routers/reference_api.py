@@ -3038,6 +3038,30 @@ def preview_prompt(
         rendered = render(key, **vars_)
         return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
 
+    # ai_complete: ref_id is enough (no segment needed)
+    if key == "reference.ai_complete":
+        if not ref_id:
+            raise HTTPException(400, "ref_id required for this prompt")
+        db = _db()
+        w = db.get_work(ref_id)
+        if not w:
+            raise HTTPException(404, "参考作品不存在")
+        author_hint = (
+            f"已知作者：{w['creator']}（可用作辅助检索；如有更准确的全名请覆盖）"
+            if w.get("creator") else "作者未知，请通过标题检索"
+        )
+        vars_ = {
+            "media_type_zh": _MEDIA_ZH.get(w.get("media_type", ""), "作品"),
+            "title": w.get("title", ""),
+            "author_hint": author_hint,
+        }
+        rendered = render(key, **vars_)
+        return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
+
+    # Fallback: render with empty vars (will raise on missing required vars)
+    rendered = render(key)
+    return {"key": key, "template": template, "rendered": rendered, "vars": {}}
+
 
 @router.get("/prompts/{key}/preview_chunks")
 def preview_prompt_chunks(
@@ -3151,29 +3175,85 @@ def preview_prompt_chunks(
     except Exception as e:
         raise HTTPException(500, f"构建分段预览失败: {e}")
 
-    # ai_complete: ref_id is enough
-    if key == "reference.ai_complete":
-        if not ref_id:
-            raise HTTPException(400, "ref_id required for this prompt")
-        db = _db()
-        w = db.get_work(ref_id)
-        if not w:
-            raise HTTPException(404, "参考作品不存在")
-        author_hint = (
-            f"已知作者：{w['creator']}（可用作辅助检索；如有更准确的全名请覆盖）"
-            if w.get("creator") else "作者未知，请通过标题检索"
-        )
-        vars_ = {
-            "media_type_zh": _MEDIA_ZH.get(w.get("media_type", ""), "作品"),
-            "title": w.get("title", ""),
-            "author_hint": author_hint,
-        }
-        rendered = render(key, **vars_)
-        return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
 
-    # Fallback: render with empty vars (will probably raise)
-    rendered = render(key)
-    return {"key": key, "template": template, "rendered": rendered, "vars": {}}
+class OutlineSummaryPromptRequest(BaseModel):
+    ref_id: str
+    segment_index: int
+    # Flat list of event dicts (from one or more outline per-chunk runs).
+    # Each dict needs at least name+description; we strip unknown keys
+    # before embedding so the rendered prompt stays small.
+    events: list[dict]
+
+
+@router.post("/prompts/reference.outline_summary/render")
+def render_outline_summary_prompt(body: OutlineSummaryPromptRequest):
+    """Render the chronological-summary prompt with the user's
+    accumulated events spliced in. Step 2 of the manual outline flow:
+    after running all per-chunk extraction prompts and accumulating
+    events, the user calls this to get a ready-to-copy summary prompt
+    that asks the LLM to reorder by story-time + group into periods/epochs.
+
+    POST (not GET) because the events array can be large and shouldn't
+    sit in a URL. The endpoint itself does no AI work — it just renders."""
+    db = _db()
+    w = db.get_work(body.ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import (
+            FeatureExtractionPipeline, build_work_ctx,
+        )
+        from analysis.feature_extraction.prompts import render
+        from analysis.feature_extraction.ai_extractor import _normalize_event
+
+        pipe = FeatureExtractionPipeline(db.db_path)
+        text = pipe._load_text(w)
+        if not text:
+            raise HTTPException(400, "作品尚未上传正文")
+        all_chapters = pipe._split_chapters(text)
+        plan = pipe.get_effective_plan(body.ref_id, all_chapters)
+        segs = plan["segments"]
+        if not segs:
+            plan = pipe.plan_segments(all_chapters)
+            segs = plan["segments"]
+        if body.segment_index < 0 or body.segment_index >= len(segs):
+            raise HTTPException(400, "segment_index 超出范围")
+        seg = segs[body.segment_index]
+        ctx = build_work_ctx(w, seg, body.segment_index)
+
+        # Normalize and dedupe events on (subject, name, description)
+        # so accidental double-pastes don't bloat the rendered prompt.
+        seen: set[tuple] = set()
+        cleaned: list[dict] = []
+        for ev in body.events or []:
+            n = _normalize_event(ev)
+            if n is None:
+                continue
+            sig = (n["subject"], n["name"], n["description"])
+            if sig in seen:
+                continue
+            seen.add(sig)
+            cleaned.append(n)
+
+        events_json = json.dumps(cleaned, ensure_ascii=False, indent=2)
+        rendered = render(
+            "reference.outline_summary",
+            title=ctx["title"], author=ctx["author"],
+            volume_index=ctx["volume_index"], volume_title=ctx["volume_title"],
+            start_chapter=ctx["start_chapter"], end_chapter=ctx["end_chapter"],
+            n_chapters=seg["end_chapter"] - seg["start_chapter"] + 1,
+            event_count=len(cleaned), events_json=events_json,
+        )
+        return {
+            "key": "reference.outline_summary",
+            "rendered": rendered,
+            "event_count": len(cleaned),
+            "dropped": len(body.events or []) - len(cleaned),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"构建总结 prompt 失败: {e}")
 
 
 @router.get("/web_search/capability")

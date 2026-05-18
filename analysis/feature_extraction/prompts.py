@@ -90,12 +90,11 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 - category: 必填，从以下英文 key 选一个：power_system | factions | geography | social_rules | history | hard_rules | worldview | other
 - title: 设定名称（如「魔法体系」「皇家骑士团」「时间法则」）
 - content: 2-4 句客观描述，写已知事实
-- hidden: 可选。该设定背后尚未对读者公开的真相、来源或动机；无则填 ""
 - first_introduced_at: 首次出现的故事中时间（如「1954 年」），找不到则留空
 - first_chapter: 本卷里首次出现的章号，如「第 5 章」；强烈建议填写
 
 输出示例（仅示意结构）：
-[{{"category":"factions","title":"18 号监狱","content":"一个收押超凡个体的特殊机构。","hidden":"","first_introduced_at":"","first_chapter":"第 1 章"}}]
+[{{"category":"factions","title":"18 号监狱","content":"一个收押超凡个体的特殊机构。","first_introduced_at":"","first_chapter":"第 1 章"}}]
 
 最多 25 条。
 
@@ -110,7 +109,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
     "reference.outline": {
         "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
 
-为下面这**一段**小说文本提取**编年史**格式的剧情大纲。
+任务：**逐章**抽取本段文本里发生的关键事件。每章产出 1-3 条**粗颗粒度**事件（章节弧标题级别，不是镜头级），按文本里出现的顺序排列。时间线整理（倒叙/插叙拉直、分组成 periods/epochs）交给下一步的总结 prompt——本步**不要**输出 epochs / periods 结构，只输出扁平 events 数组。
 
 作品上下文（仅用于消歧 / 检索；不要把它们当成「我们已经聊过的内容」）：
 - 作品标题：《{title}》
@@ -125,41 +124,34 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 - ```json ... ``` 这样的 markdown 包装
 - <think>...</think> 等推理块
 - JSON 之外的任何文字
+- **不要**输出 `hidden`、`epochs`、`periods` 等字段——本步只要扁平 events
+- 不要在事件里写心理活动 / 对话原文 / 场景描写
 
 **只输出**：以 `{{` 开始、以 `}}` 结束的合法 JSON 对象。
 
-输出 JSON schema（字段名严格匹配）：
+输出 JSON schema（字段名严格匹配，按文本出现顺序排列）：
 
 {{
-  "logline": "≤ 50 字一句话概括本段主线；不写背景介绍。若 chunk_index > 1 可留空",
-  "epochs": [
+  "events": [
     {{
-      "title": "通常就是本段对应的故事时间（如「1954 年春」）或卷名",
-      "periods": [
-        {{
-          "time": "时间段（故事中时间，如「春」「主角入狱后」），与 events[].time_marker 协调",
-          "events": [
-            {{
-              "subject": "事件主语：角色名 / 组织名 / 「叙事者」",
-              "category": "plot_main | plot_side | character | setting | conflict | revelation | foreshadow | other",
-              "name": "事件名（≤ 12 字）",
-              "description": "1-2 句客观描述发生了什么；不写心理、不复述对话原文",
-              "hidden": "可选；该事件背后**本段尚未公开**的真相或动机；无则填空字符串",
-              "time_marker": "故事中时间，如「1954 年 3 月」「春末」；无显式时间填 \\"\\"",
-              "first_chapter": "首次出现该事件的章号（使用作品的全局章号，如「第 12 章」）；强烈建议填写"
-            }}
-          ]
-        }}
-      ]
+      "first_chapter": "本事件出现的章号（使用作品全局章号，如「第 12 章」），必填",
+      "time_marker": "事件在故事中的时间（如「1954 年 3 月」「春末」「主角入狱后」）；无显式时间填 \\"\\"",
+      "subject": "事件主语：角色名 / 组织名 / 「叙事者」",
+      "category": "plot_main | plot_side | character | setting | conflict | revelation | foreshadow | other",
+      "name": "事件名（≤ 12 字，章节弧标题级别）",
+      "description": "1 句客观陈述本事件的事实，≤ 60 字；不写动机/心理/细节"
     }}
   ]
 }}
 
-要求：
-- `time_marker` 是「故事中时间」（fiction-world clock），`first_chapter` 是「该事件在原文里首次出现的章节」（real-text reference）。两者用途不同，请尽量都填。
-- 仅覆盖**本次提取范围**内的章节内容；下一段（如有）会在另一次调用中提取。
-- 事件按发生顺序排列。
-- 找不到任何事件时返回 `{{"logline":"","epochs":[]}}`。
+颗粒度参考：
+- ✓ 「主角在镖局拜师学艺」——一个事件
+- ✗ 「主角拿起茶杯 / 喝了一口 / 放下茶杯」——太细，合并成一个
+- ✓ 「反派一人挑了三大门派」——一个事件
+- ✗ 「反派打了 A / 打了 B / 打了 C」——太细，合并成一个
+- 每章 1-3 条事件最佳；超过 5 条说明颗粒度太细，请合并
+
+本段中没有事件时返回 `{{"events":[]}}`。
 
 本段正文（约 {n_chars} 字）：
 {text}
@@ -171,7 +163,68 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
             "chunk_start_chapter", "chunk_end_chapter", "chunk_n_chapters",
             "n_chars", "text",
         ],
-        "description": "参考作品分卷提取编年史大纲（含故事中时间 + 首次出现章节；超长卷自动分段）",
+        "description": "参考作品分卷逐章抽取关键事件（粗颗粒度，扁平 events 数组；超长卷自动分段）",
+    },
+
+    "reference.outline_summary": {
+        "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
+
+任务：把下面这份**按文本顺序**抽取的事件列表，整理成**按故事中时间排序**的编年史。原作可能有倒叙 / 插叙——你的工作就是把它们拉直成单一时间线，再按时间分组到 periods、再按更大阶段分组到 epochs。
+
+作品上下文：
+- 作品标题：《{title}》
+- 作者：{author}
+- 本卷：第 {volume_index} 卷 {volume_title}
+- 本卷总章节范围：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
+- 输入事件数：{event_count}
+
+**严格禁止**：寒暄/解释/markdown 包装/<think>/JSON 之外任何字符；**不要新增 `hidden` 等字段**。
+
+**只输出**：以 `{{` 开始、以 `}}` 结束的合法 JSON 对象。
+
+整理规则：
+1. **按 `time_marker`（故事中时间）排序**——以故事中时间为准，不以章节号为准。
+2. 没有明确 time_marker 的事件，参考 first_chapter 和上下文事件推断位置；实在不能确定则保持在 first_chapter 顺序里的相对位置。
+3. **保留全部事件**：不要删除、不要合并、不要新增。
+4. **不要修改字段值**：subject / category / name / description / time_marker / first_chapter 一律原样保留。
+5. 按时间相近的事件分组到 `periods`（同年/同阶段一个 period），periods 再分组到 `epochs`（更大故事阶段，如「童年篇」「战乱期」）。
+6. `logline` 一句话概括本卷主线（≤ 50 字）。
+
+输出 JSON schema：
+
+{{
+  "logline": "一句话主线",
+  "epochs": [
+    {{
+      "title": "大段标题（通常是阶段性故事时间或主题，如「童年篇」「1954 年春」）",
+      "periods": [
+        {{
+          "time": "时间段（故事时间，如「春」「1954 年 3 月」）",
+          "events": [
+            {{
+              "subject": "原样",
+              "category": "原样",
+              "name": "原样",
+              "description": "原样",
+              "time_marker": "原样",
+              "first_chapter": "原样"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+
+待整理的事件 JSON（按文本顺序）：
+{events_json}
+""",
+        "vars": [
+            "title", "author", "volume_index", "volume_title",
+            "start_chapter", "end_chapter", "n_chapters",
+            "event_count", "events_json",
+        ],
+        "description": "把分段抽取的事件按故事中时间排序，整理成编年史 epochs+periods 结构",
     },
 
     "reference.rhythm": {

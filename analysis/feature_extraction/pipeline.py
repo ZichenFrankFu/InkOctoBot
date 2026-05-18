@@ -1143,19 +1143,20 @@ class FeatureExtractionPipeline:
                     continue
                 cur = settings_map.get(key)
                 fi = (s.get("first_introduced_at") or "").strip()
+                fc = (s.get("first_chapter") or "").strip()
                 if cur is None or len((s.get("content") or "")) > len(cur.get("content") or ""):
                     settings_map[key] = {
                         "category": key[0],
                         "title": key[1],
                         "content": (s.get("content") or "").strip(),
-                        "hidden": (s.get("hidden") or "").strip(),
                         "first_introduced_at": fi or (cur.get("first_introduced_at") if cur else ""),
+                        "first_chapter": fc or (cur.get("first_chapter") if cur else ""),
                     }
                 else:
-                    if s.get("hidden") and not cur.get("hidden"):
-                        cur["hidden"] = (s.get("hidden") or "").strip()
                     if fi and not cur.get("first_introduced_at"):
                         cur["first_introduced_at"] = fi
+                    if fc and not cur.get("first_chapter"):
+                        cur["first_chapter"] = fc
         agg_settings = list(settings_map.values())
 
         rdb.update_work(

@@ -465,23 +465,37 @@ export default function PlotOutlinePanel({
                   </div>
 
                   {/* inline preview */}
-                  {isPreviewing && preview && (
+                  {isPreviewing && preview && (() => {
+                    // Did the AI actually produce anything usable? When
+                    // BOTH chronicle and characters/settings are empty,
+                    // treat the preview as a failure and skip the
+                    // preview/commit UI entirely — the user should
+                    // instead copy the prompt to a web LLM.
+                    const epochsCount = (preview.plot_outline?.epochs || []).length;
+                    const charsCount = (preview.characters || []).length;
+                    const settingsCount = (preview.settings || []).length;
+                    const hasAnyData = epochsCount + charsCount + settingsCount > 0;
+                    const hasErrors = !!(preview.errors && preview.errors.length > 0);
+                    const aiFailed = !hasAnyData && hasErrors;
+                    const periodsCount = (preview.plot_outline?.epochs || [])
+                      .reduce((n, ep) => n + (ep.periods?.length || 0), 0);
+                    return (
                     <div style={{
                       margin: "6px 0 4px 28px",
                       padding: 10,
-                      border: "1px solid var(--accent)",
+                      border: `1px solid var(--${aiFailed ? "error" : "accent"})`,
                       borderRadius: 4,
                       background: "var(--bg-card)",
                     }}>
                       <div className="flex items-center justify-between" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)" }}>
-                          预览 · {preview.elapsed_s}s
-                          <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
-                            {(preview.plot_outline?.epochs || []).length} 大段 ·
-                            {" "}{(preview.plot_outline?.epochs || []).reduce((n, ep) => n + (ep.periods?.length || 0), 0)} 时间段 ·
-                            {" "}{(preview.characters || []).length} 角色 ·
-                            {" "}{(preview.settings || []).length} 设定
-                          </span>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: `var(--${aiFailed ? "error" : "accent"})` }}>
+                          {aiFailed ? "AI 提取失败" : "预览"} · {preview.elapsed_s}s
+                          {!aiFailed && (
+                            <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
+                              {epochsCount} 大段 · {periodsCount} 时间段 ·
+                              {" "}{charsCount} 角色 · {settingsCount} 设定
+                            </span>
+                          )}
                         </div>
                         <div className="flex gap-6">
                           <button
@@ -489,62 +503,140 @@ export default function PlotOutlinePanel({
                             style={{ fontSize: 11, padding: "3px 10px" }}
                             onClick={() => { setPreview(null); setPreviewIdx(null); }}
                             disabled={committing}
-                          >取消</button>
+                          >{aiFailed ? "关闭" : "取消"}</button>
                           <button
                             className="btn"
                             style={{ fontSize: 11, padding: "3px 10px" }}
                             onClick={() => generatePreview(s.index)}
                             disabled={committing}
                           >重新生成</button>
-                          <button
-                            className="btn-primary"
-                            style={{ fontSize: 11, padding: "3px 10px" }}
-                            onClick={commitPreview}
-                            disabled={committing}
-                            title="保存本段提取结果到数据库，并立即合并到编年史"
-                          >{committing ? "入库中..." : "确认并入库"}</button>
+                          {!aiFailed && (
+                            <button
+                              className="btn-primary"
+                              style={{ fontSize: 11, padding: "3px 10px" }}
+                              onClick={commitPreview}
+                              disabled={committing}
+                              title="保存本段提取结果到数据库，并立即合并到编年史"
+                            >{committing ? "入库中..." : "确认并入库"}</button>
+                          )}
                         </div>
                       </div>
-                      {preview.warnings && preview.warnings.length > 0 && (
+
+                      {/* AI failure banner — directs user to the prompt
+                        * copy path. Replaces the preview + commit UI so
+                        * the user doesn't try to save an empty result. */}
+                      {aiFailed && (
                         <div style={{
-                          padding: "8px 10px",
+                          padding: "10px 12px", marginBottom: 8,
+                          background: "var(--bg-surface)",
+                          border: "1px solid var(--error)",
+                          borderRadius: 4,
+                          fontSize: 12, lineHeight: 1.6, color: "var(--text-primary)",
+                        }}>
+                          <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--error)" }}>
+                            本地 AI 提取失败 — 请改用网页版 LLM
+                          </div>
+                          <ol style={{ margin: "0 0 0 18px", padding: 0, fontSize: 12, lineHeight: 1.7 }}>
+                            <li>在下方「本卷大纲提取 prompt」点「复制本段」（超长卷点「复制全部 N 段」）</li>
+                            <li>把 prompt 粘到 ChatGPT / Claude.ai / 元宝 / 通义 任一网页 LLM，逐段拿到事件 JSON</li>
+                            <li>所有 chunk 跑完后，把累积的事件粘到「整理时间线 prompt」获取最终编年史</li>
+                            <li>把最终编年史 JSON 用上方「粘贴 JSON 大纲」按钮粘回本应用</li>
+                          </ol>
+                        </div>
+                      )}
+
+                      {/* Collapsible warnings — same disclosure pattern as errors */}
+                      {preview.warnings && preview.warnings.length > 0 && (
+                        <details style={{
                           marginBottom: 8,
                           background: "var(--bg-surface)",
                           border: "1px solid var(--gold)",
                           borderRadius: 4,
-                          fontSize: 11,
-                          color: "var(--gold)",
-                          lineHeight: 1.55,
+                          fontSize: 11, color: "var(--gold)",
                         }}>
-                          <div style={{ fontWeight: 600, marginBottom: 4 }}>AI 提取警告</div>
-                          <ul style={{ margin: 0, paddingLeft: 16 }}>
+                          <summary style={{
+                            padding: "6px 10px", cursor: "pointer",
+                            fontWeight: 600,
+                          }}>AI 提取警告 ({preview.warnings.length})</summary>
+                          <ul style={{ margin: 0, padding: "4px 10px 8px 24px", lineHeight: 1.55 }}>
                             {preview.warnings.map((w, i) => (
                               <li key={i} style={{ marginBottom: 2 }}>{w}</li>
                             ))}
                           </ul>
-                        </div>
-                      )}
-                      {preview.errors && preview.errors.length > 0 && (
-                        <div className="text-xs" style={{ color: "var(--error)", marginBottom: 6 }}>
-                          错误：{preview.errors.join("; ")}
-                        </div>
+                        </details>
                       )}
 
-                      {/* Per-volume outline prompt — uses the shared
-                       * PromptCopyPanel so it gets multi-chunk navigation
-                       * when the volume is too long for a single LLM call.
-                       * The panel keys on previewIdx so it always shows
-                       * prompts for the segment currently being previewed. */}
+                      {/* Collapsible errors — long error blobs (model
+                       * dump + diagnostic hint) bury the prompt-copy UI
+                       * when shown inline. The summary line shows count
+                       * + first error so the user knows the gist. */}
+                      {hasErrors && (
+                        <details style={{
+                          marginBottom: 8,
+                          background: "var(--bg-surface)",
+                          border: "1px solid var(--error)",
+                          borderRadius: 4,
+                          fontSize: 11, color: "var(--error)",
+                        }}>
+                          <summary style={{
+                            padding: "6px 10px", cursor: "pointer",
+                            fontWeight: 600, lineHeight: 1.45,
+                          }}>
+                            报错详情 ({preview.errors!.length} 条)
+                            <span className="text-xs text-muted" style={{
+                              marginLeft: 6, fontWeight: 400,
+                              display: "inline-block",
+                              maxWidth: "100%",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              verticalAlign: "bottom",
+                            }}>
+                              · {preview.errors![0].slice(0, 80)}…
+                            </span>
+                          </summary>
+                          <ul style={{ margin: 0, padding: "4px 10px 8px 24px", lineHeight: 1.55 }}>
+                            {preview.errors!.map((e, i) => (
+                              <li key={i} style={{ marginBottom: 4, wordBreak: "break-word" }}>{e}</li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+
+                      {/* Step 1: Per-chunk outline extraction prompt.
+                       *
+                       * Always visible (success or AI failure) — when
+                       * the configured model fails, the prompt is the
+                       * fallback path: user copies it to a web LLM,
+                       * runs each chunk, then accumulates the event
+                       * JSONs to feed step 2. */}
                       <PromptCopyPanel
                         refId={refId}
                         promptKey="reference.outline"
                         segmentIndex={previewIdx}
-                        label="本卷大纲提取 prompt（超长卷自动分段）"
+                        label="① 本卷大纲提取 prompt（超长卷自动分段；输出扁平事件数组）"
                       />
 
-                      <ChroniclePreview epochs={preview.plot_outline?.epochs || []} />
+                      {/* Step 2: Chronological summary prompt builder.
+                       *
+                       * After running step 1 on each chunk, the user
+                       * paste-merges all events into this textarea,
+                       * then clicks "生成总结 prompt" — backend embeds
+                       * the events into reference.outline_summary and
+                       * returns a ready-to-copy prompt that asks the
+                       * LLM to reorder by story-time + group into
+                       * periods/epochs. */}
+                      <OutlineSummaryHelper refId={refId} segmentIndex={previewIdx} />
 
-                      {/* AI chat box — refine this segment conversationally */}
+                      {/* The chronicle preview + AI chat box are only
+                       * useful when the in-process AI produced real
+                       * data. On AI failure, the user's path forward
+                       * is the prompt-copy flow above, so hide them. */}
+                      {!aiFailed && (
+                        <ChroniclePreview epochs={preview.plot_outline?.epochs || []} />
+                      )}
+
+                      {!aiFailed && (
                       <div style={{
                         marginTop: 12,
                         borderTop: "1px dashed var(--border)",
@@ -597,7 +689,7 @@ export default function PlotOutlinePanel({
                         <div className="flex gap-6">
                           <textarea
                             className="input"
-                            placeholder="例：把第 3 章的「打脸」事件改名为「初次出手」；或者添加一个 [隐]：……"
+                            placeholder="例：把第 3 章的「打脸」事件改名为「初次出手」；或合并某两条相似的事件……"
                             value={chatInput}
                             rows={2}
                             onChange={e => setChatInput(e.target.value)}
@@ -619,8 +711,10 @@ export default function PlotOutlinePanel({
                           >{chatSending ? "发送中" : "发送"}</button>
                         </div>
                       </div>
+                      )}
                     </div>
-                  )}
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -672,13 +766,23 @@ function ChroniclePreview({ epochs }: { epochs: ChronicleEpoch[] }) {
                       <span style={{ fontWeight: 600, color: "var(--accent)" }}>
                         【{ev.subject}·{ev.category}·{ev.name}】
                       </span>
+                      {ev.time_marker && (
+                        <span style={{
+                          marginLeft: 4, fontSize: 10, padding: "0 5px",
+                          color: "var(--gold)", border: "1px solid var(--gold)",
+                          borderRadius: 3,
+                        }} title="故事中时间">⏱ {ev.time_marker}</span>
+                      )}
+                      {ev.first_chapter && (
+                        <span style={{
+                          marginLeft: 3, fontSize: 10, padding: "0 5px",
+                          color: "var(--jade)", border: "1px solid var(--jade)",
+                          borderRadius: 3,
+                        }} title="首次出现章节">📖 {ev.first_chapter}</span>
+                      )}
+                      {" "}
                       <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
                     </div>
-                    {ev.hidden && (
-                      <div style={{ fontSize: 11, lineHeight: 1.55, marginTop: 2, color: "var(--gold)" }}>
-                        <span style={{ fontWeight: 600 }}>[隐]</span> {ev.hidden}
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>
@@ -686,6 +790,204 @@ function ChroniclePreview({ epochs }: { epochs: ChronicleEpoch[] }) {
           ))}
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ─── Outline summary prompt helper ────────────────────────────
+ * Step 2 of the manual outline pipeline. The user accumulates flat
+ * event JSONs from running step 1 on each chunk, pastes them here
+ * (any of: a single object {"events": [...]}, a single events array
+ * [...], or multiple objects/arrays concatenated), clicks 生成总结
+ * prompt, and gets back a ready-to-copy prompt embedding their
+ * events. They run THAT in a web LLM and paste the final chronicle
+ * back through the chronicle editor's 粘贴 JSON 大纲 button.
+ *
+ * Self-contained: tracks its own textarea + rendered output + copy
+ * state so multiple instances can coexist without sharing state. */
+function OutlineSummaryHelper({ refId, segmentIndex }: {
+  refId: string;
+  segmentIndex: number | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const [eventsText, setEventsText] = useState("");
+  const [rendered, setRendered] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "fail">("idle");
+
+  const collectEvents = (text: string): any[] => {
+    // Lenient parser: accept array of events, object with "events"
+    // key, single PlotOutline, or any combination concatenated.
+    // We try to extract all `events` arrays we can find by re-parsing
+    // each top-level JSON value in the input.
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+    // Try whole-thing JSON first.
+    const tryParse = (s: string): any | null => {
+      try { return JSON.parse(s); } catch { return null; }
+    };
+    const consume = (val: any, out: any[]) => {
+      if (Array.isArray(val)) {
+        // Either an array of events, or an array of outlines/groups.
+        for (const item of val) consume(item, out);
+        return;
+      }
+      if (val && typeof val === "object") {
+        if (Array.isArray(val.events)) {
+          for (const ev of val.events) out.push(ev);
+          return;
+        }
+        if (Array.isArray(val.epochs)) {
+          for (const ep of val.epochs) {
+            for (const per of (ep.periods || [])) {
+              for (const ev of (per.events || [])) out.push(ev);
+            }
+          }
+          return;
+        }
+        // A bare event object (has name or description).
+        if (typeof val.name === "string" || typeof val.description === "string") {
+          out.push(val);
+          return;
+        }
+      }
+    };
+    const result: any[] = [];
+    const direct = tryParse(trimmed);
+    if (direct !== null) {
+      consume(direct, result);
+      return result;
+    }
+    // Concat fallback: split on top-level JSON boundaries. Cheapest
+    // safe heuristic — find balanced { ... } and [ ... ] spans.
+    const spans: string[] = [];
+    let depth = 0;
+    let start = -1;
+    let opener = "";
+    for (let i = 0; i < trimmed.length; i++) {
+      const c = trimmed[i];
+      if (depth === 0 && (c === "{" || c === "[")) {
+        start = i;
+        opener = c;
+        depth = 1;
+        continue;
+      }
+      if (depth > 0) {
+        if (c === opener || (opener === "{" && c === "{") || (opener === "[" && c === "[")) depth++;
+        else if ((opener === "{" && c === "}") || (opener === "[" && c === "]")) {
+          depth--;
+          if (depth === 0 && start >= 0) {
+            spans.push(trimmed.slice(start, i + 1));
+            start = -1;
+          }
+        }
+      }
+    }
+    for (const s of spans) {
+      const v = tryParse(s);
+      if (v !== null) consume(v, result);
+    }
+    return result;
+  };
+
+  const generate = async () => {
+    setError("");
+    setRendered("");
+    if (segmentIndex == null) {
+      setError("请先在上方选择一卷并进入预览");
+      return;
+    }
+    const events = collectEvents(eventsText);
+    if (events.length === 0) {
+      setError("没解析出任何事件。请粘贴 step ① 各 chunk 返回的 JSON（可多份直接拼接）。");
+      return;
+    }
+    setLoading(true);
+    try {
+      const r = await apiPost<{ rendered: string; event_count: number; dropped: number }>(
+        `/api/references/prompts/reference.outline_summary/render`,
+        { ref_id: refId, segment_index: segmentIndex, events },
+      );
+      setRendered(r.rendered || "");
+      if (r.dropped && r.dropped > 0) {
+        setError(`已忽略 ${r.dropped} 条无效/重复事件，剩 ${r.event_count} 条`);
+      }
+    } catch (e: any) {
+      setError(e?.message || "生成失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!rendered) return;
+    try {
+      await navigator.clipboard.writeText(rendered);
+      setCopyState("copied");
+      setTimeout(() => setCopyState("idle"), 1500);
+    } catch {
+      setCopyState("fail");
+      setTimeout(() => setCopyState("idle"), 1500);
+    }
+  };
+
+  return (
+    <div style={{ marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4 }}>
+      <button className="btn-ghost w-full" onClick={() => setOpen(o => !o)}
+              style={{
+                justifyContent: "space-between", padding: "6px 10px",
+                fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
+                borderRadius: 0,
+              }}>
+        <span>② 整理时间线 prompt（粘贴 ① 各 chunk 的事件后生成，倒叙/插叙会被拉直）</span>
+        <span className="text-xs text-muted" style={{
+          transition: "transform 0.15s",
+          transform: open ? "rotate(180deg)" : "none",
+          display: "inline-block",
+        }}>&#x25BC;</span>
+      </button>
+      {open && (
+        <div style={{ padding: 10, background: "var(--bg-surface)" }}>
+          <div className="text-xs text-muted" style={{ marginBottom: 6, lineHeight: 1.55 }}>
+            把 step ① 在网页 LLM 跑出的所有 chunk 的事件粘贴到下方（可以直接把 N 段 JSON 整段贴在一起，会自动识别）。
+            点「生成总结 prompt」会渲染出 step ② 的 prompt——把它复制到 LLM，再把 LLM 的返回用上方「粘贴 JSON 大纲」入库即可。
+          </div>
+          <textarea
+            className="input font-mono"
+            rows={6}
+            value={eventsText}
+            onChange={e => setEventsText(e.target.value)}
+            placeholder='[在此粘贴 ① 各 chunk 的输出，例如 {"events":[…]} 或多段拼接]'
+            style={{ fontSize: 11, lineHeight: 1.5, resize: "vertical", marginBottom: 6 }}
+          />
+          <div className="flex items-center gap-6" style={{ flexWrap: "wrap" }}>
+            <button className="btn" onClick={generate} disabled={loading || !eventsText.trim()}
+                    style={{ fontSize: 11, padding: "3px 10px" }}>
+              {loading ? "生成中…" : "生成总结 prompt"}
+            </button>
+            <button className="btn" onClick={copy} disabled={!rendered}
+                    style={{ fontSize: 11, padding: "3px 10px" }}>
+              {copyState === "copied" ? "已复制" : copyState === "fail" ? "复制失败" : "复制总结 prompt"}
+            </button>
+            {error && (
+              <span className="text-xs" style={{
+                color: error.includes("忽略") ? "var(--gold)" : "var(--error)",
+              }}>{error}</span>
+            )}
+          </div>
+          {rendered && (
+            <pre className="font-mono" style={{
+              marginTop: 8, padding: 8, fontSize: 11, lineHeight: 1.55,
+              background: "var(--bg-card)", borderRadius: 3,
+              border: "1px solid var(--border)",
+              color: "var(--text-secondary)",
+              maxHeight: 280, overflow: "auto",
+              whiteSpace: "pre-wrap", wordBreak: "break-word",
+            }}>{rendered}</pre>
+          )}
+        </div>
+      )}
     </div>
   );
 }

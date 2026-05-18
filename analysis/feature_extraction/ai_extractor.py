@@ -465,36 +465,57 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
             "category": cat,
             "title": title,
             "content": content,
-            "hidden": (it.get("hidden") or "").strip(),
             "first_introduced_at": (it.get("first_introduced_at") or "").strip(),
             "first_chapter": (it.get("first_chapter") or "").strip(),
         })
     return out
 
 
-async def ai_extract_outline(chapters: list[dict], router: Any,
-                                *, prompt_override: str | None = None,
-                                use_web_search: bool = False,
-                                work_ctx: dict | None = None) -> dict:
-    """Extract a chronicle-format outline (epochs/periods/events) for one
-    volume. This is a dedicated outline-only call that returns:
+_OUTLINE_CATS = frozenset({
+    "plot_main", "plot_side", "character", "setting",
+    "conflict", "revelation", "foreshadow", "other",
+})
 
-        {"logline": str, "epochs": [{"title", "periods": [
-            {"time", "events": [{
-                "subject", "category", "name", "description",
-                "hidden", "time_marker", "first_chapter",
-            }]}
-        ]}]}
 
-    The pipeline merges these volumes into the work's master chronicle.
-    Each event carries BOTH ``time_marker`` (story-time) and
-    ``first_chapter`` (where in the text the event first appears) so
-    the UI can show them as separate tags.
+def _normalize_event(ev: Any) -> dict | None:
+    """Coerce a single raw event into the canonical shape, dropping it
+    if it has neither name nor description. Strips legacy ``hidden``
+    fields silently — we removed [隐] from the chronicle contract."""
+    if not isinstance(ev, dict):
+        return None
+    name = (ev.get("name") or "").strip()
+    desc = (ev.get("description") or "").strip()
+    if not name and not desc:
+        return None
+    cat = (ev.get("category") or "other").strip()
+    if cat not in _OUTLINE_CATS:
+        cat = "other"
+    return {
+        "subject": (ev.get("subject") or "").strip()[:40],
+        "category": cat,
+        "name": name[:40],
+        "description": desc[:120],
+        "time_marker": (ev.get("time_marker") or "").strip(),
+        "first_chapter": (ev.get("first_chapter") or "").strip(),
+    }
 
-    The in-process call uses a single chunk (truncates at
-    ``_MAX_PROMPT_CHARS``) — for over-budget volumes, the user can
-    instead copy the multi-chunk prompts from the UI and run them
-    through a web LLM, then paste back the merged JSON.
+
+async def ai_extract_outline_events(
+    chapters: list[dict], router: Any,
+    *, prompt_override: str | None = None,
+    use_web_search: bool = False,
+    work_ctx: dict | None = None,
+) -> list[dict]:
+    """Step 1 of the outline pipeline: extract a **flat list** of
+    coarse events (1-3 per chapter, chapter-arc level) from a chunk
+    of chapters. Returns events in text order (not story-time order).
+
+    Output shape (each event)::
+
+        {"subject", "category", "name", "description",
+         "time_marker", "first_chapter"}
+
+    No epochs/periods grouping yet — that's step 2 (outline_summary).
     """
     from analysis.feature_extraction.prompts import render
     text, nchars = _build_segment_text(chapters)
@@ -511,10 +532,55 @@ async def ai_extract_outline(chapters: list[dict], router: Any,
     raw = await _invoke(router, prompt, max_tokens=4096,
                           use_web_search=use_web_search, expect="object")
     obj = _parse_obj(raw)
-    valid_cats = {
-        "plot_main", "plot_side", "character", "setting",
-        "conflict", "revelation", "foreshadow", "other",
-    }
+    # Accept either {"events": [...]} (current format) or the legacy
+    # {"epochs": [{"periods": [{"events": [...]}]}]} (old format,
+    # in case a user-customized prompt still produces it).
+    flat: list[dict] = []
+    raw_events = obj.get("events")
+    if isinstance(raw_events, list):
+        for ev in raw_events:
+            n = _normalize_event(ev)
+            if n is not None:
+                flat.append(n)
+    elif isinstance(obj.get("epochs"), list):
+        for ep in obj["epochs"]:
+            for per in (ep.get("periods") or []) if isinstance(ep, dict) else []:
+                for ev in (per.get("events") or []) if isinstance(per, dict) else []:
+                    n = _normalize_event(ev)
+                    if n is not None:
+                        flat.append(n)
+    return flat
+
+
+async def ai_summarize_outline(
+    events: list[dict], router: Any,
+    *, prompt_override: str | None = None,
+    use_web_search: bool = False,
+    work_ctx: dict | None = None,
+) -> dict:
+    """Step 2 of the outline pipeline: take a flat events list (from
+    one or more ``ai_extract_outline_events`` calls) and reorder by
+    story-time, grouping into ``epochs[].periods[].events[]``.
+
+    Returns the final chronicle dict ``{"logline", "epochs": [...]}``.
+    Events are kept verbatim — the LLM only re-orders and re-groups.
+    """
+    from analysis.feature_extraction.prompts import render
+    if not events:
+        return {"logline": "", "epochs": []}
+    ctx = _ctx(work_ctx)
+    events_json = json.dumps(events, ensure_ascii=False, indent=2)
+    prompt = render(
+        "reference.outline_summary", override=prompt_override,
+        event_count=len(events), events_json=events_json,
+        title=ctx["title"], author=ctx["author"],
+        volume_index=ctx["volume_index"], volume_title=ctx["volume_title"],
+        start_chapter=ctx["start_chapter"], end_chapter=ctx["end_chapter"],
+        n_chapters=ctx.get("end_chapter", 0) if isinstance(ctx.get("end_chapter"), int) else 0,
+    )
+    raw = await _invoke(router, prompt, max_tokens=4096,
+                          use_web_search=use_web_search, expect="object")
+    obj = _parse_obj(raw)
     epochs_out: list[dict] = []
     for ep in (obj.get("epochs") or []):
         if not isinstance(ep, dict):
@@ -523,26 +589,8 @@ async def ai_extract_outline(chapters: list[dict], router: Any,
         for per in (ep.get("periods") or []):
             if not isinstance(per, dict):
                 continue
-            events_out: list[dict] = []
-            for ev in (per.get("events") or []):
-                if not isinstance(ev, dict):
-                    continue
-                cat = (ev.get("category") or "other").strip()
-                if cat not in valid_cats:
-                    cat = "other"
-                name = (ev.get("name") or "").strip()
-                desc = (ev.get("description") or "").strip()
-                if not name and not desc:
-                    continue
-                events_out.append({
-                    "subject": (ev.get("subject") or "").strip()[:40],
-                    "category": cat,
-                    "name": name[:40],
-                    "description": desc,
-                    "hidden": (ev.get("hidden") or "").strip(),
-                    "time_marker": (ev.get("time_marker") or "").strip(),
-                    "first_chapter": (ev.get("first_chapter") or "").strip(),
-                })
+            events_out = [_normalize_event(ev) for ev in (per.get("events") or [])]
+            events_out = [e for e in events_out if e is not None]
             periods_out.append({
                 "time": (per.get("time") or "").strip(),
                 "events": events_out,
@@ -555,6 +603,43 @@ async def ai_extract_outline(chapters: list[dict], router: Any,
         "logline": (obj.get("logline") or "").strip(),
         "epochs": epochs_out,
     }
+
+
+async def ai_extract_outline(chapters: list[dict], router: Any,
+                                *, prompt_override: str | None = None,
+                                use_web_search: bool = False,
+                                work_ctx: dict | None = None) -> dict:
+    """End-to-end outline extraction for one volume.
+
+    Internally runs the two-step pipeline:
+      1) ``ai_extract_outline_events`` — flat per-chapter event list
+      2) ``ai_summarize_outline`` — reorder by story-time + group into
+         epochs / periods
+
+    Returns ``{"logline", "epochs": [{"title", "periods": [
+        {"time", "events": [{
+            "subject", "category", "name", "description",
+            "time_marker", "first_chapter",
+        }]}]}]}``.
+
+    The two-step split is mainly for the manual web-LLM path (where
+    each step has its own copy-prompt button), but we apply it
+    internally too so the in-process AI sees the same flow and the
+    output format stays consistent.
+    """
+    events = await ai_extract_outline_events(
+        chapters, router,
+        prompt_override=prompt_override,
+        use_web_search=use_web_search,
+        work_ctx=work_ctx,
+    )
+    if not events:
+        return {"logline": "", "epochs": []}
+    return await ai_summarize_outline(
+        events, router,
+        use_web_search=use_web_search,
+        work_ctx=work_ctx,
+    )
 
 
 async def ai_extract_narrative(chapters: list[dict], router: Any) -> dict:
