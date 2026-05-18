@@ -128,6 +128,37 @@ def build_work_ctx(work: dict, segment: dict, segment_index: int) -> dict[str, A
     }
 
 
+def _events_to_chapter_order_chronicle(
+    events: list[dict],
+    volume_title: str = "本卷",
+) -> dict[str, Any]:
+    """Group a flat events list into the chronicle shape used by the
+    rest of the pipeline + the editor. One epoch per volume, one
+    period per ``first_chapter`` (in the order chapters first appear),
+    events within a period in the order the AI returned them.
+
+    This is the "chapter-order chronicle" produced by the extraction
+    step. The story-time reordering happens later via the chronicle
+    summary action."""
+    if not events:
+        return {"logline": "", "epochs": []}
+    by_chapter: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        key = (ev.get("first_chapter") or "").strip() or "(未指定章节)"
+        if key not in by_chapter:
+            by_chapter[key] = []
+            order.append(key)
+        by_chapter[key].append(ev)
+    periods = [{"time": k, "events": by_chapter[k]} for k in order]
+    return {
+        "logline": "",
+        "epochs": [{"title": volume_title or "本卷", "periods": periods}],
+    }
+
+
 def _enrich_settings_with_timestamp(settings_items: list[dict], chapters: list[dict],
                                       segment_start_chapter: int) -> list[dict]:
     """Fill `first_introduced_at` on settings items when AI didn't provide one.
@@ -811,21 +842,81 @@ class FeatureExtractionPipeline:
         if ai_rhythm:
             rhythm = ai_rhythm
 
-        # Plot outline — dedicated AI call (chronicle format with both
-        # story-time and first-chapter tags on every event). If the AI
-        # call fails, we still produce a chapter-title skeleton via the
-        # NLP extractor so the user has SOMETHING to edit, but the AI
-        # version is preferred — never silently overrides AI with NLP.
+        # Plot outline — chunked extraction. The extraction step
+        # produces "chronicle in chapter order" (events grouped by
+        # first_chapter, not yet reordered by story-time). The
+        # story-time summary is a separate user-driven action from the
+        # chronicle display section.
+        #
+        # Iterate per-chunk so even very long volumes finish without
+        # tripping the 32k prompt cap. Failures on individual chunks
+        # surface as separate errors but don't poison the whole volume.
         plot: dict = {}
-        ai_plot = await _ai_only(
-            "outline",
-            ai_extractor.ai_extract_outline,
-            prompt_key="reference.outline",
-        )
-        if ai_plot and (ai_plot.get("epochs") or ai_plot.get("logline")):
-            plot = ai_plot
+        ai_outline_override = (prompt_overrides or {}).get("reference.outline")
+        try:
+            chunks = ai_extractor.build_segment_text_chunks(
+                seg_chapters,
+                segment_start_chapter=seg.get("start_chapter") or 1,
+            )
+        except Exception as e:
+            chunks = []
+            errors.append(f"outline chunking: {e}")
+
+        chunk_total = len(chunks)
+        all_events: list[dict] = []
+        outline_chunks_used = 0
+        if router is not None and chunk_total > 0:
+            # `seg_chapters` is the volume's full chapter list with the
+            # `index` field set relative to the volume start. We slice
+            # it per chunk by absolute chapter number so each AI call
+            # sees only the chunk's chapters.
+            for ci, chunk in enumerate(chunks):
+                lo = chunk["start_chapter"]
+                hi = chunk["end_chapter"]
+                chunk_chapters = [
+                    c for c in seg_chapters
+                    if (c.get("index") or 0) + (seg.get("start_chapter") or 1) >= lo
+                    and (c.get("index") or 0) + (seg.get("start_chapter") or 1) <= hi
+                ]
+                if not chunk_chapters:
+                    continue
+                try:
+                    events = await ai_extractor.ai_extract_outline_events(
+                        chunk_chapters, router,
+                        prompt_override=ai_outline_override,
+                        use_web_search=use_web_search,
+                        work_ctx=work_ctx,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[ai_extractor] outline chunk %d/%d failed: %s",
+                        ci + 1, chunk_total, e,
+                    )
+                    detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
+                    hint = _diagnose_ai_error(e)
+                    msg = f"outline chunk {ci + 1}/{chunk_total}: {detail}"
+                    if hint:
+                        msg += f" · 提示：{hint}"
+                    errors.append(msg)
+                    continue
+                if events:
+                    all_events.extend(events)
+                    outline_chunks_used += 1
+            if outline_chunks_used > 0:
+                ai_methods_used.append(f"outline ({outline_chunks_used}/{chunk_total} 段)")
+
+        if all_events:
+            # Group events into chronicle shape: one epoch per volume,
+            # one period per first_chapter, events in textual order.
+            plot = _events_to_chapter_order_chronicle(
+                all_events,
+                volume_title=(work_ctx or {}).get("volume_title")
+                            or seg.get("title") or "本卷",
+            )
         else:
-            # Build a minimal NLP skeleton so the editor isn't empty.
+            # No AI events. Build a minimal NLP skeleton so the editor
+            # isn't empty (rhythm climaxes / shuangdian give the user
+            # SOMETHING to start with).
             try:
                 narr_compat = {
                     "opening_pattern": rhythm.get("opening_pattern", "character_intro"),

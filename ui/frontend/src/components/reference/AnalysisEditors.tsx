@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from "react";
-import { apiGet } from "../../api/client";
+import { apiGet, apiPost } from "../../api/client";
 
 /* ════════════════════════════════════════════════════════════
  * Human-readable editors for reference-work analysis fields.
@@ -1216,7 +1216,7 @@ function looksLikeEvent(o: any): boolean {
   return false;
 }
 function looksLikePeriod(o: any): boolean {
-  return !!(o && typeof o === "object" && Array.isArray(o.events));
+  return !!(o && typeof o === "object" && Array.isArray(o.events) && !Array.isArray(o.epochs));
 }
 function looksLikeEpoch(o: any): boolean {
   return !!(o && typeof o === "object" && Array.isArray(o.periods));
@@ -1224,16 +1224,67 @@ function looksLikeEpoch(o: any): boolean {
 function looksLikeOutline(o: any): boolean {
   return !!(o && typeof o === "object" && Array.isArray(o.epochs));
 }
+function looksLikeEventsObject(o: any): boolean {
+  // The per-chunk extraction prompt returns this shape:
+  // {"events": [{first_chapter, time_marker, subject, ...}, ...]}
+  // Distinct from a "period" which also has an events array — periods
+  // typically carry a `time` field; an events-only wrapper does not.
+  return !!(o && typeof o === "object" && !Array.isArray(o)
+            && Array.isArray(o.events)
+            && !Array.isArray(o.epochs)
+            && !Array.isArray(o.periods)
+            && typeof o.time !== "string");
+}
+
+/** Group a flat events array into a chronicle, bucketing by
+ * `first_chapter` so each chapter becomes its own period. Preserves
+ * the order in which chapters first appear in the input — that's the
+ * "chapter order" the extraction step is supposed to produce. */
+function eventsArrayToChronicle(
+  events: ChronicleEvent[], logline = "", epochTitle = "(章节顺序)",
+): PlotOutline {
+  const filtered = events.filter(e => e && typeof e === "object" && (e.name || e.description));
+  if (filtered.length === 0) return { logline, epochs: [] };
+  const byChapter = new Map<string, ChronicleEvent[]>();
+  for (const ev of filtered) {
+    const key = (ev.first_chapter || "").trim() || "(未指定章节)";
+    if (!byChapter.has(key)) byChapter.set(key, []);
+    byChapter.get(key)!.push(ev);
+  }
+  const periods: ChroniclePeriod[] = Array.from(byChapter.entries()).map(
+    ([time, evs]) => ({ time, events: evs }),
+  );
+  return { logline, epochs: [{ title: epochTitle, periods }] };
+}
 
 /** Coerce one of several user-pastable shapes into a `PlotOutline`.
  * The web-LLM workflow can produce: a full outline, a list of outlines
- * (from multi-chunk copy-all), a list of epochs, a list of periods, or
- * even just a list of events. This makes the paste tolerant of all of
- * them so the user doesn't have to hand-edit before pasting. */
+ * (from multi-chunk copy-all), a list of epochs, a list of periods,
+ * a list of events, OR an object wrapping events under an `events`
+ * key (the new per-chunk extraction format). This makes the paste
+ * tolerant of all of them so the user doesn't have to hand-edit. */
 function normalizePastedChronicle(data: any): PlotOutline | null {
+  // Case 0: object with `events` array — the per-chunk extraction
+  // output. Group by first_chapter into chapter-order periods.
+  if (looksLikeEventsObject(data)) {
+    return eventsArrayToChronicle(
+      data.events as ChronicleEvent[],
+      typeof data.logline === "string" ? data.logline : "",
+    );
+  }
+  // Case 0b: array of those events-objects (multi-chunk paste-all).
+  if (Array.isArray(data) && data.length > 0 && data.every(looksLikeEventsObject)) {
+    const flat: ChronicleEvent[] = [];
+    let logline = "";
+    for (const obj of data) {
+      if (!logline && typeof obj.logline === "string") logline = obj.logline;
+      for (const ev of (obj.events || [])) flat.push(ev);
+    }
+    return eventsArrayToChronicle(flat, logline);
+  }
   // Case 1: single PlotOutline
   if (looksLikeOutline(data)) return data as PlotOutline;
-  // Case 2: array of PlotOutlines (multi-chunk paste)
+  // Case 2: array of PlotOutlines (multi-chunk copy-all of summary prompt)
   if (Array.isArray(data) && data.length > 0 && data.every(looksLikeOutline)) {
     const epochs: ChronicleEpoch[] = [];
     let logline = "";
@@ -1254,15 +1305,9 @@ function normalizePastedChronicle(data: any): PlotOutline | null {
       epochs: [{ title: "粘贴的事件", periods: data as ChroniclePeriod[] }],
     };
   }
-  // Case 5: list of events → wrap in one period inside one epoch
+  // Case 5: bare list of events → group by first_chapter
   if (Array.isArray(data) && data.length > 0 && data.every(looksLikeEvent)) {
-    return {
-      logline: "",
-      epochs: [{
-        title: "粘贴的事件",
-        periods: [{ time: "", events: data as ChronicleEvent[] }],
-      }],
-    };
+    return eventsArrayToChronicle(data as ChronicleEvent[], "", "粘贴的事件");
   }
   return null;
 }
@@ -1287,16 +1332,308 @@ const CHRONICLE_INSTRUCTIONS = `编年史是「世界内史学家」的客观记
 4. 删除：阅读视图每条事件右上角 × 直接删除；时间段或大段的 × 在它们各自的标题行。
 5. AI 提取分两步：先逐章抽事件（按文本顺序），再用「整理时间线」prompt 让 LLM 按故事时间重排（处理倒叙/插叙）。`;
 
+/* ─── Chronicle 全时间线总结 panel ──────────────────────────────
+ * Lives at the top of the chronicle display section. Two-phase UX:
+ *
+ *   Phase A (try internal AI):
+ *     Click "运行全时间线总结" → POST /chronicle/summarize.
+ *     On success: shows the AI-reorganized chronicle preview +
+ *     "确认替换 / 取消" actions.
+ *     On failure: response carries the rendered prompt — auto-flips
+ *     to phase B with that prompt pre-loaded.
+ *
+ *   Phase B (manual via web LLM):
+ *     "复制总结 prompt" + paste-response textarea + "解析并替换".
+ *     The pasted JSON is parsed via the same normalizePastedChronicle
+ *     used by the chronicle's 粘贴 JSON 大纲 button, so any of the
+ *     supported shapes (full PlotOutline, {epochs:…}, {events:…}, …)
+ *     work without hand-editing.
+ *
+ * 总结 only operates on the existing chronicle's events — it does NOT
+ * extract new events from chapter text. That's the extraction step. */
+function ChronicleSummarizePanel({ refId, data, onSave }: {
+  refId: string;
+  data: PlotOutline;
+  onSave: (d: PlotOutline) => Promise<void> | void;
+}) {
+  type Phase = "idle" | "ai-running" | "ai-success" | "manual";
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [open, setOpen] = useState(false);
+  const [aiResult, setAiResult] = useState<PlotOutline | null>(null);
+  const [aiError, setAiError] = useState("");
+  const [manualPrompt, setManualPrompt] = useState("");
+  const [pasteRaw, setPasteRaw] = useState("");
+  const [pasteError, setPasteError] = useState("");
+  const [pasteParsed, setPasteParsed] = useState<PlotOutline | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "fail">("idle");
+
+  // Quick event count so the user knows how much will be summarized.
+  const eventCount = (data.epochs || []).reduce(
+    (n, ep) => n + (ep.periods || []).reduce(
+      (m, p) => m + (p.events?.length || 0), 0,
+    ), 0,
+  );
+
+  const runInternalAI = async () => {
+    setPhase("ai-running");
+    setAiError("");
+    setAiResult(null);
+    try {
+      const r = await apiPost<{
+        ok: boolean;
+        chronicle?: PlotOutline;
+        rendered_prompt?: string;
+        error?: string;
+        event_count?: number;
+      }>(`/api/references/works/${refId}/chronicle/summarize`, {},
+        { timeoutMs: 600_000 });
+      if (r.ok && r.chronicle) {
+        setAiResult(r.chronicle);
+        setPhase("ai-success");
+      } else {
+        setAiError(r.error || "AI 总结失败");
+        if (r.rendered_prompt) setManualPrompt(r.rendered_prompt);
+        setPhase("manual");
+      }
+    } catch (e: any) {
+      setAiError(e?.message || "AI 总结失败");
+      setPhase("manual");
+      // Try to fetch the rendered prompt separately so the user can copy.
+      try {
+        const flat: any[] = [];
+        for (const ep of (data.epochs || [])) {
+          for (const per of (ep.periods || [])) {
+            for (const ev of (per.events || [])) flat.push(ev);
+          }
+        }
+        const r = await apiPost<{ rendered: string }>(
+          `/api/references/prompts/reference.outline_summary/render`,
+          { ref_id: refId, segment_index: 0, events: flat },
+        );
+        setManualPrompt(r.rendered || "");
+      } catch { /* best-effort */ }
+    }
+  };
+
+  const confirmAiResult = async () => {
+    if (!aiResult) return;
+    setSaving(true);
+    try {
+      await onSave(aiResult);
+      setPhase("idle");
+      setAiResult(null);
+      setOpen(false);
+    } finally { setSaving(false); }
+  };
+
+  const copyPrompt = async () => {
+    if (!manualPrompt) {
+      // Lazy-fetch the prompt the first time the user clicks copy.
+      try {
+        const flat: any[] = [];
+        for (const ep of (data.epochs || [])) {
+          for (const per of (ep.periods || [])) {
+            for (const ev of (per.events || [])) flat.push(ev);
+          }
+        }
+        const r = await apiPost<{ rendered: string }>(
+          `/api/references/prompts/reference.outline_summary/render`,
+          { ref_id: refId, segment_index: 0, events: flat },
+        );
+        setManualPrompt(r.rendered || "");
+        await navigator.clipboard.writeText(r.rendered || "");
+        setCopyState("copied");
+        setTimeout(() => setCopyState("idle"), 1500);
+        return;
+      } catch {
+        setCopyState("fail");
+        setTimeout(() => setCopyState("idle"), 1500);
+        return;
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(manualPrompt);
+      setCopyState("copied");
+      setTimeout(() => setCopyState("idle"), 1500);
+    } catch {
+      setCopyState("fail");
+      setTimeout(() => setCopyState("idle"), 1500);
+    }
+  };
+
+  const parsePasted = () => {
+    setPasteError("");
+    setPasteParsed(null);
+    const raw = pasteRaw.trim();
+    if (!raw) { setPasteError("请先粘贴 LLM 返回的 JSON"); return; }
+    const stripped = stripJsonFences(raw);
+    let parsed: any;
+    try { parsed = JSON.parse(stripped); }
+    catch (e: any) { setPasteError(`JSON 解析失败：${e?.message || e}`); return; }
+    const normalized = normalizePastedChronicle(parsed);
+    if (!normalized || !normalized.epochs || normalized.epochs.length === 0) {
+      setPasteError("内容不是合法的编年史 JSON。预期形如 {epochs:[…]} 或 {events:[…]}。");
+      return;
+    }
+    setPasteParsed(normalized);
+  };
+
+  const confirmPasted = async () => {
+    if (!pasteParsed) return;
+    setSaving(true);
+    try {
+      await onSave(pasteParsed);
+      setPhase("idle");
+      setPasteRaw("");
+      setPasteParsed(null);
+      setOpen(false);
+    } finally { setSaving(false); }
+  };
+
+  // Collapsed header — keeps the chronicle uncluttered until the user
+  // explicitly invokes the summary.
+  return (
+    <div style={{
+      marginBottom: 10, border: "1px solid var(--accent)", borderRadius: 4,
+      background: "var(--bg-surface)",
+    }}>
+      <div className="flex items-center" style={{
+        padding: "6px 10px", gap: 8, flexWrap: "wrap",
+      }}>
+        <button className="btn-ghost" onClick={() => setOpen(o => !o)}
+                style={{
+                  padding: "2px 4px", fontSize: 12, fontWeight: 600,
+                  color: "var(--accent)", borderRadius: 0,
+                }}>
+          <span style={{
+            transition: "transform 0.15s",
+            transform: open ? "rotate(180deg)" : "none",
+            display: "inline-block", marginRight: 4,
+          }}>&#x25BC;</span>
+          全时间线总结（按故事时间重排，处理倒叙/插叙）
+        </button>
+        <span className="text-xs text-muted">{eventCount} 个待整理事件</span>
+        <div style={{ flex: 1 }} />
+        <button className="btn-primary" onClick={runInternalAI}
+                disabled={phase === "ai-running" || saving || eventCount === 0}
+                style={{ fontSize: 11, padding: "3px 10px" }}>
+          {phase === "ai-running" ? "运行中…" : "运行内置 AI 总结"}
+        </button>
+        <button className="btn" onClick={copyPrompt}
+                disabled={saving || eventCount === 0}
+                style={{ fontSize: 11, padding: "3px 10px" }}
+                title="拷贝 prompt 到剪贴板，使用网页版 LLM 跑">
+          {copyState === "copied" ? "已复制" : copyState === "fail" ? "复制失败" : "复制 prompt"}
+        </button>
+      </div>
+
+      {open && (
+        <div style={{ padding: "0 10px 10px" }}>
+          {/* AI success → show preview + confirm */}
+          {phase === "ai-success" && aiResult && (
+            <div>
+              <div className="text-xs text-muted" style={{ marginBottom: 6, lineHeight: 1.55 }}>
+                内置 AI 已整理出 {(aiResult.epochs || []).length} 大段。确认后会**替换**当前编年史。
+              </div>
+              <div style={{
+                maxHeight: 300, overflow: "auto", padding: 8,
+                border: "1px solid var(--border)", borderRadius: 3,
+                background: "var(--bg-card)", marginBottom: 8,
+              }}>
+                {(aiResult.epochs || []).map((ep, ei) => (
+                  <div key={ei} style={{ marginBottom: 8 }}>
+                    <div style={{ fontWeight: 600, fontSize: 12, color: "var(--accent)" }}>{ep.title}</div>
+                    {(ep.periods || []).map((per, pi) => (
+                      <div key={pi} style={{ marginLeft: 10, marginTop: 4 }}>
+                        <div className="text-xs" style={{ color: "var(--gold)" }}>{per.time || "(未填时间)"}</div>
+                        <div style={{ marginLeft: 8, fontSize: 11, color: "var(--text-secondary)" }}>
+                          {(per.events || []).length} 个事件
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
+                <button className="btn" onClick={() => { setPhase("idle"); setAiResult(null); }}
+                        disabled={saving} style={{ fontSize: 11 }}>取消</button>
+                <button className="btn-primary" onClick={confirmAiResult}
+                        disabled={saving} style={{ fontSize: 11 }}>
+                  {saving ? "替换中…" : "确认替换编年史"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* AI failed OR user wants to paste manually */}
+          {(phase === "manual" || phase === "idle") && (
+            <div>
+              {aiError && (
+                <div className="text-xs" style={{
+                  color: "var(--error)", marginBottom: 6, lineHeight: 1.55,
+                  padding: "4px 8px", background: "var(--bg-card)",
+                  border: "1px solid var(--error)", borderRadius: 3,
+                }}>
+                  ⚠ 内置 AI 失败：{aiError}。请点上方「复制 prompt」到 ChatGPT / Claude.ai 跑，再把结果粘到下方。
+                </div>
+              )}
+              <div className="text-xs text-muted" style={{ marginBottom: 6, lineHeight: 1.55 }}>
+                在网页版 LLM 跑完总结 prompt 后，把它返回的 JSON 粘到下方：
+              </div>
+              <textarea className="input font-mono" rows={5}
+                        value={pasteRaw}
+                        onChange={e => setPasteRaw(e.target.value)}
+                        placeholder='{"logline":"…","epochs":[{"title":"…","periods":[…]}]}'
+                        style={{
+                          fontSize: 11, lineHeight: 1.5, resize: "vertical",
+                          background: "var(--bg-card)", marginBottom: 6,
+                        }} />
+              <div className="flex items-center gap-6" style={{ flexWrap: "wrap" }}>
+                <button className="btn" onClick={parsePasted}
+                        disabled={saving || !pasteRaw.trim()}
+                        style={{ fontSize: 11, padding: "3px 10px" }}>解析</button>
+                <button className="btn-primary" onClick={confirmPasted}
+                        disabled={saving || !pasteParsed}
+                        style={{ fontSize: 11, padding: "3px 10px" }}
+                        title="解析并替换当前编年史">
+                  {saving ? "替换中…" : "确认替换编年史"}
+                </button>
+                {pasteError && (
+                  <span className="text-xs" style={{ color: "var(--error)" }}>{pasteError}</span>
+                )}
+                {pasteParsed && (
+                  <span className="text-xs" style={{ color: "var(--jade)" }}>
+                    解析成功：{(pasteParsed.epochs || []).length} 大段 ·
+                    {" "}{(pasteParsed.epochs || []).reduce((n, e) =>
+                      n + (e.periods || []).reduce((m, p) => m + (p.events?.length || 0), 0), 0)} 事件
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 export function PlotOutlineEditor({
   data,
   onSave,
   onExtract,
   extracting,
+  refId,
 }: {
   data: PlotOutline | null;
   onSave: (d: PlotOutline) => Promise<void> | void;
   onExtract?: () => void;
   extracting?: boolean;
+  /** Passed through so the embedded "全时间线总结" controls can hit
+   *  the work-scoped summarize endpoint. Optional — when missing,
+   *  the summary panel hides itself. */
+  refId?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<PlotOutline>(data || { epochs: [] });
@@ -1692,6 +2029,15 @@ export function PlotOutlineEditor({
 
   return (
     <div>
+      {/* 全时间线总结 controls — show only when refId is supplied AND
+        * the chronicle has events (i.e. extraction step produced
+        * something). On internal-AI failure, the panel reveals the
+        * outline_summary prompt for the user to copy to a web LLM,
+        * and accepts the parsed-back chronicle JSON. */}
+      {refId && hasContent && (
+        <ChronicleSummarizePanel refId={refId} data={d} onSave={onSave} />
+      )}
+
       {/* Chronicle usage instructions — collapsed by default to keep
         * the read view dense, but always one click away. */}
       <div style={{

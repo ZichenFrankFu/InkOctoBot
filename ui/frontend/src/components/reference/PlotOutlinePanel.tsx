@@ -278,6 +278,17 @@ export default function PlotOutlinePanel({
   // ── render ──
   return (
     <div className="flex flex-col gap-12">
+      {/* ════════ Section 1: 大纲提取 ════════
+        * Per-volume, per-chunk event extraction. Each chunk produces
+        * a flat events array (in textual / chapter order). The merged
+        * result lands in the chronicle display section below; from
+        * there the user can run the 全时间线总结 step. */}
+      {hasFullText && plan && (
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
+          大纲提取
+        </div>
+      )}
+
       {/* Segment plan + preview (only if work has full text and not in standalone manual mode) */}
       {hasFullText && plan && (
         <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
@@ -603,30 +614,24 @@ export default function PlotOutlinePanel({
                         </details>
                       )}
 
-                      {/* Step 1: Per-chunk outline extraction prompt.
+                      {/* Per-chunk outline extraction prompt.
                        *
-                       * Always visible (success or AI failure) — when
-                       * the configured model fails, the prompt is the
-                       * fallback path: user copies it to a web LLM,
-                       * runs each chunk, then accumulates the event
-                       * JSONs to feed step 2. */}
+                       * Always visible (success or AI failure). On
+                       * internal-AI failure this is the user's fallback:
+                       * copy the prompt for each chunk → run in a web
+                       * LLM → paste each `{"events":[...]}` reply back
+                       * via the chronicle editor's 「粘贴 JSON 大纲」
+                       * button (which auto-buckets events by chapter).
+                       *
+                       * Time-line summarization (story-time reorder of
+                       * the full book's chronicle) lives in the
+                       * chronicle display section below, not here. */}
                       <PromptCopyPanel
                         refId={refId}
                         promptKey="reference.outline"
                         segmentIndex={previewIdx}
-                        label="① 本卷大纲提取 prompt（超长卷自动分段；输出扁平事件数组）"
+                        label="本卷大纲提取 prompt（超长卷自动分段；输出扁平事件数组）"
                       />
-
-                      {/* Step 2: Chronological summary prompt builder.
-                       *
-                       * After running step 1 on each chunk, the user
-                       * paste-merges all events into this textarea,
-                       * then clicks "生成总结 prompt" — backend embeds
-                       * the events into reference.outline_summary and
-                       * returns a ready-to-copy prompt that asks the
-                       * LLM to reorder by story-time + group into
-                       * periods/epochs. */}
-                      <OutlineSummaryHelper refId={refId} segmentIndex={previewIdx} />
 
                       {/* The chronicle preview + AI chat box are only
                        * useful when the in-process AI produced real
@@ -727,13 +732,21 @@ export default function PlotOutlinePanel({
         <div className="text-xs text-muted" style={{ padding: 8 }}>加载分段计划中...</div>
       )}
 
-      {/* The actual chronicle viewer/editor (merged data) */}
-      <div>
+      {/* ════════ Section 2: 编年史展示 ════════
+        * The merged chronicle viewer/editor. Once the extraction
+        * section above has populated events from every segment, the
+        * user can run the "全时间线总结" feature inside this editor
+        * to story-time-reorder the whole book. */}
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: "2px solid var(--border)" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
+          编年史
+        </div>
         <PlotOutlineEditor
           data={plotOutline}
           onSave={onSavePlot}
           onExtract={hasFullText && onRegenerateFromText ? onRegenerateFromText : undefined}
           extracting={regenerating}
+          refId={refId}
         />
       </div>
     </div>
@@ -794,200 +807,3 @@ function ChroniclePreview({ epochs }: { epochs: ChronicleEpoch[] }) {
   );
 }
 
-/* ─── Outline summary prompt helper ────────────────────────────
- * Step 2 of the manual outline pipeline. The user accumulates flat
- * event JSONs from running step 1 on each chunk, pastes them here
- * (any of: a single object {"events": [...]}, a single events array
- * [...], or multiple objects/arrays concatenated), clicks 生成总结
- * prompt, and gets back a ready-to-copy prompt embedding their
- * events. They run THAT in a web LLM and paste the final chronicle
- * back through the chronicle editor's 粘贴 JSON 大纲 button.
- *
- * Self-contained: tracks its own textarea + rendered output + copy
- * state so multiple instances can coexist without sharing state. */
-function OutlineSummaryHelper({ refId, segmentIndex }: {
-  refId: string;
-  segmentIndex: number | null;
-}) {
-  const [open, setOpen] = useState(false);
-  const [eventsText, setEventsText] = useState("");
-  const [rendered, setRendered] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "fail">("idle");
-
-  const collectEvents = (text: string): any[] => {
-    // Lenient parser: accept array of events, object with "events"
-    // key, single PlotOutline, or any combination concatenated.
-    // We try to extract all `events` arrays we can find by re-parsing
-    // each top-level JSON value in the input.
-    const trimmed = text.trim();
-    if (!trimmed) return [];
-    // Try whole-thing JSON first.
-    const tryParse = (s: string): any | null => {
-      try { return JSON.parse(s); } catch { return null; }
-    };
-    const consume = (val: any, out: any[]) => {
-      if (Array.isArray(val)) {
-        // Either an array of events, or an array of outlines/groups.
-        for (const item of val) consume(item, out);
-        return;
-      }
-      if (val && typeof val === "object") {
-        if (Array.isArray(val.events)) {
-          for (const ev of val.events) out.push(ev);
-          return;
-        }
-        if (Array.isArray(val.epochs)) {
-          for (const ep of val.epochs) {
-            for (const per of (ep.periods || [])) {
-              for (const ev of (per.events || [])) out.push(ev);
-            }
-          }
-          return;
-        }
-        // A bare event object (has name or description).
-        if (typeof val.name === "string" || typeof val.description === "string") {
-          out.push(val);
-          return;
-        }
-      }
-    };
-    const result: any[] = [];
-    const direct = tryParse(trimmed);
-    if (direct !== null) {
-      consume(direct, result);
-      return result;
-    }
-    // Concat fallback: split on top-level JSON boundaries. Cheapest
-    // safe heuristic — find balanced { ... } and [ ... ] spans.
-    const spans: string[] = [];
-    let depth = 0;
-    let start = -1;
-    let opener = "";
-    for (let i = 0; i < trimmed.length; i++) {
-      const c = trimmed[i];
-      if (depth === 0 && (c === "{" || c === "[")) {
-        start = i;
-        opener = c;
-        depth = 1;
-        continue;
-      }
-      if (depth > 0) {
-        if (c === opener || (opener === "{" && c === "{") || (opener === "[" && c === "[")) depth++;
-        else if ((opener === "{" && c === "}") || (opener === "[" && c === "]")) {
-          depth--;
-          if (depth === 0 && start >= 0) {
-            spans.push(trimmed.slice(start, i + 1));
-            start = -1;
-          }
-        }
-      }
-    }
-    for (const s of spans) {
-      const v = tryParse(s);
-      if (v !== null) consume(v, result);
-    }
-    return result;
-  };
-
-  const generate = async () => {
-    setError("");
-    setRendered("");
-    if (segmentIndex == null) {
-      setError("请先在上方选择一卷并进入预览");
-      return;
-    }
-    const events = collectEvents(eventsText);
-    if (events.length === 0) {
-      setError("没解析出任何事件。请粘贴 step ① 各 chunk 返回的 JSON（可多份直接拼接）。");
-      return;
-    }
-    setLoading(true);
-    try {
-      const r = await apiPost<{ rendered: string; event_count: number; dropped: number }>(
-        `/api/references/prompts/reference.outline_summary/render`,
-        { ref_id: refId, segment_index: segmentIndex, events },
-      );
-      setRendered(r.rendered || "");
-      if (r.dropped && r.dropped > 0) {
-        setError(`已忽略 ${r.dropped} 条无效/重复事件，剩 ${r.event_count} 条`);
-      }
-    } catch (e: any) {
-      setError(e?.message || "生成失败");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const copy = async () => {
-    if (!rendered) return;
-    try {
-      await navigator.clipboard.writeText(rendered);
-      setCopyState("copied");
-      setTimeout(() => setCopyState("idle"), 1500);
-    } catch {
-      setCopyState("fail");
-      setTimeout(() => setCopyState("idle"), 1500);
-    }
-  };
-
-  return (
-    <div style={{ marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4 }}>
-      <button className="btn-ghost w-full" onClick={() => setOpen(o => !o)}
-              style={{
-                justifyContent: "space-between", padding: "6px 10px",
-                fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
-                borderRadius: 0,
-              }}>
-        <span>② 整理时间线 prompt（粘贴 ① 各 chunk 的事件后生成，倒叙/插叙会被拉直）</span>
-        <span className="text-xs text-muted" style={{
-          transition: "transform 0.15s",
-          transform: open ? "rotate(180deg)" : "none",
-          display: "inline-block",
-        }}>&#x25BC;</span>
-      </button>
-      {open && (
-        <div style={{ padding: 10, background: "var(--bg-surface)" }}>
-          <div className="text-xs text-muted" style={{ marginBottom: 6, lineHeight: 1.55 }}>
-            把 step ① 在网页 LLM 跑出的所有 chunk 的事件粘贴到下方（可以直接把 N 段 JSON 整段贴在一起，会自动识别）。
-            点「生成总结 prompt」会渲染出 step ② 的 prompt——把它复制到 LLM，再把 LLM 的返回用上方「粘贴 JSON 大纲」入库即可。
-          </div>
-          <textarea
-            className="input font-mono"
-            rows={6}
-            value={eventsText}
-            onChange={e => setEventsText(e.target.value)}
-            placeholder='[在此粘贴 ① 各 chunk 的输出，例如 {"events":[…]} 或多段拼接]'
-            style={{ fontSize: 11, lineHeight: 1.5, resize: "vertical", marginBottom: 6 }}
-          />
-          <div className="flex items-center gap-6" style={{ flexWrap: "wrap" }}>
-            <button className="btn" onClick={generate} disabled={loading || !eventsText.trim()}
-                    style={{ fontSize: 11, padding: "3px 10px" }}>
-              {loading ? "生成中…" : "生成总结 prompt"}
-            </button>
-            <button className="btn" onClick={copy} disabled={!rendered}
-                    style={{ fontSize: 11, padding: "3px 10px" }}>
-              {copyState === "copied" ? "已复制" : copyState === "fail" ? "复制失败" : "复制总结 prompt"}
-            </button>
-            {error && (
-              <span className="text-xs" style={{
-                color: error.includes("忽略") ? "var(--gold)" : "var(--error)",
-              }}>{error}</span>
-            )}
-          </div>
-          {rendered && (
-            <pre className="font-mono" style={{
-              marginTop: 8, padding: 8, fontSize: 11, lineHeight: 1.55,
-              background: "var(--bg-card)", borderRadius: 3,
-              border: "1px solid var(--border)",
-              color: "var(--text-secondary)",
-              maxHeight: 280, overflow: "auto",
-              whiteSpace: "pre-wrap", wordBreak: "break-word",
-            }}>{rendered}</pre>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}

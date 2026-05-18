@@ -3185,6 +3185,126 @@ class OutlineSummaryPromptRequest(BaseModel):
     events: list[dict]
 
 
+@router.post("/works/{ref_id}/chronicle/summarize")
+async def summarize_chronicle(ref_id: str):
+    """Run the chronological-summary AI pass on the currently-persisted
+    chronicle. Reads `plot_outline_json`, flattens all events from
+    all epochs/periods, sends them through `ai_summarize_outline`, and
+    returns the reorganized chronicle (does NOT auto-persist — the UI
+    decides whether to save the result).
+
+    On AI failure the response carries `error` + the rendered prompt
+    + the event list so the UI can switch the user to the manual
+    web-LLM path (copy prompt → run in browser → paste back)."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+
+    plot_raw = w.get("plot_outline_json") or "{}"
+    try:
+        plot = json.loads(plot_raw)
+    except Exception:
+        plot = {}
+    flat_events: list[dict] = []
+    for ep in (plot.get("epochs") or []):
+        if not isinstance(ep, dict):
+            continue
+        for per in (ep.get("periods") or []):
+            if not isinstance(per, dict):
+                continue
+            for ev in (per.get("events") or []):
+                if isinstance(ev, dict):
+                    flat_events.append(ev)
+    if not flat_events:
+        raise HTTPException(400, "编年史为空，没有事件可总结")
+
+    try:
+        from analysis.feature_extraction.pipeline import (
+            FeatureExtractionPipeline, build_work_ctx,
+        )
+        from analysis.feature_extraction.prompts import render
+        from analysis.feature_extraction.ai_extractor import (
+            _normalize_event, ai_summarize_outline,
+        )
+        pipe = FeatureExtractionPipeline(db.db_path)
+        text = pipe._load_text(w)
+        all_chapters = pipe._split_chapters(text) if text else []
+        # Build a synthetic work-wide ctx (segment 0 covers the whole work)
+        whole_segment = {
+            "title": w.get("title") or "全书",
+            "start_chapter": 1,
+            "end_chapter": len(all_chapters) or 0,
+        }
+        ctx = build_work_ctx(w, whole_segment, 0)
+
+        # Normalize+dedupe events so the prompt size stays sane.
+        seen: set[tuple] = set()
+        cleaned: list[dict] = []
+        for ev in flat_events:
+            n = _normalize_event(ev)
+            if n is None:
+                continue
+            sig = (n["subject"], n["name"], n["description"])
+            if sig in seen:
+                continue
+            seen.add(sig)
+            cleaned.append(n)
+
+        # Render the prompt up-front so we can return it on AI failure.
+        events_json = json.dumps(cleaned, ensure_ascii=False, indent=2)
+        rendered_prompt = render(
+            "reference.outline_summary",
+            title=ctx["title"], author=ctx["author"],
+            volume_index=ctx["volume_index"], volume_title=ctx["volume_title"],
+            start_chapter=ctx["start_chapter"], end_chapter=ctx["end_chapter"],
+            n_chapters=len(all_chapters) or 0,
+            event_count=len(cleaned), events_json=events_json,
+        )
+
+        try:
+            from models.router import ModelRouter
+            router_inst = ModelRouter()
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": f"AI 路由初始化失败：{e}",
+                "rendered_prompt": rendered_prompt,
+                "event_count": len(cleaned),
+                "events": cleaned,
+            }
+        try:
+            chronicle = await ai_summarize_outline(
+                cleaned, router_inst, work_ctx=ctx,
+            )
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": f"AI 总结失败：{str(e)[:200]}",
+                "rendered_prompt": rendered_prompt,
+                "event_count": len(cleaned),
+                "events": cleaned,
+            }
+        if not chronicle.get("epochs"):
+            return {
+                "ok": False,
+                "error": "AI 返回为空，请改用复制 prompt 的方式",
+                "rendered_prompt": rendered_prompt,
+                "event_count": len(cleaned),
+                "events": cleaned,
+            }
+        return {
+            "ok": True,
+            "chronicle": chronicle,
+            "event_count": len(cleaned),
+            "rendered_prompt": rendered_prompt,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"总结失败: {e}")
+
+
 @router.post("/prompts/reference.outline_summary/render")
 def render_outline_summary_prompt(body: OutlineSummaryPromptRequest):
     """Render the chronological-summary prompt with the user's
