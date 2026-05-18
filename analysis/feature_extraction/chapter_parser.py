@@ -1412,22 +1412,31 @@ def make_preview(content: str, head_chars: int = 180, tail_chars: int = 140) -> 
 
 def replace_chapter_content(text: str, chapters: list[dict],
                               chapter_number: int, new_content: str) -> str:
-    """Return a new full-text where chapter ``chapter_number``'s body has
-    been swapped for ``new_content``. Reassembles by concatenating every
-    chapter's heading + body in order — same shape as ``apply_exclusions``
-    so the on-disk file format stays consistent across edits."""
+    """Return a new full-text where chapter ``chapter_number``'s WHOLE
+    block (heading + body) is swapped for ``new_content``. The editor
+    UI gives the user a single textarea that starts with the chapter
+    heading (e.g. "1、标题"), so the payload already contains the
+    heading — emit it verbatim and skip the separate raw_marker
+    prepend that would otherwise duplicate the title. For the rest of
+    the chapters we still emit ``marker + body`` since their content
+    field is body-only. Detection re-runs after this so a user-edited
+    heading line gets re-parsed into the new raw_marker."""
     parts: list[str] = []
     found = False
     for c in chapters:
         marker = c.get("raw_marker") or c.get("title") or ""
         if c.get("number") == chapter_number:
-            body = (new_content or "").strip()
+            block = (new_content or "").strip()
+            if not block:
+                raise ValueError("章节内容不能为空")
+            parts.append(block)
             found = True
-        else:
-            body = c.get("content") or ""
+            continue
+        body = c.get("content") or ""
         if marker:
             parts.append(marker)
-        parts.append(body)
+        if body:
+            parts.append(body)
     if not found:
         raise ValueError(f"chapter {chapter_number} not found")
     return "\n\n".join(p for p in parts if p)

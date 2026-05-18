@@ -2031,9 +2031,22 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         )
                       ) : (
                         <>
+                          {/* First line is always the chapter heading — per
+                              user request that "每一章的内容中第一行都是
+                              章节标题，如 1、标题，随后是正文". */}
+                          {c.raw_marker && (
+                            <div style={{
+                              marginBottom: 6,
+                              fontWeight: 600,
+                              color: "var(--text-primary)",
+                              fontFamily: "var(--font-mono)",
+                            }}>
+                              {c.raw_marker}
+                            </div>
+                          )}
                           {c.preview_head && (
                             <div style={{ marginBottom: c.preview_tail ? 6 : 0 }}>
-                              <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>开头</span>
+                              <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>正文开头</span>
                               <span>{c.preview_head}</span>
                             </div>
                           )}

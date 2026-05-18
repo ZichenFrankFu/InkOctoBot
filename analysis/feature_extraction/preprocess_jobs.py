@@ -182,9 +182,13 @@ def get_guess_job(ref_id: str) -> Optional[GuessJob]:
 async def _run_guess(job: GuessJob, text: str, extra_patterns: list[dict] | None) -> None:
     """Body of the guess job. Scans patterns one by one, yielding to
     the loop between each so the UI's progress polls stay responsive
-    and other endpoints don't starve. Caps scanned text length so very
-    large works don't make the guess feel laggy — the actual detection
-    job re-scans the FULL text with the chosen pattern."""
+    and other endpoints don't starve. Scans the FULL text so the
+    per-format match counts shown to the user are accurate — the
+    earlier 2 MB cap (intended for snappiness on big works) made the
+    pre-expand count diverge from the post-expand count and surfaced
+    as 'matches=1 even though there are many'. Each pattern's
+    finditer runs in a worker thread, so the event loop stays
+    responsive between patterns."""
     from analysis.feature_extraction.chapter_parser import (
         _PATTERNS as BUILTIN, _compile_extra, _score_pattern,
     )
@@ -192,10 +196,7 @@ async def _run_guess(job: GuessJob, text: str, extra_patterns: list[dict] | None
         job.state = "running"
         job.started_at = time.time()
         job.text_len = len(text)
-        # Cap scan to ~2 MB — score-relevant signals (count / spacing /
-        # short-line-fraction) saturate well before this on real novels.
-        MAX_SCAN = 2_000_000
-        scan_text = text[:MAX_SCAN] if len(text) > MAX_SCAN else text
+        scan_text = text
         job.scanned_len = len(scan_text)
         custom = _compile_extra(extra_patterns)
         all_pats = list(BUILTIN) + custom

@@ -858,6 +858,18 @@ def get_chapter_content(ref_id: str, chapter_id: str):
         except (TypeError, ValueError):
             return False
 
+    def _format(marker: str, body: str) -> str:
+        """Format chapter content for the editor: heading line first,
+        then a blank line, then the body. The user requested that every
+        chapter's content start with its title (e.g. '1、标题')."""
+        marker = (marker or "").strip()
+        body = (body or "").strip()
+        if not marker:
+            return body
+        if not body:
+            return marker
+        return f"{marker}\n\n{body}"
+
     if isinstance(cached_chapters, list) and file_path:
         for c in cached_chapters:
             if not _match(c):
@@ -871,13 +883,15 @@ def get_chapter_content(ref_id: str, chapter_id: str):
                     full = None
                 if full is not None and ce <= len(full):
                     body = full[cs:ce].strip()
+                    formatted = _format(c.get("raw_marker") or c.get("title") or "", body)
                     return {
                         "chapter_id": c.get("chapter_id") or str(c.get("number")),
                         "number": c.get("number"),
                         "display_number": c.get("display_number") or c.get("number"),
                         "title": c.get("title") or "",
-                        "content": body,
-                        "char_count": visible_char_count(body),
+                        "raw_marker": c.get("raw_marker") or "",
+                        "content": formatted,
+                        "char_count": visible_char_count(formatted),
                     }
 
     # Slow path: re-detect from scratch
@@ -889,13 +903,15 @@ def get_chapter_content(ref_id: str, chapter_id: str):
     result = detect_chapters(text, extra_patterns=extras)
     for c in result["chapters"]:
         if _match(c):
+            formatted = _format(c.get("raw_marker") or c.get("title") or "", c["content"])
             return {
                 "chapter_id": c.get("chapter_id"),
                 "number": c["number"],
                 "display_number": c.get("display_number") or c["number"],
                 "title": c["title"],
-                "content": c["content"],
-                "char_count": visible_char_count(c["content"]),
+                "raw_marker": c.get("raw_marker") or "",
+                "content": formatted,
+                "char_count": visible_char_count(formatted),
             }
     raise HTTPException(404, f"未找到章节 {chapter_id}")
 
