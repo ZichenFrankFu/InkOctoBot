@@ -2,8 +2,16 @@ import React, { useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import type { AppSettings } from "../api/types";
+import PromptPreview from "../components/reference/PromptPreview";
 
 const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string; desc: string }[] }[] = [
+  {
+    group: "参考作品数据库",
+    roles: [
+      { key: "reference_extractor", label: "参考作品分段提取", desc: "角色 / 设定 / 叙事 / 节奏（无 AI 时回退 NLP）" },
+      { key: "reference_web_search", label: "参考作品 AI 联网补全", desc: "元数据补全；需要支持 web search 的模型（如 Claude Sonnet 4 / GPT-4o）" },
+    ],
+  },
   {
     group: "开书（头脑风暴 & 校准）",
     roles: [
@@ -60,7 +68,7 @@ const PROVIDER_GROUPS: { key: string; label: string }[] = [
   { key: "self_hosted", label: "自部署" },
 ];
 
-type Tab = "pipeline" | "providers" | "system";
+type Tab = "pipeline" | "providers" | "prompts" | "system";
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>("pipeline");
@@ -189,6 +197,7 @@ export default function SettingsPage() {
   const TABS: { key: Tab; label: string; icon: string }[] = [
     { key: "pipeline", label: "Pipeline 配置", icon: "\u2699" },
     { key: "providers", label: "模型供应商", icon: "\u2261" },
+    { key: "prompts", label: "LLM Prompt", icon: "\u270E" },
     { key: "system", label: "系统设置", icon: "\u2638" },
   ];
 
@@ -334,6 +343,9 @@ export default function SettingsPage() {
           onSettingsChange={(s) => { setSettings(s); setDirty(true); }}
         />
       )}
+
+      {/* ===== Prompts Tab ===== */}
+      {tab === "prompts" && <PromptsTab />}
 
       {/* ===== System Tab ===== */}
       {tab === "system" && (
@@ -742,6 +754,47 @@ function SystemTab({
         </div>
       </div>
 
+      {/* Embedding backend (参考作品向量索引) */}
+      <div className="card">
+        <div className="card-header"><h3>参考作品 Embedding 后端</h3></div>
+        <div className="card-body">
+          <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10, lineHeight: 1.6 }}>
+            「相似搜索」与索引构建使用的 embedding 模型。本地后端在第一次加载时会下载 ~400MB 模型权重并在 CPU 上运行；OpenAI 后端使用上方配置的 OpenAI API Key。
+          </div>
+          <div className="flex gap-8" style={{ flexWrap: "wrap" }}>
+            {(["local", "openai"] as const).map(opt => {
+              const sel = (settings.embedding_backend || "local") === opt;
+              return (
+                <button
+                  key={opt}
+                  onClick={() => onUpdate({ embedding_backend: opt } as any)}
+                  style={{
+                    padding: "12px 18px", borderRadius: 8, cursor: "pointer",
+                    border: sel ? "2px solid var(--accent)" : "1px solid var(--border)",
+                    background: sel ? "var(--accent-subtle)" : "transparent",
+                    color: sel ? "var(--accent)" : "var(--text-secondary)",
+                    fontSize: 13, fontWeight: sel ? 700 : 400,
+                    flex: "1 1 200px", textAlign: "left",
+                  }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
+                    {opt === "local" ? "本地 sentence-transformers" : "OpenAI text-embedding-3-small"}
+                  </div>
+                  <div style={{ fontSize: 11, fontWeight: 400, opacity: 0.85 }}>
+                    {opt === "local"
+                      ? "shibing624/text2vec-base-chinese · 384 dim · 离线 · 中文优化"
+                      : "1536 dim · 联网 · 需 OpenAI API Key · 约 $0.02 / 百万字"}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 10, lineHeight: 1.6 }}>
+            切换后端会启用一个新的 ChromaDB collection（按 backend 命名）。已有作品在新 backend 上视为「未索引」，需要重新触发索引。
+          </div>
+        </div>
+      </div>
+
       {/* Cost confirm */}
       <div className="card">
         <div className="card-header"><h3>费用确认</h3></div>
@@ -907,6 +960,92 @@ function SystemTab({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ───────────────── LLM Prompt 模板管理 ───────────────── */
+
+interface PromptItem {
+  key: string;
+  description: string;
+  vars: string[];
+  has_override: boolean;
+}
+
+function PromptsTab() {
+  const [items, setItems] = useState<PromptItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await apiGet<{ items: PromptItem[] }>("/api/references/prompts");
+      setItems(r.items || []);
+    } catch (e) {
+      console.error("prompts list failed:", e);
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
+        参考作品 LLM 调用使用的 prompt 模板。点击「编辑」可查看出厂默认 + 当前内容、修改、并保存为新默认。
+        每次提取/对话时可单独覆盖（不影响保存的默认）。
+      </div>
+
+      {loading ? (
+        <div className="text-xs text-muted" style={{ padding: 20, textAlign: "center" }}>加载中...</div>
+      ) : (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-body" style={{ padding: 0 }}>
+            {items.map((it, idx) => (
+              <div key={it.key} style={{
+                padding: "14px 18px",
+                borderBottom: idx < items.length - 1 ? "1px solid var(--border-subtle)" : "none",
+                display: "flex", alignItems: "center", gap: 12,
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+                      {it.key}
+                    </span>
+                    {it.has_override && (
+                      <span className="tag" style={{
+                        fontSize: 10, padding: "1px 6px",
+                        color: "var(--gold)", background: "var(--bg-surface-2)",
+                        border: "1px solid var(--gold)",
+                      }}>已覆盖</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted">{it.description || "—"}</div>
+                  {it.vars.length > 0 && (
+                    <div className="text-xs text-muted" style={{ marginTop: 2, fontFamily: "var(--font-mono)" }}>
+                      vars: {it.vars.join(", ")}
+                    </div>
+                  )}
+                </div>
+                <button
+                  className={selected === it.key ? "btn-primary" : "btn"}
+                  style={{ fontSize: 12, padding: "4px 12px" }}
+                  onClick={() => setSelected(selected === it.key ? null : it.key)}
+                >{selected === it.key ? "关闭" : "编辑"}</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {selected && (
+        <PromptPreview
+          promptKey={selected}
+          onSaved={load}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </div>
   );
 }

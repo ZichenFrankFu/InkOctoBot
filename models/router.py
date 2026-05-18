@@ -64,9 +64,52 @@ class ModelRouter:
             path = _CONFIG_DIR / "models.yaml"
         p = Path(path)
         if not p.exists() or p.stat().st_size == 0:
-            return self._default_config()
-        with open(p, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or self._default_config()
+            cfg = self._default_config()
+        else:
+            with open(p, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or self._default_config()
+        # Merge user-edited Settings (data/settings.json) on top of the
+        # static YAML. The UI writes per-role pipeline assignments and
+        # per-provider api_key/base_url/models there; without this merge
+        # the router silently keeps using the YAML's placeholder values
+        # (e.g. ollama/qwen2.5:14b) even after the user re-binds the role.
+        cfg.setdefault("role_overrides", {})
+        cfg.setdefault("_ui_providers", {})
+        try:
+            ui = self._load_ui_settings()
+        except Exception as e:
+            logger.warning("could not merge data/settings.json: %s", e)
+            ui = {}
+        # 1) Per-role overrides from Settings → Pipeline 配置.
+        for role, asg in (ui.get("pipeline") or {}).items():
+            if not isinstance(asg, dict):
+                continue
+            prov = (asg.get("provider") or "").strip()
+            mdl = (asg.get("model") or "").strip()
+            if not prov or not mdl:
+                continue  # blank row in UI; keep YAML default
+            existing = cfg["role_overrides"].setdefault(role, {})
+            existing["provider"] = prov
+            existing["model"] = mdl
+        # 2) Per-provider api_key + base_url + models from Settings →
+        #    模型供应商. Stored on cfg for _build_providers to consume.
+        cfg["_ui_providers"] = ui.get("providers") or {}
+        return cfg
+
+    @staticmethod
+    def _load_ui_settings() -> dict[str, Any]:
+        """Read data/settings.json (the file the SettingsPage saves to).
+        Returns {} if the file doesn't exist or fails to parse."""
+        # Same resolution as ui/backend/app/routers/settings_api.py
+        candidates = [
+            _CONFIG_DIR.parent / "data" / "settings.json",
+            Path.cwd() / "data" / "settings.json",
+        ]
+        for c in candidates:
+            if c.exists():
+                with open(c, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        return {}
 
     @staticmethod
     def _default_config() -> dict[str, Any]:
@@ -82,6 +125,21 @@ class ModelRouter:
         if providers_json.exists():
             with open(providers_json, "r", encoding="utf-8-sig") as f:
                 provider_defs = json.load(f).get("providers", {})
+
+        # Merge the user-edited provider config (api_key + base_url) on
+        # top of the static defaults so a user-supplied api_key in
+        # data/settings.json takes precedence over the bare provider
+        # definition shipped in config/model_providers.json.
+        ui_providers: dict[str, Any] = self._config.get("_ui_providers") or {}
+        for name, ucfg in ui_providers.items():
+            if not isinstance(ucfg, dict):
+                continue
+            merged = dict(provider_defs.get(name, {}))
+            if ucfg.get("api_key"):
+                merged["api_key"] = ucfg["api_key"]
+            if ucfg.get("base_url"):
+                merged["base_url"] = ucfg["base_url"]
+            provider_defs[name] = merged
 
         default_type = self._config.get("default_provider", "ollama")
         default_model = self._config.get("default_model", "qwen2.5:14b")
@@ -186,6 +244,32 @@ class ModelRouter:
             max_tokens=max_tokens,
         )
         return resp.content
+
+    async def invoke_with_web_search(
+        self,
+        *,
+        role: str,
+        prompt: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> str:
+        """Like ``invoke`` but requires the resolved provider to expose
+        ``generate_with_web_search``. Raises NotImplementedError when the
+        configured provider/model doesn't support web search."""
+        provider = self._get_provider(role)
+        messages = [LLMMessage(role="user", content=prompt)]
+        resp = await provider.generate_with_web_search(
+            messages, temperature=temperature, max_tokens=max_tokens,
+        )
+        return resp.content
+
+    def resolve_role(self, role: str) -> tuple[str, str]:
+        """Return (provider_type, model_name) currently bound to ``role``.
+        Returns ("", "") if unbound."""
+        prov = self._get_provider(role)
+        if prov is None:
+            return ("", "")
+        return (prov.provider_type, prov.model_name)
 
     def estimate_cost(
         self, agent_role: str, input_tokens: int, output_tokens: int,

@@ -1849,3 +1849,40 @@ textarea.input {
   z-index: 99999;
   font-size: 14px;
 }
+
+/* ── Reference detail: inline edit affordance (chronicle event / character) ── */
+.ref-event-row,
+.ref-card-row {
+  position: relative;
+  /* leave room on the right edge for the inline edit button so it never
+     overlaps a long event description */
+  padding-right: 28px;
+}
+.ref-inline-edit {
+  position: absolute;
+  top: 4px;
+  right: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.ref-event-row:hover .ref-inline-edit,
+.ref-card-row:hover .ref-inline-edit,
+.ref-inline-edit:focus-visible {
+  opacity: 1;
+}
+.ref-inline-edit:hover {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-color: var(--accent);
+}

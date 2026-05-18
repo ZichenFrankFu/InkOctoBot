@@ -72,3 +72,59 @@ class OpenAIProvider(BaseLLMProvider):
     def estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
         prices = _PRICING.get(self.config.model_name, (0.005, 0.015))
         return (input_tokens / 1000 * prices[0]) + (output_tokens / 1000 * prices[1])
+
+    async def generate_with_web_search(
+        self, messages: list[LLMMessage], *,
+        temperature: float | None = None, max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Use the OpenAI Responses API with the hosted ``web_search`` tool.
+        Falls back to chat.completions with the tool spec for SDK versions
+        that don't expose responses.create yet."""
+        from .web_search_capabilities import supports_web_search
+        if not supports_web_search("openai", self.config.model_name):
+            raise NotImplementedError(
+                f"openai/{self.config.model_name} 暂未接入联网搜索"
+            )
+
+        responses_api = getattr(self._client, "responses", None)
+        if responses_api is not None:
+            # Preferred path: Responses API with hosted web_search tool
+            input_blocks = [
+                {"role": m.role, "content": m.content} for m in messages
+            ]
+            resp = await responses_api.create(
+                model=self.config.model_name,
+                input=input_blocks,
+                tools=[{"type": "web_search"}],
+                temperature=temperature if temperature is not None else self.config.temperature,
+                max_output_tokens=max_tokens or self.config.max_tokens,
+            )
+            # SDK exposes a flat .output_text helper
+            content = getattr(resp, "output_text", "") or ""
+            usage = getattr(resp, "usage", None)
+            return LLMResponse(
+                content=content, model=getattr(resp, "model", self.config.model_name),
+                input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
+                output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
+                finish_reason="",
+                raw=_safe_model_dump(resp),
+            )
+
+        # Legacy fallback: chat.completions with web_search tool spec
+        resp = await self._client.chat.completions.create(
+            model=self.config.model_name,
+            messages=[{"role": m.role, "content": m.content} for m in messages],
+            tools=[{"type": "web_search"}],
+            temperature=temperature if temperature is not None else self.config.temperature,
+            max_tokens=max_tokens or self.config.max_tokens,
+        )
+        choice = resp.choices[0]
+        usage = resp.usage
+        return LLMResponse(
+            content=choice.message.content or "", model=resp.model,
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+            finish_reason=choice.finish_reason or "",
+            raw=_safe_model_dump(resp),
+        )

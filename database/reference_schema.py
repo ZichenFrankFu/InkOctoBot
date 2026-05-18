@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS reference_works (
     preprocessing_status TEXT NOT NULL DEFAULT 'not_applicable' CHECK (preprocessing_status IN ('not_applicable','pending','processing','done','error')),
     style_fingerprint_json TEXT, narrative_structure_json TEXT,
     extracted_characters_json TEXT, rhythm_template_json TEXT,
+    plot_outline_json TEXT, segments_json TEXT, settings_json TEXT,
+    rhythm_json TEXT,
+    serial_status TEXT CHECK (serial_status IN ('ongoing','completed','hiatus','unknown')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"""
 
@@ -38,8 +41,61 @@ CREATE TABLE IF NOT EXISTS project_reference_links (
     FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
 );"""
 
-ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS]
+# Per-work, per-level (L1/L2/L3) indexing progress so deep-indexing of
+# multi-million-token works can be resumed across restarts.
+_WORK_INDEX_PROGRESS = """
+CREATE TABLE IF NOT EXISTS work_index_progress (
+    ref_id TEXT NOT NULL,
+    level TEXT NOT NULL,                  -- 'L1' | 'L2' | 'L3'
+    backend TEXT NOT NULL,                -- embedding backend name
+    done INTEGER NOT NULL DEFAULT 0,      -- chunks/items embedded so far
+    total INTEGER NOT NULL DEFAULT 0,     -- expected total when known
+    last_ordinal INTEGER NOT NULL DEFAULT -1,  -- last chunk ord persisted (L3)
+    status TEXT NOT NULL DEFAULT 'pending', -- pending|running|done|error
+    error TEXT,
+    started_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (ref_id, level, backend),
+    FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
+);"""
+
+# Persisted chapter list — populated when the user clicks 「保存全部章节」
+# after preprocessing. Holds the canonical chapter breakdown so
+# downstream features (segment plan, feature extraction, vector index)
+# can rely on stable boundaries instead of re-running detection.
+_REFERENCE_CHAPTERS = """
+CREATE TABLE IF NOT EXISTS reference_chapters (
+    ref_id TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    title TEXT,
+    raw_marker TEXT,
+    pattern TEXT,
+    volume TEXT,
+    parsed_number INTEGER,
+    char_count INTEGER,
+    is_author_note INTEGER NOT NULL DEFAULT 0,
+    content TEXT,
+    content_start INTEGER,
+    content_end INTEGER,
+    saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (ref_id, number),
+    FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
+);"""
+
+ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS, _REFERENCE_CHAPTERS]
 
 def ensure_reference_tables(conn: sqlite3.Connection) -> None:
     for ddl in ALL_DDL: conn.executescript(ddl)
+    # Lightweight migrations for additive columns on pre-existing DBs
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(reference_works)").fetchall()}
+    if "plot_outline_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN plot_outline_json TEXT")
+    if "segments_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN segments_json TEXT")
+    if "settings_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN settings_json TEXT")
+    if "serial_status" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN serial_status TEXT")
+    if "rhythm_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN rhythm_json TEXT")
     conn.commit()

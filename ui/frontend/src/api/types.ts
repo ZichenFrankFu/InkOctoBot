@@ -105,6 +105,11 @@ export interface ReferenceWork {
   narrative_structure_json?: string;
   extracted_characters_json?: string;
   rhythm_template_json?: string;
+  plot_outline_json?: string;
+  segments_json?: string;
+  settings_json?: string;
+  rhythm_json?: string;
+  serial_status?: "ongoing" | "completed" | "hiatus" | "unknown" | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -400,6 +405,8 @@ export interface AppSettings {
   providers: Record<string, ProviderConfig>;
   pipeline: Record<string, PipelineRole>;
   crawler_db_path?: string;
+  embedding_backend?: "local" | "openai";
+  prompt_overrides?: Record<string, string>;
 }
 
 // ── Analysis ──

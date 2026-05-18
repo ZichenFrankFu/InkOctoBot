@@ -75,6 +75,83 @@ class VectorStore:
             metadatas=metadatas or [{} for _ in ids],
         )
 
+    def add_batch_with_embeddings(
+        self,
+        ids: list[str],
+        texts: list[str],
+        embeddings: list[list[float]] | Any,  # numpy.ndarray (N, dim) accepted
+        metadatas: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Upsert with PRE-COMPUTED embeddings — bypasses ChromaDB's
+        default embedding function. Used by reference-works indexing
+        where we want explicit control over the model."""
+        self._ensure_client()
+        # ChromaDB tolerates either list[list[float]] or np.ndarray; if
+        # the caller passed a numpy array, convert to list of lists so
+        # the downstream client doesn't fight numpy's iteration semantics
+        # on some versions.
+        try:
+            import numpy as np  # type: ignore
+            if isinstance(embeddings, np.ndarray):
+                emb_list = embeddings.tolist()
+            else:
+                emb_list = list(embeddings)
+        except ImportError:
+            emb_list = list(embeddings)
+        self._collection.upsert(
+            ids=ids,
+            documents=texts,
+            embeddings=emb_list,
+            metadatas=metadatas or [{} for _ in ids],
+        )
+
+    def query_with_embedding(
+        self,
+        embedding: list[float] | Any,
+        n_results: int = 5,
+        where: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query by a pre-computed query embedding (mirror of `query`
+        for use with the explicit-backend indexer)."""
+        self._ensure_client()
+        try:
+            import numpy as np
+            if hasattr(embedding, "tolist"):
+                emb = embedding.tolist()
+            else:
+                emb = list(embedding)
+        except ImportError:
+            emb = list(embedding)
+        kw: dict[str, Any] = {"query_embeddings": [emb], "n_results": n_results}
+        if where:
+            kw["where"] = where
+        results = self._collection.query(**kw)
+        out: list[dict[str, Any]] = []
+        ids = results.get("ids", [[]])[0]
+        docs = results.get("documents", [[]])[0]
+        metas = results.get("metadatas", [[]])[0]
+        dists = results.get("distances", [[]])[0]
+        for i in range(len(ids)):
+            out.append({
+                "id": ids[i],
+                "text": docs[i] if docs else "",
+                "metadata": metas[i] if metas else {},
+                "distance": dists[i] if dists else 0.0,
+            })
+        return out
+
+    def get_many(self, ids: list[str]) -> set[str]:
+        """Return the subset of ids that already exist in the collection.
+        Used by the indexer to skip already-embedded chunks."""
+        self._ensure_client()
+        if not ids:
+            return set()
+        try:
+            result = self._collection.get(ids=ids)
+            return set(result.get("ids") or [])
+        except Exception:
+            return set()
+
     def query(
         self,
         query_text: str,

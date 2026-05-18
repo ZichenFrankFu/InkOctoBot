@@ -84,3 +84,20 @@ role_overrides:
     model: "qwen2.5:14b"
     temperature: 0.4
     max_tokens: 8192
+
+  # Reference works — segmented feature extraction
+  # (characters / settings / narrative / rhythm, NLP fallback).
+  reference_extractor:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.3
+    max_tokens: 4096
+
+  # Reference works — web-search metadata completion.
+  # Defaults to ollama (no web access) so the capability check returns
+  # disabled until the user explicitly picks anthropic/openai in Settings.
+  reference_web_search:
+    provider: ollama
+    model: "qwen2.5:14b"
+    temperature: 0.2
+    max_tokens: 2048

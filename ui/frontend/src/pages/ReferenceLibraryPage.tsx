@@ -3,36 +3,19 @@ import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import useDebounce from "../hooks/useDebounce";
 import { useToast } from "../components/shared/Toast";
-import type { ReferenceWork, ReferenceEntry, MediaType } from "../api/types";
-
-/* ── Extraction types ── */
-interface ExtractionProgress {
-  total_novels: number;
-  phases: Record<string, Record<string, number>>;
-  patterns: Record<string, number>;
-  skills_emitted: number;
-}
-interface ExtPattern {
-  pattern_id: string; category: string; subcategory: string;
-  pattern_name: string; description: string; frequency: number;
-  quality_score: number; skill_emitted: boolean; examples: any[];
-}
-interface PipelineStatus {
-  status: string; progress?: string; error?: string; result?: any;
-}
-const CATEGORY_LABELS: Record<string, string> = {
-  writing_technique: "写作手法", chapter_design: "章节设计", story_arc: "剧情设计",
-};
-const PHASE_LABELS: Record<string, string> = {
-  clean: "数据清洗", chapter_extract: "章节提取", novel_aggregate: "全书聚合", pattern_mine: "模式挖掘",
-};
-function fmtChars(n: number | null | undefined): string {
-  if (!n) return "0";
-  if (n >= 10000) return (n / 10000).toFixed(1) + "万";
-  return n.toLocaleString();
-}
-
-type PageTab = "works" | "extraction" | "patterns";
+import type { ReferenceWork, MediaType } from "../api/types";
+import {
+  Section,
+  StyleFingerprintEditor,
+  CharactersEditor,
+  SettingsEditor,
+  RhythmEditor,
+} from "../components/reference/AnalysisEditors";
+import type { PlotOutline } from "../components/reference/AnalysisEditors";
+import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
+import PreprocessPanel from "../components/reference/PreprocessPanel";
+import FilesPanel from "../components/reference/FilesPanel";
+import { splitGenres } from "../utils/genre";
 
 const MEDIA_TYPES: { value: MediaType; label: string; color: string }[] = [
   { value: "web_novel", label: "网文", color: "var(--accent)" },
@@ -42,11 +25,6 @@ const MEDIA_TYPES: { value: MediaType; label: string; color: string }[] = [
   { value: "anime", label: "动漫", color: "#f472b6" },
   { value: "tv_series", label: "电视剧", color: "var(--indigo)" },
   { value: "other", label: "其他", color: "var(--text-tertiary)" },
-];
-
-const ENTRY_TYPES = [
-  "scene", "character", "worldbuilding", "dialogue", "technique",
-  "atmosphere", "plot_structure", "emotional_beat", "hook", "style_sample", "other",
 ];
 
 function mediaLabel(mt: string) {
@@ -93,23 +71,12 @@ function StarRating({ value, onChange }: { value: number; onChange: (n: number) 
 
 export default function ReferenceLibraryPage() {
   const { toast } = useToast();
-  const [pageTab, setPageTab] = useState<PageTab>("works");
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
   const [filterMedia, setFilterMedia] = useState("");
   const [sel, setSel] = useState<ReferenceWork | null>(null);
-  const [entries, setEntries] = useState<ReferenceEntry[]>([]);
   const [loading, setLoading] = useState(false);
-
-  // Extraction pipeline state
-  const [extProgress, setExtProgress] = useState<ExtractionProgress | null>(null);
-  const [pipeStatus, setPipeStatus] = useState<PipelineStatus>({ status: "idle" });
-  const [extPatterns, setExtPatterns] = useState<ExtPattern[]>([]);
-  const [extPatternsTotal, setExtPatternsTotal] = useState(0);
-  const [extPatternCat, setExtPatternCat] = useState("");
-  const [ingesting, setIngesting] = useState(false);
-  const corpusFileRef = useRef<HTMLInputElement>(null);
 
   // Add work modal
   const [showAddWork, setShowAddWork] = useState(false);
@@ -130,19 +97,14 @@ export default function ReferenceLibraryPage() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Add entry inline form
-  const [showAddEntry, setShowAddEntry] = useState(false);
-  const [eType, setEType] = useState("scene");
-  const [eTitle, setETitle] = useState("");
-  const [eCont, setECont] = useState("");
-  const [ePos, setEPos] = useState("");
-  const [eNotes, setENotes] = useState("");
-
   // Batch management
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  const leftPanel = useResizable({ direction: "horizontal", initialSize: 360, minSize: 260, maxSize: 560 });
+  // Plot outline re-extraction
+
+  const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 180, maxSize: 420 });
+
 
   /* ---- Data loading ---- */
   const debouncedSearch = useDebounce(search, 300);
@@ -166,84 +128,24 @@ export default function ReferenceLibraryPage() {
     load();
   }, [load]);
 
-  /* ---- Extraction data loading ---- */
-  const loadExtProgress = useCallback(async () => {
-    try {
-      const [prog, st] = await Promise.all([
-        apiGet<ExtractionProgress>("/api/extraction/progress"),
-        apiGet<PipelineStatus>("/api/extraction/run/status"),
-      ]);
-      setExtProgress(prog); setPipeStatus(st);
-    } catch { /* ignore */ }
-  }, []);
-
-  const loadExtPatterns = useCallback(async () => {
-    try {
-      const url = `/api/extraction/patterns?limit=100${extPatternCat ? `&category=${extPatternCat}` : ""}`;
-      const r = await apiGet<{ items: ExtPattern[]; total: number }>(url);
-      setExtPatterns(r.items || []); setExtPatternsTotal(r.total || 0);
-    } catch { /* ignore */ }
-  }, [extPatternCat]);
-
+  // Pre-select a work from sessionStorage (set by ReferenceOverviewPage's
+  // "open details" button). Cleared after first use.
   useEffect(() => {
-    if (pageTab === "extraction") loadExtProgress();
-    if (pageTab === "patterns") loadExtPatterns();
-  }, [pageTab, loadExtProgress, loadExtPatterns]);
-
-  useEffect(() => {
-    if (pipeStatus.status !== "running") return;
-    const id = setInterval(loadExtProgress, 3000);
-    return () => clearInterval(id);
-  }, [pipeStatus.status, loadExtProgress]);
-
-  const handleIngestCorpus = async () => {
-    setIngesting(true);
+    if (sel || works.length === 0) return;
     try {
-      const r = await apiPost<{ ingested: number }>("/api/extraction/ingest", {}, { timeoutMs: 300_000 });
-      toast(`已导入 ${r.ingested} 本小说`, "success");
-      load();
-    } catch (e: any) { toast(e.message, "error"); }
-    finally { setIngesting(false); }
-  };
+      const target = sessionStorage.getItem("ref_open_ref_id");
+      if (target) {
+        const match = works.find(w => w.ref_id === target);
+        if (match) {
+          setSel(match);
+          sessionStorage.removeItem("ref_open_ref_id");
+        }
+      }
+    } catch { /* sessionStorage may be unavailable; ignore */ }
+  }, [works, sel]);
 
-  const handleCorpusUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const fd = new FormData(); fd.append("file", file);
-      const res = await fetch("/api/extraction/ingest/upload", { method: "POST", body: fd });
-      if (!res.ok) { const err = await res.json().catch(() => ({ detail: "上传失败" })); throw new Error(err.detail || "上传失败"); }
-      const r = await res.json();
-      toast(`已导入《${r.title}》(${r.chapters}章)`, "success");
-      load();
-    } catch (err: any) { toast(err.message, "error"); }
-    finally { e.target.value = ""; }
-  };
-
-  const handleRunPipeline = async (phases?: string[]) => {
-    try {
-      await apiPost("/api/extraction/run", { phases, resume: true });
-      toast("提取流程已启动", "success");
-      setPipeStatus({ status: "running", progress: "初始化..." });
-    } catch (e: any) { toast(e.message, "error"); }
-  };
-
-  const handleEmitSkills = async () => {
-    try {
-      const r = await apiPost<{ skills_emitted: any }>("/api/extraction/emit", {});
-      toast(`Skill生成完成: ${JSON.stringify(r.skills_emitted)}`, "success");
-      loadExtProgress();
-    } catch (e: any) { toast(e.message, "error"); }
-  };
-
-  async function selectWork(w: ReferenceWork) {
+  function selectWork(w: ReferenceWork) {
     setSel(w);
-    try {
-      const r = await apiGet<{ items: ReferenceEntry[] }>(`/api/references/entries/${w.ref_id}`);
-      setEntries(r.items || []);
-    } catch {
-      setEntries([]);
-    }
   }
 
   async function saveAnalysisField(fieldKey: string, data: any) {
@@ -297,6 +199,7 @@ export default function ReferenceLibraryPage() {
         const updated = await resp.json();
         setSel(updated);
         setWorks(prev => prev.map(w => w.ref_id === updated.ref_id ? updated : w));
+        toast(`已上传正文：${uFile.name}`, "success");
       } catch (e: any) {
         toast(e.message || "操作失败", "error");
       }
@@ -330,11 +233,10 @@ export default function ReferenceLibraryPage() {
   }
 
   async function delWork(id: string) {
-    if (!confirm("确定删除这部参考作品及其所有条目？")) return;
+    if (!confirm("确定删除这部参考作品？")) return;
     try {
       await apiDelete(`/api/references/works/${id}`);
       setSel(null);
-      setEntries([]);
       load();
     } catch (e: any) {
       toast(e.message || "操作失败", "error");
@@ -353,7 +255,6 @@ export default function ReferenceLibraryPage() {
     }
     if (sel && selectedIds.has(sel.ref_id)) {
       setSel(null);
-      setEntries([]);
     }
     setSelectedIds(new Set());
     setBatchMode(false);
@@ -381,50 +282,6 @@ export default function ReferenceLibraryPage() {
     }
   }
 
-  async function runPreprocess(id: string) {
-    try {
-      const r = await apiPost<any>(`/api/references/preprocess/${id}`, {});
-      toast(`特征提取完成 (${r.chapters || 0} 章, ${r.errors?.length || 0} 错误)`, "success");
-    } catch (e: any) {
-      toast(e.message || "操作失败", "error");
-    }
-    load();
-    if (sel?.ref_id === id) {
-      try {
-        const w = await apiGet<ReferenceWork>(`/api/references/works/${id}`);
-        setSel(w);
-      } catch {}
-    }
-  }
-
-  async function addEntry() {
-    if (!sel || !eCont.trim()) return;
-    try {
-      await apiPost("/api/references/entries", {
-        ref_id: sel.ref_id,
-        entry_type: eType,
-        title: eTitle.trim(),
-        content: eCont.trim(),
-        position_label: ePos.trim() || undefined,
-        user_notes: eNotes.trim() || undefined,
-      });
-      setShowAddEntry(false);
-      setETitle(""); setECont(""); setEPos(""); setENotes("");
-      selectWork(sel);
-    } catch (e: any) {
-      toast(e.message || "操作失败", "error");
-    }
-  }
-
-  async function delEntry(eid: string) {
-    try {
-      await apiDelete(`/api/references/entries/${eid}`);
-      if (sel) selectWork(sel);
-    } catch (e: any) {
-      toast(e.message || "操作失败", "error");
-    }
-  }
-
   const statusBadge = (s: string) => {
     const map: Record<string, { cls: string; label: string }> = {
       done: { cls: "status-ongoing", label: "已分析" },
@@ -443,35 +300,14 @@ export default function ReferenceLibraryPage() {
       <div className="page-header" style={{ paddingBottom: 8 }}>
         <div className="page-header-row">
           <div>
-            <h2>参考作品库</h2>
-            <p>录入你喜欢的作品 &middot; 批量导入小说语料 &middot; 自动提取写作技巧为Skill</p>
+            <h2>参考作品详情</h2>
+            <p>录入你喜欢的作品 · 上传正文 · 提取风格/角色/剧情大纲</p>
           </div>
           <div className="flex gap-8">
-            <label className="btn" style={{ cursor: "pointer" }}>
-              上传小说
-              <input ref={corpusFileRef} type="file" accept=".txt" onChange={handleCorpusUpload} hidden />
-            </label>
-            <button className="btn" onClick={handleIngestCorpus} disabled={ingesting}>
-              {ingesting ? "导入中..." : "批量导入语料"}
-            </button>
             <button className="btn-primary" onClick={() => setShowAddWork(true)}>+ 添加作品</button>
           </div>
         </div>
       </div>
-
-      {/* Page-level tabs */}
-      <div className="flex gap-8 items-center" style={{ padding: "0 0 8px", borderBottom: "1px solid var(--border)" }}>
-        {([["works", "作品库"], ["extraction", "提取进度"], ["patterns", "模式库"]] as [PageTab, string][]).map(([k, l]) => (
-          <button key={k} className="btn-ghost" style={{
-            padding: "6px 16px", fontWeight: pageTab === k ? 600 : 400,
-            color: pageTab === k ? "var(--accent)" : "var(--text-secondary)",
-            borderBottom: pageTab === k ? "2px solid var(--accent)" : "2px solid transparent",
-          }} onClick={() => setPageTab(k)}>{l}</button>
-        ))}
-      </div>
-
-      {/* ════════ Works Tab ════════ */}
-      {pageTab === "works" && <>
       {/* Toolbar */}
       <div className="flex gap-8 items-center" style={{ padding: "10px 0 14px", flexWrap: "wrap" }}>
         <input
@@ -533,7 +369,7 @@ export default function ReferenceLibraryPage() {
                 key={w.ref_id}
                 className={`report-list-item ${sel?.ref_id === w.ref_id ? "active" : ""}`}
                 onClick={() => selectWork(w)}
-                style={{ padding: "12px 14px", gap: 10 }}
+                style={{ padding: "10px 12px", gap: 8 }}
               >
                 {batchMode && (
                   <input
@@ -544,19 +380,35 @@ export default function ReferenceLibraryPage() {
                     style={{ flexShrink: 0, cursor: "pointer", width: 16, height: 16 }}
                   />
                 )}
+                <div style={{
+                  width: 3,
+                  alignSelf: "stretch",
+                  background: mediaColor(w.media_type),
+                  borderRadius: 2,
+                  flexShrink: 0,
+                }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="truncate" style={{ fontWeight: 600, fontSize: 14, color: "var(--text-primary)" }}>
-                      {w.title}
-                    </span>
+                  <div className="truncate" style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)", marginBottom: 4 }}>
+                    {w.title}
+                  </div>
+                  <div className="flex items-center gap-6 text-xs" style={{ flexWrap: "wrap", marginBottom: 2 }}>
+                    {w.creator && <span className="text-muted truncate" style={{ maxWidth: 100 }}>{w.creator}</span>}
+                    {w.user_rating ? <span style={{ color: "var(--gold)" }}>{stars(w.user_rating)}</span> : null}
+                    <div style={{ flex: 1 }} />
                     {statusBadge(w.preprocessing_status)}
                   </div>
-                  <div className="flex gap-8 text-xs" style={{ flexWrap: "wrap" }}>
-                    <span style={{ color: mediaColor(w.media_type) }}>{mediaLabel(w.media_type)}</span>
-                    {w.creator && <span className="text-muted">{w.creator}</span>}
-                    {w.genre && <span className="text-muted" style={{ opacity: 0.7 }}>{w.genre}</span>}
-                    {w.user_rating && <span style={{ color: "var(--gold)" }}>{stars(w.user_rating)}</span>}
-                  </div>
+                  {splitGenres(w.genre).length > 0 && (
+                    <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
+                      {splitGenres(w.genre).slice(0, 3).map(g => (
+                        <span key={g} className="tag" style={{
+                          fontSize: 10, padding: "1px 6px",
+                          background: "var(--bg-surface)",
+                          color: "var(--text-secondary)",
+                          border: "1px solid var(--border)",
+                        }}>{g}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -576,298 +428,47 @@ export default function ReferenceLibraryPage() {
         <div className="panel flex-1" style={{ overflowY: "auto" }}>
           <div className="panel-body" style={{ padding: "16px 20px" }}>
             {sel ? (
-              <div>
-                {/* Work header */}
-                <div className="flex justify-between" style={{ alignItems: "flex-start", marginBottom: 16 }}>
-                  <div>
-                    <div className="flex items-center gap-10 mb-4">
-                      <h3 className="font-serif" style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary)" }}>
-                        {sel.title}
-                      </h3>
-                      <span
-                        className="tag"
-                        style={{ color: mediaColor(sel.media_type), background: "var(--bg-surface-2)" }}
-                      >
-                        {mediaLabel(sel.media_type)}
-                      </span>
-                    </div>
-                    <div className="flex gap-12 text-sm text-muted">
-                      {sel.creator && <span>&#x270D;&#xFE0F; {sel.creator}</span>}
-                      {sel.genre && <span>{sel.genre}</span>}
-                      <span>{sel.created_at?.split("T")[0] || "\u2014"}</span>
-                      {Boolean(sel.has_full_text) && (
-                        <span style={{ color: "var(--jade)", fontWeight: 500 }}>&#x2705; 已上传正文</span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex gap-6" style={{ flexShrink: 0 }}>
-                    {!sel.has_full_text && (
-                      <button className="btn" onClick={() => { setUTitle(sel.title); setUCreator(sel.creator || ""); setUMedia(sel.media_type); setUGenre(sel.genre || ""); setShowUpload(true); }}>
-                        上传正文文本
-                      </button>
-                    )}
-                    {Boolean(sel.has_full_text) && sel.preprocessing_status !== "done" && (
-                      <button className="btn" onClick={() => runPreprocess(sel.ref_id)} style={{ color: "var(--jade)", borderColor: "var(--jade)" }}>
-                        提取特征
-                      </button>
-                    )}
-                    {Boolean(sel.has_full_text) && sel.preprocessing_status === "done" && (
-                      <button className="btn" onClick={() => runPreprocess(sel.ref_id)} style={{ fontSize: 12 }}>
-                        重新提取
-                      </button>
-                    )}
-                    <button className="btn" style={{ color: "var(--error)" }} onClick={() => delWork(sel.ref_id)}>删除</button>
-                  </div>
-                </div>
-
-                {/* User annotations / rating */}
-                <div className="card mb-16">
-                  <div className="card-body">
-                    <div className="label" style={{ color: "var(--accent)", marginBottom: 6 }}>我的审美笔记</div>
-                    <div style={{ marginBottom: 4 }}>
-                      <StarRating value={sel.user_rating || 0} onChange={updateRating} />
-                    </div>
-                    {sel.user_why_i_like && (
-                      <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                        {sel.user_why_i_like}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Analysis results */}
-                {sel.preprocessing_status === "done" && (
-                  <div className="card mb-16">
-                    <div className="card-body">
-                      <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>特征提取结果</div>
-                      <div className="flex flex-col gap-8">
-                        <AnalysisSection title="风格指纹" data={pj(sel.style_fingerprint_json)} fieldKey="style_fingerprint_json" onSave={saveAnalysisField} />
-                        <AnalysisSection title="叙事结构" data={pj(sel.narrative_structure_json)} fieldKey="narrative_structure_json" onSave={saveAnalysisField} />
-                        <AnalysisSection title="提取角色" data={pj(sel.extracted_characters_json)} fieldKey="extracted_characters_json" onSave={saveAnalysisField} />
-                        <AnalysisSection title="节奏模板" data={pj(sel.rhythm_template_json)} fieldKey="rhythm_template_json" onSave={saveAnalysisField} />
-                      </div>
-                    </div>
-                  </div>
+              <WorkDetail
+                key={sel.ref_id}
+                sel={sel}
+                onUpload={() => { setUTitle(sel.title); setUCreator(sel.creator || ""); setUMedia(sel.media_type); setUGenre(sel.genre || ""); setShowUpload(true); }}
+                onDelete={() => delWork(sel.ref_id)}
+                onUpdateRating={updateRating}
+                onUpdateWhy={async (text) => {
+                  try {
+                    const updated = await apiPut<ReferenceWork>(`/api/references/works/${sel.ref_id}`, { user_why_i_like: text });
+                    setSel(updated);
+                    setWorks(prev => prev.map(x => x.ref_id === updated.ref_id ? updated : x));
+                  } catch (e: any) { toast(e.message || "保存失败", "error"); }
+                }}
+                onSaveAnalysisField={saveAnalysisField}
+                onAfterMerge={async () => {
+                  try {
+                    const w = await apiGet<ReferenceWork>(`/api/references/works/${sel.ref_id}`);
+                    setSel(w);
+                    setWorks(prev => prev.map(x => x.ref_id === w.ref_id ? w : x));
+                  } catch {}
+                }}
+              />
+                        ) : (
+              <div className="empty-state" style={{ paddingTop: 80, maxWidth: 420, margin: "0 auto", textAlign: "center" }}>
+                <h4>从左侧选择一部作品</h4>
+                <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+                  在左侧列表中选择任意作品查看详情、编辑大纲、调整角色与设定。<br />
+                  浏览全部参考作品的统计请前往「数据库概览」。
+                </p>
+                {works.length === 0 && (
+                  <button className="btn-primary" style={{ marginTop: 16 }} onClick={() => setShowAddWork(true)}>
+                    + 添加第一部作品
+                  </button>
                 )}
-
-                {/* Entries */}
-                <div className="card">
-                  <div className="card-header">
-                    <h3>参考条目 ({entries.length})</h3>
-                    <button className="btn" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => setShowAddEntry(true)}>
-                      + 添加
-                    </button>
-                  </div>
-                  <div className="card-body">
-                    {/* Add entry form */}
-                    {showAddEntry && (
-                      <div style={{
-                        padding: 12,
-                        borderRadius: "var(--radius-md)",
-                        background: "var(--bg-surface)",
-                        border: "1px solid var(--border)",
-                        marginBottom: 12,
-                      }}>
-                        <div className="flex gap-6 mb-8" style={{ flexWrap: "wrap" }}>
-                          <select className="select" value={eType} onChange={e => setEType(e.target.value)} style={{ flex: "0 0 140px" }}>
-                            {ENTRY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                          </select>
-                          <input className="input" placeholder="标题" value={eTitle} onChange={e => setETitle(e.target.value)} style={{ flex: 1 }} />
-                          <input className="input" placeholder="位置 (第3章/S1E05)" value={ePos} onChange={e => setEPos(e.target.value)} style={{ flex: "0 0 140px" }} />
-                        </div>
-                        <textarea
-                          className="input mb-8"
-                          placeholder="内容（原文摘录或你的描述）"
-                          value={eCont}
-                          onChange={e => setECont(e.target.value)}
-                          rows={3}
-                        />
-                        <textarea
-                          className="input mb-8"
-                          placeholder="个人笔记（可选）"
-                          value={eNotes}
-                          onChange={e => setENotes(e.target.value)}
-                          rows={2}
-                        />
-                        <div className="flex gap-6">
-                          <button className="btn-primary" onClick={addEntry} disabled={!eCont.trim()}>保存</button>
-                          <button className="btn" onClick={() => setShowAddEntry(false)}>取消</button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Entry list */}
-                    <div className="flex flex-col gap-6">
-                      {entries.map(e => (
-                        <div
-                          key={e.entry_id}
-                          style={{
-                            padding: "10px 12px",
-                            borderRadius: "var(--radius-sm)",
-                            background: "var(--bg-surface)",
-                            border: "1px solid var(--border)",
-                          }}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <span className="tag accent" style={{ marginRight: 6 }}>{e.entry_type}</span>
-                              <span style={{ fontWeight: 500, fontSize: 13, color: "var(--text-primary)" }}>{e.title || "(无标题)"}</span>
-                              {e.position_label && (
-                                <span className="text-xs text-muted" style={{ marginLeft: 6 }}>{e.position_label}</span>
-                              )}
-                            </div>
-                            <button className="btn-icon" style={{ fontSize: 14 }} onClick={() => delEntry(e.entry_id)}>
-                              &times;
-                            </button>
-                          </div>
-                          {e.content && (
-                            <div className="text-sm mt-6" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                              {e.content.length > 200 ? e.content.slice(0, 200) + "..." : e.content}
-                            </div>
-                          )}
-                          {e.user_notes && (
-                            <div className="text-xs mt-4" style={{ color: "var(--text-tertiary)", fontStyle: "italic" }}>
-                              {e.user_notes}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      {!entries.length && (
-                        <div className="text-xs text-muted text-center" style={{ padding: "16px 0" }}>
-                          暂无条目 &mdash; 点击上方「添加」记录你的感受
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="empty-state" style={{ paddingTop: 80 }}>
-                <div className="empty-icon">&#x1F4DA;</div>
-                <h4>选择一部作品查看详情</h4>
-                <p>或点击上方添加新的参考作品</p>
               </div>
             )}
           </div>
-          {/* LoRA Training Panel */}
-          <LoRATrainingPanel works={works} />
         </div>
       </div>
 
-      </>}
 
-      {/* ════════ Extraction Tab ════════ */}
-      {pageTab === "extraction" && (
-        <div style={{ padding: "16px 0" }}>
-          {/* Pipeline controls */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 16, padding: 12, background: "var(--bg-surface)", borderRadius: 6, border: "1px solid var(--border)", alignItems: "center", flexWrap: "wrap" }}>
-            <span style={{ fontSize: 12, color: "var(--text-secondary)", marginRight: 8 }}>
-              流程状态:
-              <span style={{ marginLeft: 6, fontWeight: 600, color: pipeStatus.status === "running" ? "var(--gold)" : pipeStatus.status === "done" ? "var(--jade)" : pipeStatus.status === "error" ? "var(--error)" : "var(--text-tertiary)" }}>
-                {pipeStatus.status === "idle" ? "空闲" : pipeStatus.progress || pipeStatus.status}
-              </span>
-            </span>
-            <div style={{ flex: 1 }} />
-            {(["chapter", "novel", "pattern"] as const).map(p => (
-              <button key={p} className="btn" onClick={() => handleRunPipeline([p])} disabled={pipeStatus.status === "running"} style={{ fontSize: 11 }}>
-                {{chapter: "章节提取", novel: "全书聚合", pattern: "模式挖掘"}[p]}
-              </button>
-            ))}
-            <button className="btn-primary" onClick={() => handleRunPipeline()} disabled={pipeStatus.status === "running"} style={{ fontSize: 11 }}>全部运行</button>
-            <button className="btn" onClick={handleEmitSkills} disabled={pipeStatus.status === "running"} style={{ fontSize: 11 }}>生成Skill</button>
-          </div>
-
-          {pipeStatus.error && (
-            <div style={{ padding: "8px 12px", marginBottom: 12, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, color: "var(--error)", fontSize: 12 }}>
-              {pipeStatus.error}
-            </div>
-          )}
-
-          {extProgress && (
-            <div>
-              <div style={{ marginBottom: 12, fontSize: 13, color: "var(--text-secondary)" }}>已注册小说: <strong>{extProgress.total_novels}</strong></div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginBottom: 20 }}>
-                {Object.entries(PHASE_LABELS).map(([phase, label]) => {
-                  const ps = extProgress.phases[phase] || {};
-                  const completed = ps["completed"] || 0, failed = ps["failed"] || 0, pending = ps["pending"] || 0, inProg = ps["in_progress"] || 0;
-                  const tot = completed + failed + pending + inProg;
-                  return (
-                    <div key={phase} style={{ padding: 16, background: "var(--bg-surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{label}</div>
-                      {tot === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>尚未开始</div> : <>
-                        <div style={{ height: 6, background: "var(--bg-surface-2)", borderRadius: 3, overflow: "hidden", marginBottom: 6 }}>
-                          <div style={{ height: "100%", width: `${(completed / tot) * 100}%`, background: "var(--jade)", borderRadius: 3, transition: "width 0.3s" }} />
-                        </div>
-                        <div style={{ display: "flex", gap: 12, fontSize: 11, color: "var(--text-secondary)" }}>
-                          <span style={{ color: "var(--jade)" }}>{completed} 完成</span>
-                          {inProg > 0 && <span style={{ color: "var(--gold)" }}>{inProg} 进行中</span>}
-                          {failed > 0 && <span style={{ color: "var(--error)" }}>{failed} 失败</span>}
-                          {pending > 0 && <span>{pending} 待处理</span>}
-                        </div>
-                      </>}
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-                <div style={{ padding: 16, background: "var(--bg-surface)", borderRadius: 8, border: "1px solid var(--border)", minWidth: 200 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>已挖掘模式</div>
-                  {Object.keys(extProgress.patterns).length === 0
-                    ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div>
-                    : Object.entries(extProgress.patterns).map(([cat, cnt]) => (
-                      <div key={cat} style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 2 }}>{CATEGORY_LABELS[cat] || cat}: <strong>{cnt}</strong></div>
-                    ))
-                  }
-                </div>
-                <div style={{ padding: 16, background: "var(--bg-surface)", borderRadius: 8, border: "1px solid var(--border)", minWidth: 200 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>已生成Skill</div>
-                  <div style={{ fontSize: 24, fontWeight: 700, color: "var(--accent)" }}>{extProgress.skills_emitted}</div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ════════ Patterns Tab ════════ */}
-      {pageTab === "patterns" && (
-        <div style={{ padding: "16px 0" }}>
-          <div className="flex gap-8 items-center" style={{ marginBottom: 12 }}>
-            <select className="select" value={extPatternCat} onChange={e => setExtPatternCat(e.target.value)}>
-              <option value="">全部类别</option>
-              {Object.entries(CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-            <span className="text-xs text-muted">共 {extPatternsTotal} 个模式</span>
-          </div>
-          {extPatterns.length === 0 ? (
-            <div className="empty-state" style={{ padding: 40 }}>暂无模式。请先在"提取进度"中运行模式挖掘。</div>
-          ) : (
-            <div className="flex flex-col gap-8">
-              {extPatterns.map(p => (
-                <div key={p.pattern_id} style={{ padding: 12, background: "var(--bg-surface)", borderRadius: 6, border: "1px solid var(--border)" }}>
-                  <div className="flex justify-between items-center" style={{ marginBottom: 4 }}>
-                    <div className="flex gap-8 items-center">
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>{p.pattern_name}</span>
-                      <span className="tag" style={{ fontSize: 10 }}>{CATEGORY_LABELS[p.category] || p.category}</span>
-                      {p.subcategory && <span className="text-xs text-muted">/ {p.subcategory}</span>}
-                    </div>
-                    <div className="flex gap-12 text-xs text-muted">
-                      <span>出现: {p.frequency}本</span>
-                      <span>质量: {(p.quality_score || 0).toFixed(1)}</span>
-                      {p.skill_emitted && <span style={{ color: "var(--jade)" }}>已生成Skill</span>}
-                    </div>
-                  </div>
-                  {p.description && (
-                    <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                      {p.description.length > 200 ? p.description.slice(0, 200) + "..." : p.description}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* ======== Add Work Modal ======== */}
       {showAddWork && (
@@ -1039,217 +640,312 @@ export default function ReferenceLibraryPage() {
   );
 }
 
-/* ---- Analysis Section (collapsible + editable) ---- */
-function AnalysisSection({ title, data, fieldKey, onSave }: {
-  title: string; data: any; fieldKey?: string; onSave?: (fieldKey: string, data: any) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState("");
-  const [editError, setEditError] = useState("");
-  if (!data) return null;
+/* ───────────────── Work Detail (horizontal tabs) ───────────────── */
 
-  const startEdit = () => {
-    setEditText(JSON.stringify(data, null, 2));
-    setEditError("");
-    setEditing(true);
-  };
-  const cancelEdit = () => { setEditing(false); setEditError(""); };
-  const saveEdit = () => {
-    try {
-      const parsed = JSON.parse(editText);
-      if (onSave && fieldKey) onSave(fieldKey, parsed);
-      setEditing(false);
-      setEditError("");
-    } catch (e: any) {
-      setEditError("JSON 格式错误: " + (e.message || "解析失败"));
-    }
-  };
+type WorkDetailTab = "files" | "preprocess" | "plot" | "characters" | "settings" | "features" | "info";
+
+const STATUS_LABEL: Record<string, { label: string; color: string }> = {
+  done: { label: "已分析", color: "var(--jade)" },
+  processing: { label: "处理中", color: "var(--gold)" },
+  pending: { label: "待处理", color: "var(--accent)" },
+  error: { label: "出错", color: "var(--error)" },
+  not_applicable: { label: "手动维护", color: "var(--text-tertiary)" },
+};
+
+function WorkDetail({
+  sel, onUpload, onDelete,
+  onUpdateRating, onUpdateWhy, onSaveAnalysisField, onAfterMerge,
+}: {
+  sel: ReferenceWork;
+  onUpload: () => void;
+  onDelete: () => void;
+  onUpdateRating: (rating: number) => void;
+  onUpdateWhy: (text: string) => Promise<void> | void;
+  onSaveAnalysisField: (fieldKey: string, data: any) => Promise<void> | void;
+  onAfterMerge: () => Promise<void> | void;
+}) {
+  const [tab, setTab] = useState<WorkDetailTab>("files");
+  const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
+  const [editingWhy, setEditingWhy] = useState(false);
+
+  useEffect(() => {
+    setWhyDraft(sel.user_why_i_like || "");
+    setEditingWhy(false);
+  }, [sel.ref_id, sel.user_why_i_like]);
+
+  const status = STATUS_LABEL[sel.preprocessing_status] || STATUS_LABEL.not_applicable;
+  const plot = pj(sel.plot_outline_json) as PlotOutline | null;
+  const chars = pj(sel.extracted_characters_json) as any[] | null;
+  const epochCount = (plot?.epochs || []).length;
+  const periodCount = (plot?.epochs || []).reduce((n: number, ep: any) => n + (ep.periods?.length || 0), 0);
+  const eventCount = (plot?.epochs || []).reduce(
+    (n: number, ep: any) =>
+      n + (ep.periods || []).reduce((m: number, per: any) => m + (per.events?.length || 0), 0),
+    0,
+  );
+  const charCount = (chars || []).length;
+  const settings = pj(sel.settings_json) as any[] | null;
+  const settingsCount = (settings || []).length;
+
+  const TABS: { key: WorkDetailTab; label: string; count?: number | string }[] = [
+    { key: "files", label: "原始文件" },
+    { key: "preprocess", label: "预处理" },
+    { key: "plot", label: "剧情大纲", count: eventCount || undefined },
+    { key: "characters", label: "角色", count: charCount || undefined },
+    { key: "settings", label: "设定", count: settingsCount || undefined },
+    { key: "features", label: "文本特征" },
+    { key: "info", label: "信息与笔记" },
+  ];
 
   return (
-    <div style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", overflow: "hidden" }}>
-      <button
-        className="btn-ghost w-full"
-        style={{
-          justifyContent: "space-between",
-          padding: "8px 12px",
-          background: "var(--bg-surface)",
-          fontWeight: 500,
-          borderRadius: 0,
-        }}
-        onClick={() => setOpen(!open)}
-      >
-        <span>{title}</span>
-        <span
-          className="text-xs text-muted"
-          style={{ transition: "transform 0.15s", transform: open ? "rotate(180deg)" : "none", display: "inline-block" }}
-        >
-          &#x25BC;
-        </span>
-      </button>
-      {open && (
-        <div style={{ background: "var(--bg-card)" }}>
-          {editing ? (
-            <div style={{ padding: 8 }}>
-              <textarea
-                className="input font-mono"
-                value={editText}
-                onChange={e => setEditText(e.target.value)}
-                style={{ width: "100%", minHeight: 200, maxHeight: 400, fontSize: 11, lineHeight: 1.5, resize: "vertical", boxSizing: "border-box" }}
-              />
-              {editError && <div style={{ fontSize: 11, color: "var(--error)", marginTop: 4 }}>{editError}</div>}
-              <div style={{ display: "flex", gap: 6, marginTop: 6, justifyContent: "flex-end" }}>
-                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={cancelEdit}>取消</button>
-                <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} onClick={saveEdit}>保存</button>
+    <div>
+      {/* Compact, sticky work header.
+       *
+       * The parent .panel-body has padding:16px 20px so the sticky
+       * region must EXTEND past that padding — otherwise during scroll
+       * there's a narrow strip above the bar where panel-body content
+       * leaks through (the bug user reported as "和搜索bar有空隙").
+       *
+       * margin:-16px -20px 12px pulls the sticky region edge-to-edge
+       * within the scroll container; padding:16px 20px 10px restores
+       * the visual inset for the bar's content. This way the opaque
+       * background fully covers the scroll container's top during
+       * scroll, regardless of intermediate sub-pixel positioning. */}
+      <div style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 10,
+        background: "var(--bg-app)",
+        margin: "-16px -20px 12px",
+        padding: "16px 20px 10px",
+        borderBottom: "1px solid var(--border)",
+        boxShadow: "0 6px 6px -6px rgba(0,0,0,0.18)",
+      }}>
+        <div className="flex items-center" style={{ gap: 10, flexWrap: "wrap" }}>
+          <h3 className="font-serif" style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
+            {sel.title}
+          </h3>
+          <span className="tag" style={{
+            color: mediaColor(sel.media_type),
+            background: "var(--bg-surface-2)",
+            fontSize: 11, padding: "1px 8px",
+          }}>{mediaLabel(sel.media_type)}</span>
+          <span className="tag" style={{
+            fontSize: 11, padding: "1px 8px",
+            color: status.color,
+            background: "var(--bg-surface-2)",
+            border: `1px solid ${status.color}`,
+          }}>{status.label}</span>
+          <div style={{ flex: 1 }} />
+          <div className="flex gap-6" style={{ flexShrink: 0 }}>
+            {!sel.has_full_text && (
+              <button className="btn" onClick={onUpload}>上传正文</button>
+            )}
+            <button className="btn" style={{ color: "var(--error)" }} onClick={onDelete}>删除</button>
+          </div>
+        </div>
+        <div className="flex gap-12 text-xs text-muted" style={{ marginTop: 6, flexWrap: "wrap" }}>
+          {sel.creator && <span>{sel.creator}</span>}
+          {sel.genre && <span>· {sel.genre}</span>}
+          {sel.updated_at && <span>· 更新 {sel.updated_at.split("T")[0]}</span>}
+          {sel.user_rating ? <span style={{ color: "var(--gold)" }}>· {stars(sel.user_rating)}</span> : null}
+        </div>
+
+        {/* Horizontal tab bar */}
+        <div className="flex" style={{ marginTop: 12, gap: 4, borderBottom: "1px solid var(--border)" }}>
+          {TABS.map(t => (
+            <button
+              key={t.key}
+              className="btn-ghost"
+              onClick={() => setTab(t.key)}
+              style={{
+                padding: "8px 16px",
+                fontSize: 13,
+                fontWeight: tab === t.key ? 600 : 400,
+                color: tab === t.key ? "var(--accent)" : "var(--text-secondary)",
+                borderBottom: tab === t.key ? "2px solid var(--accent)" : "2px solid transparent",
+                marginBottom: -1,
+                borderRadius: 0,
+              }}
+            >
+              {t.label}
+              {t.count != null && (
+                <span style={{
+                  marginLeft: 6,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: tab === t.key ? "var(--accent)" : "var(--text-tertiary)",
+                  background: tab === t.key ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+                  padding: "1px 6px",
+                  borderRadius: 10,
+                }}>{t.count}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Tab content */}
+      {tab === "files" && (
+        <FilesPanel
+          refId={sel.ref_id}
+          onAfterChange={onAfterMerge}
+        />
+      )}
+
+      {tab === "preprocess" && (
+        <PreprocessPanel
+          refId={sel.ref_id}
+          hasFullText={Boolean(sel.has_full_text)}
+          onUpload={() => setTab("files")}
+          onAfterApplyExclusions={onAfterMerge}
+        />
+      )}
+
+      {tab === "plot" && (
+        <PlotOutlinePanel
+          refId={sel.ref_id}
+          hasFullText={Boolean(sel.has_full_text)}
+          preprocessingStatus={sel.preprocessing_status}
+          plotOutline={plot}
+          onSavePlot={d => onSaveAnalysisField("plot_outline_json", d)}
+          onAfterMerge={onAfterMerge}
+          onGoToPreprocess={() => setTab("preprocess")}
+        />
+      )}
+
+      {tab === "characters" && (
+        chars && chars.length > 0 ? (
+          <CharactersEditor
+            data={chars}
+            onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+          />
+        ) : (
+          <div className="empty-state" style={{ padding: 32 }}>
+            <p>暂无角色数据。前往「剧情大纲」分段提取（勾选「使用 AI」可得到带简介的角色）。</p>
+          </div>
+        )
+      )}
+
+      {tab === "settings" && (
+        <SettingsEditor
+          data={settings || []}
+          onSave={d => onSaveAnalysisField("settings_json", d)}
+        />
+      )}
+
+      {tab === "features" && (
+        <div className="flex flex-col gap-12">
+          <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏"
+            empty={!pj(sel.style_fingerprint_json)}
+            emptyHint="暂无风格指纹。请先提取特征。"
+            defaultOpen
+          >
+            <StyleFingerprintEditor
+              data={pj(sel.style_fingerprint_json)}
+              onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
+            />
+          </Section>
+          <Section title="节奏" subtitle="每章特征 · 信息密度 · 钩子 · 节奏分段（含叙事结构）"
+            defaultOpen
+          >
+            <RhythmEditor
+              data={pj(sel.rhythm_json) as any}
+              legacyNarrative={pj(sel.narrative_structure_json)}
+              legacyRhythm={pj(sel.rhythm_template_json)}
+              onSave={d => onSaveAnalysisField("rhythm_json", d)}
+            />
+          </Section>
+        </div>
+      )}
+
+      {tab === "info" && (
+        <div className="flex flex-col gap-12">
+          {/* Stats */}
+          <div className="card">
+            <div className="card-body">
+              <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>作品摘要</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
+                <Stat label="处理状态" value={status.label} accent={status.color} />
+                <Stat label="正文" value={sel.has_full_text ? "已上传" : "未上传"} />
+                <Stat label="时间段" value={periodCount} />
+                <Stat label="事件" value={eventCount} />
+                <Stat label="角色" value={charCount} />
+                <Stat label="设定" value={settingsCount} />
+                <Stat label="评分" value={sel.user_rating ? stars(sel.user_rating) : "—"} />
               </div>
             </div>
-          ) : (
-            <>
-              <pre
-                className="font-mono"
-                style={{
-                  margin: 0, padding: 12, fontSize: 11, lineHeight: 1.5,
-                  color: "var(--text-secondary)", whiteSpace: "pre-wrap",
-                  wordBreak: "break-all", maxHeight: 260, overflow: "auto",
-                }}
-              >
-                {JSON.stringify(data, null, 2)}
-              </pre>
-              {fieldKey && onSave && (
-                <div style={{ padding: "4px 12px 8px", textAlign: "right" }}>
-                  <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }} onClick={startEdit}>
-                    编辑
-                  </button>
+          </div>
+
+          {/* Rating */}
+          <div className="card">
+            <div className="card-body">
+              <div className="label" style={{ color: "var(--accent)", marginBottom: 6 }}>我的评分</div>
+              <StarRating value={sel.user_rating || 0} onChange={onUpdateRating} />
+            </div>
+          </div>
+
+          {/* Why I like it */}
+          <div className="card">
+            <div className="card-body">
+              <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+                <div className="label" style={{ color: "var(--accent)", margin: 0 }}>为什么喜欢</div>
+                {!editingWhy && (
+                  <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={() => setEditingWhy(true)}>编辑</button>
+                )}
+              </div>
+              {editingWhy ? (
+                <>
+                  <textarea
+                    className="input"
+                    rows={4}
+                    value={whyDraft}
+                    onChange={e => setWhyDraft(e.target.value)}
+                    placeholder="写作风格？世界观？角色塑造？情绪节奏？"
+                  />
+                  <div className="flex gap-6 mt-8" style={{ justifyContent: "flex-end" }}>
+                    <button className="btn" onClick={() => { setEditingWhy(false); setWhyDraft(sel.user_why_i_like || ""); }}>取消</button>
+                    <button className="btn-primary" onClick={async () => { await onUpdateWhy(whyDraft); setEditingWhy(false); }}>保存</button>
+                  </div>
+                </>
+              ) : sel.user_why_i_like ? (
+                <div className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
+                  {sel.user_why_i_like}
+                </div>
+              ) : (
+                <div className="text-xs text-muted" style={{ fontStyle: "italic" }}>
+                  暂无笔记。点击「编辑」记录你为什么喜欢这部作品。
                 </div>
               )}
-            </>
-          )}
+            </div>
+          </div>
+
+          {/* Metadata */}
+          <div className="card">
+            <div className="card-body">
+              <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>元数据</div>
+              <dl style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "6px 14px", fontSize: 12, margin: 0 }}>
+                <dt className="text-muted">作品 ID</dt>
+                <dd style={{ fontFamily: "var(--font-mono)", color: "var(--text-secondary)", margin: 0 }}>{sel.ref_id}</dd>
+                <dt className="text-muted">作者</dt><dd style={{ margin: 0 }}>{sel.creator || "—"}</dd>
+                <dt className="text-muted">题材</dt><dd style={{ margin: 0 }}>{sel.genre || "—"}</dd>
+                <dt className="text-muted">来源</dt><dd style={{ margin: 0 }}>{sel.source || "—"}</dd>
+                <dt className="text-muted">创建</dt><dd style={{ margin: 0 }}>{sel.created_at?.split("T")[0] || "—"}</dd>
+                <dt className="text-muted">更新</dt><dd style={{ margin: 0 }}>{sel.updated_at?.split("T")[0] || "—"}</dd>
+              </dl>
+            </div>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-/* ---- LoRA Training Panel ---- */
-function LoRATrainingPanel({ works }: { works: ReferenceWork[] }) {
-  const [open, setOpen] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [baseModel, setBaseModel] = useState("Qwen/Qwen2-1.5B");
-  const [rank, setRank] = useState(16);
-  const [alpha, setAlpha] = useState(32);
-  const [epochs, setEpochs] = useState(3);
-  const [lr, setLr] = useState(0.0002);
-  const [status, setStatus] = useState<any>(null);
-  const [training, setTraining] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const doneWorks = works.filter(w => w.preprocessing_status === "done");
-
-  const toggleWork = (refId: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(refId)) next.delete(refId); else next.add(refId);
-      return next;
-    });
-  };
-
-  const startTraining = async () => {
-    if (selectedIds.size === 0) return;
-    setTraining(true);
-    try {
-      await apiPost("/api/references/lora/train", {
-        work_ids: Array.from(selectedIds),
-        base_model: baseModel, rank, alpha, epochs, learning_rate: lr,
-      });
-      // Start polling status
-      pollRef.current = setInterval(async () => {
-        try {
-          const s = await apiGet<any>("/api/references/lora/status");
-          setStatus(s);
-          if (s.status === "done" || s.status === "error" || s.status === "idle") {
-            if (pollRef.current) clearInterval(pollRef.current);
-            setTraining(false);
-          }
-        } catch { /* ignore */ }
-      }, 2000);
-    } catch (e: any) {
-      setStatus({ status: "error", error: e?.message || "启动失败" });
-      setTraining(false);
-    }
-  };
-
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
-
+function Stat({ label, value, accent }: { label: string; value: React.ReactNode; accent?: string }) {
   return (
-    <div style={{ borderTop: "1px solid var(--border)", flexShrink: 0 }}>
-      <button
-        className="btn-ghost w-full"
-        style={{ padding: "10px 20px", justifyContent: "space-between", fontWeight: 600, fontSize: 13, borderRadius: 0 }}
-        onClick={() => setOpen(!open)}
-      >
-        <span>LoRA 风格训练</span>
-        <span className="text-xs text-muted" style={{ transition: "transform 0.15s", transform: open ? "rotate(180deg)" : "none", display: "inline-block" }}>&#x25BC;</span>
-      </button>
-      {open && (
-        <div style={{ padding: "12px 20px" }}>
-          <div className="label mb-8">选择参考作品（需已完成特征提取）</div>
-          <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, marginBottom: 12 }}>
-            {doneWorks.length === 0 ? (
-              <div className="text-xs text-muted" style={{ padding: 16, textAlign: "center" }}>没有已完成特征提取的作品</div>
-            ) : doneWorks.map(w => (
-              <label key={w.ref_id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", cursor: "pointer", borderBottom: "1px solid var(--border)" }}>
-                <input type="checkbox" checked={selectedIds.has(w.ref_id)} onChange={() => toggleWork(w.ref_id)} />
-                <span style={{ fontSize: 12, flex: 1 }}>{w.title}</span>
-                <span className="text-xs text-muted">{w.genre || w.media_type}</span>
-              </label>
-            ))}
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
-            <div className="field">
-              <label className="label">基础模型</label>
-              <select className="select w-full" value={baseModel} onChange={e => setBaseModel(e.target.value)}>
-                <option value="Qwen/Qwen2-1.5B">Qwen2-1.5B</option>
-                <option value="Qwen/Qwen2-7B">Qwen2-7B</option>
-                <option value="meta-llama/Llama-3-8B">Llama-3-8B</option>
-              </select>
-            </div>
-            <div className="field">
-              <label className="label">Epochs</label>
-              <input className="input" type="number" value={epochs} onChange={e => setEpochs(Number(e.target.value))} min={1} max={20} />
-            </div>
-            <div className="field">
-              <label className="label">Rank</label>
-              <input className="input" type="number" value={rank} onChange={e => setRank(Number(e.target.value))} min={4} max={128} />
-            </div>
-            <div className="field">
-              <label className="label">Alpha</label>
-              <input className="input" type="number" value={alpha} onChange={e => setAlpha(Number(e.target.value))} min={4} max={256} />
-            </div>
-          </div>
-
-          <button
-            className="btn-primary w-full"
-            onClick={startTraining}
-            disabled={selectedIds.size === 0 || training}
-            style={{ marginBottom: 8 }}
-          >
-            {training ? "训练中..." : `开始训练 (${selectedIds.size} 部作品)`}
-          </button>
-
-          {status && (
-            <div style={{
-              padding: "8px 12px", borderRadius: 6, fontSize: 12,
-              background: status.status === "error" ? "rgba(255,100,100,0.1)" : status.status === "done" ? "rgba(52,168,83,0.1)" : "var(--bg-surface-2)",
-              color: status.status === "error" ? "var(--error)" : status.status === "done" ? "var(--jade)" : "var(--text-secondary)",
-            }}>
-              {status.status === "running" && <div>{status.progress || "训练进行中..."}</div>}
-              {status.status === "done" && <div>训练完成！使用了 {status.samples_used} 个样本。</div>}
-              {status.status === "error" && <div>训练失败: {status.error}</div>}
-            </div>
-          )}
-        </div>
-      )}
+    <div>
+      <div className="text-xs text-muted" style={{ marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 600, color: accent || "var(--text-primary)" }}>{value}</div>
     </div>
   );
 }

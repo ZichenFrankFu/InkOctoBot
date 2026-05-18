@@ -85,7 +85,10 @@ def _defaults() -> dict:
             "editor_agent": {"provider": "ollama", "model": "", "compare_models": []},
             "evaluator": {"provider": "ollama", "model": "", "compare_models": []},
             "analyzer": {"provider": "ollama", "model": "", "compare_models": []},
+            "reference_extractor": {"provider": "ollama", "model": "", "compare_models": []},
+            "reference_web_search": {"provider": "", "model": "", "compare_models": []},
         },
+        "embedding_backend": "local",
     }
 
 
