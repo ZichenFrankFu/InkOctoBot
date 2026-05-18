@@ -129,6 +129,12 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const { toast } = useToast();
   const { confirm: confirmDialog, ConfirmHost } = useConfirm();
   const [status, setStatus] = useState<PreprocessStatus | null>(null);
+  // Track whether the first /preprocess/status call has returned, so
+  // we can show a 「加载中」 placeholder instead of the empty-state
+  // CTA ("还没有章节") during the initial load. Prevents the user
+  // from misclicking 重新检测 on a tab whose history hasn't loaded
+  // yet, which would clobber the persisted chapter list.
+  const [statusLoaded, setStatusLoaded] = useState(false);
   // ``excluded`` is purely user-driven. We do NOT auto-seed from the
   // is_author_note flag — that previously made the checkboxes feel
   // stuck (auto-seed re-applied on every poll). A "勾选全部疑似题外话"
@@ -220,6 +226,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       return r;
     } catch (e) {
       return null;
+    } finally {
+      setStatusLoaded(true);
     }
   }, [refId]);
 
@@ -1100,14 +1108,15 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               <button className="btn-primary"
                       style={{
                         fontSize: 12, padding: "5px 14px",
-                        cursor: guessing ? "wait" : "pointer",
+                        cursor: (guessing || !statusLoaded) ? "wait" : "pointer",
                         background: guessing ? "var(--gold)" : undefined,
                         color: guessing ? "#000" : undefined,
                         borderColor: guessing ? "var(--gold)" : undefined,
+                        opacity: !statusLoaded ? 0.5 : 1,
                       }}
                       onClick={() => { void guessFormat(); }}
-                      disabled={guessing}
-                      title="先扫描全文匹配章节格式，再让你确认后进行识别">
+                      disabled={guessing || !statusLoaded}
+                      title={!statusLoaded ? "正在加载历史，请稍候…" : "先扫描全文匹配章节格式，再让你确认后进行识别"}>
                 {guessing
                   ? <><span className="spinner-inline" style={{
                         display: "inline-block",
@@ -1674,9 +1683,25 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         </div>
       </div>
 
+      {/* Initial-load placeholder — shown until the first
+          /preprocess/status call resolves. Prevents the empty-state
+          CTA below from flashing on tab switches and prevents the
+          user from clicking 重新检测 before the persisted chapter
+          history has loaded. */}
+      {!statusLoaded && chapters.length === 0 && hasFullText && (
+        <div style={{
+          padding: 20, textAlign: "center",
+          border: "1px dashed var(--border)", borderRadius: 4,
+          background: "var(--bg-surface)",
+          color: "var(--text-tertiary)", fontSize: 12,
+        }}>
+          加载中…
+        </div>
+      )}
+
       {/* Empty-state CTA: when detection has been run but no chapters
           exist (or never run on a fresh upload). */}
-      {chapters.length === 0 && (state === "idle" || state === "done") && hasFullText && (
+      {statusLoaded && chapters.length === 0 && (state === "idle" || state === "done") && hasFullText && (
         <div style={{
           padding: 20, textAlign: "center",
           border: "1px dashed var(--border)", borderRadius: 4,
@@ -2480,20 +2505,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
           }}>
             <div style={{
               padding: "10px 14px", borderBottom: "1px solid var(--border)",
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-              gap: 8,
             }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                  编辑第 {editingChapter.display_number} 章 · {editingChapter.title}
-                </div>
-                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                  保存后会更新正文文件并备份原文（可在「清理章节」处撤销）。
-                </div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                编辑第 {editingChapter.display_number} 章 · {editingChapter.title}
               </div>
-              <button className="btn" onClick={() => setEditingChapter(null)} disabled={editSaving}>
-                关闭
-              </button>
+              <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                保存后会更新正文文件并备份原文（可在「清理章节」处撤销）。
+              </div>
             </div>
             <div style={{ padding: 14, flex: 1, overflow: "auto" }}>
               {editLoading ? (

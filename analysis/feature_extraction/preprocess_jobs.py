@@ -560,9 +560,12 @@ def persist_result_to_segments(ref_id: str, db_path: str,
         "total_chapters": len(light),
         "flagged_count": sum(1 for c in light if c.get("is_author_note")),
         "gaps": find_chapter_gaps(chapters),
-        # Wall-clock stamp of when this parse completed. Lets the UI
-        # show "上次识别 2026-05-18 14:32" so the user can tell at a
-        # glance whether the displayed chapter list is fresh.
+        # Wall-clock stamp of when this parse completed.
         "parsed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        # detect_chapters already runs the body-boundary safety net,
+        # so freshly-detected state is correct by construction —
+        # signal that to the status endpoint so it skips the slow
+        # read-time re-anchor pass on subsequent fetches.
+        "safety_applied": True,
     }
     rdb.update_work(ref_id, segments_json=json.dumps(state, ensure_ascii=False))
