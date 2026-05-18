@@ -182,6 +182,16 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const guessPollRef = useRef<number | null>(null);
   // Inline test results per format in the confirm panel
   const [candidateTests, setCandidateTests] = useState<Record<string, { count: number; preview: any[]; truncated: boolean; loading?: boolean }>>({});
+  // Per-candidate expand state for the format-pick list. Independent
+  // of `candidateTests` so the user can collapse a row WITHOUT losing
+  // the already-loaded match results.
+  const [candidateExpanded, setCandidateExpanded] = useState<Set<string>>(new Set());
+  // When the user picks the 题外话 filter, lazy-fetch aside paragraphs
+  // for this work once and key by chapter number; the chapter preview
+  // then renders ONLY the matched paragraphs instead of head + tail
+  // (per user feedback — head/tail is useless when filtering to asides).
+  const [filterAsides, setFilterAsides] = useState<any[] | null>(null);
+  const [filterAsidesLoading, setFilterAsidesLoading] = useState(false);
   // Per-chapter content edit modal
   const [editingChapter, setEditingChapter] = useState<{ chapter_id: string; display_number: number; title: string; content: string } | null>(null);
   const [editLoading, setEditLoading] = useState(false);
@@ -257,6 +267,34 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   useEffect(() => {
     fetchStatus(); fetchPlan(); fetchPatterns(); fetchKeywords(); fetchSavedSummary(); fetchGarbledPatterns();
   }, [fetchStatus, fetchPlan, fetchPatterns, fetchKeywords, fetchSavedSummary, fetchGarbledPatterns]);
+
+  // Lazy-load aside paragraphs the first time the 题外话 filter is
+  // active. The list is scoped to the work; re-fetch when refId or
+  // the chapter list (status) changes since paragraph indexes can
+  // shift after edits.
+  useEffect(() => {
+    if (filter !== "flagged") return;
+    let cancelled = false;
+    (async () => {
+      setFilterAsidesLoading(true);
+      try {
+        const r = await apiGet<{ asides: any[] }>(
+          `/api/references/works/${refId}/preprocess/aside_paragraphs`,
+        );
+        if (!cancelled) setFilterAsides(r.asides || []);
+      } catch {
+        if (!cancelled) setFilterAsides([]);
+      } finally {
+        if (!cancelled) setFilterAsidesLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [filter, refId, status?.chapters?.length]);
+  // Invalidate the cached asides whenever the user leaves the 题外话
+  // filter so re-entering triggers a fresh fetch.
+  useEffect(() => {
+    if (filter !== "flagged") setFilterAsides(null);
+  }, [filter]);
 
   // ── Garbled-pattern CRUD ──
 
@@ -503,6 +541,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     setGuessProgress({ current: 0, total: 0 });
     setGuessCandidates(null);
     setCandidateTests({});
+    setCandidateExpanded(new Set());
     try {
       // Kick off the async match job
       const init = await apiPost<{ state: string; current_pattern: number; total_patterns: number }>(
@@ -1143,6 +1182,20 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               {guessCandidates.slice(0, 12).map(c => {
                 const checked = chosenFormats.has(c.name);
                 const t = candidateTests[c.name];
+                const isExpanded = candidateExpanded.has(c.name);
+                const toggleExpand = () => {
+                  setCandidateExpanded(prev => {
+                    const n = new Set(prev);
+                    if (n.has(c.name)) {
+                      n.delete(c.name);
+                    } else {
+                      n.add(c.name);
+                      // Lazy-load matches the first time the row expands.
+                      if (!candidateTests[c.name]) testCandidate(c.name);
+                    }
+                    return n;
+                  });
+                };
                 return (
                   <div key={c.name} style={{
                     border: `1px solid ${checked ? "var(--accent)" : "var(--border)"}`,
@@ -1179,14 +1232,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       <span className="text-xs text-muted" style={{
                         fontFamily: "var(--font-mono)", minWidth: 70, textAlign: "right",
                       }}>
-                        匹配 {c.count} 处
+                        匹配 {(t?.count ?? c.count)} 处
                       </span>
                       <button className="btn"
-                              style={{ fontSize: 10, padding: "2px 8px" }}
-                              onClick={() => testCandidate(c.name)}
+                              style={{ fontSize: 10, padding: "2px 8px", minWidth: 50 }}
+                              onClick={toggleExpand}
                               disabled={t?.loading}
-                              title="展示该格式在当前作品上匹配到的章节（截取前 2 MB）">
-                        {t?.loading ? "..." : "展示"}
+                              title="展开/收起该格式匹配到的章节">
+                        {t?.loading ? "…" : isExpanded ? "收起" : "展开"}
                       </button>
                       {c.custom && (
                         <button className="btn-icon"
@@ -1195,7 +1248,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                                 title="删除此自定义格式">&times;</button>
                       )}
                     </div>
-                    {t && !t.loading && (
+                    {isExpanded && t && !t.loading && (
                       <div className="text-xs" style={{
                         margin: "0 8px 6px 8px", padding: 6,
                         background: "var(--bg-surface)", borderRadius: 3,
@@ -1206,12 +1259,19 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                           <span style={{
                             fontWeight: 600,
                             color: t.count > 5 ? "var(--jade)" : t.count > 0 ? "var(--gold)" : "var(--text-tertiary)",
-                          }}>匹配 {t.count} 处</span>
-                          {t.truncated && <span className="text-muted" style={{ marginLeft: 6 }}>（截取前 2 MB）</span>}
+                          }}>共 {t.count} 处</span>
+                          {t.preview.length < t.count && (
+                            <span className="text-muted" style={{ marginLeft: 6 }}>
+                              （仅显示前 {t.preview.length} 处）
+                            </span>
+                          )}
                         </div>
                         {t.preview.length > 0 && (
-                          <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
-                            {t.preview.slice(0, 5).map((m: any, k: number) => (
+                          <ul style={{
+                            margin: "4px 0 0 16px", padding: 0,
+                            maxHeight: 240, overflowY: "auto",
+                          }}>
+                            {t.preview.map((m: any, k: number) => (
                               <li key={k} style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
                                 {m.match}
                               </li>
@@ -1916,20 +1976,77 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                       background: "var(--bg-card)", borderRadius: 3,
                       color: "var(--text-secondary)", lineHeight: 1.6, fontSize: 11,
                     }}>
-                      {c.preview_head && (
-                        <div style={{ marginBottom: c.preview_tail ? 6 : 0 }}>
-                          <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>开头</span>
-                          <span>{c.preview_head}</span>
-                        </div>
-                      )}
-                      {c.preview_tail && (
-                        <div>
-                          <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>结尾</span>
-                          <span>{c.preview_tail}</span>
-                        </div>
-                      )}
-                      {(!c.preview_head && !c.preview_tail) && (
-                        <div className="text-muted">（无预览内容）</div>
+                      {/* Filter-aware preview: in 题外话/乱码 mode show
+                          ONLY the matched paragraphs / signals so the
+                          user doesn't have to scan the head+tail to
+                          find the offending text. */}
+                      {filter === "flagged" ? (
+                        (() => {
+                          // Backend keys asides by `chapter_number` —
+                          // the (post-bump) unique `number` field, not
+                          // the visible `display_number`. Match on c.number.
+                          const matched = (filterAsides || []).filter(
+                            a => a.chapter_number === c.number,
+                          );
+                          if (filterAsidesLoading && !filterAsides) {
+                            return <div className="text-muted">加载题外话段落中…</div>;
+                          }
+                          if (matched.length === 0) {
+                            return <div className="text-muted">（本章无单独段落级题外话；整章为疑似题外话）</div>;
+                          }
+                          return (
+                            <div className="flex flex-col gap-4">
+                              {matched.map((a: any, k: number) => (
+                                <div key={k} style={{
+                                  padding: 6,
+                                  background: "rgba(250,204,21,0.08)",
+                                  borderLeft: "2px solid var(--gold)",
+                                  borderRadius: 2,
+                                }}>
+                                  <div className="text-muted" style={{ fontSize: 10, marginBottom: 2 }}>
+                                    段落 {a.para_index + 1}/{a.para_total} · {(a.reasons || []).join(" · ")}
+                                  </div>
+                                  <div>{a.text}</div>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()
+                      ) : filter === "garbled" ? (
+                        (c.garbled_reasons && c.garbled_reasons.length > 0) ? (
+                          <div className="flex flex-col gap-4">
+                            {c.garbled_reasons.map((r: string, k: number) => (
+                              <div key={k} style={{
+                                padding: 6,
+                                background: "rgba(220,38,38,0.06)",
+                                borderLeft: "2px solid var(--error)",
+                                borderRadius: 2,
+                                fontFamily: "var(--font-mono)",
+                                whiteSpace: "pre-wrap",
+                              }}>{r}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-muted">（本章无具体乱码样本）</div>
+                        )
+                      ) : (
+                        <>
+                          {c.preview_head && (
+                            <div style={{ marginBottom: c.preview_tail ? 6 : 0 }}>
+                              <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>开头</span>
+                              <span>{c.preview_head}</span>
+                            </div>
+                          )}
+                          {c.preview_tail && (
+                            <div>
+                              <span className="text-muted" style={{ marginRight: 6, fontSize: 10 }}>结尾</span>
+                              <span>{c.preview_tail}</span>
+                            </div>
+                          )}
+                          {(!c.preview_head && !c.preview_tail) && (
+                            <div className="text-muted">（无预览内容）</div>
+                          )}
+                        </>
                       )}
                       {c.author_note_reasons && c.author_note_reasons.length > 0 && (
                         <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed var(--border)" }}>

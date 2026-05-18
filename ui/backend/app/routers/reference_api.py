@@ -1524,19 +1524,25 @@ def test_chapter_pattern(body: ChapterPatternTestBody):
         file_path = w.get("file_path")
         if not file_path:
             raise HTTPException(400, "尚未上传正文")
-        # Sample-read so quick-test stays snappy on large works.
-        from analysis.feature_extraction.preprocess_jobs import read_sample
-        scan_text = read_sample(file_path, 2_500_000)
+        # Full-file scan now (was a 2.5 MB sample): the candidate-list
+        # preview is the only place users verify how many chapters a
+        # pattern actually catches, and showing "1 match" because the
+        # sample missed everything past ~mid-file made the count
+        # untrustworthy. Falls back to the raw companion when present
+        # so sampling reflects pristine upload rather than mutated.
         from pathlib import Path as _P
+        raw_path = _P(str(file_path) + ".raw.txt")
+        scan_path = raw_path if raw_path.exists() else _P(file_path)
         try:
-            truncated = _P(file_path).stat().st_size > len(scan_text.encode("utf-8"))
+            scan_text = scan_path.read_text(encoding="utf-8", errors="replace")
         except Exception:
-            truncated = False
+            scan_text = ""
+        truncated = False
     else:
         raise HTTPException(400, "请提供 ref_id 或 sample_text")
     ms = list(pat.finditer(scan_text))
     preview = []
-    for m in ms[:8]:
+    for m in ms[:200]:
         preview.append({
             "match": m.group(0)[:60],
             "groups": [g for g in m.groups()[:2]],

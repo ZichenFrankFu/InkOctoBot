@@ -80,26 +80,26 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # should not match) — that's enforced below in those patterns only.
     ("第N章", re.compile(
         r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9０-９]+)\s*章"
-        r"(?:[\s：:　.、，,．]+([^\n]{0,79}?[^\s。！？，,.!?；;：:…]))?"
+        r"(?:[\s：:　.、，,．]+([^\n]{0,79}?[^\s。，,.；;：:？?]))?"
         r"[\s　]*$",
         re.MULTILINE,
     )),
     ("第N回", re.compile(
         r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9０-９]+)\s*回"
-        r"(?:[\s：:　.、，,．]+([^\n]{0,79}?[^\s。！？，,.!?；;：:…]))?"
+        r"(?:[\s：:　.、，,．]+([^\n]{0,79}?[^\s。，,.；;：:？?]))?"
         r"[\s　]*$",
         re.MULTILINE,
     )),
     ("第N节", re.compile(
         r"^[\s　]*第\s*([零〇一二两三四五六七八九十百千万0-9０-９]+)\s*节"
-        r"(?:[\s：:　.、，,．]+([^\n]{0,79}?[^\s。！？，,.!?；;：:…]))?"
+        r"(?:[\s：:　.、，,．]+([^\n]{0,79}?[^\s。，,.；;：:？?]))?"
         r"[\s　]*$",
         re.MULTILINE,
     )),
     # "Chapter N" English-style headings
     ("Chapter N", re.compile(
         r"^[\s　]*Chapter\s+([0-9]+)"
-        r"(?:[\s：:.,、，]+([^\n]{0,79}?[^\s。！？，,.!?；;：:…]))?"
+        r"(?:[\s：:.,、，]+([^\n]{0,79}?[^\s。，,.；;：:？?]))?"
         r"[\s　]*$",
         re.MULTILINE | re.IGNORECASE,
     )),
@@ -113,7 +113,7 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("N、", re.compile(
         r"^[\s　]*([0-9０-９]+)\s*[、][\s　]*"
         r"(?![0-9０-９])"
-        r"([^\n]{0,79}?[^\s。！？，,.!?；;：:…])[\s　]*$",
+        r"([^\n]{0,79}?[^\s。，,.；;：:？?])[\s　]*$",
         re.MULTILINE,
     )),
     # "1.标题" — arabic + 句点 (both regular `.` and full-width `．`).
@@ -123,7 +123,7 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("N.", re.compile(
         r"^[\s　]*([0-9０-９]+)[\s]*[.．][\s　]*"
         r"(?![0-9０-９])"
-        r"([^\n]{0,79}?[^\s。！？，,.!?；;：:…])[\s　]*$",
+        r"([^\n]{0,79}?[^\s。，,.；;：:？?])[\s　]*$",
         re.MULTILINE,
     )),
     # Short standalone heading lines without terminal punctuation
