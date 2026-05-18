@@ -301,17 +301,49 @@ def _format_parse_error(want: str, raw: str, stripped: str,
 # ── Public API ──────────────────────────────────────────────────────
 
 
+# Default fillers when the caller doesn't supply work / volume context.
+# The prompts ALL reference these vars; rendering would KeyError without
+# defaults, so we provide sane "(未知)" placeholders.
+_DEFAULT_CTX = {
+    "title": "(未提供)",
+    "author": "(未知)",
+    "platform": "(未知)",
+    "volume_index": "1",
+    "volume_title": "(本卷)",
+    "start_chapter": "1",
+    "end_chapter": "?",
+}
+
+
+def _ctx(work_ctx: dict | None) -> dict:
+    """Merge caller-supplied work/volume context with defaults so every
+    prompt var present in the template is filled in."""
+    out = dict(_DEFAULT_CTX)
+    if work_ctx:
+        for k in _DEFAULT_CTX:
+            v = work_ctx.get(k)
+            if v is None or v == "":
+                continue
+            out[k] = str(v)
+    return out
+
+
 async def ai_extract_characters(chapters: list[dict], router: Any,
                                    *, prompt_override: str | None = None,
-                                   use_web_search: bool = False) -> list[dict]:
-    """Returns list of {name, mentions, intro, speech_samples, first_seen_at}.
-    appearance_chapters / appearance_word_count are filled in by the caller
-    after intersecting with chapter texts (rule-based, deterministic)."""
+                                   use_web_search: bool = False,
+                                   work_ctx: dict | None = None) -> list[dict]:
+    """Returns list of {name, mentions, intro, speech_samples, first_seen_at,
+    first_chapter, role_tag}.
+
+    ``work_ctx`` supplies the per-volume context (title/author/platform/...);
+    the caller (pipeline.compute_segment) builds it from the reference DB
+    + current segment metadata. Missing keys fall back to defaults."""
     from analysis.feature_extraction.prompts import render
     text, nchars = _build_segment_text(chapters)
     prompt = render(
         "reference.characters", override=prompt_override,
         n_chapters=len(chapters), n_chars=nchars, text=text,
+        **_ctx(work_ctx),
     )
     raw = await _invoke(router, prompt, use_web_search=use_web_search, expect="list")
     items = _parse_listish(raw)
@@ -326,6 +358,7 @@ async def ai_extract_characters(chapters: list[dict], router: Any,
             "intro": (it.get("intro") or "").strip(),
             "speech_samples": [s for s in (it.get("speech_samples") or []) if isinstance(s, str)][:3],
             "first_seen_at": (it.get("first_seen_at") or "").strip(),
+            "first_chapter": (it.get("first_chapter") or "").strip(),
             "role_tag": (it.get("role_tag") or "").strip(),
         })
     return out
@@ -333,13 +366,16 @@ async def ai_extract_characters(chapters: list[dict], router: Any,
 
 async def ai_extract_settings(chapters: list[dict], router: Any,
                                 *, prompt_override: str | None = None,
-                                use_web_search: bool = False) -> list[dict]:
-    """Returns list of {category, title, content, hidden, first_introduced_at}."""
+                                use_web_search: bool = False,
+                                work_ctx: dict | None = None) -> list[dict]:
+    """Returns list of {category, title, content, hidden, first_introduced_at,
+    first_chapter}."""
     from analysis.feature_extraction.prompts import render
     text, nchars = _build_segment_text(chapters)
     prompt = render(
         "reference.settings", override=prompt_override,
         n_chapters=len(chapters), n_chars=nchars, text=text,
+        **_ctx(work_ctx),
     )
     raw = await _invoke(router, prompt, use_web_search=use_web_search, expect="list")
     items = _parse_listish(raw)
@@ -360,8 +396,84 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
             "content": content,
             "hidden": (it.get("hidden") or "").strip(),
             "first_introduced_at": (it.get("first_introduced_at") or "").strip(),
+            "first_chapter": (it.get("first_chapter") or "").strip(),
         })
     return out
+
+
+async def ai_extract_outline(chapters: list[dict], router: Any,
+                                *, prompt_override: str | None = None,
+                                use_web_search: bool = False,
+                                work_ctx: dict | None = None) -> dict:
+    """Extract a chronicle-format outline (epochs/periods/events) for one
+    volume. This is a dedicated outline-only call that returns:
+
+        {"logline": str, "epochs": [{"title", "periods": [
+            {"time", "events": [{
+                "subject", "category", "name", "description",
+                "hidden", "time_marker", "first_chapter",
+            }]}
+        ]}]}
+
+    The pipeline merges these volumes into the work's master chronicle.
+    Each event carries BOTH ``time_marker`` (story-time) and
+    ``first_chapter`` (where in the text the event first appears) so
+    the UI can show them as separate tags.
+    """
+    from analysis.feature_extraction.prompts import render
+    text, nchars = _build_segment_text(chapters)
+    prompt = render(
+        "reference.outline", override=prompt_override,
+        n_chapters=len(chapters), n_chars=nchars, text=text,
+        **_ctx(work_ctx),
+    )
+    raw = await _invoke(router, prompt, max_tokens=4096,
+                          use_web_search=use_web_search, expect="object")
+    obj = _parse_obj(raw)
+    valid_cats = {
+        "plot_main", "plot_side", "character", "setting",
+        "conflict", "revelation", "foreshadow", "other",
+    }
+    epochs_out: list[dict] = []
+    for ep in (obj.get("epochs") or []):
+        if not isinstance(ep, dict):
+            continue
+        periods_out: list[dict] = []
+        for per in (ep.get("periods") or []):
+            if not isinstance(per, dict):
+                continue
+            events_out: list[dict] = []
+            for ev in (per.get("events") or []):
+                if not isinstance(ev, dict):
+                    continue
+                cat = (ev.get("category") or "other").strip()
+                if cat not in valid_cats:
+                    cat = "other"
+                name = (ev.get("name") or "").strip()
+                desc = (ev.get("description") or "").strip()
+                if not name and not desc:
+                    continue
+                events_out.append({
+                    "subject": (ev.get("subject") or "").strip()[:40],
+                    "category": cat,
+                    "name": name[:40],
+                    "description": desc,
+                    "hidden": (ev.get("hidden") or "").strip(),
+                    "time_marker": (ev.get("time_marker") or "").strip(),
+                    "first_chapter": (ev.get("first_chapter") or "").strip(),
+                })
+            periods_out.append({
+                "time": (per.get("time") or "").strip(),
+                "events": events_out,
+            })
+        epochs_out.append({
+            "title": (ep.get("title") or "").strip(),
+            "periods": periods_out,
+        })
+    return {
+        "logline": (obj.get("logline") or "").strip(),
+        "epochs": epochs_out,
+    }
 
 
 async def ai_extract_narrative(chapters: list[dict], router: Any) -> dict:
@@ -416,7 +528,8 @@ _CHAPTER_TYPES_VALID = frozenset({
 
 async def ai_extract_rhythm_v2(chapters: list[dict], router: Any,
                                   *, prompt_override: str | None = None,
-                                  use_web_search: bool = False) -> dict:
+                                  use_web_search: bool = False,
+                                  work_ctx: dict | None = None) -> dict:
     """Single AI call that produces the consolidated rhythm_json shape
     (replaces ai_extract_narrative + ai_extract_rhythm)."""
     from analysis.feature_extraction.prompts import render
@@ -424,6 +537,7 @@ async def ai_extract_rhythm_v2(chapters: list[dict], router: Any,
     prompt = render(
         "reference.rhythm", override=prompt_override,
         n_chapters=len(chapters), text=text,
+        **_ctx(work_ctx),
     )
     raw = await _invoke(router, prompt, max_tokens=4096,
                           use_web_search=use_web_search, expect="object")

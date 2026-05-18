@@ -2419,6 +2419,11 @@ class SegmentRunRequest(BaseModel):
 
 class SegmentCommitRequest(BaseModel):
     result: dict
+    # When True (the default), `commit_segment` also runs `finalize_segments`
+    # so the top-level chronicle / characters / settings reflect the new
+    # commit immediately. UI's "确认并入库" relies on this so users don't
+    # need a second click to update the chronicle tab.
+    merge_after: bool = True
 
 
 @router.post("/works/{ref_id}/segments/preview")
@@ -2460,7 +2465,7 @@ def commit_segment(ref_id: str, body: SegmentCommitRequest):
     try:
         from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
-        return pipe.persist_segment(ref_id, body.result)
+        return pipe.persist_segment(ref_id, body.result, merge_after=body.merge_after)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
@@ -2977,7 +2982,8 @@ def preview_prompt(
             raise HTTPException(500, f"构建预览失败: {e}")
 
     # Segment-scoped: need ref_id + segment_index → build chapter text
-    if key in {"reference.characters", "reference.settings", "reference.rhythm"}:
+    if key in {"reference.characters", "reference.settings", "reference.rhythm",
+               "reference.outline"}:
         if not ref_id or segment_index is None:
             raise HTTPException(400, "ref_id + segment_index required for this prompt")
         db = _db()
@@ -2985,14 +2991,22 @@ def preview_prompt(
         if not w:
             raise HTTPException(404, "参考作品不存在")
         try:
-            from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+            from analysis.feature_extraction.pipeline import (
+                FeatureExtractionPipeline, build_work_ctx,
+            )
             pipe = FeatureExtractionPipeline(db.db_path)
             text = pipe._load_text(w)
             if not text:
                 raise HTTPException(400, "作品尚未上传正文")
             all_chapters = pipe._split_chapters(text)
-            plan = pipe.plan_segments(all_chapters)
+            # Honor the user's saved custom plan when previewing — the
+            # user expects to see the prompt for the SAME volume layout
+            # they configured, not the auto-detected fallback.
+            plan = pipe.get_effective_plan(ref_id, all_chapters)
             segs = plan["segments"]
+            if not segs:
+                plan = pipe.plan_segments(all_chapters)
+                segs = plan["segments"]
             if segment_index < 0 or segment_index >= len(segs):
                 raise HTTPException(400, "segment_index 超出范围")
             seg = segs[segment_index]
@@ -3002,7 +3016,9 @@ def preview_prompt(
             ]
             from analysis.feature_extraction.ai_extractor import _build_segment_text
             seg_text, nchars = _build_segment_text(seg_chapters)
-            vars_ = {
+            ctx = build_work_ctx(w, seg, segment_index)
+            vars_: dict[str, Any] = {
+                **ctx,
                 "n_chapters": len(seg_chapters),
                 "n_chars": nchars,
                 "text": seg_text,

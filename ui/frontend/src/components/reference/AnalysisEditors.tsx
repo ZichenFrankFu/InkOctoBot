@@ -1,10 +1,129 @@
-import React, { useState } from "react";
+import React, { useCallback, useState } from "react";
+import { apiGet } from "../../api/client";
 
 /* ════════════════════════════════════════════════════════════
  * Human-readable editors for reference-work analysis fields.
  * Each editor displays the data in a structured layout and lets
  * the user edit individual values. On save, calls onSave(data).
  * ════════════════════════════════════════════════════════════ */
+
+/* ─── Shared: copyable per-volume prompt panel ─────────────────
+ * Lives next to the characters / settings tabs so the user can
+ * paste the exact same prompt the pipeline would use into a web
+ * LLM (ChatGPT / Claude.ai) when the configured model fails.
+ *
+ * Segment-scoped: needs refId + segmentIndex to render the prompt
+ * with chapter text spliced in. Without segmentIndex it just shows
+ * "请先在剧情大纲页选择一卷" so the user knows where to set context. */
+export function PromptCopyPanel({
+  refId, promptKey, segmentIndex, label,
+}: {
+  refId: string;
+  promptKey: "reference.characters" | "reference.settings" | "reference.outline";
+  segmentIndex: number | null;
+  label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [rendered, setRendered] = useState("");
+  const [error, setError] = useState("");
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "fail">("idle");
+
+  const loadPrompt = useCallback(async () => {
+    if (segmentIndex == null) {
+      setError("请先到「剧情大纲」tab 选择一卷开始预览，本卷的 prompt 将自动渲染");
+      setRendered("");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({
+        ref_id: refId, segment_index: String(segmentIndex),
+      });
+      const r = await apiGet<{ rendered: string }>(
+        `/api/references/prompts/${promptKey}/preview?${params}`,
+      );
+      setRendered(r.rendered || "");
+    } catch (e: any) {
+      setError(e?.message || "获取 prompt 失败");
+      setRendered("");
+    } finally {
+      setLoading(false);
+    }
+  }, [refId, promptKey, segmentIndex]);
+
+  const toggle = async () => {
+    const willOpen = !open;
+    setOpen(willOpen);
+    if (willOpen && !rendered && !error) await loadPrompt();
+  };
+
+  const copy = async () => {
+    if (!rendered) return;
+    try {
+      await navigator.clipboard.writeText(rendered);
+      setCopyState("copied");
+      setTimeout(() => setCopyState("idle"), 1500);
+    } catch {
+      setCopyState("fail");
+      setTimeout(() => setCopyState("idle"), 1500);
+    }
+  };
+
+  return (
+    <div style={{ marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4 }}>
+      <div className="flex items-center" style={{
+        padding: "4px 8px", gap: 6, flexWrap: "wrap",
+        borderBottom: open ? "1px dashed var(--border)" : "none",
+      }}>
+        <button className="btn-ghost" onClick={toggle}
+                style={{
+                  padding: "2px 4px", fontSize: 11, fontWeight: 600,
+                  color: "var(--text-secondary)", borderRadius: 0,
+                }}>
+          <span style={{
+            transition: "transform 0.15s",
+            transform: open ? "rotate(180deg)" : "none",
+            display: "inline-block", marginRight: 4,
+          }}>&#x25BC;</span>
+          {label}
+        </button>
+        <div style={{ flex: 1 }} />
+        {segmentIndex != null && (
+          <span className="text-xs text-muted">当前卷 #{segmentIndex + 1}</span>
+        )}
+        <button className="btn" onClick={loadPrompt}
+                disabled={loading || segmentIndex == null}
+                style={{ padding: "2px 8px", fontSize: 10 }}
+                title="重新渲染（如卷信息有变）">刷新</button>
+        <button className="btn" onClick={copy}
+                disabled={!rendered || loading}
+                style={{ padding: "2px 10px", fontSize: 10 }}
+                title="复制 prompt 到剪贴板，再到 ChatGPT / Claude.ai 等手动调用">
+          {copyState === "copied" ? "已复制" : copyState === "fail" ? "复制失败" : "复制 prompt"}
+        </button>
+      </div>
+      {open && (
+        <div style={{ padding: 8, background: "var(--bg-surface)" }}>
+          {loading ? (
+            <div className="text-xs text-muted" style={{ padding: 6 }}>加载中…</div>
+          ) : error ? (
+            <div className="text-xs" style={{ padding: 6, color: "var(--text-tertiary)" }}>{error}</div>
+          ) : (
+            <pre className="font-mono" style={{
+              margin: 0, padding: 8, fontSize: 11, lineHeight: 1.55,
+              background: "var(--bg-card)", borderRadius: 3,
+              color: "var(--text-secondary)",
+              maxHeight: 320, overflow: "auto",
+              whiteSpace: "pre-wrap", wordBreak: "break-word",
+            }}>{rendered || "（无）"}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const OPENING_LABELS: Record<string, string> = {
   in_medias_res: "高潮开局 (in medias res)",
@@ -930,7 +1049,13 @@ export interface ChronicleEvent {
   name: string;        // 事件名
   description: string; // 客观描述,2-5 句
   hidden?: string;     // [隐] 当时无人知晓但作为史学家知道的真相
-  time_marker?: string; // 事件在文本中的时间锚点 (date | "第 N 章" | "约 M 万字处")
+  // Two time anchors — shown side-by-side as tags in the read view.
+  // story-time: 「1954 年 3 月」 (in-fiction clock; what the world says)
+  // first_chapter: 「第 12 章」 (real-text reference; where this event is
+  //                 first described — useful for jumping back to the
+  //                 source passage in the editor).
+  time_marker?: string;
+  first_chapter?: string;
 }
 export interface ChroniclePeriod {
   time: string;        // 时间标题: "2030 年 2 月上旬" / "第一卷开篇" 等
@@ -956,8 +1081,17 @@ function isLegacy(d: PlotOutline | null | undefined): boolean {
 }
 
 function emptyEvent(): ChronicleEvent {
-  return { subject: "", category: "", name: "", description: "", hidden: "", time_marker: "" };
+  return { subject: "", category: "", name: "", description: "", hidden: "", time_marker: "", first_chapter: "" };
 }
+
+const CHRONICLE_INSTRUCTIONS = `编年史是「世界内史学家」的客观记录：
+1. 视角：第三人称客观史学家，只记录「发生了什么」。
+2. 不写：对话原文、心理活动、场景细节、章节结构、伏笔预告。
+3. 时间标签有两个：
+   • 故事中时间（time_marker）—— 故事世界里的时钟，如「1954 年 3 月」「春末」。没有就留空。
+   • 首次出现章节（first_chapter）—— 原文里这条事件被首次描写的章号，如「第 12 章」。建议都填。
+4. 「[隐] 隐藏真相」用于事件背后**当前章节读者还不知道**的动机或真相；冰山理论视角下会折叠。
+5. 删除事件：在阅读视图右上角的 × 按钮可以直接删除。删除时间段或大段需要进入「编辑」模式。`;
 
 export function PlotOutlineEditor({
   data,
@@ -987,16 +1121,30 @@ export function PlotOutlineEditor({
     setEventEdit({ key: `${ei}-${pi}-${evi}`, draft: { ...ev } });
   };
   const cancelEventEdit = () => setEventEdit(null);
+
+  // Deep-clone the editor data so a CRUD operation in read view doesn't
+  // mutate state objects that other components might be observing.
+  const cloneData = (): PlotOutline => (
+    data
+      ? {
+          ...data,
+          epochs: (data.epochs || []).map(e => ({
+            ...e,
+            periods: (e.periods || []).map(p => ({
+              ...p,
+              events: [...(p.events || [])],
+            })),
+          })),
+        }
+      : { epochs: [] }
+  );
+
   const saveEventEdit = async () => {
     if (!eventEdit) return;
     setEventEditSaving(true);
     try {
       const [ei, pi, evi] = eventEdit.key.split("-").map(n => parseInt(n, 10));
-      const base: PlotOutline = data ? { ...data, epochs: (data.epochs || []).map(e => ({
-        ...e, periods: (e.periods || []).map(p => ({
-          ...p, events: [...(p.events || [])],
-        })),
-      })) } : { epochs: [] };
+      const base = cloneData();
       const epochs = base.epochs || [];
       if (epochs[ei] && epochs[ei].periods[pi]) {
         epochs[ei].periods[pi].events[evi] = eventEdit.draft;
@@ -1005,6 +1153,40 @@ export function PlotOutlineEditor({
       setEventEdit(null);
     } finally { setEventEditSaving(false); }
   };
+
+  // CRUD operations callable from the read view — no need to enter
+  // global edit mode to delete a single bad event. We persist each
+  // change immediately via onSave so the user sees the DB-backed
+  // chronicle update right after pressing the button.
+  const deleteEventInRead = async (ei: number, pi: number, evi: number) => {
+    if (typeof window !== "undefined" &&
+        !window.confirm("确认删除这条事件？此操作会立即保存到数据库。")) return;
+    const base = cloneData();
+    const epochs = base.epochs || [];
+    if (!epochs[ei]?.periods[pi]?.events) return;
+    epochs[ei].periods[pi].events.splice(evi, 1);
+    await onSave(base);
+  };
+  const deletePeriodInRead = async (ei: number, pi: number) => {
+    if (typeof window !== "undefined" &&
+        !window.confirm("确认删除这个时间段及其下所有事件？此操作会立即保存。")) return;
+    const base = cloneData();
+    const epochs = base.epochs || [];
+    if (!epochs[ei]?.periods) return;
+    epochs[ei].periods.splice(pi, 1);
+    await onSave(base);
+  };
+  const deleteEpochInRead = async (ei: number) => {
+    if (typeof window !== "undefined" &&
+        !window.confirm("确认删除这个大段及其下所有时间段/事件？此操作会立即保存。")) return;
+    const base = cloneData();
+    base.epochs = (base.epochs || []).filter((_, i) => i !== ei);
+    await onSave(base);
+  };
+  // Instructions disclosure — collapsible because chronicle conventions
+  // can be unfamiliar to first-time users, but veteran users won't want
+  // to see the wall of text on every load.
+  const [showInstructions, setShowInstructions] = useState(false);
 
   const start = () => { setDraft(data ? { ...data, epochs: data.epochs || [] } : { epochs: [] }); setEditing(true); };
   const cancel = () => { setDraft(data ? { ...data, epochs: data.epochs || [] } : { epochs: [] }); setEditing(false); };
@@ -1168,13 +1350,22 @@ export function PlotOutlineEditor({
                             onChange={e => updateEvent(ei, pi, evi, { hidden: e.target.value })}
                             style={{ fontSize: 12, color: "var(--gold)", marginBottom: 4 }}
                           />
-                          <input
-                            className="input"
-                            placeholder='事件时间锚点 (留空则用 period 的时间)'
-                            value={ev.time_marker || ""}
-                            onChange={e => updateEvent(ei, pi, evi, { time_marker: e.target.value })}
-                            style={{ fontSize: 12 }}
-                          />
+                          <div className="flex gap-4">
+                            <input
+                              className="input"
+                              placeholder='故事中时间（如「1954 年 3 月」；留空则用 period）'
+                              value={ev.time_marker || ""}
+                              onChange={e => updateEvent(ei, pi, evi, { time_marker: e.target.value })}
+                              style={{ flex: 1, fontSize: 12 }}
+                            />
+                            <input
+                              className="input"
+                              placeholder='首次出现章节（如「第 12 章」）'
+                              value={ev.first_chapter || ""}
+                              onChange={e => updateEvent(ei, pi, evi, { first_chapter: e.target.value })}
+                              style={{ flex: 1, fontSize: 12 }}
+                            />
+                          </div>
                         </div>
                       ))}
                       <button
@@ -1213,6 +1404,35 @@ export function PlotOutlineEditor({
 
   return (
     <div>
+      {/* Chronicle usage instructions — collapsed by default to keep
+        * the read view dense, but always one click away. */}
+      <div style={{
+        marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4,
+      }}>
+        <button className="btn-ghost w-full" onClick={() => setShowInstructions(s => !s)}
+                style={{
+                  justifyContent: "space-between", padding: "6px 10px",
+                  fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
+                  borderRadius: 0,
+                }}>
+          <span>编年史格式使用说明</span>
+          <span className="text-xs text-muted" style={{
+            transition: "transform 0.15s",
+            transform: showInstructions ? "rotate(180deg)" : "none",
+            display: "inline-block",
+          }}>&#x25BC;</span>
+        </button>
+        {showInstructions && (
+          <pre style={{
+            margin: 0, padding: "8px 12px",
+            background: "var(--bg-surface)",
+            fontSize: 11, lineHeight: 1.65,
+            color: "var(--text-secondary)",
+            whiteSpace: "pre-wrap", wordBreak: "break-word",
+            fontFamily: "inherit",
+          }}>{CHRONICLE_INSTRUCTIONS}</pre>
+        )}
+      </div>
 
       {legacy && (
         <div style={{
@@ -1283,19 +1503,35 @@ export function PlotOutlineEditor({
               return (
                 <div key={ei}>
                   {ep.title && (
-                    <button
-                      className="btn-ghost w-full"
-                      style={{ justifyContent: "space-between", padding: "6px 0", fontWeight: 700, fontSize: 14, color: "var(--text-primary)", borderRadius: 0 }}
-                      onClick={() => setOpenEpoch(prev => ({ ...prev, [ei]: !isOpen }))}
-                    >
-                      <span>{ep.title}</span>
-                      <span className="text-xs text-muted" style={{ transition: "transform 0.15s", transform: isOpen ? "rotate(180deg)" : "none", display: "inline-block" }}>&#x25BC;</span>
-                    </button>
+                    <div className="flex items-center" style={{ gap: 4 }}>
+                      <button
+                        className="btn-ghost"
+                        style={{ flex: 1, justifyContent: "space-between", padding: "6px 0", fontWeight: 700, fontSize: 14, color: "var(--text-primary)", borderRadius: 0 }}
+                        onClick={() => setOpenEpoch(prev => ({ ...prev, [ei]: !isOpen }))}
+                      >
+                        <span>{ep.title}</span>
+                        <span className="text-xs text-muted" style={{ transition: "transform 0.15s", transform: isOpen ? "rotate(180deg)" : "none", display: "inline-block" }}>&#x25BC;</span>
+                      </button>
+                      <button
+                        className="btn-icon"
+                        onClick={() => deleteEpochInRead(ei)}
+                        title="删除整个大段"
+                        style={{ fontSize: 12, color: "var(--error)", width: 22, height: 22 }}
+                      >&times;</button>
+                    </div>
                   )}
                   {isOpen && (ep.periods || []).map((per, pi) => (
                     <div key={pi} style={{ marginBottom: 12, paddingLeft: ep.title ? 8 : 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, color: "var(--accent)", marginBottom: 6 }}>
-                        {per.time || "(未填写时间)"}
+                      <div className="flex items-center" style={{ marginBottom: 6, gap: 4 }}>
+                        <div style={{ flex: 1, fontWeight: 600, fontSize: 13, color: "var(--accent)" }}>
+                          {per.time || "(未填写时间)"}
+                        </div>
+                        <button
+                          className="btn-icon"
+                          onClick={() => deletePeriodInRead(ei, pi)}
+                          title="删除这个时间段"
+                          style={{ fontSize: 11, color: "var(--error)", width: 18, height: 18 }}
+                        >&times;</button>
                       </div>
                       <div className="flex flex-col gap-6" style={{ paddingLeft: 8, borderLeft: "2px solid var(--border)" }}>
                         {(per.events || []).map((ev, evi) => {
@@ -1335,11 +1571,18 @@ export function PlotOutlineEditor({
                                   value={ed.hidden || ""}
                                   onChange={e => patch({ hidden: e.target.value })}
                                   style={{ marginBottom: 4, fontSize: 12, color: "var(--gold)" }} />
-                                <input className="input"
-                                  placeholder='事件时间锚点 (留空则用 period 的时间)'
-                                  value={ed.time_marker || ""}
-                                  onChange={e => patch({ time_marker: e.target.value })}
-                                  style={{ marginBottom: 6, fontSize: 12 }} />
+                                <div className="flex gap-4" style={{ marginBottom: 6 }}>
+                                  <input className="input"
+                                    placeholder='故事中时间（如「1954 年 3 月」）'
+                                    value={ed.time_marker || ""}
+                                    onChange={e => patch({ time_marker: e.target.value })}
+                                    style={{ flex: 1, fontSize: 12 }} />
+                                  <input className="input"
+                                    placeholder='首次出现章节（如「第 12 章」）'
+                                    value={ed.first_chapter || ""}
+                                    onChange={e => patch({ first_chapter: e.target.value })}
+                                    style={{ flex: 1, fontSize: 12 }} />
+                                </div>
                                 <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
                                   <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
                                           onClick={cancelEventEdit} disabled={eventEditSaving}>取消</button>
@@ -1355,8 +1598,30 @@ export function PlotOutlineEditor({
                             <div key={evi} className="ref-event-row" style={{ paddingLeft: 8, position: "relative" }}>
                               <div style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-primary)" }}>
                                 <span style={{ fontWeight: 600, color: "var(--accent)" }}>
-                                  【{ev.subject}·{ev.category}·{ev.name}{ev.time_marker ? ` · ${ev.time_marker}` : ""}】
+                                  【{ev.subject}·{ev.category}·{ev.name}】
                                 </span>
+                                {/* Two time tags rendered side-by-side: story-time
+                                  * (in-fiction clock) and first_chapter (where in
+                                  * the real text this event is first described).
+                                  * Both are visually distinct so users can tell
+                                  * them apart at a glance. */}
+                                {ev.time_marker && (
+                                  <span className="tag" style={{
+                                    marginLeft: 6, fontSize: 10, padding: "1px 7px",
+                                    color: "var(--gold)",
+                                    background: "var(--bg-surface-2)",
+                                    border: "1px solid var(--gold)",
+                                  }} title="故事中时间">⏱ {ev.time_marker}</span>
+                                )}
+                                {ev.first_chapter && (
+                                  <span className="tag" style={{
+                                    marginLeft: 4, fontSize: 10, padding: "1px 7px",
+                                    color: "var(--jade)",
+                                    background: "var(--bg-surface-2)",
+                                    border: "1px solid var(--jade)",
+                                  }} title="首次出现章节">📖 {ev.first_chapter}</span>
+                                )}
+                                {" "}
                                 <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
                                 {ev.hidden && viewMode === "iceberg" && !showHidden && (
                                   <button
@@ -1373,19 +1638,39 @@ export function PlotOutlineEditor({
                                   >[隐] 展开</button>
                                 )}
                               </div>
-                              <button
-                                className="ref-inline-edit"
-                                onClick={() => startEventEdit(ei, pi, evi, ev)}
-                                title="编辑这条事件"
-                                aria-label="编辑这条事件"
-                              >
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                                     stroke="currentColor" strokeWidth="2"
-                                     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                  <path d="M12 20h9" />
-                                  <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
-                                </svg>
-                              </button>
+                              <div style={{
+                                position: "absolute", top: 0, right: 0,
+                                display: "flex", gap: 2,
+                              }}>
+                                <button
+                                  className="ref-inline-edit"
+                                  onClick={() => startEventEdit(ei, pi, evi, ev)}
+                                  title="编辑这条事件"
+                                  aria-label="编辑这条事件"
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                       stroke="currentColor" strokeWidth="2"
+                                       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <path d="M12 20h9" />
+                                    <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                                  </svg>
+                                </button>
+                                <button
+                                  className="ref-inline-edit"
+                                  onClick={() => deleteEventInRead(ei, pi, evi)}
+                                  title="删除这条事件"
+                                  aria-label="删除这条事件"
+                                  style={{ color: "var(--error)" }}
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                       stroke="currentColor" strokeWidth="2"
+                                       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <path d="M3 6h18" />
+                                    <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                                  </svg>
+                                </button>
+                              </div>
                               {ev.hidden && showHidden && (
                                 <div style={{ fontSize: 12, lineHeight: 1.6, marginTop: 2, color: "var(--gold)" }}>
                                   <span

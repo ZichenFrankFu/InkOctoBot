@@ -57,6 +57,11 @@ interface Props {
   /** Switch to the "预处理" tab — used by the "编辑分卷" button now that
    * volume creation/editing lives in the preprocess tab. */
   onGoToPreprocess?: () => void;
+  /** The currently "active" segment (volume) — shared across tabs so
+   * the characters / settings PromptCopyPanels know which volume to
+   * render the prompt for. Defaults to 0 if omitted. */
+  activeSegmentIndex?: number;
+  onActiveSegmentChange?: (idx: number) => void;
 }
 
 export default function PlotOutlinePanel({
@@ -69,6 +74,8 @@ export default function PlotOutlinePanel({
   onRegenerateFromText,
   regenerating,
   onGoToPreprocess,
+  activeSegmentIndex,
+  onActiveSegmentChange,
 }: Props) {
   const { toast } = useToast();
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
@@ -126,25 +133,25 @@ export default function PlotOutlinePanel({
   const allDone = total > 0 && doneCount >= total;
   const nextIdx = plan?.segments.find(s => !completed.has(s.index))?.index;
 
-  // Which prompt to surface in the audit panel: rhythm is the heaviest
-  // and most representative, but the user can switch to characters or
-  // settings to copy those prompts for manual web-LLM use too.
-  const [promptKey, setPromptKey] = useState<"reference.rhythm" | "reference.characters" | "reference.settings">("reference.rhythm");
-  const fetchSegmentPrompt = useCallback(async (idx: number, key?: string) => {
-    const k = key || promptKey;
+  // The outline tab focuses on the chronicle extraction prompt. The
+  // characters / settings prompts are surfaced in their OWN tabs now
+  // (see ReferenceLibraryPage), so this panel only needs one key —
+  // the user's primary action here is "extract outline → confirm".
+  const promptKey = "reference.outline" as const;
+  const fetchSegmentPrompt = useCallback(async (idx: number) => {
     setPromptLoading(true);
     try {
       const params = new URLSearchParams({
         ref_id: refId, segment_index: String(idx),
       });
       const r = await apiGet<{ key: string; rendered: string }>(
-        `/api/references/prompts/${k}/preview?${params}`,
+        `/api/references/prompts/${promptKey}/preview?${params}`,
       );
       setShownPrompt({ key: r.key, rendered: r.rendered });
     } catch (e: any) {
-      setShownPrompt({ key: k, rendered: `（获取 prompt 失败：${e?.message || "未知错误"}）` });
+      setShownPrompt({ key: promptKey, rendered: `（获取 prompt 失败：${e?.message || "未知错误"}）` });
     } finally { setPromptLoading(false); }
-  }, [refId, promptKey]);
+  }, [refId]);
 
   const copyShownPrompt = async () => {
     if (!shownPrompt?.rendered) return;
@@ -158,6 +165,10 @@ export default function PlotOutlinePanel({
 
   const generatePreview = async (idx: number) => {
     setPreviewIdx(idx);
+    // Sync the cross-tab "active segment" so the characters / settings
+    // prompt-copy panels render against the same volume the user is
+    // currently working with here.
+    onActiveSegmentChange?.(idx);
     setPreview(null);
     setPreviewLoading(true);
     // Fetch the exact rendered prompt in parallel so the user can audit.
@@ -180,15 +191,26 @@ export default function PlotOutlinePanel({
     if (!preview) return;
     setCommitting(true);
     try {
+      // merge_after=true makes the backend immediately fold the new
+      // segment result into the top-level chronicle / characters /
+      // settings, so the "剧情大纲" tab reflects the change after this
+      // single click. Without merge_after the user would have to also
+      // press "合并到全书" before seeing the chronicle update.
       const r = await apiPost<any>(
         `/api/references/works/${refId}/segments/commit`,
-        { result: preview },
+        { result: preview, merge_after: true },
       );
-      toast(`第 ${(preview.index ?? 0) + 1} 段已保存（${r.completed_count}/${r.total_segments}）`, "success");
+      const msg = r.merge
+        ? `第 ${(preview.index ?? 0) + 1} 段已入库并合并到编年史（${r.completed_count}/${r.total_segments}）`
+        : `第 ${(preview.index ?? 0) + 1} 段已保存（${r.completed_count}/${r.total_segments}）`;
+      toast(msg, "success");
       setPreview(null);
       setPreviewIdx(null);
       setChatMessages([]);
       await loadPlan();
+      // Refresh the parent so the chronicle tab shows the new events
+      // without requiring a tab switch. onAfterMerge re-fetches the work.
+      try { await onAfterMerge(); } catch { /* non-fatal */ }
     } catch (e: any) {
       toast(e?.message || "保存失败", "error");
     } finally { setCommitting(false); }
@@ -515,7 +537,8 @@ export default function PlotOutlinePanel({
                             style={{ fontSize: 11, padding: "3px 10px" }}
                             onClick={commitPreview}
                             disabled={committing}
-                          >{committing ? "保存中..." : "确认保存"}</button>
+                            title="保存本段提取结果到数据库，并立即合并到编年史"
+                          >{committing ? "入库中..." : "确认并入库"}</button>
                         </div>
                       </div>
                       {preview.warnings && preview.warnings.length > 0 && (
@@ -543,14 +566,14 @@ export default function PlotOutlinePanel({
                         </div>
                       )}
 
-                      {/* Exact prompt sent to the LLM (collapsible).
+                      {/* Outline-extraction prompt (collapsible + copyable).
                        *
-                       * Three-way selector so the user can copy any of
-                       * the three extraction prompts to a web LLM when
-                       * the configured model can't parse one of them.
-                       * The chronicle-outline format itself is captured
-                       * in the chronicle_outline_extract skill (see
-                       * agents/analysis/skills/) for external reference. */}
+                       * This is the per-volume outline prompt — it
+                       * includes 作者/书名/平台/卷号/卷名/章节数 so the
+                       * user can paste it into a web LLM and have the
+                       * model do the chronicle extraction with full
+                       * context. Characters and settings prompts have
+                       * their own copy buttons in their respective tabs. */}
                       <div style={{ marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4 }}>
                         <div className="flex items-center" style={{
                           padding: "4px 8px", gap: 6, flexWrap: "wrap",
@@ -569,35 +592,16 @@ export default function PlotOutlinePanel({
                               display: "inline-block",
                               marginRight: 4,
                             }}>&#x25BC;</span>
-                            发送给 LLM 的 prompt
+                            本卷大纲提取 prompt（含作者/书名/平台/卷号/章节数）
                           </button>
                           <div style={{ flex: 1 }} />
-                          {(["reference.rhythm", "reference.characters", "reference.settings"] as const).map(k => (
-                            <button
-                              key={k}
-                              className="btn-ghost"
-                              onClick={() => {
-                                setPromptKey(k);
-                                if (previewIdx != null) fetchSegmentPrompt(previewIdx, k);
-                                setPromptOpen(true);
-                              }}
-                              style={{
-                                padding: "2px 8px", fontSize: 10,
-                                fontWeight: promptKey === k ? 600 : 400,
-                                color: promptKey === k ? "var(--accent)" : "var(--text-tertiary)",
-                                borderBottom: promptKey === k ? "1px solid var(--accent)" : "1px solid transparent",
-                                borderRadius: 0,
-                              }}>
-                              {k.replace("reference.", "")}
-                            </button>
-                          ))}
                           <button
                             className="btn"
                             onClick={copyShownPrompt}
                             disabled={!shownPrompt?.rendered || promptLoading}
                             style={{ padding: "2px 10px", fontSize: 10 }}
                             title="复制 prompt 到剪贴板，再到 ChatGPT / Claude.ai 等手动调用">
-                            复制
+                            复制 prompt
                           </button>
                         </div>
                         {promptOpen && (

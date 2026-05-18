@@ -112,6 +112,22 @@ def _load_chapter_patterns() -> list[dict]:
         return []
 
 
+def build_work_ctx(work: dict, segment: dict, segment_index: int) -> dict[str, Any]:
+    """Build the work / volume context that gets threaded into every AI
+    extraction prompt. The prompts reference these keys via {placeholder}
+    substitution; missing/empty values fall back to defaults inside
+    ``ai_extractor._ctx``."""
+    return {
+        "title": (work.get("title") or "").strip() or "(未命名)",
+        "author": (work.get("creator") or "").strip() or "(未知)",
+        "platform": (work.get("platform") or "").strip() or "(未知)",
+        "volume_index": segment_index + 1,
+        "volume_title": (segment.get("title") or "").strip() or f"第 {segment_index + 1} 卷",
+        "start_chapter": segment.get("start_chapter") or 1,
+        "end_chapter": segment.get("end_chapter") or 1,
+    }
+
+
 def _enrich_settings_with_timestamp(settings_items: list[dict], chapters: list[dict],
                                       segment_start_chapter: int) -> list[dict]:
     """Fill `first_introduced_at` on settings items when AI didn't provide one.
@@ -689,6 +705,13 @@ class FeatureExtractionPipeline:
         errors: list[str] = []
         warnings: list[str] = []
 
+        # Build the per-volume context that the prompts reference. This
+        # gets threaded into every AI extractor call so the model sees
+        # the same book metadata (title/author/platform/volume name) on
+        # every shot — improves disambiguation and gives the user the
+        # exact prompt they need when copying to a web LLM.
+        work_ctx = build_work_ctx(work, seg, segment_index)
+
         from analysis.feature_extraction.nlp_stats import compute_style_fingerprint
         from analysis.feature_extraction.narrative_extractor import extract_plot_outline
 
@@ -729,7 +752,10 @@ class FeatureExtractionPipeline:
                 return None
             try:
                 override = (prompt_overrides or {}).get(prompt_key) if prompt_key else None
-                kw: dict[str, Any] = {"use_web_search": use_web_search}
+                kw: dict[str, Any] = {
+                    "use_web_search": use_web_search,
+                    "work_ctx": work_ctx,
+                }
                 if override is not None:
                     kw["prompt_override"] = override
                 result = await ai_fn(seg_chapters, router, **kw)
@@ -785,19 +811,30 @@ class FeatureExtractionPipeline:
         if ai_rhythm:
             rhythm = ai_rhythm
 
-        # Plot outline (chronicle skeleton — always NLP-derived, but it
-        # USES the AI rhythm output as input. If rhythm failed, we still
-        # build a minimal skeleton from chapter titles).
+        # Plot outline — dedicated AI call (chronicle format with both
+        # story-time and first-chapter tags on every event). If the AI
+        # call fails, we still produce a chapter-title skeleton via the
+        # NLP extractor so the user has SOMETHING to edit, but the AI
+        # version is preferred — never silently overrides AI with NLP.
         plot: dict = {}
-        try:
-            narr_compat = {
-                "opening_pattern": rhythm.get("opening_pattern", "character_intro"),
-                "climax_positions": rhythm.get("climax_positions", []),
-                "shuangdian": rhythm.get("shuangdian", []),
-            }
-            plot = extract_plot_outline(seg_chapters, narrative=narr_compat)
-        except Exception as e:
-            errors.append(f"plot_outline: {e}")
+        ai_plot = await _ai_only(
+            "outline",
+            ai_extractor.ai_extract_outline,
+            prompt_key="reference.outline",
+        )
+        if ai_plot and (ai_plot.get("epochs") or ai_plot.get("logline")):
+            plot = ai_plot
+        else:
+            # Build a minimal NLP skeleton so the editor isn't empty.
+            try:
+                narr_compat = {
+                    "opening_pattern": rhythm.get("opening_pattern", "character_intro"),
+                    "climax_positions": rhythm.get("climax_positions", []),
+                    "shuangdian": rhythm.get("shuangdian", []),
+                }
+                plot = extract_plot_outline(seg_chapters, narrative=narr_compat)
+            except Exception as e:
+                errors.append(f"plot_outline: {e}")
 
         return {
             "index": segment_index,
@@ -817,8 +854,16 @@ class FeatureExtractionPipeline:
             "settings": settings_items,
         }
 
-    def persist_segment(self, ref_id: str, result: dict) -> dict[str, Any]:
-        """Persist a previously-computed segment result into segments_json."""
+    def persist_segment(self, ref_id: str, result: dict,
+                          merge_after: bool = False) -> dict[str, Any]:
+        """Persist a previously-computed segment result into segments_json.
+
+        When ``merge_after`` is True, also runs ``finalize_segments``
+        immediately so the top-level ``plot_outline_json`` / characters /
+        settings reflect this commit. The UI uses ``merge_after=True``
+        on the "确认并入库" button so users don't need a second click
+        to see the full chronicle update after each segment.
+        """
         from rag.reference_db import ReferenceDB
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
@@ -885,13 +930,20 @@ class FeatureExtractionPipeline:
         except Exception as e:
             logger.debug("[work_index] auto-index hook skipped: %s", e)
 
-        return {
+        info: dict[str, Any] = {
             "ref_id": ref_id,
             "segment_index": seg_index,
             "total_segments": len(segs),
             "completed_count": len(results),
             "all_done": new_status == "done",
         }
+        if merge_after:
+            try:
+                info["merge"] = self.finalize_segments(ref_id)
+            except Exception as e:
+                logger.warning("[persist_segment] auto-merge failed: %s", e)
+                info["merge_error"] = str(e)
+        return info
 
     async def run_segment(self, ref_id: str, segment_index: int,
                             segment_chars: int | None = None,
@@ -1062,13 +1114,23 @@ class FeatureExtractionPipeline:
         }
 
         # ── plot outline: each segment becomes its own epoch ──
+        # Events keep their own `time_marker` (story-time) and
+        # `first_chapter` (real-text reference) so the editor can show
+        # both as tags. Logline picks the first segment's logline as a
+        # representative summary (multi-volume works rarely have one
+        # global logline; the per-volume ones at least anchor the view).
         agg_plot_epochs: list[dict] = []
+        agg_logline = ""
         for it in items:
             po = it.get("plot_outline") or {}
+            if not agg_logline:
+                lg = (po.get("logline") or "").strip()
+                if lg:
+                    agg_logline = lg
             for ep in (po.get("epochs") or []):
                 title = ep.get("title") or it.get("title") or ""
                 agg_plot_epochs.append({"title": title, "periods": ep.get("periods") or []})
-        agg_plot = {"logline": "", "epochs": agg_plot_epochs}
+        agg_plot = {"logline": agg_logline, "epochs": agg_plot_epochs}
 
         # ── settings: dedupe by (category, title); longest content wins ──
         settings_map: dict[tuple[str, str], dict] = {}

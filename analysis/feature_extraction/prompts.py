@@ -27,7 +27,14 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
     "reference.characters": {
         "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
 
-从下面的小说文本中提取主要角色。
+从下面这一**卷**的小说文本中提取主要角色。
+
+作品上下文（仅供消歧 / 检索）：
+- 作品标题：《{title}》
+- 作者：{author}
+- 平台：{platform}
+- 本卷：第 {volume_index} 卷 {volume_title}
+- 包含章节：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
 
 **严格禁止**（违反则整条响应被视为错误）：
 - 任何寒暄、解释、对话语句（如「你好」「让我告诉你」「这个故事讲的是」「如果你想了解...」）
@@ -43,24 +50,33 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 - intro: 1-3 句客观简介（身份/能力/关键背景），不写主观评价、不剧透
 - speech_samples: 最多 3 条对白原文（从文本摘录），无则填 []
 - mentions: 整数，出现次数估计
-- first_seen_at: 首次出场时间锚点。文本里有显式时间（如「1954 年」）就照写；否则填「第 N 章」；都不便确定时填「约 M 万字处」。**不要编造日期**
+- first_seen_at: 首次出场时间锚点（故事中时间，如「1954 年」），找不到就留空
+- first_chapter: 本卷里首次出场的章号，如「第 12 章」；强烈建议填写
 
 输出示例（仅示意结构，不要照抄）：
-[{{"name":"庆尘","role_tag":"主角","intro":"穿越者","speech_samples":[],"mentions":120,"first_seen_at":"第 1 章"}}]
+[{{"name":"庆尘","role_tag":"主角","intro":"穿越者","speech_samples":[],"mentions":120,"first_seen_at":"1954 年春","first_chapter":"第 1 章"}}]
 
 最多 30 个角色，按重要性排序（主角第一）。
 
-文本（约 {n_chapters} 章，{n_chars} 字）：
+本卷正文（约 {n_chars} 字）：
 {text}
 """,
-        "vars": ["n_chapters", "n_chars", "text"],
-        "description": "参考作品分段提取角色（姓名/简介/对白/首次出场时间锚点/定位标签）",
+        "vars": ["title", "author", "platform", "volume_index", "volume_title",
+                 "start_chapter", "end_chapter", "n_chapters", "n_chars", "text"],
+        "description": "参考作品分卷提取角色（姓名/简介/对白/首次出场时间 + 章节）",
     },
 
     "reference.settings": {
         "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
 
-从下面的小说文本中提取世界观设定。
+从下面这一**卷**的小说文本中提取世界观设定。
+
+作品上下文（仅供消歧 / 检索）：
+- 作品标题：《{title}》
+- 作者：{author}
+- 平台：{platform}
+- 本卷：第 {volume_index} 卷 {volume_title}
+- 包含章节：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
 
 **严格禁止**（违反则整条响应被视为错误）：
 - 任何寒暄、解释、对话语句（如「你好」「让我告诉你」「在 18 号监狱里...」）
@@ -75,24 +91,94 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 - title: 设定名称（如「魔法体系」「皇家骑士团」「时间法则」）
 - content: 2-4 句客观描述，写已知事实
 - hidden: 可选。该设定背后尚未对读者公开的真相、来源或动机；无则填 ""
-- first_introduced_at: 首次出现的时间锚点。有显式时间就照写；否则填「第 N 章」；都不便确定时填「约 M 万字处」。**不要编造日期**
+- first_introduced_at: 首次出现的故事中时间（如「1954 年」），找不到则留空
+- first_chapter: 本卷里首次出现的章号，如「第 5 章」；强烈建议填写
 
 输出示例（仅示意结构）：
-[{{"category":"factions","title":"18 号监狱","content":"一个收押超凡个体的特殊机构。","hidden":"","first_introduced_at":"第 1 章"}}]
+[{{"category":"factions","title":"18 号监狱","content":"一个收押超凡个体的特殊机构。","hidden":"","first_introduced_at":"","first_chapter":"第 1 章"}}]
 
 最多 25 条。
 
-文本（约 {n_chapters} 章，{n_chars} 字）：
+本卷正文（约 {n_chars} 字）：
 {text}
 """,
-        "vars": ["n_chapters", "n_chars", "text"],
-        "description": "参考作品分段提取设定（世界观/力量体系/势力/地理 ...）",
+        "vars": ["title", "author", "platform", "volume_index", "volume_title",
+                 "start_chapter", "end_chapter", "n_chapters", "n_chars", "text"],
+        "description": "参考作品分卷提取设定（世界观/力量体系/势力/地理 ...）",
+    },
+
+    "reference.outline": {
+        "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
+
+为下面这一**卷**的小说文本提取**编年史**格式的剧情大纲。
+
+作品上下文（仅用于消歧 / 检索 / 你跟人类对话时引用——不要把它们当成「我们已经聊过的内容」）：
+- 作品标题：《{title}》
+- 作者：{author}
+- 平台：{platform}
+- 本卷：第 {volume_index} 卷 {volume_title}
+- 包含章节：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
+
+**严格禁止**（违反则整条响应被视为错误）：
+- 任何寒暄、解释、对话语句（如「你好」「这一卷讲的是」「让我告诉你」「庆尘是一个穿越者」）
+- ```json ... ``` 这样的 markdown 包装
+- <think>...</think> 等推理块
+- JSON 之外的任何文字
+
+**只输出**：以 `{{` 开始、以 `}}` 结束的合法 JSON 对象。
+
+输出 JSON schema（字段名严格匹配）：
+
+{{
+  "logline": "≤ 50 字一句话概括本卷主线；不写背景介绍",
+  "epochs": [
+    {{
+      "title": "通常就是本卷的故事时间（如「1954 年春」）或本卷名",
+      "periods": [
+        {{
+          "time": "时间段（故事中时间，如「春」「主角入狱后」），与 events[].time_marker 协调",
+          "events": [
+            {{
+              "subject": "事件主语：角色名 / 组织名 / 「叙事者」",
+              "category": "plot_main | plot_side | character | setting | conflict | revelation | foreshadow | other",
+              "name": "事件名（≤ 12 字）",
+              "description": "1-2 句客观描述发生了什么；不写心理、不复述对话原文",
+              "hidden": "可选；该事件背后**本卷尚未公开**的真相或动机；无则填空字符串",
+              "time_marker": "故事中时间，如「1954 年 3 月」「春末」；无显式时间填 \\"\\"",
+              "first_chapter": "本卷里首次出现该事件的章号，如「第 12 章」；强烈建议填写"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+
+要求：
+- `time_marker` 是「故事中时间」（fiction-world clock），`first_chapter` 是「该事件在原文里首次出现的章节」（real-text reference）。两者用途不同，请尽量都填。
+- 如果一卷里事件密集，把 epoch 切成 2-5 个 periods（按时间或主题）。
+- 事件按发生顺序排列。
+- 找不到任何事件时返回 `{{"logline":"","epochs":[]}}`。
+
+本卷正文（约 {n_chars} 字）：
+{text}
+""",
+        "vars": ["title", "author", "platform", "volume_index", "volume_title",
+                 "start_chapter", "end_chapter", "n_chapters", "n_chars", "text"],
+        "description": "参考作品分卷提取编年史大纲（含故事中时间 + 首次出现章节）",
     },
 
     "reference.rhythm": {
         "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
 
-分析下面的小说文本，输出**一个**合并 JSON 对象，覆盖叙事结构 + 节奏 + 每章特征。章号都使用本段内的相对章号（1-base）。
+分析下面这一**卷**的小说文本，输出**一个**合并 JSON 对象，覆盖叙事结构 + 节奏 + 每章特征。章号都使用本段内的相对章号（1-base）。
+
+作品上下文（仅供消歧）：
+- 作品标题：《{title}》
+- 作者：{author}
+- 平台：{platform}
+- 本卷：第 {volume_index} 卷 {volume_title}
+- 包含章节：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
 
 **严格禁止**（违反则整条响应被视为错误）：
 - 任何寒暄、解释、对话语句（如「在这个故事中」「庆尘是一个穿越者」「让我告诉你」）
@@ -115,11 +201,12 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 - info_density_curve: 长度 == {n_chapters} 的浮点数组，与 chapter_features[i].info_density 一致
 - pacing_segments: 节奏分段 [{{start, end, pacing, avg_info_density}}], pacing 从 fast | medium | slow 选
 
-文本（{n_chapters} 章）：
+本卷正文：
 {text}
 """,
-        "vars": ["n_chapters", "text"],
-        "description": "参考作品分段提取节奏 + 叙事 + 每章特征（合并字段）",
+        "vars": ["title", "author", "platform", "volume_index", "volume_title",
+                 "start_chapter", "end_chapter", "n_chapters", "text"],
+        "description": "参考作品分卷提取节奏 + 叙事 + 每章特征（合并字段）",
     },
 
     "reference.chat_system": {

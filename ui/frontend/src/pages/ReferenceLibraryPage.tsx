@@ -10,6 +10,7 @@ import {
   CharactersEditor,
   SettingsEditor,
   RhythmEditor,
+  PromptCopyPanel,
 } from "../components/reference/AnalysisEditors";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
@@ -667,6 +668,11 @@ function WorkDetail({
   const [tab, setTab] = useState<WorkDetailTab>("files");
   const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
   const [editingWhy, setEditingWhy] = useState(false);
+  // Shared segment index for the prompt-copy panels in the
+  // characters / settings tabs. Defaults to 0 (first volume) — the
+  // user can change it from the outline tab's preview controls and
+  // the value carries across tabs.
+  const [activeSegmentIndex, setActiveSegmentIndex] = useState<number>(0);
 
   useEffect(() => {
     setWhyDraft(sel.user_why_i_like || "");
@@ -831,27 +837,45 @@ function WorkDetail({
           onSavePlot={d => onSaveAnalysisField("plot_outline_json", d)}
           onAfterMerge={onAfterMerge}
           onGoToPreprocess={() => setTab("preprocess")}
+          activeSegmentIndex={activeSegmentIndex}
+          onActiveSegmentChange={setActiveSegmentIndex}
         />
       )}
 
       {tab === "characters" && (
-        chars && chars.length > 0 ? (
-          <CharactersEditor
-            data={chars}
-            onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+        <div>
+          <PromptCopyPanel
+            refId={sel.ref_id}
+            promptKey="reference.characters"
+            segmentIndex={activeSegmentIndex}
+            label="本卷角色提取 prompt（含作者/书名/平台/卷号/章节数）"
           />
-        ) : (
-          <div className="empty-state" style={{ padding: 32 }}>
-            <p>暂无角色数据。前往「剧情大纲」分段提取（勾选「使用 AI」可得到带简介的角色）。</p>
-          </div>
-        )
+          {chars && chars.length > 0 ? (
+            <CharactersEditor
+              data={chars}
+              onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+            />
+          ) : (
+            <div className="empty-state" style={{ padding: 32 }}>
+              <p>暂无角色数据。前往「剧情大纲」分段提取（勾选「使用 AI」可得到带简介的角色）。</p>
+            </div>
+          )}
+        </div>
       )}
 
       {tab === "settings" && (
-        <SettingsEditor
-          data={settings || []}
-          onSave={d => onSaveAnalysisField("settings_json", d)}
-        />
+        <div>
+          <PromptCopyPanel
+            refId={sel.ref_id}
+            promptKey="reference.settings"
+            segmentIndex={activeSegmentIndex}
+            label="本卷设定提取 prompt（含作者/书名/平台/卷号/章节数）"
+          />
+          <SettingsEditor
+            data={settings || []}
+            onSave={d => onSaveAnalysisField("settings_json", d)}
+          />
+        </div>
       )}
 
       {tab === "features" && (
