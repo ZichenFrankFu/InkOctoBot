@@ -661,6 +661,43 @@ def _build_chapters(text: str,
             c["number"] = bumped
         used.add(c["number"])
 
+    # SAFETY NET: walk consecutive kept chapters and force each body to
+    # terminate at the FIRST line-start occurrence of the next kept
+    # chapter's raw_marker. This is belt-and-suspenders coverage for
+    # any edge case where the title_start-based boundary leaks (e.g.
+    # cross-pattern overlaps that weren't detected by title_bounds
+    # arithmetic, persisted state drift, or new pattern variants
+    # added in the future). Guarantees no chapter body can contain
+    # the verbatim heading of any subsequent chapter — directly fixes
+    # the user-reported 「第一章中有'2、'的部分内容」 symptom.
+    for i in range(len(deduped) - 1):
+        cur = deduped[i]
+        nxt = deduped[i + 1]
+        cur_cs = cur.get("content_start")
+        cur_ce = cur.get("content_end")
+        nxt_marker = (nxt.get("raw_marker") or "").strip()
+        if not (isinstance(cur_cs, int) and isinstance(cur_ce, int)) or not nxt_marker:
+            continue
+        # Scan the current body slice for the next chapter's marker at
+        # a line start. Use a literal substring search anchored to \n
+        # so we only catch genuine heading lines, not stray mentions
+        # inside dialogue. Also handle the edge case where the
+        # marker appears at position 0 of the slice.
+        slice_text = text[cur_cs:cur_ce]
+        needle_lf = "\n" + nxt_marker
+        rel = slice_text.find(needle_lf)
+        if rel >= 0:
+            # Truncate this chapter's body at the marker's line-start
+            # position (the `\n` is kept on the previous side; the
+            # marker itself becomes the start of the next chapter).
+            new_ce = cur_cs + rel + 1  # +1 to keep the trailing \n
+            if new_ce < cur_ce:
+                cur["content_end"] = new_ce
+                cur["content"] = text[cur_cs:new_ce].strip()
+                pv = make_preview(cur["content"])
+                cur["preview_head"] = pv["head"]
+                cur["preview_tail"] = pv["tail"]
+
     return deduped
 
 
