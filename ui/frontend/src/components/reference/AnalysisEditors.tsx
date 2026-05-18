@@ -13,62 +13,109 @@ import { apiGet } from "../../api/client";
  * LLM (ChatGPT / Claude.ai) when the configured model fails.
  *
  * Segment-scoped: needs refId + segmentIndex to render the prompt
- * with chapter text spliced in. Without segmentIndex it just shows
- * "请先在剧情大纲页选择一卷" so the user knows where to set context. */
+ * with chapter text spliced in. Without segmentIndex it shows a hint
+ * pointing the user to the outline tab to set context.
+ *
+ * Chunked: when the volume is too long for one LLM call, the panel
+ * pulls the multi-chunk preview from `/preview_chunks` and offers
+ * per-chunk copy buttons + "copy all" so the user can run each
+ * chunk through a web LLM and paste the merged results back. */
+interface ChunkInfo {
+  chunk_index: number;
+  rendered: string;
+  start_chapter: number;
+  end_chapter: number;
+  n_chapters: number;
+  n_chars: number;
+}
+
 export function PromptCopyPanel({
-  refId, promptKey, segmentIndex, label,
+  refId, promptKey, segmentIndex, label, chunked = true,
 }: {
   refId: string;
   promptKey: "reference.characters" | "reference.settings" | "reference.outline";
   segmentIndex: number | null;
   label: string;
+  /** Allow the multi-chunk endpoint. Defaults to true; pass false to
+   * always render a single (possibly truncated) prompt — useful for
+   * characters / settings, where each call needs the full segment text. */
+  chunked?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [rendered, setRendered] = useState("");
+  const [chunks, setChunks] = useState<ChunkInfo[]>([]);
+  const [activeChunk, setActiveChunk] = useState(0);
   const [error, setError] = useState("");
   const [copyState, setCopyState] = useState<"idle" | "copied" | "fail">("idle");
 
   const loadPrompt = useCallback(async () => {
     if (segmentIndex == null) {
       setError("请先到「剧情大纲」tab 选择一卷开始预览，本卷的 prompt 将自动渲染");
-      setRendered("");
+      setChunks([]);
       return;
     }
     setLoading(true);
     setError("");
     try {
-      const params = new URLSearchParams({
-        ref_id: refId, segment_index: String(segmentIndex),
-      });
-      const r = await apiGet<{ rendered: string }>(
-        `/api/references/prompts/${promptKey}/preview?${params}`,
-      );
-      setRendered(r.rendered || "");
+      if (chunked) {
+        const params = new URLSearchParams({
+          ref_id: refId, segment_index: String(segmentIndex),
+        });
+        const r = await apiGet<{ chunks: ChunkInfo[]; total_chunks: number }>(
+          `/api/references/prompts/${promptKey}/preview_chunks?${params}`,
+        );
+        setChunks(r.chunks || []);
+        setActiveChunk(0);
+      } else {
+        const params = new URLSearchParams({
+          ref_id: refId, segment_index: String(segmentIndex),
+        });
+        const r = await apiGet<{ rendered: string }>(
+          `/api/references/prompts/${promptKey}/preview?${params}`,
+        );
+        setChunks([{
+          chunk_index: 0, rendered: r.rendered || "",
+          start_chapter: 0, end_chapter: 0, n_chapters: 0, n_chars: 0,
+        }]);
+        setActiveChunk(0);
+      }
     } catch (e: any) {
       setError(e?.message || "获取 prompt 失败");
-      setRendered("");
+      setChunks([]);
     } finally {
       setLoading(false);
     }
-  }, [refId, promptKey, segmentIndex]);
+  }, [refId, promptKey, segmentIndex, chunked]);
 
   const toggle = async () => {
     const willOpen = !open;
     setOpen(willOpen);
-    if (willOpen && !rendered && !error) await loadPrompt();
+    if (willOpen && chunks.length === 0 && !error) await loadPrompt();
   };
 
-  const copy = async () => {
-    if (!rendered) return;
+  const current = chunks[activeChunk];
+  const total = chunks.length;
+
+  const copy = async (text: string) => {
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(rendered);
+      await navigator.clipboard.writeText(text);
       setCopyState("copied");
       setTimeout(() => setCopyState("idle"), 1500);
     } catch {
       setCopyState("fail");
       setTimeout(() => setCopyState("idle"), 1500);
     }
+  };
+
+  const copyCurrent = () => current && copy(current.rendered);
+  const copyAll = () => {
+    if (chunks.length === 0) return;
+    // Separated with a clear divider so paste-back can split them.
+    const joined = chunks.map((c, i) =>
+      `===== 分段 ${i + 1}/${chunks.length}（第 ${c.start_chapter}–${c.end_chapter} 章） =====\n${c.rendered}`
+    ).join("\n\n");
+    copy(joined);
   };
 
   return (
@@ -97,13 +144,47 @@ export function PromptCopyPanel({
                 disabled={loading || segmentIndex == null}
                 style={{ padding: "2px 8px", fontSize: 10 }}
                 title="重新渲染（如卷信息有变）">刷新</button>
-        <button className="btn" onClick={copy}
-                disabled={!rendered || loading}
+        <button className="btn" onClick={copyCurrent}
+                disabled={!current?.rendered || loading}
                 style={{ padding: "2px 10px", fontSize: 10 }}
-                title="复制 prompt 到剪贴板，再到 ChatGPT / Claude.ai 等手动调用">
-          {copyState === "copied" ? "已复制" : copyState === "fail" ? "复制失败" : "复制 prompt"}
+                title="复制当前段 prompt 到剪贴板">
+          {copyState === "copied" ? "已复制" : copyState === "fail" ? "复制失败" : "复制本段"}
         </button>
+        {total > 1 && (
+          <button className="btn-ghost" onClick={copyAll}
+                  disabled={loading}
+                  style={{ padding: "2px 8px", fontSize: 10 }}
+                  title="复制全部 N 段（带分段分隔符）">
+            复制全部 {total} 段
+          </button>
+        )}
       </div>
+      {open && total > 1 && (
+        <div className="flex items-center" style={{
+          padding: "4px 8px", gap: 4, flexWrap: "wrap",
+          background: "var(--bg-surface)",
+          borderBottom: "1px dashed var(--border)",
+          fontSize: 10,
+        }}>
+          <span className="text-muted">本卷字数超出单次 prompt 上限，已拆分：</span>
+          {chunks.map((c, i) => (
+            <button
+              key={i}
+              className="btn-ghost"
+              onClick={() => setActiveChunk(i)}
+              style={{
+                padding: "2px 8px", fontSize: 10,
+                fontWeight: activeChunk === i ? 600 : 400,
+                color: activeChunk === i ? "var(--accent)" : "var(--text-tertiary)",
+                background: activeChunk === i ? "var(--accent-subtle)" : "transparent",
+                borderRadius: 3,
+              }}
+              title={`第 ${c.start_chapter}–${c.end_chapter} 章 · ${c.n_chars} 字`}>
+              {i + 1}/{total}
+            </button>
+          ))}
+        </div>
+      )}
       {open && (
         <div style={{ padding: 8, background: "var(--bg-surface)" }}>
           {loading ? (
@@ -111,13 +192,21 @@ export function PromptCopyPanel({
           ) : error ? (
             <div className="text-xs" style={{ padding: 6, color: "var(--text-tertiary)" }}>{error}</div>
           ) : (
-            <pre className="font-mono" style={{
-              margin: 0, padding: 8, fontSize: 11, lineHeight: 1.55,
-              background: "var(--bg-card)", borderRadius: 3,
-              color: "var(--text-secondary)",
-              maxHeight: 320, overflow: "auto",
-              whiteSpace: "pre-wrap", wordBreak: "break-word",
-            }}>{rendered || "（无）"}</pre>
+            <>
+              {current && total > 1 && (
+                <div className="text-xs text-muted" style={{ marginBottom: 6 }}>
+                  本段覆盖第 <strong>{current.start_chapter}</strong>–<strong>{current.end_chapter}</strong> 章
+                  （{current.n_chapters} 章 · {current.n_chars.toLocaleString()} 字）
+                </div>
+              )}
+              <pre className="font-mono" style={{
+                margin: 0, padding: 8, fontSize: 11, lineHeight: 1.55,
+                background: "var(--bg-card)", borderRadius: 3,
+                color: "var(--text-secondary)",
+                maxHeight: 320, overflow: "auto",
+                whiteSpace: "pre-wrap", wordBreak: "break-word",
+              }}>{current?.rendered || "（无）"}</pre>
+            </>
           )}
         </div>
       )}
@@ -1084,6 +1173,107 @@ function emptyEvent(): ChronicleEvent {
   return { subject: "", category: "", name: "", description: "", hidden: "", time_marker: "", first_chapter: "" };
 }
 
+/** Strip ```json fences and `<think>` blocks from raw LLM text so the
+ * paste-back parser sees just the JSON payload. Mirrors the backend
+ * `_strip_json` logic so paste behavior matches what the pipeline does. */
+function stripJsonFences(s: string): string {
+  let out = s.trim();
+  // Drop <think>...</think> reasoning blocks.
+  out = out.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  out = out.replace(/<\/?think>/gi, "").trim();
+  // Whole-response ```json fence.
+  const fence = out.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fence) out = fence[1].trim();
+  // Lock onto the earliest JSON delimiter so leading prose / chunk
+  // separator lines don't break the parse.
+  const earliest = (() => {
+    const a = out.indexOf("["), b = out.indexOf("{");
+    if (a < 0) return b;
+    if (b < 0) return a;
+    return Math.min(a, b);
+  })();
+  if (earliest > 0) out = out.slice(earliest);
+  // Trim trailing prose.
+  const lastClose = Math.max(out.lastIndexOf("}"), out.lastIndexOf("]"));
+  if (lastClose >= 0) out = out.slice(0, lastClose + 1);
+  return out;
+}
+
+const CHRONICLE_EVENT_KEYS = new Set([
+  "subject", "category", "name", "description",
+  "hidden", "time_marker", "first_chapter",
+]);
+function looksLikeEvent(o: any): boolean {
+  if (!o || typeof o !== "object") return false;
+  // Treat anything with name OR description AND any other event key as event-shaped.
+  const hasIdentity = typeof o.name === "string" || typeof o.description === "string";
+  if (!hasIdentity) return false;
+  for (const k of Object.keys(o)) if (CHRONICLE_EVENT_KEYS.has(k)) return true;
+  return false;
+}
+function looksLikePeriod(o: any): boolean {
+  return !!(o && typeof o === "object" && Array.isArray(o.events));
+}
+function looksLikeEpoch(o: any): boolean {
+  return !!(o && typeof o === "object" && Array.isArray(o.periods));
+}
+function looksLikeOutline(o: any): boolean {
+  return !!(o && typeof o === "object" && Array.isArray(o.epochs));
+}
+
+/** Coerce one of several user-pastable shapes into a `PlotOutline`.
+ * The web-LLM workflow can produce: a full outline, a list of outlines
+ * (from multi-chunk copy-all), a list of epochs, a list of periods, or
+ * even just a list of events. This makes the paste tolerant of all of
+ * them so the user doesn't have to hand-edit before pasting. */
+function normalizePastedChronicle(data: any): PlotOutline | null {
+  // Case 1: single PlotOutline
+  if (looksLikeOutline(data)) return data as PlotOutline;
+  // Case 2: array of PlotOutlines (multi-chunk paste)
+  if (Array.isArray(data) && data.length > 0 && data.every(looksLikeOutline)) {
+    const epochs: ChronicleEpoch[] = [];
+    let logline = "";
+    for (const po of data as PlotOutline[]) {
+      if (!logline && po.logline) logline = po.logline;
+      for (const ep of (po.epochs || [])) epochs.push(ep);
+    }
+    return { logline, epochs };
+  }
+  // Case 3: list of epochs
+  if (Array.isArray(data) && data.length > 0 && data.every(looksLikeEpoch)) {
+    return { logline: "", epochs: data as ChronicleEpoch[] };
+  }
+  // Case 4: list of periods → wrap in one epoch
+  if (Array.isArray(data) && data.length > 0 && data.every(looksLikePeriod)) {
+    return {
+      logline: "",
+      epochs: [{ title: "粘贴的事件", periods: data as ChroniclePeriod[] }],
+    };
+  }
+  // Case 5: list of events → wrap in one period inside one epoch
+  if (Array.isArray(data) && data.length > 0 && data.every(looksLikeEvent)) {
+    return {
+      logline: "",
+      epochs: [{
+        title: "粘贴的事件",
+        periods: [{ time: "", events: data as ChronicleEvent[] }],
+      }],
+    };
+  }
+  return null;
+}
+
+const EVENT_CATEGORIES: { key: string; label: string }[] = [
+  { key: "plot_main",   label: "主线情节 (plot_main)" },
+  { key: "plot_side",   label: "支线情节 (plot_side)" },
+  { key: "character",   label: "角色变化 (character)" },
+  { key: "setting",     label: "世界观 (setting)" },
+  { key: "conflict",    label: "冲突/对抗 (conflict)" },
+  { key: "revelation",  label: "真相揭示 (revelation)" },
+  { key: "foreshadow",  label: "伏笔铺垫 (foreshadow)" },
+  { key: "other",       label: "其他 (other)" },
+];
+
 const CHRONICLE_INSTRUCTIONS = `编年史是「世界内史学家」的客观记录：
 1. 视角：第三人称客观史学家，只记录「发生了什么」。
 2. 不写：对话原文、心理活动、场景细节、章节结构、伏笔预告。
@@ -1187,6 +1377,112 @@ export function PlotOutlineEditor({
   // can be unfamiliar to first-time users, but veteran users won't want
   // to see the wall of text on every load.
   const [showInstructions, setShowInstructions] = useState(false);
+
+  // Quick-add single event: a lightweight inline form for users who want
+  // to add one event without entering full edit mode. When `time_marker`
+  // matches an existing period's `time`, the new event slides into that
+  // period; otherwise a new period (and possibly epoch) is created.
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickEvent, setQuickEvent] = useState<ChronicleEvent>(emptyEvent());
+  const [quickTargetEpoch, setQuickTargetEpoch] = useState<number | "new">("new");
+  const [quickSaving, setQuickSaving] = useState(false);
+
+  // Bulk-paste JSON: user runs the outline prompt in a web LLM, then
+  // pastes the JSON response back here for one-click merge.
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteRaw, setPasteRaw] = useState("");
+  const [pasteParsed, setPasteParsed] = useState<PlotOutline | null>(null);
+  const [pasteError, setPasteError] = useState("");
+  const [pasteMode, setPasteMode] = useState<"append" | "replace">("append");
+  const [pasteSaving, setPasteSaving] = useState(false);
+
+  const submitQuickAdd = async () => {
+    const ev = { ...quickEvent };
+    if (!ev.name.trim() && !ev.description.trim()) {
+      window.alert("请至少填写事件名或描述");
+      return;
+    }
+    setQuickSaving(true);
+    try {
+      const base = cloneData();
+      const epochs = base.epochs || [];
+      // Resolve target epoch.
+      let targetEi: number;
+      if (quickTargetEpoch === "new" || epochs.length === 0) {
+        epochs.push({ title: ev.time_marker || "新增段", periods: [] });
+        targetEi = epochs.length - 1;
+      } else {
+        targetEi = quickTargetEpoch as number;
+      }
+      const targetEpoch = epochs[targetEi];
+      const periods = targetEpoch.periods || [];
+      // Match by time string (after trim). Empty time_marker matches
+      // empty-time period if any; otherwise creates a "(未填写时间)" bucket.
+      const tm = (ev.time_marker || "").trim();
+      let targetPi = periods.findIndex(p => (p.time || "").trim() === tm);
+      if (targetPi < 0) {
+        periods.push({ time: tm, events: [] });
+        targetPi = periods.length - 1;
+        targetEpoch.periods = periods;
+      }
+      periods[targetPi].events = [...(periods[targetPi].events || []), ev];
+      base.epochs = epochs;
+      await onSave(base);
+      // Reset the form so a second add doesn't reuse the previous values.
+      setQuickEvent(emptyEvent());
+      setQuickAddOpen(false);
+    } finally { setQuickSaving(false); }
+  };
+
+  const parsePaste = () => {
+    setPasteError("");
+    setPasteParsed(null);
+    const raw = pasteRaw.trim();
+    if (!raw) { setPasteError("请先粘贴 LLM 返回的 JSON 内容"); return; }
+    const stripped = stripJsonFences(raw);
+    let data: any;
+    try {
+      data = JSON.parse(stripped);
+    } catch (e: any) {
+      setPasteError(`JSON 解析失败：${e?.message || e}`);
+      return;
+    }
+    // Accept a few shapes:
+    //  1. Full PlotOutline:        {logline, epochs: [...]}
+    //  2. List of epochs:           [{title, periods: [...]}, ...]
+    //  3. List of periods:          [{time, events: [...]}, ...]   (wrapped in one epoch)
+    //  4. List of events:           [{subject, ..., name, ...}, ...] (wrapped in one period)
+    //  5. List of multiple PlotOutlines (from copy-all of N chunks):
+    //                               [{logline, epochs: [...]}, ...]
+    const normalized = normalizePastedChronicle(data);
+    if (!normalized || !normalized.epochs || normalized.epochs.length === 0) {
+      setPasteError("内容不是合法的编年史 JSON。预期形如 {logline, epochs: [...]} 或 epoch/period/event 数组。");
+      return;
+    }
+    setPasteParsed(normalized);
+  };
+
+  const confirmPaste = async () => {
+    if (!pasteParsed) return;
+    setPasteSaving(true);
+    try {
+      let next: PlotOutline;
+      if (pasteMode === "replace") {
+        next = { ...pasteParsed };
+      } else {
+        const base = cloneData();
+        next = {
+          ...base,
+          logline: base.logline || pasteParsed.logline,
+          epochs: [...(base.epochs || []), ...(pasteParsed.epochs || [])],
+        };
+      }
+      await onSave(next);
+      setPasteOpen(false);
+      setPasteRaw("");
+      setPasteParsed(null);
+    } finally { setPasteSaving(false); }
+  };
 
   const start = () => { setDraft(data ? { ...data, epochs: data.epochs || [] } : { epochs: [] }); setEditing(true); };
   const cancel = () => { setDraft(data ? { ...data, epochs: data.epochs || [] } : { epochs: [] }); setEditing(false); };
@@ -1449,8 +1745,10 @@ export function PlotOutlineEditor({
       )}
 
       {!hasContent ? (
-        <div className="text-xs text-muted text-center" style={{ padding: 12 }}>
-          暂无编年史。请在上方「分段提取大纲」逐段提取，或点击「编辑」手动添加。
+        <div className="text-xs text-muted text-center" style={{ padding: 12, lineHeight: 1.7 }}>
+          暂无编年史。可以选择：
+          <br />
+          上方「分段提取大纲」让 AI 自动抽取；或下方手动添加 / 粘贴。
         </div>
       ) : (
         <>
@@ -1710,9 +2008,193 @@ export function PlotOutlineEditor({
         </>
       )}
 
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
-        <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
+      {/* Two manual-input modes, plus the legacy "编辑" full-form button.
+        * The structured + paste modes let the user grow the chronicle
+        * without entering the heavy edit view. */}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12, gap: 6, flexWrap: "wrap" }}>
+        <button className="btn" style={{ fontSize: 11 }}
+                onClick={() => { setQuickAddOpen(true); setQuickEvent(emptyEvent()); }}
+                title="结构化逐条添加：填写时间 + 事件 + 章节，自动合并到匹配的时间段">
+          + 添加事件
+        </button>
+        <button className="btn" style={{ fontSize: 11 }}
+                onClick={() => { setPasteOpen(true); setPasteError(""); setPasteParsed(null); }}
+                title="粘贴 JSON：从网页 LLM 复制回来的整段大纲，一键解析合并">
+          粘贴 JSON 大纲
+        </button>
+        <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>
+          全量编辑
+        </button>
       </div>
+
+      {/* Quick-add modal */}
+      {quickAddOpen && (
+        <div onClick={() => !quickSaving && setQuickAddOpen(false)}
+             style={{
+               position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+               display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100,
+             }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: "var(--bg-app)", border: "1px solid var(--border)",
+            borderRadius: 6, padding: 16, width: "min(560px, 92vw)",
+            maxHeight: "85vh", display: "flex", flexDirection: "column",
+          }}>
+            <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>添加一条编年史事件</h4>
+              <button className="btn-icon" onClick={() => setQuickAddOpen(false)}
+                      disabled={quickSaving} style={{ fontSize: 16 }} title="关闭">&times;</button>
+            </div>
+            <div className="text-xs text-muted" style={{ marginBottom: 10, lineHeight: 1.55 }}>
+              填写「故事中时间」后，如果已有同时间的 period 会自动并入；否则新建一个 period。
+            </div>
+            <div className="flex flex-col gap-6" style={{ overflow: "auto" }}>
+              <div className="flex gap-6">
+                <div className="field" style={{ flex: 1 }}>
+                  <label className="label">主体</label>
+                  <input className="input" placeholder="角色名 / 组织名"
+                         value={quickEvent.subject}
+                         onChange={e => setQuickEvent({ ...quickEvent, subject: e.target.value })} />
+                </div>
+                <div className="field" style={{ flex: 1 }}>
+                  <label className="label">分类</label>
+                  <select className="input" value={quickEvent.category || ""}
+                          onChange={e => setQuickEvent({ ...quickEvent, category: e.target.value })}>
+                    <option value="">（请选择）</option>
+                    {EVENT_CATEGORIES.map(c => (
+                      <option key={c.key} value={c.key}>{c.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field" style={{ flex: 1.2 }}>
+                  <label className="label">事件名</label>
+                  <input className="input" placeholder="≤ 12 字"
+                         value={quickEvent.name}
+                         onChange={e => setQuickEvent({ ...quickEvent, name: e.target.value })} />
+                </div>
+              </div>
+              <div className="field">
+                <label className="label">描述（1-2 句客观陈述）</label>
+                <textarea className="input" rows={2}
+                          value={quickEvent.description}
+                          onChange={e => setQuickEvent({ ...quickEvent, description: e.target.value })} />
+              </div>
+              <div className="field">
+                <label className="label" style={{ color: "var(--gold)" }}>[隐] 隐藏真相（可选）</label>
+                <textarea className="input" rows={1} placeholder="本段读者还不知道的动机/真相"
+                          value={quickEvent.hidden || ""}
+                          onChange={e => setQuickEvent({ ...quickEvent, hidden: e.target.value })}
+                          style={{ color: "var(--gold)" }} />
+              </div>
+              <div className="flex gap-6">
+                <div className="field" style={{ flex: 1 }}>
+                  <label className="label">故事中时间</label>
+                  <input className="input" placeholder='如「1954 年 3 月」'
+                         value={quickEvent.time_marker || ""}
+                         onChange={e => setQuickEvent({ ...quickEvent, time_marker: e.target.value })} />
+                </div>
+                <div className="field" style={{ flex: 1 }}>
+                  <label className="label">首次出现章节</label>
+                  <input className="input" placeholder='如「第 12 章」'
+                         value={quickEvent.first_chapter || ""}
+                         onChange={e => setQuickEvent({ ...quickEvent, first_chapter: e.target.value })} />
+                </div>
+              </div>
+              <div className="field">
+                <label className="label">归属大段</label>
+                <select className="input"
+                        value={String(quickTargetEpoch)}
+                        onChange={e => setQuickTargetEpoch(e.target.value === "new" ? "new" : parseInt(e.target.value, 10))}>
+                  <option value="new">+ 新建大段</option>
+                  {(d.epochs || []).map((ep, i) => (
+                    <option key={i} value={String(i)}>
+                      {ep.title || `(未命名大段 #${i + 1})`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-6" style={{ justifyContent: "flex-end", marginTop: 12 }}>
+              <button className="btn" onClick={() => setQuickAddOpen(false)} disabled={quickSaving}>取消</button>
+              <button className="btn-primary" onClick={submitQuickAdd} disabled={quickSaving}>
+                {quickSaving ? "保存中..." : "添加并入库"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Paste-JSON modal */}
+      {pasteOpen && (
+        <div onClick={() => !pasteSaving && setPasteOpen(false)}
+             style={{
+               position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+               display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100,
+             }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: "var(--bg-app)", border: "1px solid var(--border)",
+            borderRadius: 6, padding: 16, width: "min(820px, 94vw)",
+            maxHeight: "90vh", display: "flex", flexDirection: "column",
+          }}>
+            <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>粘贴 JSON 大纲</h4>
+              <button className="btn-icon" onClick={() => setPasteOpen(false)}
+                      disabled={pasteSaving} style={{ fontSize: 16 }} title="关闭">&times;</button>
+            </div>
+            <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
+              从网页 LLM（ChatGPT / Claude.ai 等）复制回来的 JSON 粘到下方。支持：完整 outline 对象、
+              outline 数组（多段拼接）、epoch / period / event 数组。代码围栏（<code>```json</code>）和
+              <code>&lt;think&gt;</code> 块会自动剥除。
+            </div>
+            <textarea className="input font-mono" rows={12} value={pasteRaw}
+                      onChange={e => setPasteRaw(e.target.value)}
+                      placeholder='{"logline":"…","epochs":[{"title":"…","periods":[…]}]}'
+                      style={{
+                        fontSize: 11, lineHeight: 1.55, resize: "vertical",
+                        background: "var(--bg-card)",
+                      }} />
+            <div className="flex items-center gap-8" style={{ marginTop: 8, flexWrap: "wrap" }}>
+              <button className="btn" onClick={parsePaste} disabled={pasteSaving}>解析</button>
+              {pasteError && (
+                <span className="text-xs" style={{ color: "var(--error)" }}>{pasteError}</span>
+              )}
+              {pasteParsed && (
+                <span className="text-xs" style={{ color: "var(--jade)" }}>
+                  解析成功：{(pasteParsed.epochs || []).length} 大段 ·
+                  {" "}{(pasteParsed.epochs || []).reduce((n, e) => n + (e.periods?.length || 0), 0)} 时间段 ·
+                  {" "}{(pasteParsed.epochs || []).reduce((n, e) =>
+                       n + (e.periods || []).reduce((m, p) => m + (p.events?.length || 0), 0), 0)} 事件
+                </span>
+              )}
+            </div>
+            {pasteParsed && (
+              <div className="field" style={{ marginTop: 10 }}>
+                <label className="label">合并方式</label>
+                <div className="flex gap-12">
+                  <label className="text-xs">
+                    <input type="radio" name="pasteMode" value="append"
+                           checked={pasteMode === "append"}
+                           onChange={() => setPasteMode("append")} />
+                    &nbsp;追加到现有大纲末尾
+                  </label>
+                  <label className="text-xs">
+                    <input type="radio" name="pasteMode" value="replace"
+                           checked={pasteMode === "replace"}
+                           onChange={() => setPasteMode("replace")} />
+                    &nbsp;<span style={{ color: "var(--error)" }}>替换现有大纲（覆盖删除）</span>
+                  </label>
+                </div>
+              </div>
+            )}
+            <div className="flex gap-6" style={{ justifyContent: "flex-end", marginTop: 12 }}>
+              <button className="btn" onClick={() => setPasteOpen(false)} disabled={pasteSaving}>取消</button>
+              <button className="btn-primary" onClick={confirmPaste}
+                      disabled={pasteSaving || !pasteParsed}>
+                {pasteSaving ? "保存中..." : pasteMode === "replace" ? "替换并入库" : "追加并入库"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

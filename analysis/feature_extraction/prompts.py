@@ -110,14 +110,15 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
     "reference.outline": {
         "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
 
-为下面这一**卷**的小说文本提取**编年史**格式的剧情大纲。
+为下面这**一段**小说文本提取**编年史**格式的剧情大纲。
 
-作品上下文（仅用于消歧 / 检索 / 你跟人类对话时引用——不要把它们当成「我们已经聊过的内容」）：
+作品上下文（仅用于消歧 / 检索；不要把它们当成「我们已经聊过的内容」）：
 - 作品标题：《{title}》
 - 作者：{author}
 - 平台：{platform}
 - 本卷：第 {volume_index} 卷 {volume_title}
-- 包含章节：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
+- 本卷总章节范围：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
+- 本次提取范围：第 {chunk_start_chapter}–{chunk_end_chapter} 章（共 {chunk_n_chapters} 章；分段 {chunk_index_human}/{total_chunks}）
 
 **严格禁止**（违反则整条响应被视为错误）：
 - 任何寒暄、解释、对话语句（如「你好」「这一卷讲的是」「让我告诉你」「庆尘是一个穿越者」）
@@ -130,10 +131,10 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 输出 JSON schema（字段名严格匹配）：
 
 {{
-  "logline": "≤ 50 字一句话概括本卷主线；不写背景介绍",
+  "logline": "≤ 50 字一句话概括本段主线；不写背景介绍。若 chunk_index > 1 可留空",
   "epochs": [
     {{
-      "title": "通常就是本卷的故事时间（如「1954 年春」）或本卷名",
+      "title": "通常就是本段对应的故事时间（如「1954 年春」）或卷名",
       "periods": [
         {{
           "time": "时间段（故事中时间，如「春」「主角入狱后」），与 events[].time_marker 协调",
@@ -143,9 +144,9 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
               "category": "plot_main | plot_side | character | setting | conflict | revelation | foreshadow | other",
               "name": "事件名（≤ 12 字）",
               "description": "1-2 句客观描述发生了什么；不写心理、不复述对话原文",
-              "hidden": "可选；该事件背后**本卷尚未公开**的真相或动机；无则填空字符串",
+              "hidden": "可选；该事件背后**本段尚未公开**的真相或动机；无则填空字符串",
               "time_marker": "故事中时间，如「1954 年 3 月」「春末」；无显式时间填 \\"\\"",
-              "first_chapter": "本卷里首次出现该事件的章号，如「第 12 章」；强烈建议填写"
+              "first_chapter": "首次出现该事件的章号（使用作品的全局章号，如「第 12 章」）；强烈建议填写"
             }}
           ]
         }}
@@ -156,16 +157,21 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 
 要求：
 - `time_marker` 是「故事中时间」（fiction-world clock），`first_chapter` 是「该事件在原文里首次出现的章节」（real-text reference）。两者用途不同，请尽量都填。
-- 如果一卷里事件密集，把 epoch 切成 2-5 个 periods（按时间或主题）。
+- 仅覆盖**本次提取范围**内的章节内容；下一段（如有）会在另一次调用中提取。
 - 事件按发生顺序排列。
 - 找不到任何事件时返回 `{{"logline":"","epochs":[]}}`。
 
-本卷正文（约 {n_chars} 字）：
+本段正文（约 {n_chars} 字）：
 {text}
 """,
-        "vars": ["title", "author", "platform", "volume_index", "volume_title",
-                 "start_chapter", "end_chapter", "n_chapters", "n_chars", "text"],
-        "description": "参考作品分卷提取编年史大纲（含故事中时间 + 首次出现章节）",
+        "vars": [
+            "title", "author", "platform", "volume_index", "volume_title",
+            "start_chapter", "end_chapter", "n_chapters",
+            "chunk_index_human", "total_chunks",
+            "chunk_start_chapter", "chunk_end_chapter", "chunk_n_chapters",
+            "n_chars", "text",
+        ],
+        "description": "参考作品分卷提取编年史大纲（含故事中时间 + 首次出现章节；超长卷自动分段）",
     },
 
     "reference.rhythm": {

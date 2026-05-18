@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiPatch } from "../../api/client";
 import { useToast } from "../shared/Toast";
-import { PlotOutlineEditor } from "./AnalysisEditors";
+import { PlotOutlineEditor, PromptCopyPanel } from "./AnalysisEditors";
 import type { PlotOutline, ChronicleEpoch, ChroniclePeriod } from "./AnalysisEditors";
 
 interface SegmentInfo {
@@ -87,11 +87,6 @@ export default function PlotOutlinePanel({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [merging, setMerging] = useState(false);
-  // Prompt-display state — surfaces the EXACT text being sent to the LLM
-  // for the currently-previewing segment so the user can audit.
-  const [shownPrompt, setShownPrompt] = useState<{ key: string; rendered: string } | null>(null);
-  const [promptLoading, setPromptLoading] = useState(false);
-  const [promptOpen, setPromptOpen] = useState(false);
   // Chat-with-AI state for the currently-previewed segment
   const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -134,45 +129,14 @@ export default function PlotOutlinePanel({
   const nextIdx = plan?.segments.find(s => !completed.has(s.index))?.index;
 
   // The outline tab focuses on the chronicle extraction prompt. The
-  // characters / settings prompts are surfaced in their OWN tabs now
-  // (see ReferenceLibraryPage), so this panel only needs one key —
-  // the user's primary action here is "extract outline → confirm".
-  const promptKey = "reference.outline" as const;
-  const fetchSegmentPrompt = useCallback(async (idx: number) => {
-    setPromptLoading(true);
-    try {
-      const params = new URLSearchParams({
-        ref_id: refId, segment_index: String(idx),
-      });
-      const r = await apiGet<{ key: string; rendered: string }>(
-        `/api/references/prompts/${promptKey}/preview?${params}`,
-      );
-      setShownPrompt({ key: r.key, rendered: r.rendered });
-    } catch (e: any) {
-      setShownPrompt({ key: promptKey, rendered: `（获取 prompt 失败：${e?.message || "未知错误"}）` });
-    } finally { setPromptLoading(false); }
-  }, [refId]);
-
-  const copyShownPrompt = async () => {
-    if (!shownPrompt?.rendered) return;
-    try {
-      await navigator.clipboard.writeText(shownPrompt.rendered);
-      toast("已复制 prompt 到剪贴板", "success");
-    } catch {
-      toast("复制失败：请手动选中文本", "error");
-    }
-  };
-
   const generatePreview = async (idx: number) => {
     setPreviewIdx(idx);
     // Sync the cross-tab "active segment" so the characters / settings
-    // prompt-copy panels render against the same volume the user is
-    // currently working with here.
+    // prompt-copy panels (and our own embedded PromptCopyPanel) render
+    // against the same volume the user is currently working with here.
     onActiveSegmentChange?.(idx);
     setPreview(null);
     setPreviewLoading(true);
-    // Fetch the exact rendered prompt in parallel so the user can audit.
-    fetchSegmentPrompt(idx);
     try {
       const r = await apiPost<SegmentResult>(
         `/api/references/works/${refId}/segments/preview`,
@@ -566,60 +530,17 @@ export default function PlotOutlinePanel({
                         </div>
                       )}
 
-                      {/* Outline-extraction prompt (collapsible + copyable).
-                       *
-                       * This is the per-volume outline prompt — it
-                       * includes 作者/书名/平台/卷号/卷名/章节数 so the
-                       * user can paste it into a web LLM and have the
-                       * model do the chronicle extraction with full
-                       * context. Characters and settings prompts have
-                       * their own copy buttons in their respective tabs. */}
-                      <div style={{ marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4 }}>
-                        <div className="flex items-center" style={{
-                          padding: "4px 8px", gap: 6, flexWrap: "wrap",
-                          borderBottom: promptOpen ? "1px dashed var(--border)" : "none",
-                        }}>
-                          <button
-                            className="btn-ghost"
-                            onClick={() => setPromptOpen(o => !o)}
-                            style={{
-                              padding: "2px 4px", fontSize: 11, fontWeight: 600,
-                              color: "var(--text-secondary)", borderRadius: 0,
-                            }}>
-                            <span style={{
-                              transition: "transform 0.15s",
-                              transform: promptOpen ? "rotate(180deg)" : "none",
-                              display: "inline-block",
-                              marginRight: 4,
-                            }}>&#x25BC;</span>
-                            本卷大纲提取 prompt（含作者/书名/平台/卷号/章节数）
-                          </button>
-                          <div style={{ flex: 1 }} />
-                          <button
-                            className="btn"
-                            onClick={copyShownPrompt}
-                            disabled={!shownPrompt?.rendered || promptLoading}
-                            style={{ padding: "2px 10px", fontSize: 10 }}
-                            title="复制 prompt 到剪贴板，再到 ChatGPT / Claude.ai 等手动调用">
-                            复制 prompt
-                          </button>
-                        </div>
-                        {promptOpen && (
-                          <div style={{ padding: 8, background: "var(--bg-surface)" }}>
-                            {promptLoading ? (
-                              <div className="text-xs text-muted" style={{ padding: 6 }}>加载中…</div>
-                            ) : (
-                              <pre className="font-mono" style={{
-                                margin: 0, padding: 8, fontSize: 11, lineHeight: 1.55,
-                                background: "var(--bg-card)", borderRadius: 3,
-                                color: "var(--text-secondary)",
-                                maxHeight: 320, overflow: "auto",
-                                whiteSpace: "pre-wrap", wordBreak: "break-word",
-                              }}>{shownPrompt?.rendered || "（无）"}</pre>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                      {/* Per-volume outline prompt — uses the shared
+                       * PromptCopyPanel so it gets multi-chunk navigation
+                       * when the volume is too long for a single LLM call.
+                       * The panel keys on previewIdx so it always shows
+                       * prompts for the segment currently being previewed. */}
+                      <PromptCopyPanel
+                        refId={refId}
+                        promptKey="reference.outline"
+                        segmentIndex={previewIdx}
+                        label="本卷大纲提取 prompt（超长卷自动分段）"
+                      />
 
                       <ChroniclePreview epochs={preview.plot_outline?.epochs || []} />
 

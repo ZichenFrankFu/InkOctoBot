@@ -849,6 +849,7 @@ function WorkDetail({
             promptKey="reference.characters"
             segmentIndex={activeSegmentIndex}
             label="本卷角色提取 prompt（含作者/书名/平台/卷号/章节数）"
+            chunked={false}
           />
           {chars && chars.length > 0 ? (
             <CharactersEditor
@@ -870,6 +871,7 @@ function WorkDetail({
             promptKey="reference.settings"
             segmentIndex={activeSegmentIndex}
             label="本卷设定提取 prompt（含作者/书名/平台/卷号/章节数）"
+            chunked={false}
           />
           <SettingsEditor
             data={settings || []}

@@ -3022,6 +3022,14 @@ def preview_prompt(
                 "n_chapters": len(seg_chapters),
                 "n_chars": nchars,
                 "text": seg_text,
+                # Single-chunk default. The chunked preview endpoint
+                # (preview_chunks) supplies real values for these when
+                # the volume must be split for copy-to-web-LLM use.
+                "chunk_index_human": 1,
+                "total_chunks": 1,
+                "chunk_start_chapter": ctx.get("start_chapter", "?"),
+                "chunk_end_chapter": ctx.get("end_chapter", "?"),
+                "chunk_n_chapters": len(seg_chapters),
             }
         except HTTPException:
             raise
@@ -3029,6 +3037,119 @@ def preview_prompt(
             raise HTTPException(500, f"构建预览失败: {e}")
         rendered = render(key, **vars_)
         return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
+
+
+@router.get("/prompts/{key}/preview_chunks")
+def preview_prompt_chunks(
+    key: str,
+    ref_id: str,
+    segment_index: int,
+    max_chars: int = 32_000,
+):
+    """Render the prompt for a segment as **multiple** chunks so the
+    user can run an over-budget volume as N separate web-LLM calls
+    instead of having content silently truncated.
+
+    Returns::
+
+        {"key": ..., "total_chunks": N, "chunks": [
+            {"chunk_index": 0, "rendered": "...", "start_chapter": 1,
+             "end_chapter": 30, "n_chapters": 30, "n_chars": 28000}, ...
+        ]}
+
+    Currently only ``reference.outline`` supports chunking — it's the
+    only prompt that benefits from running each chunk independently
+    (characters / settings ideally see the full text). For other keys
+    this returns a single-chunk list, equivalent to the regular preview.
+    """
+    from analysis.feature_extraction.prompts import (
+        DEFAULT_PROMPTS, render, get_template,
+    )
+    if key not in DEFAULT_PROMPTS:
+        raise HTTPException(404, f"unknown prompt key: {key}")
+    if max_chars < 4_000 or max_chars > 200_000:
+        raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
+
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import (
+            FeatureExtractionPipeline, build_work_ctx,
+        )
+        from analysis.feature_extraction.ai_extractor import (
+            build_segment_text_chunks,
+        )
+        pipe = FeatureExtractionPipeline(db.db_path)
+        text = pipe._load_text(w)
+        if not text:
+            raise HTTPException(400, "作品尚未上传正文")
+        all_chapters = pipe._split_chapters(text)
+        plan = pipe.get_effective_plan(ref_id, all_chapters)
+        segs = plan["segments"]
+        if not segs:
+            plan = pipe.plan_segments(all_chapters)
+            segs = plan["segments"]
+        if segment_index < 0 or segment_index >= len(segs):
+            raise HTTPException(400, "segment_index 超出范围")
+        seg = segs[segment_index]
+        seg_chapters = [
+            all_chapters[j - 1]
+            for j in range(seg["start_chapter"], seg["end_chapter"] + 1)
+        ]
+        ctx = build_work_ctx(w, seg, segment_index)
+
+        chunk_infos = build_segment_text_chunks(
+            seg_chapters, max_chars=max_chars,
+            segment_start_chapter=seg["start_chapter"],
+        )
+        if not chunk_infos:
+            return {"key": key, "total_chunks": 0, "chunks": []}
+
+        rendered_chunks: list[dict[str, Any]] = []
+        for ci in chunk_infos:
+            vars_: dict[str, Any] = {
+                **ctx,
+                "n_chapters": seg["end_chapter"] - seg["start_chapter"] + 1,
+                "n_chars": ci["n_chars"],
+                "text": ci["text"],
+                "chunk_index_human": ci["chunk_index"] + 1,
+                "total_chunks": ci["total_chunks"],
+                "chunk_start_chapter": ci["start_chapter"],
+                "chunk_end_chapter": ci["end_chapter"],
+                "chunk_n_chapters": ci["n_chapters"],
+            }
+            try:
+                rendered = render(key, **vars_)
+            except ValueError as e:
+                # If the user's custom template doesn't reference the new
+                # chunk vars, render still succeeds (only complains on
+                # missing required vars). Surface the underlying error.
+                raise HTTPException(400, str(e))
+            rendered_chunks.append({
+                "chunk_index": ci["chunk_index"],
+                "rendered": rendered,
+                "start_chapter": ci["start_chapter"],
+                "end_chapter": ci["end_chapter"],
+                "n_chapters": ci["n_chapters"],
+                "n_chars": ci["n_chars"],
+            })
+        return {
+            "key": key,
+            "total_chunks": len(rendered_chunks),
+            "chunks": rendered_chunks,
+            "volume": {
+                "index": segment_index,
+                "title": ctx.get("volume_title"),
+                "start_chapter": seg["start_chapter"],
+                "end_chapter": seg["end_chapter"],
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"构建分段预览失败: {e}")
 
     # ai_complete: ref_id is enough
     if key == "reference.ai_complete":

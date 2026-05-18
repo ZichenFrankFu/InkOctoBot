@@ -83,6 +83,77 @@ def _build_segment_text(chapters: list[dict]) -> tuple[str, int]:
     return "".join(parts), total
 
 
+def build_segment_text_chunks(
+    chapters: list[dict],
+    max_chars: int = _MAX_PROMPT_CHARS,
+    *,
+    segment_start_chapter: int = 1,
+) -> list[dict]:
+    """Split a list of chapters into contiguous chunks where each chunk's
+    concatenated text fits within ``max_chars``. Used by the prompt-copy
+    UI so the user can run an over-budget volume as multiple separate
+    web-LLM calls instead of having the tail silently truncated.
+
+    Each returned dict has::
+
+        {
+            "chunk_index":      int,     # 0-based
+            "total_chunks":     int,
+            "text":             str,     # ready-to-splice prompt body
+            "n_chapters":       int,     # chapters in this chunk
+            "n_chars":          int,     # text length
+            "start_chapter":    int,     # absolute chapter # (1-based)
+            "end_chapter":      int,     # absolute chapter # (1-based, inclusive)
+        }
+
+    ``segment_start_chapter`` lets the caller report absolute chapter
+    numbers in the work even when ``chapters`` is just a slice for one
+    volume — set it to the volume's first absolute chapter number.
+
+    A single chapter that itself exceeds ``max_chars`` becomes its own
+    chunk (and that chunk's text gets hard-truncated, with a marker).
+    """
+    if not chapters:
+        return []
+
+    chunks: list[list[dict]] = []   # list of [chapters-in-chunk]
+    cur: list[dict] = []
+    cur_chars = 0
+    for ch in chapters:
+        body = (ch.get("content") or "").strip()
+        title = (ch.get("title") or "").strip()
+        # Format we use later in the rendered block; include in size accounting.
+        block_size = len(body) + len(title) + 4  # "## " + "\n" + content + "\n"
+        if cur and cur_chars + block_size > max_chars:
+            chunks.append(cur)
+            cur = []
+            cur_chars = 0
+        cur.append(ch)
+        cur_chars += block_size
+    if cur:
+        chunks.append(cur)
+
+    total = len(chunks)
+    out: list[dict] = []
+    offset = segment_start_chapter - 1  # convert intra-volume idx → absolute
+    chapter_cursor = 0  # advances over `chapters`
+    for i, ch_group in enumerate(chunks):
+        text, nchars = _build_segment_text(ch_group)
+        start_abs = chapter_cursor + 1 + offset
+        end_abs = chapter_cursor + len(ch_group) + offset
+        chapter_cursor += len(ch_group)
+        out.append({
+            "chunk_index": i,
+            "total_chunks": total,
+            "text": text,
+            "n_chapters": len(ch_group),
+            "n_chars": nchars,
+            "start_chapter": start_abs,
+            "end_chapter": end_abs,
+        })
+    return out
+
+
 def _strip_json(raw: str) -> str:
     """Extract a JSON payload from an LLM response.
 
@@ -419,13 +490,23 @@ async def ai_extract_outline(chapters: list[dict], router: Any,
     Each event carries BOTH ``time_marker`` (story-time) and
     ``first_chapter`` (where in the text the event first appears) so
     the UI can show them as separate tags.
+
+    The in-process call uses a single chunk (truncates at
+    ``_MAX_PROMPT_CHARS``) — for over-budget volumes, the user can
+    instead copy the multi-chunk prompts from the UI and run them
+    through a web LLM, then paste back the merged JSON.
     """
     from analysis.feature_extraction.prompts import render
     text, nchars = _build_segment_text(chapters)
+    ctx = _ctx(work_ctx)
     prompt = render(
         "reference.outline", override=prompt_override,
         n_chapters=len(chapters), n_chars=nchars, text=text,
-        **_ctx(work_ctx),
+        chunk_index_human=1, total_chunks=1,
+        chunk_start_chapter=ctx.get("start_chapter", "?"),
+        chunk_end_chapter=ctx.get("end_chapter", "?"),
+        chunk_n_chapters=len(chapters),
+        **ctx,
     )
     raw = await _invoke(router, prompt, max_tokens=4096,
                           use_web_search=use_web_search, expect="object")
