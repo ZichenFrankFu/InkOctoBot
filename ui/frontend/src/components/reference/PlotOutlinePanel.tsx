@@ -232,56 +232,133 @@ export default function PlotOutlinePanel({
 
   /** Parse the user's pasted JSON. Tolerant of the same shapes the
    *  chronicle editor accepts: {events:[…]}, bare arrays, full outlines.
+   *  Specifically handles the common case where a web-LLM UI prepends
+   *  prose ("Claude responded:") and/or pastes a truncated preview
+   *  copy before the real JSON — we scan for ALL `{"events":` /
+   *  `{"epochs":` positions, try to balanced-extract from each, and
+   *  pick the candidate with the most events.
    *  On success the chunk transitions to ready/source=paste (no chatbox
    *  — the chatbox needs a model conversation, which we don't have on
    *  the paste path). */
   const parseChunkPaste = (segIdx: number, chunkIdx: number, raw: string) => {
-    const trimmed = raw.trim();
-    if (!trimmed) {
+    let s = (raw || "").replace(/<think>[\s\S]*?<\/think>/gi, "")
+                       .replace(/<\/?think>/gi, "");
+    // Strip a whole-response code fence
+    const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    if (fence) s = fence[1];
+    s = s.trim();
+    if (!s) {
       patchChunk(segIdx, chunkIdx, { pasteError: "请先粘贴 LLM 返回的 JSON" });
       return;
     }
-    // Same strip-fences logic the chronicle editor uses.
-    let stripped = trimmed.replace(/<think>[\s\S]*?<\/think>/gi, "")
-                          .replace(/<\/?think>/gi, "").trim();
-    const fence = stripped.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-    if (fence) stripped = fence[1].trim();
-    const a = stripped.indexOf("["), b = stripped.indexOf("{");
-    const start = a < 0 ? b : b < 0 ? a : Math.min(a, b);
-    if (start > 0) stripped = stripped.slice(start);
-    const last = Math.max(stripped.lastIndexOf("}"), stripped.lastIndexOf("]"));
-    if (last >= 0) stripped = stripped.slice(0, last + 1);
-    let data: any;
-    try { data = JSON.parse(stripped); }
-    catch (e: any) {
-      patchChunk(segIdx, chunkIdx, { pasteError: `JSON 解析失败：${e?.message || e}` });
+
+    // Balanced extraction: walk from `start`, tracking JSON string and
+    // brace depth, return the substring of the matching balanced
+    // object/array (or null if it never balances).
+    const balancedExtract = (start: number): string | null => {
+      if (s[start] !== "{" && s[start] !== "[") return null;
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      for (let i = start; i < s.length; i++) {
+        const c = s[i];
+        if (escape) { escape = false; continue; }
+        if (c === "\\") { escape = true; continue; }
+        if (c === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (c === "{" || c === "[") depth++;
+        else if (c === "}" || c === "]") {
+          depth--;
+          if (depth === 0) return s.slice(start, i + 1);
+        }
+      }
+      return null;
+    };
+
+    const eventsFromParsed = (parsed: any): any[] => {
+      if (Array.isArray(parsed)) {
+        // Either a bare events array, or an array of {events: [...]} chunks.
+        if (parsed.length > 0 && parsed[0] && typeof parsed[0] === "object"
+            && Array.isArray(parsed[0].events)) {
+          const out: any[] = [];
+          for (const obj of parsed) for (const ev of (obj.events || [])) out.push(ev);
+          return out;
+        }
+        return parsed.filter((e: any) => e && typeof e === "object" && (e.name || e.description));
+      }
+      if (parsed && typeof parsed === "object") {
+        if (Array.isArray(parsed.events)) return parsed.events;
+        if (Array.isArray(parsed.epochs)) {
+          const flat: any[] = [];
+          for (const ep of parsed.epochs)
+            for (const per of (ep.periods || []))
+              for (const ev of (per.events || [])) flat.push(ev);
+          return flat;
+        }
+      }
+      return [];
+    };
+
+    // Collect all candidate parse positions, prioritising known
+    // structural patterns. Multi-pass with a `tried` set so we don't
+    // re-attempt the same start position.
+    const candidates: any[][] = [];
+    const tried = new Set<number>();
+    let lastErrorMsg = "";
+
+    for (const pattern of [/\{\s*"events"\s*:/g, /\{\s*"epochs"\s*:/g]) {
+      let m: RegExpExecArray | null;
+      while ((m = pattern.exec(s)) !== null) {
+        if (tried.has(m.index)) continue;
+        tried.add(m.index);
+        const extracted = balancedExtract(m.index);
+        if (!extracted) continue;
+        try {
+          const parsed = JSON.parse(extracted);
+          const events = eventsFromParsed(parsed);
+          if (events.length > 0) candidates.push(events);
+        } catch (e: any) {
+          lastErrorMsg = e?.message || String(e);
+        }
+      }
+    }
+
+    // Fallback: try any { or [ position. Useful when the LLM returned
+    // a bare array of events instead of {"events":[...]}.
+    if (candidates.length === 0) {
+      for (let i = 0; i < s.length; i++) {
+        if (s[i] !== "{" && s[i] !== "[") continue;
+        if (tried.has(i)) continue;
+        tried.add(i);
+        const extracted = balancedExtract(i);
+        if (!extracted) continue;
+        try {
+          const parsed = JSON.parse(extracted);
+          const events = eventsFromParsed(parsed);
+          if (events.length > 0) candidates.push(events);
+        } catch (e: any) {
+          lastErrorMsg = e?.message || String(e);
+        }
+      }
+    }
+
+    if (candidates.length === 0) {
+      patchChunk(segIdx, chunkIdx, {
+        pasteError: lastErrorMsg
+          ? `在 JSON 中没找到任何事件（${lastErrorMsg.slice(0, 80)}）。预期形如 {events: [...]}。`
+          : "在 JSON 中没找到任何事件。预期形如 {events: [...]}。",
+      });
       return;
     }
-    // Extract events from any shape we can recognise.
-    let events: any[] = [];
-    if (Array.isArray(data)) {
-      if (data.length === 0) {
-        patchChunk(segIdx, chunkIdx, { pasteError: "JSON 是空数组" });
-        return;
-      }
-      // Either an array of events, or array of {events: [...]} objects.
-      if (data[0] && typeof data[0] === "object" && Array.isArray(data[0].events)) {
-        for (const obj of data) for (const ev of (obj.events || [])) events.push(ev);
-      } else {
-        events = data;
-      }
-    } else if (data && typeof data === "object") {
-      if (Array.isArray(data.events)) events = data.events;
-      else if (Array.isArray(data.epochs)) {
-        for (const ep of data.epochs)
-          for (const per of (ep.periods || []))
-            for (const ev of (per.events || [])) events.push(ev);
-      }
-    }
-    events = events.filter(e => e && typeof e === "object" && (e.name || e.description));
+
+    // Use the candidate with the most events. Drop event-shaped items
+    // missing both name and description so we don't commit junk.
+    const events = candidates
+      .sort((a, b) => b.length - a.length)[0]
+      .filter((e: any) => e && typeof e === "object" && (e.name || e.description));
     if (events.length === 0) {
       patchChunk(segIdx, chunkIdx, {
-        pasteError: "在 JSON 中没找到任何事件。预期形如 {events: [...]}。",
+        pasteError: "解析到的事件都没有 name 或 description 字段。",
       });
       return;
     }
@@ -715,7 +792,7 @@ function ChroniclePreview({ epochs }: { epochs: ChronicleEpoch[] }) {
 
 /* ─── Per-chunk extraction row ─────────────────────────────────────
  * Renders one chunk inside an expanded volume. Three primary states:
- *   - idle:     show prompt panel + [AI 提取] / [粘贴回复] buttons
+ *   - idle:     show prompt panel + [AI 提取] / [解析网页 LLM 回复] buttons
  *   - extracting (AI only): show spinner
  *   - ready:    show events preview, [chatbox if AI], [确认入库] button
  *   - failed:   show error + reminder to copy-prompt to a web LLM
@@ -827,7 +904,7 @@ function ChunkRow({
               <button className="btn"
                       onClick={() => setShowPaste(p => !p)}
                       style={{ fontSize: 11, padding: "3px 10px" }}>
-                {showPaste ? "收起粘贴" : "粘贴网页 LLM 的回复"}
+                {showPaste ? "收起" : "解析网页 LLM 回复"}
               </button>
             </div>
           )}
@@ -841,7 +918,7 @@ function ChunkRow({
               <div style={{ fontWeight: 600, marginBottom: 2 }}>内置 AI 提取失败</div>
               <div style={{ wordBreak: "break-word" }}>{state.error}</div>
               <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>
-                请点上方「复制本段」把 prompt 拷到 ChatGPT / Claude.ai，再用「粘贴网页 LLM 的回复」入库。
+                请点上方「复制本段」把 prompt 拷到 ChatGPT / Claude.ai，再用「解析网页 LLM 回复」入库。
               </div>
             </div>
           )}
