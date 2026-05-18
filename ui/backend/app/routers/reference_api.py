@@ -2354,6 +2354,54 @@ def auto_suggest_plan(ref_id: str):
         raise HTTPException(500, f"自动检测失败: {e}")
 
 
+@router.post("/works/{ref_id}/segments/plan/ai_detect")
+async def ai_detect_plan(ref_id: str):
+    """AI-powered volume detection.
+
+    Tries a web-search-capable LLM first (best accuracy on published
+    works), falls back to a local LLM, then to a rule-based text scan
+    of chapter titles + content heads, and finally to the legacy
+    parser-tag detector. The response always carries:
+
+      - ``used_method``: which layer produced the answer
+      - ``prompt_used``: the exact prompt sent to the LLM, so the user
+        can paste it into a web LLM (ChatGPT / Claude.ai) when the
+        configured model gave bad output
+
+    Does NOT persist — same contract as ``/auto_suggest``."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        return await pipe.ai_suggest_volume_plan(ref_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"AI 自动检测失败: {e}")
+
+
+@router.get("/works/{ref_id}/segments/plan/ai_detect_prompt")
+def ai_detect_plan_prompt(ref_id: str):
+    """Return the exact prompt ``ai_detect_plan`` would send, without
+    actually calling any model. Lets the UI offer a "复制 prompt" path
+    even when no AI is configured."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        pipe = FeatureExtractionPipeline(db.db_path)
+        return pipe.render_volume_detect_prompt(ref_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"生成 prompt 失败: {e}")
+
+
 
 class SegmentRunRequest(BaseModel):
     segment_index: int
@@ -2902,6 +2950,31 @@ def preview_prompt(
     # If the prompt has no vars (e.g. chat_system), return as-is
     if not required_vars:
         return {"key": key, "template": template, "rendered": template, "vars": {}}
+
+    # Work-scoped (whole work, no segment): volume_detect just needs ref_id
+    if key == "reference.volume_detect":
+        if not ref_id:
+            raise HTTPException(400, "ref_id required for this prompt")
+        db = _db()
+        w = db.get_work(ref_id)
+        if not w:
+            raise HTTPException(404, "参考作品不存在")
+        try:
+            from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+            pipe = FeatureExtractionPipeline(db.db_path)
+            data = pipe.render_volume_detect_prompt(ref_id)
+            return {
+                "key": key, "template": template,
+                "rendered": data["prompt"],
+                "vars": {
+                    "title": data.get("title", ""),
+                    "n_chapters": data.get("total_chapters", 0),
+                },
+            }
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(500, f"构建预览失败: {e}")
 
     # Segment-scoped: need ref_id + segment_index → build chapter text
     if key in {"reference.characters", "reference.settings", "reference.rhythm"}:

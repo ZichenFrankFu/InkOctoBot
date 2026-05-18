@@ -371,6 +371,134 @@ class FeatureExtractionPipeline:
         plan["total_chapters"] = len(chapters)
         return plan
 
+    def render_volume_detect_prompt(self, ref_id: str) -> dict[str, Any]:
+        """Return the exact prompt that ``ai_suggest_volume_plan`` would
+        send. Surfaced via API so the user can copy it into a web LLM
+        (ChatGPT / Claude.ai) when the configured model is unable to
+        produce parseable output. Also returns chapter count for context."""
+        from rag.reference_db import ReferenceDB
+        from analysis.feature_extraction.volume_detector import build_volume_prompt
+
+        rdb = ReferenceDB(self.db_path)
+        work = rdb.get_work(ref_id)
+        if not work:
+            raise ValueError(f"reference work not found: {ref_id}")
+        text = self._load_text(work)
+        chapters = self._split_chapters(text) if text else []
+        if not chapters:
+            raise ValueError("作品尚未上传正文或未识别出章节")
+        prompt = build_volume_prompt(work, chapters)
+        return {
+            "ref_id": ref_id,
+            "title": work.get("title") or "",
+            "total_chapters": len(chapters),
+            "prompt": prompt,
+            "prompt_key": "reference.volume_detect",
+        }
+
+    async def ai_suggest_volume_plan(self, ref_id: str) -> dict[str, Any]:
+        """Detect volumes for a work using the best available source.
+
+        Priority chain:
+          1. Web-search-capable LLM (highest accuracy on indexed works)
+          2. Local LLM without web search
+          3. Rule-based scan of titles + chapter heads (offline)
+          4. Existing parser-tag detection (the old behavior)
+
+        Returns ``{type: "volumes", segments: [...], used_method: "...",
+        prompt_used: "...", total_chapters: N, is_custom: False}``.
+        ``used_method`` is one of ``ai_web_search`` / ``ai_local`` /
+        ``text_scan`` / ``parser_tags`` / ``none``.
+        """
+        from rag.reference_db import ReferenceDB
+        from analysis.feature_extraction.volume_detector import (
+            ai_detect_volumes, text_detect_volumes, build_volume_prompt,
+        )
+
+        rdb = ReferenceDB(self.db_path)
+        work = rdb.get_work(ref_id)
+        if not work:
+            raise ValueError(f"reference work not found: {ref_id}")
+        text = self._load_text(work)
+        chapters = self._split_chapters(text) if text else []
+        if not chapters:
+            return {
+                "type": "volumes", "segments": [], "total_chapters": 0,
+                "used_method": "none", "is_custom": False,
+                "prompt_used": "",
+                "warning": "作品尚未上传正文或未识别出章节",
+            }
+
+        prompt_used = build_volume_prompt(work, chapters)
+        used_method = "none"
+        volumes: list[dict] | None = None
+
+        # ── Try AI first when a router is available ──
+        try:
+            from models.router import ModelRouter
+            router = ModelRouter()
+        except Exception as e:
+            logger.info("[volume_detect] router unavailable, skipping AI: %s", e)
+            router = None
+
+        if router is not None:
+            try:
+                volumes, used_method = await ai_detect_volumes(
+                    work, chapters, router, prefer_web_search=True,
+                )
+            except Exception as e:
+                logger.warning("[volume_detect] AI layer crashed: %s", e)
+                volumes, used_method = None, "ai_error"
+
+        # ── Text-based fallback ──
+        if not volumes:
+            text_vols = text_detect_volumes(chapters)
+            if text_vols:
+                volumes = text_vols
+                used_method = "text_scan"
+
+        # ── Last resort: legacy parser-tag detector ──
+        if not volumes:
+            parser_vols = self._detect_volumes(chapters)
+            if parser_vols:
+                volumes = parser_vols
+                used_method = "parser_tags"
+
+        if not volumes:
+            return {
+                "type": "volumes", "segments": [], "total_chapters": len(chapters),
+                "used_method": used_method, "is_custom": False,
+                "prompt_used": prompt_used,
+                "warning": (
+                    "未能识别到分卷结构。请使用「复制 prompt」按钮把提示发到任意"
+                    "网页版 LLM（如 ChatGPT / Claude.ai），再把回复粘回章节范围。"
+                ),
+            }
+
+        # Enrich with chapter_count / char_count for the UI
+        segments: list[dict] = []
+        for i, v in enumerate(volumes):
+            sc, ec = v["start_chapter"], v["end_chapter"]
+            segments.append({
+                "index": i,
+                "title": v["title"],
+                "start_chapter": sc,
+                "end_chapter": ec,
+                "chapter_count": ec - sc + 1,
+                "char_count": sum(
+                    len(chapters[j - 1].get("content") or "")
+                    for j in range(sc, ec + 1)
+                ),
+            })
+        return {
+            "type": "volumes",
+            "segments": segments,
+            "total_chapters": len(chapters),
+            "used_method": used_method,
+            "is_custom": False,
+            "prompt_used": prompt_used,
+        }
+
     def rename_segment_title(self, ref_id: str, index: int, title: str) -> dict[str, Any]:
         """Rename a single segment's title in-place without resetting any
         already-completed extraction results. Used by inline title edit in

@@ -126,22 +126,35 @@ export default function PlotOutlinePanel({
   const allDone = total > 0 && doneCount >= total;
   const nextIdx = plan?.segments.find(s => !completed.has(s.index))?.index;
 
-  const fetchSegmentPrompt = useCallback(async (idx: number) => {
+  // Which prompt to surface in the audit panel: rhythm is the heaviest
+  // and most representative, but the user can switch to characters or
+  // settings to copy those prompts for manual web-LLM use too.
+  const [promptKey, setPromptKey] = useState<"reference.rhythm" | "reference.characters" | "reference.settings">("reference.rhythm");
+  const fetchSegmentPrompt = useCallback(async (idx: number, key?: string) => {
+    const k = key || promptKey;
     setPromptLoading(true);
     try {
       const params = new URLSearchParams({
         ref_id: refId, segment_index: String(idx),
       });
-      // We surface the rhythm prompt by default — it's the heaviest one
-      // and most representative of what the model sees for the segment.
       const r = await apiGet<{ key: string; rendered: string }>(
-        `/api/references/prompts/reference.rhythm/preview?${params}`,
+        `/api/references/prompts/${k}/preview?${params}`,
       );
       setShownPrompt({ key: r.key, rendered: r.rendered });
     } catch (e: any) {
-      setShownPrompt({ key: "reference.rhythm", rendered: `（获取 prompt 失败：${e?.message || "未知错误"}）` });
+      setShownPrompt({ key: k, rendered: `（获取 prompt 失败：${e?.message || "未知错误"}）` });
     } finally { setPromptLoading(false); }
-  }, [refId]);
+  }, [refId, promptKey]);
+
+  const copyShownPrompt = async () => {
+    if (!shownPrompt?.rendered) return;
+    try {
+      await navigator.clipboard.writeText(shownPrompt.rendered);
+      toast("已复制 prompt 到剪贴板", "success");
+    } catch {
+      toast("复制失败：请手动选中文本", "error");
+    }
+  };
 
   const generatePreview = async (idx: number) => {
     setPreviewIdx(idx);
@@ -530,25 +543,63 @@ export default function PlotOutlinePanel({
                         </div>
                       )}
 
-                      {/* Exact prompt sent to the LLM (collapsible) */}
+                      {/* Exact prompt sent to the LLM (collapsible).
+                       *
+                       * Three-way selector so the user can copy any of
+                       * the three extraction prompts to a web LLM when
+                       * the configured model can't parse one of them.
+                       * The chronicle-outline format itself is captured
+                       * in the chronicle_outline_extract skill (see
+                       * agents/analysis/skills/) for external reference. */}
                       <div style={{ marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4 }}>
-                        <button
-                          className="btn-ghost w-full"
-                          onClick={() => setPromptOpen(o => !o)}
-                          style={{
-                            justifyContent: "space-between",
-                            padding: "6px 10px",
-                            fontSize: 11, fontWeight: 600,
-                            color: "var(--text-secondary)", borderRadius: 0,
-                          }}
-                        >
-                          <span>查看本次发送给 LLM 的 prompt（{shownPrompt?.key || "reference.rhythm"}）</span>
-                          <span className="text-xs text-muted" style={{
-                            transition: "transform 0.15s",
-                            transform: promptOpen ? "rotate(180deg)" : "none",
-                            display: "inline-block",
-                          }}>&#x25BC;</span>
-                        </button>
+                        <div className="flex items-center" style={{
+                          padding: "4px 8px", gap: 6, flexWrap: "wrap",
+                          borderBottom: promptOpen ? "1px dashed var(--border)" : "none",
+                        }}>
+                          <button
+                            className="btn-ghost"
+                            onClick={() => setPromptOpen(o => !o)}
+                            style={{
+                              padding: "2px 4px", fontSize: 11, fontWeight: 600,
+                              color: "var(--text-secondary)", borderRadius: 0,
+                            }}>
+                            <span style={{
+                              transition: "transform 0.15s",
+                              transform: promptOpen ? "rotate(180deg)" : "none",
+                              display: "inline-block",
+                              marginRight: 4,
+                            }}>&#x25BC;</span>
+                            发送给 LLM 的 prompt
+                          </button>
+                          <div style={{ flex: 1 }} />
+                          {(["reference.rhythm", "reference.characters", "reference.settings"] as const).map(k => (
+                            <button
+                              key={k}
+                              className="btn-ghost"
+                              onClick={() => {
+                                setPromptKey(k);
+                                if (previewIdx != null) fetchSegmentPrompt(previewIdx, k);
+                                setPromptOpen(true);
+                              }}
+                              style={{
+                                padding: "2px 8px", fontSize: 10,
+                                fontWeight: promptKey === k ? 600 : 400,
+                                color: promptKey === k ? "var(--accent)" : "var(--text-tertiary)",
+                                borderBottom: promptKey === k ? "1px solid var(--accent)" : "1px solid transparent",
+                                borderRadius: 0,
+                              }}>
+                              {k.replace("reference.", "")}
+                            </button>
+                          ))}
+                          <button
+                            className="btn"
+                            onClick={copyShownPrompt}
+                            disabled={!shownPrompt?.rendered || promptLoading}
+                            style={{ padding: "2px 10px", fontSize: 10 }}
+                            title="复制 prompt 到剪贴板，再到 ChatGPT / Claude.ai 等手动调用">
+                            复制
+                          </button>
+                        </div>
                         {promptOpen && (
                           <div style={{ padding: 8, background: "var(--bg-surface)" }}>
                             {promptLoading ? (

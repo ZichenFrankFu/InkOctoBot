@@ -193,6 +193,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
   const [planDraft, setPlanDraft] = useState<{ title: string; start_chapter: number; end_chapter: number }[] | null>(null);
   const [planSaving, setPlanSaving] = useState(false);
+  // AI-driven volume detection state (separate from the per-segment
+  // AI extraction state — this one targets the volume-boundary detector).
+  const [aiDetecting, setAiDetecting] = useState(false);
+  const [aiPromptUsed, setAiPromptUsed] = useState("");
+  const [aiPromptOpen, setAiPromptOpen] = useState(false);
   // Custom chapter patterns
   const [patterns, setPatterns] = useState<ChapterPattern[]>([]);
   const [patternsOpen, setPatternsOpen] = useState(false);
@@ -984,10 +989,26 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   };
 
   const loadAutoSuggest = async () => {
+    setAiDetecting(true);
     try {
-      const sug = await apiGet<SegmentPlan>(`/api/references/works/${refId}/segments/plan/auto_suggest`);
+      // The AI endpoint internally walks: web-search LLM → local LLM →
+      // text scan → parser tags. It always returns the prompt it used
+      // so we can show it in the modal even when AI succeeded.
+      const sug = await apiPost<{
+        segments: SegmentInfo[];
+        used_method: string;
+        prompt_used: string;
+        warning?: string;
+      }>(
+        `/api/references/works/${refId}/segments/plan/ai_detect`,
+        {},
+        { timeoutMs: 300_000 },
+      );
+      setAiPromptUsed(sug.prompt_used || "");
       if (!sug.segments || sug.segments.length === 0) {
-        toast("自动检测未识别到可分卷的结构", "info");
+        // Show the prompt so user can copy it into a web LLM.
+        setAiPromptOpen(true);
+        toast(sug.warning || "自动检测未识别到可分卷的结构，可复制 prompt 手动尝试", "info");
         return;
       }
       setPlanDraft(sug.segments.map(s => ({
@@ -995,9 +1016,47 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         start_chapter: s.start_chapter,
         end_chapter: s.end_chapter,
       })));
-      toast(`已载入 ${sug.segments.length} 段建议，请检查后保存`, "success");
+      const methodLabel = ({
+        ai_web_search: "AI 联网搜索",
+        ai_local: "AI 本地推理",
+        text_scan: "正文卷标记扫描",
+        parser_tags: "章节解析器标记",
+      } as Record<string, string>)[sug.used_method] || "自动检测";
+      toast(`已载入 ${sug.segments.length} 段建议（${methodLabel}），请检查后保存`, "success");
     } catch (e: any) {
+      // On AI failure, still surface the prompt so the user has a path
+      // forward (copy to ChatGPT / Claude.ai → paste results back).
+      try {
+        const r = await apiGet<{ prompt: string }>(
+          `/api/references/works/${refId}/segments/plan/ai_detect_prompt`,
+        );
+        setAiPromptUsed(r.prompt || "");
+        setAiPromptOpen(true);
+      } catch { /* keep the original toast below */ }
       toast(e?.message || "自动检测失败", "error");
+    } finally { setAiDetecting(false); }
+  };
+
+  const showAiPrompt = async () => {
+    if (aiPromptUsed) { setAiPromptOpen(true); return; }
+    try {
+      const r = await apiGet<{ prompt: string }>(
+        `/api/references/works/${refId}/segments/plan/ai_detect_prompt`,
+      );
+      setAiPromptUsed(r.prompt || "");
+      setAiPromptOpen(true);
+    } catch (e: any) {
+      toast(e?.message || "获取 prompt 失败", "error");
+    }
+  };
+
+  const copyAiPrompt = async () => {
+    if (!aiPromptUsed) return;
+    try {
+      await navigator.clipboard.writeText(aiPromptUsed);
+      toast("已复制 prompt 到剪贴板", "success");
+    } catch {
+      toast("复制失败：请手动选中文本", "error");
     }
   };
 
@@ -2576,14 +2635,74 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         plan={plan}
         planDraft={planDraft}
         planSaving={planSaving}
+        aiDetecting={aiDetecting}
         startPlanEdit={startPlanEdit}
         loadAutoSuggest={loadAutoSuggest}
+        showAiPrompt={showAiPrompt}
         addPlanRow={addPlanRow}
         removePlanRow={removePlanRow}
         savePlan={savePlan}
         cancelPlanEdit={cancelPlanEdit}
         setPlanDraft={setPlanDraft}
       />
+      {aiPromptOpen && (
+        <AiPromptModal
+          prompt={aiPromptUsed}
+          onClose={() => setAiPromptOpen(false)}
+          onCopy={copyAiPrompt}
+        />
+      )}
+    </div>
+  );
+}
+
+function AiPromptModal({ prompt, onClose, onCopy }: {
+  prompt: string;
+  onClose: () => void;
+  onCopy: () => void;
+}) {
+  // Modal showing the exact prompt that would be / was sent to the LLM
+  // for volume detection. Use case: configured model fails or returns
+  // unparseable output → user copies prompt to ChatGPT / Claude.ai →
+  // pastes the JSON back into the chapter range inputs manually.
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 1000,
+      }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "var(--bg-app)", border: "1px solid var(--border)",
+        borderRadius: 6, padding: 16, width: "min(720px, 92vw)",
+        maxHeight: "85vh", display: "flex", flexDirection: "column",
+      }}>
+        <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+          <h4 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>
+            自动检测分卷的 prompt
+          </h4>
+          <button className="btn-icon" onClick={onClose}
+                  style={{ fontSize: 16 }} title="关闭">&times;</button>
+        </div>
+        <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
+          复制这段 prompt 到网页版 LLM（ChatGPT / Claude.ai / 元宝 / 通义 等）。
+          模型返回 JSON 后，把里面的 <code>volumes</code> 数组里的每一项手动填入下方的章节范围。
+        </div>
+        <pre className="font-mono" style={{
+          flex: 1, margin: 0, padding: 10,
+          background: "var(--bg-card)", border: "1px solid var(--border)",
+          borderRadius: 4, fontSize: 11, lineHeight: 1.55,
+          overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word",
+          color: "var(--text-secondary)",
+        }}>{prompt || "（prompt 为空）"}</pre>
+        <div className="flex gap-6" style={{ justifyContent: "flex-end", marginTop: 10 }}>
+          <button className="btn" onClick={onClose}>关闭</button>
+          <button className="btn-primary" onClick={onCopy} disabled={!prompt}>
+            复制到剪贴板
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2592,8 +2711,10 @@ interface VolumeEditorProps {
   plan: SegmentPlan | null;
   planDraft: { title: string; start_chapter: number; end_chapter: number }[] | null;
   planSaving: boolean;
+  aiDetecting: boolean;
   startPlanEdit: () => void;
   loadAutoSuggest: () => Promise<void>;
+  showAiPrompt: () => void;
   addPlanRow: (afterIdx: number) => void;
   removePlanRow: (idx: number) => void;
   savePlan: () => Promise<void>;
@@ -2641,8 +2762,14 @@ function VolumeEditor(p: VolumeEditorProps) {
               新建卷
             </button>
             <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={p.loadAutoSuggest}
-                    title="按文中「第 X 卷」标记或 ~10 万字切块自动建议分卷">
-              自动检测分卷
+                    disabled={p.aiDetecting}
+                    title="优先用联网 AI 检索官方分卷信息；联网模型不可用时回退到正文卷标记扫描">
+              {p.aiDetecting ? "检测中…" : "自动检测分卷"}
+            </button>
+            <button className="btn-ghost" style={{ fontSize: 11, padding: "5px 10px" }}
+                    onClick={p.showAiPrompt}
+                    title="查看 / 复制发给 LLM 的 prompt（可粘到 ChatGPT、Claude.ai 等手动检测）">
+              复制 prompt
             </button>
           </div>
         </div>
@@ -2656,11 +2783,19 @@ function VolumeEditor(p: VolumeEditorProps) {
               卷标题代表故事中的时间（如「1954 年」），无明确时间时填写章节范围。共 {plan.total_chapters} 章。
               {plan.segments.length > 0 && <><br />保存后会清空已有的提取结果。</>}
             </div>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                    onClick={p.loadAutoSuggest}
-                    disabled={planSaving}>
-              自动检测分卷
-            </button>
+            <div className="flex gap-6" style={{ flexShrink: 0 }}>
+              <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                      onClick={p.loadAutoSuggest}
+                      disabled={planSaving || p.aiDetecting}
+                      title="优先用联网 AI 检索官方分卷信息；联网模型不可用时回退到正文卷标记扫描">
+                {p.aiDetecting ? "检测中…" : "自动检测分卷"}
+              </button>
+              <button className="btn-ghost" style={{ fontSize: 11, padding: "3px 8px" }}
+                      onClick={p.showAiPrompt}
+                      title="查看 / 复制发给 LLM 的 prompt（可粘到 ChatGPT、Claude.ai 等手动检测）">
+                复制 prompt
+              </button>
+            </div>
           </div>
 
           {planDraft.length > 0 && (
@@ -2710,9 +2845,9 @@ function VolumeEditor(p: VolumeEditorProps) {
                         style={{ minWidth: 56, textAlign: "right", fontFamily: "var(--font-mono)" }}>
                     {Math.max(0, (s.end_chapter || 0) - (s.start_chapter || 0) + 1)} 章
                   </span>
-                  <button className="btn" style={{ fontSize: 11, padding: "3px 8px" }}
+                  <button className="btn-icon" style={{ fontSize: 14, width: 22, height: 22 }}
                           onClick={() => p.addPlanRow(i)}
-                          title="在该段后新建一个分卷">新建卷</button>
+                          title="在该段后插入一个新的分卷">+</button>
                   <button className="btn-icon"
                           onClick={() => p.removePlanRow(i)}
                           style={{ fontSize: 14 }}

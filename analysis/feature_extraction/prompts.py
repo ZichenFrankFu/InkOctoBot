@@ -142,6 +142,47 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
         "description": "分段大纲对话框系统 prompt（驱动「与 AI 对话调整本段」）",
     },
 
+    "reference.volume_detect": {
+        "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
+
+你的任务：为下面这部作品识别**卷（volume）的边界**——也就是把整本书按「故事大段 / 时间跨度」切成若干卷。
+
+作品信息：
+- 标题：《{title}》
+{author_hint}
+- 总章节数：{n_chapters} 章
+
+如果你具备联网搜索能力，**优先**使用搜索结果对齐本作品的官方分卷信息（百科 / 出版方 / 作者公告 / 主流盗版站的目录页）。找到后，把每一卷的标题与起止章号填回下方 JSON。
+
+如果联网无果（或本作品没有官方分卷信息），请基于下面提供的「章节标题清单」做合理切分：
+- 看章名是否暗示阶段切换（如「序章 / 第一章 / 番外」「卷一 / 卷二」「第N部」「YYYY 年」）
+- 看主题是否在某一章发生大的转折（地点变更、时间跨度、主要人物变化）
+- 同一卷应在 10-150 章之间为宜，避免一卷只有 1-3 章或一卷占全书 80%+
+
+**严格禁止**（违反则整条响应被视为错误）：
+- 任何寒暄、解释、对话语句
+- ```json ... ``` 这样的 markdown 包装
+- <think>...</think> 等推理块
+- JSON 之外的任何文字
+
+**只输出**：以 `{{` 开始、以 `}}` 结束的合法 JSON 对象，形如：
+
+{{"source": "web_search" | "chapter_titles", "volumes": [{{"title": "卷名", "start_chapter": 1, "end_chapter": 30}}, ...]}}
+
+要求：
+- `volumes` 至少 2 条，最多 30 条。
+- `start_chapter` / `end_chapter` 均为 1-base 整数，闭区间。
+- 相邻两卷必须**首尾相接**（前一卷的 end_chapter + 1 == 后一卷的 start_chapter）。
+- 首卷 start_chapter = 1，末卷 end_chapter = {n_chapters}。
+- `title` 优先使用作品里出现过的卷名；找不到就用阶段性主题（如「东瀛篇」），实在没有再写「第 X 卷」。
+
+章节标题清单（节选；# 为章号）：
+{titles}
+""",
+        "vars": ["title", "author_hint", "n_chapters", "titles"],
+        "description": "为参考作品自动识别分卷边界（优先联网，否则按章名切分）",
+    },
+
     "reference.ai_complete": {
         "template": """请通过联网搜索查询以下 {media_type_zh}　的基本信息，并返回严格 JSON。
 

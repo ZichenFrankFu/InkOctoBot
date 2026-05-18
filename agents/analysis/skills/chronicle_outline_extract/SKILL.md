@@ -1,0 +1,101 @@
+---
+name: chronicle_outline_extract
+display_name: 编年史大纲提取
+description: 从小说文本中提取「编年史」格式的剧情大纲：epochs（大段/纪元）→ periods（时间段）→ events（事件）。每个事件包含主语、类别、名称、描述、隐藏信息、时间锚点。
+version: 1.0.0
+model_role: reference_extractor
+tags: [analysis, narrative, outline, chronicle, extraction]
+permissions: [read_narrative]
+---
+
+## 用途
+
+把一段小说原文（最好已按「故事时间」切过卷）转成结构化的编年史大纲。
+适用场景：
+- 参考作品入库后的剧情骨架抽取
+- 用户拿这个 prompt 到任意网页 LLM（ChatGPT / Claude.ai / 元宝 / 通义）手动跑出大纲，再粘回本应用
+
+输出形状被前端 `PlotOutlineEditor` 直接读取，字段必须严格匹配。
+
+## 数据契约（必须严格遵守）
+
+```json
+{
+  "logline": "≤ 50 字的一句话概括（可选，留空也行）",
+  "epochs": [
+    {
+      "title": "大段标题（通常是故事时间，如「1954 年」，或卷名「东瀛篇」）",
+      "periods": [
+        {
+          "title": "时间段标题（如「春」「主角入狱后」「第 3 章前后」）",
+          "time_marker": "可选；如「1954 年 3 月」「第 12 章」「约 5 万字处」",
+          "events": [
+            {
+              "subject": "事件的主语（角色名 / 组织名 / 「叙事者」）",
+              "category": "事件类别",
+              "name": "事件名称（≤ 12 字）",
+              "description": "1-2 句客观描述发生了什么，不剧透动机",
+              "hidden": "可选；该事件在本段中尚未对读者公开的真相或动机",
+              "time_marker": "可选；事件发生的时间锚点"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+### `category` 必须从以下值中选一个（英文 key）
+
+- `plot_main` — 主线情节推进
+- `plot_side` — 支线情节
+- `character` — 角色出场 / 关系变化 / 成长
+- `setting` — 世界观 / 规则 / 设定揭示
+- `conflict` — 冲突 / 对抗 / 战斗
+- `revelation` — 真相揭示 / 反转
+- `foreshadow` — 伏笔铺垫
+- `other` — 其他
+
+### 时间锚点（`time_marker`）的填法
+
+按优先级：
+1. 原文里有显式时间（「1954 年 3 月」「公元前 221 年」） → 直接照写
+2. 在某一章前后 → 写「第 N 章」
+3. 都不便确定 → 写「约 M 万字处」
+4. **绝对不要编造日期**
+
+## 输入
+
+| 字段        | 类型   | 必填 | 说明                                         |
+| ----------- | ------ | ---- | -------------------------------------------- |
+| text        | string | 是   | 待分析的小说文本（最好不超过 5 万字）         |
+| segment_title | string | 否 | 本段的卷名 / 时间锚点（用于丰富 epoch.title） |
+| n_chapters  | int    | 否   | 本段包含的章节数                              |
+
+## 输出
+
+JSON 对象，结构如上 `数据契约`。
+
+## 严格输出要求
+
+- 整段响应必须以 `{` 开头、以 `}` 结尾。
+- 禁止任何寒暄、解释、对话语句（如「你好」「这个故事讲的是」「让我告诉你」）。
+- 禁止 markdown ``` 包装、`<think>` 推理块、自然语言摘要。
+- 找不到任何事件时：返回 `{"logline":"","epochs":[]}` —— 不要返回自然语言说明。
+- 调用方会用 `json.loads` 直接解析，任何前后多余字符都会导致管线失败。
+
+## 实现说明
+
+本 skill 既是**可执行 skill**（通过 BaseSkill 接口被 ModelRouter 调用），
+也是**人类参考文档**（用户复制 prompt 到网页 LLM 时遵照此格式）。
+
+应用内部的实际管线 (`analysis/feature_extraction/pipeline.py:compute_segment`)
+目前**不**直接调用本 skill —— 它把大纲拆成了三个独立的 LLM 调用（characters /
+settings / rhythm），然后用 `extract_plot_outline` 拼出编年史骨架。本文档主要
+作用是：
+
+1. 把「编年史格式」这个跨多个调用的契约集中固化下来，便于后续重构。
+2. 给用户提供一个**完整的、能跑通的 prompt**，当应用内的模型失败时，
+   用户可以一次性把整段原文 + 这个 prompt 贴到网页 LLM，拿到完整 JSON
+   再手动填回本应用的「角色」「设定」「剧情大纲」三个 tab。
