@@ -246,6 +246,20 @@ export default function PlotOutlinePanel({
     // Strip a whole-response code fence
     const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
     if (fence) s = fence[1];
+    // Normalize copy-paste mangling that often breaks JSON parsing.
+    // Built with \u escapes (not literal chars) so this stays readable
+    // even when the source is viewed in editors that hide invisible
+    // code points.
+    //   - BOM (U+FEFF) at the head
+    //   - Zero-width chars (U+200B – U+200D, U+FEFF mid-string)
+    //   - Curly "smart" quotes (U+201C/U+201D, U+2018/U+2019) —
+    //     some web UIs silently replace ASCII " when copying.
+    //   - Non-breaking spaces (U+00A0) that the JSON parser refuses
+    //     in whitespace position.
+    s = s.replace(/[\uFEFF\u200B-\u200D]/g, "")
+         .replace(/[\u201C\u201D]/g, '"')
+         .replace(/[\u2018\u2019]/g, "'")
+         .replace(/\u00A0/g, " ");
     s = s.trim();
     if (!s) {
       patchChunk(segIdx, chunkIdx, { pasteError: "请先粘贴 LLM 返回的 JSON" });
@@ -343,9 +357,27 @@ export default function PlotOutlinePanel({
     }
 
     if (candidates.length === 0) {
+      // When the parse failed at a specific position, surface ~50 chars
+      // of context around it so the user can spot a mangled escape /
+      // smart quote / extra char. The most common silent breakage is
+      // an inner `"` inside a description that the LLM forgot to escape.
+      let extra = "";
+      const posMatch = lastErrorMsg.match(/position\s+(\d+)/i);
+      if (posMatch) {
+        const pos = parseInt(posMatch[1], 10);
+        if (pos >= 0 && pos < s.length) {
+          const a = Math.max(0, pos - 30);
+          const b = Math.min(s.length, pos + 30);
+          const before = s.slice(a, pos);
+          const at = s.slice(pos, pos + 1);
+          const after = s.slice(pos + 1, b);
+          extra = `\n出错位置附近：…${before}【${at}】${after}…`;
+        }
+      }
       patchChunk(segIdx, chunkIdx, {
         pasteError: lastErrorMsg
-          ? `在 JSON 中没找到任何事件（${lastErrorMsg.slice(0, 80)}）。预期形如 {events: [...]}。`
+          ? `JSON 解析失败：${lastErrorMsg.slice(0, 120)}${extra}\n` +
+            "常见原因：LLM 在描述里写了未转义的引号（应为 \\\"…\\\" 而不是 \"…\"），或复制时把直引号变成了弯引号。"
           : "在 JSON 中没找到任何事件。预期形如 {events: [...]}。",
       });
       return;
@@ -888,6 +920,8 @@ function ChunkRow({
               refId={refId}
               promptKey="reference.outline"
               segmentIndex={segIdx}
+              chunkIndex={chunk.chunk_index}
+              defaultOpen
               label={`分段 ${chunk.chunk_index + 1} 的 prompt（含本段 ${chunk.n_chapters} 章正文）`}
             />
           )}
@@ -943,7 +977,11 @@ function ChunkRow({
                   解析并预览
                 </button>
                 {state.pasteError && (
-                  <span className="text-xs" style={{ color: "var(--error)" }}>{state.pasteError}</span>
+                  <pre className="text-xs" style={{
+                    color: "var(--error)", whiteSpace: "pre-wrap",
+                    wordBreak: "break-word", margin: "4px 0 0",
+                    flexBasis: "100%", lineHeight: 1.55,
+                  }}>{state.pasteError}</pre>
                 )}
               </div>
             </div>

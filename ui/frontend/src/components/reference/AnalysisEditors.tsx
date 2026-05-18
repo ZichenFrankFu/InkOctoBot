@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost } from "../../api/client";
 
 /* ════════════════════════════════════════════════════════════
@@ -30,7 +30,8 @@ interface ChunkInfo {
 }
 
 export function PromptCopyPanel({
-  refId, promptKey, segmentIndex, label, chunked = true,
+  refId, promptKey, segmentIndex, label, chunked = true, chunkIndex,
+  defaultOpen = false,
 }: {
   refId: string;
   promptKey: "reference.characters" | "reference.settings" | "reference.outline";
@@ -40,8 +41,15 @@ export function PromptCopyPanel({
    * always render a single (possibly truncated) prompt — useful for
    * characters / settings, where each call needs the full segment text. */
   chunked?: boolean;
+  /** When set, render ONLY this chunk's prompt — hides the chunk
+   * navigator and the "copy all" button. Used by per-chunk extraction
+   * rows where the surrounding UI already knows which chunk it is. */
+  chunkIndex?: number;
+  /** Start expanded instead of collapsed. Useful for chunk rows that
+   * are already user-expanded and want their prompt visible immediately. */
+  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [loading, setLoading] = useState(false);
   const [chunks, setChunks] = useState<ChunkInfo[]>([]);
   const [activeChunk, setActiveChunk] = useState(0);
@@ -64,7 +72,14 @@ export function PromptCopyPanel({
         const r = await apiGet<{ chunks: ChunkInfo[]; total_chunks: number }>(
           `/api/references/prompts/${promptKey}/preview_chunks?${params}`,
         );
-        setChunks(r.chunks || []);
+        const all = r.chunks || [];
+        // If a specific chunk was requested, keep only that one. The
+        // surrounding row already labels itself with the chunk number,
+        // so the panel doesn't need a navigator.
+        const filtered = chunkIndex != null
+          ? all.filter(c => c.chunk_index === chunkIndex)
+          : all;
+        setChunks(filtered);
         setActiveChunk(0);
       } else {
         const params = new URLSearchParams({
@@ -85,7 +100,15 @@ export function PromptCopyPanel({
     } finally {
       setLoading(false);
     }
-  }, [refId, promptKey, segmentIndex, chunked]);
+  }, [refId, promptKey, segmentIndex, chunked, chunkIndex]);
+
+  // Auto-fetch when the panel mounts in defaultOpen mode (per-chunk rows).
+  useEffect(() => {
+    if (defaultOpen && chunks.length === 0 && !error && !loading) {
+      loadPrompt();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultOpen]);
 
   const toggle = async () => {
     const willOpen = !open;
@@ -95,6 +118,9 @@ export function PromptCopyPanel({
 
   const current = chunks[activeChunk];
   const total = chunks.length;
+  // Hide the per-chunk navigator + "copy all" when the caller has
+  // restricted the panel to a single chunk.
+  const showChunkNavigator = chunkIndex == null;
 
   const copy = async (text: string) => {
     if (!text) return;
@@ -150,7 +176,7 @@ export function PromptCopyPanel({
                 title="复制当前段 prompt 到剪贴板">
           {copyState === "copied" ? "已复制" : copyState === "fail" ? "复制失败" : "复制本段"}
         </button>
-        {total > 1 && (
+        {showChunkNavigator && total > 1 && (
           <button className="btn-ghost" onClick={copyAll}
                   disabled={loading}
                   style={{ padding: "2px 8px", fontSize: 10 }}
@@ -159,7 +185,7 @@ export function PromptCopyPanel({
           </button>
         )}
       </div>
-      {open && total > 1 && (
+      {showChunkNavigator && open && total > 1 && (
         <div className="flex items-center" style={{
           padding: "4px 8px", gap: 4, flexWrap: "wrap",
           background: "var(--bg-surface)",
@@ -193,7 +219,7 @@ export function PromptCopyPanel({
             <div className="text-xs" style={{ padding: 6, color: "var(--text-tertiary)" }}>{error}</div>
           ) : (
             <>
-              {current && total > 1 && (
+              {current && showChunkNavigator && total > 1 && (
                 <div className="text-xs text-muted" style={{ marginBottom: 6 }}>
                   本段覆盖第 <strong>{current.start_chapter}</strong>–<strong>{current.end_chapter}</strong> 章
                   （{current.n_chapters} 章 · {current.n_chars.toLocaleString()} 字）
