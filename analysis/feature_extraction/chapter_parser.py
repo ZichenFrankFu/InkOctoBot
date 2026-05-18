@@ -150,12 +150,13 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"(?!第\s*[零〇一二两三四五六七八九十百千万0-9０-９]+\s*[章回节卷])"
         r"(?!Chapter[\s　]+[0-9])"
         r"([^\s。！？；，,.!?…：:　][^\n。！？；，,.!?…：:]{0,40}[^\s。！？；，,.!?…：:　])"
-        # Next line must start with REAL indent (space/tab/全角空格)
-        # WITHOUT crossing a blank line first. Previously `[\s　]+`
-        # accepted "\n\n1、章节1" — a blank line plus the next chapter
-        # heading — as if it were indented body, so every preceding
-        # paragraph got mis-flagged as a title.
-        r"\n[ \t　]+\S",
+        # LOOKAHEAD for the indented next-line check, so the body's
+        # first character isn't consumed by the match. Previously
+        # `\n[ \t　]+\S` ate the indent AND the first body char,
+        # making content_start fall AFTER it — every 缩进对比 chapter
+        # silently lost its first character (sometimes the entire
+        # first sentence when paired with subsequent dedup quirks).
+        r"(?=\n[ \t　]+\S)",
         re.MULTILINE | re.IGNORECASE,
     )),
     # Author-aside "chapters" — paragraph-isolated lines that contain
@@ -1309,17 +1310,41 @@ def flag_garbled_chapters(chapters: list[dict]) -> list[dict]:
     return chapters
 
 
+# Garbled patterns split by repair strategy:
+#   - DELETABLE: scrape-noise that has NO Chinese-text interpretation —
+#     HTML tags, BBCode, random IDs, zero-width chars, watermarks. Just
+#     sub("") them and the surrounding Chinese text is preserved intact.
+#   - MOJIBAKE: byte-level corruption symptoms (锟斤拷, U+FFFD,
+#     Latin-1 残留, …). Deleting them loses real Chinese characters;
+#     the correct fix is an encoding round-trip via repair_encoding.
+_DELETABLE_GARBLED_NAMES: set[str] = {
+    "HTML 注释", "HTML 转义", "HTML 标签",
+    "模板占位", "BBCode 标签",
+    "随机 ID", "追书神器水印",
+    "零宽字符",
+}
+
+
+def strip_deletable_garbled(text: str) -> str:
+    """Remove ONLY the scrape-noise garbled patterns (HTML/BBCode/random
+    IDs/zero-width/watermarks). Mojibake patterns (锟斤拷, U+FFFD,
+    Latin-1 残留, …) are LEFT INTACT — those need encoding repair, not
+    deletion. Whitespace runs created by the deletions get collapsed."""
+    for name, pat in _compile_garbled():
+        if name not in _DELETABLE_GARBLED_NAMES:
+            continue
+        text = pat.sub("", text)
+    text = re.sub(r"[ \t　]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text
+
+
 def strip_garbled(text: str, try_encoding_repair: bool = True) -> str:
-    """Two-step cleanup:
-
-      1. Run each regex in the effective garbled-pattern set (built-in
-         + user CRUD) and ``sub("")`` the matches.
-      2. If ``try_encoding_repair`` is True, attempt the 6 mojibake
-         repairs and apply whichever one materially increases the CJK
-         density of the result.
-
-    Whitespace runs created by the deletions get collapsed before
-    returning."""
+    """Legacy aggressive cleanup — strips EVERY garbled-pattern hit,
+    including the mojibake ones. Kept for back-compat; the new
+    ``一键修复乱码`` flow prefers ``strip_deletable_garbled`` followed
+    by ``repair_encoding`` so byte-level corruption is recovered
+    instead of silently removed."""
     for _, pat in _compile_garbled():
         text = pat.sub("", text)
     if try_encoding_repair:

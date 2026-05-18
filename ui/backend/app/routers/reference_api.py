@@ -1770,49 +1770,61 @@ async def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest)
 async def preprocess_repair_garbled(ref_id: str):
     """One-shot 一键修复乱码 button.
 
-    Two-stage repair, then a survivor pass:
-      1. Whole-file encoding-mojibake fix — pick the transform that
-         best raises CJK density (GBK↔UTF-8, Latin-1 round-trips).
-      2. Per-chapter encoding repair on chapters that the whole-file
-         transform didn't help. A different chapter may need a
-         different transform if the file was assembled from
-         multiply-encoded sources.
-      3. Any chapter still flagged ``is_garbled`` after both passes
-         gets ``cannot_repair=true`` so the UI can show a 「无法修复」
-         label and the user can decide manually.
+    Three-stage repair, then a survivor pass:
+      1. Delete scrape-noise patterns (HTML / BBCode / random IDs /
+         zero-width / watermarks). These are NOT encoding corruption —
+         they're cleanly removable noise. Previously the endpoint
+         skipped this step, which is why every HTML-laden chapter
+         got marked 「无法修复」 even though deleting the tags would
+         have fixed it.
+      2. Whole-file encoding-mojibake repair — pick the transform
+         (GBK↔UTF-8, Latin-1 round-trips, …) that best raises CJK
+         density. Targets 锟斤拷 / U+FFFD / 方块 / Latin-1 残留 etc.
+      3. Per-chapter encoding repair on chapters still flagged after
+         steps 1+2. A multi-source file may need different transforms
+         for different chapters.
+      4. Survivors of all three passes get cannot_repair=true so the
+         UI surfaces 「无法修复」 only for chapters where no automatic
+         fix was possible.
     """
     from analysis.feature_extraction.chapter_parser import (
-        repair_encoding, detect_encoding_mojibake,
+        strip_deletable_garbled, repair_encoding, detect_encoding_mojibake,
+        flag_garbled_chapters as _fg,
     )
 
     def _fix(txt: str, _chs):
-        # Stage 1: whole-file repair. Falls through unchanged if no
-        # transform helps — we still proceed to per-chapter + label.
+        # Stage 1: delete scrape-noise (HTML tags, BBCode, …).
+        txt = strip_deletable_garbled(txt)
+        # Stage 2: whole-file encoding-mojibake fix.
         fixed, _transform = repair_encoding(txt)
         return fixed
 
     def _mark_unrepairable(chapters: list[dict]) -> None:
-        # Stage 2 + 3: for each chapter still garbled, try a per-chapter
-        # encoding repair on its content. If a transform helps AND
-        # doesn't break the chapter, splice the fix in by rewriting
-        # the chapter's `content` field. If nothing helps, mark
-        # `cannot_repair`.
+        # Stage 3 + 4: chapter-by-chapter recovery, then mark survivors.
         for c in chapters:
             if not c.get("is_garbled"):
                 continue
             content = c.get("content") or ""
             if not content:
                 continue
-            guess = detect_encoding_mojibake(content)
-            if guess and guess.get("fixed_text"):
-                c["content"] = guess["fixed_text"]
-                # Re-flag this single chapter; if still garbled, mark.
-                from analysis.feature_extraction.chapter_parser import (
-                    flag_garbled_chapters as _fg,
-                )
+            # First try DELETING any remaining scrape-noise inside the
+            # chapter — some files have noise so concentrated that the
+            # whole-file pass didn't fully clean every region.
+            cleaned = strip_deletable_garbled(content)
+            if cleaned != content:
+                c["content"] = cleaned
                 _fg([c])
                 if not c.get("is_garbled"):
                     continue
+                content = cleaned
+            # Then try a per-chapter encoding round-trip.
+            guess = detect_encoding_mojibake(content)
+            if guess and guess.get("fixed_text"):
+                c["content"] = guess["fixed_text"]
+                _fg([c])
+                if not c.get("is_garbled"):
+                    continue
+            # Nothing worked — surface 「无法修复」.
             c["cannot_repair"] = True
 
     return await _modify_and_redetect(

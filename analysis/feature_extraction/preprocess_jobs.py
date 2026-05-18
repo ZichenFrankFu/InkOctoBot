@@ -254,11 +254,18 @@ async def start_guess_job_for_path(ref_id: str, file_path: str,
 
     async def _wrapper():
         try:
-            # Sample-read instead of full-file read: head + middle + tail
-            # totaling ~2.5 MB. On a 50 MB work this saves seconds of I/O
-            # without losing format-recognition quality — chapter markers
-            # are consistent across the document.
-            text = await asyncio.to_thread(read_sample, file_path, 2_500_000)
+            # Full-file read for accurate counts: previously this used
+            # a 2.5 MB sample (head+mid+tail), but the user reported the
+            # match counts shown before clicking "展开" were untrust-
+            # worthy ("第N章 only 1 match"). Full-file scan keeps
+            # the pre-expand count consistent with the post-expand one.
+            from pathlib import Path as _P
+            def _read_full(p: str) -> str:
+                try:
+                    return _P(p).read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    return ""
+            text = await asyncio.to_thread(_read_full, file_path)
             await _run_guess(job, text, extra_patterns)
         except Exception as e:
             logger.exception("[preprocess] guess (lazy load) for %s failed", ref_id)
