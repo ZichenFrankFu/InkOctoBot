@@ -2455,6 +2455,191 @@ async def preview_segment(ref_id: str, body: SegmentRunRequest):
         raise HTTPException(500, f"分段提取失败: {e}")
 
 
+class ChunkExtractRequest(BaseModel):
+    use_web_search: bool = False
+    prompt_override: Optional[str] = None
+    max_chars: int = 32_000
+
+
+@router.post("/works/{ref_id}/segments/{segment_index}/chunks/{chunk_index}/extract")
+async def extract_chunk(ref_id: str, segment_index: int, chunk_index: int,
+                         body: Optional[ChunkExtractRequest] = None):
+    """Run the outline events extraction on a SINGLE chunk of a segment.
+
+    Returns ``{events, elapsed_s, errors, chunk: {start_chapter, end_chapter,
+    n_chapters, n_chars}}``. Does NOT persist — the UI calls this for each
+    chunk separately, then commits accumulated events into the chronicle
+    via the regular plot_outline_json PATCH.
+
+    Mirrors the per-volume `preview_segment` flow but at chunk granularity
+    so the user can confirm one chunk at a time without committing to the
+    rest of the volume."""
+    body = body or ChunkExtractRequest()
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    if body.max_chars < 4_000 or body.max_chars > 200_000:
+        raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
+
+    try:
+        from analysis.feature_extraction.pipeline import (
+            FeatureExtractionPipeline, build_work_ctx,
+        )
+        from analysis.feature_extraction.ai_extractor import (
+            build_segment_text_chunks, ai_extract_outline_events,
+        )
+        from models.router import ModelRouter
+
+        pipe = FeatureExtractionPipeline(db.db_path)
+        text = pipe._load_text(w)
+        if not text:
+            raise HTTPException(400, "作品尚未上传正文")
+        all_chapters = pipe._split_chapters(text)
+        plan = pipe.get_effective_plan(ref_id, all_chapters)
+        segs = plan["segments"]
+        if not segs:
+            plan = pipe.plan_segments(all_chapters)
+            segs = plan["segments"]
+        if segment_index < 0 or segment_index >= len(segs):
+            raise HTTPException(400, "segment_index 超出范围")
+        seg = segs[segment_index]
+        seg_chapters = [
+            {**all_chapters[j - 1], "index": j - seg["start_chapter"]}
+            for j in range(seg["start_chapter"], seg["end_chapter"] + 1)
+        ]
+        chunks = build_segment_text_chunks(
+            seg_chapters, max_chars=body.max_chars,
+            segment_start_chapter=seg["start_chapter"],
+        )
+        if chunk_index < 0 or chunk_index >= len(chunks):
+            raise HTTPException(
+                400, f"chunk_index 超出范围（本段共 {len(chunks)} 个分段）",
+            )
+        chunk_meta = chunks[chunk_index]
+        lo, hi = chunk_meta["start_chapter"], chunk_meta["end_chapter"]
+        # Slice the chapters that belong to this chunk by absolute index.
+        chunk_chapters = [
+            c for c in seg_chapters
+            if (c.get("index") or 0) + seg["start_chapter"] >= lo
+            and (c.get("index") or 0) + seg["start_chapter"] <= hi
+        ]
+
+        try:
+            router_inst = ModelRouter()
+        except Exception as e:
+            raise HTTPException(503, f"AI 路由初始化失败：{e}")
+
+        work_ctx = build_work_ctx(w, seg, segment_index)
+        # Tell the prompt which chunk this is, so the model knows the
+        # extraction range exactly.
+        work_ctx_for_chunk = {
+            **work_ctx,
+            # Override the start/end with the chunk's range so the prompt
+            # shows "本次提取范围 第 X-Y 章" correctly. The other vars
+            # (book title, author, etc.) stay intact.
+        }
+
+        import time as _time
+        t0 = _time.perf_counter()
+        try:
+            events = await ai_extract_outline_events(
+                chunk_chapters, router_inst,
+                prompt_override=body.prompt_override,
+                use_web_search=body.use_web_search,
+                work_ctx=work_ctx_for_chunk,
+            )
+        except Exception as e:
+            elapsed = round(_time.perf_counter() - t0, 2)
+            return {
+                "events": [],
+                "elapsed_s": elapsed,
+                "errors": [f"AI 提取失败：{str(e)[:240]}"],
+                "chunk": {
+                    "chunk_index": chunk_index,
+                    "total_chunks": len(chunks),
+                    "start_chapter": lo,
+                    "end_chapter": hi,
+                    "n_chapters": chunk_meta["n_chapters"],
+                    "n_chars": chunk_meta["n_chars"],
+                },
+            }
+        elapsed = round(_time.perf_counter() - t0, 2)
+        return {
+            "events": events or [],
+            "elapsed_s": elapsed,
+            "errors": [],
+            "chunk": {
+                "chunk_index": chunk_index,
+                "total_chunks": len(chunks),
+                "start_chapter": lo,
+                "end_chapter": hi,
+                "n_chapters": chunk_meta["n_chapters"],
+                "n_chars": chunk_meta["n_chars"],
+            },
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"分段提取失败: {e}")
+
+
+@router.get("/works/{ref_id}/segments/{segment_index}/chunks")
+def list_segment_chunks(ref_id: str, segment_index: int, max_chars: int = 32_000):
+    """List the chunks for a segment WITHOUT running any AI — used by
+    the UI's "expand volume → show its chunks" interaction. Each chunk
+    entry carries its chapter range, char count, and chunk index."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    if max_chars < 4_000 or max_chars > 200_000:
+        raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
+    try:
+        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from analysis.feature_extraction.ai_extractor import build_segment_text_chunks
+
+        pipe = FeatureExtractionPipeline(db.db_path)
+        text = pipe._load_text(w)
+        if not text:
+            raise HTTPException(400, "作品尚未上传正文")
+        all_chapters = pipe._split_chapters(text)
+        plan = pipe.get_effective_plan(ref_id, all_chapters)
+        segs = plan["segments"]
+        if not segs:
+            plan = pipe.plan_segments(all_chapters)
+            segs = plan["segments"]
+        if segment_index < 0 or segment_index >= len(segs):
+            raise HTTPException(400, "segment_index 超出范围")
+        seg = segs[segment_index]
+        seg_chapters = [
+            {**all_chapters[j - 1], "index": j - seg["start_chapter"]}
+            for j in range(seg["start_chapter"], seg["end_chapter"] + 1)
+        ]
+        chunks = build_segment_text_chunks(
+            seg_chapters, max_chars=max_chars,
+            segment_start_chapter=seg["start_chapter"],
+        )
+        # Strip the rendered `text` from the response — the UI only
+        # needs metadata here (the prompt itself is fetched separately
+        # via /preview_chunks when the user expands a chunk).
+        return {
+            "segment_index": segment_index,
+            "volume_title": seg.get("title") or "",
+            "total_chunks": len(chunks),
+            "chunks": [
+                {k: v for k, v in c.items() if k != "text"}
+                for c in chunks
+            ],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"获取分段失败: {e}")
+
+
 @router.post("/works/{ref_id}/segments/commit")
 def commit_segment(ref_id: str, body: SegmentCommitRequest):
     """Persist a previewed (possibly user-edited) segment result."""

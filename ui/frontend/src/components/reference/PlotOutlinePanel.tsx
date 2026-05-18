@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost, apiPatch } from "../../api/client";
+import { apiGet, apiPost } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { PlotOutlineEditor, PromptCopyPanel } from "./AnalysisEditors";
 import type { PlotOutline, ChronicleEpoch, ChroniclePeriod } from "./AnalysisEditors";
@@ -21,28 +21,41 @@ interface SegmentPlan {
   is_custom?: boolean;
 }
 
-interface SegmentResult {
-  index: number;
-  title: string;
-  start_chapter: number;
-  end_chapter: number;
-  char_count: number;
-  elapsed_s: number;
-  errors: string[];
-  warnings?: string[];
-  ai_methods_used?: string[];
-  ai_methods_fallback?: string[];
-  plot_outline: { logline?: string; epochs?: ChronicleEpoch[] };
-  characters?: any[];
-  settings?: any[];
-  style_fingerprint?: any;
-  rhythm?: any;
-}
-
-
 function fmtChars(n: number): string {
   if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`;
   return `${n.toLocaleString()} 字`;
+}
+
+/** Chunk metadata returned from /segments/{idx}/chunks. */
+interface ChunkMeta {
+  chunk_index: number;
+  total_chunks: number;
+  start_chapter: number;
+  end_chapter: number;
+  n_chapters: number;
+  n_chars: number;
+}
+
+/** UI state for a single chunk during the extraction step.
+ *
+ * Lifecycle: idle → extracting (AI path only) → ready → committing → committed.
+ * The paste path skips "extracting" and jumps idle → ready on parse success.
+ * "failed" stays as a terminal status with an error message — the user is
+ * directed to copy-prompt + paste-back from a web LLM at that point. */
+interface ChunkExtractionState {
+  status: "idle" | "extracting" | "ready" | "failed" | "committing" | "committed";
+  /** "ai" enables the chatbox; "paste" doesn't (no model to chat with). */
+  source?: "ai" | "paste";
+  events?: any[];
+  error?: string;
+  elapsedS?: number;
+  /** Paste-mode local state. */
+  pasteRaw?: string;
+  pasteError?: string;
+  /** Chat-with-AI for refining the extracted events (AI path only). */
+  chat?: { role: "user" | "assistant"; content: string }[];
+  chatInput?: string;
+  chatSending?: boolean;
 }
 
 interface Props {
@@ -82,21 +95,18 @@ export default function PlotOutlinePanel({
   const [planLoading, setPlanLoading] = useState(false);
   const [useWebSearch, setUseWebSearch] = useState(false);
   const [webSearchCap, setWebSearchCap] = useState<{ enabled: boolean; reason: string; provider: string; model: string } | null>(null);
-  const [previewIdx, setPreviewIdx] = useState<number | null>(null);
-  const [preview, setPreview] = useState<SegmentResult | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [committing, setCommitting] = useState(false);
   const [merging, setMerging] = useState(false);
-  // Chat-with-AI state for the currently-previewed segment
-  const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
-  const [chatInput, setChatInput] = useState("");
-  const [chatSending, setChatSending] = useState(false);
-  // Inline title editing in the segment timeline (separate from full plan-edit
-  // mode) — lets the user rename a single volume's story-time title without
-  // wiping any completed extraction.
-  const [titleEditIdx, setTitleEditIdx] = useState<number | null>(null);
-  const [titleEditValue, setTitleEditValue] = useState("");
-  const [titleSaving, setTitleSaving] = useState(false);
+  // Per-segment expansion state: clicking a volume row reveals its
+  // chunks. The chunks list is fetched lazily on first expand.
+  const [openSegs, setOpenSegs] = useState<Set<number>>(new Set());
+  const [segChunks, setSegChunks] = useState<Record<number, ChunkMeta[]>>({});
+  const [segChunksLoading, setSegChunksLoading] = useState<Set<number>>(new Set());
+  // Per-chunk state — keyed by `${segIdx}:${chunkIdx}`. Each chunk
+  // tracks: which UI section is open, what events were extracted
+  // (whether via AI or paste), per-chunk errors, paste-mode buffer,
+  // and the chatbox state (chat-tunable only when source === "ai").
+  const [openChunks, setOpenChunks] = useState<Set<string>>(new Set());
+  const [chunkState, setChunkState] = useState<Record<string, ChunkExtractionState>>({});
 
   const loadPlan = useCallback(async () => {
     if (!hasFullText) { setPlan(null); return; }
@@ -128,90 +138,273 @@ export default function PlotOutlinePanel({
   const allDone = total > 0 && doneCount >= total;
   const nextIdx = plan?.segments.find(s => !completed.has(s.index))?.index;
 
-  // The outline tab focuses on the chronicle extraction prompt. The
-  const generatePreview = async (idx: number) => {
-    setPreviewIdx(idx);
-    // Sync the cross-tab "active segment" so the characters / settings
-    // prompt-copy panels (and our own embedded PromptCopyPanel) render
-    // against the same volume the user is currently working with here.
-    onActiveSegmentChange?.(idx);
-    setPreview(null);
-    setPreviewLoading(true);
+  // ─── per-chunk handlers ───
+
+  /** Lazy-load a segment's chunks the first time it's expanded. */
+  const ensureChunksLoaded = useCallback(async (segIdx: number) => {
+    if (segChunks[segIdx]) return;
+    setSegChunksLoading(prev => new Set(prev).add(segIdx));
     try {
-      const r = await apiPost<SegmentResult>(
-        `/api/references/works/${refId}/segments/preview`,
-        { segment_index: idx, use_ai: true, use_web_search: useWebSearch && !!webSearchCap?.enabled },
-        { timeoutMs: 900_000 },
+      const r = await apiGet<{ chunks: ChunkMeta[]; total_chunks: number }>(
+        `/api/references/works/${refId}/segments/${segIdx}/chunks`,
       );
-      setPreview(r);
-      setChatMessages([]);
+      setSegChunks(prev => ({ ...prev, [segIdx]: r.chunks || [] }));
     } catch (e: any) {
-      toast(e?.message || "预览失败", "error");
-      setPreviewIdx(null);
-    } finally { setPreviewLoading(false); }
+      toast(e?.message || "获取分段失败", "error");
+    } finally {
+      setSegChunksLoading(prev => {
+        const next = new Set(prev); next.delete(segIdx); return next;
+      });
+    }
+  }, [refId, segChunks, toast]);
+
+  const toggleSeg = async (segIdx: number) => {
+    const open = openSegs.has(segIdx);
+    setOpenSegs(prev => {
+      const next = new Set(prev);
+      if (open) next.delete(segIdx); else next.add(segIdx);
+      return next;
+    });
+    if (!open) {
+      await ensureChunksLoaded(segIdx);
+      onActiveSegmentChange?.(segIdx);
+    }
   };
 
-  const commitPreview = async () => {
-    if (!preview) return;
-    setCommitting(true);
-    try {
-      // merge_after=true makes the backend immediately fold the new
-      // segment result into the top-level chronicle / characters /
-      // settings, so the "剧情大纲" tab reflects the change after this
-      // single click. Without merge_after the user would have to also
-      // press "合并到全书" before seeing the chronicle update.
-      const r = await apiPost<any>(
-        `/api/references/works/${refId}/segments/commit`,
-        { result: preview, merge_after: true },
-      );
-      const msg = r.merge
-        ? `第 ${(preview.index ?? 0) + 1} 段已入库并合并到编年史（${r.completed_count}/${r.total_segments}）`
-        : `第 ${(preview.index ?? 0) + 1} 段已保存（${r.completed_count}/${r.total_segments}）`;
-      toast(msg, "success");
-      setPreview(null);
-      setPreviewIdx(null);
-      setChatMessages([]);
-      await loadPlan();
-      // Refresh the parent so the chronicle tab shows the new events
-      // without requiring a tab switch. onAfterMerge re-fetches the work.
-      try { await onAfterMerge(); } catch { /* non-fatal */ }
-    } catch (e: any) {
-      toast(e?.message || "保存失败", "error");
-    } finally { setCommitting(false); }
+  const chunkKey = (s: number, c: number) => `${s}:${c}`;
+  const toggleChunk = (s: number, c: number) => {
+    const k = chunkKey(s, c);
+    setOpenChunks(prev => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k); else next.add(k);
+      return next;
+    });
+  };
+  const patchChunk = (s: number, c: number, patch: Partial<ChunkExtractionState>) => {
+    const k = chunkKey(s, c);
+    setChunkState(prev => ({ ...prev, [k]: { ...(prev[k] || { status: "idle" }), ...patch } }));
   };
 
-  const sendChat = async () => {
-    const text = chatInput.trim();
-    if (!text || !preview || previewIdx === null || chatSending) return;
+  /** Run the internal AI on one chunk. Success populates events +
+   *  source="ai" (so the chatbox shows); failure marks the chunk as
+   *  failed with an error — the user is directed to the prompt-copy
+   *  path in that branch. */
+  const runChunkAI = async (segIdx: number, chunkIdx: number) => {
+    patchChunk(segIdx, chunkIdx, {
+      status: "extracting", error: undefined, events: undefined, source: undefined,
+    });
+    try {
+      const r = await apiPost<{
+        events: any[]; elapsed_s: number; errors: string[];
+      }>(
+        `/api/references/works/${refId}/segments/${segIdx}/chunks/${chunkIdx}/extract`,
+        { use_web_search: useWebSearch && !!webSearchCap?.enabled },
+        { timeoutMs: 600_000 },
+      );
+      if (r.errors && r.errors.length > 0) {
+        patchChunk(segIdx, chunkIdx, {
+          status: "failed",
+          error: r.errors.join("; "),
+          elapsedS: r.elapsed_s,
+        });
+      } else if (!r.events || r.events.length === 0) {
+        patchChunk(segIdx, chunkIdx, {
+          status: "failed",
+          error: "AI 返回了 0 个事件。请改用复制 prompt 到网页 LLM 的方式。",
+          elapsedS: r.elapsed_s,
+        });
+      } else {
+        patchChunk(segIdx, chunkIdx, {
+          status: "ready",
+          source: "ai",
+          events: r.events,
+          elapsedS: r.elapsed_s,
+          chat: [],
+        });
+      }
+    } catch (e: any) {
+      patchChunk(segIdx, chunkIdx, {
+        status: "failed",
+        error: e?.message || "AI 提取失败",
+      });
+    }
+  };
+
+  /** Parse the user's pasted JSON. Tolerant of the same shapes the
+   *  chronicle editor accepts: {events:[…]}, bare arrays, full outlines.
+   *  On success the chunk transitions to ready/source=paste (no chatbox
+   *  — the chatbox needs a model conversation, which we don't have on
+   *  the paste path). */
+  const parseChunkPaste = (segIdx: number, chunkIdx: number, raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      patchChunk(segIdx, chunkIdx, { pasteError: "请先粘贴 LLM 返回的 JSON" });
+      return;
+    }
+    // Same strip-fences logic the chronicle editor uses.
+    let stripped = trimmed.replace(/<think>[\s\S]*?<\/think>/gi, "")
+                          .replace(/<\/?think>/gi, "").trim();
+    const fence = stripped.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    if (fence) stripped = fence[1].trim();
+    const a = stripped.indexOf("["), b = stripped.indexOf("{");
+    const start = a < 0 ? b : b < 0 ? a : Math.min(a, b);
+    if (start > 0) stripped = stripped.slice(start);
+    const last = Math.max(stripped.lastIndexOf("}"), stripped.lastIndexOf("]"));
+    if (last >= 0) stripped = stripped.slice(0, last + 1);
+    let data: any;
+    try { data = JSON.parse(stripped); }
+    catch (e: any) {
+      patchChunk(segIdx, chunkIdx, { pasteError: `JSON 解析失败：${e?.message || e}` });
+      return;
+    }
+    // Extract events from any shape we can recognise.
+    let events: any[] = [];
+    if (Array.isArray(data)) {
+      if (data.length === 0) {
+        patchChunk(segIdx, chunkIdx, { pasteError: "JSON 是空数组" });
+        return;
+      }
+      // Either an array of events, or array of {events: [...]} objects.
+      if (data[0] && typeof data[0] === "object" && Array.isArray(data[0].events)) {
+        for (const obj of data) for (const ev of (obj.events || [])) events.push(ev);
+      } else {
+        events = data;
+      }
+    } else if (data && typeof data === "object") {
+      if (Array.isArray(data.events)) events = data.events;
+      else if (Array.isArray(data.epochs)) {
+        for (const ep of data.epochs)
+          for (const per of (ep.periods || []))
+            for (const ev of (per.events || [])) events.push(ev);
+      }
+    }
+    events = events.filter(e => e && typeof e === "object" && (e.name || e.description));
+    if (events.length === 0) {
+      patchChunk(segIdx, chunkIdx, {
+        pasteError: "在 JSON 中没找到任何事件。预期形如 {events: [...]}。",
+      });
+      return;
+    }
+    patchChunk(segIdx, chunkIdx, {
+      status: "ready",
+      source: "paste",
+      events,
+      pasteError: undefined,
+      pasteRaw: undefined,
+    });
+  };
+
+  /** Merge a chunk's events into the current chronicle: one epoch per
+   *  volume (matched by title), one period per first_chapter. New
+   *  events are appended to existing periods if the chapter already
+   *  has an entry. */
+  const mergeEventsIntoChronicle = (
+    base: PlotOutline | null,
+    newEvents: any[],
+    volumeTitle: string,
+  ): PlotOutline => {
+    const next: PlotOutline = base
+      ? {
+          ...base,
+          epochs: (base.epochs || []).map(e => ({
+            ...e,
+            periods: (e.periods || []).map(p => ({
+              ...p, events: [...(p.events || [])],
+            })),
+          })),
+        }
+      : { logline: "", epochs: [] };
+    let epoch = (next.epochs || []).find(e => e.title === volumeTitle);
+    if (!epoch) {
+      epoch = { title: volumeTitle, periods: [] };
+      next.epochs = [...(next.epochs || []), epoch];
+    }
+    for (const ev of newEvents) {
+      const key = ((ev.first_chapter || "") + "").trim() || "(未指定章节)";
+      let period = (epoch.periods || []).find(p => (p.time || "") === key);
+      if (!period) {
+        period = { time: key, events: [] };
+        epoch.periods = [...(epoch.periods || []), period];
+      }
+      period.events = [...(period.events || []), ev];
+    }
+    return next;
+  };
+
+  const commitChunk = async (segIdx: number, chunkIdx: number) => {
+    const st = chunkState[chunkKey(segIdx, chunkIdx)];
+    if (!st || st.status !== "ready" || !st.events || st.events.length === 0) return;
+    const seg = plan?.segments[segIdx];
+    if (!seg) return;
+    patchChunk(segIdx, chunkIdx, { status: "committing" });
+    try {
+      const merged = mergeEventsIntoChronicle(
+        plotOutline, st.events,
+        seg.title || `第 ${segIdx + 1} 卷`,
+      );
+      await onSavePlot(merged);
+      patchChunk(segIdx, chunkIdx, { status: "committed" });
+      toast(`第 ${segIdx + 1} 卷 · 分段 ${chunkIdx + 1} 已入库（${st.events.length} 事件）`, "success");
+    } catch (e: any) {
+      patchChunk(segIdx, chunkIdx, { status: "ready", error: e?.message || "入库失败" });
+      toast(e?.message || "入库失败", "error");
+    }
+  };
+
+  const sendChunkChat = async (segIdx: number, chunkIdx: number) => {
+    const k = chunkKey(segIdx, chunkIdx);
+    const st = chunkState[k];
+    if (!st || st.source !== "ai" || !st.events) return;
+    const text = (st.chatInput || "").trim();
+    if (!text || st.chatSending) return;
     const userMsg = { role: "user" as const, content: text };
-    const next = [...chatMessages, userMsg];
-    setChatMessages(next);
-    setChatInput("");
-    setChatSending(true);
+    const nextChat = [...(st.chat || []), userMsg];
+    patchChunk(segIdx, chunkIdx, {
+      chat: nextChat, chatInput: "", chatSending: true,
+    });
     try {
-      const r = await apiPost<{ assistant_message: string; revised: { plot_outline?: any; characters?: any[]; settings?: any[] } }>(
+      // Reuse the existing /segments/chat endpoint with a synthetic
+      // segment result so we don't need a new backend route just for
+      // chunk-level chat refinement.
+      const r = await apiPost<{
+        assistant_message: string;
+        revised: { plot_outline?: { epochs?: any[] }; characters?: any[]; settings?: any[] };
+      }>(
         `/api/references/works/${refId}/segments/chat`,
         {
-          segment_index: previewIdx,
-          messages: next,
-          current_result: preview,
+          segment_index: segIdx,
+          messages: nextChat,
+          current_result: {
+            index: segIdx,
+            plot_outline: {
+              logline: "",
+              epochs: [{ title: "(本段)", periods: [{ time: "", events: st.events }] }],
+            },
+            characters: [], settings: [],
+          },
         },
         { timeoutMs: 300_000 },
       );
-      setChatMessages([...next, { role: "assistant", content: r.assistant_message || "（无回复）" }]);
-      // If the AI returned a revision, merge it into the preview so the
-      // user sees the updated chronicle / characters / settings inline.
-      if (r.revised && Object.keys(r.revised).length > 0) {
-        setPreview(cur => cur ? {
-          ...cur,
-          plot_outline: r.revised.plot_outline ?? cur.plot_outline,
-          characters: r.revised.characters ?? cur.characters,
-          settings: r.revised.settings ?? cur.settings,
-        } : cur);
-      }
+      const revisedEvents = (() => {
+        const eps = r.revised?.plot_outline?.epochs;
+        if (!Array.isArray(eps)) return null;
+        const flat: any[] = [];
+        for (const ep of eps)
+          for (const per of (ep.periods || []))
+            for (const ev of (per.events || [])) flat.push(ev);
+        return flat;
+      })();
+      patchChunk(segIdx, chunkIdx, {
+        chat: [...nextChat, { role: "assistant", content: r.assistant_message || "（无回复）" }],
+        events: revisedEvents && revisedEvents.length > 0 ? revisedEvents : st.events,
+        chatSending: false,
+      });
     } catch (e: any) {
-      setChatMessages([...next, { role: "assistant", content: `（出错）${e?.message || "对话失败"}` }]);
-    } finally { setChatSending(false); }
+      patchChunk(segIdx, chunkIdx, {
+        chat: [...nextChat, { role: "assistant", content: `（出错）${e?.message || "对话失败"}` }],
+        chatSending: false,
+      });
+    }
   };
 
   const finalize = async () => {
@@ -234,44 +427,6 @@ export default function PlotOutlinePanel({
       await loadPlan();
     } catch (e: any) {
       toast(e?.message || "重置失败", "error");
-    }
-  };
-
-  // ── Inline title edit (timeline view, non-destructive) ──
-
-  const beginTitleEdit = (idx: number, current: string) => {
-    setTitleEditIdx(idx);
-    setTitleEditValue(current);
-  };
-
-  const cancelTitleEdit = () => {
-    setTitleEditIdx(null);
-    setTitleEditValue("");
-  };
-
-  const saveTitleEdit = async () => {
-    if (titleEditIdx === null || !plan) return;
-    const newTitle = titleEditValue.trim();
-    const orig = plan.segments[titleEditIdx]?.title || "";
-    if (newTitle === orig) { cancelTitleEdit(); return; }
-    setTitleSaving(true);
-    try {
-      await apiPatch(
-        `/api/references/works/${refId}/segments/${titleEditIdx}/title`,
-        { title: newTitle },
-      );
-      // Optimistic local update so we don't have to wait for a full reload
-      setPlan(p => p ? {
-        ...p,
-        segments: p.segments.map((s, i) =>
-          i === titleEditIdx ? { ...s, title: newTitle || s.title } : s,
-        ),
-      } : p);
-      cancelTitleEdit();
-    } catch (e: any) {
-      toast(e?.message || "重命名失败", "error");
-    } finally {
-      setTitleSaving(false);
     }
   };
 
@@ -343,16 +498,8 @@ export default function PlotOutlinePanel({
                 />
                 AI 联网验证
               </label>
-              {onGoToPreprocess && (
-                <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                        onClick={onGoToPreprocess}
-                        disabled={committing || merging || previewLoading}
-                        title="到「预处理」tab 新建 / 编辑分卷">
-                  编辑分段
-                </button>
-              )}
               {doneCount > 0 && !allDone && (
-                <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }} onClick={reset} disabled={committing || merging}>
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }} onClick={reset} disabled={merging}>
                   重置
                 </button>
               )}
@@ -390,21 +537,38 @@ export default function PlotOutlinePanel({
             </div>
           )}
 
+          {/* ─── Per-volume chunk list ───
+            * Each volume row is collapsible. When expanded, shows the
+            * list of chunks. Each chunk is an independent unit of
+            * work: view prompt → pick AI or paste-from-web → preview
+            * events → 确认入库.
+            *
+            * Volume rename and 编辑分段 actions live in the preprocess
+            * tab — this section is purely about extracting events. */}
           {total > 0 && (
           <div className="flex flex-col gap-4">
             {plan.segments.map(s => {
               const isDone = completed.has(s.index);
-              const isPreviewing = previewIdx === s.index;
-              const isNext = nextIdx === s.index;
+              const isOpen = openSegs.has(s.index);
+              const chunks = segChunks[s.index] || [];
+              const chunksLoading = segChunksLoading.has(s.index);
               return (
                 <div key={s.index}>
-                  <div style={{
-                    display: "flex", alignItems: "center", gap: 8,
-                    padding: "6px 10px",
-                    background: isDone ? "rgba(52,168,83,0.06)" : isNext ? "var(--bg-card)" : "transparent",
-                    border: "1px solid var(--border)",
-                    borderRadius: 4,
-                  }}>
+                  <button
+                    className="btn-ghost w-full"
+                    onClick={() => toggleSeg(s.index)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      padding: "6px 10px",
+                      background: isDone ? "rgba(52,168,83,0.06)" : "transparent",
+                      border: "1px solid var(--border)", borderRadius: 4,
+                      justifyContent: "flex-start", textAlign: "left",
+                    }}>
+                    <span style={{
+                      transition: "transform 0.15s",
+                      transform: isOpen ? "rotate(90deg)" : "none",
+                      display: "inline-block", color: "var(--text-tertiary)",
+                    }}>▶</span>
                     <span className="tag" style={{
                       fontSize: 10, minWidth: 36, textAlign: "center",
                       color: isDone ? "var(--jade)" : "var(--text-secondary)",
@@ -414,317 +578,58 @@ export default function PlotOutlinePanel({
                       {isDone ? "已完成" : `#${s.index + 1}`}
                     </span>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      {titleEditIdx === s.index ? (
-                        <div className="flex items-center gap-4">
-                          <input
-                            className="input"
-                            autoFocus
-                            value={titleEditValue}
-                            placeholder='故事时间（如 "1954 年"）'
-                            onChange={e => setTitleEditValue(e.target.value)}
-                            onKeyDown={e => {
-                              if (e.key === "Enter") { e.preventDefault(); saveTitleEdit(); }
-                              else if (e.key === "Escape") { e.preventDefault(); cancelTitleEdit(); }
-                            }}
-                            disabled={titleSaving}
-                            style={{ flex: 1, fontSize: 12, padding: "2px 6px" }}
-                            title="此处填写本段对应的故事时间；无明确时间时填写章节范围"
-                          />
-                          <button className="btn"
-                                  style={{ fontSize: 10, padding: "2px 6px" }}
-                                  onClick={saveTitleEdit}
-                                  disabled={titleSaving}>{titleSaving ? "..." : "保存"}</button>
-                          <button className="btn"
-                                  style={{ fontSize: 10, padding: "2px 6px" }}
-                                  onClick={cancelTitleEdit}
-                                  disabled={titleSaving}>取消</button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-4">
-                          <div className="truncate" style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", flex: 1, minWidth: 0 }}>
-                            {s.title}
-                          </div>
-                          <button
-                            className="btn-ghost"
-                            onClick={() => beginTitleEdit(s.index, s.title || `第 ${s.start_chapter}–${s.end_chapter} 章`)}
-                            style={{ fontSize: 10, padding: "1px 6px", color: "var(--text-tertiary)" }}
-                            title='编辑标题（故事时间，如 "1954 年"）'
-                          >改名</button>
-                        </div>
-                      )}
+                      <div className="truncate" style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)" }}>
+                        {s.title}
+                      </div>
                       <div className="text-xs text-muted">
                         第 {s.start_chapter}–{s.end_chapter} 章 · 共 {s.chapter_count ?? (s.end_chapter - s.start_chapter + 1)} 章 · {fmtChars(s.char_count)}
                       </div>
                     </div>
-                    {isPreviewing && previewLoading ? (
-                      <span className="text-xs" style={{ color: "var(--gold)" }}>生成预览中...</span>
-                    ) : isDone ? (
-                      <button
-                        className="btn"
-                        style={{ fontSize: 11, padding: "3px 10px" }}
-                        onClick={() => generatePreview(s.index)}
-                        disabled={previewLoading || committing}
-                      >重新生成</button>
-                    ) : (
-                      <button
-                        className={isNext ? "btn-primary" : "btn"}
-                        style={{ fontSize: 11, padding: "3px 10px" }}
-                        onClick={() => generatePreview(s.index)}
-                        disabled={previewLoading || committing}
-                      >{isNext ? "提取并预览" : "预览"}</button>
-                    )}
-                  </div>
+                  </button>
 
-                  {/* inline preview */}
-                  {isPreviewing && preview && (() => {
-                    // Did the AI actually produce anything usable? When
-                    // BOTH chronicle and characters/settings are empty,
-                    // treat the preview as a failure and skip the
-                    // preview/commit UI entirely — the user should
-                    // instead copy the prompt to a web LLM.
-                    const epochsCount = (preview.plot_outline?.epochs || []).length;
-                    const charsCount = (preview.characters || []).length;
-                    const settingsCount = (preview.settings || []).length;
-                    const hasAnyData = epochsCount + charsCount + settingsCount > 0;
-                    const hasErrors = !!(preview.errors && preview.errors.length > 0);
-                    const aiFailed = !hasAnyData && hasErrors;
-                    const periodsCount = (preview.plot_outline?.epochs || [])
-                      .reduce((n, ep) => n + (ep.periods?.length || 0), 0);
-                    return (
-                    <div style={{
-                      margin: "6px 0 4px 28px",
-                      padding: 10,
-                      border: `1px solid var(--${aiFailed ? "error" : "accent"})`,
-                      borderRadius: 4,
-                      background: "var(--bg-card)",
-                    }}>
-                      <div className="flex items-center justify-between" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: `var(--${aiFailed ? "error" : "accent"})` }}>
-                          {aiFailed ? "AI 提取失败" : "预览"} · {preview.elapsed_s}s
-                          {!aiFailed && (
-                            <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
-                              {epochsCount} 大段 · {periodsCount} 时间段 ·
-                              {" "}{charsCount} 角色 · {settingsCount} 设定
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex gap-6">
-                          <button
-                            className="btn"
-                            style={{ fontSize: 11, padding: "3px 10px" }}
-                            onClick={() => { setPreview(null); setPreviewIdx(null); }}
-                            disabled={committing}
-                          >{aiFailed ? "关闭" : "取消"}</button>
-                          <button
-                            className="btn"
-                            style={{ fontSize: 11, padding: "3px 10px" }}
-                            onClick={() => generatePreview(s.index)}
-                            disabled={committing}
-                          >重新生成</button>
-                          {!aiFailed && (
-                            <button
-                              className="btn-primary"
-                              style={{ fontSize: 11, padding: "3px 10px" }}
-                              onClick={commitPreview}
-                              disabled={committing}
-                              title="保存本段提取结果到数据库，并立即合并到编年史"
-                            >{committing ? "入库中..." : "确认并入库"}</button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* AI failure banner — directs user to the prompt
-                        * copy path. Replaces the preview + commit UI so
-                        * the user doesn't try to save an empty result. */}
-                      {aiFailed && (
-                        <div style={{
-                          padding: "10px 12px", marginBottom: 8,
-                          background: "var(--bg-surface)",
-                          border: "1px solid var(--error)",
-                          borderRadius: 4,
-                          fontSize: 12, lineHeight: 1.6, color: "var(--text-primary)",
-                        }}>
-                          <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--error)" }}>
-                            本地 AI 提取失败 — 请改用网页版 LLM
-                          </div>
-                          <ol style={{ margin: "0 0 0 18px", padding: 0, fontSize: 12, lineHeight: 1.7 }}>
-                            <li>在下方「本卷大纲提取 prompt」点「复制本段」（超长卷点「复制全部 N 段」）</li>
-                            <li>把 prompt 粘到 ChatGPT / Claude.ai / 元宝 / 通义 任一网页 LLM，逐段拿到事件 JSON</li>
-                            <li>所有 chunk 跑完后，把累积的事件粘到「整理时间线 prompt」获取最终编年史</li>
-                            <li>把最终编年史 JSON 用上方「粘贴 JSON 大纲」按钮粘回本应用</li>
-                          </ol>
-                        </div>
+                  {isOpen && (
+                    <div style={{ marginTop: 6, marginLeft: 18, paddingLeft: 10, borderLeft: "2px solid var(--border)" }}>
+                      {chunksLoading && (
+                        <div className="text-xs text-muted" style={{ padding: 6 }}>正在划分本卷分段…</div>
                       )}
-
-                      {/* Collapsible warnings — same disclosure pattern as errors */}
-                      {preview.warnings && preview.warnings.length > 0 && (
-                        <details style={{
-                          marginBottom: 8,
-                          background: "var(--bg-surface)",
-                          border: "1px solid var(--gold)",
-                          borderRadius: 4,
-                          fontSize: 11, color: "var(--gold)",
-                        }}>
-                          <summary style={{
-                            padding: "6px 10px", cursor: "pointer",
-                            fontWeight: 600,
-                          }}>AI 提取警告 ({preview.warnings.length})</summary>
-                          <ul style={{ margin: 0, padding: "4px 10px 8px 24px", lineHeight: 1.55 }}>
-                            {preview.warnings.map((w, i) => (
-                              <li key={i} style={{ marginBottom: 2 }}>{w}</li>
-                            ))}
-                          </ul>
-                        </details>
+                      {!chunksLoading && chunks.length === 0 && (
+                        <div className="text-xs text-muted" style={{ padding: 6 }}>本卷为空。</div>
                       )}
-
-                      {/* Collapsible errors — long error blobs (model
-                       * dump + diagnostic hint) bury the prompt-copy UI
-                       * when shown inline. The summary line shows count
-                       * + first error so the user knows the gist. */}
-                      {hasErrors && (
-                        <details style={{
-                          marginBottom: 8,
-                          background: "var(--bg-surface)",
-                          border: "1px solid var(--error)",
-                          borderRadius: 4,
-                          fontSize: 11, color: "var(--error)",
-                        }}>
-                          <summary style={{
-                            padding: "6px 10px", cursor: "pointer",
-                            fontWeight: 600, lineHeight: 1.45,
-                          }}>
-                            报错详情 ({preview.errors!.length} 条)
-                            <span className="text-xs text-muted" style={{
-                              marginLeft: 6, fontWeight: 400,
-                              display: "inline-block",
-                              maxWidth: "100%",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                              verticalAlign: "bottom",
-                            }}>
-                              · {preview.errors![0].slice(0, 80)}…
-                            </span>
-                          </summary>
-                          <ul style={{ margin: 0, padding: "4px 10px 8px 24px", lineHeight: 1.55 }}>
-                            {preview.errors!.map((e, i) => (
-                              <li key={i} style={{ marginBottom: 4, wordBreak: "break-word" }}>{e}</li>
-                            ))}
-                          </ul>
-                        </details>
-                      )}
-
-                      {/* Per-chunk outline extraction prompt.
-                       *
-                       * Always visible (success or AI failure). On
-                       * internal-AI failure this is the user's fallback:
-                       * copy the prompt for each chunk → run in a web
-                       * LLM → paste each `{"events":[...]}` reply back
-                       * via the chronicle editor's 「粘贴 JSON 大纲」
-                       * button (which auto-buckets events by chapter).
-                       *
-                       * Time-line summarization (story-time reorder of
-                       * the full book's chronicle) lives in the
-                       * chronicle display section below, not here. */}
-                      <PromptCopyPanel
-                        refId={refId}
-                        promptKey="reference.outline"
-                        segmentIndex={previewIdx}
-                        label="本卷大纲提取 prompt（超长卷自动分段；输出扁平事件数组）"
-                      />
-
-                      {/* The chronicle preview + AI chat box are only
-                       * useful when the in-process AI produced real
-                       * data. On AI failure, the user's path forward
-                       * is the prompt-copy flow above, so hide them. */}
-                      {!aiFailed && (
-                        <ChroniclePreview epochs={preview.plot_outline?.epochs || []} />
-                      )}
-
-                      {!aiFailed && (
-                      <div style={{
-                        marginTop: 12,
-                        borderTop: "1px dashed var(--border)",
-                        paddingTop: 10,
-                      }}>
-                        <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-                          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)" }}>
-                            与 AI 对话调整本段
-                          </span>
-                          <span className="text-xs text-muted">
-                            修改会即时应用到上方预览
-                          </span>
-                        </div>
-                        {chatMessages.length > 0 && (
-                          <div style={{
-                            maxHeight: 220,
-                            overflowY: "auto",
-                            border: "1px solid var(--border)",
-                            borderRadius: 4,
-                            padding: 8,
-                            marginBottom: 8,
-                            background: "var(--bg-surface)",
-                          }}>
-                            {chatMessages.map((m, i) => (
-                              <div key={i} style={{
-                                marginBottom: i === chatMessages.length - 1 ? 0 : 8,
-                                display: "flex",
-                                flexDirection: m.role === "user" ? "row-reverse" : "row",
-                              }}>
-                                <div style={{
-                                  maxWidth: "85%",
-                                  padding: "6px 10px",
-                                  borderRadius: 6,
-                                  fontSize: 12,
-                                  lineHeight: 1.55,
-                                  whiteSpace: "pre-wrap",
-                                  background: m.role === "user" ? "var(--accent-subtle)" : "var(--bg-card)",
-                                  color: m.role === "user" ? "var(--accent)" : "var(--text-primary)",
-                                  border: `1px solid ${m.role === "user" ? "var(--accent)" : "var(--border)"}`,
-                                }}>{m.content}</div>
-                              </div>
-                            ))}
-                            {chatSending && (
-                              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 6, fontStyle: "italic" }}>
-                                AI 正在回复...
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        <div className="flex gap-6">
-                          <textarea
-                            className="input"
-                            placeholder="例：把第 3 章的「打脸」事件改名为「初次出手」；或合并某两条相似的事件……"
-                            value={chatInput}
-                            rows={2}
-                            onChange={e => setChatInput(e.target.value)}
-                            onKeyDown={e => {
-                              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                                e.preventDefault();
-                                sendChat();
-                              }
-                            }}
-                            style={{ flex: 1, fontSize: 12, resize: "vertical" }}
-                            disabled={chatSending || committing}
+                      {!chunksLoading && chunks.length > 0 && chunks.map(ck => {
+                        const k = chunkKey(s.index, ck.chunk_index);
+                        const st = chunkState[k] || { status: "idle" as const };
+                        const isChunkOpen = openChunks.has(k);
+                        return (
+                          <ChunkRow
+                            key={k}
+                            refId={refId}
+                            segIdx={s.index}
+                            chunk={ck}
+                            state={st}
+                            open={isChunkOpen}
+                            onToggle={() => toggleChunk(s.index, ck.chunk_index)}
+                            onRunAI={() => runChunkAI(s.index, ck.chunk_index)}
+                            onPasteRawChange={(v) => patchChunk(s.index, ck.chunk_index, { pasteRaw: v, pasteError: undefined })}
+                            onParsePaste={() => parseChunkPaste(s.index, ck.chunk_index, st.pasteRaw || "")}
+                            onCommit={() => commitChunk(s.index, ck.chunk_index)}
+                            onChatInputChange={(v) => patchChunk(s.index, ck.chunk_index, { chatInput: v })}
+                            onSendChat={() => sendChunkChat(s.index, ck.chunk_index)}
+                            onResetChunk={() => patchChunk(s.index, ck.chunk_index, {
+                              status: "idle", source: undefined, events: undefined,
+                              error: undefined, chat: undefined, chatInput: undefined,
+                              pasteRaw: undefined, pasteError: undefined,
+                            })}
                           />
-                          <button
-                            className="btn-primary"
-                            style={{ fontSize: 11, padding: "3px 12px", alignSelf: "stretch" }}
-                            onClick={sendChat}
-                            disabled={!chatInput.trim() || chatSending || committing}
-                            title="发送（⌘/Ctrl + Enter）"
-                          >{chatSending ? "发送中" : "发送"}</button>
-                        </div>
-                      </div>
-                      )}
+                        );
+                      })}
                     </div>
-                    );
-                  })()}
+                  )}
                 </div>
               );
             })}
           </div>
           )}
+
         </div>
       )}
 
@@ -807,3 +712,305 @@ function ChroniclePreview({ epochs }: { epochs: ChronicleEpoch[] }) {
   );
 }
 
+
+/* ─── Per-chunk extraction row ─────────────────────────────────────
+ * Renders one chunk inside an expanded volume. Three primary states:
+ *   - idle:     show prompt panel + [AI 提取] / [粘贴回复] buttons
+ *   - extracting (AI only): show spinner
+ *   - ready:    show events preview, [chatbox if AI], [确认入库] button
+ *   - failed:   show error + reminder to copy-prompt to a web LLM
+ *   - committed: collapsed success state with [重新提取] reset button
+ * Paste-mode buffer lives in the chunk state too so it survives the
+ * row being collapsed/re-expanded mid-edit. */
+function ChunkRow({
+  refId, segIdx, chunk, state, open,
+  onToggle, onRunAI, onPasteRawChange, onParsePaste,
+  onCommit, onChatInputChange, onSendChat, onResetChunk,
+}: {
+  refId: string;
+  segIdx: number;
+  chunk: ChunkMeta;
+  state: ChunkExtractionState;
+  open: boolean;
+  onToggle: () => void;
+  onRunAI: () => void;
+  onPasteRawChange: (raw: string) => void;
+  onParsePaste: () => void;
+  onCommit: () => void;
+  onChatInputChange: (v: string) => void;
+  onSendChat: () => void;
+  onResetChunk: () => void;
+}) {
+  const [showPaste, setShowPaste] = useState(false);
+  const ready = state.status === "ready";
+  const failed = state.status === "failed";
+  const extracting = state.status === "extracting";
+  const committing = state.status === "committing";
+  const committed = state.status === "committed";
+
+  const eventCount = (state.events || []).length;
+
+  return (
+    <div style={{
+      marginTop: 6, marginBottom: 6,
+      border: `1px solid ${committed ? "var(--jade)" : ready ? "var(--accent)" : failed ? "var(--error)" : "var(--border)"}`,
+      borderRadius: 4,
+      background: committed ? "rgba(52,168,83,0.04)" : "var(--bg-card)",
+    }}>
+      <button
+        className="btn-ghost w-full"
+        onClick={onToggle}
+        style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "5px 10px", textAlign: "left",
+          justifyContent: "flex-start", borderRadius: 0,
+        }}>
+        <span style={{
+          transition: "transform 0.15s",
+          transform: open ? "rotate(90deg)" : "none",
+          display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
+        }}>▶</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)" }}>
+          分段 {chunk.chunk_index + 1}/{chunk.total_chunks}
+        </span>
+        <span className="text-xs text-muted">
+          第 {chunk.start_chapter}–{chunk.end_chapter} 章 · {chunk.n_chapters} 章 · {chunk.n_chars.toLocaleString()} 字
+        </span>
+        <div style={{ flex: 1 }} />
+        {committed && (
+          <span className="tag" style={{
+            fontSize: 10, padding: "1px 6px",
+            color: "var(--jade)", border: "1px solid var(--jade)",
+          }}>✓ 已入库 · {eventCount} 事件</span>
+        )}
+        {ready && !committed && (
+          <span className="tag" style={{
+            fontSize: 10, padding: "1px 6px",
+            color: "var(--accent)", border: "1px solid var(--accent)",
+          }}>{state.source === "ai" ? "AI 已生成" : "已解析"} · {eventCount} 事件</span>
+        )}
+        {failed && (
+          <span className="tag" style={{
+            fontSize: 10, padding: "1px 6px",
+            color: "var(--error)", border: "1px solid var(--error)",
+          }}>AI 失败</span>
+        )}
+        {extracting && (
+          <span className="text-xs" style={{ color: "var(--gold)" }}>提取中…</span>
+        )}
+      </button>
+
+      {open && (
+        <div style={{ padding: "8px 10px", borderTop: "1px dashed var(--border)" }}>
+          {/* 1. Prompt copy panel — always available so the user can
+            *    inspect what would be sent before running anything, AND
+            *    can copy it for use in a web LLM. The shared panel
+            *    handles fetching from /preview_chunks. */}
+          {!committed && (
+            <PromptCopyPanel
+              refId={refId}
+              promptKey="reference.outline"
+              segmentIndex={segIdx}
+              label={`分段 ${chunk.chunk_index + 1} 的 prompt（含本段 ${chunk.n_chapters} 章正文）`}
+            />
+          )}
+
+          {/* 2. Action area — varies by status */}
+          {(state.status === "idle" || failed) && !committed && (
+            <div className="flex items-center gap-6" style={{ flexWrap: "wrap", marginBottom: 6 }}>
+              <button className="btn-primary"
+                      onClick={onRunAI}
+                      disabled={extracting}
+                      style={{ fontSize: 11, padding: "3px 12px" }}>
+                {extracting ? "AI 提取中…" : "用内置 AI 提取本段"}
+              </button>
+              <button className="btn"
+                      onClick={() => setShowPaste(p => !p)}
+                      style={{ fontSize: 11, padding: "3px 10px" }}>
+                {showPaste ? "收起粘贴" : "粘贴网页 LLM 的回复"}
+              </button>
+            </div>
+          )}
+
+          {failed && state.error && (
+            <div style={{
+              padding: "6px 10px", marginBottom: 6,
+              background: "var(--bg-surface)", border: "1px solid var(--error)",
+              borderRadius: 3, fontSize: 11, color: "var(--error)", lineHeight: 1.55,
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>内置 AI 提取失败</div>
+              <div style={{ wordBreak: "break-word" }}>{state.error}</div>
+              <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>
+                请点上方「复制本段」把 prompt 拷到 ChatGPT / Claude.ai，再用「粘贴网页 LLM 的回复」入库。
+              </div>
+            </div>
+          )}
+
+          {/* 3. Paste-reply form (manual web-LLM path) */}
+          {showPaste && !ready && !committed && (
+            <div style={{ marginBottom: 8 }}>
+              <textarea className="input font-mono"
+                        rows={5}
+                        value={state.pasteRaw || ""}
+                        onChange={e => onPasteRawChange(e.target.value)}
+                        placeholder='{"events":[{"first_chapter":"第1章",...}]}'
+                        style={{
+                          fontSize: 11, lineHeight: 1.5, resize: "vertical",
+                          background: "var(--bg-app)", marginBottom: 6,
+                        }} />
+              <div className="flex items-center gap-6">
+                <button className="btn-primary"
+                        onClick={onParsePaste}
+                        disabled={!(state.pasteRaw && state.pasteRaw.trim())}
+                        style={{ fontSize: 11, padding: "3px 10px" }}>
+                  解析并预览
+                </button>
+                {state.pasteError && (
+                  <span className="text-xs" style={{ color: "var(--error)" }}>{state.pasteError}</span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 4. Preview (success path: AI or paste) */}
+          {ready && !committed && state.events && (
+            <ChunkEventsPreview events={state.events} />
+          )}
+
+          {/* 5. Chat-with-AI (only when source === "ai") */}
+          {ready && !committed && state.source === "ai" && (
+            <div style={{
+              marginTop: 8, borderTop: "1px dashed var(--border)", paddingTop: 8,
+            }}>
+              <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)" }}>与 AI 对话调整本段</span>
+                <span className="text-xs text-muted">修改会即时应用到上方预览</span>
+              </div>
+              {(state.chat || []).length > 0 && (
+                <div style={{
+                  maxHeight: 180, overflowY: "auto",
+                  border: "1px solid var(--border)", borderRadius: 4,
+                  padding: 6, marginBottom: 6, background: "var(--bg-app)",
+                }}>
+                  {(state.chat || []).map((m, i) => (
+                    <div key={i} style={{
+                      marginBottom: 6, display: "flex",
+                      flexDirection: m.role === "user" ? "row-reverse" : "row",
+                    }}>
+                      <div style={{
+                        maxWidth: "85%", padding: "5px 10px", borderRadius: 6,
+                        fontSize: 12, lineHeight: 1.55, whiteSpace: "pre-wrap",
+                        background: m.role === "user" ? "var(--accent-subtle)" : "var(--bg-surface)",
+                        color: m.role === "user" ? "var(--accent)" : "var(--text-primary)",
+                        border: `1px solid ${m.role === "user" ? "var(--accent)" : "var(--border)"}`,
+                      }}>{m.content}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-6">
+                <textarea className="input" rows={2}
+                          value={state.chatInput || ""}
+                          onChange={e => onChatInputChange(e.target.value)}
+                          placeholder="例：合并第 3 章里两条重复的事件…"
+                          onKeyDown={e => {
+                            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                              e.preventDefault();
+                              onSendChat();
+                            }
+                          }}
+                          disabled={!!state.chatSending}
+                          style={{ flex: 1, fontSize: 12, resize: "vertical" }} />
+                <button className="btn-primary"
+                        onClick={onSendChat}
+                        disabled={!!state.chatSending || !(state.chatInput && state.chatInput.trim())}
+                        style={{ fontSize: 11, padding: "3px 12px", alignSelf: "stretch" }}>
+                  {state.chatSending ? "发送中" : "发送"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 6. Commit + reset row (visible in ready state, both AI and paste) */}
+          {ready && !committed && (
+            <div className="flex items-center gap-6" style={{
+              justifyContent: "flex-end", marginTop: 8,
+              paddingTop: 8, borderTop: "1px dashed var(--border)",
+            }}>
+              <button className="btn"
+                      onClick={onResetChunk}
+                      disabled={committing}
+                      style={{ fontSize: 11, padding: "3px 10px" }}>
+                重置
+              </button>
+              <button className="btn-primary"
+                      onClick={onCommit}
+                      disabled={committing || eventCount === 0}
+                      style={{ fontSize: 11, padding: "3px 14px" }}>
+                {committing ? "入库中…" : `确认入库（${eventCount} 事件）`}
+              </button>
+            </div>
+          )}
+
+          {/* 7. Committed state — let the user redo if needed */}
+          {committed && (
+            <div className="flex items-center gap-6" style={{ justifyContent: "flex-end", marginTop: 4 }}>
+              <button className="btn-ghost"
+                      onClick={onResetChunk}
+                      style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }}>
+                重新提取本段（不会自动删除已入库事件）
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Compact preview list of the events about to be committed. */
+function ChunkEventsPreview({ events }: { events: any[] }) {
+  if (!events || events.length === 0) {
+    return <div className="text-xs text-muted">未生成任何事件。</div>;
+  }
+  // Group by first_chapter so the preview matches how they'll be
+  // stored in the chronicle (one period per chapter).
+  const groups = new Map<string, any[]>();
+  for (const ev of events) {
+    const key = ((ev.first_chapter || "") + "").trim() || "(未指定章节)";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(ev);
+  }
+  return (
+    <div style={{
+      marginTop: 6, marginBottom: 4,
+      maxHeight: 260, overflowY: "auto",
+      padding: 6, background: "var(--bg-app)",
+      border: "1px solid var(--border)", borderRadius: 3,
+    }}>
+      {Array.from(groups.entries()).map(([ch, evs], gi) => (
+        <div key={gi} style={{ marginBottom: 6 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--gold)" }}>{ch}</div>
+          <div style={{ paddingLeft: 8, borderLeft: "2px solid var(--border)" }}>
+            {evs.map((ev, i) => (
+              <div key={i} style={{ fontSize: 11, lineHeight: 1.55, marginTop: 2 }}>
+                <span style={{ fontWeight: 600, color: "var(--accent)" }}>
+                  【{ev.subject}·{ev.category}·{ev.name}】
+                </span>
+                {ev.time_marker && (
+                  <span style={{
+                    marginLeft: 4, fontSize: 10, padding: "0 5px",
+                    color: "var(--gold)", border: "1px solid var(--gold)",
+                    borderRadius: 3,
+                  }}>⏱ {ev.time_marker}</span>
+                )}
+                {" "}
+                <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
