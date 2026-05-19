@@ -2616,6 +2616,185 @@ async def extract_chunk(ref_id: str, segment_index: int, chunk_index: int,
         raise HTTPException(500, f"分段提取失败: {e}")
 
 
+async def _resolve_chunk(
+    db, w, ref_id: str, segment_index: int, chunk_index: int, max_chars: int,
+):
+    """Shared lookup for per-chunk extractors: returns
+    (chunk_chapters, chunk_meta, total_chunks, work_ctx). Raises
+    HTTPException on missing data."""
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, build_work_ctx,
+    )
+    from analysis.feature_extraction.ai_extractor import build_segment_text_chunks
+
+    if max_chars < 4_000 or max_chars > 200_000:
+        raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "作品尚未上传正文")
+    all_chapters = pipe._split_chapters(text)
+    plan = pipe.get_effective_plan(ref_id, all_chapters)
+    segs = plan["segments"]
+    if not segs:
+        plan = pipe.plan_segments(all_chapters)
+        segs = plan["segments"]
+    if segment_index < 0 or segment_index >= len(segs):
+        raise HTTPException(400, "segment_index 超出范围")
+    seg = segs[segment_index]
+    seg_chapters = [
+        {**all_chapters[j - 1], "index": j - seg["start_chapter"]}
+        for j in range(seg["start_chapter"], seg["end_chapter"] + 1)
+    ]
+    chunks = build_segment_text_chunks(
+        seg_chapters, max_chars=max_chars,
+        segment_start_chapter=seg["start_chapter"],
+    )
+    if chunk_index < 0 or chunk_index >= len(chunks):
+        raise HTTPException(
+            400, f"chunk_index 超出范围（本段共 {len(chunks)} 个分段）",
+        )
+    chunk_meta = chunks[chunk_index]
+    lo, hi = chunk_meta["start_chapter"], chunk_meta["end_chapter"]
+    chunk_chapters = [
+        c for c in seg_chapters
+        if (c.get("index") or 0) + seg["start_chapter"] >= lo
+        and (c.get("index") or 0) + seg["start_chapter"] <= hi
+    ]
+    work_ctx = build_work_ctx(w, seg, segment_index)
+    return chunk_chapters, chunk_meta, len(chunks), work_ctx
+
+
+@router.post("/works/{ref_id}/segments/{segment_index}/chunks/{chunk_index}/extract_characters")
+async def extract_chunk_characters(
+    ref_id: str, segment_index: int, chunk_index: int,
+    body: Optional[ChunkExtractRequest] = None,
+):
+    """Per-chunk character extraction. Returns ``{characters, elapsed_s,
+    errors, chunk: {...}}``. Each character carries the rich shape
+    (appearance/personality/experiences lists with chapter tags) — see
+    ai_extract_characters in ai_extractor.py."""
+    body = body or ChunkExtractRequest()
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.ai_extractor import ai_extract_characters
+        from models.router import ModelRouter
+        chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
+            db, w, ref_id, segment_index, chunk_index, body.max_chars,
+        )
+        try:
+            router_inst = ModelRouter()
+        except Exception as e:
+            raise HTTPException(503, f"AI 路由初始化失败：{e}")
+        import time as _time
+        t0 = _time.perf_counter()
+        try:
+            characters = await ai_extract_characters(
+                chunk_chapters, router_inst,
+                prompt_override=body.prompt_override,
+                use_web_search=body.use_web_search,
+                work_ctx=work_ctx,
+            )
+            elapsed = round(_time.perf_counter() - t0, 2)
+            return {
+                "characters": characters or [],
+                "elapsed_s": elapsed,
+                "errors": [],
+                "chunk": {
+                    "chunk_index": chunk_index, "total_chunks": total,
+                    "start_chapter": chunk_meta["start_chapter"],
+                    "end_chapter": chunk_meta["end_chapter"],
+                    "n_chapters": chunk_meta["n_chapters"],
+                    "n_chars": chunk_meta["n_chars"],
+                },
+            }
+        except Exception as e:
+            elapsed = round(_time.perf_counter() - t0, 2)
+            return {
+                "characters": [], "elapsed_s": elapsed,
+                "errors": [f"AI 提取失败：{str(e)[:240]}"],
+                "chunk": {
+                    "chunk_index": chunk_index, "total_chunks": total,
+                    "start_chapter": chunk_meta["start_chapter"],
+                    "end_chapter": chunk_meta["end_chapter"],
+                    "n_chapters": chunk_meta["n_chapters"],
+                    "n_chars": chunk_meta["n_chars"],
+                },
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"角色提取失败: {e}")
+
+
+@router.post("/works/{ref_id}/segments/{segment_index}/chunks/{chunk_index}/extract_settings")
+async def extract_chunk_settings(
+    ref_id: str, segment_index: int, chunk_index: int,
+    body: Optional[ChunkExtractRequest] = None,
+):
+    """Per-chunk settings extraction. Returns ``{settings, elapsed_s,
+    errors, chunk: {...}}``. Each setting carries category + concise
+    title + the new ``updates`` list (one entry per chapter that
+    extends or revises the setting in this chunk's range)."""
+    body = body or ChunkExtractRequest()
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    try:
+        from analysis.feature_extraction.ai_extractor import ai_extract_settings
+        from models.router import ModelRouter
+        chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
+            db, w, ref_id, segment_index, chunk_index, body.max_chars,
+        )
+        try:
+            router_inst = ModelRouter()
+        except Exception as e:
+            raise HTTPException(503, f"AI 路由初始化失败：{e}")
+        import time as _time
+        t0 = _time.perf_counter()
+        try:
+            settings = await ai_extract_settings(
+                chunk_chapters, router_inst,
+                prompt_override=body.prompt_override,
+                use_web_search=body.use_web_search,
+                work_ctx=work_ctx,
+            )
+            elapsed = round(_time.perf_counter() - t0, 2)
+            return {
+                "settings": settings or [],
+                "elapsed_s": elapsed,
+                "errors": [],
+                "chunk": {
+                    "chunk_index": chunk_index, "total_chunks": total,
+                    "start_chapter": chunk_meta["start_chapter"],
+                    "end_chapter": chunk_meta["end_chapter"],
+                    "n_chapters": chunk_meta["n_chapters"],
+                    "n_chars": chunk_meta["n_chars"],
+                },
+            }
+        except Exception as e:
+            elapsed = round(_time.perf_counter() - t0, 2)
+            return {
+                "settings": [], "elapsed_s": elapsed,
+                "errors": [f"AI 提取失败：{str(e)[:240]}"],
+                "chunk": {
+                    "chunk_index": chunk_index, "total_chunks": total,
+                    "start_chapter": chunk_meta["start_chapter"],
+                    "end_chapter": chunk_meta["end_chapter"],
+                    "n_chapters": chunk_meta["n_chapters"],
+                    "n_chars": chunk_meta["n_chars"],
+                },
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"设定提取失败: {e}")
+
+
 @router.get("/works/{ref_id}/segments/{segment_index}/chunks")
 def list_segment_chunks(ref_id: str, segment_index: int, max_chars: int = 32_000):
     """List the chunks for a segment WITHOUT running any AI — used by

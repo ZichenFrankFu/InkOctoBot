@@ -10,8 +10,13 @@ import {
   CharactersEditor,
   SettingsEditor,
   RhythmEditor,
-  PromptCopyPanel,
 } from "../components/reference/AnalysisEditors";
+import {
+  CharactersExtractionSection,
+  SettingsExtractionSection,
+  CharactersRichDisplay,
+  SettingsRichDisplay,
+} from "../components/reference/CharactersAndSettingsExtraction";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
 import PreprocessPanel from "../components/reference/PreprocessPanel";
@@ -843,40 +848,74 @@ function WorkDetail({
       )}
 
       {tab === "characters" && (
-        <div>
-          <PromptCopyPanel
+        <div className="flex flex-col gap-12">
+          {/* Section 1: per-volume / per-chunk extraction with the same
+            * pattern as the chronicle tab — AI or paste, preview,
+            * confirm-into-work. Saves into extracted_characters_json. */}
+          <CharactersExtractionSection
             refId={sel.ref_id}
-            promptKey="reference.characters"
-            segmentIndex={activeSegmentIndex}
-            label="本卷角色提取 prompt（含作者/书名/平台/卷号/章节数）"
-            chunked={false}
+            hasFullText={Boolean(sel.has_full_text)}
+            data={(chars || []) as any}
+            onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+            activeSegmentIndex={activeSegmentIndex}
+            onActiveSegmentChange={setActiveSegmentIndex}
           />
-          {chars && chars.length > 0 ? (
-            <CharactersEditor
-              data={chars}
-              onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
-            />
-          ) : (
-            <div className="empty-state" style={{ padding: 32 }}>
-              <p>暂无角色数据。前往「剧情大纲」分段提取（勾选「使用 AI」可得到带简介的角色）。</p>
+          {/* Section 2: the rich display — sorted by frequency, each
+            * character expandable to show appearance/personality/
+            * experiences with chapter tags. Falls back to legacy
+            * CharactersEditor for the table-style editor when the
+            * user wants to mass-edit (kept inside a collapsible). */}
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
+              角色列表（按重要性排序）
             </div>
-          )}
+            <CharactersRichDisplay data={(chars || []) as any} />
+            <details style={{ marginTop: 12 }}>
+              <summary className="text-xs text-muted" style={{ cursor: "pointer" }}>
+                高级：以表格方式编辑全部字段（CRUD）
+              </summary>
+              <div style={{ marginTop: 6 }}>
+                <CharactersEditor
+                  data={(chars || []) as any}
+                  onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+                />
+              </div>
+            </details>
+          </div>
         </div>
       )}
 
       {tab === "settings" && (
-        <div>
-          <PromptCopyPanel
+        <div className="flex flex-col gap-12">
+          {/* Section 1: per-chunk extraction. */}
+          <SettingsExtractionSection
             refId={sel.ref_id}
-            promptKey="reference.settings"
-            segmentIndex={activeSegmentIndex}
-            label="本卷设定提取 prompt（含作者/书名/平台/卷号/章节数）"
-            chunked={false}
-          />
-          <SettingsEditor
-            data={settings || []}
+            hasFullText={Boolean(sel.has_full_text)}
+            data={(settings || []) as any}
             onSave={d => onSaveAnalysisField("settings_json", d)}
+            activeSegmentIndex={activeSegmentIndex}
+            onActiveSegmentChange={setActiveSegmentIndex}
           />
+          {/* Section 2: rich display — grouped by category, each
+            * setting summarised by its title with an expandable list
+            * of per-chapter updates. */}
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
+              设定列表
+            </div>
+            <SettingsRichDisplay data={(settings || []) as any} />
+            <details style={{ marginTop: 12 }}>
+              <summary className="text-xs text-muted" style={{ cursor: "pointer" }}>
+                高级：以表格方式编辑全部字段（CRUD）
+              </summary>
+              <div style={{ marginTop: 6 }}>
+                <SettingsEditor
+                  data={(settings || []) as any}
+                  onSave={d => onSaveAnalysisField("settings_json", d)}
+                />
+              </div>
+            </details>
+          </div>
         </div>
       )}
 

@@ -399,16 +399,48 @@ def _ctx(work_ctx: dict | None) -> dict:
     return out
 
 
+def _norm_tagged_list(raw: Any, max_items: int = 20, max_text: int = 80) -> list[dict]:
+    """Coerce a character-list field (appearance / personality / experiences)
+    into a list of ``{chapter, text}`` items, dropping malformed entries.
+    Tolerates flat strings too — the LLM occasionally outputs bare strings
+    when it forgets the chapter tag. They become items with empty chapter."""
+    out: list[dict] = []
+    if not isinstance(raw, list):
+        return out
+    for it in raw:
+        if isinstance(it, str):
+            t = it.strip()[:max_text]
+            if t:
+                out.append({"chapter": "", "text": t})
+        elif isinstance(it, dict):
+            t = (it.get("text") or "").strip()[:max_text]
+            if not t:
+                continue
+            out.append({
+                "chapter": (it.get("chapter") or "").strip()[:20],
+                "text": t,
+            })
+        if len(out) >= max_items:
+            break
+    return out
+
+
 async def ai_extract_characters(chapters: list[dict], router: Any,
                                    *, prompt_override: str | None = None,
                                    use_web_search: bool = False,
                                    work_ctx: dict | None = None) -> list[dict]:
-    """Returns list of {name, mentions, intro, speech_samples, first_seen_at,
-    first_chapter, role_tag}.
+    """Returns a list of rich character dicts:
 
-    ``work_ctx`` supplies the per-volume context (title/author/platform/...);
-    the caller (pipeline.compute_segment) builds it from the reference DB
-    + current segment metadata. Missing keys fall back to defaults."""
+        {
+          name, role_tag, intro, mentions, first_seen_at, first_chapter,
+          appearance:   [{chapter, text}, ...],   # 外貌
+          personality:  [{chapter, text}, ...],   # 性格
+          experiences:  [{chapter, text}, ...],   # 经历
+          speech_samples: []  # kept for backward compat (always [])
+        }
+
+    The new prompt returns ``{"characters": [...]}`` instead of a bare
+    list — the parser accepts either via ``_parse_listish``."""
     from analysis.feature_extraction.prompts import render
     text, nchars = _build_segment_text(chapters)
     prompt = render(
@@ -431,6 +463,12 @@ async def ai_extract_characters(chapters: list[dict], router: Any,
             "first_seen_at": (it.get("first_seen_at") or "").strip(),
             "first_chapter": (it.get("first_chapter") or "").strip(),
             "role_tag": (it.get("role_tag") or "").strip(),
+            # Rich per-category fact lists. The new prompt is REQUIRED
+            # to emit these; legacy data may not have them, which is
+            # fine — the editor falls back gracefully.
+            "appearance": _norm_tagged_list(it.get("appearance")),
+            "personality": _norm_tagged_list(it.get("personality")),
+            "experiences": _norm_tagged_list(it.get("experiences")),
         })
     return out
 
@@ -439,8 +477,13 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
                                 *, prompt_override: str | None = None,
                                 use_web_search: bool = False,
                                 work_ctx: dict | None = None) -> list[dict]:
-    """Returns list of {category, title, content, hidden, first_introduced_at,
-    first_chapter}."""
+    """Returns list of rich setting dicts:
+
+        {category, title, first_introduced_at, first_chapter,
+         updates: [{chapter, text}, ...]}
+
+    Legacy `content` is preserved (used by older display code) by
+    concatenating the updates if the LLM didn't supply one explicitly."""
     from analysis.feature_extraction.prompts import render
     text, nchars = _build_segment_text(chapters)
     prompt = render(
@@ -455,8 +498,14 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
     out: list[dict] = []
     for it in items:
         title = (it.get("title") or "").strip()
+        updates = _norm_tagged_list(it.get("updates"), max_items=30, max_text=120)
         content = (it.get("content") or "").strip()
-        if not title and not content:
+        if not content and updates:
+            # Synthesize legacy `content` from the first update so older
+            # display code that hasn't been updated to read `updates`
+            # still shows something.
+            content = updates[0]["text"]
+        if not title and not content and not updates:
             continue
         cat = (it.get("category") or "other").strip()
         if cat not in valid_cats:
@@ -465,6 +514,7 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
             "category": cat,
             "title": title,
             "content": content,
+            "updates": updates,
             "first_introduced_at": (it.get("first_introduced_at") or "").strip(),
             "first_chapter": (it.get("first_chapter") or "").strip(),
         })

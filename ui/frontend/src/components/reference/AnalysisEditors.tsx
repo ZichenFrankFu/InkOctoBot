@@ -686,15 +686,29 @@ const ROLE_TAG_COLOR: Record<string, string> = {
   其他:     "var(--text-tertiary)",
 };
 
-interface CharacterItem {
+/** A single chapter-tagged fact about a character (appearance,
+ *  personality trait, or experience). Chapter is "第 N 章" or empty. */
+export interface CharacterListItem {
+  chapter: string;
+  text: string;
+}
+
+export interface CharacterItem {
   name: string;
   mentions?: number;
   intro?: string;
   speech_samples?: string[];
   appearance_chapters?: number;
   appearance_word_count?: number;
-  first_seen_at?: string; // 首次出场的时间锚点
+  first_seen_at?: string;
+  first_chapter?: string;
   role_tag?: CharacterRoleTag;
+  // Rich per-category fact lists with chapter tags. Populated by the
+  // new per-chunk extraction prompt; older data simply has these
+  // empty or absent and the editor falls back to the intro/legacy view.
+  appearance?: CharacterListItem[];  // 外貌
+  personality?: CharacterListItem[]; // 性格
+  experiences?: CharacterListItem[]; // 经历
 }
 
 function fmtAppearance(c: CharacterItem): string {
@@ -2173,12 +2187,26 @@ export function PlotOutlineEditor({
 
 /* ──────────────── Settings (设定) ──────────────── */
 
+/** One chapter-tagged update on a setting (e.g. "第 7 章 · 穹顶嵌
+ *  机枪、无人机"). The per-chunk extraction prompt fills this with
+ *  every chapter that introduces, extends or revises the setting. */
+export interface SettingUpdate {
+  chapter: string;
+  text: string;
+}
+
 export interface SettingItem {
   category: string;
   title: string;
+  /** Brief summary line shown when the setting card is collapsed.
+   *  When extractor doesn't supply it explicitly we synthesise from
+   *  the first update so older display code keeps working. */
   content: string;
-  first_introduced_at?: string; // 首次出现的故事中时间
-  first_chapter?: string;       // 首次出现的章号
+  /** Per-chapter history of how the setting evolves in the text.
+   *  Populated by the new per-chunk extractor. */
+  updates?: SettingUpdate[];
+  first_introduced_at?: string;
+  first_chapter?: string;
   /** @deprecated Legacy [隐] field. New extractions don't write it; the
    *  editor no longer displays or edits the key. */
   hidden?: string;

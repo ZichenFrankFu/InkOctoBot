@@ -27,7 +27,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
     "reference.characters": {
         "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
 
-从下面这一**卷**的小说文本中提取主要角色。
+从下面这**一段**小说文本中提取本段内的主要角色，每个角色按「外貌 / 性格 / 经历」三类分别列出本段里出现的事实，**每条事实都标注其首次出现的章号**。
 
 作品上下文（仅供消歧 / 检索）：
 - 作品标题：《{title}》
@@ -37,39 +37,59 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 - 包含章节：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
 
 **严格禁止**（违反则整条响应被视为错误）：
-- 任何寒暄、解释、对话语句（如「你好」「让我告诉你」「这个故事讲的是」「如果你想了解...」）
+- 任何寒暄、解释、对话语句
 - ```json ... ``` 这样的 markdown 包装
 - <think>...</think> 等推理块
 - JSON 之外的任何文字、引导句、结束语
+- 不要把同一条事实重复写在多个类别下
 
-**只输出**：以 `[` 开始、以 `]` 结束的合法 JSON 数组。找不到任何角色就返回 `[]`。
+**只输出**：以 `{{` 开始、以 `}}` 结束的合法 JSON 对象。本段中没有角色时返回 `{{"characters":[]}}`。
 
-每个角色一个对象，字段：
-- name: 角色姓名/称呼（必填，2-4 字最佳，从文本原文摘录）
-- role_tag: **一个**字符串，从这 9 个值中选一个：主角 / 女主角 / 男配 / 女配 / 反派 / 师长 / 重要配角 / 路人 / 其他
-- intro: 1-3 句客观简介（身份/能力/关键背景），不写主观评价、不剧透
-- speech_samples: 最多 3 条对白原文（从文本摘录），无则填 []
-- mentions: 整数，出现次数估计
-- first_seen_at: 首次出场时间锚点（故事中时间，如「1954 年」），找不到就留空
-- first_chapter: 本卷里首次出场的章号，如「第 12 章」；强烈建议填写
+输出 JSON schema（字段名严格匹配）：
 
-输出示例（仅示意结构，不要照抄）：
-[{{"name":"庆尘","role_tag":"主角","intro":"穿越者","speech_samples":[],"mentions":120,"first_seen_at":"1954 年春","first_chapter":"第 1 章"}}]
+{{
+  "characters": [
+    {{
+      "name": "角色姓名/称呼（必填，2-4 字最佳，文本原文摘录）",
+      "role_tag": "主角 | 女主角 | 男配 | 女配 | 反派 | 师长 | 重要配角 | 路人 | 其他",
+      "intro": "1 句客观简介（身份/能力/关键背景），不写主观评价",
+      "first_chapter": "本卷里首次出场的章号，如「第 12 章」（必填）",
+      "appearance": [
+        {{"chapter": "第 N 章", "text": "外貌细节（≤ 30 字）"}}
+      ],
+      "personality": [
+        {{"chapter": "第 N 章", "text": "性格特征（≤ 30 字）"}}
+      ],
+      "experiences": [
+        {{"chapter": "第 N 章", "text": "本段里发生的关键经历（≤ 40 字，章节弧标题级别）"}}
+      ],
+      "mentions": 0
+    }}
+  ]
+}}
 
-最多 30 个角色，按重要性排序（主角第一）。
+分类规则：
+- 外貌（appearance）：身材、面貌、衣着、机械义肢等物理特征。
+- 性格（personality）：性情、习惯、价值观、决策风格。
+- 经历（experiences）：本段里这个角色亲历的事件（与剧情大纲互补，但写得更角色视角）。
 
-本卷正文（约 {n_chars} 字）：
+要求：
+- 每条 `text` 必须配 `chapter`；没有明确章节就写最贴近的「第 N 章」。
+- 同一类下允许多条按时间排列；若本段没有该类信息则该字段填 `[]`。
+- 最多 30 个角色，按重要性排序（主角第一）。
+
+本段正文（约 {n_chars} 字）：
 {text}
 """,
         "vars": ["title", "author", "platform", "volume_index", "volume_title",
                  "start_chapter", "end_chapter", "n_chapters", "n_chars", "text"],
-        "description": "参考作品分卷提取角色（姓名/简介/对白/首次出场时间 + 章节）",
+        "description": "参考作品分卷提取角色（含外貌/性格/经历分类列表，逐条带章节标签）",
     },
 
     "reference.settings": {
         "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
 
-从下面这一**卷**的小说文本中提取世界观设定。
+从下面这**一段**小说文本中提取世界观设定。**每条设定的标题应当具有概括性**（如「机械义肢」「18 号监狱」「庆氏集团」），下面的 `updates` 数组逐章记录本段中该设定**首次出现 / 被扩展 / 被推翻**的细节，每条都带章节号。
 
 作品上下文（仅供消歧 / 检索）：
 - 作品标题：《{title}》
@@ -79,31 +99,44 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 - 包含章节：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
 
 **严格禁止**（违反则整条响应被视为错误）：
-- 任何寒暄、解释、对话语句（如「你好」「让我告诉你」「在 18 号监狱里...」）
+- 任何寒暄、解释、对话语句
 - ```json ... ``` 这样的 markdown 包装
 - <think>...</think> 等推理块
 - JSON 之外的任何文字
 
-**只输出**：以 `[` 开始、以 `]` 结束的合法 JSON 数组。找不到任何设定就返回 `[]`。
+**只输出**：以 `{{` 开始、以 `}}` 结束的合法 JSON 对象。本段中没有新设定时返回 `{{"settings":[]}}`。
 
-每条设定一个对象，字段：
-- category: 必填，从以下英文 key 选一个：power_system | factions | geography | social_rules | history | hard_rules | worldview | other
-- title: 设定名称（如「魔法体系」「皇家骑士团」「时间法则」）
-- content: 2-4 句客观描述，写已知事实
-- first_introduced_at: 首次出现的故事中时间（如「1954 年」），找不到则留空
-- first_chapter: 本卷里首次出现的章号，如「第 5 章」；强烈建议填写
+输出 JSON schema（字段名严格匹配）：
 
-输出示例（仅示意结构）：
-[{{"category":"factions","title":"18 号监狱","content":"一个收押超凡个体的特殊机构。","first_introduced_at":"","first_chapter":"第 1 章"}}]
+{{
+  "settings": [
+    {{
+      "category": "power_system | factions | geography | social_rules | history | hard_rules | worldview | other",
+      "title": "概括性短标题（≤ 12 字，例如「机械义肢」「18 号监狱」）",
+      "first_chapter": "本卷里首次出现的章号，如「第 4 章」（必填）",
+      "first_introduced_at": "首次出现的故事中时间（如「2022 年秋」），无则留空",
+      "updates": [
+        {{"chapter": "第 N 章", "text": "本章里关于此设定的新事实/扩展/反转（≤ 50 字）"}}
+      ]
+    }}
+  ]
+}}
 
-最多 25 条。
+类别中文对照（请用英文 key 输出）：
+- power_system 力量体系   factions 势力组织   geography 地理   social_rules 社会规则
+- history 历史背景        hard_rules 硬规则   worldview 世界观  other 其他
 
-本卷正文（约 {n_chars} 字）：
+要求：
+- `updates` 至少 1 条；若本段只是首次提及，把首次出现的描述作为第 1 条。
+- 同一设定在本段中多次扩展时按章序排列；不要把无关事实塞进 `updates`。
+- 最多 25 条设定。
+
+本段正文（约 {n_chars} 字）：
 {text}
 """,
         "vars": ["title", "author", "platform", "volume_index", "volume_title",
                  "start_chapter", "end_chapter", "n_chapters", "n_chars", "text"],
-        "description": "参考作品分卷提取设定（世界观/力量体系/势力/地理 ...）",
+        "description": "参考作品分卷提取设定（类别 + 概括标题 + 逐章 updates）",
     },
 
     "reference.outline": {
