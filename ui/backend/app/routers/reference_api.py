@@ -265,23 +265,53 @@ async def list_work_files(ref_id: str):
             })
             total_chars = max(total_chars, ce)
     elif file_path and Path(file_path).exists():
-        # Legacy fallback — one synthetic entry. Use file stat for
-        # byte size to skip the read; show "未跟踪" so user knows.
+        # Legacy fallback — happens when the work was uploaded by an
+        # older build that didn't write the uploads ledger. Recover by
+        # re-reading the file to get an accurate **char count** (not
+        # bytes — CJK text is 3 bytes per char in UTF-8, so st_size was
+        # showing 3× the real character count, which the user reported
+        # as "字数翻倍" after restart). One quick read is acceptable
+        # since this is the rescue path, not the normal one.
         try:
-            size_bytes = Path(file_path).stat().st_size
+            text = Path(file_path).read_text(encoding="utf-8", errors="replace")
+            char_count = len(text)
         except Exception:
-            size_bytes = 0
+            try:
+                char_count = Path(file_path).stat().st_size
+            except Exception:
+                char_count = 0
+        # Self-heal: write a synthetic uploads entry back to segments_json
+        # so subsequent loads use the fast ledger path (and the "未跟踪"
+        # banner disappears). On any DB error we silently fall through —
+        # the read path still works.
         from os.path import basename as _bn
+        synthetic_entry = {
+            "filename": _bn(file_path),
+            "char_start": 0,
+            "char_end": char_count,
+            "uploaded_at": None,
+        }
+        try:
+            if not isinstance(state, dict):
+                state = {}
+            state["uploads"] = [synthetic_entry]
+            db.update_work(ref_id, segments_json=json.dumps(state, ensure_ascii=False))
+        except Exception:
+            pass
         out.append({
             "index": 0,
             "filename": _bn(file_path),
             "char_start": 0,
-            "char_end": size_bytes,  # rough upper bound — UI just shows it
-            "char_count": size_bytes,
+            "char_end": char_count,
+            "char_count": char_count,
             "uploaded_at": None,
+            # Even though we now have a ledger entry, the file's history
+            # is still unknown (we have no upload timestamp etc.) — show
+            # "已修复" instead of the bare "未跟踪" so the user knows the
+            # state is now stable.
             "legacy": True,
         })
-        total_chars = size_bytes
+        total_chars = char_count
     return {
         "files": out,
         "total_chars": total_chars,

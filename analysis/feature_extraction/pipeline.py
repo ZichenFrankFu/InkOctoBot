@@ -622,13 +622,31 @@ class FeatureExtractionPipeline:
             seg["index"] = i
 
         # Editing the plan invalidates prior per-segment results.
-        new_state = {
+        #
+        # CRITICAL: preserve top-level keys this function doesn't own —
+        # `uploads` (the file-tracking ledger maintained by the upload
+        # endpoint), `preprocess` (cached chapter-parser output), and
+        # anything else a future feature may store here. Rebuilding the
+        # dict from scratch was silently nuking the uploads ledger,
+        # which is why the Files tab showed "未跟踪" after restart and
+        # the chunk count looked wrong.
+        try:
+            existing = json.loads(work.get("segments_json") or "{}")
+        except Exception:
+            existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+        # Whitelist of keys this function explicitly owns. Everything
+        # else (uploads, preprocess, etc.) carries over untouched.
+        OWNED = {"type", "plan", "custom_plan", "results", "completed"}
+        new_state = {k: v for k, v in existing.items() if k not in OWNED}
+        new_state.update({
             "type": plan_type,
             "plan": cleaned,
             "custom_plan": cleaned,
             "results": {},
             "completed": [],
-        }
+        })
         rdb.update_work(
             ref_id,
             segments_json=json.dumps(new_state, ensure_ascii=False),
@@ -981,7 +999,12 @@ class FeatureExtractionPipeline:
             results = {}
         results[str(seg_index)] = result
 
-        new_state = {
+        # Same data-integrity guard as save_custom_plan: keep top-level
+        # keys this function doesn't own (uploads, preprocess, …)
+        # untouched so they survive a per-segment commit.
+        OWNED = {"type", "plan", "results", "completed"}
+        new_state = {k: v for k, v in existing.items() if k not in OWNED}
+        new_state.update({
             "type": plan["type"],
             "plan": [
                 {k: v for k, v in s.items() if k in (
@@ -990,12 +1013,13 @@ class FeatureExtractionPipeline:
                 )}
                 for s in segs
             ],
-            # Preserve the user's saved custom plan across commits so it
-            # keeps overriding auto-detection on subsequent extractions.
-            **({"custom_plan": existing["custom_plan"]} if existing.get("custom_plan") else {}),
             "results": results,
             "completed": sorted(int(k) for k in results.keys()),
-        }
+        })
+        # Preserve the user's saved custom plan across commits so it
+        # keeps overriding auto-detection on subsequent extractions.
+        if existing.get("custom_plan"):
+            new_state["custom_plan"] = existing["custom_plan"]
         new_status = "done" if len(results) >= len(segs) else "processing"
         rdb.update_work(
             ref_id,

@@ -49,6 +49,9 @@ interface ChunkExtractionState {
   events?: any[];
   error?: string;
   elapsedS?: number;
+  /** Unix-ms time when the AI extraction started. Used by the row to
+   *  render a live elapsed-seconds counter while status === "extracting". */
+  startedAt?: number;
   /** Paste-mode local state. */
   pasteRaw?: string;
   pasteError?: string;
@@ -155,6 +158,75 @@ export default function PlotOutlinePanel({
   const allDone = total > 0 && doneCount >= total;
   const nextIdx = plan?.segments.find(s => !completed.has(s.index))?.index;
 
+  // ─── Recover committed-chunk state from the persisted chronicle ───
+  //
+  // chunkState is in-memory only — when the user switches pages and
+  // comes back, the green "已完成" badges disappear unless we rebuild
+  // the status from data that IS persisted. The chronicle's
+  // plot_outline_json stores periods named by first_chapter ("第N章"),
+  // so we can check each chunk's chapter range against the volume's
+  // epoch and mark it committed if any period inside the range carries
+  // events. This persists across sessions because the chronicle itself
+  // does.
+  const detectCommittedChunk = useCallback(
+    (volumeTitle: string, startCh: number, endCh: number): boolean => {
+      const outline = plotOutlineRef.current;
+      if (!outline?.epochs) return false;
+      const epoch = outline.epochs.find(e => e.title === volumeTitle);
+      if (!epoch) return false;
+      return (epoch.periods || []).some(p => {
+        if (!p.events || p.events.length === 0) return false;
+        const m = (p.time || "").match(/第\s*(\d+)\s*章/);
+        if (!m) return false;
+        const n = parseInt(m[1], 10);
+        return n >= startCh && n <= endCh;
+      });
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!plan || !plotOutline) return;
+    setChunkState(prev => {
+      let changed = false;
+      const next = { ...prev };
+      for (const seg of plan.segments) {
+        const chunks = segChunks[seg.index] || [];
+        const title = seg.title || `第 ${seg.index + 1} 卷`;
+        for (const ck of chunks) {
+          const k = chunkKey(seg.index, ck.chunk_index);
+          const currentStatus = next[k]?.status;
+          // Don't clobber in-flight states. Only upgrade idle/failed →
+          // committed when the chronicle confirms persistence.
+          if (currentStatus === "extracting" || currentStatus === "committing"
+              || currentStatus === "ready" || currentStatus === "committed") {
+            continue;
+          }
+          const isCommitted = detectCommittedChunk(
+            title, ck.start_chapter, ck.end_chapter,
+          );
+          if (isCommitted) {
+            next[k] = { ...(next[k] || { status: "idle" }), status: "committed" };
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [plotOutline, plan, segChunks, detectCommittedChunk]);
+
+  /** Whether every chunk of a volume has been committed (per the
+   *  client-side derived chunkState). Used to color the volume row
+   *  "已完成" green without waiting for the server-side `plan.completed`
+   *  set, which only tracks the legacy per-segment commit path. */
+  const isVolumeFullyCommitted = (segIdx: number): boolean => {
+    const chunks = segChunks[segIdx] || [];
+    if (chunks.length === 0) return false;
+    return chunks.every(ck => {
+      const k = chunkKey(segIdx, ck.chunk_index);
+      return chunkState[k]?.status === "committed";
+    });
+  };
+
   // ─── per-chunk handlers ───
 
   /** Lazy-load a segment's chunks the first time it's expanded. */
@@ -209,6 +281,7 @@ export default function PlotOutlinePanel({
   const runChunkAI = async (segIdx: number, chunkIdx: number) => {
     patchChunk(segIdx, chunkIdx, {
       status: "extracting", error: undefined, events: undefined, source: undefined,
+      startedAt: Date.now(),
     });
     try {
       const r = await apiPost<{
@@ -666,6 +739,7 @@ export default function PlotOutlinePanel({
         });
         patchChunk(seg.index, chunk.chunk_index, {
           status: "extracting", error: undefined,
+          startedAt: Date.now(),
         });
         try {
           const r = await apiPost<{ events: any[]; elapsed_s: number; errors: string[] }>(
@@ -922,7 +996,11 @@ export default function PlotOutlinePanel({
           {total > 0 && (
           <div className="flex flex-col gap-4">
             {plan.segments.map(s => {
-              const isDone = completed.has(s.index);
+              // Volume is "done" either via the legacy server-side
+              // per-segment commit (plan.completed) OR when every chunk
+              // has been committed via the per-chunk flow (derived
+              // client-side from the chronicle).
+              const isDone = completed.has(s.index) || isVolumeFullyCommitted(s.index);
               const isOpen = openSegs.has(s.index);
               const chunks = segChunks[s.index] || [];
               const chunksLoading = segChunksLoading.has(s.index);
@@ -1169,8 +1247,8 @@ function ChunkRow({
             color: "var(--error)", border: "1px solid var(--error)",
           }}>AI 失败</span>
         )}
-        {extracting && (
-          <span className="text-xs" style={{ color: "var(--gold)" }}>提取中…</span>
+        {extracting && state.startedAt && (
+          <ExtractionTimer startedAt={state.startedAt} totalChars={chunk.n_chars} />
         )}
       </button>
 
@@ -1392,5 +1470,35 @@ function ChunkEventsPreview({ events }: { events: any[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+/** Live elapsed-seconds counter for an in-flight extraction. Re-renders
+ * every 500 ms so the user sees a moving timer instead of a static
+ * spinner. ETA is a deliberately rough heuristic (≈ 60 chars/sec on
+ * a typical local LLM); it's labelled "估计" so users don't take it
+ * as a guarantee. */
+function ExtractionTimer({ startedAt, totalChars }: {
+  startedAt: number;
+  totalChars?: number;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, []);
+  const elapsedS = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const etaS = totalChars && totalChars > 0
+    ? Math.max(elapsedS, Math.round(totalChars / 60))
+    : null;
+  return (
+    <span className="text-xs" style={{ color: "var(--gold)", fontFamily: "var(--font-mono)" }}>
+      提取中… 已用 {elapsedS}s
+      {etaS != null && elapsedS < etaS && (
+        <span style={{ color: "var(--text-tertiary)" }}>
+          {" / 估计 "}{etaS}s
+        </span>
+      )}
+    </span>
   );
 }

@@ -1394,6 +1394,66 @@ export function timeMarkers(ev: { time_marker?: string; time_markers?: string[] 
   return out;
 }
 
+/** Best-effort comparator for two story-time markers. Pure date math is
+ * brittle on Chinese fiction-time strings ("天宝十年", "穿越后第一日"),
+ * so we use a tiered heuristic: (1) numeric year if both have one;
+ * (2) BCE/CE flag; (3) zh-locale string compare for stability. This
+ * deliberately isn't perfect — the AI 时间线总结 step is the proper
+ * tool for re-ordering; this comparator just gives the read view a
+ * reasonable client-side guess. */
+function compareTimeMarkers(a: string, b: string): number {
+  if (!a && !b) return 0;
+  if (!a) return 1;
+  if (!b) return -1;
+  const ya = a.match(/(\d{4})/);
+  const yb = b.match(/(\d{4})/);
+  const aBCE = /公元前|前\s*\d/.test(a);
+  const bBCE = /公元前|前\s*\d/.test(b);
+  if (aBCE && !bBCE) return -1;
+  if (!aBCE && bBCE) return 1;
+  if (ya && yb && ya[1] !== yb[1]) {
+    return (aBCE ? -1 : 1) * (parseInt(ya[1], 10) - parseInt(yb[1], 10));
+  }
+  return a.localeCompare(b, "zh");
+}
+
+/** Build a single synthetic epoch from `rawEpochs` whose periods are
+ * grouped by the events' first time_marker, sorted by that marker.
+ * Used by the chronicle's 时间顺序 view mode — the persisted data is
+ * untouched. Flashbacks/inserts in the original chapter order get
+ * pulled into the in-fiction chronology this way.
+ *
+ * Heads-up: events shown here no longer correspond to a single
+ * (ei, pi, evi) location in the persisted data — index-based mutations
+ * (delete, edit) would write to the wrong row, so the caller must
+ * suppress per-event CRUD buttons in story view. */
+function regroupChronicleByStoryTime(rawEpochs: ChronicleEpoch[]): ChronicleEpoch[] {
+  type FlatEv = { ev: ChronicleEvent; firstMarker: string; idx: number };
+  const all: FlatEv[] = [];
+  let i = 0;
+  for (const ep of rawEpochs) {
+    for (const per of (ep.periods || [])) {
+      for (const ev of (per.events || [])) {
+        const markers = timeMarkers(ev);
+        const m = markers.length > 0 ? markers[0] : (per.time || "");
+        all.push({ ev, firstMarker: m, idx: i++ });
+      }
+    }
+  }
+  all.sort((a, b) => {
+    const c = compareTimeMarkers(a.firstMarker, b.firstMarker);
+    return c !== 0 ? c : a.idx - b.idx;
+  });
+  const periods: ChroniclePeriod[] = [];
+  for (const { ev, firstMarker } of all) {
+    const key = firstMarker || "(未填时间)";
+    const last = periods[periods.length - 1];
+    if (last && last.time === key) last.events.push(ev);
+    else periods.push({ time: key, events: [ev] });
+  }
+  return [{ title: "按故事时间排序", periods }];
+}
+
 const CHRONICLE_INSTRUCTIONS = `编年史是「世界内史学家」的客观记录：
 1. 视角：第三人称客观史学家，只记录「发生了什么」——不写心理、不写对话原文、不写场景细节。
 2. 颗粒度：章节弧标题级别。「主角拜师」是一个事件；「主角拿茶杯/喝茶/放下」就太细，要合并成一个。每章 1-3 条为佳。
@@ -1783,6 +1843,15 @@ export function PlotOutlineEditor({
   // to see the wall of text on every load.
   const [showInstructions, setShowInstructions] = useState(false);
 
+  // View mode for the chronicle:
+  //   "chapter" = 章节顺序 — events grouped by first_chapter, the
+  //               natural order produced by the extraction step.
+  //   "story"   = 时间顺序 — events grouped by their first (most-
+  //               anchored) time_marker, sorted by that marker so the
+  //               reader sees flashbacks/inserts pulled into the actual
+  //               in-fiction chronology.
+  // The toggle is display-only; nothing is rewritten to disk.
+  const [viewMode, setViewMode] = useState<"chapter" | "story">("chapter");
 
   // Read-only chronicle view. With the full-edit / quick-add / paste
   // entry points removed (per user request), the only mutations from
@@ -1791,7 +1860,14 @@ export function PlotOutlineEditor({
   const d = data || {};
   const legacy = isLegacy(d);
 
-  const epochs = d.epochs || [];
+  const rawEpochs = d.epochs || [];
+  // Apply the view-mode transformation. Chapter mode renders the stored
+  // structure as-is. Story mode rebuilds a single synthetic epoch from
+  // all events sorted by their first time_marker, with one period per
+  // distinct marker.
+  const epochs = (viewMode === "story" && rawEpochs.length > 0)
+    ? regroupChronicleByStoryTime(rawEpochs)
+    : rawEpochs;
   const hasContent = (epochs.length > 0 && epochs.some(e => (e.periods || []).length > 0)) || legacy || d.logline;
 
   return (
@@ -1803,6 +1879,41 @@ export function PlotOutlineEditor({
         * and accepts the parsed-back chronicle JSON. */}
       {refId && hasContent && (
         <ChronicleSummarizePanel refId={refId} data={d} onSave={onSave} />
+      )}
+
+      {/* View-mode toggle: chapter order (storage order, the natural
+        * extraction layout) vs. story-time order (flashbacks pulled
+        * into chronology). Storage is untouched — story mode is a
+        * pure display transform via regroupChronicleByStoryTime(). */}
+      {hasContent && (
+        <div className="flex items-center" style={{ marginBottom: 10, gap: 6 }}>
+          <span className="text-xs text-muted">视图：</span>
+          {([
+            { key: "chapter" as const, label: "章节顺序", hint: "按事件首次出现的章节排列（提取的原始顺序）" },
+            { key: "story"   as const, label: "时间顺序", hint: "按故事中时间排序，倒叙/插叙被拉直（仅显示重排，存储不变）" },
+          ]).map(opt => (
+            <button
+              key={opt.key}
+              className="btn-ghost"
+              onClick={() => setViewMode(opt.key)}
+              title={opt.hint}
+              style={{
+                padding: "3px 10px", fontSize: 11,
+                fontWeight: viewMode === opt.key ? 600 : 400,
+                color: viewMode === opt.key ? "var(--accent)" : "var(--text-secondary)",
+                background: viewMode === opt.key ? "var(--accent-subtle)" : "transparent",
+                border: "1px solid var(--border)",
+                borderRadius: 3,
+              }}>
+              {opt.label}
+            </button>
+          ))}
+          {viewMode === "story" && (
+            <span className="text-xs text-muted" style={{ marginLeft: 6 }}>
+              （此视图下隐藏编辑/删除按钮——切回章节顺序后可改）
+            </span>
+          )}
+        </div>
       )}
 
       {/* Chronicle usage instructions — collapsed by default to keep
@@ -1879,12 +1990,12 @@ export function PlotOutlineEditor({
                         <span>{ep.title}</span>
                         <span className="text-xs text-muted" style={{ transition: "transform 0.15s", transform: isOpen ? "rotate(180deg)" : "none", display: "inline-block" }}>&#x25BC;</span>
                       </button>
-                      <button
+                      {viewMode === "chapter" && <button
                         className="btn-icon"
                         onClick={() => deleteEpochInRead(ei)}
                         title="删除整个大段"
                         style={{ fontSize: 12, color: "var(--error)", width: 22, height: 22 }}
-                      >&times;</button>
+                      >&times;</button>}
                     </div>
                   )}
                   {isOpen && (ep.periods || []).map((per, pi) => (
@@ -1893,12 +2004,14 @@ export function PlotOutlineEditor({
                         <div style={{ flex: 1, fontWeight: 600, fontSize: 13, color: "var(--accent)" }}>
                           {per.time || "(未填写时间)"}
                         </div>
-                        <button
-                          className="btn-icon"
-                          onClick={() => deletePeriodInRead(ei, pi)}
-                          title="删除这个时间段"
-                          style={{ fontSize: 11, color: "var(--error)", width: 18, height: 18 }}
-                        >&times;</button>
+                        {viewMode === "chapter" && (
+                          <button
+                            className="btn-icon"
+                            onClick={() => deletePeriodInRead(ei, pi)}
+                            title="删除这个时间段"
+                            style={{ fontSize: 11, color: "var(--error)", width: 18, height: 18 }}
+                          >&times;</button>
+                        )}
                       </div>
                       <div className="flex flex-col gap-6" style={{ paddingLeft: 8, borderLeft: "2px solid var(--border)" }}>
                         {(per.events || []).map((ev, evi) => {
@@ -1985,7 +2098,13 @@ export function PlotOutlineEditor({
                                 {" "}
                                 <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
                               </div>
-                              <div style={{
+                              {/* CRUD buttons. Hidden in 时间顺序 view
+                                * because the displayed event no longer
+                                * lives at the (ei, pi, evi) index — the
+                                * read view is built from a synthetic
+                                * regrouping. The user is told to switch
+                                * back to 章节顺序 to edit/delete. */}
+                              {viewMode === "chapter" && <div style={{
                                 position: "absolute", top: 0, right: 0,
                                 display: "flex", gap: 2,
                               }}>
@@ -2017,7 +2136,7 @@ export function PlotOutlineEditor({
                                     <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
                                   </svg>
                                 </button>
-                              </div>
+                              </div>}
                             </div>
                           );
                         })}
