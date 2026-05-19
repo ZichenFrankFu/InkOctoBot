@@ -1170,6 +1170,12 @@ export interface ChronicleEvent {
   // time_marker: 故事中时间 「1954 年 3 月」 (in-fiction clock)
   // first_chapter: 首次出现章节 「第 12 章」 (real-text reference)
   time_marker?: string;
+  /** Multiple time references for the same event — used when the LLM
+   *  provided more than one timestamp (e.g. an in-fiction date AND a
+   *  countdown reading) and when the paste parser resolved a relative
+   *  reference against an earlier absolute one. The read view renders
+   *  each entry as a separate tag for cross-referencing. */
+  time_markers?: string[];
   first_chapter?: string;
   /** @deprecated Legacy [隐] field from older chronicles. New events no
    *  longer carry it; the editor still tolerates the key on existing
@@ -1348,6 +1354,45 @@ const EVENT_CATEGORIES: { key: string; label: string }[] = [
   { key: "foreshadow",  label: "伏笔铺垫 (foreshadow)" },
   { key: "other",       label: "其他 (other)" },
 ];
+
+/** Short Chinese label for a category key, used in tag-style display
+ * (read view, preview chips). The LLM emits English enum keys; the UI
+ * uses the Chinese rendering exclusively per user request. Unknown
+ * values fall through unchanged so legacy data still shows something. */
+export const CATEGORY_LABELS_CN: Record<string, string> = {
+  plot_main:  "主线",
+  plot_side:  "支线",
+  character:  "角色",
+  setting:    "设定",
+  conflict:   "冲突",
+  revelation: "揭示",
+  foreshadow: "伏笔",
+  other:      "其他",
+};
+export function categoryLabel(cat: string | undefined | null): string {
+  if (!cat) return "";
+  return CATEGORY_LABELS_CN[cat] || cat;
+}
+
+/** Build a deduped list of time tags from an event. Supports both the
+ * legacy single `time_marker` field and the newer `time_markers` array
+ * (which can be populated by the paste parser when the LLM provided
+ * multiple time references, or when a relative time was resolved
+ * against an earlier absolute one). Preserves first-occurrence order. */
+export function timeMarkers(ev: { time_marker?: string; time_markers?: string[] }): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (s: any) => {
+    if (typeof s !== "string") return;
+    const v = s.trim();
+    if (!v || seen.has(v)) return;
+    seen.add(v);
+    out.push(v);
+  };
+  if (Array.isArray(ev.time_markers)) for (const t of ev.time_markers) push(t);
+  push(ev.time_marker);
+  return out;
+}
 
 const CHRONICLE_INSTRUCTIONS = `编年史是「世界内史学家」的客观记录：
 1. 视角：第三人称客观史学家，只记录「发生了什么」——不写心理、不写对话原文、不写场景细节。
@@ -1601,7 +1646,7 @@ function ChronicleSummarizePanel({ refId, data, onSave }: {
                   padding: "4px 8px", background: "var(--bg-card)",
                   border: "1px solid var(--error)", borderRadius: 3,
                 }}>
-                  ⚠ 内置 AI 失败：{aiError}。请点上方「复制 prompt」到 ChatGPT / Claude.ai 跑，再把结果粘到下方。
+                  [注意] 内置 AI 失败：{aiError}。请点上方「复制 prompt」到 ChatGPT / Claude.ai 跑，再把结果粘到下方。
                 </div>
               )}
               <div className="text-xs text-muted" style={{ marginBottom: 6, lineHeight: 1.55 }}>
@@ -1914,28 +1959,28 @@ export function PlotOutlineEditor({
                             <div key={evi} className="ref-event-row" style={{ paddingLeft: 8, position: "relative" }}>
                               <div style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-primary)" }}>
                                 <span style={{ fontWeight: 600, color: "var(--accent)" }}>
-                                  【{ev.subject}·{ev.category}·{ev.name}】
+                                  【{ev.subject}·{categoryLabel(ev.category)}·{ev.name}】
                                 </span>
-                                {/* Two time tags rendered side-by-side: story-time
-                                  * (in-fiction clock) and first_chapter (where in
-                                  * the real text this event is first described).
-                                  * Both are visually distinct so users can tell
-                                  * them apart at a glance. */}
-                                {ev.time_marker && (
-                                  <span className="tag" style={{
-                                    marginLeft: 6, fontSize: 10, padding: "1px 7px",
+                                {/* Story-time tags: render each entry from
+                                  * timeMarkers(ev) as its own chip so multi-
+                                  * timestamp events ("1954 年春" 与 "倒计时
+                                  * 6:00:00") cross-reference visually. */}
+                                {timeMarkers(ev).map((t, ti) => (
+                                  <span key={`t${ti}`} className="tag" style={{
+                                    marginLeft: ti === 0 ? 6 : 3,
+                                    fontSize: 10, padding: "1px 7px",
                                     color: "var(--gold)",
                                     background: "var(--bg-surface-2)",
                                     border: "1px solid var(--gold)",
-                                  }} title="故事中时间">⏱ {ev.time_marker}</span>
-                                )}
+                                  }} title="故事中时间">{t}</span>
+                                ))}
                                 {ev.first_chapter && (
                                   <span className="tag" style={{
                                     marginLeft: 4, fontSize: 10, padding: "1px 7px",
                                     color: "var(--jade)",
                                     background: "var(--bg-surface-2)",
                                     border: "1px solid var(--jade)",
-                                  }} title="首次出现章节">📖 {ev.first_chapter}</span>
+                                  }} title="首次出现章节">{ev.first_chapter}</span>
                                 )}
                                 {" "}
                                 <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
@@ -2192,7 +2237,7 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
                         color: "var(--gold)",
                         background: "var(--bg-surface-2)",
                         border: "1px solid var(--gold)",
-                      }} title="故事中时间">⏱ {item.first_introduced_at}</span>
+                      }} title="故事中时间">{item.first_introduced_at}</span>
                     )}
                     {item.first_chapter && (
                       <span className="tag" style={{
@@ -2200,7 +2245,7 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
                         color: "var(--jade)",
                         background: "var(--bg-surface-2)",
                         border: "1px solid var(--jade)",
-                      }} title="首次出现章节">📖 {item.first_chapter}</span>
+                      }} title="首次出现章节">{item.first_chapter}</span>
                     )}
                   </div>
                   {item.content && (

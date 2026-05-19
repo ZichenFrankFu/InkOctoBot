@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost } from "../../api/client";
 import { useToast } from "../shared/Toast";
-import { PlotOutlineEditor, PromptCopyPanel } from "./AnalysisEditors";
+import { PlotOutlineEditor, PromptCopyPanel, categoryLabel, timeMarkers } from "./AnalysisEditors";
 import type { PlotOutline, ChronicleEpoch, ChroniclePeriod } from "./AnalysisEditors";
 
 interface SegmentInfo {
@@ -107,6 +107,23 @@ export default function PlotOutlinePanel({
   // and the chatbox state (chat-tunable only when source === "ai").
   const [openChunks, setOpenChunks] = useState<Set<string>>(new Set());
   const [chunkState, setChunkState] = useState<Record<string, ChunkExtractionState>>({});
+
+  // Bulk-run state for the "use internal AI on every chunk" action.
+  // The cancel flag is a ref so the in-flight loop can poll it
+  // without re-rendering on every state update.
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<
+    { done: number; total: number; label: string; failed: number } | null
+  >(null);
+  const bulkCancelRef = useRef(false);
+  // Refs for stable access from async loops (state updates are deferred,
+  // so reading state directly mid-loop can race).
+  const plotOutlineRef = useRef(plotOutline);
+  useEffect(() => { plotOutlineRef.current = plotOutline; }, [plotOutline]);
+  const chunkStateRef = useRef(chunkState);
+  useEffect(() => { chunkStateRef.current = chunkState; }, [chunkState]);
+  const segChunksRef = useRef(segChunks);
+  useEffect(() => { segChunksRef.current = segChunks; }, [segChunks]);
 
   const loadPlan = useCallback(async () => {
     if (!hasFullText) { setPlan(null); return; }
@@ -385,15 +402,76 @@ export default function PlotOutlinePanel({
 
     // Use the candidate with the most events. Drop event-shaped items
     // missing both name and description so we don't commit junk.
-    const events = candidates
+    const rawEvents = candidates
       .sort((a, b) => b.length - a.length)[0]
       .filter((e: any) => e && typeof e === "object" && (e.name || e.description));
-    if (events.length === 0) {
+    if (rawEvents.length === 0) {
       patchChunk(segIdx, chunkIdx, {
         pasteError: "解析到的事件都没有 name 或 description 字段。",
       });
       return;
     }
+    // Post-process time markers:
+    //   1. Split each event's `time_marker` on common multi-stamp
+    //      separators (·, ；, /, |, ＋, +) so events with multiple
+    //      timestamps in one string become an array.
+    //   2. Classify each piece as "absolute" (contains a year or
+    //      explicit date) or "relative" (同日 / 次日 / 倒计时…).
+    //   3. When an event has no absolute timestamp of its own, copy
+    //      the LAST absolute timestamp seen — that way "同日傍晚" gets
+    //      stored alongside the inherited "2022 年秋某周二傍晚" so the
+    //      reader can cross-reference.
+    // Both the original strings and the inherited one are kept in
+    // `time_markers` (deduped); `time_marker` stays populated with the
+    // first entry for backward compat with anything that still reads it.
+    const SEP = /\s*[·／/|｜＋+；;]\s*/;
+    const isAbsoluteTime = (s: string): boolean => {
+      if (!s) return false;
+      // Any 4-digit year, any 公元/纪元 marker, or full date patterns.
+      return /\d{4}\s*年|公元|纪元|世纪|\d{4}[-/]\d{1,2}/.test(s);
+    };
+    let lastAbsolute: string | null = null;
+    const events = rawEvents.map((ev: any) => {
+      const next: any = { ...ev };
+      const incoming = typeof ev.time_marker === "string" ? ev.time_marker.trim() : "";
+      const incomingList = Array.isArray(ev.time_markers)
+        ? ev.time_markers.map((s: any) => (typeof s === "string" ? s.trim() : "")).filter(Boolean)
+        : [];
+      const pieces: string[] = [];
+      const seen = new Set<string>();
+      const add = (s: string) => {
+        const v = s.trim();
+        if (v && !seen.has(v)) { seen.add(v); pieces.push(v); }
+      };
+      for (const t of incomingList) add(t);
+      if (incoming) {
+        // Only split if the string actually contains a separator —
+        // otherwise relative tokens like "同日傍晚" stay intact.
+        if (SEP.test(incoming)) {
+          for (const part of incoming.split(SEP)) add(part);
+        } else {
+          add(incoming);
+        }
+      }
+      const hasOwnAbsolute = pieces.some(isAbsoluteTime);
+      if (!hasOwnAbsolute && lastAbsolute) {
+        // Prepend the inherited absolute so the reader sees "1954 年春"
+        // ahead of the relative "同日傍晚".
+        if (!seen.has(lastAbsolute)) {
+          pieces.unshift(lastAbsolute);
+          seen.add(lastAbsolute);
+        }
+      }
+      // Update lastAbsolute trailer for the next event.
+      for (const p of pieces) {
+        if (isAbsoluteTime(p)) lastAbsolute = p;
+      }
+      if (pieces.length > 0) {
+        next.time_markers = pieces;
+        next.time_marker = pieces[0];
+      }
+      return next;
+    });
     patchChunk(segIdx, chunkIdx, {
       status: "ready",
       source: "paste",
@@ -516,6 +594,142 @@ export default function PlotOutlinePanel({
     }
   };
 
+  /** One-click run: walks every (segment, chunk) that hasn't been
+   *  committed yet, runs the internal AI extraction, and merges results
+   *  into the chronicle in sequence. Updates a progress bar; can be
+   *  cancelled mid-loop (the current chunk finishes, then the rest are
+   *  skipped). Already-committed chunks are skipped so the action is
+   *  safe to re-run after a partial failure. */
+  const runAllChunksAI = async () => {
+    if (!plan || bulkRunning) return;
+    setBulkRunning(true);
+    bulkCancelRef.current = false;
+    try {
+      // 1. Make sure every segment's chunk list is loaded. We load
+      //    sequentially (not Promise.all) to give the user immediate
+      //    visual feedback and to avoid hammering the backend.
+      const loaded: Array<{ seg: SegmentInfo; chunks: ChunkMeta[] }> = [];
+      for (const s of plan.segments) {
+        let cs = segChunksRef.current[s.index];
+        if (!cs) {
+          try {
+            const r = await apiGet<{ chunks: ChunkMeta[] }>(
+              `/api/references/works/${refId}/segments/${s.index}/chunks`,
+            );
+            cs = r.chunks || [];
+            setSegChunks(prev => ({ ...prev, [s.index]: cs! }));
+            segChunksRef.current = { ...segChunksRef.current, [s.index]: cs };
+          } catch (e: any) {
+            toast(`第 ${s.index + 1} 卷分段加载失败：${e?.message || e}`, "error");
+            continue;
+          }
+        }
+        loaded.push({ seg: s, chunks: cs });
+      }
+
+      // 2. Build the work list, skipping chunks that are already
+      //    committed so the user can safely retry a partial run.
+      const tasks: Array<{ seg: SegmentInfo; chunk: ChunkMeta }> = [];
+      for (const { seg, chunks } of loaded) {
+        for (const ck of chunks) {
+          const k = chunkKey(seg.index, ck.chunk_index);
+          if (chunkStateRef.current[k]?.status === "committed") continue;
+          tasks.push({ seg, chunk: ck });
+        }
+      }
+      if (tasks.length === 0) {
+        toast("所有分段都已入库，无需重复处理。", "info");
+        setBulkRunning(false);
+        return;
+      }
+
+      // 3. Iterate, accumulating into a local mirror of the chronicle
+      //    so each commit's merge sees the prior chunks' events even
+      //    before onSavePlot's async parent update lands.
+      let acc: PlotOutline = plotOutlineRef.current
+        ? JSON.parse(JSON.stringify(plotOutlineRef.current))
+        : { logline: "", epochs: [] };
+      let failed = 0;
+      setBulkProgress({
+        done: 0, total: tasks.length,
+        label: `第 ${tasks[0].seg.index + 1} 卷 · 分段 ${tasks[0].chunk.chunk_index + 1}`,
+        failed: 0,
+      });
+
+      for (let i = 0; i < tasks.length; i++) {
+        if (bulkCancelRef.current) break;
+        const { seg, chunk } = tasks[i];
+        const k = chunkKey(seg.index, chunk.chunk_index);
+        setBulkProgress({
+          done: i, total: tasks.length, failed,
+          label: `第 ${seg.index + 1} 卷 · 分段 ${chunk.chunk_index + 1}`,
+        });
+        patchChunk(seg.index, chunk.chunk_index, {
+          status: "extracting", error: undefined,
+        });
+        try {
+          const r = await apiPost<{ events: any[]; elapsed_s: number; errors: string[] }>(
+            `/api/references/works/${refId}/segments/${seg.index}/chunks/${chunk.chunk_index}/extract`,
+            { use_web_search: useWebSearch && !!webSearchCap?.enabled },
+            { timeoutMs: 600_000 },
+          );
+          if ((r.errors && r.errors.length > 0) || !r.events || r.events.length === 0) {
+            failed++;
+            patchChunk(seg.index, chunk.chunk_index, {
+              status: "failed",
+              error: (r.errors && r.errors.join("; ")) || "AI 返回 0 事件",
+              elapsedS: r.elapsed_s,
+            });
+            continue;
+          }
+          acc = mergeEventsIntoChronicle(
+            acc, r.events, seg.title || `第 ${seg.index + 1} 卷`,
+          );
+          try {
+            await onSavePlot(acc);
+          } catch (saveErr: any) {
+            failed++;
+            patchChunk(seg.index, chunk.chunk_index, {
+              status: "failed",
+              error: `入库失败：${saveErr?.message || saveErr}`,
+            });
+            continue;
+          }
+          patchChunk(seg.index, chunk.chunk_index, {
+            status: "committed", source: "ai",
+            events: r.events, elapsedS: r.elapsed_s,
+          });
+        } catch (e: any) {
+          failed++;
+          patchChunk(seg.index, chunk.chunk_index, {
+            status: "failed",
+            error: e?.message || "AI 提取失败",
+          });
+        }
+      }
+      setBulkProgress({
+        done: tasks.length, total: tasks.length, failed,
+        label: bulkCancelRef.current ? "已取消" : "完成",
+      });
+      const succeeded = tasks.length - failed;
+      const cancelled = bulkCancelRef.current;
+      toast(
+        cancelled
+          ? `已取消（成功 ${succeeded}，失败 ${failed}）`
+          : failed === 0
+            ? `批量处理完成：${succeeded} 个分段全部入库`
+            : `批量处理完成：成功 ${succeeded}，失败 ${failed}`,
+        failed > 0 && !cancelled ? "info" : "success",
+      );
+    } finally {
+      setBulkRunning(false);
+      // Leave the progress visible for a beat so the user can read it.
+      setTimeout(() => setBulkProgress(null), 2000);
+    }
+  };
+
+  const cancelBulk = () => { bulkCancelRef.current = true; };
+
   const finalize = async () => {
     setMerging(true);
     try {
@@ -607,21 +821,72 @@ export default function PlotOutlinePanel({
                 />
                 AI 联网验证
               </label>
+              {total > 0 && (
+                <button
+                  className="btn-primary"
+                  style={{ fontSize: 12, padding: "4px 14px" }}
+                  onClick={runAllChunksAI}
+                  disabled={bulkRunning || merging}
+                  title="对每一卷的每一分段都调用内置 AI，已入库的分段会跳过"
+                >
+                  {bulkRunning ? "批量处理中…" : "使用内置 AI 一键处理全部分段"}
+                </button>
+              )}
               {doneCount > 0 && !allDone && (
-                <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }} onClick={reset} disabled={merging}>
+                <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }} onClick={reset} disabled={merging || bulkRunning}>
                   重置
                 </button>
               )}
               {allDone && (
-                <button className="btn-primary" style={{ fontSize: 12, padding: "4px 12px" }} onClick={finalize} disabled={merging}>
+                <button className="btn-primary" style={{ fontSize: 12, padding: "4px 12px" }} onClick={finalize} disabled={merging || bulkRunning}>
                   {merging ? "合并中..." : "合并到全书"}
                 </button>
               )}
             </div>
           </div>
 
-          {/* progress bar (hidden when there are no segments yet) */}
-          {total > 0 && (
+          {/* Bulk-run progress bar */}
+          {bulkProgress && (
+            <div style={{
+              marginBottom: 10, padding: "8px 10px",
+              border: "1px solid var(--accent)", borderRadius: 4,
+              background: "var(--bg-card)",
+            }}>
+              <div className="flex items-center" style={{ gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)" }}>
+                  {bulkRunning ? "批量处理中" : "已完成"}
+                </span>
+                <span className="text-xs text-muted">
+                  {bulkProgress.done}/{bulkProgress.total}
+                  {bulkProgress.label ? ` · ${bulkProgress.label}` : ""}
+                  {bulkProgress.failed > 0 ? ` · 失败 ${bulkProgress.failed}` : ""}
+                </span>
+                <div style={{ flex: 1 }} />
+                {bulkRunning && (
+                  <button className="btn" onClick={cancelBulk}
+                          style={{ fontSize: 11, padding: "2px 10px", color: "var(--error)" }}>
+                    取消
+                  </button>
+                )}
+              </div>
+              <div style={{
+                height: 6, background: "var(--bg-surface-2)",
+                borderRadius: 3, overflow: "hidden",
+              }}>
+                <div style={{
+                  height: "100%",
+                  width: `${bulkProgress.total > 0 ? (bulkProgress.done / bulkProgress.total) * 100 : 0}%`,
+                  background: "var(--accent)",
+                  transition: "width 0.25s",
+                }} />
+              </div>
+            </div>
+          )}
+
+          {/* Per-segment commit-status bar (hidden when there are no
+            * segments yet, and hidden while the bulk run is showing
+            * its own progress to avoid two stacked progress bars). */}
+          {total > 0 && !bulkProgress && (
             <div style={{ height: 5, background: "var(--bg-surface-2)", borderRadius: 3, overflow: "hidden", marginBottom: 10 }}>
               <div style={{ height: "100%", width: `${(doneCount / total) * 100}%`, background: "var(--jade)", borderRadius: 3, transition: "width 0.3s" }} />
             </div>
@@ -791,21 +1056,21 @@ function ChroniclePreview({ epochs }: { epochs: ChronicleEpoch[] }) {
                   <div key={evi} style={{ paddingLeft: 8 }}>
                     <div style={{ fontSize: 11, lineHeight: 1.55 }}>
                       <span style={{ fontWeight: 600, color: "var(--accent)" }}>
-                        【{ev.subject}·{ev.category}·{ev.name}】
+                        【{ev.subject}·{categoryLabel(ev.category)}·{ev.name}】
                       </span>
-                      {ev.time_marker && (
-                        <span style={{
-                          marginLeft: 4, fontSize: 10, padding: "0 5px",
+                      {timeMarkers(ev).map((t, ti) => (
+                        <span key={`t${ti}`} style={{
+                          marginLeft: ti === 0 ? 4 : 2, fontSize: 10, padding: "0 5px",
                           color: "var(--gold)", border: "1px solid var(--gold)",
                           borderRadius: 3,
-                        }} title="故事中时间">⏱ {ev.time_marker}</span>
-                      )}
+                        }} title="故事中时间">{t}</span>
+                      ))}
                       {ev.first_chapter && (
                         <span style={{
                           marginLeft: 3, fontSize: 10, padding: "0 5px",
                           color: "var(--jade)", border: "1px solid var(--jade)",
                           borderRadius: 3,
-                        }} title="首次出现章节">📖 {ev.first_chapter}</span>
+                        }} title="首次出现章节">{ev.first_chapter}</span>
                       )}
                       {" "}
                       <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
@@ -890,7 +1155,7 @@ function ChunkRow({
           <span className="tag" style={{
             fontSize: 10, padding: "1px 6px",
             color: "var(--jade)", border: "1px solid var(--jade)",
-          }}>✓ 已入库 · {eventCount} 事件</span>
+          }}>已入库 · {eventCount} 事件</span>
         )}
         {ready && !committed && (
           <span className="tag" style={{
@@ -1110,15 +1375,15 @@ function ChunkEventsPreview({ events }: { events: any[] }) {
             {evs.map((ev, i) => (
               <div key={i} style={{ fontSize: 11, lineHeight: 1.55, marginTop: 2 }}>
                 <span style={{ fontWeight: 600, color: "var(--accent)" }}>
-                  【{ev.subject}·{ev.category}·{ev.name}】
+                  【{ev.subject}·{categoryLabel(ev.category)}·{ev.name}】
                 </span>
-                {ev.time_marker && (
-                  <span style={{
-                    marginLeft: 4, fontSize: 10, padding: "0 5px",
+                {timeMarkers(ev).map((t, ti) => (
+                  <span key={`t${ti}`} style={{
+                    marginLeft: ti === 0 ? 4 : 2, fontSize: 10, padding: "0 5px",
                     color: "var(--gold)", border: "1px solid var(--gold)",
                     borderRadius: 3,
-                  }}>⏱ {ev.time_marker}</span>
-                )}
+                  }}>{t}</span>
+                ))}
                 {" "}
                 <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
               </div>

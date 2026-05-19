@@ -1092,8 +1092,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       return;
     }
     if (!(await confirmDialog({
-      title: "保存分段",
-      message: "保存自定义分段会清空所有已完成的提取结果。继续？",
+      title: "保存分段计划",
+      message: "更改卷的章节范围后，原来按旧范围抽取的剧情大纲会与新范围对不上，所以需要清空一次重新提取。继续保存？",
     }))) return;
     setPlanSaving(true);
     try {
@@ -2199,7 +2199,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                   display: "flex", alignItems: "center", gap: 8,
                 }}
                   title={`从第 ${gap.expected_next} 章开始 缺失 ${gap.missing_count} 章`}>
-                  <span>⚠</span>
+                  <span>[注意]</span>
                   <span style={{ flex: 1 }}>
                     缺失 <strong>{gap.missing_count}</strong> 章（{gap.pattern}）：
                     <span style={{ fontFamily: "var(--font-mono)" }}>{missingPreview}</span>
