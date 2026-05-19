@@ -869,7 +869,7 @@ function WorkDetail({
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
               角色列表（按重要性排序）
             </div>
-            <CharactersRichDisplay data={(chars || []) as any} />
+            <CharactersRichDisplay data={(chars || []) as any} chronicle={plot} />
             <details style={{ marginTop: 12 }}>
               <summary className="text-xs text-muted" style={{ cursor: "pointer" }}>
                 高级：以表格方式编辑全部字段（CRUD）

@@ -3,6 +3,7 @@ import { apiGet, apiPost } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { PlotOutlineEditor, PromptCopyPanel, categoryLabel, timeMarkers } from "./AnalysisEditors";
 import type { PlotOutline, ChronicleEpoch, ChroniclePeriod } from "./AnalysisEditors";
+import { useSegmentation, invalidateSegmentation } from "./segmentationCache";
 
 interface SegmentInfo {
   index: number;
@@ -13,7 +14,7 @@ interface SegmentInfo {
   char_count: number;
 }
 
-interface SegmentPlan {
+export interface SegmentPlan {
   type: "volumes" | "chunks" | "custom";
   segments: SegmentInfo[];
   completed: number[];
@@ -26,8 +27,72 @@ function fmtChars(n: number): string {
   return `${n.toLocaleString()} 字`;
 }
 
+/** Detect an "absolute" story-time marker (4-digit year, 公元/纪元
+ *  era, full date pattern). Used by the time-marker resolver below. */
+function isAbsoluteTime(s: string): boolean {
+  if (!s) return false;
+  return /\d{4}\s*年|公元|纪元|世纪|\d{4}[-/]\d{1,2}/.test(s);
+}
+
+/** Post-process an events list (from AI or paste) so each event ends
+ *  up with a `time_markers` array containing every distinct timestamp
+ *  for cross-referencing:
+ *
+ *   1. Split each event's `time_marker` on multi-stamp separators
+ *      (·, ；, /, |, ＋, +) so "1954 年春 · 倒计时6:00:00" becomes two.
+ *   2. Track the most recent "absolute" timestamp across the events.
+ *   3. When an event has no absolute timestamp of its own (e.g. the
+ *      LLM only wrote "同日傍晚"), prepend the inherited absolute so
+ *      the chronicle shows both tags.
+ *
+ *  This runs on the per-chunk events list — within one chunk we know
+ *  textual order, so the most recent absolute traces naturally. The
+ *  resolver doesn't touch already-multi-marker events. */
+const TIME_MARKER_SEP = /\s*[·／/|｜＋+；;]\s*/;
+function resolveEventTimeMarkers<T extends { time_marker?: string; time_markers?: string[] }>(
+  rawEvents: T[],
+): T[] {
+  let lastAbsolute: string | null = null;
+  return rawEvents.map(ev => {
+    const next: any = { ...ev };
+    const incoming = typeof ev.time_marker === "string" ? ev.time_marker.trim() : "";
+    const incomingList = Array.isArray(ev.time_markers)
+      ? ev.time_markers.map(s => (typeof s === "string" ? s.trim() : "")).filter(Boolean)
+      : [];
+    const pieces: string[] = [];
+    const seen = new Set<string>();
+    const add = (s: string) => {
+      const v = s.trim();
+      if (v && !seen.has(v)) { seen.add(v); pieces.push(v); }
+    };
+    for (const t of incomingList) add(t);
+    if (incoming) {
+      if (TIME_MARKER_SEP.test(incoming)) {
+        for (const part of incoming.split(TIME_MARKER_SEP)) add(part);
+      } else {
+        add(incoming);
+      }
+    }
+    const hasOwnAbsolute = pieces.some(isAbsoluteTime);
+    if (!hasOwnAbsolute && lastAbsolute) {
+      if (!seen.has(lastAbsolute)) {
+        pieces.unshift(lastAbsolute);
+        seen.add(lastAbsolute);
+      }
+    }
+    for (const p of pieces) {
+      if (isAbsoluteTime(p)) lastAbsolute = p;
+    }
+    if (pieces.length > 0) {
+      next.time_markers = pieces;
+      next.time_marker = pieces[0];
+    }
+    return next as T;
+  });
+}
+
 /** Chunk metadata returned from /segments/{idx}/chunks. */
-interface ChunkMeta {
+export interface ChunkMeta {
   chunk_index: number;
   total_chunks: number;
   start_chapter: number;
@@ -94,16 +159,18 @@ export default function PlotOutlinePanel({
   onActiveSegmentChange,
 }: Props) {
   const { toast } = useToast();
-  const [plan, setPlan] = useState<SegmentPlan | null>(null);
-  const [planLoading, setPlanLoading] = useState(false);
+  // Shared segmentation state — same module cache the Characters and
+  // Settings tabs subscribe to, so segmenting once here also serves
+  // them without extra HTTP roundtrips. When the user changes the
+  // plan via the preprocess tab they should invalidate the cache.
+  const { plan, planLoading, chunks: segChunks, chunkLoading: segChunksLoading, ensureChunks: ensureChunksLoaded } =
+    useSegmentation(refId, hasFullText);
   const [useWebSearch, setUseWebSearch] = useState(false);
   const [webSearchCap, setWebSearchCap] = useState<{ enabled: boolean; reason: string; provider: string; model: string } | null>(null);
   const [merging, setMerging] = useState(false);
   // Per-segment expansion state: clicking a volume row reveals its
   // chunks. The chunks list is fetched lazily on first expand.
   const [openSegs, setOpenSegs] = useState<Set<number>>(new Set());
-  const [segChunks, setSegChunks] = useState<Record<number, ChunkMeta[]>>({});
-  const [segChunksLoading, setSegChunksLoading] = useState<Set<number>>(new Set());
   // Per-chunk state — keyed by `${segIdx}:${chunkIdx}`. Each chunk
   // tracks: which UI section is open, what events were extracted
   // (whether via AI or paste), per-chunk errors, paste-mode buffer,
@@ -128,18 +195,13 @@ export default function PlotOutlinePanel({
   const segChunksRef = useRef(segChunks);
   useEffect(() => { segChunksRef.current = segChunks; }, [segChunks]);
 
+  // Compatibility helper kept so the rest of the component can call
+  // `loadPlan()` after a finalize / reset without knowing about the
+  // shared cache. invalidateSegmentation drops cached entries and the
+  // hook re-fetches on next subscription tick.
   const loadPlan = useCallback(async () => {
-    if (!hasFullText) { setPlan(null); return; }
-    setPlanLoading(true);
-    try {
-      const p = await apiGet<SegmentPlan>(`/api/references/works/${refId}/segments/plan`);
-      setPlan(p);
-    } catch (e: any) {
-      // silent on first load
-    } finally { setPlanLoading(false); }
-  }, [refId, hasFullText]);
-
-  useEffect(() => { loadPlan(); }, [loadPlan]);
+    invalidateSegmentation(refId);
+  }, [refId]);
 
   // Capability probe so we can disable the web-search toggle with a
   // useful tooltip when the user hasn't configured a search-capable model.
@@ -242,24 +304,9 @@ export default function PlotOutlinePanel({
   };
 
   // ─── per-chunk handlers ───
-
-  /** Lazy-load a segment's chunks the first time it's expanded. */
-  const ensureChunksLoaded = useCallback(async (segIdx: number) => {
-    if (segChunks[segIdx]) return;
-    setSegChunksLoading(prev => new Set(prev).add(segIdx));
-    try {
-      const r = await apiGet<{ chunks: ChunkMeta[]; total_chunks: number }>(
-        `/api/references/works/${refId}/segments/${segIdx}/chunks`,
-      );
-      setSegChunks(prev => ({ ...prev, [segIdx]: r.chunks || [] }));
-    } catch (e: any) {
-      toast(e?.message || "获取分段失败", "error");
-    } finally {
-      setSegChunksLoading(prev => {
-        const next = new Set(prev); next.delete(segIdx); return next;
-      });
-    }
-  }, [refId, segChunks, toast]);
+  // Chunks are fetched via the shared segmentation cache so the
+  // Characters / Settings tabs see the same data the chronicle did
+  // — no duplicate fetches when the user tabs around.
 
   const toggleSeg = async (segIdx: number) => {
     const open = openSegs.has(segIdx);
@@ -318,10 +365,14 @@ export default function PlotOutlinePanel({
           elapsedS: r.elapsed_s,
         });
       } else {
+        // Resolve relative time markers (同日傍晚, 次日, …) against
+        // earlier absolute ones from the same chunk so the chronicle
+        // stores both — matches the post-paste resolution path.
+        const resolved = resolveEventTimeMarkers(r.events);
         patchChunk(segIdx, chunkIdx, {
           status: "ready",
           source: "ai",
-          events: r.events,
+          events: resolved,
           elapsedS: r.elapsed_s,
           chat: [],
         });
@@ -498,67 +549,7 @@ export default function PlotOutlinePanel({
       });
       return;
     }
-    // Post-process time markers:
-    //   1. Split each event's `time_marker` on common multi-stamp
-    //      separators (·, ；, /, |, ＋, +) so events with multiple
-    //      timestamps in one string become an array.
-    //   2. Classify each piece as "absolute" (contains a year or
-    //      explicit date) or "relative" (同日 / 次日 / 倒计时…).
-    //   3. When an event has no absolute timestamp of its own, copy
-    //      the LAST absolute timestamp seen — that way "同日傍晚" gets
-    //      stored alongside the inherited "2022 年秋某周二傍晚" so the
-    //      reader can cross-reference.
-    // Both the original strings and the inherited one are kept in
-    // `time_markers` (deduped); `time_marker` stays populated with the
-    // first entry for backward compat with anything that still reads it.
-    const SEP = /\s*[·／/|｜＋+；;]\s*/;
-    const isAbsoluteTime = (s: string): boolean => {
-      if (!s) return false;
-      // Any 4-digit year, any 公元/纪元 marker, or full date patterns.
-      return /\d{4}\s*年|公元|纪元|世纪|\d{4}[-/]\d{1,2}/.test(s);
-    };
-    let lastAbsolute: string | null = null;
-    const events = rawEvents.map((ev: any) => {
-      const next: any = { ...ev };
-      const incoming = typeof ev.time_marker === "string" ? ev.time_marker.trim() : "";
-      const incomingList = Array.isArray(ev.time_markers)
-        ? ev.time_markers.map((s: any) => (typeof s === "string" ? s.trim() : "")).filter(Boolean)
-        : [];
-      const pieces: string[] = [];
-      const seen = new Set<string>();
-      const add = (s: string) => {
-        const v = s.trim();
-        if (v && !seen.has(v)) { seen.add(v); pieces.push(v); }
-      };
-      for (const t of incomingList) add(t);
-      if (incoming) {
-        // Only split if the string actually contains a separator —
-        // otherwise relative tokens like "同日傍晚" stay intact.
-        if (SEP.test(incoming)) {
-          for (const part of incoming.split(SEP)) add(part);
-        } else {
-          add(incoming);
-        }
-      }
-      const hasOwnAbsolute = pieces.some(isAbsoluteTime);
-      if (!hasOwnAbsolute && lastAbsolute) {
-        // Prepend the inherited absolute so the reader sees "1954 年春"
-        // ahead of the relative "同日傍晚".
-        if (!seen.has(lastAbsolute)) {
-          pieces.unshift(lastAbsolute);
-          seen.add(lastAbsolute);
-        }
-      }
-      // Update lastAbsolute trailer for the next event.
-      for (const p of pieces) {
-        if (isAbsoluteTime(p)) lastAbsolute = p;
-      }
-      if (pieces.length > 0) {
-        next.time_markers = pieces;
-        next.time_marker = pieces[0];
-      }
-      return next;
-    });
+    const events = resolveEventTimeMarkers(rawEvents);
     patchChunk(segIdx, chunkIdx, {
       status: "ready",
       source: "paste",
@@ -724,12 +715,10 @@ export default function PlotOutlinePanel({
         let cs = segChunksRef.current[s.index];
         if (!cs) {
           try {
-            const r = await apiGet<{ chunks: ChunkMeta[] }>(
-              `/api/references/works/${refId}/segments/${s.index}/chunks`,
-            );
-            cs = r.chunks || [];
-            setSegChunks(prev => ({ ...prev, [s.index]: cs! }));
-            segChunksRef.current = { ...segChunksRef.current, [s.index]: cs };
+            // Use the shared loader so other tabs see the freshly-
+            // fetched chunks without their own roundtrip.
+            await ensureChunksLoaded(s.index);
+            cs = segChunksRef.current[s.index] || [];
           } catch (e: any) {
             toast(`第 ${s.index + 1} 卷分段加载失败：${e?.message || e}`, "error");
             continue;
@@ -794,10 +783,14 @@ export default function PlotOutlinePanel({
             });
             continue;
           }
+          // Resolve relative time markers against earlier absolute
+          // ones BEFORE persisting — that way the chronicle stores
+          // "2022年秋某周二傍晚 + 同日傍晚" instead of just "同日傍晚".
+          const resolved = resolveEventTimeMarkers(r.events);
           // Bulk-run also replaces by chunk range so re-running on
           // an already-committed work doesn't duplicate events.
           acc = mergeEventsIntoChronicle(
-            acc, r.events, seg.title || `第 ${seg.index + 1} 卷`,
+            acc, resolved, seg.title || `第 ${seg.index + 1} 卷`,
             { startCh: chunk.start_chapter, endCh: chunk.end_chapter },
           );
           try {
@@ -812,7 +805,7 @@ export default function PlotOutlinePanel({
           }
           patchChunk(seg.index, chunk.chunk_index, {
             status: "committed", source: "ai",
-            events: r.events, elapsedS: r.elapsed_s,
+            events: resolved, elapsedS: r.elapsed_s,
           });
         } catch (e: any) {
           failed++;

@@ -1103,6 +1103,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       toast("分段计划已保存", "success");
       setPlanDraft(null);
       await fetchPlan();
+      // The chronicle / characters / settings tabs share a segmentation
+      // cache keyed by refId — invalidate it so the next tab they
+      // open sees the new plan, not the cached old one.
+      try {
+        const mod = await import("./segmentationCache");
+        mod.invalidateSegmentation(refId);
+      } catch { /* shared cache module is optional */ }
     } catch (e: any) {
       toast(e?.message || "保存失败", "error");
     } finally { setPlanSaving(false); }

@@ -12,38 +12,17 @@
  * (by chapter range vs by name vs by category+title). A generic
  * component would be more abstract than helpful.
  */
-import React, { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost } from "../../api/client";
+import React, { useEffect, useState } from "react";
+import { apiPost } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { PromptCopyPanel } from "./AnalysisEditors";
 import type {
   CharacterItem, CharacterListItem,
   SettingItem, SettingUpdate,
+  ChronicleEpoch,
 } from "./AnalysisEditors";
-
-interface SegmentInfo {
-  index: number;
-  title: string;
-  start_chapter: number;
-  end_chapter: number;
-  chapter_count?: number;
-  char_count: number;
-}
-interface SegmentPlan {
-  type: "volumes" | "chunks" | "custom";
-  segments: SegmentInfo[];
-  completed: number[];
-  total_chapters: number;
-  is_custom?: boolean;
-}
-interface ChunkMeta {
-  chunk_index: number;
-  total_chunks: number;
-  start_chapter: number;
-  end_chapter: number;
-  n_chapters: number;
-  n_chars: number;
-}
+import { useSegmentation } from "./segmentationCache";
+import type { ChunkMeta } from "./segmentationCache";
 
 type Phase = "idle" | "extracting" | "ready" | "failed" | "committing" | "committed";
 
@@ -645,8 +624,24 @@ function SettingCard({ s }: { s: SettingItem }) {
   );
 }
 
-/** Render the rich character list — sorted by frequency, expandable. */
-export function CharactersRichDisplay({ data }: { data: CharacterItem[] }) {
+/** Render the rich character list — sorted by importance/frequency,
+ *  expandable. Each character card → 3 sub-sections (外貌/性格/经历),
+ *  each sub-section in turn expandable to its chapter-tagged items.
+ *
+ *  经历 is intentionally NOT read from the character's own
+ *  `experiences` field. Instead we walk the chronicle (passed in via
+ *  `chronicle`) and pull every event whose `subject` matches this
+ *  character's name. That keeps the 经历 sub-tab synced with the
+ *  chronicle: editing/deleting an event there flows into here. */
+export function CharactersRichDisplay({
+  data, chronicle,
+}: {
+  data: CharacterItem[];
+  /** Optional plot outline; when supplied, the 经历 sub-section is
+   *  derived from chronicle events. When omitted, falls back to the
+   *  character's own experiences field (legacy data). */
+  chronicle?: { epochs?: ChronicleEpoch[] } | null;
+}) {
   if (!data || data.length === 0) {
     return (
       <div className="empty-state" style={{ padding: 32 }}>
@@ -654,19 +649,57 @@ export function CharactersRichDisplay({ data }: { data: CharacterItem[] }) {
       </div>
     );
   }
-  // The list is already sorted by mergeCharacters; render as cards.
+  // Pre-index chronicle events by subject so each card render is O(1).
+  const eventsBySubject = React.useMemo(() => {
+    const idx = new Map<string, CharacterListItem[]>();
+    if (!chronicle?.epochs) return idx;
+    for (const ep of chronicle.epochs) {
+      for (const per of (ep.periods || [])) {
+        for (const ev of (per.events || [])) {
+          const subject = ((ev as any).subject || "").trim();
+          if (!subject) continue;
+          const text = ((ev as any).description || (ev as any).name || "").trim();
+          if (!text) continue;
+          const chapter = ((ev as any).first_chapter || per.time || "").trim();
+          const list = idx.get(subject) || [];
+          list.push({ chapter, text });
+          idx.set(subject, list);
+        }
+      }
+    }
+    return idx;
+  }, [chronicle]);
+
   return (
     <div className="flex flex-col gap-6" style={{ marginTop: 8 }}>
-      {data.map((c, i) => <CharacterCard key={i} c={c} />)}
+      {data.map((c, i) => (
+        <CharacterCard key={i} c={c}
+                       chronicleExperiences={eventsBySubject.get(c.name) || null} />
+      ))}
     </div>
   );
 }
 
-function CharacterCard({ c }: { c: CharacterItem }) {
+function CharacterCard({
+  c, chronicleExperiences,
+}: {
+  c: CharacterItem;
+  chronicleExperiences: CharacterListItem[] | null;
+}) {
   const [open, setOpen] = useState(false);
   const tag = c.role_tag || "";
-  const hasLists = (c.appearance?.length || 0) + (c.personality?.length || 0)
-                 + (c.experiences?.length || 0) > 0;
+  // 经历 prefers chronicle-derived events; falls back to legacy field.
+  const experiences = chronicleExperiences && chronicleExperiences.length > 0
+    ? chronicleExperiences
+    : (c.experiences || []);
+  const subSections: Array<{ key: string; label: string; items: CharacterListItem[] }> = [
+    { key: "appearance",  label: "外貌", items: c.appearance  || [] },
+    { key: "personality", label: "性格", items: c.personality || [] },
+    { key: "experiences", label: "经历", items: experiences },
+  ];
+  const totalItems = subSections.reduce((n, s) => n + s.items.length, 0);
+  const hasAnything = totalItems > 0 || !!c.intro;
+
   return (
     <div style={{
       border: "1px solid var(--border)", borderRadius: 4,
@@ -675,7 +708,7 @@ function CharacterCard({ c }: { c: CharacterItem }) {
       <button
         className="btn-ghost w-full"
         onClick={() => setOpen(o => !o)}
-        disabled={!hasLists && !c.intro}
+        disabled={!hasAnything}
         style={{
           display: "flex", alignItems: "center", gap: 8,
           padding: "6px 10px", textAlign: "left",
@@ -711,11 +744,76 @@ function CharacterCard({ c }: { c: CharacterItem }) {
       {open && (
         <div style={{ padding: "4px 10px 10px", borderTop: "1px dashed var(--border)" }}>
           {c.intro && (
-            <div style={{ fontSize: 12, marginBottom: 4, color: "var(--text-secondary)", lineHeight: 1.55 }}>
+            <div style={{ fontSize: 12, marginBottom: 6, color: "var(--text-secondary)", lineHeight: 1.55 }}>
               {c.intro}
             </div>
           )}
-          <CharacterFactLists c={c} />
+          <div className="flex flex-col gap-4">
+            {subSections.map(s => (
+              <CharacterSubSection key={s.key} label={s.label} items={s.items} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Collapsible per-sub-type list (外貌 / 性格 / 经历). Each row is
+ *  `[chapter tag][content text]`. The whole card stays compact until
+ *  the user expands it. Empty lists render a muted placeholder so the
+ *  user can see which sub-types haven't been filled yet. */
+function CharacterSubSection({ label, items }: {
+  label: string;
+  items: CharacterListItem[];
+}) {
+  const [open, setOpen] = useState(false);
+  const empty = !items || items.length === 0;
+  return (
+    <div style={{
+      border: "1px solid var(--border)", borderRadius: 3,
+      background: "var(--bg-surface)",
+    }}>
+      <button
+        className="btn-ghost w-full"
+        onClick={() => setOpen(o => !o)}
+        disabled={empty}
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "4px 8px", textAlign: "left",
+          justifyContent: "flex-start", borderRadius: 0,
+        }}>
+        <span style={{
+          transition: "transform 0.15s",
+          transform: open ? "rotate(90deg)" : "none",
+          display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
+        }}>▶</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)" }}>
+          {label}
+        </span>
+        <span className="text-xs text-muted">
+          {empty ? "(空)" : `${items.length} 条`}
+        </span>
+      </button>
+      {open && !empty && (
+        <div style={{
+          padding: "4px 8px 6px", borderTop: "1px dashed var(--border)",
+        }}>
+          <div className="flex flex-col gap-2">
+            {items.map((it, i) => (
+              <div key={i} style={{ fontSize: 11, lineHeight: 1.55 }}>
+                {it.chapter && (
+                  <span style={{
+                    marginRight: 6, padding: "0 5px",
+                    fontSize: 10, color: "var(--gold)",
+                    fontFamily: "var(--font-mono)",
+                    border: "1px solid var(--gold)", borderRadius: 3,
+                  }}>{it.chapter}</span>
+                )}
+                <span style={{ color: "var(--text-secondary)" }}>{it.text}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -750,38 +848,15 @@ function ExtractionSection<T>(props: ExtractionSectionProps<T>) {
     onActiveSegmentChange,
   } = props;
   const { toast } = useToast();
-  const [plan, setPlan] = useState<SegmentPlan | null>(null);
+  // Shared segmentation cache: this is the same data the chronicle
+  // tab fetched first. We don't re-segment in the Characters /
+  // Settings tabs; we just subscribe to whatever the Chronicle (or a
+  // prior visit to these tabs) already loaded.
+  const { plan, chunks: segChunks, chunkLoading: segChunksLoading, ensureChunks } =
+    useSegmentation(refId, hasFullText);
   const [openSegs, setOpenSegs] = useState<Set<number>>(new Set());
   const [openChunks, setOpenChunks] = useState<Set<string>>(new Set());
-  const [segChunks, setSegChunks] = useState<Record<number, ChunkMeta[]>>({});
-  const [segChunksLoading, setSegChunksLoading] = useState<Set<number>>(new Set());
   const [chunkPhases, setChunkPhases] = useState<Record<string, ChunkPhase<T>>>({});
-
-  const loadPlan = useCallback(async () => {
-    if (!hasFullText) { setPlan(null); return; }
-    try {
-      const p = await apiGet<SegmentPlan>(`/api/references/works/${refId}/segments/plan`);
-      setPlan(p);
-    } catch { /* silent */ }
-  }, [refId, hasFullText]);
-  useEffect(() => { loadPlan(); }, [loadPlan]);
-
-  const ensureChunks = useCallback(async (segIdx: number) => {
-    if (segChunks[segIdx]) return;
-    setSegChunksLoading(prev => new Set(prev).add(segIdx));
-    try {
-      const r = await apiGet<{ chunks: ChunkMeta[] }>(
-        `/api/references/works/${refId}/segments/${segIdx}/chunks`,
-      );
-      setSegChunks(prev => ({ ...prev, [segIdx]: r.chunks || [] }));
-    } catch (e: any) {
-      toast(e?.message || "获取分段失败", "error");
-    } finally {
-      setSegChunksLoading(prev => {
-        const next = new Set(prev); next.delete(segIdx); return next;
-      });
-    }
-  }, [refId, segChunks, toast]);
 
   const toggleSeg = async (i: number) => {
     const isOpen = openSegs.has(i);
