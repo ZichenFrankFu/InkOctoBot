@@ -168,19 +168,28 @@ export default function PlotOutlinePanel({
   // epoch and mark it committed if any period inside the range carries
   // events. This persists across sessions because the chronicle itself
   // does.
-  const detectCommittedChunk = useCallback(
-    (volumeTitle: string, startCh: number, endCh: number): boolean => {
+  //
+  // Returns the actual events array (or null if no events in range) so
+  // the restore can also seed chunkState.events — fixes the "已入库 ·
+  // 0 事件" badge that appeared on tab return because the status was
+  // restored but the event list wasn't.
+  const detectCommittedChunkEvents = useCallback(
+    (volumeTitle: string, startCh: number, endCh: number): any[] | null => {
       const outline = plotOutlineRef.current;
-      if (!outline?.epochs) return false;
+      if (!outline?.epochs) return null;
       const epoch = outline.epochs.find(e => e.title === volumeTitle);
-      if (!epoch) return false;
-      return (epoch.periods || []).some(p => {
-        if (!p.events || p.events.length === 0) return false;
+      if (!epoch) return null;
+      const collected: any[] = [];
+      for (const p of (epoch.periods || [])) {
+        if (!p.events || p.events.length === 0) continue;
         const m = (p.time || "").match(/第\s*(\d+)\s*章/);
-        if (!m) return false;
+        if (!m) continue;
         const n = parseInt(m[1], 10);
-        return n >= startCh && n <= endCh;
-      });
+        if (n >= startCh && n <= endCh) {
+          for (const ev of p.events) collected.push(ev);
+        }
+      }
+      return collected.length > 0 ? collected : null;
     },
     [],
   );
@@ -201,18 +210,23 @@ export default function PlotOutlinePanel({
               || currentStatus === "ready" || currentStatus === "committed") {
             continue;
           }
-          const isCommitted = detectCommittedChunk(
+          const events = detectCommittedChunkEvents(
             title, ck.start_chapter, ck.end_chapter,
           );
-          if (isCommitted) {
-            next[k] = { ...(next[k] || { status: "idle" }), status: "committed" };
+          if (events) {
+            next[k] = {
+              ...(next[k] || { status: "idle" }),
+              status: "committed",
+              events,
+              source: next[k]?.source || "ai",
+            };
             changed = true;
           }
         }
       }
       return changed ? next : prev;
     });
-  }, [plotOutline, plan, segChunks, detectCommittedChunk]);
+  }, [plotOutline, plan, segChunks, detectCommittedChunkEvents]);
 
   /** Whether every chunk of a volume has been committed (per the
    *  client-side derived chunkState). Used to color the volume row
@@ -555,13 +569,19 @@ export default function PlotOutlinePanel({
   };
 
   /** Merge a chunk's events into the current chronicle: one epoch per
-   *  volume (matched by title), one period per first_chapter. New
-   *  events are appended to existing periods if the chapter already
-   *  has an entry. */
+   *  volume (matched by title), one period per first_chapter.
+   *
+   *  When `replaceRange` is supplied, this REPLACES (rather than
+   *  appends to) any existing periods whose chapter number falls
+   *  within [startCh, endCh]. That's what makes re-extracting a chunk
+   *  overwrite its prior events instead of doubling them up. Pure-
+   *  manual merges (e.g. paste-back) can omit replaceRange to keep
+   *  the old additive behaviour. */
   const mergeEventsIntoChronicle = (
     base: PlotOutline | null,
     newEvents: any[],
     volumeTitle: string,
+    replaceRange?: { startCh: number; endCh: number },
   ): PlotOutline => {
     const next: PlotOutline = base
       ? {
@@ -578,6 +598,19 @@ export default function PlotOutlinePanel({
     if (!epoch) {
       epoch = { title: volumeTitle, periods: [] };
       next.epochs = [...(next.epochs || []), epoch];
+    }
+    if (replaceRange) {
+      // Drop periods whose 第N章 label falls inside the chunk's range
+      // so re-extraction overwrites cleanly. Non-chapter-labeled
+      // periods (e.g. "(未指定章节)" or story-time labels left over
+      // from a previous summary) are kept untouched — we only own the
+      // chapter-numbered ones produced by extraction.
+      epoch.periods = (epoch.periods || []).filter(p => {
+        const m = (p.time || "").match(/第\s*(\d+)\s*章/);
+        if (!m) return true;
+        const n = parseInt(m[1], 10);
+        return !(n >= replaceRange.startCh && n <= replaceRange.endCh);
+      });
     }
     for (const ev of newEvents) {
       const key = ((ev.first_chapter || "") + "").trim() || "(未指定章节)";
@@ -596,11 +629,16 @@ export default function PlotOutlinePanel({
     if (!st || st.status !== "ready" || !st.events || st.events.length === 0) return;
     const seg = plan?.segments[segIdx];
     if (!seg) return;
+    // Look up the chunk's chapter range so the merge can replace
+    // (rather than append to) prior periods inside that range. This
+    // is what makes re-extracting a chunk overwrite cleanly.
+    const ck = (segChunks[segIdx] || []).find(c => c.chunk_index === chunkIdx);
     patchChunk(segIdx, chunkIdx, { status: "committing" });
     try {
       const merged = mergeEventsIntoChronicle(
         plotOutline, st.events,
         seg.title || `第 ${segIdx + 1} 卷`,
+        ck ? { startCh: ck.start_chapter, endCh: ck.end_chapter } : undefined,
       );
       await onSavePlot(merged);
       patchChunk(segIdx, chunkIdx, { status: "committed" });
@@ -756,8 +794,11 @@ export default function PlotOutlinePanel({
             });
             continue;
           }
+          // Bulk-run also replaces by chunk range so re-running on
+          // an already-committed work doesn't duplicate events.
           acc = mergeEventsIntoChronicle(
             acc, r.events, seg.title || `第 ${seg.index + 1} 卷`,
+            { startCh: chunk.start_chapter, endCh: chunk.end_chapter },
           );
           try {
             await onSavePlot(acc);
