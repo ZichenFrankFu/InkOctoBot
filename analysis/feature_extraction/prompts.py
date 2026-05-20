@@ -24,6 +24,95 @@ logger = logging.getLogger("inkoctobot.analysis.prompts")
 # ── Factory defaults ─────────────────────────────────────────────────
 
 DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
+    "reference.unified": {
+        "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
+
+任务：阅读下面这**一段**小说文本，一次性抽取 4 类信息——**事件 / 角色 / 设定 / 风格**——合并成**一个** JSON 对象返回。这样同一段正文只需上传一次。
+
+作品上下文（仅供消歧 / 检索；不要当成「我们聊过的内容」）：
+- 作品标题：《{title}》
+- 作者：{author}
+- 平台：{platform}
+- 本卷：第 {volume_index} 卷 {volume_title}
+- 本次范围：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
+
+**严格禁止**（违反则整条响应被视为错误）：
+- 任何寒暄、解释、对话语句
+- ```json ... ``` 这样的 markdown 包装
+- <think>...</think> 等推理块
+- JSON 之外的任何文字
+
+**只输出**：以 `{{` 开始、以 `}}` 结束的合法 JSON 对象，顶层恰好 4 个键：events / characters / settings / style。
+
+输出 JSON schema（字段名严格匹配）：
+
+{{
+  "events": [
+    {{
+      "first_chapter": "事件出现的章号（全局章号，如「第 12 章」），必填",
+      "time_marker": "事件在故事中的时间（如「1954 年 3 月」「春末」），无则填 \\"\\"",
+      "subject": "事件主语：角色名 / 组织名 / 「叙事者」",
+      "category": "plot_main | plot_side | character | setting | conflict | revelation | foreshadow | other",
+      "name": "事件名（≤ 12 字，章节弧标题级别）",
+      "description": "1 句客观陈述本事件，≤ 60 字；不写动机/心理/细节"
+    }}
+  ],
+  "characters": [
+    {{
+      "name": "角色名",
+      "role_tag": "主角 | 女主角 | 反派 | 男配 | 女配 | 师长 | 重要配角 | 路人 | 其他",
+      "intro": "一句话简介（≤ 40 字）",
+      "mentions": 本段中该角色的出场次数（整数估计）,
+      "first_chapter": "本段中首次出现的章号，如「第 4 章」",
+      "appearance":  [{{"chapter": "第 N 章", "text": "外貌描写要点（≤ 40 字）"}}],
+      "personality": [{{"chapter": "第 N 章", "text": "性格/行为要点（≤ 40 字）"}}],
+      "experiences": [{{"chapter": "第 N 章", "text": "本段经历要点（≤ 40 字）"}}]
+    }}
+  ],
+  "settings": [
+    {{
+      "category": "power_system | factions | geography | social_rules | history | hard_rules | worldview | other",
+      "title": "概括性短标题（≤ 12 字，如「机械义肢」「18 号监狱」）",
+      "first_chapter": "本段里首次出现的章号，如「第 4 章」",
+      "updates": [{{"chapter": "第 N 章", "text": "本章关于此设定的新事实/扩展/反转（≤ 50 字）"}}]
+    }}
+  ],
+  "style": {{
+    "dialogue_ratio": 0–1 浮点，对话（含心理独白）占本段篇幅的比例,
+    "rhetoric_frequency": 数字，每千字使用比喻/排比/反问/夸张等修辞的次数,
+    "description_density": 0–1 浮点，环境/外貌/动作等描写性文字占比,
+    "pacing_profile": {{"fast": 0–1, "medium": 0–1, "slow": 0–1}},
+    "chapter_signals": [
+      {{
+        "chapter": "第 N 章（本段每一章都要有一条）",
+        "info_density": 0–1 浮点，本章信息密度（推进剧情/抛设定/铺垫的有效信息量，灌水越多越低）,
+        "payoffs": 整数，本章「爽点」个数（打脸/扮猪吃虎/突破/反转/获得宝物等令读者爽快的情节）,
+        "hooks": 整数，本章「钩子」个数（章末悬念、未解之谜、引导继续阅读的张力点）
+      }}
+    ]
+  }}
+}}
+
+类别中文对照（用英文 key 输出）：
+- 事件 category：plot_main 主线  plot_side 支线  character 角色  setting 设定  conflict 冲突  revelation 揭示  foreshadow 伏笔  other 其他
+- 设定 category：power_system 力量体系  factions 势力组织  geography 地理  social_rules 社会规则  history 历史  hard_rules 硬规则  worldview 世界观  other 其他
+
+要求：
+- 事件颗粒度为章节弧标题级别，每章 1-3 条最佳；不要写镜头级细节。
+- 角色的 appearance/personality/experiences 至少给主要角色填写；次要角色可只填 experiences。
+- 设定 `updates` 至少 1 条；最多 25 条设定。
+- `style.chapter_signals` **必须覆盖本段的每一章**（共 {n_chapters} 章）；`pacing_profile` 三项之和约等于 1。
+- 平均句长、词汇丰富度、标点等纯统计特征由 NLP 离线计算，**不要**输出。
+- 某一类没有内容时返回空数组（events/characters/settings）或合理估计（style）。
+
+本段正文（约 {n_chars} 字）：
+{text}
+""",
+        "vars": ["title", "author", "platform", "volume_index", "volume_title",
+                 "start_chapter", "end_chapter", "n_chapters", "n_chars", "text"],
+        "description": "参考作品分段一次性抽取事件+角色+设定+风格（省 token，单段正文只上传一次）",
+    },
+
     "reference.style": {
         "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
 

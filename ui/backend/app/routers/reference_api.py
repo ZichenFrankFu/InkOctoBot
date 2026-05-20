@@ -2800,6 +2800,86 @@ async def extract_chunk_settings(
         raise HTTPException(500, f"设定提取失败: {e}")
 
 
+@router.post("/works/{ref_id}/segments/{segment_index}/chunks/{chunk_index}/extract_all")
+async def extract_chunk_all(
+    ref_id: str, segment_index: int, chunk_index: int,
+    body: Optional[ChunkExtractRequest] = None,
+):
+    """Unified per-chunk extraction: ONE LLM call pulls events +
+    characters + settings + style for the chunk, so the chapter text is
+    uploaded once instead of four times. Also runs the offline NLP style
+    metrics. Returns ``{events, characters, settings, style, chunk,
+    elapsed_s, errors}`` where ``style`` already merges the NLP half
+    (avg_sentence_length, vocab_complexity, punctuation_profile) with
+    the LLM half (dialogue ratio, rhetoric, payoff/info/hook density,
+    pacing, per-chapter chapter_signals).
+
+    Does NOT persist — the UI distributes the four pieces into
+    plot_outline_json / extracted_characters_json / settings_json /
+    style_fingerprint_json on commit."""
+    body = body or ChunkExtractRequest()
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    import time as _time
+    t0 = _time.perf_counter()
+    try:
+        from analysis.feature_extraction.nlp_stats import compute_nlp_style
+        from analysis.feature_extraction.ai_extractor import ai_extract_all
+        from models.router import ModelRouter
+        chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
+            db, w, ref_id, segment_index, chunk_index, body.max_chars,
+        )
+        nlp = compute_nlp_style(chunk_chapters)
+        errors: list[str] = []
+        result: dict = {"events": [], "characters": [], "settings": [], "style": {}}
+        # use_ai=False is the paste path: skip the LLM call and return
+        # only the offline NLP style half (the events/characters/settings
+        # and the LLM style come from the user's pasted JSON).
+        if body.use_ai:
+            try:
+                router_inst = ModelRouter()
+            except Exception as e:
+                raise HTTPException(503, f"AI 路由初始化失败：{e}")
+            chunk_ctx = {
+                **work_ctx,
+                "start_chapter": chunk_meta["start_chapter"],
+                "end_chapter": chunk_meta["end_chapter"],
+            }
+            try:
+                result = await ai_extract_all(
+                    chunk_chapters, router_inst,
+                    prompt_override=body.prompt_override,
+                    use_web_search=body.use_web_search,
+                    work_ctx=chunk_ctx,
+                )
+            except Exception as e:
+                errors.append(f"AI 提取失败：{str(e)[:240]}")
+        elapsed = round(_time.perf_counter() - t0, 2)
+        return {
+            "events": result.get("events") or [],
+            "characters": result.get("characters") or [],
+            "settings": result.get("settings") or [],
+            # style = NLP half (offline) merged with the LLM half.
+            "style": {**nlp, **(result.get("style") or {})},
+            "n_chars": chunk_meta["n_chars"],
+            "elapsed_s": elapsed,
+            "errors": errors,
+            "chunk": {
+                "chunk_index": chunk_index, "total_chunks": total,
+                "start_chapter": chunk_meta["start_chapter"],
+                "end_chapter": chunk_meta["end_chapter"],
+                "n_chapters": chunk_meta["n_chapters"],
+                "n_chars": chunk_meta["n_chars"],
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"统一特征提取失败: {e}")
+
+
 @router.post("/works/{ref_id}/segments/{segment_index}/chunks/{chunk_index}/extract_style")
 async def extract_chunk_style(
     ref_id: str, segment_index: int, chunk_index: int,
@@ -3455,7 +3535,7 @@ def preview_prompt(
 
     # Segment-scoped: need ref_id + segment_index → build chapter text
     if key in {"reference.characters", "reference.settings", "reference.rhythm",
-               "reference.outline", "reference.style"}:
+               "reference.outline", "reference.style", "reference.unified"}:
         if not ref_id or segment_index is None:
             raise HTTPException(400, "ref_id + segment_index required for this prompt")
         db = _db()
@@ -3616,10 +3696,10 @@ def preview_prompt_chunks(
                 "chunk_end_chapter": ci["end_chapter"],
                 "chunk_n_chapters": ci["n_chapters"],
             }
-            # reference.style's template references {start_chapter}/
-            # {end_chapter}/{n_chapters} as the *chunk* range (it has no
+            # reference.style / reference.unified reference {start_chapter}/
+            # {end_chapter}/{n_chapters} as the *chunk* range (they have no
             # separate chunk_* vars), so narrow them to this chunk.
-            if key == "reference.style":
+            if key in ("reference.style", "reference.unified"):
                 vars_["start_chapter"] = ci["start_chapter"]
                 vars_["end_chapter"] = ci["end_chapter"]
                 vars_["n_chapters"] = ci["n_chapters"]

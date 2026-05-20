@@ -8,16 +8,14 @@ import {
   Section,
   StyleFingerprintEditor,
   RhythmEditor,
+  PlotOutlineEditor,
 } from "../components/reference/AnalysisEditors";
 import {
-  CharactersExtractionSection,
-  SettingsExtractionSection,
   CharactersRichDisplay,
   SettingsRichDisplay,
 } from "../components/reference/CharactersAndSettingsExtraction";
-import { FeaturesExtractionPanel } from "../components/reference/FeaturesExtractionPanel";
+import { UnifiedExtractionPanel } from "../components/reference/UnifiedExtractionPanel";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
-import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
 import PreprocessPanel from "../components/reference/PreprocessPanel";
 import FilesPanel from "../components/reference/FilesPanel";
 import { splitGenres } from "../utils/genre";
@@ -647,7 +645,7 @@ export default function ReferenceLibraryPage() {
 
 /* ───────────────── Work Detail (horizontal tabs) ───────────────── */
 
-type WorkDetailTab = "files" | "preprocess" | "plot" | "characters" | "settings" | "features" | "info";
+type WorkDetailTab = "files" | "preprocess" | "extract" | "plot" | "characters" | "settings" | "features";
 
 const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   done: { label: "已分析", color: "var(--jade)" },
@@ -672,11 +670,6 @@ function WorkDetail({
   const [tab, setTab] = useState<WorkDetailTab>("files");
   const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
   const [editingWhy, setEditingWhy] = useState(false);
-  // Shared segment index for the prompt-copy panels in the
-  // characters / settings tabs. Defaults to 0 (first volume) — the
-  // user can change it from the outline tab's preview controls and
-  // the value carries across tabs.
-  const [activeSegmentIndex, setActiveSegmentIndex] = useState<number>(0);
 
   useEffect(() => {
     setWhyDraft(sel.user_why_i_like || "");
@@ -717,11 +710,11 @@ function WorkDetail({
   const TABS: { key: WorkDetailTab; label: string; count?: number | string }[] = [
     { key: "files", label: "原始文件" },
     { key: "preprocess", label: "预处理" },
+    { key: "extract", label: "特征提取" },
     { key: "plot", label: "剧情大纲", count: eventCount || undefined },
     { key: "characters", label: "角色", count: charCount || undefined },
     { key: "settings", label: "设定", count: settingsCount || undefined },
     { key: "features", label: "文本特征" },
-    { key: "info", label: "信息与笔记" },
   ];
 
   return (
@@ -817,125 +810,14 @@ function WorkDetail({
 
       {/* Tab content */}
       {tab === "files" && (
-        <FilesPanel
-          refId={sel.ref_id}
-          onAfterChange={onAfterMerge}
-        />
-      )}
-
-      {tab === "preprocess" && (
-        <PreprocessPanel
-          refId={sel.ref_id}
-          hasFullText={Boolean(sel.has_full_text)}
-          onUpload={() => setTab("files")}
-          onAfterApplyExclusions={onAfterMerge}
-        />
-      )}
-
-      {tab === "plot" && (
-        <PlotOutlinePanel
-          refId={sel.ref_id}
-          hasFullText={Boolean(sel.has_full_text)}
-          preprocessingStatus={sel.preprocessing_status}
-          plotOutline={plot}
-          onSavePlot={d => onSaveAnalysisField("plot_outline_json", d)}
-          onAfterMerge={onAfterMerge}
-          onGoToPreprocess={() => setTab("preprocess")}
-          activeSegmentIndex={activeSegmentIndex}
-          onActiveSegmentChange={setActiveSegmentIndex}
-        />
-      )}
-
-      {tab === "characters" && (
         <div className="flex flex-col gap-12">
-          {/* Section 1: per-volume / per-chunk extraction with the same
-            * pattern as the chronicle tab — AI or paste, preview,
-            * confirm-into-work. Saves into extracted_characters_json. */}
-          <CharactersExtractionSection
+          <FilesPanel
             refId={sel.ref_id}
-            hasFullText={Boolean(sel.has_full_text)}
-            data={(chars || []) as any}
-            onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
-            activeSegmentIndex={activeSegmentIndex}
-            onActiveSegmentChange={setActiveSegmentIndex}
+            onAfterChange={onAfterMerge}
           />
-          {/* Section 2: rich display with inline CRUD — sorted by
-            * frequency, each character expandable to show appearance/
-            * personality/experiences with chapter tags. Edit/delete
-            * buttons appear on each card; the previous duplicate
-            * table-style CRUD editor was removed in favour of this. */}
-          <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
-              角色列表（按重要性排序）
-            </div>
-            <CharactersRichDisplay
-              data={(chars || []) as any}
-              chronicle={plot}
-              onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
-            />
-          </div>
-        </div>
-      )}
 
-      {tab === "settings" && (
-        <div className="flex flex-col gap-12">
-          {/* Section 1: per-chunk extraction. */}
-          <SettingsExtractionSection
-            refId={sel.ref_id}
-            hasFullText={Boolean(sel.has_full_text)}
-            data={(settings || []) as any}
-            onSave={d => onSaveAnalysisField("settings_json", d)}
-            activeSegmentIndex={activeSegmentIndex}
-            onActiveSegmentChange={setActiveSegmentIndex}
-          />
-          {/* Section 2: rich display with inline CRUD — grouped by
-            * category, each setting summarised by its title with an
-            * expandable list of per-chapter updates. */}
-          <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
-              设定列表
-            </div>
-            <SettingsRichDisplay
-              data={(settings || []) as any}
-              onSave={d => onSaveAnalysisField("settings_json", d)}
-            />
-          </div>
-        </div>
-      )}
-
-      {tab === "features" && (
-        <div className="flex flex-col gap-12">
-          <FeaturesExtractionPanel
-            refId={sel.ref_id}
-            hasFullText={Boolean(sel.has_full_text)}
-            current={pj(sel.style_fingerprint_json) as any}
-            onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
-          />
-          <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏"
-            empty={!pj(sel.style_fingerprint_json)}
-            emptyHint="暂无风格指纹。请先用上面的「NLP 自动计算」或「内置 AI 提取」。"
-            defaultOpen
-          >
-            <StyleFingerprintEditor
-              data={pj(sel.style_fingerprint_json)}
-              onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
-            />
-          </Section>
-          <Section title="节奏" subtitle="每章特征 · 信息密度 · 钩子 · 节奏分段（含叙事结构）"
-            defaultOpen
-          >
-            <RhythmEditor
-              data={pj(sel.rhythm_json) as any}
-              legacyNarrative={pj(sel.narrative_structure_json)}
-              legacyRhythm={pj(sel.rhythm_template_json)}
-              onSave={d => onSaveAnalysisField("rhythm_json", d)}
-            />
-          </Section>
-        </div>
-      )}
-
-      {tab === "info" && (
-        <div className="flex flex-col gap-12">
+          {/* 信息与笔记 — merged into the 原始文件 tab so作品元数据 /
+            * 评分 / 笔记 live next to the source files they describe. */}
           {/* Stats */}
           <div className="card">
             <div className="card-body">
@@ -1010,6 +892,90 @@ function WorkDetail({
               </dl>
             </div>
           </div>
+        </div>
+      )}
+
+      {tab === "preprocess" && (
+        <PreprocessPanel
+          refId={sel.ref_id}
+          hasFullText={Boolean(sel.has_full_text)}
+          onUpload={() => setTab("files")}
+          onAfterApplyExclusions={onAfterMerge}
+        />
+      )}
+
+      {tab === "extract" && (
+        <UnifiedExtractionPanel
+          refId={sel.ref_id}
+          hasFullText={Boolean(sel.has_full_text)}
+          plot={plot}
+          characters={(chars || []) as any}
+          settings={(settings || []) as any}
+          style={pj(sel.style_fingerprint_json) as any}
+          onSavePlot={d => onSaveAnalysisField("plot_outline_json", d)}
+          onSaveCharacters={d => onSaveAnalysisField("extracted_characters_json", d)}
+          onSaveSettings={d => onSaveAnalysisField("settings_json", d)}
+          onSaveStyle={d => onSaveAnalysisField("style_fingerprint_json", d)}
+        />
+      )}
+
+      {/* The 剧情大纲 / 角色 / 设定 / 文本特征 tabs are整体浏览 — display
+        * and CRUD only. Extraction happens once in the「特征提取」tab. */}
+      {tab === "plot" && (
+        <PlotOutlineEditor
+          data={plot}
+          onSave={d => onSaveAnalysisField("plot_outline_json", d)}
+          refId={sel.ref_id}
+        />
+      )}
+
+      {tab === "characters" && (
+        <div className="flex flex-col gap-12">
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>
+            角色列表（按重要性排序）
+          </div>
+          <CharactersRichDisplay
+            data={(chars || []) as any}
+            chronicle={plot}
+            onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+          />
+        </div>
+      )}
+
+      {tab === "settings" && (
+        <div className="flex flex-col gap-12">
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>
+            设定列表
+          </div>
+          <SettingsRichDisplay
+            data={(settings || []) as any}
+            onSave={d => onSaveAnalysisField("settings_json", d)}
+          />
+        </div>
+      )}
+
+      {tab === "features" && (
+        <div className="flex flex-col gap-12">
+          <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏 / 信息密度 / 爽点 / 钩子"
+            empty={!pj(sel.style_fingerprint_json)}
+            emptyHint="暂无风格指纹。请到「特征提取」tab 分段提取。"
+            defaultOpen
+          >
+            <StyleFingerprintEditor
+              data={pj(sel.style_fingerprint_json)}
+              onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
+            />
+          </Section>
+          <Section title="节奏" subtitle="每章特征 · 信息密度 · 钩子 · 节奏分段（含叙事结构）"
+            defaultOpen
+          >
+            <RhythmEditor
+              data={pj(sel.rhythm_json) as any}
+              legacyNarrative={pj(sel.narrative_structure_json)}
+              legacyRhythm={pj(sel.rhythm_template_json)}
+              onSave={d => onSaveAnalysisField("rhythm_json", d)}
+            />
+          </Section>
         </div>
       )}
     </div>

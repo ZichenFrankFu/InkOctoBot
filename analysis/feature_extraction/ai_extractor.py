@@ -477,6 +477,156 @@ async def ai_extract_style(chapters: list[dict], router: Any,
     return normalize_ai_style(_parse_obj(raw))
 
 
+_SETTING_CATS = frozenset({
+    "power_system", "factions", "geography", "social_rules",
+    "history", "hard_rules", "worldview", "other",
+})
+
+
+def _normalize_unified_style(raw: Any, n_chars: int, n_chapters: int) -> dict:
+    """Coerce the `style` block of a unified extraction into the canonical
+    fingerprint. The LLM gives per-chapter signals (info_density, payoffs,
+    hooks); the chunk-level payoff_density / hook_density / info_density
+    are DERIVED from them so there's a single source of truth."""
+    if not isinstance(raw, dict):
+        return {}
+    def _f(k: str, d: float = 0.0) -> float:
+        v = raw.get(k)
+        try:
+            return float(v) if v is not None else d
+        except (TypeError, ValueError):
+            return d
+    pp = raw.get("pacing_profile") or {}
+    if not isinstance(pp, dict):
+        pp = {}
+    signals: list[dict] = []
+    total_payoffs = 0
+    total_hooks = 0
+    info_sum = 0.0
+    for s in (raw.get("chapter_signals") or []):
+        if not isinstance(s, dict):
+            continue
+        try:
+            info = float(s.get("info_density") or 0)
+        except (TypeError, ValueError):
+            info = 0.0
+        try:
+            payoffs = int(float(s.get("payoffs") or 0))
+        except (TypeError, ValueError):
+            payoffs = 0
+        try:
+            hooks = int(float(s.get("hooks") or 0))
+        except (TypeError, ValueError):
+            hooks = 0
+        signals.append({
+            "chapter": (s.get("chapter") or "").strip()[:20],
+            "info_density": round(info, 4),
+            "payoffs": payoffs,
+            "hooks": hooks,
+        })
+        total_payoffs += payoffs
+        total_hooks += hooks
+        info_sum += info
+    n_sig = len(signals)
+    return {
+        "dialogue_ratio":      round(_f("dialogue_ratio"), 4),
+        "rhetoric_frequency":  round(_f("rhetoric_frequency"), 4),
+        "description_density": round(_f("description_density"), 4),
+        # Derived chunk aggregates from the per-chapter signals.
+        "payoff_density":      round(total_payoffs / max(n_chars / 10000.0, 1.0), 4),
+        "hook_density":        round(total_hooks / max(n_chapters, 1), 4),
+        "info_density":        round(info_sum / n_sig, 4) if n_sig else 0.0,
+        "pacing_profile": {
+            "fast":   round(float(pp.get("fast") or 0), 3),
+            "medium": round(float(pp.get("medium") or 0), 3),
+            "slow":   round(float(pp.get("slow") or 0), 3),
+        },
+        "chapter_signals": signals,
+    }
+
+
+async def ai_extract_all(chapters: list[dict], router: Any,
+                          *, prompt_override: str | None = None,
+                          use_web_search: bool = False,
+                          work_ctx: dict | None = None) -> dict:
+    """One LLM call that extracts events + characters + settings + style
+    for a chunk. The chapter text is uploaded ONCE instead of four times
+    (one call per feature) — the main token saving for the features tab.
+
+    Returns ``{events, characters, settings, style}`` where each piece
+    matches the shape of its single-purpose extractor (ai_extract_outline_events
+    / ai_extract_characters / ai_extract_settings) plus the unified
+    style block (with per-chapter chapter_signals)."""
+    from analysis.feature_extraction.prompts import render
+    text, nchars = _build_segment_text(chapters)
+    prompt = render(
+        "reference.unified", override=prompt_override,
+        n_chapters=len(chapters), n_chars=nchars, text=text,
+        **_ctx(work_ctx),
+    )
+    raw = await _invoke(router, prompt, max_tokens=8192,
+                          use_web_search=use_web_search, expect="object")
+    obj = _parse_obj(raw)
+
+    events: list[dict] = []
+    for ev in (obj.get("events") or []):
+        n = _normalize_event(ev)
+        if n is not None:
+            events.append(n)
+
+    characters: list[dict] = []
+    for it in (obj.get("characters") or []):
+        if not isinstance(it, dict):
+            continue
+        name = (it.get("name") or "").strip()
+        if not name:
+            continue
+        characters.append({
+            "name": name,
+            "mentions": int(it.get("mentions") or 0) if str(it.get("mentions") or "0").strip().lstrip("-").isdigit() else 0,
+            "intro": (it.get("intro") or "").strip(),
+            "speech_samples": [],
+            "first_seen_at": (it.get("first_seen_at") or "").strip(),
+            "first_chapter": (it.get("first_chapter") or "").strip(),
+            "role_tag": (it.get("role_tag") or "").strip(),
+            "appearance": _norm_tagged_list(it.get("appearance")),
+            "personality": _norm_tagged_list(it.get("personality")),
+            "experiences": _norm_tagged_list(it.get("experiences")),
+        })
+
+    settings: list[dict] = []
+    for it in (obj.get("settings") or []):
+        if not isinstance(it, dict):
+            continue
+        title = (it.get("title") or "").strip()
+        updates = _norm_tagged_list(it.get("updates"), max_items=30, max_text=120)
+        content = (it.get("content") or "").strip()
+        if not content and updates:
+            content = updates[0]["text"]
+        if not title and not content and not updates:
+            continue
+        cat = (it.get("category") or "other").strip()
+        if cat not in _SETTING_CATS:
+            cat = "other"
+        settings.append({
+            "category": cat,
+            "title": title,
+            "content": content,
+            "updates": updates,
+            "first_introduced_at": (it.get("first_introduced_at") or "").strip(),
+            "first_chapter": (it.get("first_chapter") or "").strip(),
+        })
+
+    style = _normalize_unified_style(obj.get("style"), nchars, len(chapters))
+
+    return {
+        "events": events,
+        "characters": characters,
+        "settings": settings,
+        "style": style,
+    }
+
+
 async def ai_extract_characters(chapters: list[dict], router: Any,
                                    *, prompt_override: str | None = None,
                                    use_web_search: bool = False,

@@ -34,7 +34,7 @@ export function PromptCopyPanel({
   defaultOpen = false,
 }: {
   refId: string;
-  promptKey: "reference.characters" | "reference.settings" | "reference.outline" | "reference.style";
+  promptKey: "reference.characters" | "reference.settings" | "reference.outline" | "reference.style" | "reference.unified";
   segmentIndex: number | null;
   label: string;
   /** Allow the multi-chunk endpoint. Defaults to true; pass false to
@@ -347,6 +347,8 @@ interface StyleFingerprint {
   info_density?: number;
   hook_density?: number;
   pacing_profile?: { fast?: number; medium?: number; slow?: number };
+  /** Per-chapter signals from the unified extraction. */
+  chapter_signals?: { chapter: string; info_density?: number; payoffs?: number; hooks?: number }[];
 }
 
 function MetricRow({ label, value, unit, max, hint }: { label: string; value: number | undefined; unit?: string; max?: number; hint?: string }) {
@@ -489,9 +491,72 @@ export function StyleFingerprintEditor({ data, onSave }: { data: StyleFingerprin
           );
         })}
       </div>
+      {Array.isArray(d.chapter_signals) && d.chapter_signals.length > 0 && (
+        <ChapterSignalsTable signals={d.chapter_signals} />
+      )}
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
         <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
       </div>
+    </div>
+  );
+}
+
+/** Per-chapter信息密度/爽点/钩子 from the unified extraction. Collapsed
+ *  by default — the table can be long for a whole book. */
+function ChapterSignalsTable({ signals }: {
+  signals: { chapter: string; info_density?: number; payoffs?: number; hooks?: number }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const totalPayoffs = signals.reduce((n, s) => n + (s.payoffs || 0), 0);
+  const totalHooks = signals.reduce((n, s) => n + (s.hooks || 0), 0);
+  return (
+    <div style={{ marginTop: 14, border: "1px dashed var(--border)", borderRadius: 4 }}>
+      <button className="btn-ghost w-full" onClick={() => setOpen(o => !o)}
+              style={{
+                justifyContent: "space-between", padding: "6px 10px",
+                fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", borderRadius: 0,
+              }}>
+        <span>每章信号（信息密度 / 爽点 / 钩子 · 共 {signals.length} 章）</span>
+        <span className="text-xs text-muted">
+          爽点 {totalPayoffs} · 钩子 {totalHooks}
+          <span style={{
+            marginLeft: 8, transition: "transform 0.15s",
+            transform: open ? "rotate(180deg)" : "none", display: "inline-block",
+          }}>&#x25BC;</span>
+        </span>
+      </button>
+      {open && (
+        <div style={{ maxHeight: 320, overflowY: "auto", padding: "4px 8px 8px" }}>
+          <div className="flex" style={{
+            fontSize: 10, color: "var(--text-tertiary)", padding: "2px 4px",
+            borderBottom: "1px solid var(--border)",
+          }}>
+            <span style={{ flex: 1 }}>章节</span>
+            <span style={{ width: 80, textAlign: "right" }}>信息密度</span>
+            <span style={{ width: 56, textAlign: "right" }}>爽点</span>
+            <span style={{ width: 56, textAlign: "right" }}>钩子</span>
+          </div>
+          {signals.map((s, i) => (
+            <div key={i} className="flex" style={{
+              fontSize: 11, padding: "3px 4px",
+              borderBottom: "1px dashed var(--border)",
+            }}>
+              <span style={{ flex: 1, color: "var(--text-secondary)" }}>{s.chapter || "—"}</span>
+              <span style={{ width: 80, textAlign: "right", fontFamily: "var(--font-mono)" }}>
+                {typeof s.info_density === "number" ? `${(s.info_density * 100).toFixed(0)}%` : "—"}
+              </span>
+              <span style={{
+                width: 56, textAlign: "right", fontFamily: "var(--font-mono)",
+                color: (s.payoffs || 0) > 0 ? "var(--gold)" : "var(--text-tertiary)",
+              }}>{s.payoffs || 0}</span>
+              <span style={{
+                width: 56, textAlign: "right", fontFamily: "var(--font-mono)",
+                color: (s.hooks || 0) > 0 ? "var(--accent)" : "var(--text-tertiary)",
+              }}>{s.hooks || 0}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
