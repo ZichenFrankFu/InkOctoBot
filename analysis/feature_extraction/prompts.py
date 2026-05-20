@@ -50,7 +50,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
   "events": [
     {{
       "first_chapter": "事件出现的章号（全局章号，如「第 12 章」），必填",
-      "time_marker": "事件在故事中的时间（如「1954 年 3 月」「春末」），无则填 \\"\\"",
+      "time_marker": "事件的故事中时间，**尽量具体到年月日**（如「1954 年 3 月 12 日上午」「1954 年初春」）；书中未明写时，根据上下文（季节、事件先后、章节进度——章节越靠后时间越晚）**推断一个合理的具体时间**；**禁止**只写「上午」「傍晚」「次日」这类没有日期锚点的模糊时间",
       "subject": "事件主语：角色名 / 组织名 / 「叙事者」",
       "category": "plot_main | plot_side | character | setting | conflict | revelation | foreshadow | other",
       "name": "事件名（≤ 12 字，章节弧标题级别）",
@@ -64,8 +64,8 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
       "intro": "一句话简介（≤ 40 字）",
       "mentions": 本段中该角色的出场次数（整数估计）,
       "first_chapter": "本段中首次出现的章号，如「第 4 章」",
-      "appearance":  [{{"chapter": "第 N 章", "text": "外貌描写要点（≤ 40 字）"}}],
-      "personality": [{{"chapter": "第 N 章", "text": "性格/行为要点（≤ 40 字）"}}],
+      "appearance":  [{{"chapter": "第 N 章", "text": "外貌描写要点（≤ 30 字，精炼）"}}],
+      "personality": [{{"chapter": "第 N 章", "text": "一条关键性格特征（≤ 25 字，精炼，不与其它条目重复）"}}],
       "experiences": [{{"chapter": "第 N 章", "text": "本段经历要点（≤ 40 字）"}}]
     }}
   ],
@@ -108,7 +108,9 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 
 要求：
 - 事件颗粒度为章节弧标题级别，每章 1-3 条最佳；不要写镜头级细节。
+- 事件的 `time_marker` 必须带日期锚点，不能只是「上午」「傍晚」「次日」。
 - 角色的 appearance/personality/experiences 至少给主要角色填写；次要角色可只填 experiences。
+- **personality 务必精简**：只有当本段对该角色性格有**重要揭示**时才新增一条；条目之间不得重复或近义；同一角色性格条目宁少勿滥。
 - 设定 `updates` 至少 1 条；最多 25 条设定。
 - `style.chapter_signals` **必须覆盖本段的每一章**（共 {n_chapters} 章），逐章给出信息密度 / 爽点 / 钩子；`pacing_profile` 三项之和约等于 1。
 - 平均句长、词汇丰富度、标点等纯统计特征由 NLP 离线计算，**不要**输出。

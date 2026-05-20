@@ -706,6 +706,23 @@ function WorkDetail({
     return out;
   }, [segmentPlan, segChunks]);
 
+  // Feature-extraction progress — how many chapters' info has been
+  // pulled (a chunk counts once it has any committed section, recorded
+  // in style_fingerprint_json._chunks).
+  const extractionProgress = useMemo(() => {
+    const ledger = ((pj(sel.style_fingerprint_json) as any)?._chunks) || {};
+    const total = segmentPlan?.total_chapters || 0;
+    let doneChapters = 0;
+    let doneChunks = 0;
+    for (const ck of chunkList) {
+      if (ledger[ck.key]) {
+        doneChunks += 1;
+        doneChapters += Math.max(0, ck.endChapter - ck.startChapter + 1);
+      }
+    }
+    return { doneChapters, total, doneChunks, totalChunks: chunkList.length };
+  }, [sel.style_fingerprint_json, segmentPlan, chunkList]);
+
   useEffect(() => {
     setWhyDraft(sel.user_why_i_like || "");
     setEditingWhy(false);
@@ -855,6 +872,27 @@ function WorkDetail({
                 <Stat label="设定" value={settingsCount} />
                 <Stat label="评分" value={sel.user_rating ? stars(sel.user_rating) : "—"} />
               </div>
+              {/* Feature-extraction progress bar. */}
+              {extractionProgress.total > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <div className="flex items-center justify-between" style={{ marginBottom: 5 }}>
+                    <span className="text-xs text-muted">特征提取进度</span>
+                    <span className="text-xs" style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
+                      {extractionProgress.doneChapters} / {extractionProgress.total} 章
+                      {extractionProgress.totalChunks > 0 &&
+                        ` · ${extractionProgress.doneChunks}/${extractionProgress.totalChunks} 分段`}
+                    </span>
+                  </div>
+                  <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{
+                      height: "100%",
+                      width: `${extractionProgress.total > 0
+                        ? Math.min(100, (extractionProgress.doneChapters / extractionProgress.total) * 100) : 0}%`,
+                      background: "var(--jade)", borderRadius: 4, transition: "width 0.3s",
+                    }} />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

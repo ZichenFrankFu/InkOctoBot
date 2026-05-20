@@ -1249,7 +1249,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         borderColor: guessing ? "var(--gold)" : undefined,
                         opacity: !statusLoaded ? 0.5 : 1,
                       }}
-                      onClick={() => { void guessFormat(); }}
+                      onClick={() => { setChapterEditMode(true); void guessFormat(); }}
                       disabled={guessing || !statusLoaded}
                       title={!statusLoaded ? "正在加载历史，请稍候…" : "先扫描全文匹配章节格式，再让你确认后进行识别"}>
                 {guessing
@@ -1862,14 +1862,9 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               <div className="text-xs text-muted" style={{ marginTop: 2 }}>
                 数据库中共 {savedSummary.saved_count} 章
                 {savedSummary.saved_at && ` · 保存于 ${new Date(savedSummary.saved_at).toLocaleString("zh-CN")}`}
+                {" "}· 如需重新识别 / 清理，点上方「智能章节识别」的「重新识别」
               </div>
             </div>
-            <button className="btn-primary"
-                    style={{ fontSize: 11, padding: "4px 12px" }}
-                    onClick={() => setChapterEditMode(true)}
-                    title="重新识别 / 清理章节；保存后会覆盖数据库中已存储的章节">
-              重新识别章节
-            </button>
           </div>
           <div className="flex flex-col gap-2" style={{
             maxHeight: 360, overflowY: "auto",
