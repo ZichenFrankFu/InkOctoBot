@@ -176,11 +176,21 @@ export function SettingsRichDisplay({ data, onSave, chunkList }: {
   const hasSegments = !!chunkList && chunkList.length > 0;
   const mode: "segment" | "book" = hasSegments ? viewMode : "book";
 
+  const segNoOf = (firstChapter?: string): number | null => {
+    if (!chunkList || chunkList.length === 0) return null;
+    const m = (firstChapter || "").match(/(\d+)/);
+    if (!m) return null;
+    const ch = parseInt(m[1], 10);
+    const hit = chunkList.find(c => ch >= c.startChapter && ch <= c.endChapter);
+    return hit ? hit.globalIndex : null;
+  };
+
   const renderCard = (s: SettingItem) => {
     const gi = findGlobalIdx(s);
     return (
       <SettingCard key={gi >= 0 ? gi : s.title}
                    s={s}
+                   segNo={segNoOf(s.first_chapter)}
                    onChange={editable ? (next) => updateAt(gi, next) : undefined}
                    onDelete={editable ? () => removeAt(gi) : undefined} />
     );
@@ -227,8 +237,10 @@ export function SettingsRichDisplay({ data, onSave, chunkList }: {
   );
 }
 
-function SettingCard({ s, onChange, onDelete }: {
+function SettingCard({ s, segNo, onChange, onDelete }: {
   s: SettingItem;
+  /** Which extraction 分段 this setting first appears in. */
+  segNo?: number | null;
   onChange?: (next: SettingItem) => void;
   onDelete?: () => void;
 }) {
@@ -275,6 +287,13 @@ function SettingCard({ s, onChange, onDelete }: {
               color: "var(--jade)", border: "1px solid var(--jade)",
               borderRadius: 3,
             }}>{s.first_chapter}</span>
+          )}
+          {segNo != null && (
+            <span className="tag" style={{
+              fontSize: 10, padding: "0 6px",
+              color: "var(--text-tertiary)", border: "1px solid var(--border)",
+              borderRadius: 3,
+            }} title="该设定首次出现所在的提取分段">第 {segNo} 段</span>
           )}
         </button>
         {editable && (editing ? (
@@ -481,6 +500,16 @@ export function CharactersRichDisplay({
   // else the total of the rich fact lists. We keep the ORIGINAL index
   // alongside each entry so edit/delete handlers still patch the right
   // slot in the source array.
+  // Which extraction 分段 a chapter falls in — shown as a「第 N 段」tag
+  // on every card so the source 分段 is visible in any view mode.
+  const segNoOf = (firstChapter?: string): number | null => {
+    if (!chunkList || chunkList.length === 0) return null;
+    const m = (firstChapter || "").match(/(\d+)/);
+    if (!m) return null;
+    const ch = parseInt(m[1], 10);
+    const hit = chunkList.find(c => ch >= c.startChapter && ch <= c.endChapter);
+    return hit ? hit.globalIndex : null;
+  };
   const roleRank = (r?: string): number =>
     r === "主角" ? 0 : r === "女主角" ? 1 : 2;
   const frequency = (c: CharacterItem): number => {
@@ -504,6 +533,7 @@ export function CharactersRichDisplay({
   const renderCard = ({ c, originalIndex }: { c: CharacterItem; originalIndex: number }) => (
     <CharacterCard key={originalIndex} c={c}
                    chronicleExperiences={eventsBySubject.get(c.name) || null}
+                   segNo={segNoOf(c.first_chapter)}
                    onChange={editable ? (next) => updateAt(originalIndex, next) : undefined}
                    onDelete={editable ? () => removeAt(originalIndex) : undefined} />
   );
@@ -545,10 +575,12 @@ export function CharactersRichDisplay({
 }
 
 function CharacterCard({
-  c, chronicleExperiences, onChange, onDelete,
+  c, chronicleExperiences, segNo, onChange, onDelete,
 }: {
   c: CharacterItem;
   chronicleExperiences: CharacterListItem[] | null;
+  /** Which extraction 分段 this character first appears in. */
+  segNo?: number | null;
   onChange?: (next: CharacterItem) => void;
   onDelete?: () => void;
 }) {
@@ -629,6 +661,13 @@ function CharacterCard({
               color: "var(--jade)", border: "1px solid var(--jade)",
               borderRadius: 3,
             }}>{c.first_chapter}</span>
+          )}
+          {segNo != null && (
+            <span className="tag" style={{
+              fontSize: 10, padding: "0 5px",
+              color: "var(--text-tertiary)", border: "1px solid var(--border)",
+              borderRadius: 3,
+            }} title="该角色首次出现所在的提取分段">第 {segNo} 段</span>
           )}
         </button>
         {editable && (editing ? (

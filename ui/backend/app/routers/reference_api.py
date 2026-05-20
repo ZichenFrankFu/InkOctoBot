@@ -2293,6 +2293,37 @@ def preprocess_saved_summary(ref_id: str):
     return {"saved_count": cnt, "saved_at": row[1] if row else None}
 
 
+@router.get("/works/{ref_id}/preprocess/saved_chapters")
+def preprocess_saved_chapters(ref_id: str):
+    """Return the chapter list persisted in ``reference_chapters`` (the
+    committed DB store). The 预处理 tab's read-only「已存储章节」view
+    reads from HERE — not from the transient detection state — so it
+    survives a reload even when the in-progress detection state is
+    empty."""
+    import sqlite3
+    db = _db()
+    with sqlite3.connect(db.db_path) as conn:
+        from database.reference_schema import ensure_reference_tables
+        ensure_reference_tables(conn)
+        rows = conn.execute(
+            "SELECT number, title, volume, char_count, is_author_note "
+            "FROM reference_chapters WHERE ref_id = ? ORDER BY number",
+            (ref_id,),
+        ).fetchall()
+    return {
+        "chapters": [
+            {
+                "number": int(r[0] or 0),
+                "title": r[1] or "",
+                "volume": r[2] or "",
+                "char_count": int(r[3] or 0),
+                "is_author_note": bool(r[4]),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.post("/works/{ref_id}/preprocess/undo_exclusions")
 def preprocess_undo_exclusions(ref_id: str):
     """Restore the pre-apply text from the most recent .bak snapshot.

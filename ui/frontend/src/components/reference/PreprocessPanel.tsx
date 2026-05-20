@@ -47,6 +47,15 @@ interface Chapter {
 
 interface LogEntry { ts: number; message: string; chapter?: number | null; }
 
+/** A chapter committed to the reference_chapters DB table. */
+interface SavedChapter {
+  number: number;
+  title: string;
+  volume: string;
+  char_count: number;
+  is_author_note: boolean;
+}
+
 interface GapEntry {
   after_number: number;
   before_number: number;
@@ -213,6 +222,9 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [keywordInput, setKeywordInput] = useState("");
   // Persisted-chapters summary (for the 保存全部章节 button label)
   const [savedSummary, setSavedSummary] = useState<{ saved_count: number; saved_at: string | null }>({ saved_count: 0, saved_at: null });
+  // The actual chapter list committed to the reference_chapters DB
+  // table — the source of truth for the read-only「已存储章节」view.
+  const [savedChapters, setSavedChapters] = useState<SavedChapter[]>([]);
   const [savingAll, setSavingAll] = useState(false);
   // Once chapters are written to the database the "章节清理" editing
   // section collapses to a compact read-only summary; the user clicks
@@ -310,6 +322,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         `/api/references/works/${refId}/preprocess/saved_summary`,
       );
       setSavedSummary(r);
+    } catch { /* silent */ }
+    // The read-only「已存储章节」view reads the committed DB chapters
+    // here — independent of the transient detection state.
+    try {
+      const r = await apiGet<{ chapters: SavedChapter[] }>(
+        `/api/references/works/${refId}/preprocess/saved_chapters`,
+      );
+      setSavedChapters(r.chapters || []);
     } catch { /* silent */ }
   }, [refId]);
 
@@ -1800,8 +1820,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       )}
 
       {/* Empty-state CTA: when detection has been run but no chapters
-          exist (or never run on a fresh upload). */}
-      {statusLoaded && chapters.length === 0 && (state === "idle" || state === "done") && hasFullText && (
+          exist (or never run on a fresh upload). Hidden while the
+          read-only「已存储章节」view is showing. */}
+      {statusLoaded && chapters.length === 0 && (state === "idle" || state === "done") && hasFullText
+        && (savedSummary.saved_count === 0 || chapterEditMode) && (
         <div style={{
           padding: 20, textAlign: "center",
           border: "1px dashed var(--border)", borderRadius: 4,
@@ -1820,10 +1842,11 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         </div>
       )}
 
-      {/* Section 2 (read-only): once chapters are saved to the DB, the
-          cleaning editor collapses to this compact summary. The user
-          clicks 「修改数据库中章节」 to re-open the full editor. */}
-      {chapters.length > 0 && savedSummary.saved_count > 0 && !chapterEditMode && (
+      {/* Section 2 (read-only): when chapters are committed to the DB,
+          show them by default — read straight from reference_chapters
+          so the view survives reloads even when the transient detection
+          state is empty. 「重新识别章节」 re-opens the cleaning editor. */}
+      {savedSummary.saved_count > 0 && !chapterEditMode && (
         <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
           <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
             <div>
@@ -1841,34 +1864,39 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 {savedSummary.saved_at && ` · 保存于 ${new Date(savedSummary.saved_at).toLocaleString("zh-CN")}`}
               </div>
             </div>
-            <button className="btn"
+            <button className="btn-primary"
                     style={{ fontSize: 11, padding: "4px 12px" }}
                     onClick={() => setChapterEditMode(true)}
-                    title="重新打开「章节清理」以增删改章节">
-              修改数据库中章节
+                    title="重新识别 / 清理章节；保存后会覆盖数据库中已存储的章节">
+              重新识别章节
             </button>
           </div>
           <div className="flex flex-col gap-2" style={{
             maxHeight: 360, overflowY: "auto",
             padding: 6, border: "1px solid var(--border)", borderRadius: 4,
           }}>
-            {chapters.map(c => (
-              <div key={cid(c)} className="flex items-center" style={{
+            {savedChapters.map(c => (
+              <div key={c.number} className="flex items-center" style={{
                 gap: 8, fontSize: 12, padding: "3px 6px",
                 borderBottom: "1px dashed var(--border)",
               }}>
                 <span style={{
                   fontFamily: "var(--font-mono)", color: "var(--accent)",
                   minWidth: 56,
-                }}>第 {displayNum(c)} 章</span>
+                }}>第 {c.number} 章</span>
                 <span className="truncate" style={{ flex: 1, color: "var(--text-secondary)" }}>
-                  {c.title_only || c.title || "(无标题)"}
+                  {c.title || "(无标题)"}
                 </span>
                 <span className="text-xs text-muted" style={{ fontFamily: "var(--font-mono)" }}>
                   {c.char_count.toLocaleString()} 字
                 </span>
               </div>
             ))}
+            {savedChapters.length === 0 && (
+              <div className="text-xs text-muted" style={{ padding: 8, textAlign: "center" }}>
+                正在加载已存储章节…
+              </div>
+            )}
           </div>
         </div>
       )}
