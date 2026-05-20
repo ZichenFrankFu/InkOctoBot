@@ -2324,6 +2324,7 @@ def preprocess_export_text(ref_id: str):
     ``reference_chapters`` into a single .txt and return it as a file
     download. This is the post-cleanup full text — exclusions applied,
     题外话 段落 stripped — so it can be archived or re-fed elsewhere."""
+    import re as _re
     import sqlite3
     from urllib.parse import quote
     db = _db()
@@ -2347,7 +2348,7 @@ def preprocess_export_text(ref_id: str):
         parts.append(f"{heading}\n{body}" if body else heading)
     text = "\n\n".join(parts)
     title = (w.get("title") or ref_id).strip()
-    safe = re.sub(r"[^\w一-鿿-]", "_", title)[:60] or ref_id
+    safe = _re.sub(r"[^\w一-鿿-]", "_", title)[:60] or ref_id
     fname = f"{safe}_已清理全文.txt"
     return Response(
         content=text,

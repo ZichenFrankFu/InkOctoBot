@@ -105,7 +105,10 @@ async function loadChunksInto(refId: string, segIdx: number): Promise<void> {
     const r = await apiGet<{ chunks: ChunkMeta[] }>(
       `/api/references/works/${refId}/segments/${segIdx}/chunks`,
     );
-    e.chunks[segIdx] = r.chunks || [];
+    // Replace (not mutate) the chunks map so its reference changes —
+    // consumers memoize on it (e.g. chunkList) and would otherwise miss
+    // the update and keep showing an empty chunk list.
+    e.chunks = { ...e.chunks, [segIdx]: r.chunks || [] };
   } catch { /* silent */ }
   finally {
     e.chunkLoading.delete(segIdx);
