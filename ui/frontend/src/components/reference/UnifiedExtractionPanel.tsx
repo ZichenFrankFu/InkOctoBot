@@ -699,6 +699,14 @@ function UnifiedChunkRow({
 
       {open && (
         <div style={{ padding: "8px 10px", borderTop: "1px dashed var(--border)" }}>
+          {running && (
+            <div style={{ marginBottom: 8 }}>
+              <div className="text-xs" style={{ color: "var(--accent)", marginBottom: 4 }}>
+                {phase.source === "paste" ? "正在解析网页返回结果…" : "内置 AI 提取中…"}
+              </div>
+              <div className="ink-indeterminate" />
+            </div>
+          )}
           {result ? (
             <>
               <UnifiedResultPreview
@@ -1007,16 +1015,17 @@ function UnifiedResultPreview({
                     }}>{t}</span>
                   ))}
                 </div>
-                {(s.payoffs || []).length > 0 && (
-                  <div style={{ marginTop: 1 }}>
-                    {(s.payoffs || []).map((p, pi) => (
-                      <span key={pi} className="tag" style={{
-                        fontSize: 9, padding: "0 5px", marginRight: 4,
-                        color: "var(--gold)", border: "1px solid var(--gold)",
-                      }}>爽点 · {p.type}</span>
-                    ))}
+                {(s.payoffs || []).map((p, pi) => (
+                  <div key={pi} style={{ marginTop: 1, lineHeight: 1.5 }}>
+                    <span className="tag" style={{
+                      fontSize: 9, padding: "0 5px", marginRight: 5,
+                      color: "var(--gold)", border: "1px solid var(--gold)",
+                    }}>爽点 · {p.type}</span>
+                    <span style={{ color: "var(--text-secondary)" }}>
+                      {p.plot || "（未提供具体情节）"}
+                    </span>
                   </div>
-                )}
+                ))}
                 {(s.hooks || []).map((h, hi) => (
                   <div key={hi} style={{ marginTop: 1, color: "var(--text-secondary)" }}>
                     <span style={{ color: "var(--accent)", marginRight: 4 }}>钩子 · {h.position}</span>

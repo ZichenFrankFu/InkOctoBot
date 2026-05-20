@@ -6,13 +6,14 @@
  * SettingItem with a per-chapter updates list).
  */
 import React, { useState } from "react";
+import { EditIconButton } from "./AnalysisEditors";
 import type {
   CharacterItem, CharacterListItem,
   SettingItem, SettingUpdate,
   ChronicleEpoch,
 } from "./AnalysisEditors";
-import { groupBySegment } from "./referenceMerge";
-import type { SegmentPlan } from "./segmentationCache";
+import { groupByChunk, chunkLabel } from "./referenceMerge";
+import type { ChunkLoc } from "./referenceMerge";
 
 /** 分段视图 / 全书视图 toggle shared by the characters & settings tabs. */
 function ViewToggle({ mode, onChange, segmentLabel, bookLabel }: {
@@ -40,6 +41,38 @@ function ViewToggle({ mode, onChange, segmentLabel, bookLabel }: {
           {opt.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** Collapsible group — used for the 设定 category sections (力量体系 /
+ *  势力 …) so a long settings list can be folded down. */
+function CollapsibleGroup({ title, color, count, children, defaultOpen = true }: {
+  title: string; color?: string; count: number;
+  children: React.ReactNode; defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button className="btn-ghost w-full" onClick={() => setOpen(o => !o)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "4px 6px", justifyContent: "flex-start", borderRadius: 0,
+              }}>
+        <span style={{
+          transition: "transform 0.15s", transform: open ? "rotate(90deg)" : "none",
+          display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
+        }}>▶</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: color || "var(--text-primary)" }}>
+          {title}
+        </span>
+        <span className="text-xs text-muted">{count}</span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-6" style={{ marginTop: 4 }}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }
@@ -88,10 +121,10 @@ const CATEGORY_COLOR: Record<string, string> = {
 /** Render the rich settings list. 全书视图 groups by category; 分段视图
  *  groups by the volume each setting's first_chapter falls into. When
  *  `onSave` is given, each card gets inline edit/delete. */
-export function SettingsRichDisplay({ data, onSave, segmentPlan }: {
+export function SettingsRichDisplay({ data, onSave, chunkList }: {
   data: SettingItem[];
   onSave?: (next: SettingItem[]) => Promise<void> | void;
-  segmentPlan?: SegmentPlan | null;
+  chunkList?: ChunkLoc[];
 }) {
   const [viewMode, setViewMode] = useState<"segment" | "book">("book");
   const editable = !!onSave;
@@ -140,7 +173,7 @@ export function SettingsRichDisplay({ data, onSave, segmentPlan }: {
     if (!groups.has(cat)) groups.set(cat, []);
     groups.get(cat)!.push(s);
   }
-  const hasSegments = !!segmentPlan && segmentPlan.segments.length > 0;
+  const hasSegments = !!chunkList && chunkList.length > 0;
   const mode: "segment" | "book" = hasSegments ? viewMode : "book";
 
   const renderCard = (s: SettingItem) => {
@@ -173,25 +206,21 @@ export function SettingsRichDisplay({ data, onSave, segmentPlan }: {
       {mode === "book" ? (
         Array.from(groups.entries()).map(([cat, items]) => (
           items.length > 0 ? (
-            <div key={cat}>
-              <div style={{
-                fontSize: 12, fontWeight: 700, marginBottom: 6,
-                color: CATEGORY_COLOR[cat] || "var(--text-tertiary)",
-              }}>{CATEGORY_LABEL_CN[cat] || cat}</div>
-              <div className="flex flex-col gap-6">
-                {items.map(renderCard)}
-              </div>
-            </div>
+            <CollapsibleGroup key={cat}
+                              title={CATEGORY_LABEL_CN[cat] || cat}
+                              color={CATEGORY_COLOR[cat] || "var(--text-tertiary)"}
+                              count={items.length}>
+              {items.map(renderCard)}
+            </CollapsibleGroup>
           ) : null
         ))
       ) : (
-        groupBySegment(data, segmentPlan || null, s => s.first_chapter).map(g => (
-          <div key={g.index}>
-            <SegmentGroupHeader title={g.title} count={g.items.length} />
-            <div className="flex flex-col gap-6" style={{ marginTop: 6 }}>
-              {g.items.map(renderCard)}
-            </div>
-          </div>
+        groupByChunk(data, chunkList || [], s => s.first_chapter).map((g, gi) => (
+          <CollapsibleGroup key={g.loc ? g.loc.key : `un${gi}`}
+                            title={g.loc ? chunkLabel(g.loc) : "未分段（无法定位章节）"}
+                            count={g.items.length}>
+            {g.items.map(renderCard)}
+          </CollapsibleGroup>
         ))
       )}
     </div>
@@ -256,12 +285,9 @@ function SettingCard({ s, onChange, onDelete }: {
           </button>
         ) : (
           <>
-            <button className="btn-ghost"
-                    onClick={() => { setEditing(true); setOpen(true); }}
-                    title="编辑此设定的全部字段"
-                    style={{ fontSize: 11, padding: "2px 8px", color: "var(--text-tertiary)" }}>
-              编辑
-            </button>
+            <EditIconButton
+              onClick={() => { setEditing(true); setOpen(true); }}
+              title="编辑此设定的全部字段" />
             <button className="btn-ghost"
                     onClick={() => {
                       if (confirm(`确认删除设定「${s.title}」？此操作不可撤销。`)) onDelete?.();
@@ -377,7 +403,7 @@ function SettingCard({ s, onChange, onDelete }: {
  *  character's name. That keeps the 经历 sub-tab synced with the
  *  chronicle: editing/deleting an event there flows into here. */
 export function CharactersRichDisplay({
-  data, chronicle, onSave, segmentPlan,
+  data, chronicle, onSave, chunkList,
 }: {
   data: CharacterItem[];
   /** Optional plot outline; when supplied, the 经历 sub-section is
@@ -388,9 +414,9 @@ export function CharactersRichDisplay({
    *  card, add/delete on appearance/personality sub-sections, and a
    *  「+ 添加角色」 button at the top of the list. */
   onSave?: (next: CharacterItem[]) => Promise<void> | void;
-  /** Segment plan — enables the 分段视图 (group characters by the
-   *  volume their first_chapter falls into). */
-  segmentPlan?: SegmentPlan | null;
+  /** Extraction chunk list — enables the 分段视图 (group characters by
+   *  the 分段 their first_chapter falls into). */
+  chunkList?: ChunkLoc[];
 }) {
   const [viewMode, setViewMode] = useState<"segment" | "book">("book");
   // Pre-index chronicle events by subject so each card render is O(1).
@@ -472,7 +498,7 @@ export function CharactersRichDisplay({
       if (ra < 2) return a.originalIndex - b.originalIndex; // 主角/女主角 stable
       return frequency(b.c) - frequency(a.c);
     });
-  const hasSegments = !!segmentPlan && segmentPlan.segments.length > 0;
+  const hasSegments = !!chunkList && chunkList.length > 0;
   const mode: "segment" | "book" = hasSegments ? viewMode : "book";
 
   const renderCard = ({ c, originalIndex }: { c: CharacterItem; originalIndex: number }) => (
@@ -505,9 +531,11 @@ export function CharactersRichDisplay({
       {mode === "book" ? (
         ordered.map(renderCard)
       ) : (
-        groupBySegment(ordered, segmentPlan || null, x => x.c.first_chapter).map(g => (
-          <div key={g.index} className="flex flex-col gap-6">
-            <SegmentGroupHeader title={g.title} count={g.items.length} />
+        groupByChunk(ordered, chunkList || [], x => x.c.first_chapter).map((g, gi) => (
+          <div key={g.loc ? g.loc.key : `un${gi}`} className="flex flex-col gap-6">
+            <SegmentGroupHeader
+              title={g.loc ? chunkLabel(g.loc) : "未分段（无法定位章节）"}
+              count={g.items.length} />
             {g.items.map(renderCard)}
           </div>
         ))
@@ -611,12 +639,7 @@ function CharacterCard({
           </button>
         ) : (
           <>
-            <button className="btn-ghost"
-                    onClick={startEdit}
-                    title="编辑此角色的全部字段"
-                    style={{ fontSize: 11, padding: "2px 8px", color: "var(--text-tertiary)" }}>
-              编辑
-            </button>
+            <EditIconButton onClick={startEdit} title="编辑此角色的全部字段" />
             <button className="btn-ghost"
                     onClick={() => {
                       if (confirm(`确认删除角色「${c.name}」？此操作不可撤销。`)) onDelete?.();

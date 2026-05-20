@@ -2800,22 +2800,32 @@ interface VolumeEditorProps {
 
 function VolumeEditor(p: VolumeEditorProps) {
   const { plan, planDraft, planSaving } = p;
-  if (!plan) return null;
 
   return (
-    <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
+    <div style={{
+      border: "2px solid var(--accent)", borderRadius: "var(--radius-sm)",
+      padding: 12, background: "var(--bg-surface)",
+    }}>
       <div className="flex items-center justify-between" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-            分卷与分段
+          <div className="flex items-center" style={{ gap: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>
+              分卷与分段
+            </span>
+            <span className="tag" style={{
+              fontSize: 10, padding: "1px 7px",
+              color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 3,
+            }}>新建 / 编辑 / 删除卷</span>
           </div>
           <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-            {plan.segments.length === 0
-              ? `共 ${plan.total_chapters} 章 · 尚未划分卷`
-              : `${plan.is_custom ? "自定义" : (plan.type === "volumes" ? "按卷处理" : "按 ~10 万字分块")} · ${plan.segments.length} 段`}
+            {!plan
+              ? "加载分卷信息中…"
+              : plan.segments.length === 0
+                ? `共 ${plan.total_chapters} 章 · 尚未划分卷`
+                : `${plan.is_custom ? "自定义" : (plan.type === "volumes" ? "按卷处理" : "按 ~10 万字分块")} · ${plan.segments.length} 段`}
           </div>
         </div>
-        {!planDraft && plan.segments.length > 0 && (
+        {plan && !planDraft && plan.segments.length > 0 && (
           <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
                   onClick={p.startPlanEdit}
                   title="编辑卷的标题和章节范围">
@@ -2824,8 +2834,17 @@ function VolumeEditor(p: VolumeEditorProps) {
         )}
       </div>
 
+      {!plan && (
+        <div className="text-xs text-muted" style={{
+          padding: 16, textAlign: "center",
+          border: "1px dashed var(--border)", borderRadius: 4,
+        }}>
+          正在加载分卷信息……如长时间未加载，请确认正文已上传并完成章节识别。
+        </div>
+      )}
+
       {/* Empty state */}
-      {plan.segments.length === 0 && !planDraft && (
+      {plan && plan.segments.length === 0 && !planDraft && (
         <div style={{
           padding: 16, textAlign: "center",
           border: "1px dashed var(--border)", borderRadius: 4,
@@ -2852,7 +2871,7 @@ function VolumeEditor(p: VolumeEditorProps) {
       )}
 
       {/* Edit mode */}
-      {planDraft && (
+      {plan && planDraft && (
         <div>
           <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
             <div className="text-xs text-muted" style={{ lineHeight: 1.55, flex: 1, minWidth: 220 }}>
@@ -2954,7 +2973,7 @@ function VolumeEditor(p: VolumeEditorProps) {
       )}
 
       {/* List mode */}
-      {!planDraft && plan.segments.length > 0 && (
+      {plan && !planDraft && plan.segments.length > 0 && (
         <div className="flex flex-col gap-4">
           {plan.segments.map(s => (
             <div key={s.index} style={{

@@ -7,6 +7,26 @@ import { apiGet, apiPost } from "../../api/client";
  * the user edit individual values. On save, calls onSave(data).
  * ════════════════════════════════════════════════════════════ */
 
+/** A compact pencil-icon button — the standard per-entry「编辑」
+ *  affordance across the 剧情大纲 / 角色 / 设定 / 文本特征 tabs. */
+export function EditIconButton({ onClick, title = "编辑" }: {
+  onClick: () => void; title?: string;
+}) {
+  return (
+    <button className="btn-ghost" onClick={onClick} title={title} aria-label={title}
+            style={{
+              padding: "2px 6px", color: "var(--text-tertiary)",
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+            }}>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 20h9" />
+        <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+      </svg>
+    </button>
+  );
+}
+
 /* ─── Shared: copyable per-volume prompt panel ─────────────────
  * Lives next to the characters / settings tabs so the user can
  * paste the exact same prompt the pipeline would use into a web
@@ -353,7 +373,7 @@ interface StyleFingerprint {
     info_density?: number;
     chapter_types?: string[];
     summary?: string;
-    payoffs?: { type: string }[];
+    payoffs?: { type: string; plot?: string }[];
     hooks?: { position: string; content: string }[];
   }[];
 }
@@ -502,7 +522,7 @@ export function StyleFingerprintEditor({ data, onSave }: { data: StyleFingerprin
         <ChapterSignalsTable signals={d.chapter_signals} />
       )}
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
-        <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
+        <EditIconButton onClick={start} />
       </div>
     </div>
   );
@@ -546,12 +566,6 @@ function ChapterSignalsTable({ signals }: {
                 <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
                   信息密度 {typeof s.info_density === "number" ? `${(s.info_density * 100).toFixed(0)}%` : "—"}
                 </span>
-                {(Array.isArray(s.payoffs) ? s.payoffs : []).map((p, pi) => (
-                  <span key={`p${pi}`} className="tag" style={{
-                    fontSize: 9, padding: "0 5px",
-                    color: "var(--gold)", border: "1px solid var(--gold)",
-                  }}>爽点·{p?.type || "其他"}</span>
-                ))}
                 {(Array.isArray(s.chapter_types) ? s.chapter_types : []).map((t, ti) => (
                   <span key={`t${ti}`} className="tag" style={{
                     fontSize: 9, padding: "0 5px",
@@ -562,6 +576,17 @@ function ChapterSignalsTable({ signals }: {
               {s.summary && (
                 <div className="text-xs text-muted" style={{ marginTop: 2 }}>{s.summary}</div>
               )}
+              {(Array.isArray(s.payoffs) ? s.payoffs : []).map((p, pi) => (
+                <div key={`p${pi}`} style={{ marginTop: 2, lineHeight: 1.5 }}>
+                  <span className="tag" style={{
+                    fontSize: 9, padding: "0 5px", marginRight: 5,
+                    color: "var(--gold)", border: "1px solid var(--gold)",
+                  }}>爽点 · {p?.type || "其他"}</span>
+                  <span style={{ color: "var(--text-secondary)" }}>
+                    {p?.plot || "（未提供具体情节）"}
+                  </span>
+                </div>
+              ))}
               {(Array.isArray(s.hooks) ? s.hooks : []).map((h, hi) => (
                 <div key={`h${hi}`} className="text-xs" style={{ marginTop: 2, color: "var(--text-secondary)" }}>
                   <span style={{ color: "var(--accent)", marginRight: 4 }}>钩子·{h?.position || "章末"}</span>
@@ -580,15 +605,19 @@ function ChapterSignalsTable({ signals }: {
  *  from the style_fingerprint_json._chunks ledger. The 全书视图 is the
  *  aggregated StyleFingerprintEditor; this shows each segment's own
  *  fingerprint so the user can compare卷与卷之间的风格差异. */
-export function StyleByChunkView({ chunks, segmentTitles }: {
+export function StyleByChunkView({ chunks, chunkList }: {
   chunks: Record<string, {
     chars: number; source?: string;
     fp?: StyleFingerprint;
     counts?: { events: number; characters: number; settings: number };
   }>;
-  /** segIdx → volume title, for labelling chunk keys "segIdx:chunkIdx". */
-  segmentTitles: Record<number, string>;
+  /** Chunk metadata — used to label "segIdx:chunkIdx" keys as
+   *  「第 N 段 · 第 X–Y 章（卷名）」. */
+  chunkList: { key: string; globalIndex: number; volumeTitle: string;
+               startChapter: number; endChapter: number }[];
 }) {
+  const locByKey: Record<string, typeof chunkList[number]> = {};
+  for (const c of chunkList) locByKey[c.key] = c;
   // Only chunks whose 风格 section was committed carry an `fp`.
   const keys = Object.keys(chunks)
     .filter(k => chunks[k]?.fp && Object.keys(chunks[k].fp!).length > 0)
@@ -611,7 +640,10 @@ export function StyleByChunkView({ chunks, segmentTitles }: {
         const entry = chunks[k];
         const fp = entry.fp || {};
         const pp = fp.pacing_profile || {};
-        const title = segmentTitles[segIdx] || `第 ${segIdx + 1} 卷`;
+        const loc = locByKey[k];
+        const title = loc
+          ? `第 ${loc.globalIndex} 段 · 第 ${loc.startChapter}–${loc.endChapter} 章（${loc.volumeTitle}）`
+          : `第 ${segIdx + 1} 卷 · 分段 ${chunkIdx + 1}`;
         return (
           <div key={k} style={{
             border: "1px solid var(--border)", borderRadius: 4,
@@ -619,7 +651,7 @@ export function StyleByChunkView({ chunks, segmentTitles }: {
           }}>
             <div className="flex items-center" style={{ gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)" }}>
-                {title} · 分段 {chunkIdx + 1}
+                {title}
               </span>
               {entry.source && (
                 <span className="tag" style={{
@@ -849,7 +881,7 @@ export function NarrativeStructureEditor({ data, onSave }: { data: NarrativeStru
         </details>
       )}
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
-        <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
+        <EditIconButton onClick={start} />
       </div>
     </div>
   );
@@ -1344,7 +1376,7 @@ export function RhythmTemplateEditor({ data, onSave }: { data: RhythmTemplate | 
         ))}
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
-        <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
+        <EditIconButton onClick={start} />
       </div>
     </div>
   );
@@ -1949,6 +1981,7 @@ export function PlotOutlineEditor({
   onExtract,
   extracting,
   refId,
+  chunkList,
 }: {
   data: PlotOutline | null;
   onSave: (d: PlotOutline) => Promise<void> | void;
@@ -1958,7 +1991,19 @@ export function PlotOutlineEditor({
    *  the work-scoped summarize endpoint. Optional — when missing,
    *  the summary panel hides itself. */
   refId?: string;
+  /** Extraction chunk list — when supplied, each period in 分段视图
+   *  gets a「· 第 N 段」label so the user can locate the events. */
+  chunkList?: { globalIndex: number; startChapter: number; endChapter: number }[];
 }) {
+  /** Find which 分段 a period (labelled "第 N 章") belongs to. */
+  const chunkOfChapter = (periodTime: string): number | null => {
+    if (!chunkList || chunkList.length === 0) return null;
+    const m = (periodTime || "").match(/第\s*(\d+)\s*章/);
+    if (!m) return null;
+    const ch = parseInt(m[1], 10);
+    const hit = chunkList.find(c => ch >= c.startChapter && ch <= c.endChapter);
+    return hit ? hit.globalIndex : null;
+  };
   const [openEpoch, setOpenEpoch] = useState<Record<number, boolean>>({});
   // Per-event inline edit state — "ei-pi-evi" key → ChronicleEvent draft.
   // Editing one row at a time keeps the rest of the chronicle in read view.
@@ -2160,11 +2205,21 @@ export function PlotOutlineEditor({
                       >&times;</button>}
                     </div>
                   )}
-                  {isOpen && (ep.periods || []).map((per, pi) => (
+                  {isOpen && (ep.periods || []).map((per, pi) => {
+                    const segNo = viewMode === "chapter"
+                      ? chunkOfChapter(per.time || "") : null;
+                    return (
                     <div key={pi} style={{ marginBottom: 12, paddingLeft: ep.title ? 8 : 0 }}>
                       <div className="flex items-center" style={{ marginBottom: 6, gap: 4 }}>
                         <div style={{ flex: 1, fontWeight: 600, fontSize: 13, color: "var(--accent)" }}>
                           {per.time || "(未填写时间)"}
+                          {segNo != null && (
+                            <span className="tag" style={{
+                              marginLeft: 6, fontSize: 9, padding: "0 6px",
+                              color: "var(--text-tertiary)", border: "1px solid var(--border)",
+                              fontWeight: 400,
+                            }}>第 {segNo} 段</span>
+                          )}
                         </div>
                         {viewMode === "chapter" && (
                           <button
@@ -2313,7 +2368,8 @@ export function PlotOutlineEditor({
                         )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               );
             })}
@@ -2477,7 +2533,7 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
           暂无设定。在分段提取大纲时勾选「使用 AI」会自动抽取设定，或点击「编辑」手动添加。
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
+          <EditIconButton onClick={start} />
         </div>
       </div>
     );
@@ -2562,7 +2618,7 @@ export function SettingsEditor({ data, onSave }: { data: SettingItem[] | null; o
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
-        <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
+        <EditIconButton onClick={start} />
       </div>
     </div>
   );
@@ -2602,7 +2658,7 @@ export interface RhythmJson {
   coverage: { chapters: number; chars: number };
   opening_pattern: string;
   climax_positions: number[];
-  shuangdian: { chapter: number; type: string }[];
+  shuangdian: { chapter: number; type: string; plot?: string }[];
   chapter_features: RhythmChapterFeature[];
   info_density_curve: number[];
   pacing_segments: { start: number; end: number; pacing: string; avg_info_density: number }[];
@@ -2918,7 +2974,7 @@ export function RhythmEditor({ data, legacyNarrative, legacyRhythm, onSave }: {
       )}
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
-        <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }} onClick={start}>编辑</button>
+        <EditIconButton onClick={start} />
       </div>
     </div>
   );

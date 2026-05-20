@@ -520,11 +520,14 @@ def _normalize_unified_style(raw: Any, n_chars: int, n_chapters: int) -> dict:
         if isinstance(raw_payoffs, list):
             for p in raw_payoffs:
                 if isinstance(p, dict):
-                    payoffs.append({"type": (p.get("type") or "其他").strip()[:20]})
+                    payoffs.append({
+                        "type": (p.get("type") or "其他").strip()[:20],
+                        "plot": (p.get("plot") or "").strip()[:80],
+                    })
                 elif isinstance(p, str) and p.strip():
-                    payoffs.append({"type": p.strip()[:20]})
+                    payoffs.append({"type": p.strip()[:20], "plot": ""})
         elif isinstance(raw_payoffs, (int, float)):
-            payoffs = [{"type": "其他"}] * int(raw_payoffs)
+            payoffs = [{"type": "其他", "plot": ""}] * int(raw_payoffs)
         hooks: list[dict] = []
         raw_hooks = s.get("hooks")
         if isinstance(raw_hooks, list):

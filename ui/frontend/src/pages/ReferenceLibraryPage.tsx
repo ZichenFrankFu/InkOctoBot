@@ -18,6 +18,7 @@ import {
 import { UnifiedExtractionPanel } from "../components/reference/UnifiedExtractionPanel";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import { useSegmentation } from "../components/reference/segmentationCache";
+import type { ChunkLoc } from "../components/reference/referenceMerge";
 import PreprocessPanel from "../components/reference/PreprocessPanel";
 import FilesPanel from "../components/reference/FilesPanel";
 import { splitGenres } from "../utils/genre";
@@ -674,8 +675,32 @@ function WorkDetail({
   const [editingWhy, setEditingWhy] = useState(false);
   // 文本特征 tab: 分段视图 vs 全书视图.
   const [featuresView, setFeaturesView] = useState<"segment" | "book">("book");
-  // Shared segment plan — powers the 分段视图 of the browse tabs.
-  const { plan: segmentPlan } = useSegmentation(sel.ref_id, Boolean(sel.has_full_text));
+  // Shared segmentation — powers the 分段视图 of the browse tabs. We
+  // eagerly load every volume's chunk list so the browse tabs can group
+  // items by extraction 分段 (chunk), matching the 特征提取 tab.
+  const { plan: segmentPlan, chunks: segChunks, ensureChunks } =
+    useSegmentation(sel.ref_id, Boolean(sel.has_full_text));
+  useEffect(() => {
+    if (!segmentPlan) return;
+    for (const seg of segmentPlan.segments) ensureChunks(seg.index);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segmentPlan]);
+  const chunkList: ChunkLoc[] = useMemo(() => {
+    if (!segmentPlan) return [];
+    const out: ChunkLoc[] = [];
+    let g = 1;
+    for (const seg of segmentPlan.segments) {
+      for (const ck of (segChunks[seg.index] || [])) {
+        out.push({
+          key: `${seg.index}:${ck.chunk_index}`,
+          segIdx: seg.index, chunkIndex: ck.chunk_index,
+          globalIndex: g++, volumeTitle: seg.title,
+          startChapter: ck.start_chapter, endChapter: ck.end_chapter,
+        });
+      }
+    }
+    return out;
+  }, [segmentPlan, segChunks]);
 
   useEffect(() => {
     setWhyDraft(sel.user_why_i_like || "");
@@ -933,6 +958,7 @@ function WorkDetail({
           data={plot}
           onSave={d => onSaveAnalysisField("plot_outline_json", d)}
           refId={sel.ref_id}
+          chunkList={chunkList}
         />
       )}
 
@@ -945,7 +971,7 @@ function WorkDetail({
             data={(chars || []) as any}
             chronicle={plot}
             onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
-            segmentPlan={segmentPlan}
+            chunkList={chunkList}
           />
         </div>
       )}
@@ -958,15 +984,15 @@ function WorkDetail({
           <SettingsRichDisplay
             data={(settings || []) as any}
             onSave={d => onSaveAnalysisField("settings_json", d)}
-            segmentPlan={segmentPlan}
+            chunkList={chunkList}
           />
         </div>
       )}
 
       {tab === "features" && (
         <div className="flex flex-col gap-12">
-          {/* 分段视图 / 全书视图 toggle — shown once a segment plan exists. */}
-          {segmentPlan && segmentPlan.segments.length > 0 && (
+          {/* 分段视图 / 全书视图 toggle — shown once chunks exist. */}
+          {chunkList.length > 0 && (
             <div className="flex items-center" style={{ gap: 6 }}>
               <span className="text-xs text-muted">视图：</span>
               {([
@@ -988,7 +1014,7 @@ function WorkDetail({
             </div>
           )}
 
-          {(!segmentPlan || segmentPlan.segments.length === 0 || featuresView === "book") ? (
+          {(chunkList.length === 0 || featuresView === "book") ? (
             <>
               <Section title="风格指纹（全书）" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏 / 信息密度 / 爽点 / 钩子"
                 empty={!pj(sel.style_fingerprint_json)}
@@ -1017,9 +1043,7 @@ function WorkDetail({
             >
               <StyleByChunkView
                 chunks={((pj(sel.style_fingerprint_json) as any)?._chunks) || {}}
-                segmentTitles={Object.fromEntries(
-                  segmentPlan.segments.map(s => [s.index, s.title]),
-                )}
+                chunkList={chunkList}
               />
             </Section>
           )}

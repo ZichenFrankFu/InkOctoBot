@@ -1888,3 +1888,26 @@ textarea.input {
   color: var(--accent);
   border-color: var(--accent);
 }
+
+/* ── Indeterminate progress bar (paste-parse / extraction in flight) ── */
+@keyframes ink-indeterminate {
+  0%   { left: -45%; }
+  100% { left: 100%; }
+}
+.ink-indeterminate {
+  position: relative;
+  height: 4px;
+  background: var(--bg-surface-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.ink-indeterminate::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 45%;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: ink-indeterminate 1.1s ease-in-out infinite;
+}

@@ -54,6 +54,55 @@ export function groupBySegment<T>(
   return out;
 }
 
+/** One extraction 分段 (chunk) — the unit the 特征提取 tab works in.
+ *  A volume is split into one or more chunks of ≈32k chars each. */
+export interface ChunkLoc {
+  /** "segIdx:chunkIndex" — matches the style ledger keys. */
+  key: string;
+  segIdx: number;
+  chunkIndex: number;
+  /** 1-based index across the whole book — the「第 N 段」number. */
+  globalIndex: number;
+  volumeTitle: string;
+  startChapter: number;
+  endChapter: number;
+}
+
+/** Human label for a chunk: 「第 3 段 · 第 21–30 章（第二卷）」. */
+export function chunkLabel(c: ChunkLoc): string {
+  return `第 ${c.globalIndex} 段 · 第 ${c.startChapter}–${c.endChapter} 章（${c.volumeTitle}）`;
+}
+
+/** Group items by which extraction 分段 (chunk) their chapter falls in.
+ *  This is the 分段视图 grouping — finer than groupBySegment (which is
+ *  per-volume). Items outside every chunk land in a trailing bucket. */
+export function groupByChunk<T>(
+  items: T[],
+  chunkList: ChunkLoc[],
+  getChapter: (item: T) => string | undefined,
+): { loc: ChunkLoc | null; items: T[] }[] {
+  const buckets = chunkList.map(c => ({ loc: c as ChunkLoc | null, items: [] as T[] }));
+  const unassigned: T[] = [];
+  for (const it of items || []) {
+    const ch = chapterNumOf(getChapter(it));
+    let placed = false;
+    if (Number.isFinite(ch)) {
+      for (const b of buckets) {
+        const c = b.loc!;
+        if (ch >= c.startChapter && ch <= c.endChapter) {
+          b.items.push(it);
+          placed = true;
+          break;
+        }
+      }
+    }
+    if (!placed) unassigned.push(it);
+  }
+  const out = buckets.filter(b => b.items.length > 0);
+  if (unassigned.length > 0) out.push({ loc: null, items: unassigned });
+  return out;
+}
+
 /* ─────────────────── chronicle events ─────────────────── */
 
 /** Detect an "absolute" story-time marker (4-digit year, 公元/纪元
@@ -286,7 +335,11 @@ export function mergeSettings(
 
 /* ─────────────────── style fingerprint ─────────────────── */
 
-export interface ChapterPayoff { type: string }
+export interface ChapterPayoff {
+  type: string;
+  /** Concrete plot description of this 爽点 (not just the tag). */
+  plot?: string;
+}
 export interface ChapterHook { position: string; content: string }
 /** Per-chapter signal from the unified extraction — feeds both the
  *  style fingerprint's aggregates and the 节奏 (rhythm) section. */
@@ -346,11 +399,13 @@ export function normalizeChapterSignals(raw: any): ChapterSignal[] {
     if (Array.isArray(s.payoffs)) {
       payoffs = s.payoffs
         .map((p: any) => typeof p === "string"
-          ? { type: p.trim() || "其他" }
-          : (p && typeof p === "object" ? { type: String(p.type || "其他") } : null))
+          ? { type: p.trim() || "其他", plot: "" }
+          : (p && typeof p === "object"
+            ? { type: String(p.type || "其他"), plot: String(p.plot || "") }
+            : null))
         .filter(Boolean) as ChapterPayoff[];
     } else if (typeof s.payoffs === "number" && s.payoffs > 0) {
-      payoffs = Array.from({ length: Math.floor(s.payoffs) }, () => ({ type: "其他" }));
+      payoffs = Array.from({ length: Math.floor(s.payoffs) }, () => ({ type: "其他", plot: "" }));
     }
     let hooks: ChapterHook[] = [];
     if (Array.isArray(s.hooks)) {
@@ -500,10 +555,14 @@ export function buildRhythmFromSignals(
     };
   });
   features.sort((a, b) => a.chapter - b.chapter);
-  const shuangdian: { chapter: number; type: string }[] = [];
+  const shuangdian: { chapter: number; type: string; plot?: string }[] = [];
   for (const s of (signals || [])) {
     for (const p of (Array.isArray(s.payoffs) ? s.payoffs : [])) {
-      shuangdian.push({ chapter: chNum(s.chapter), type: (p && p.type) || "其他" });
+      shuangdian.push({
+        chapter: chNum(s.chapter),
+        type: (p && p.type) || "其他",
+        plot: (p && p.plot) || "",
+      });
     }
   }
   shuangdian.sort((a, b) => a.chapter - b.chapter);
