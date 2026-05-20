@@ -1266,7 +1266,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         ? Math.round(((guessProgress.current || 0) / guessProgress.total) * 100) + "%"
                         : ""}
                     </>
-                  : (state === "idle" ? "匹配章节格式" : "重新识别")}
+                  : ((state !== "idle" || savedSummary.saved_count > 0)
+                      ? "重新识别" : "匹配章节格式")}
               </button>
             )}
             {state === "running" && (
@@ -1440,7 +1441,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
             <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
               <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                      onClick={() => { setGuessCandidates(null); setChosenFormats(new Set()); }}>
+                      onClick={() => {
+                        setGuessCandidates(null);
+                        setChosenFormats(new Set());
+                        // Cancelling re-detection drops back to the
+                        // read-only 已存储章节 view when the DB still
+                        // has the previously-saved chapters.
+                        if (savedSummary.saved_count > 0) setChapterEditMode(false);
+                      }}>
                 取消
               </button>
               <button className="btn-primary"
@@ -2805,6 +2813,108 @@ function AiPromptModal({ prompt, onClose, onCopy }: {
   );
 }
 
+type VolumeRow = { title: string; start_chapter: number; end_chapter: number };
+
+/** Parse a web-LLM volume-detection response into plan rows. Tolerates
+ *  <think> blocks, ```json fences, surrounding prose, and either
+ *  {volumes:[…]} / {segments:[…]} or a bare array. */
+function parseVolumesJson(raw: string, total: number): VolumeRow[] | null {
+  let s = (raw || "").replace(/<think>[\s\S]*?<\/think>/gi, "")
+                     .replace(/<\/?think>/gi, "");
+  const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fence) s = fence[1];
+  s = s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim();
+  if (!s) return null;
+  const balanced = (start: number): string | null => {
+    const open = s[start];
+    if (open !== "{" && open !== "[") return null;
+    const close = open === "{" ? "}" : "]";
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < s.length; i++) {
+      const c = s[i];
+      if (esc) { esc = false; continue; }
+      if (c === "\\") { esc = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c === open) depth++;
+      else if (c === close) { depth--; if (depth === 0) return s.slice(start, i + 1); }
+    }
+    return null;
+  };
+  let obj: any = null;
+  for (let i = 0; i < s.length && obj == null; i++) {
+    if (s[i] !== "{" && s[i] !== "[") continue;
+    const ext = balanced(i);
+    if (!ext) continue;
+    try { obj = JSON.parse(ext); } catch { obj = null; }
+  }
+  if (obj == null) return null;
+  const arr: any[] | null = Array.isArray(obj) ? obj
+    : Array.isArray(obj.volumes) ? obj.volumes
+    : Array.isArray(obj.segments) ? obj.segments
+    : null;
+  if (!arr) return null;
+  const rows: VolumeRow[] = [];
+  for (const v of arr) {
+    if (!v || typeof v !== "object") continue;
+    const sc = parseInt(v.start_chapter ?? v.start ?? v.from, 10);
+    const ec = parseInt(v.end_chapter ?? v.end ?? v.to, 10);
+    if (!Number.isFinite(sc) || !Number.isFinite(ec)) continue;
+    const cap = total > 0 ? total : Math.max(sc, ec);
+    rows.push({
+      title: String(v.title || v.name || "").trim() || `第 ${sc}–${ec} 章`,
+      start_chapter: Math.max(1, Math.min(sc, cap)),
+      end_chapter: Math.max(1, Math.min(ec, cap)),
+    });
+  }
+  return rows;
+}
+
+/** Collapsible paste box — drop in a web-LLM volume-detection JSON and
+ *  it fills the plan draft. */
+function VolumePasteBox({ totalChapters, onParsed }: {
+  totalChapters: number;
+  onParsed: (rows: VolumeRow[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [raw, setRaw] = useState("");
+  const [error, setError] = useState("");
+  const parse = () => {
+    setError("");
+    const rows = parseVolumesJson(raw, totalChapters);
+    if (!rows) { setError("未能解析出分卷数组（需含 volumes 或 segments）"); return; }
+    if (rows.length === 0) { setError("解析结果为空"); return; }
+    onParsed(rows);
+    setRaw("");
+    setOpen(false);
+  };
+  return (
+    <div style={{ marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4 }}>
+      <button className="btn-ghost w-full" onClick={() => setOpen(o => !o)}
+              style={{
+                justifyContent: "space-between", padding: "6px 10px",
+                fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", borderRadius: 0,
+              }}>
+        <span>粘贴网页 LLM 返回结果（自动填入分卷）</span>
+        <span className="text-xs text-muted">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{ padding: 8 }}>
+          <textarea className="input font-mono" rows={5} value={raw}
+                    onChange={e => { setRaw(e.target.value); setError(""); }}
+                    placeholder={'粘贴 LLM 返回的 {"volumes":[{"title":"...","start_chapter":1,"end_chapter":30}, ...]}'}
+                    style={{ fontSize: 11, lineHeight: 1.5, resize: "vertical", background: "var(--bg-app)" }} />
+          <div className="flex items-center gap-6" style={{ marginTop: 6 }}>
+            <button className="btn-primary" style={{ fontSize: 11, padding: "3px 12px" }}
+                    onClick={parse} disabled={!raw.trim()}>解析并填入</button>
+            {error && <span className="text-xs" style={{ color: "var(--error)" }}>{error}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface VolumeEditorProps {
   plan: SegmentPlan | null;
   planDraft: { title: string; start_chapter: number; end_chapter: number }[] | null;
@@ -2863,6 +2973,15 @@ function VolumeEditor(p: VolumeEditorProps) {
         }}>
           正在加载分卷信息……如长时间未加载，请确认正文已上传并完成章节识别。
         </div>
+      )}
+
+      {/* Paste-back: parse a web-LLM volume-detection response into the
+          plan draft (pairs with the「复制 prompt」button). */}
+      {plan && (
+        <VolumePasteBox
+          totalChapters={plan.total_chapters || 0}
+          onParsed={rows => p.setPlanDraft(rows)}
+        />
       )}
 
       {/* Empty state */}

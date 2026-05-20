@@ -215,13 +215,37 @@ async def upload_text_for_work(
     from analysis.feature_extraction import preprocess_jobs
     preprocess_jobs.clear(ref_id)
 
-    w = _db().update_work(
-        ref_id,
+    update_kwargs: dict = dict(
         file_path=str(dest),
         has_full_text=True,
         preprocessing_status="pending",
         segments_json=json.dumps(state, ensure_ascii=False),
     )
+    if not append:
+        # Replacing the novel text invalidates EVERY extracted result —
+        # chronicle / characters / settings / style / rhythm — plus the
+        # committed chapter list. Wipe them all so nothing stale leaks
+        # into the new work.
+        update_kwargs.update(
+            plot_outline_json="",
+            extracted_characters_json="",
+            settings_json="",
+            style_fingerprint_json="",
+            rhythm_json="",
+            narrative_structure_json="",
+            rhythm_template_json="",
+        )
+    w = _db().update_work(ref_id, **update_kwargs)
+    if not append:
+        import sqlite3
+        try:
+            with sqlite3.connect(_db().db_path) as conn:
+                conn.execute(
+                    "DELETE FROM reference_chapters WHERE ref_id = ?", (ref_id,),
+                )
+                conn.commit()
+        except Exception:
+            pass
     return w
 
 

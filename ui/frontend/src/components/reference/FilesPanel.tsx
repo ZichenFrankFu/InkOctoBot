@@ -57,6 +57,15 @@ export default function FilesPanel({ refId, onAfterChange }: Props) {
       toast("仅支持 .txt 文件", "error");
       return;
     }
+    // Replacing the text invalidates every extracted result — make the
+    // user confirm before wiping the chronicle / characters / settings /
+    // features and the stored chapters.
+    if (!append && data && data.files.length > 0) {
+      if (!confirm(
+        "重新上传会覆盖全部正文，并清除所有已提取的内容（编年史 / 角色 / 设定 / 文本特征）"
+        + "以及预处理已存储的章节。此操作不可撤销，确定继续？"
+      )) return;
+    }
     setUploading(true);
     try {
       const fd = new FormData();
