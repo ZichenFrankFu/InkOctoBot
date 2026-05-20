@@ -108,15 +108,16 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
 
   // ── Search actions ──
 
-  const runSearch = useCallback(async () => {
-    if (!q.trim()) return;
+  const runSearch = useCallback(async (queryText?: string) => {
+    const query = (queryText ?? q).trim();
+    if (!query) return;
     setLoading(true);
     setHits([]);
     setDrillingRefId(null);
     setDrillHits([]);
     try {
       const params = new URLSearchParams({
-        q: q.trim(), k: String(k), levels: "L1,L2",
+        q: query, k: String(k), levels: "L1,L2",
       });
       const r = await apiGet<SearchResponse>(`/api/references/search?${params}`);
       setHits(r.hits || []);
@@ -281,7 +282,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
                     className="input" style={{ width: 60 }}
                   />
                 </label>
-                <button className="btn-primary" onClick={runSearch} disabled={loading || !q.trim()}>
+                <button className="btn-primary" onClick={() => runSearch()} disabled={loading || !q.trim()}>
                   {loading ? "搜索中..." : "搜索"}
                 </button>
               </div>
@@ -347,7 +348,16 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
         </>
       )}
 
-      {activeTab === "library" && <InspirationLibrary />}
+      {activeTab === "library" && (
+        <InspirationLibrary onSearchWorks={(text) => {
+          // Cap the query — embedding models truncate long input anyway
+          // and an over-long URL query param is best avoided.
+          const query = text.trim().slice(0, 600);
+          setQ(query);
+          setActiveTab("search");
+          runSearch(query);
+        }} />
+      )}
 
       {activeTab === "index" && (
         <>

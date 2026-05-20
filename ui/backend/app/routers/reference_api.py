@@ -4255,8 +4255,8 @@ async def search_works(
 
 # ═══ Inspiration library ═════════════════════════════════
 # A personal store of free-text idea snippets (scenes / plot devices /
-# character designs / …) with lexical similarity search. Independent of
-# any reference work — see rag/inspiration_search.py for the ranking.
+# character designs / …). Each entry can be used as a query to fuzzy-
+# search the reference works via the existing /search endpoint.
 
 
 class InspirationCreate(BaseModel):
@@ -4275,20 +4275,6 @@ class InspirationUpdate(BaseModel):
 def list_inspirations():
     """All inspirations, newest-updated first."""
     return {"items": _db().list_inspirations()}
-
-
-@router.get("/inspirations/search")
-def search_inspirations(
-    q: str = Query(..., min_length=1, description="查询文本"),
-    k: int = Query(20, ge=1, le=100),
-    exclude_id: Optional[str] = None,
-):
-    """Rank stored inspirations by lexical similarity to ``q``. Pass
-    ``exclude_id`` to omit the seed inspiration when finding similar."""
-    from rag.inspiration_search import rank_inspirations
-    items = _db().list_inspirations()
-    hits = rank_inspirations(q, items, top_k=k, exclude_id=exclude_id)
-    return {"q": q, "k": k, "hits": hits}
 
 
 @router.post("/inspirations")
