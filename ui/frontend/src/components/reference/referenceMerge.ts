@@ -319,29 +319,121 @@ export interface StyleFingerprint {
 }
 export interface StyleChunkEntry {
   chars: number;
-  source: "ai" | "paste";
-  fp: StyleFingerprint;
-  /** Counts of the other three feature types committed alongside this
-   *  chunk — purely for the "已入库 · N事件 N角色" badge. */
+  source?: "ai" | "paste";
+  /** Present once the 风格/节奏 section is committed for this chunk. */
+  fp?: StyleFingerprint;
+  /** Which of the four sections have been committed for this chunk.
+   *  Lets the unified tab offer a per-section 确认入库. */
+  done?: { events?: boolean; characters?: boolean; settings?: boolean; style?: boolean };
+  /** Counts of each feature type extracted — for the "已入库" badge. */
   counts?: { events: number; characters: number; settings: number };
 }
 
 function r2(v: number): number { return Math.round(v * 100) / 100; }
 function r4(v: number): number { return Math.round(v * 10000) / 10000; }
 
-/** Char-weighted average of every committed chunk's fingerprint, plus
- *  the concatenated per-chapter signals (sorted by chapter number). */
+/** Coerce a raw chapter_signals array (from a pasted web-LLM response,
+ *  which may not match the schema) into the canonical shape — payoffs
+ *  and hooks ALWAYS arrays. The AI path is normalized server-side; this
+ *  is the paste-path equivalent and the reason `.map is not a function`
+ *  no longer fires. */
+export function normalizeChapterSignals(raw: any): ChapterSignal[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ChapterSignal[] = [];
+  for (const s of raw) {
+    if (!s || typeof s !== "object") continue;
+    let payoffs: ChapterPayoff[] = [];
+    if (Array.isArray(s.payoffs)) {
+      payoffs = s.payoffs
+        .map((p: any) => typeof p === "string"
+          ? { type: p.trim() || "其他" }
+          : (p && typeof p === "object" ? { type: String(p.type || "其他") } : null))
+        .filter(Boolean) as ChapterPayoff[];
+    } else if (typeof s.payoffs === "number" && s.payoffs > 0) {
+      payoffs = Array.from({ length: Math.floor(s.payoffs) }, () => ({ type: "其他" }));
+    }
+    let hooks: ChapterHook[] = [];
+    if (Array.isArray(s.hooks)) {
+      hooks = s.hooks
+        .map((h: any) => typeof h === "string"
+          ? { position: "章末", content: h.trim() }
+          : (h && typeof h === "object"
+            ? { position: String(h.position || "章末"), content: String(h.content || "") }
+            : null))
+        .filter(Boolean) as ChapterHook[];
+    } else if (typeof s.hooks === "number" && s.hooks > 0) {
+      hooks = Array.from({ length: Math.floor(s.hooks) }, () => ({ position: "章末", content: "" }));
+    }
+    const info = Number(s.info_density);
+    out.push({
+      chapter: String(s.chapter || ""),
+      info_density: Number.isFinite(info) ? info : 0,
+      chapter_types: Array.isArray(s.chapter_types)
+        ? s.chapter_types.map((t: any) => String(t)).filter(Boolean)
+        : [],
+      summary: String(s.summary || ""),
+      payoffs,
+      hooks,
+    });
+  }
+  return out;
+}
+
+/** Normalize a pasted unified-extraction `style` block: coerce numbers,
+ *  normalize chapter_signals, and DERIVE the chunk-level payoff / hook /
+ *  info densities from the signals (single source of truth, same as the
+ *  server's _normalize_unified_style). */
+export function normalizeUnifiedStyle(
+  raw: any, nChars: number, nChapters: number,
+): StyleFingerprint {
+  const s = (raw && typeof raw === "object") ? raw : {};
+  const num = (v: any): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const signals = normalizeChapterSignals(s.chapter_signals);
+  let payoffs = 0, hooks = 0, infoSum = 0;
+  for (const sig of signals) {
+    payoffs += (sig.payoffs || []).length;
+    hooks += (sig.hooks || []).length;
+    infoSum += sig.info_density || 0;
+  }
+  const pp = (s.pacing_profile && typeof s.pacing_profile === "object") ? s.pacing_profile : {};
+  return {
+    dialogue_ratio:      r4(num(s.dialogue_ratio)),
+    rhetoric_frequency:  r4(num(s.rhetoric_frequency)),
+    description_density: r4(num(s.description_density)),
+    payoff_density:      r4(payoffs / Math.max(nChars / 10000, 1)),
+    hook_density:        r4(hooks / Math.max(nChapters, 1)),
+    info_density:        signals.length ? r4(infoSum / signals.length) : 0,
+    pacing_profile: {
+      fast:   r2(num(pp.fast)),
+      medium: r2(num(pp.medium)),
+      slow:   r2(num(pp.slow)),
+    },
+    chapter_signals: signals,
+  };
+}
+
+/** Char-weighted average of every STYLE-committed chunk's fingerprint,
+ *  plus the concatenated per-chapter signals (sorted by chapter). Only
+ *  entries that carry an `fp` (i.e. their 风格 section was committed)
+ *  count toward the aggregate — a chunk with只入库了事件 doesn't skew
+ *  the style numbers. The full `chunks` ledger is carried through so
+ *  per-section commit state survives reloads. */
 export function aggregateStyleChunks(
   chunks: Record<string, StyleChunkEntry>,
 ): StyleFingerprint {
-  const entries = Object.values(chunks);
+  const entries = Object.values(chunks).filter(
+    e => e.fp && Object.keys(e.fp).length > 0,
+  );
   if (entries.length === 0) return { _chunks: chunks };
   const total = entries.reduce((s, e) => s + (e.chars || 1), 0) || 1;
   const w = (sel: (fp: StyleFingerprint) => number | undefined): number =>
-    entries.reduce((s, e) => s + (sel(e.fp) || 0) * (e.chars || 1), 0) / total;
+    entries.reduce((s, e) => s + (sel(e.fp!) || 0) * (e.chars || 1), 0) / total;
   const signals: ChapterSignal[] = [];
   for (const e of entries) {
-    for (const sig of (e.fp.chapter_signals || [])) signals.push(sig);
+    for (const sig of (e.fp!.chapter_signals || [])) signals.push(sig);
   }
   const chNum = (s: string) => {
     const m = (s || "").match(/(\d+)/);
@@ -391,26 +483,27 @@ export function buildRhythmFromSignals(
     return m ? parseInt(m[1], 10) : 0;
   };
   const features = (signals || []).map(s => {
-    const types = (s.chapter_types || [])
+    const types = (Array.isArray(s.chapter_types) ? s.chapter_types : [])
       .map(t => (valid.has(t) ? t : "其他"))
       .filter((t, i, a) => a.indexOf(t) === i);
+    const hookList = Array.isArray(s.hooks) ? s.hooks : [];
     return {
       chapter: chNum(s.chapter),
       types: (types.length ? types : ["其他"]) as any,
       info_density: typeof s.info_density === "number" ? s.info_density : 0,
       summary: s.summary || "",
-      hooks: (s.hooks || []).map(h => ({
-        position: (h.position === "章首" || h.position === "段中" || h.position === "章末"
+      hooks: hookList.map(h => ({
+        position: (h && (h.position === "章首" || h.position === "段中" || h.position === "章末")
           ? h.position : "章末") as "章首" | "段中" | "章末",
-        content: h.content || "",
+        content: (h && h.content) || "",
       })),
     };
   });
   features.sort((a, b) => a.chapter - b.chapter);
   const shuangdian: { chapter: number; type: string }[] = [];
   for (const s of (signals || [])) {
-    for (const p of (s.payoffs || [])) {
-      shuangdian.push({ chapter: chNum(s.chapter), type: p.type });
+    for (const p of (Array.isArray(s.payoffs) ? s.payoffs : [])) {
+      shuangdian.push({ chapter: chNum(s.chapter), type: (p && p.type) || "其他" });
     }
   }
   shuangdian.sort((a, b) => a.chapter - b.chapter);

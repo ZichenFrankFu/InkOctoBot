@@ -26,7 +26,7 @@ import type { ChunkMeta } from "./segmentationCache";
 import {
   resolveEventTimeMarkers, mergeEventsIntoChronicle,
   mergeCharacters, mergeSettings, aggregateStyleChunks,
-  buildRhythmFromSignals,
+  buildRhythmFromSignals, normalizeUnifiedStyle,
 } from "./referenceMerge";
 import type { StyleFingerprint, StyleChunkEntry } from "./referenceMerge";
 
@@ -39,7 +39,13 @@ interface ChunkResult {
   nChars: number;
 }
 
-type Phase = "idle" | "running" | "ready" | "committing" | "committed" | "failed";
+/** The four feature sections — each can be committed independently. */
+type Section = "events" | "characters" | "settings" | "style";
+const SECTION_LABEL: Record<Section, string> = {
+  events: "事件", characters: "角色", settings: "设定", style: "风格 / 节奏",
+};
+
+type Phase = "idle" | "running" | "ready" | "failed";
 interface ChunkPhase {
   status: Phase;
   source?: "ai" | "paste";
@@ -49,6 +55,8 @@ interface ChunkPhase {
   startedAt?: number;
   pasteRaw?: string;
   pasteError?: string;
+  /** Section whose 确认入库 is currently in flight (disables that button). */
+  committingSection?: Section;
 }
 
 /** Lenient parser for a pasted unified web-LLM response. Strips
@@ -239,7 +247,8 @@ export function UnifiedExtractionPanel({
     }
   };
 
-  const parsePaste = async (s: number, c: number, raw: string) => {
+  const parsePaste = async (s: number, chunk: ChunkMeta, raw: string) => {
+    const c = chunk.chunk_index;
     const { result, error } = parseUnifiedPaste(raw);
     if (error || !result) {
       patch(s, c, { pasteError: error || "解析失败" });
@@ -253,12 +262,15 @@ export function UnifiedExtractionPanel({
         { use_ai: false },
         { timeoutMs: 120_000 },
       );
+      // Normalize the pasted style (payoffs/hooks → arrays, derive
+      // densities) so the rhythm builder never sees a stray number.
+      const llmStyle = normalizeUnifiedStyle(result.style, r.n_chars, chunk.n_chapters);
       patch(s, c, {
         status: "ready", source: "paste",
         result: {
           events: result.events, characters: result.characters,
           settings: result.settings,
-          style: { ...(r.style || {}), ...result.style },
+          style: { ...(r.style || {}), ...llmStyle },
           nChars: r.n_chars,
         },
         pasteRaw: undefined,
@@ -268,64 +280,90 @@ export function UnifiedExtractionPanel({
     }
   };
 
-  /** Distribute one chunk's result into the four work-level blobs.
-   *  Returns the next accumulator snapshot for the bulk loop. */
-  const distribute = async (
+  /** Commit a SET of sections of one chunk into the work-level blobs.
+   *  Each section's blob is saved only if it's in `sections`; the
+   *  style_fingerprint_json ledger is always updated so per-section
+   *  「已入库」 state survives reloads. Returns the next accumulator. */
+  const commitSections = async (
     segIdx: number, chunk: ChunkMeta, result: ChunkResult, source: "ai" | "paste",
+    sections: Section[],
     acc: { plot: PlotOutline | null; chars: CharacterItem[]; settings: SettingItem[];
            ledger: Record<string, StyleChunkEntry> },
   ) => {
     const seg = plan?.segments[segIdx];
     const volumeTitle = seg?.title || `第 ${segIdx + 1} 卷`;
     const range = { startCh: chunk.start_chapter, endCh: chunk.end_chapter };
-    const nextPlot = mergeEventsIntoChronicle(
-      acc.plot, resolveEventTimeMarkers(result.events), volumeTitle, range,
-    );
-    const nextChars = mergeCharacters(acc.chars, result.characters);
-    const nextSettings = mergeSettings(acc.settings, result.settings);
+    let { plot, chars, settings, ledger } = acc;
+
+    if (sections.includes("events")) {
+      plot = mergeEventsIntoChronicle(
+        plot, resolveEventTimeMarkers(result.events), volumeTitle, range,
+      );
+      await onSavePlot(plot);
+    }
+    if (sections.includes("characters")) {
+      chars = mergeCharacters(chars, result.characters);
+      await onSaveCharacters(chars);
+    }
+    if (sections.includes("settings")) {
+      settings = mergeSettings(settings, result.settings);
+      await onSaveSettings(settings);
+    }
+    // Ledger entry — records which sections are done + the style fp.
+    const key = ckKey(segIdx, chunk.chunk_index);
+    const prev = ledger[key];
     const entry: StyleChunkEntry = {
-      chars: result.nChars || chunk.n_chars || 1,
-      source,
-      fp: result.style,
+      chars: result.nChars || prev?.chars || chunk.n_chars || 1,
+      source: prev?.source,
+      fp: prev?.fp,
+      done: { ...(prev?.done || {}) },
       counts: {
         events: result.events.length,
         characters: result.characters.length,
         settings: result.settings.length,
       },
     };
-    const nextLedger = { ...acc.ledger, [ckKey(segIdx, chunk.chunk_index)]: entry };
-    const nextStyle = aggregateStyleChunks(nextLedger);
-    // Rhythm is derived from the aggregated per-chapter signals so the
-    // 节奏 section's每章爽点/信息密度/钩子 stays in sync.
-    const nextRhythm = buildRhythmFromSignals(nextStyle.chapter_signals);
-    await onSavePlot(nextPlot);
-    await onSaveCharacters(nextChars);
-    await onSaveSettings(nextSettings);
+    for (const sec of sections) entry.done![sec] = true;
+    if (sections.includes("style")) {
+      entry.fp = result.style;
+      entry.source = source;
+    }
+    ledger = { ...ledger, [key]: entry };
+    const nextStyle = aggregateStyleChunks(ledger);
     await onSaveStyle(nextStyle);
-    await onSaveRhythm(nextRhythm);
-    return { plot: nextPlot, chars: nextChars, settings: nextSettings, ledger: nextLedger };
+    if (sections.includes("style")) {
+      // Rhythm derives from the aggregated per-chapter signals.
+      await onSaveRhythm(buildRhythmFromSignals(nextStyle.chapter_signals));
+    }
+    return { plot, chars, settings, ledger };
   };
 
-  const commit = async (segIdx: number, chunkIdx: number, chunk: ChunkMeta) => {
-    const k = ckKey(segIdx, chunkIdx);
+  /** Commit a single section of one chunk (the per-section 确认入库). */
+  const commitSection = async (
+    segIdx: number, chunk: ChunkMeta, section: Section,
+  ) => {
+    const k = ckKey(segIdx, chunk.chunk_index);
     const phase = chunkPhases[k];
-    if (!phase || phase.status !== "ready" || !phase.result) return;
-    patch(segIdx, chunkIdx, { status: "committing" });
+    if (!phase?.result) return;
+    patch(segIdx, chunk.chunk_index, { committingSection: section });
     try {
-      const snap = await distribute(segIdx, chunk, phase.result, phase.source || "ai", {
-        plot: plotRef.current,
-        chars: charsRef.current || [],
-        settings: settingsRef.current || [],
-        ledger: ledgerRef.current,
-      });
+      const snap = await commitSections(
+        segIdx, chunk, phase.result, phase.source || "ai", [section],
+        {
+          plot: plotRef.current,
+          chars: charsRef.current || [],
+          settings: settingsRef.current || [],
+          ledger: ledgerRef.current,
+        },
+      );
       plotRef.current = snap.plot;
       charsRef.current = snap.chars;
       settingsRef.current = snap.settings;
       ledgerRef.current = snap.ledger;
-      patch(segIdx, chunkIdx, { status: "committed" });
-      toast(`第 ${segIdx + 1} 卷 · 分段 ${chunkIdx + 1} 已入库（事件/角色/设定/风格）`, "success");
+      patch(segIdx, chunk.chunk_index, { committingSection: undefined });
+      toast(`第 ${segIdx + 1} 卷 · 分段 ${chunk.chunk_index + 1} · ${SECTION_LABEL[section]} 已入库`, "success");
     } catch (e: any) {
-      patch(segIdx, chunkIdx, { status: "ready", error: e?.message || "入库失败" });
+      patch(segIdx, chunk.chunk_index, { committingSection: undefined });
       toast(e?.message || "入库失败", "error");
     }
   };
@@ -354,7 +392,8 @@ export function UnifiedExtractionPanel({
       for (const { segIdx, chunks } of loaded) {
         for (const ck of chunks) {
           const k = ckKey(segIdx, ck.chunk_index);
-          if (ledgerRef.current[k] || chunkPhases[k]?.status === "committed") continue;
+          // Skip chunks already committed (any section recorded).
+          if (ledgerRef.current[k]) continue;
           tasks.push({ segIdx, chunk: ck });
         }
       }
@@ -400,12 +439,15 @@ export function UnifiedExtractionPanel({
             events: r.events || [], characters: r.characters || [],
             settings: r.settings || [], style: r.style || {}, nChars: r.n_chars,
           };
-          acc = await distribute(segIdx, chunk, result, "ai", acc);
+          acc = await commitSections(
+            segIdx, chunk, result, "ai",
+            ["events", "characters", "settings", "style"], acc,
+          );
           plotRef.current = acc.plot;
           charsRef.current = acc.chars;
           settingsRef.current = acc.settings;
           ledgerRef.current = acc.ledger;
-          patch(segIdx, c, { status: "committed", result, elapsedS: r.elapsed_s });
+          patch(segIdx, c, { status: "ready", result, elapsedS: r.elapsed_s });
         } catch (e: any) {
           failed++;
           patch(segIdx, c, { status: "failed", error: e?.message || "AI 提取失败" });
@@ -548,8 +590,7 @@ export function UnifiedExtractionPanel({
                   {!loading && chunks.map(ck => {
                     const k = ckKey(seg.index, ck.chunk_index);
                     const committedEntry = ledger[k] || null;
-                    const phase = chunkPhases[k]
-                      || { status: (committedEntry ? "committed" : "idle") as Phase };
+                    const phase = chunkPhases[k] || { status: "idle" as Phase };
                     return (
                       <UnifiedChunkRow
                         key={k}
@@ -562,8 +603,8 @@ export function UnifiedExtractionPanel({
                         onToggle={() => toggleChunk(seg.index, ck.chunk_index)}
                         onRunAI={() => runAI(seg.index, ck.chunk_index)}
                         onPasteChange={(v) => patch(seg.index, ck.chunk_index, { pasteRaw: v, pasteError: undefined })}
-                        onParsePaste={() => parsePaste(seg.index, ck.chunk_index, phase.pasteRaw || "")}
-                        onCommit={() => commit(seg.index, ck.chunk_index, ck)}
+                        onParsePaste={() => parsePaste(seg.index, ck, phase.pasteRaw || "")}
+                        onCommitSection={(section) => commitSection(seg.index, ck, section)}
                         onReset={() => patch(seg.index, ck.chunk_index, {
                           status: "idle", source: undefined, result: undefined,
                           error: undefined, pasteRaw: undefined, pasteError: undefined,
@@ -583,7 +624,7 @@ export function UnifiedExtractionPanel({
 
 function UnifiedChunkRow({
   refId, segIdx, chunk, phase, committedEntry, open,
-  onToggle, onRunAI, onPasteChange, onParsePaste, onCommit, onReset,
+  onToggle, onRunAI, onPasteChange, onParsePaste, onCommitSection, onReset,
 }: {
   refId: string;
   segIdx: number;
@@ -595,24 +636,25 @@ function UnifiedChunkRow({
   onRunAI: () => void;
   onPasteChange: (v: string) => void;
   onParsePaste: () => void;
-  onCommit: () => void;
+  onCommitSection: (section: Section) => void;
   onReset: () => void;
 }) {
   const [showPaste, setShowPaste] = useState(false);
   const running = phase.status === "running";
   const ready = phase.status === "ready";
   const failed = phase.status === "failed";
-  const committing = phase.status === "committing";
-  const committed = phase.status === "committed";
   const result = phase.result;
-  const counts = committedEntry?.counts;
+  const done = committedEntry?.done || {};
+  const doneCount = (["events", "characters", "settings", "style"] as Section[])
+    .filter(s => done[s]).length;
+  const anyDone = doneCount > 0;
 
   return (
     <div style={{
       marginTop: 6, marginBottom: 6,
-      border: `1px solid ${committed ? "var(--jade)" : ready ? "var(--accent)" : failed ? "var(--error)" : "var(--border)"}`,
+      border: `1px solid ${doneCount === 4 ? "var(--jade)" : ready ? "var(--accent)" : failed ? "var(--error)" : anyDone ? "var(--jade)" : "var(--border)"}`,
       borderRadius: 4,
-      background: committed ? "rgba(52,168,83,0.04)" : "var(--bg-card)",
+      background: anyDone ? "rgba(52,168,83,0.04)" : "var(--bg-card)",
     }}>
       <button
         className="btn-ghost w-full"
@@ -634,15 +676,13 @@ function UnifiedChunkRow({
           第 {chunk.start_chapter}–{chunk.end_chapter} 章 · {chunk.n_chars.toLocaleString()} 字
         </span>
         <div style={{ flex: 1 }} />
-        {committed && (
+        {anyDone && (
           <span className="tag" style={{
             fontSize: 10, padding: "1px 6px",
             color: "var(--jade)", border: "1px solid var(--jade)",
-          }}>
-            已入库{counts ? ` · ${counts.events}事件 ${counts.characters}角色 ${counts.settings}设定` : ""}
-          </span>
+          }}>已入库 {doneCount}/4</span>
         )}
-        {ready && !committed && (
+        {ready && !anyDone && (
           <span className="tag" style={{
             fontSize: 10, padding: "1px 6px",
             color: "var(--accent)", border: "1px solid var(--accent)",
@@ -659,22 +699,40 @@ function UnifiedChunkRow({
 
       {open && (
         <div style={{ padding: "8px 10px", borderTop: "1px dashed var(--border)" }}>
-          {committed ? (
-            <div className="text-xs text-muted" style={{ lineHeight: 1.7 }}>
-              本分段已一次性提取并分发到四个 tab。
-              {counts && (
-                <> 事件 {counts.events} · 角色 {counts.characters} · 设定 {counts.settings} · 风格已并入。</>
-              )}
-              <div style={{ marginTop: 6 }}>
-                <button className="btn-ghost"
-                        onClick={onReset}
-                        style={{ fontSize: 11, padding: "3px 10px", color: "var(--accent)" }}>
-                  重新提取本段（会覆盖本段章节范围内的事件）
-                </button>
+          {result ? (
+            <>
+              <UnifiedResultPreview
+                result={result}
+                done={done}
+                committingSection={phase.committingSection}
+                onCommitSection={onCommitSection}
+              />
+              <div className="flex items-center gap-6" style={{
+                justifyContent: "flex-end", marginTop: 8,
+                paddingTop: 8, borderTop: "1px dashed var(--border)",
+              }}>
+                <span className="text-xs text-muted" style={{ flex: 1 }}>
+                  逐个 section 点「确认入库」分发到对应 tab；可只入库需要的部分。
+                </span>
+                <button className="btn" onClick={onReset}
+                        disabled={!!phase.committingSection}
+                        style={{ fontSize: 11, padding: "3px 10px" }}>重新提取</button>
               </div>
-            </div>
+            </>
           ) : (
             <>
+              {anyDone && (
+                <div className="text-xs text-muted" style={{ marginBottom: 6, lineHeight: 1.7 }}>
+                  本分段已入库：
+                  {(["events", "characters", "settings", "style"] as Section[]).map(s => (
+                    <span key={s} style={{
+                      marginLeft: 6,
+                      color: done[s] ? "var(--jade)" : "var(--text-tertiary)",
+                    }}>{done[s] ? "✓" : "○"} {SECTION_LABEL[s]}</span>
+                  ))}
+                  。可重新提取以补全或更新。
+                </div>
+              )}
               <PromptCopyPanel
                 refId={refId}
                 promptKey="reference.unified"
@@ -684,21 +742,19 @@ function UnifiedChunkRow({
                 label={`分段 ${chunk.chunk_index + 1} 的统一 prompt（事件+角色+设定+风格，一次提取）`}
               />
 
-              {(phase.status === "idle" || failed) && (
-                <div className="flex items-center gap-6" style={{ flexWrap: "wrap", marginBottom: 6 }}>
-                  <button className="btn-primary"
-                          onClick={onRunAI}
-                          disabled={running}
-                          style={{ fontSize: 11, padding: "3px 12px" }}>
-                    {running ? "AI 提取中…" : "用内置 AI 提取本段"}
-                  </button>
-                  <button className="btn"
-                          onClick={() => setShowPaste(p => !p)}
-                          style={{ fontSize: 11, padding: "3px 10px" }}>
-                    {showPaste ? "收起" : "解析网页 LLM 回复"}
-                  </button>
-                </div>
-              )}
+              <div className="flex items-center gap-6" style={{ flexWrap: "wrap", marginBottom: 6 }}>
+                <button className="btn-primary"
+                        onClick={onRunAI}
+                        disabled={running}
+                        style={{ fontSize: 11, padding: "3px 12px" }}>
+                  {running ? "AI 提取中…" : "用内置 AI 提取本段"}
+                </button>
+                <button className="btn"
+                        onClick={() => setShowPaste(p => !p)}
+                        style={{ fontSize: 11, padding: "3px 10px" }}>
+                  {showPaste ? "收起" : "解析网页 LLM 回复"}
+                </button>
+              </div>
 
               {failed && phase.error && (
                 <div style={{
@@ -711,7 +767,7 @@ function UnifiedChunkRow({
                 </div>
               )}
 
-              {showPaste && !ready && (
+              {showPaste && (
                 <div style={{ marginBottom: 8 }}>
                   <textarea className="input font-mono"
                             rows={5}
@@ -737,24 +793,6 @@ function UnifiedChunkRow({
                   </div>
                 </div>
               )}
-
-              {ready && result && (
-                <>
-                  <UnifiedResultPreview result={result} />
-                  <div className="flex items-center gap-6" style={{
-                    justifyContent: "flex-end", marginTop: 8,
-                    paddingTop: 8, borderTop: "1px dashed var(--border)",
-                  }}>
-                    <button className="btn" onClick={onReset} disabled={committing}
-                            style={{ fontSize: 11, padding: "3px 10px" }}>重置</button>
-                    <button className="btn-primary" onClick={onCommit}
-                            disabled={committing}
-                            style={{ fontSize: 11, padding: "3px 14px" }}>
-                      {committing ? "入库中…" : "确认入库（分发到四个 tab）"}
-                    </button>
-                  </div>
-                </>
-              )}
             </>
           )}
         </div>
@@ -770,29 +808,57 @@ function fmtPct(v: number | undefined): string {
   return typeof v === "number" ? `${(v * 100).toFixed(1)}%` : "—";
 }
 
-/** Collapsible preview section used inside UnifiedResultPreview. */
-function PreviewSection({ title, count, children, defaultOpen = true }: {
-  title: string; count: number; children: React.ReactNode; defaultOpen?: boolean;
+/** Per-section 确认入库 button shown in each PreviewSection header. */
+function CommitBtn({ section, done, committing, onCommit }: {
+  section: Section; done: boolean; committing: boolean;
+  onCommit: (s: Section) => void;
+}) {
+  return (
+    <button
+      className={done ? "btn" : "btn-primary"}
+      onClick={(e) => { e.stopPropagation(); onCommit(section); }}
+      disabled={committing}
+      style={{
+        fontSize: 10, padding: "2px 10px",
+        color: done ? "var(--jade)" : undefined,
+      }}>
+      {committing ? "入库中…" : done ? "已入库 · 重新入库" : "确认入库"}
+    </button>
+  );
+}
+
+/** Collapsible preview section with an optional header action (the
+ *  per-section 确认入库 button). */
+function PreviewSection({ title, count, headerAction, children, defaultOpen = true }: {
+  title: string; count: number;
+  headerAction?: React.ReactNode;
+  children: React.ReactNode; defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-surface)" }}>
-      <button className="btn-ghost w-full" onClick={() => setOpen(o => !o)}
-              style={{
-                display: "flex", alignItems: "center", gap: 6,
-                padding: "4px 8px", justifyContent: "flex-start", borderRadius: 0,
-              }}>
-        <span style={{
-          transition: "transform 0.15s", transform: open ? "rotate(90deg)" : "none",
-          display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
-        }}>▶</span>
-        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)" }}>{title}</span>
-        <span className="text-xs text-muted">{count}</span>
-      </button>
+      <div style={{
+        display: "flex", alignItems: "center", gap: 6,
+        padding: "3px 6px 3px 8px",
+      }}>
+        <button className="btn-ghost" onClick={() => setOpen(o => !o)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, flex: 1,
+                  padding: "2px 0", justifyContent: "flex-start", borderRadius: 0,
+                }}>
+          <span style={{
+            transition: "transform 0.15s", transform: open ? "rotate(90deg)" : "none",
+            display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
+          }}>▶</span>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)" }}>{title}</span>
+          <span className="text-xs text-muted">{count}</span>
+        </button>
+        {headerAction}
+      </div>
       {open && (
         <div style={{
           padding: "4px 8px 8px", borderTop: "1px dashed var(--border)",
-          maxHeight: 240, overflowY: "auto",
+          maxHeight: 260, overflowY: "auto",
         }}>{children}</div>
       )}
     </div>
@@ -800,14 +866,26 @@ function PreviewSection({ title, count, children, defaultOpen = true }: {
 }
 
 /** Full preview of one chunk's unified extraction result — events,
- *  characters, settings and style — so the user can review everything
- *  before「确认入库」. */
-function UnifiedResultPreview({ result }: { result: ChunkResult }) {
+ *  characters, settings and style/rhythm — each section with its own
+ *  确认入库 button so the user can commit one part at a time. */
+function UnifiedResultPreview({
+  result, done, committingSection, onCommitSection,
+}: {
+  result: ChunkResult;
+  done: NonNullable<StyleChunkEntry["done"]>;
+  committingSection?: Section;
+  onCommitSection: (s: Section) => void;
+}) {
   const st = result.style;
   const sigs = st.chapter_signals || [];
+  const btn = (section: Section) => (
+    <CommitBtn section={section} done={!!done[section]}
+               committing={committingSection === section}
+               onCommit={onCommitSection} />
+  );
   return (
     <div className="flex flex-col gap-6" style={{ marginTop: 6 }}>
-      <PreviewSection title="事件" count={result.events.length}>
+      <PreviewSection title="事件" count={result.events.length} headerAction={btn("events")}>
         {result.events.length === 0
           ? <span className="text-xs text-muted">（无）</span>
           : (
@@ -837,7 +915,7 @@ function UnifiedResultPreview({ result }: { result: ChunkResult }) {
           )}
       </PreviewSection>
 
-      <PreviewSection title="角色" count={result.characters.length}>
+      <PreviewSection title="角色" count={result.characters.length} headerAction={btn("characters")}>
         {result.characters.length === 0
           ? <span className="text-xs text-muted">（无）</span>
           : (
@@ -866,7 +944,7 @@ function UnifiedResultPreview({ result }: { result: ChunkResult }) {
           )}
       </PreviewSection>
 
-      <PreviewSection title="设定" count={result.settings.length}>
+      <PreviewSection title="设定" count={result.settings.length} headerAction={btn("settings")}>
         {result.settings.length === 0
           ? <span className="text-xs text-muted">（无）</span>
           : (
@@ -880,18 +958,23 @@ function UnifiedResultPreview({ result }: { result: ChunkResult }) {
                   <span className="text-xs text-muted" style={{ marginLeft: 4 }}>
                     {s.updates?.length || 0} 条更新
                   </span>
-                  {(s.updates && s.updates.length > 0) && (
-                    <div style={{ color: "var(--text-secondary)", marginTop: 1 }}>
-                      {s.updates[0].text}
+                  {(s.updates || []).map((u, ui) => (
+                    <div key={ui} style={{ color: "var(--text-secondary)", marginTop: 1 }}>
+                      {u.chapter && (
+                        <span style={{ color: "var(--gold)", marginRight: 4, fontFamily: "var(--font-mono)" }}>
+                          {u.chapter}
+                        </span>
+                      )}
+                      {u.text}
                     </div>
-                  )}
+                  ))}
                 </div>
               ))}
             </div>
           )}
       </PreviewSection>
 
-      <PreviewSection title="风格 / 节奏" count={sigs.length}>
+      <PreviewSection title="风格 / 节奏" count={sigs.length} headerAction={btn("style")}>
         <div className="text-xs" style={{ lineHeight: 1.9, color: "var(--text-secondary)" }}>
           对话占比 {fmtPct(st.dialogue_ratio)} · 描写密度 {fmtPct(st.description_density)}
           {" · "}修辞 {fmtNum(st.rhetoric_frequency)}/千字
@@ -906,24 +989,40 @@ function UnifiedResultPreview({ result }: { result: ChunkResult }) {
           )}
         </div>
         {sigs.length > 0 && (
-          <div className="flex flex-col gap-2" style={{ marginTop: 4 }}>
+          <div className="flex flex-col gap-4" style={{ marginTop: 6 }}>
             {sigs.map((s, i) => (
-              <div key={i} style={{ fontSize: 10, lineHeight: 1.5 }}>
-                <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>{s.chapter}</span>
-                <span style={{ color: "var(--accent)", marginLeft: 4 }}>
-                  信息密度 {typeof s.info_density === "number" ? `${(s.info_density * 100).toFixed(0)}%` : "—"}
-                </span>
-                {(s.payoffs || []).length > 0 && (
-                  <span style={{ color: "var(--gold)", marginLeft: 4 }}>爽点×{s.payoffs!.length}</span>
-                )}
-                {(s.hooks || []).length > 0 && (
-                  <span style={{ color: "var(--accent)", marginLeft: 4 }}>钩子×{s.hooks!.length}</span>
-                )}
-                {(s.chapter_types || []).length > 0 && (
-                  <span className="text-muted" style={{ marginLeft: 4 }}>
-                    {s.chapter_types!.join("/")}
+              <div key={i} style={{
+                fontSize: 10, lineHeight: 1.6,
+                paddingBottom: 3, borderBottom: "1px dashed var(--border)",
+              }}>
+                <div className="flex items-center" style={{ gap: 5, flexWrap: "wrap" }}>
+                  <span style={{ fontWeight: 700, color: "var(--text-primary)" }}>{s.chapter}</span>
+                  <span style={{ color: "var(--accent)" }}>
+                    信息密度 {typeof s.info_density === "number" ? `${(s.info_density * 100).toFixed(0)}%` : "—"}
                   </span>
+                  {(s.chapter_types || []).map((t, ti) => (
+                    <span key={ti} className="tag" style={{
+                      fontSize: 9, padding: "0 5px",
+                      color: "var(--text-tertiary)", border: "1px solid var(--border)",
+                    }}>{t}</span>
+                  ))}
+                </div>
+                {(s.payoffs || []).length > 0 && (
+                  <div style={{ marginTop: 1 }}>
+                    {(s.payoffs || []).map((p, pi) => (
+                      <span key={pi} className="tag" style={{
+                        fontSize: 9, padding: "0 5px", marginRight: 4,
+                        color: "var(--gold)", border: "1px solid var(--gold)",
+                      }}>爽点 · {p.type}</span>
+                    ))}
+                  </div>
                 )}
+                {(s.hooks || []).map((h, hi) => (
+                  <div key={hi} style={{ marginTop: 1, color: "var(--text-secondary)" }}>
+                    <span style={{ color: "var(--accent)", marginRight: 4 }}>钩子 · {h.position}</span>
+                    {h.content || "（无描述）"}
+                  </div>
+                ))}
               </div>
             ))}
           </div>

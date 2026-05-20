@@ -514,8 +514,8 @@ function ChapterSignalsTable({ signals }: {
   signals: NonNullable<StyleFingerprint["chapter_signals"]>;
 }) {
   const [open, setOpen] = useState(false);
-  const totalPayoffs = signals.reduce((n, s) => n + (s.payoffs?.length || 0), 0);
-  const totalHooks = signals.reduce((n, s) => n + (s.hooks?.length || 0), 0);
+  const totalPayoffs = signals.reduce((n, s) => n + (Array.isArray(s.payoffs) ? s.payoffs.length : 0), 0);
+  const totalHooks = signals.reduce((n, s) => n + (Array.isArray(s.hooks) ? s.hooks.length : 0), 0);
   return (
     <div style={{ marginTop: 14, border: "1px dashed var(--border)", borderRadius: 4 }}>
       <button className="btn-ghost w-full" onClick={() => setOpen(o => !o)}
@@ -546,13 +546,13 @@ function ChapterSignalsTable({ signals }: {
                 <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
                   信息密度 {typeof s.info_density === "number" ? `${(s.info_density * 100).toFixed(0)}%` : "—"}
                 </span>
-                {(s.payoffs || []).map((p, pi) => (
+                {(Array.isArray(s.payoffs) ? s.payoffs : []).map((p, pi) => (
                   <span key={`p${pi}`} className="tag" style={{
                     fontSize: 9, padding: "0 5px",
                     color: "var(--gold)", border: "1px solid var(--gold)",
-                  }}>爽点·{p.type}</span>
+                  }}>爽点·{p?.type || "其他"}</span>
                 ))}
-                {(s.chapter_types || []).map((t, ti) => (
+                {(Array.isArray(s.chapter_types) ? s.chapter_types : []).map((t, ti) => (
                   <span key={`t${ti}`} className="tag" style={{
                     fontSize: 9, padding: "0 5px",
                     color: "var(--text-tertiary)", border: "1px solid var(--border)",
@@ -562,10 +562,10 @@ function ChapterSignalsTable({ signals }: {
               {s.summary && (
                 <div className="text-xs text-muted" style={{ marginTop: 2 }}>{s.summary}</div>
               )}
-              {(s.hooks || []).map((h, hi) => (
+              {(Array.isArray(s.hooks) ? s.hooks : []).map((h, hi) => (
                 <div key={`h${hi}`} className="text-xs" style={{ marginTop: 2, color: "var(--text-secondary)" }}>
-                  <span style={{ color: "var(--accent)", marginRight: 4 }}>钩子·{h.position}</span>
-                  {h.content}
+                  <span style={{ color: "var(--accent)", marginRight: 4 }}>钩子·{h?.position || "章末"}</span>
+                  {h?.content}
                 </div>
               ))}
             </div>
@@ -583,17 +583,20 @@ function ChapterSignalsTable({ signals }: {
 export function StyleByChunkView({ chunks, segmentTitles }: {
   chunks: Record<string, {
     chars: number; source?: string;
-    fp: StyleFingerprint;
+    fp?: StyleFingerprint;
     counts?: { events: number; characters: number; settings: number };
   }>;
   /** segIdx → volume title, for labelling chunk keys "segIdx:chunkIdx". */
   segmentTitles: Record<number, string>;
 }) {
-  const keys = Object.keys(chunks).sort((a, b) => {
-    const [sa, ca] = a.split(":").map(Number);
-    const [sb, cb] = b.split(":").map(Number);
-    return sa !== sb ? sa - sb : ca - cb;
-  });
+  // Only chunks whose 风格 section was committed carry an `fp`.
+  const keys = Object.keys(chunks)
+    .filter(k => chunks[k]?.fp && Object.keys(chunks[k].fp!).length > 0)
+    .sort((a, b) => {
+      const [sa, ca] = a.split(":").map(Number);
+      const [sb, cb] = b.split(":").map(Number);
+      return sa !== sb ? sa - sb : ca - cb;
+    });
   if (keys.length === 0) {
     return (
       <div className="text-xs text-muted text-center" style={{ padding: 16, lineHeight: 1.7 }}>
