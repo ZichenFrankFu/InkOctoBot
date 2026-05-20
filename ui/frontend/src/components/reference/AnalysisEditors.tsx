@@ -347,8 +347,15 @@ interface StyleFingerprint {
   info_density?: number;
   hook_density?: number;
   pacing_profile?: { fast?: number; medium?: number; slow?: number };
-  /** Per-chapter signals from the unified extraction. */
-  chapter_signals?: { chapter: string; info_density?: number; payoffs?: number; hooks?: number }[];
+  /** Per-chapter signals from the unified extraction (also feed 节奏). */
+  chapter_signals?: {
+    chapter: string;
+    info_density?: number;
+    chapter_types?: string[];
+    summary?: string;
+    payoffs?: { type: string }[];
+    hooks?: { position: string; content: string }[];
+  }[];
 }
 
 function MetricRow({ label, value, unit, max, hint }: { label: string; value: number | undefined; unit?: string; max?: number; hint?: string }) {
@@ -504,11 +511,11 @@ export function StyleFingerprintEditor({ data, onSave }: { data: StyleFingerprin
 /** Per-chapter信息密度/爽点/钩子 from the unified extraction. Collapsed
  *  by default — the table can be long for a whole book. */
 function ChapterSignalsTable({ signals }: {
-  signals: { chapter: string; info_density?: number; payoffs?: number; hooks?: number }[];
+  signals: NonNullable<StyleFingerprint["chapter_signals"]>;
 }) {
   const [open, setOpen] = useState(false);
-  const totalPayoffs = signals.reduce((n, s) => n + (s.payoffs || 0), 0);
-  const totalHooks = signals.reduce((n, s) => n + (s.hooks || 0), 0);
+  const totalPayoffs = signals.reduce((n, s) => n + (s.payoffs?.length || 0), 0);
+  const totalHooks = signals.reduce((n, s) => n + (s.hooks?.length || 0), 0);
   return (
     <div style={{ marginTop: 14, border: "1px dashed var(--border)", borderRadius: 4 }}>
       <button className="btn-ghost w-full" onClick={() => setOpen(o => !o)}
@@ -526,39 +533,126 @@ function ChapterSignalsTable({ signals }: {
         </span>
       </button>
       {open && (
-        <div style={{ maxHeight: 320, overflowY: "auto", padding: "4px 8px 8px" }}>
-          <div className="flex" style={{
-            fontSize: 10, color: "var(--text-tertiary)", padding: "2px 4px",
-            borderBottom: "1px solid var(--border)",
-          }}>
-            <span style={{ flex: 1 }}>章节</span>
-            <span style={{ width: 80, textAlign: "right" }}>信息密度</span>
-            <span style={{ width: 56, textAlign: "right" }}>爽点</span>
-            <span style={{ width: 56, textAlign: "right" }}>钩子</span>
-          </div>
+        <div style={{ maxHeight: 340, overflowY: "auto", padding: "4px 8px 8px" }}>
           {signals.map((s, i) => (
-            <div key={i} className="flex" style={{
-              fontSize: 11, padding: "3px 4px",
+            <div key={i} style={{
+              fontSize: 11, padding: "4px 4px",
               borderBottom: "1px dashed var(--border)",
             }}>
-              <span style={{ flex: 1, color: "var(--text-secondary)" }}>{s.chapter || "—"}</span>
-              <span style={{ width: 80, textAlign: "right", fontFamily: "var(--font-mono)" }}>
-                {typeof s.info_density === "number" ? `${(s.info_density * 100).toFixed(0)}%` : "—"}
-              </span>
-              <span style={{
-                width: 56, textAlign: "right", fontFamily: "var(--font-mono)",
-                color: (s.payoffs || 0) > 0 ? "var(--gold)" : "var(--text-tertiary)",
-              }}>{s.payoffs || 0}</span>
-              <span style={{
-                width: 56, textAlign: "right", fontFamily: "var(--font-mono)",
-                color: (s.hooks || 0) > 0 ? "var(--accent)" : "var(--text-tertiary)",
-              }}>{s.hooks || 0}</span>
+              <div className="flex items-center" style={{ gap: 6, flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 600, color: "var(--text-primary)", minWidth: 56 }}>
+                  {s.chapter || "—"}
+                </span>
+                <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
+                  信息密度 {typeof s.info_density === "number" ? `${(s.info_density * 100).toFixed(0)}%` : "—"}
+                </span>
+                {(s.payoffs || []).map((p, pi) => (
+                  <span key={`p${pi}`} className="tag" style={{
+                    fontSize: 9, padding: "0 5px",
+                    color: "var(--gold)", border: "1px solid var(--gold)",
+                  }}>爽点·{p.type}</span>
+                ))}
+                {(s.chapter_types || []).map((t, ti) => (
+                  <span key={`t${ti}`} className="tag" style={{
+                    fontSize: 9, padding: "0 5px",
+                    color: "var(--text-tertiary)", border: "1px solid var(--border)",
+                  }}>{t}</span>
+                ))}
+              </div>
+              {s.summary && (
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>{s.summary}</div>
+              )}
+              {(s.hooks || []).map((h, hi) => (
+                <div key={`h${hi}`} className="text-xs" style={{ marginTop: 2, color: "var(--text-secondary)" }}>
+                  <span style={{ color: "var(--accent)", marginRight: 4 }}>钩子·{h.position}</span>
+                  {h.content}
+                </div>
+              ))}
             </div>
           ))}
         </div>
       )}
     </div>
   );
+}
+
+/** 分段视图 for the 文本特征 tab — one card per extracted chunk, read
+ *  from the style_fingerprint_json._chunks ledger. The 全书视图 is the
+ *  aggregated StyleFingerprintEditor; this shows each segment's own
+ *  fingerprint so the user can compare卷与卷之间的风格差异. */
+export function StyleByChunkView({ chunks, segmentTitles }: {
+  chunks: Record<string, {
+    chars: number; source?: string;
+    fp: StyleFingerprint;
+    counts?: { events: number; characters: number; settings: number };
+  }>;
+  /** segIdx → volume title, for labelling chunk keys "segIdx:chunkIdx". */
+  segmentTitles: Record<number, string>;
+}) {
+  const keys = Object.keys(chunks).sort((a, b) => {
+    const [sa, ca] = a.split(":").map(Number);
+    const [sb, cb] = b.split(":").map(Number);
+    return sa !== sb ? sa - sb : ca - cb;
+  });
+  if (keys.length === 0) {
+    return (
+      <div className="text-xs text-muted text-center" style={{ padding: 16, lineHeight: 1.7 }}>
+        暂无分段风格数据。请到「特征提取」tab 分段提取。
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-8">
+      {keys.map(k => {
+        const [segIdx, chunkIdx] = k.split(":").map(Number);
+        const entry = chunks[k];
+        const fp = entry.fp || {};
+        const pp = fp.pacing_profile || {};
+        const title = segmentTitles[segIdx] || `第 ${segIdx + 1} 卷`;
+        return (
+          <div key={k} style={{
+            border: "1px solid var(--border)", borderRadius: 4,
+            background: "var(--bg-card)", padding: "8px 10px",
+          }}>
+            <div className="flex items-center" style={{ gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)" }}>
+                {title} · 分段 {chunkIdx + 1}
+              </span>
+              {entry.source && (
+                <span className="tag" style={{
+                  fontSize: 9, padding: "0 5px",
+                  color: "var(--text-tertiary)", border: "1px solid var(--border)",
+                }}>{entry.source === "ai" ? "AI" : "粘贴"}</span>
+              )}
+              {entry.counts && (
+                <span className="text-xs text-muted">
+                  {entry.counts.events} 事件 · {entry.counts.characters} 角色 · {entry.counts.settings} 设定
+                </span>
+              )}
+            </div>
+            <div className="text-xs" style={{ lineHeight: 1.9, color: "var(--text-secondary)" }}>
+              对话占比 {fmtFp(fp.dialogue_ratio, "pct")} · 描写密度 {fmtFp(fp.description_density, "pct")}
+              {" · "}修辞 {fmtFp(fp.rhetoric_frequency)}/千字
+              <br />
+              信息密度 {fmtFp(fp.info_density, "pct")} · 爽点密度 {fmtFp(fp.payoff_density)}/万字
+              {" · "}钩子密度 {fmtFp(fp.hook_density)}/章
+              <br />
+              节奏 快{fmtFp(pp.fast, "pct")} / 中{fmtFp(pp.medium, "pct")} / 慢{fmtFp(pp.slow, "pct")}
+              {" · "}平均句长 {fmtFp(fp.avg_sentence_length)} 字 · 词汇丰富度 {fmtFp(fp.vocab_complexity, "pct")}
+            </div>
+            {Array.isArray(fp.chapter_signals) && fp.chapter_signals.length > 0 && (
+              <ChapterSignalsTable signals={fp.chapter_signals} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function fmtFp(v: number | undefined, kind?: "pct"): string {
+  if (typeof v !== "number") return "—";
+  return kind === "pct" ? `${(v * 100).toFixed(1)}%` : v.toFixed(2);
 }
 
 /* ──────────────── Narrative Structure ──────────────── */
@@ -1984,8 +2078,8 @@ export function PlotOutlineEditor({
         <div className="flex items-center" style={{ marginBottom: 10, gap: 6 }}>
           <span className="text-xs text-muted">视图：</span>
           {([
-            { key: "chapter" as const, label: "章节顺序", hint: "按事件首次出现的章节排列（提取的原始顺序）" },
-            { key: "story"   as const, label: "时间顺序", hint: "按故事中时间排序，倒叙/插叙被拉直（仅显示重排，存储不变）" },
+            { key: "chapter" as const, label: "分段视图", hint: "按卷/分段分组，事件按首次出现的章节排列（提取的原始顺序）" },
+            { key: "story"   as const, label: "全书时间线", hint: "全书按故事中时间排序，倒叙/插叙被拉直（仅显示重排，存储不变）" },
           ]).map(opt => (
             <button
               key={opt.key}
@@ -2005,7 +2099,7 @@ export function PlotOutlineEditor({
           ))}
           {viewMode === "story" && (
             <span className="text-xs text-muted" style={{ marginLeft: 6 }}>
-              （此视图下隐藏编辑/删除按钮——切回章节顺序后可改）
+              （此视图下隐藏编辑/删除按钮——切回分段视图后可改）
             </span>
           )}
         </div>

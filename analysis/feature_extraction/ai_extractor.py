@@ -485,9 +485,11 @@ _SETTING_CATS = frozenset({
 
 def _normalize_unified_style(raw: Any, n_chars: int, n_chapters: int) -> dict:
     """Coerce the `style` block of a unified extraction into the canonical
-    fingerprint. The LLM gives per-chapter signals (info_density, payoffs,
-    hooks); the chunk-level payoff_density / hook_density / info_density
-    are DERIVED from them so there's a single source of truth."""
+    fingerprint. The LLM gives per-chapter signals (info_density, chapter
+    types, summary, payoff list, hook list); the chunk-level payoff /
+    hook / info densities are DERIVED from them so there's a single
+    source of truth, and the per-chapter signals also feed the rhythm
+    section."""
     if not isinstance(raw, dict):
         return {}
     def _f(k: str, d: float = 0.0) -> float:
@@ -499,6 +501,7 @@ def _normalize_unified_style(raw: Any, n_chars: int, n_chapters: int) -> dict:
     pp = raw.get("pacing_profile") or {}
     if not isinstance(pp, dict):
         pp = {}
+    _HOOK_POS = {"章首", "段中", "章末"}
     signals: list[dict] = []
     total_payoffs = 0
     total_hooks = 0
@@ -510,22 +513,48 @@ def _normalize_unified_style(raw: Any, n_chars: int, n_chapters: int) -> dict:
             info = float(s.get("info_density") or 0)
         except (TypeError, ValueError):
             info = 0.0
-        try:
-            payoffs = int(float(s.get("payoffs") or 0))
-        except (TypeError, ValueError):
-            payoffs = 0
-        try:
-            hooks = int(float(s.get("hooks") or 0))
-        except (TypeError, ValueError):
-            hooks = 0
+        # payoffs / hooks: accept rich object lists; tolerate a bare int
+        # (older prompt) or list of strings.
+        payoffs: list[dict] = []
+        raw_payoffs = s.get("payoffs")
+        if isinstance(raw_payoffs, list):
+            for p in raw_payoffs:
+                if isinstance(p, dict):
+                    payoffs.append({"type": (p.get("type") or "其他").strip()[:20]})
+                elif isinstance(p, str) and p.strip():
+                    payoffs.append({"type": p.strip()[:20]})
+        elif isinstance(raw_payoffs, (int, float)):
+            payoffs = [{"type": "其他"}] * int(raw_payoffs)
+        hooks: list[dict] = []
+        raw_hooks = s.get("hooks")
+        if isinstance(raw_hooks, list):
+            for h in raw_hooks:
+                if isinstance(h, dict):
+                    pos = (h.get("position") or "章末").strip()
+                    if pos not in _HOOK_POS:
+                        pos = "章末"
+                    hooks.append({
+                        "position": pos,
+                        "content": (h.get("content") or "").strip()[:60],
+                    })
+                elif isinstance(h, str) and h.strip():
+                    hooks.append({"position": "章末", "content": h.strip()[:60]})
+        elif isinstance(raw_hooks, (int, float)):
+            hooks = [{"position": "章末", "content": ""}] * int(raw_hooks)
+        ctypes = s.get("chapter_types")
+        if not isinstance(ctypes, list):
+            ctypes = []
+        ctypes = [str(t).strip()[:8] for t in ctypes if str(t).strip()][:3]
         signals.append({
             "chapter": (s.get("chapter") or "").strip()[:20],
             "info_density": round(info, 4),
+            "chapter_types": ctypes,
+            "summary": (s.get("summary") or "").strip()[:60],
             "payoffs": payoffs,
             "hooks": hooks,
         })
-        total_payoffs += payoffs
-        total_hooks += hooks
+        total_payoffs += len(payoffs)
+        total_hooks += len(hooks)
         info_sum += info
     n_sig = len(signals)
     return {

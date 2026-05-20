@@ -11,6 +11,51 @@ import type {
   SettingItem, SettingUpdate,
   ChronicleEpoch,
 } from "./AnalysisEditors";
+import { groupBySegment } from "./referenceMerge";
+import type { SegmentPlan } from "./segmentationCache";
+
+/** 分段视图 / 全书视图 toggle shared by the characters & settings tabs. */
+function ViewToggle({ mode, onChange, segmentLabel, bookLabel }: {
+  mode: "segment" | "book";
+  onChange: (m: "segment" | "book") => void;
+  segmentLabel: string;
+  bookLabel: string;
+}) {
+  return (
+    <div className="flex items-center" style={{ gap: 6 }}>
+      <span className="text-xs text-muted">视图：</span>
+      {([
+        { key: "segment" as const, label: segmentLabel },
+        { key: "book" as const, label: bookLabel },
+      ]).map(opt => (
+        <button key={opt.key} className="btn-ghost"
+                onClick={() => onChange(opt.key)}
+                style={{
+                  padding: "3px 10px", fontSize: 11,
+                  fontWeight: mode === opt.key ? 600 : 400,
+                  color: mode === opt.key ? "var(--accent)" : "var(--text-secondary)",
+                  background: mode === opt.key ? "var(--accent-subtle)" : "transparent",
+                  border: "1px solid var(--border)", borderRadius: 3,
+                }}>
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Header row for one segment bucket in 分段视图. */
+function SegmentGroupHeader({ title, count }: { title: string; count: number }) {
+  return (
+    <div className="flex items-center" style={{
+      gap: 8, padding: "4px 0 4px 8px", marginTop: 4,
+      borderLeft: "3px solid var(--accent)",
+    }}>
+      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)" }}>{title}</span>
+      <span className="text-xs text-muted">{count}</span>
+    </div>
+  );
+}
 
 const ROLE_COLORS: Record<string, string> = {
   "主角": "var(--accent)", "女主角": "#f472b6", "反派": "var(--error)",
@@ -40,13 +85,15 @@ const CATEGORY_COLOR: Record<string, string> = {
   other:        "var(--text-tertiary)",
 };
 
-/** Render the rich settings list grouped by category. Used in the
- *  Settings tab below the extraction section. When `onSave` is given,
- *  each card gets inline edit/delete and updates can be added/removed. */
-export function SettingsRichDisplay({ data, onSave }: {
+/** Render the rich settings list. 全书视图 groups by category; 分段视图
+ *  groups by the volume each setting's first_chapter falls into. When
+ *  `onSave` is given, each card gets inline edit/delete. */
+export function SettingsRichDisplay({ data, onSave, segmentPlan }: {
   data: SettingItem[];
   onSave?: (next: SettingItem[]) => Promise<void> | void;
+  segmentPlan?: SegmentPlan | null;
 }) {
+  const [viewMode, setViewMode] = useState<"segment" | "book">("book");
   const editable = !!onSave;
   // Map from grouped index back to global index so handlers patch the
   // right entry in the source array.
@@ -93,38 +140,60 @@ export function SettingsRichDisplay({ data, onSave }: {
     if (!groups.has(cat)) groups.set(cat, []);
     groups.get(cat)!.push(s);
   }
+  const hasSegments = !!segmentPlan && segmentPlan.segments.length > 0;
+  const mode: "segment" | "book" = hasSegments ? viewMode : "book";
+
+  const renderCard = (s: SettingItem) => {
+    const gi = findGlobalIdx(s);
+    return (
+      <SettingCard key={gi >= 0 ? gi : s.title}
+                   s={s}
+                   onChange={editable ? (next) => updateAt(gi, next) : undefined}
+                   onDelete={editable ? () => removeAt(gi) : undefined} />
+    );
+  };
+
   return (
     <div className="flex flex-col gap-12" style={{ marginTop: 8 }}>
-      {editable && (
+      <div className="flex items-center justify-between" style={{ gap: 8, flexWrap: "wrap" }}>
         <div className="flex items-center" style={{ gap: 8 }}>
-          <button className="btn" onClick={addBlank}
-                  style={{ fontSize: 11, padding: "3px 12px" }}>
-            + 添加设定
-          </button>
+          {editable && (
+            <button className="btn" onClick={addBlank}
+                    style={{ fontSize: 11, padding: "3px 12px" }}>
+              + 添加设定
+            </button>
+          )}
           <span className="text-xs text-muted">共 {data.length} 条设定</span>
         </div>
-      )}
-      {Array.from(groups.entries()).map(([cat, items]) => (
-        items.length > 0 ? (
-          <div key={cat}>
-            <div style={{
-              fontSize: 12, fontWeight: 700, marginBottom: 6,
-              color: CATEGORY_COLOR[cat] || "var(--text-tertiary)",
-            }}>{CATEGORY_LABEL_CN[cat] || cat}</div>
-            <div className="flex flex-col gap-6">
-              {items.map((s) => {
-                const gi = findGlobalIdx(s);
-                return (
-                  <SettingCard key={gi >= 0 ? gi : s.title}
-                               s={s}
-                               onChange={editable ? (next) => updateAt(gi, next) : undefined}
-                               onDelete={editable ? () => removeAt(gi) : undefined} />
-                );
-              })}
+        {hasSegments && (
+          <ViewToggle mode={mode} onChange={setViewMode}
+                      segmentLabel="分段视图" bookLabel="全书（按类别）" />
+        )}
+      </div>
+      {mode === "book" ? (
+        Array.from(groups.entries()).map(([cat, items]) => (
+          items.length > 0 ? (
+            <div key={cat}>
+              <div style={{
+                fontSize: 12, fontWeight: 700, marginBottom: 6,
+                color: CATEGORY_COLOR[cat] || "var(--text-tertiary)",
+              }}>{CATEGORY_LABEL_CN[cat] || cat}</div>
+              <div className="flex flex-col gap-6">
+                {items.map(renderCard)}
+              </div>
+            </div>
+          ) : null
+        ))
+      ) : (
+        groupBySegment(data, segmentPlan || null, s => s.first_chapter).map(g => (
+          <div key={g.index}>
+            <SegmentGroupHeader title={g.title} count={g.items.length} />
+            <div className="flex flex-col gap-6" style={{ marginTop: 6 }}>
+              {g.items.map(renderCard)}
             </div>
           </div>
-        ) : null
-      ))}
+        ))
+      )}
     </div>
   );
 }
@@ -308,7 +377,7 @@ function SettingCard({ s, onChange, onDelete }: {
  *  character's name. That keeps the 经历 sub-tab synced with the
  *  chronicle: editing/deleting an event there flows into here. */
 export function CharactersRichDisplay({
-  data, chronicle, onSave,
+  data, chronicle, onSave, segmentPlan,
 }: {
   data: CharacterItem[];
   /** Optional plot outline; when supplied, the 经历 sub-section is
@@ -319,7 +388,11 @@ export function CharactersRichDisplay({
    *  card, add/delete on appearance/personality sub-sections, and a
    *  「+ 添加角色」 button at the top of the list. */
   onSave?: (next: CharacterItem[]) => Promise<void> | void;
+  /** Segment plan — enables the 分段视图 (group characters by the
+   *  volume their first_chapter falls into). */
+  segmentPlan?: SegmentPlan | null;
 }) {
+  const [viewMode, setViewMode] = useState<"segment" | "book">("book");
   // Pre-index chronicle events by subject so each card render is O(1).
   const eventsBySubject = React.useMemo(() => {
     const idx = new Map<string, CharacterListItem[]>();
@@ -399,26 +472,46 @@ export function CharactersRichDisplay({
       if (ra < 2) return a.originalIndex - b.originalIndex; // 主角/女主角 stable
       return frequency(b.c) - frequency(a.c);
     });
+  const hasSegments = !!segmentPlan && segmentPlan.segments.length > 0;
+  const mode: "segment" | "book" = hasSegments ? viewMode : "book";
+
+  const renderCard = ({ c, originalIndex }: { c: CharacterItem; originalIndex: number }) => (
+    <CharacterCard key={originalIndex} c={c}
+                   chronicleExperiences={eventsBySubject.get(c.name) || null}
+                   onChange={editable ? (next) => updateAt(originalIndex, next) : undefined}
+                   onDelete={editable ? () => removeAt(originalIndex) : undefined} />
+  );
 
   return (
     <div className="flex flex-col gap-6" style={{ marginTop: 8 }}>
-      {editable && (
+      <div className="flex items-center justify-between" style={{ gap: 8, flexWrap: "wrap" }}>
         <div className="flex items-center" style={{ gap: 8 }}>
-          <button className="btn" onClick={addBlank}
-                  style={{ fontSize: 11, padding: "3px 12px" }}>
-            + 添加角色
-          </button>
+          {editable && (
+            <button className="btn" onClick={addBlank}
+                    style={{ fontSize: 11, padding: "3px 12px" }}>
+              + 添加角色
+            </button>
+          )}
           <span className="text-xs text-muted">
-            共 {data.length} 个角色 · 主角/女主角置顶，其余按出场次数排序
+            共 {data.length} 个角色
+            {mode === "book" && " · 主角/女主角置顶，其余按出场次数排序"}
           </span>
         </div>
+        {hasSegments && (
+          <ViewToggle mode={mode} onChange={setViewMode}
+                      segmentLabel="分段视图" bookLabel="全书（按出场次数）" />
+        )}
+      </div>
+      {mode === "book" ? (
+        ordered.map(renderCard)
+      ) : (
+        groupBySegment(ordered, segmentPlan || null, x => x.c.first_chapter).map(g => (
+          <div key={g.index} className="flex flex-col gap-6">
+            <SegmentGroupHeader title={g.title} count={g.items.length} />
+            {g.items.map(renderCard)}
+          </div>
+        ))
       )}
-      {ordered.map(({ c, originalIndex }) => (
-        <CharacterCard key={originalIndex} c={c}
-                       chronicleExperiences={eventsBySubject.get(c.name) || null}
-                       onChange={editable ? (next) => updateAt(originalIndex, next) : undefined}
-                       onDelete={editable ? () => removeAt(originalIndex) : undefined} />
-      ))}
     </div>
   );
 }

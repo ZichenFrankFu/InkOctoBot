@@ -9,6 +9,7 @@ import {
   StyleFingerprintEditor,
   RhythmEditor,
   PlotOutlineEditor,
+  StyleByChunkView,
 } from "../components/reference/AnalysisEditors";
 import {
   CharactersRichDisplay,
@@ -16,6 +17,7 @@ import {
 } from "../components/reference/CharactersAndSettingsExtraction";
 import { UnifiedExtractionPanel } from "../components/reference/UnifiedExtractionPanel";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
+import { useSegmentation } from "../components/reference/segmentationCache";
 import PreprocessPanel from "../components/reference/PreprocessPanel";
 import FilesPanel from "../components/reference/FilesPanel";
 import { splitGenres } from "../utils/genre";
@@ -670,6 +672,10 @@ function WorkDetail({
   const [tab, setTab] = useState<WorkDetailTab>("files");
   const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
   const [editingWhy, setEditingWhy] = useState(false);
+  // 文本特征 tab: 分段视图 vs 全书视图.
+  const [featuresView, setFeaturesView] = useState<"segment" | "book">("book");
+  // Shared segment plan — powers the 分段视图 of the browse tabs.
+  const { plan: segmentPlan } = useSegmentation(sel.ref_id, Boolean(sel.has_full_text));
 
   useEffect(() => {
     setWhyDraft(sel.user_why_i_like || "");
@@ -916,6 +922,7 @@ function WorkDetail({
           onSaveCharacters={d => onSaveAnalysisField("extracted_characters_json", d)}
           onSaveSettings={d => onSaveAnalysisField("settings_json", d)}
           onSaveStyle={d => onSaveAnalysisField("style_fingerprint_json", d)}
+          onSaveRhythm={d => onSaveAnalysisField("rhythm_json", d)}
         />
       )}
 
@@ -932,12 +939,13 @@ function WorkDetail({
       {tab === "characters" && (
         <div className="flex flex-col gap-12">
           <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>
-            角色列表（按重要性排序）
+            角色列表
           </div>
           <CharactersRichDisplay
             data={(chars || []) as any}
             chronicle={plot}
             onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+            segmentPlan={segmentPlan}
           />
         </div>
       )}
@@ -950,32 +958,71 @@ function WorkDetail({
           <SettingsRichDisplay
             data={(settings || []) as any}
             onSave={d => onSaveAnalysisField("settings_json", d)}
+            segmentPlan={segmentPlan}
           />
         </div>
       )}
 
       {tab === "features" && (
         <div className="flex flex-col gap-12">
-          <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏 / 信息密度 / 爽点 / 钩子"
-            empty={!pj(sel.style_fingerprint_json)}
-            emptyHint="暂无风格指纹。请到「特征提取」tab 分段提取。"
-            defaultOpen
-          >
-            <StyleFingerprintEditor
-              data={pj(sel.style_fingerprint_json)}
-              onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
-            />
-          </Section>
-          <Section title="节奏" subtitle="每章特征 · 信息密度 · 钩子 · 节奏分段（含叙事结构）"
-            defaultOpen
-          >
-            <RhythmEditor
-              data={pj(sel.rhythm_json) as any}
-              legacyNarrative={pj(sel.narrative_structure_json)}
-              legacyRhythm={pj(sel.rhythm_template_json)}
-              onSave={d => onSaveAnalysisField("rhythm_json", d)}
-            />
-          </Section>
+          {/* 分段视图 / 全书视图 toggle — shown once a segment plan exists. */}
+          {segmentPlan && segmentPlan.segments.length > 0 && (
+            <div className="flex items-center" style={{ gap: 6 }}>
+              <span className="text-xs text-muted">视图：</span>
+              {([
+                { key: "segment" as const, label: "分段视图" },
+                { key: "book" as const, label: "全书视图" },
+              ]).map(opt => (
+                <button key={opt.key} className="btn-ghost"
+                        onClick={() => setFeaturesView(opt.key)}
+                        style={{
+                          padding: "3px 10px", fontSize: 11,
+                          fontWeight: featuresView === opt.key ? 600 : 400,
+                          color: featuresView === opt.key ? "var(--accent)" : "var(--text-secondary)",
+                          background: featuresView === opt.key ? "var(--accent-subtle)" : "transparent",
+                          border: "1px solid var(--border)", borderRadius: 3,
+                        }}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {(!segmentPlan || segmentPlan.segments.length === 0 || featuresView === "book") ? (
+            <>
+              <Section title="风格指纹（全书）" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏 / 信息密度 / 爽点 / 钩子"
+                empty={!pj(sel.style_fingerprint_json)}
+                emptyHint="暂无风格指纹。请到「特征提取」tab 分段提取。"
+                defaultOpen
+              >
+                <StyleFingerprintEditor
+                  data={pj(sel.style_fingerprint_json)}
+                  onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
+                />
+              </Section>
+              <Section title="节奏（全书）" subtitle="每章特征 · 信息密度 · 钩子 · 节奏分段（含叙事结构）"
+                defaultOpen
+              >
+                <RhythmEditor
+                  data={pj(sel.rhythm_json) as any}
+                  legacyNarrative={pj(sel.narrative_structure_json)}
+                  legacyRhythm={pj(sel.rhythm_template_json)}
+                  onSave={d => onSaveAnalysisField("rhythm_json", d)}
+                />
+              </Section>
+            </>
+          ) : (
+            <Section title="分段风格指纹" subtitle="每个提取分段各自的风格 / 节奏特征"
+              defaultOpen
+            >
+              <StyleByChunkView
+                chunks={((pj(sel.style_fingerprint_json) as any)?._chunks) || {}}
+                segmentTitles={Object.fromEntries(
+                  segmentPlan.segments.map(s => [s.index, s.title]),
+                )}
+              />
+            </Section>
+          )}
         </div>
       )}
     </div>

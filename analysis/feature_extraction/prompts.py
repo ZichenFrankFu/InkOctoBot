@@ -86,8 +86,14 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
       {{
         "chapter": "第 N 章（本段每一章都要有一条）",
         "info_density": 0–1 浮点，本章信息密度（推进剧情/抛设定/铺垫的有效信息量，灌水越多越低）,
-        "payoffs": 整数，本章「爽点」个数（打脸/扮猪吃虎/突破/反转/获得宝物等令读者爽快的情节）,
-        "hooks": 整数，本章「钩子」个数（章末悬念、未解之谜、引导继续阅读的张力点）
+        "chapter_types": ["本章类型，从 日常/战斗/高潮/角色个人回/主线事件/支线事件/伏笔铺垫/收束/转折/其他 中选 1-2 个"],
+        "summary": "本章一句话摘要（≤ 30 字）",
+        "payoffs": [
+          {{"type": "本章「爽点」类型：打脸反转 | 实力展现 | 突破晋级 | 谜底揭开 | 其他（本章无爽点则空数组）"}}
+        ],
+        "hooks": [
+          {{"position": "钩子位置：章首 | 段中 | 章末", "content": "钩子内容（悬念/未解之谜/张力点，≤ 25 字；本章无钩子则空数组）"}}
+        ]
       }}
     ]
   }}
@@ -101,7 +107,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 - 事件颗粒度为章节弧标题级别，每章 1-3 条最佳；不要写镜头级细节。
 - 角色的 appearance/personality/experiences 至少给主要角色填写；次要角色可只填 experiences。
 - 设定 `updates` 至少 1 条；最多 25 条设定。
-- `style.chapter_signals` **必须覆盖本段的每一章**（共 {n_chapters} 章）；`pacing_profile` 三项之和约等于 1。
+- `style.chapter_signals` **必须覆盖本段的每一章**（共 {n_chapters} 章），逐章给出信息密度 / 爽点 / 钩子；`pacing_profile` 三项之和约等于 1。
 - 平均句长、词汇丰富度、标点等纯统计特征由 NLP 离线计算，**不要**输出。
 - 某一类没有内容时返回空数组（events/characters/settings）或合理估计（style）。
 

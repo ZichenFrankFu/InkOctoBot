@@ -17,15 +17,16 @@
 import React, { useEffect, useRef, useState } from "react";
 import { apiPost } from "../../api/client";
 import { useToast } from "../shared/Toast";
-import { PromptCopyPanel } from "./AnalysisEditors";
+import { PromptCopyPanel, categoryLabel } from "./AnalysisEditors";
 import type {
-  PlotOutline, CharacterItem, SettingItem,
+  PlotOutline, CharacterItem, SettingItem, RhythmJson,
 } from "./AnalysisEditors";
 import { useSegmentation } from "./segmentationCache";
 import type { ChunkMeta } from "./segmentationCache";
 import {
   resolveEventTimeMarkers, mergeEventsIntoChronicle,
   mergeCharacters, mergeSettings, aggregateStyleChunks,
+  buildRhythmFromSignals,
 } from "./referenceMerge";
 import type { StyleFingerprint, StyleChunkEntry } from "./referenceMerge";
 
@@ -141,7 +142,7 @@ function parseUnifiedPaste(raw: string): {
 export function UnifiedExtractionPanel({
   refId, hasFullText,
   plot, characters, settings, style,
-  onSavePlot, onSaveCharacters, onSaveSettings, onSaveStyle,
+  onSavePlot, onSaveCharacters, onSaveSettings, onSaveStyle, onSaveRhythm,
 }: {
   refId: string;
   hasFullText: boolean;
@@ -153,6 +154,10 @@ export function UnifiedExtractionPanel({
   onSaveCharacters: (d: CharacterItem[]) => Promise<void> | void;
   onSaveSettings: (d: SettingItem[]) => Promise<void> | void;
   onSaveStyle: (d: StyleFingerprint) => Promise<void> | void;
+  /** Rhythm is fully derived from the aggregated chapter_signals — the
+   *  unified commit rebuilds rhythm_json so the 节奏 section stays in
+   *  sync with每章爽点/信息密度/钩子. */
+  onSaveRhythm: (d: RhythmJson) => Promise<void> | void;
 }) {
   const { toast } = useToast();
   const { plan, chunks: segChunks, chunkLoading, ensureChunks } =
@@ -290,10 +295,14 @@ export function UnifiedExtractionPanel({
     };
     const nextLedger = { ...acc.ledger, [ckKey(segIdx, chunk.chunk_index)]: entry };
     const nextStyle = aggregateStyleChunks(nextLedger);
+    // Rhythm is derived from the aggregated per-chapter signals so the
+    // 节奏 section's每章爽点/信息密度/钩子 stays in sync.
+    const nextRhythm = buildRhythmFromSignals(nextStyle.chapter_signals);
     await onSavePlot(nextPlot);
     await onSaveCharacters(nextChars);
     await onSaveSettings(nextSettings);
     await onSaveStyle(nextStyle);
+    await onSaveRhythm(nextRhythm);
     return { plot: nextPlot, chars: nextChars, settings: nextSettings, ledger: nextLedger };
   };
 
@@ -731,25 +740,7 @@ function UnifiedChunkRow({
 
               {ready && result && (
                 <>
-                  <div style={{
-                    marginTop: 6, padding: "6px 10px",
-                    border: "1px solid var(--border)", borderRadius: 4,
-                    background: "var(--bg-surface)", fontSize: 11, lineHeight: 1.8,
-                  }}>
-                    <div>
-                      <strong style={{ color: "var(--accent)" }}>事件</strong> {result.events.length} 条
-                      {" · "}
-                      <strong style={{ color: "var(--accent)" }}>角色</strong> {result.characters.length} 个
-                      {" · "}
-                      <strong style={{ color: "var(--accent)" }}>设定</strong> {result.settings.length} 条
-                    </div>
-                    <div className="text-xs text-muted">
-                      风格：对话占比 {fmtPct(result.style.dialogue_ratio)} · 信息密度 {fmtPct(result.style.info_density)}
-                      {" · "}爽点密度 {fmtNum(result.style.payoff_density)} · 钩子密度 {fmtNum(result.style.hook_density)}
-                      {result.style.chapter_signals && result.style.chapter_signals.length > 0 &&
-                        ` · 每章信号 ${result.style.chapter_signals.length} 章`}
-                    </div>
-                  </div>
+                  <UnifiedResultPreview result={result} />
                   <div className="flex items-center gap-6" style={{
                     justifyContent: "flex-end", marginTop: 8,
                     paddingTop: 8, borderTop: "1px dashed var(--border)",
@@ -777,4 +768,167 @@ function fmtNum(v: number | undefined, d = 2): string {
 }
 function fmtPct(v: number | undefined): string {
   return typeof v === "number" ? `${(v * 100).toFixed(1)}%` : "—";
+}
+
+/** Collapsible preview section used inside UnifiedResultPreview. */
+function PreviewSection({ title, count, children, defaultOpen = true }: {
+  title: string; count: number; children: React.ReactNode; defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-surface)" }}>
+      <button className="btn-ghost w-full" onClick={() => setOpen(o => !o)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "4px 8px", justifyContent: "flex-start", borderRadius: 0,
+              }}>
+        <span style={{
+          transition: "transform 0.15s", transform: open ? "rotate(90deg)" : "none",
+          display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
+        }}>▶</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)" }}>{title}</span>
+        <span className="text-xs text-muted">{count}</span>
+      </button>
+      {open && (
+        <div style={{
+          padding: "4px 8px 8px", borderTop: "1px dashed var(--border)",
+          maxHeight: 240, overflowY: "auto",
+        }}>{children}</div>
+      )}
+    </div>
+  );
+}
+
+/** Full preview of one chunk's unified extraction result — events,
+ *  characters, settings and style — so the user can review everything
+ *  before「确认入库」. */
+function UnifiedResultPreview({ result }: { result: ChunkResult }) {
+  const st = result.style;
+  const sigs = st.chapter_signals || [];
+  return (
+    <div className="flex flex-col gap-6" style={{ marginTop: 6 }}>
+      <PreviewSection title="事件" count={result.events.length}>
+        {result.events.length === 0
+          ? <span className="text-xs text-muted">（无）</span>
+          : (
+            <div className="flex flex-col gap-3">
+              {result.events.map((ev, i) => (
+                <div key={i} style={{ fontSize: 11, lineHeight: 1.55 }}>
+                  <span style={{ fontWeight: 600, color: "var(--accent)" }}>
+                    【{ev.subject || "—"}·{categoryLabel(ev.category)}·{ev.name || "—"}】
+                  </span>
+                  {ev.first_chapter && (
+                    <span className="tag" style={{
+                      marginLeft: 4, fontSize: 9, padding: "0 5px",
+                      color: "var(--jade)", border: "1px solid var(--jade)",
+                    }}>{ev.first_chapter}</span>
+                  )}
+                  {ev.time_marker && (
+                    <span className="tag" style={{
+                      marginLeft: 3, fontSize: 9, padding: "0 5px",
+                      color: "var(--gold)", border: "1px solid var(--gold)",
+                    }}>{ev.time_marker}</span>
+                  )}
+                  {" "}
+                  <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
+                </div>
+              ))}
+            </div>
+          )}
+      </PreviewSection>
+
+      <PreviewSection title="角色" count={result.characters.length}>
+        {result.characters.length === 0
+          ? <span className="text-xs text-muted">（无）</span>
+          : (
+            <div className="flex flex-col gap-3">
+              {result.characters.map((c, i) => (
+                <div key={i} style={{ fontSize: 11, lineHeight: 1.5 }}>
+                  <span style={{ fontWeight: 700, color: "var(--text-primary)" }}>{c.name}</span>
+                  {c.role_tag && (
+                    <span className="tag" style={{
+                      marginLeft: 4, fontSize: 9, padding: "0 5px",
+                      color: "var(--accent)", border: "1px solid var(--accent)",
+                    }}>{c.role_tag}</span>
+                  )}
+                  {c.first_chapter && (
+                    <span className="text-xs text-muted" style={{ marginLeft: 4 }}>{c.first_chapter}</span>
+                  )}
+                  <span className="text-xs text-muted" style={{ marginLeft: 4 }}>
+                    外貌{c.appearance?.length || 0}·性格{c.personality?.length || 0}·经历{c.experiences?.length || 0}
+                  </span>
+                  {c.intro && (
+                    <div style={{ color: "var(--text-secondary)", marginTop: 1 }}>{c.intro}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+      </PreviewSection>
+
+      <PreviewSection title="设定" count={result.settings.length}>
+        {result.settings.length === 0
+          ? <span className="text-xs text-muted">（无）</span>
+          : (
+            <div className="flex flex-col gap-3">
+              {result.settings.map((s, i) => (
+                <div key={i} style={{ fontSize: 11, lineHeight: 1.5 }}>
+                  <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>{s.title}</span>
+                  {s.first_chapter && (
+                    <span className="text-xs text-muted" style={{ marginLeft: 4 }}>{s.first_chapter}</span>
+                  )}
+                  <span className="text-xs text-muted" style={{ marginLeft: 4 }}>
+                    {s.updates?.length || 0} 条更新
+                  </span>
+                  {(s.updates && s.updates.length > 0) && (
+                    <div style={{ color: "var(--text-secondary)", marginTop: 1 }}>
+                      {s.updates[0].text}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+      </PreviewSection>
+
+      <PreviewSection title="风格 / 节奏" count={sigs.length}>
+        <div className="text-xs" style={{ lineHeight: 1.9, color: "var(--text-secondary)" }}>
+          对话占比 {fmtPct(st.dialogue_ratio)} · 描写密度 {fmtPct(st.description_density)}
+          {" · "}修辞 {fmtNum(st.rhetoric_frequency)}/千字
+          <br />
+          信息密度 {fmtPct(st.info_density)} · 爽点密度 {fmtNum(st.payoff_density)}/万字
+          {" · "}钩子密度 {fmtNum(st.hook_density)}/章
+          {st.pacing_profile && (
+            <>
+              <br />
+              节奏 快{fmtPct(st.pacing_profile.fast)} / 中{fmtPct(st.pacing_profile.medium)} / 慢{fmtPct(st.pacing_profile.slow)}
+            </>
+          )}
+        </div>
+        {sigs.length > 0 && (
+          <div className="flex flex-col gap-2" style={{ marginTop: 4 }}>
+            {sigs.map((s, i) => (
+              <div key={i} style={{ fontSize: 10, lineHeight: 1.5 }}>
+                <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>{s.chapter}</span>
+                <span style={{ color: "var(--accent)", marginLeft: 4 }}>
+                  信息密度 {typeof s.info_density === "number" ? `${(s.info_density * 100).toFixed(0)}%` : "—"}
+                </span>
+                {(s.payoffs || []).length > 0 && (
+                  <span style={{ color: "var(--gold)", marginLeft: 4 }}>爽点×{s.payoffs!.length}</span>
+                )}
+                {(s.hooks || []).length > 0 && (
+                  <span style={{ color: "var(--accent)", marginLeft: 4 }}>钩子×{s.hooks!.length}</span>
+                )}
+                {(s.chapter_types || []).length > 0 && (
+                  <span className="text-muted" style={{ marginLeft: 4 }}>
+                    {s.chapter_types!.join("/")}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </PreviewSection>
+    </div>
+  );
 }

@@ -8,8 +8,51 @@
  */
 import type {
   PlotOutline, CharacterItem, CharacterListItem,
-  SettingItem, SettingUpdate,
+  SettingItem, SettingUpdate, RhythmJson,
 } from "./AnalysisEditors";
+import { CHAPTER_TYPE_VALUES } from "./AnalysisEditors";
+import type { SegmentPlan } from "./segmentationCache";
+
+/* ─────────────────── segment grouping ─────────────────── */
+
+/** Parse a chapter number out of "第 12 章" / "第12章" / "12". */
+export function chapterNumOf(s?: string): number {
+  const m = (s || "").match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : NaN;
+}
+
+/** Group items by which volume/segment their chapter falls into — used
+ *  by the 分段视图 of the characters / settings tabs. Items whose
+ *  chapter is unparseable or outside every segment land in a trailing
+ *  "未分段" bucket. Empty segment buckets are dropped. */
+export function groupBySegment<T>(
+  items: T[],
+  plan: SegmentPlan | null,
+  getChapter: (item: T) => string | undefined,
+): { index: number; title: string; items: T[] }[] {
+  const segs = plan?.segments || [];
+  const buckets = segs.map(s => ({ index: s.index, title: s.title, items: [] as T[] }));
+  const unassigned: T[] = [];
+  for (const it of items || []) {
+    const ch = chapterNumOf(getChapter(it));
+    let placed = false;
+    if (Number.isFinite(ch)) {
+      for (let i = 0; i < segs.length; i++) {
+        if (ch >= segs[i].start_chapter && ch <= segs[i].end_chapter) {
+          buckets[i].items.push(it);
+          placed = true;
+          break;
+        }
+      }
+    }
+    if (!placed) unassigned.push(it);
+  }
+  const out = buckets.filter(b => b.items.length > 0);
+  if (unassigned.length > 0) {
+    out.push({ index: -1, title: "未分段", items: unassigned });
+  }
+  return out;
+}
 
 /* ─────────────────── chronicle events ─────────────────── */
 
@@ -243,11 +286,17 @@ export function mergeSettings(
 
 /* ─────────────────── style fingerprint ─────────────────── */
 
+export interface ChapterPayoff { type: string }
+export interface ChapterHook { position: string; content: string }
+/** Per-chapter signal from the unified extraction — feeds both the
+ *  style fingerprint's aggregates and the 节奏 (rhythm) section. */
 export interface ChapterSignal {
   chapter: string;
   info_density?: number;
-  payoffs?: number;
-  hooks?: number;
+  chapter_types?: string[];
+  summary?: string;
+  payoffs?: ChapterPayoff[];
+  hooks?: ChapterHook[];
 }
 export interface StyleFingerprint {
   avg_sentence_length?: number;
@@ -322,5 +371,58 @@ export function aggregateStyleChunks(
     },
     chapter_signals: signals,
     _chunks: chunks,
+  };
+}
+
+/* ─────────────────── rhythm (节奏) ─────────────────── */
+
+/** Build the 节奏 (rhythm) section from the aggregated per-chapter
+ *  signals. The unified extraction's chapter_signals carry per-chapter
+ *  info density, types, payoffs (爽点) and hooks (钩子) — exactly the
+ *  per-chapter data the rhythm section wants. The rhythm_json is
+ *  therefore fully DERIVED from chapter_signals (single source of
+ *  truth) rather than extracted separately. */
+export function buildRhythmFromSignals(
+  signals: ChapterSignal[] | undefined,
+): RhythmJson {
+  const valid = new Set<string>(CHAPTER_TYPE_VALUES as readonly string[]);
+  const chNum = (s: string) => {
+    const m = (s || "").match(/(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  };
+  const features = (signals || []).map(s => {
+    const types = (s.chapter_types || [])
+      .map(t => (valid.has(t) ? t : "其他"))
+      .filter((t, i, a) => a.indexOf(t) === i);
+    return {
+      chapter: chNum(s.chapter),
+      types: (types.length ? types : ["其他"]) as any,
+      info_density: typeof s.info_density === "number" ? s.info_density : 0,
+      summary: s.summary || "",
+      hooks: (s.hooks || []).map(h => ({
+        position: (h.position === "章首" || h.position === "段中" || h.position === "章末"
+          ? h.position : "章末") as "章首" | "段中" | "章末",
+        content: h.content || "",
+      })),
+    };
+  });
+  features.sort((a, b) => a.chapter - b.chapter);
+  const shuangdian: { chapter: number; type: string }[] = [];
+  for (const s of (signals || [])) {
+    for (const p of (s.payoffs || [])) {
+      shuangdian.push({ chapter: chNum(s.chapter), type: p.type });
+    }
+  }
+  shuangdian.sort((a, b) => a.chapter - b.chapter);
+  return {
+    coverage: { chapters: features.length, chars: 0 },
+    opening_pattern: "",
+    climax_positions: features
+      .filter(f => (f.types as string[]).includes("高潮"))
+      .map(f => f.chapter),
+    shuangdian,
+    chapter_features: features,
+    info_density_curve: features.map(f => f.info_density),
+    pacing_segments: [],
   };
 }
