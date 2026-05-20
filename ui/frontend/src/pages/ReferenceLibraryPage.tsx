@@ -7,8 +7,6 @@ import type { ReferenceWork, MediaType } from "../api/types";
 import {
   Section,
   StyleFingerprintEditor,
-  CharactersEditor,
-  SettingsEditor,
   RhythmEditor,
 } from "../components/reference/AnalysisEditors";
 import {
@@ -17,6 +15,7 @@ import {
   CharactersRichDisplay,
   SettingsRichDisplay,
 } from "../components/reference/CharactersAndSettingsExtraction";
+import { FeaturesExtractionPanel } from "../components/reference/FeaturesExtractionPanel";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
 import PreprocessPanel from "../components/reference/PreprocessPanel";
@@ -860,27 +859,20 @@ function WorkDetail({
             activeSegmentIndex={activeSegmentIndex}
             onActiveSegmentChange={setActiveSegmentIndex}
           />
-          {/* Section 2: the rich display — sorted by frequency, each
-            * character expandable to show appearance/personality/
-            * experiences with chapter tags. Falls back to legacy
-            * CharactersEditor for the table-style editor when the
-            * user wants to mass-edit (kept inside a collapsible). */}
+          {/* Section 2: rich display with inline CRUD — sorted by
+            * frequency, each character expandable to show appearance/
+            * personality/experiences with chapter tags. Edit/delete
+            * buttons appear on each card; the previous duplicate
+            * table-style CRUD editor was removed in favour of this. */}
           <div style={{ marginTop: 8 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
               角色列表（按重要性排序）
             </div>
-            <CharactersRichDisplay data={(chars || []) as any} chronicle={plot} />
-            <details style={{ marginTop: 12 }}>
-              <summary className="text-xs text-muted" style={{ cursor: "pointer" }}>
-                高级：以表格方式编辑全部字段（CRUD）
-              </summary>
-              <div style={{ marginTop: 6 }}>
-                <CharactersEditor
-                  data={(chars || []) as any}
-                  onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
-                />
-              </div>
-            </details>
+            <CharactersRichDisplay
+              data={(chars || []) as any}
+              chronicle={plot}
+              onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+            />
           </div>
         </div>
       )}
@@ -896,34 +888,32 @@ function WorkDetail({
             activeSegmentIndex={activeSegmentIndex}
             onActiveSegmentChange={setActiveSegmentIndex}
           />
-          {/* Section 2: rich display — grouped by category, each
-            * setting summarised by its title with an expandable list
-            * of per-chapter updates. */}
+          {/* Section 2: rich display with inline CRUD — grouped by
+            * category, each setting summarised by its title with an
+            * expandable list of per-chapter updates. */}
           <div style={{ marginTop: 8 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
               设定列表
             </div>
-            <SettingsRichDisplay data={(settings || []) as any} />
-            <details style={{ marginTop: 12 }}>
-              <summary className="text-xs text-muted" style={{ cursor: "pointer" }}>
-                高级：以表格方式编辑全部字段（CRUD）
-              </summary>
-              <div style={{ marginTop: 6 }}>
-                <SettingsEditor
-                  data={(settings || []) as any}
-                  onSave={d => onSaveAnalysisField("settings_json", d)}
-                />
-              </div>
-            </details>
+            <SettingsRichDisplay
+              data={(settings || []) as any}
+              onSave={d => onSaveAnalysisField("settings_json", d)}
+            />
           </div>
         </div>
       )}
 
       {tab === "features" && (
         <div className="flex flex-col gap-12">
+          <FeaturesExtractionPanel
+            refId={sel.ref_id}
+            hasFullText={Boolean(sel.has_full_text)}
+            current={pj(sel.style_fingerprint_json) as any}
+            onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
+          />
           <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏"
             empty={!pj(sel.style_fingerprint_json)}
-            emptyHint="暂无风格指纹。请先提取特征。"
+            emptyHint="暂无风格指纹。请先用上面的「NLP 自动计算」或「内置 AI 提取」。"
             defaultOpen
           >
             <StyleFingerprintEditor

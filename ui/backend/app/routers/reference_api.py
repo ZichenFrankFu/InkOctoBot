@@ -2795,6 +2795,115 @@ async def extract_chunk_settings(
         raise HTTPException(500, f"设定提取失败: {e}")
 
 
+class StyleExtractRequest(BaseModel):
+    """Body for style fingerprint extraction. `segment_index` is optional —
+    when omitted, the whole work is processed. `use_ai` selects the AI
+    path (otherwise the NLP rule-based extractor runs locally). The
+    `prompt_override` is only used by the AI path."""
+    segment_index: Optional[int] = None
+    use_ai: bool = False
+    use_web_search: bool = False
+    prompt_override: Optional[str] = None
+
+
+def _load_style_chapters(db, w, ref_id: str, segment_index: int | None):
+    """Resolve the chapters that should feed the style extractor. When
+    ``segment_index`` is None, returns the full chapter list. Otherwise
+    returns just the chapters inside that segment's chapter range,
+    along with a small ``work_ctx`` for the AI prompt vars."""
+    from analysis.feature_extraction.pipeline import (
+        FeatureExtractionPipeline, build_work_ctx,
+    )
+    pipe = FeatureExtractionPipeline(db.db_path)
+    text = pipe._load_text(w)
+    if not text:
+        raise HTTPException(400, "作品尚未上传正文")
+    all_chapters = pipe._split_chapters(text)
+    if segment_index is None:
+        ctx = {
+            "title":        (w.get("title") or "").strip() or "(未命名)",
+            "author":       (w.get("creator") or "").strip() or "(未知)",
+            "platform":     (w.get("platform") or "").strip() or "(未知)",
+            "volume_index": 0,
+            "volume_title": "全书",
+            "start_chapter": 1,
+            "end_chapter":   len(all_chapters),
+        }
+        return all_chapters, ctx
+    plan = pipe.get_effective_plan(ref_id, all_chapters)
+    segs = plan["segments"]
+    if not segs:
+        plan = pipe.plan_segments(all_chapters)
+        segs = plan["segments"]
+    if segment_index < 0 or segment_index >= len(segs):
+        raise HTTPException(400, "segment_index 超出范围")
+    seg = segs[segment_index]
+    seg_chapters = [
+        all_chapters[j - 1]
+        for j in range(seg["start_chapter"], seg["end_chapter"] + 1)
+    ]
+    ctx = build_work_ctx(w, seg, segment_index)
+    return seg_chapters, ctx
+
+
+@router.post("/works/{ref_id}/style/extract")
+async def extract_style(ref_id: str, body: StyleExtractRequest):
+    """Compute a style fingerprint for either the whole work (when
+    ``segment_index`` is None) or a single segment. The NLP path uses
+    ``compute_style_fingerprint`` (jieba + regex; offline, no tokens).
+    The AI path uses ``ai_extract_style`` (LLM call via ModelRouter).
+    Does NOT persist — the UI saves via the usual style_fingerprint_json
+    PATCH endpoint."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    import time as _time
+    t0 = _time.perf_counter()
+    try:
+        chapters, ctx = _load_style_chapters(db, w, ref_id, body.segment_index)
+        if not chapters:
+            raise HTTPException(400, "未找到任何章节文本")
+        if body.use_ai:
+            from analysis.feature_extraction.ai_extractor import ai_extract_style
+            from models.router import ModelRouter
+            try:
+                router_inst = ModelRouter()
+            except Exception as e:
+                raise HTTPException(503, f"AI 路由初始化失败：{e}")
+            fp = await ai_extract_style(
+                chapters, router_inst,
+                prompt_override=body.prompt_override,
+                use_web_search=body.use_web_search,
+                work_ctx=ctx,
+            )
+        else:
+            from analysis.feature_extraction.nlp_stats import compute_style_fingerprint
+            fp = compute_style_fingerprint(chapters)
+        elapsed = round(_time.perf_counter() - t0, 2)
+        return {
+            "style_fingerprint": fp,
+            "elapsed_s": elapsed,
+            "errors": [],
+            "scope": {
+                "segment_index": body.segment_index,
+                "label": ctx.get("volume_title") or "全书",
+                "start_chapter": ctx.get("start_chapter"),
+                "end_chapter": ctx.get("end_chapter"),
+                "n_chapters": len(chapters),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        elapsed = round(_time.perf_counter() - t0, 2)
+        return {
+            "style_fingerprint": {}, "elapsed_s": elapsed,
+            "errors": [f"提取失败：{str(e)[:240]}"],
+            "scope": {"segment_index": body.segment_index},
+        }
+
+
 @router.get("/works/{ref_id}/segments/{segment_index}/chunks")
 def list_segment_chunks(ref_id: str, segment_index: int, max_chars: int = 32_000):
     """List the chunks for a segment WITHOUT running any AI — used by
@@ -3377,7 +3486,7 @@ def preview_prompt(
 
     # Segment-scoped: need ref_id + segment_index → build chapter text
     if key in {"reference.characters", "reference.settings", "reference.rhythm",
-               "reference.outline"}:
+               "reference.outline", "reference.style"}:
         if not ref_id or segment_index is None:
             raise HTTPException(400, "ref_id + segment_index required for this prompt")
         db = _db()

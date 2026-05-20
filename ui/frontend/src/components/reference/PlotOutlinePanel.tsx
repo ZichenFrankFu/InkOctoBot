@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { apiGet, apiPost } from "../../api/client";
+import { apiPost } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { PlotOutlineEditor, PromptCopyPanel, categoryLabel, timeMarkers } from "./AnalysisEditors";
 import type { PlotOutline, ChronicleEpoch, ChroniclePeriod } from "./AnalysisEditors";
@@ -165,9 +165,11 @@ export default function PlotOutlinePanel({
   // plan via the preprocess tab they should invalidate the cache.
   const { plan, planLoading, chunks: segChunks, chunkLoading: segChunksLoading, ensureChunks: ensureChunksLoaded } =
     useSegmentation(refId, hasFullText);
-  const [useWebSearch, setUseWebSearch] = useState(false);
-  const [webSearchCap, setWebSearchCap] = useState<{ enabled: boolean; reason: string; provider: string; model: string } | null>(null);
   const [merging, setMerging] = useState(false);
+  /** When all chunks are committed, the extraction Section 1 collapses
+   *  into a one-line banner; the user can click "重新分段提取" to bring
+   *  it back. Reset whenever the plan / done-count drops below total. */
+  const [extractionExpanded, setExtractionExpanded] = useState(false);
   // Per-segment expansion state: clicking a volume row reveals its
   // chunks. The chunks list is fetched lazily on first expand.
   const [openSegs, setOpenSegs] = useState<Set<number>>(new Set());
@@ -202,17 +204,6 @@ export default function PlotOutlinePanel({
   const loadPlan = useCallback(async () => {
     invalidateSegmentation(refId);
   }, [refId]);
-
-  // Capability probe so we can disable the web-search toggle with a
-  // useful tooltip when the user hasn't configured a search-capable model.
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<{ enabled: boolean; reason: string; provider: string; model: string }>(
-      "/api/references/web_search/capability",
-    ).then(r => { if (!cancelled) setWebSearchCap(r); })
-     .catch(() => { /* no-op; toggle stays disabled */ });
-    return () => { cancelled = true; };
-  }, []);
 
   const total = plan?.segments.length || 0;
   const completed = new Set(plan?.completed || []);
@@ -349,7 +340,7 @@ export default function PlotOutlinePanel({
         events: any[]; elapsed_s: number; errors: string[];
       }>(
         `/api/references/works/${refId}/segments/${segIdx}/chunks/${chunkIdx}/extract`,
-        { use_web_search: useWebSearch && !!webSearchCap?.enabled },
+        {},
         { timeoutMs: 600_000 },
       );
       if (r.errors && r.errors.length > 0) {
@@ -811,7 +802,7 @@ export default function PlotOutlinePanel({
         try {
           const r = await apiPost<{ events: any[]; elapsed_s: number; errors: string[] }>(
             `/api/references/works/${refId}/segments/${seg.index}/chunks/${chunk.chunk_index}/extract`,
-            { use_web_search: useWebSearch && !!webSearchCap?.enabled },
+            {},
             { timeoutMs: 600_000 },
           );
           if ((r.errors && r.errors.length > 0) || !r.events || r.events.length === 0) {
@@ -904,19 +895,35 @@ export default function PlotOutlinePanel({
   // ── render ──
   return (
     <div className="flex flex-col gap-12">
-      {/* ════════ Section 1: 大纲提取 ════════
+      {/* ════════ Section 1: 大纲提取（在所有分段都已入库后自动折叠）
         * Per-volume, per-chunk event extraction. Each chunk produces
         * a flat events array (in textual / chapter order). The merged
         * result lands in the chronicle display section below; from
         * there the user can run the 全时间线总结 step. */}
-      {hasFullText && plan && (
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
-          大纲提取
+      {hasFullText && plan && allDone && !extractionExpanded && (
+        <div className="flex items-center" style={{
+          gap: 8, padding: "8px 12px",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-sm)",
+          background: "var(--bg-surface)",
+          fontSize: 12, color: "var(--text-secondary)",
+        }}>
+          <span className="tag" style={{
+            fontSize: 10, padding: "1px 8px",
+            color: "var(--jade)", border: "1px solid var(--jade)", borderRadius: 3,
+          }}>已全部入库</span>
+          <span>{plan.segments.length} 卷分段提取均已完成，结果展示在下方编年史。</span>
+          <div style={{ flex: 1 }} />
+          <button className="btn-ghost"
+                  style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-secondary)" }}
+                  onClick={() => setExtractionExpanded(true)}>
+            重新分段提取
+          </button>
         </div>
       )}
 
       {/* Segment plan + preview (only if work has full text and not in standalone manual mode) */}
-      {hasFullText && plan && (
+      {hasFullText && plan && (!allDone || extractionExpanded) && (
         <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
           <div className="flex items-center justify-between" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
             <div>
@@ -943,32 +950,6 @@ export default function PlotOutlinePanel({
               </div>
             </div>
             <div className="flex items-center gap-8" style={{ flexWrap: "wrap" }}>
-              <label
-                className="flex items-center gap-6"
-                style={{
-                  fontSize: 11,
-                  cursor: webSearchCap?.enabled ? "pointer" : "not-allowed",
-                  color: webSearchCap?.enabled ? "var(--text-secondary)" : "var(--text-tertiary)",
-                  padding: "3px 8px",
-                  borderRadius: 3,
-                  border: `1px solid ${useWebSearch && webSearchCap?.enabled ? "var(--accent)" : "var(--border)"}`,
-                  background: useWebSearch && webSearchCap?.enabled ? "var(--accent-subtle)" : "transparent",
-                }}
-                title={
-                  webSearchCap?.enabled
-                    ? `开启后 AI 会用 ${webSearchCap.provider}/${webSearchCap.model} 联网验证抽取结果，降低幻觉。`
-                    : (webSearchCap?.reason || "未配置联网模型；请到「设置 → Pipeline 配置 → 参考作品 AI 联网补全」选择支持 web search 的模型")
-                }
-              >
-                <input
-                  type="checkbox"
-                  checked={useWebSearch && !!webSearchCap?.enabled}
-                  onChange={e => setUseWebSearch(e.target.checked)}
-                  disabled={!webSearchCap?.enabled}
-                  style={{ width: 13, height: 13 }}
-                />
-                AI 联网验证
-              </label>
               {total > 0 && (
                 <button
                   className="btn-primary"

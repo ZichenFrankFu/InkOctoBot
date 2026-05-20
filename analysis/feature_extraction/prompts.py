@@ -24,6 +24,56 @@ logger = logging.getLogger("inkoctobot.analysis.prompts")
 # ── Factory defaults ─────────────────────────────────────────────────
 
 DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
+    "reference.style": {
+        "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
+
+阅读下面这**一段**小说文本，输出该段的**风格指纹**（6 个统计/语感维度）。
+注意：句长 / 对话占比 / 词汇丰富度等纯统计指标已由本系统的 NLP 模块给出基线值；
+你的任务是对**整体语感**做综合判断（如句子节奏、修辞密集度、描写风格），用 0–1 的浮点数
+表达，不要给逐句打分，也不要解释。
+
+作品上下文（仅供消歧）：
+- 作品标题：《{title}》
+- 作者：{author}
+- 平台：{platform}
+- 本卷：第 {volume_index} 卷 {volume_title}
+- 本卷章节：第 {start_chapter}–{end_chapter} 章（共 {n_chapters} 章）
+
+**严格禁止**（违反则整条响应被视为错误）：
+- 任何寒暄、解释、对话语句
+- ```json ... ``` 这样的 markdown 包装
+- <think>...</think> 等推理块
+- JSON 之外的任何文字
+
+**只输出**：以 `{{` 开始、以 `}}` 结束的合法 JSON 对象。
+
+输出 JSON schema（字段名严格匹配）：
+
+{{
+  "avg_sentence_length": 数字，本段平均句长（字数）；
+  "dialogue_ratio": 0–1 浮点，对话内容字数 / 全文字数；
+  "description_density": 0–1 浮点，描写/形容性词语在全部词中的占比；
+  "rhetoric_frequency": 数字，每千字使用比喻/排比/反问等修辞的次数；
+  "vocab_complexity": 0–1 浮点，词汇丰富度（归一化 TTR），≥ 0.5 视作较丰富；
+  "pacing_profile": {{
+    "fast":   0–1 浮点（节奏快、动作多的章节占比）,
+    "medium": 0–1 浮点,
+    "slow":   0–1 浮点（描写密、慢节奏章节占比）,
+  }}
+}}
+
+要求：
+- `pacing_profile.fast + medium + slow` 应当约等于 1（允许 0.05 误差）。
+- 所有数值保留 2–4 位小数，不要用文字描述。
+
+本段正文（约 {n_chars} 字）：
+{text}
+""",
+        "vars": ["title", "author", "platform", "volume_index", "volume_title",
+                 "start_chapter", "end_chapter", "n_chapters", "n_chars", "text"],
+        "description": "参考作品分段提取风格指纹（句长/对话/描写/修辞/节奏）",
+    },
+
     "reference.characters": {
         "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
 

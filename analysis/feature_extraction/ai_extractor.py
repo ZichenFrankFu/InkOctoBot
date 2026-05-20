@@ -425,6 +425,47 @@ def _norm_tagged_list(raw: Any, max_items: int = 20, max_text: int = 80) -> list
     return out
 
 
+async def ai_extract_style(chapters: list[dict], router: Any,
+                            *, prompt_override: str | None = None,
+                            use_web_search: bool = False,
+                            work_ctx: dict | None = None) -> dict:
+    """Run the LLM on a segment / work and return a style fingerprint
+    dict shaped like ``compute_style_fingerprint`` (avg_sentence_length,
+    dialogue_ratio, description_density, rhetoric_frequency,
+    vocab_complexity, pacing_profile). Used by the features tab when
+    the user wants an LLM second-opinion on the NLP-computed values."""
+    from analysis.feature_extraction.prompts import render
+    text, nchars = _build_segment_text(chapters)
+    prompt = render(
+        "reference.style", override=prompt_override,
+        n_chapters=len(chapters), n_chars=nchars, text=text,
+        **_ctx(work_ctx),
+    )
+    raw = await _invoke(router, prompt, use_web_search=use_web_search, expect="dict")
+    obj = _parse_obj(raw)
+    if not isinstance(obj, dict):
+        return {}
+    def _f(k: str, default: float = 0.0) -> float:
+        v = obj.get(k)
+        try: return float(v) if v is not None else default
+        except (TypeError, ValueError): return default
+    pp = obj.get("pacing_profile") or {}
+    if not isinstance(pp, dict): pp = {}
+    out = {
+        "avg_sentence_length": round(_f("avg_sentence_length"), 2),
+        "dialogue_ratio":      round(_f("dialogue_ratio"), 4),
+        "description_density": round(_f("description_density"), 4),
+        "rhetoric_frequency":  round(_f("rhetoric_frequency"), 4),
+        "vocab_complexity":    round(_f("vocab_complexity"), 4),
+        "pacing_profile": {
+            "fast":   round(float(pp.get("fast") or 0), 3),
+            "medium": round(float(pp.get("medium") or 0), 3),
+            "slow":   round(float(pp.get("slow") or 0), 3),
+        },
+    }
+    return out
+
+
 async def ai_extract_characters(chapters: list[dict], router: Any,
                                    *, prompt_override: str | None = None,
                                    use_web_search: bool = False,

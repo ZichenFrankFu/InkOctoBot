@@ -54,6 +54,41 @@ function fmtChars(n: number): string {
   return `${n.toLocaleString()} 字`;
 }
 
+/** Pull a chapter number out of strings like "第 12 章", "第12章",
+ *  "Chapter 12", or a bare "12". Returns NaN if nothing parseable. */
+function chapterNum(s?: string): number {
+  if (!s) return NaN;
+  const m = String(s).match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : NaN;
+}
+
+/** Decide whether a chunk has already been extracted by scanning the
+ *  persisted data for items first_introduced (or updated) inside this
+ *  chunk's chapter range. Returns the count so the UI can show e.g.
+ *  "已提取 · 4 条" — restores the marker on page reload without needing
+ *  a separate per-chunk ledger. Works for both characters (first_chapter)
+ *  and settings (first_chapter + updates[].chapter). */
+function countPriorItemsInChunk(
+  data: any[] | null | undefined,
+  startCh: number,
+  endCh: number,
+): number {
+  if (!data || data.length === 0) return 0;
+  let n = 0;
+  for (const item of data) {
+    const inRange = (raw?: string) => {
+      const c = chapterNum(raw);
+      return Number.isFinite(c) && c >= startCh && c <= endCh;
+    };
+    if (inRange(item.first_chapter)) { n++; continue; }
+    const updates = item.updates || item.appearance || item.personality || item.experiences;
+    if (Array.isArray(updates) && updates.some((u: any) => inRange(u?.chapter))) {
+      n++;
+    }
+  }
+  return n;
+}
+
 /** Lenient JSON parse: strips <think> blocks, ```json fences, and finds
  *  the longest balanced JSON object/array in the text. Mirrors the
  *  chronicle's paste parser logic. */
@@ -558,12 +593,46 @@ function SettingsPreview({ items }: { items: SettingItem[] }) {
 }
 
 /** Render the rich settings list grouped by category. Used in the
- *  Settings tab below the extraction section. */
-export function SettingsRichDisplay({ data }: { data: SettingItem[] }) {
+ *  Settings tab below the extraction section. When `onSave` is given,
+ *  each card gets inline edit/delete and updates can be added/removed. */
+export function SettingsRichDisplay({ data, onSave }: {
+  data: SettingItem[];
+  onSave?: (next: SettingItem[]) => Promise<void> | void;
+}) {
+  const editable = !!onSave;
+  // Map from grouped index back to global index so handlers patch the
+  // right entry in the source array.
+  const findGlobalIdx = (target: SettingItem) =>
+    (data || []).findIndex(x => x === target);
+  const updateAt = (idx: number, next: SettingItem) => {
+    if (!onSave || idx < 0) return;
+    const copy = (data || []).slice();
+    copy[idx] = next;
+    onSave(copy);
+  };
+  const removeAt = (idx: number) => {
+    if (!onSave || idx < 0) return;
+    const copy = (data || []).slice();
+    copy.splice(idx, 1);
+    onSave(copy);
+  };
+  const addBlank = () => {
+    if (!onSave) return;
+    const copy = (data || []).slice();
+    copy.unshift({ category: "other", title: "新设定", content: "", updates: [] });
+    onSave(copy);
+  };
+
   if (!data || data.length === 0) {
     return (
       <div className="empty-state" style={{ padding: 32 }}>
         <p>暂无设定。在上方分段提取后会自动入库。</p>
+        {editable && (
+          <button className="btn" onClick={addBlank}
+                  style={{ fontSize: 12, padding: "4px 12px", marginTop: 12 }}>
+            + 手动添加一条设定
+          </button>
+        )}
       </div>
     );
   }
@@ -578,6 +647,15 @@ export function SettingsRichDisplay({ data }: { data: SettingItem[] }) {
   }
   return (
     <div className="flex flex-col gap-12" style={{ marginTop: 8 }}>
+      {editable && (
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <button className="btn" onClick={addBlank}
+                  style={{ fontSize: 11, padding: "3px 12px" }}>
+            + 添加设定
+          </button>
+          <span className="text-xs text-muted">共 {data.length} 条设定</span>
+        </div>
+      )}
       {Array.from(groups.entries()).map(([cat, items]) => (
         items.length > 0 ? (
           <div key={cat}>
@@ -586,7 +664,15 @@ export function SettingsRichDisplay({ data }: { data: SettingItem[] }) {
               color: CATEGORY_COLOR[cat] || "var(--text-tertiary)",
             }}>{CATEGORY_LABEL_CN[cat] || cat}</div>
             <div className="flex flex-col gap-6">
-              {items.map((s, i) => <SettingCard key={i} s={s} />)}
+              {items.map((s) => {
+                const gi = findGlobalIdx(s);
+                return (
+                  <SettingCard key={gi >= 0 ? gi : s.title}
+                               s={s}
+                               onChange={editable ? (next) => updateAt(gi, next) : undefined}
+                               onDelete={editable ? () => removeAt(gi) : undefined} />
+                );
+              })}
             </div>
           </div>
         ) : null
@@ -595,57 +681,154 @@ export function SettingsRichDisplay({ data }: { data: SettingItem[] }) {
   );
 }
 
-function SettingCard({ s }: { s: SettingItem }) {
+function SettingCard({ s, onChange, onDelete }: {
+  s: SettingItem;
+  onChange?: (next: SettingItem) => void;
+  onDelete?: () => void;
+}) {
+  const editable = !!onChange;
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const updates = s.updates || [];
+  const setUpdates = (next: SettingUpdate[]) => onChange?.({ ...s, updates: next });
   return (
     <div style={{
       border: "1px solid var(--border)", borderRadius: 4,
       background: "var(--bg-card)",
     }}>
-      <button
-        className="btn-ghost w-full"
-        onClick={() => setOpen(o => !o)}
-        disabled={updates.length === 0 && !s.content}
-        style={{
-          display: "flex", alignItems: "center", gap: 8,
-          padding: "6px 10px", textAlign: "left",
-          justifyContent: "flex-start", borderRadius: 0,
-        }}>
-        <span style={{
-          transition: "transform 0.15s",
-          transform: open ? "rotate(90deg)" : "none",
-          display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
-        }}>▶</span>
-        <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>
-          {s.title}
-        </span>
-        <span className="text-xs text-muted">
-          {updates.length > 0 ? `${updates.length} 条记录` : (s.content ? "1 条简介" : "(空)")}
-        </span>
-        {s.first_chapter && (
-          <span className="tag" style={{
-            fontSize: 10, padding: "0 6px",
-            color: "var(--jade)", border: "1px solid var(--jade)",
-            borderRadius: 3,
-          }}>{s.first_chapter}</span>
+      <div style={{
+        display: "flex", alignItems: "center", gap: 8,
+        padding: "4px 6px 4px 10px",
+      }}>
+        <button
+          className="btn-ghost"
+          onClick={() => setOpen(o => !o)}
+          disabled={updates.length === 0 && !s.content && !editable}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, flex: 1,
+            padding: "2px 4px", textAlign: "left",
+            justifyContent: "flex-start", borderRadius: 0, minWidth: 0,
+          }}>
+          <span style={{
+            transition: "transform 0.15s",
+            transform: open ? "rotate(90deg)" : "none",
+            display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
+          }}>▶</span>
+          <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>
+            {s.title || "(未命名)"}
+          </span>
+          <span className="text-xs text-muted">
+            {updates.length > 0 ? `${updates.length} 条记录` : (s.content ? "1 条简介" : "(空)")}
+          </span>
+          {s.first_chapter && (
+            <span className="tag" style={{
+              fontSize: 10, padding: "0 6px",
+              color: "var(--jade)", border: "1px solid var(--jade)",
+              borderRadius: 3,
+            }}>{s.first_chapter}</span>
+          )}
+        </button>
+        {editable && (
+          <>
+            <button className="btn-ghost"
+                    onClick={() => { setEditing(e => !e); setOpen(true); }}
+                    title={editing ? "完成编辑" : "编辑标题/类别/首章"}
+                    style={{ fontSize: 11, padding: "2px 8px", color: "var(--text-tertiary)" }}>
+              {editing ? "完成" : "编辑"}
+            </button>
+            <button className="btn-ghost"
+                    onClick={() => {
+                      if (confirm(`确认删除设定「${s.title}」？此操作不可撤销。`)) onDelete?.();
+                    }}
+                    title="删除设定"
+                    style={{ fontSize: 14, padding: "2px 8px", color: "var(--error)" }}>×</button>
+          </>
         )}
-      </button>
+      </div>
       {open && (
         <div style={{ padding: "6px 10px 10px", borderTop: "1px dashed var(--border)" }}>
-          {updates.length > 0 ? (
+          {editing && editable && (
+            <div className="flex flex-col gap-6" style={{ marginBottom: 8 }}>
+              <div className="flex items-center" style={{ gap: 6 }}>
+                <span className="text-xs text-muted" style={{ minWidth: 50 }}>标题</span>
+                <input className="input" value={s.title}
+                       onChange={e => onChange?.({ ...s, title: e.target.value })}
+                       style={{ fontSize: 12, padding: "3px 8px", flex: 1 }} />
+              </div>
+              <div className="flex items-center" style={{ gap: 6 }}>
+                <span className="text-xs text-muted" style={{ minWidth: 50 }}>类别</span>
+                <select className="select" value={s.category || "other"}
+                        onChange={e => onChange?.({ ...s, category: e.target.value })}
+                        style={{ fontSize: 12, padding: "3px 8px", flex: 1 }}>
+                  {Object.entries(CATEGORY_LABEL_CN).map(([k, v]) =>
+                    <option key={k} value={k}>{v}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center" style={{ gap: 6 }}>
+                <span className="text-xs text-muted" style={{ minWidth: 50 }}>首章</span>
+                <input className="input" value={s.first_chapter || ""}
+                       placeholder="如：第 4 章"
+                       onChange={e => onChange?.({ ...s, first_chapter: e.target.value })}
+                       style={{ fontSize: 12, padding: "3px 8px", flex: 1 }} />
+              </div>
+            </div>
+          )}
+          {updates.length > 0 || editable ? (
             <div className="flex flex-col gap-4">
-              {updates.map((u, i) => (
-                <div key={i} style={{ fontSize: 12, lineHeight: 1.6 }}>
-                  {u.chapter && (
-                    <span style={{
-                      color: "var(--gold)", marginRight: 6,
-                      fontFamily: "var(--font-mono)", fontWeight: 600,
-                    }}>{u.chapter}</span>
-                  )}
-                  <span style={{ color: "var(--text-secondary)" }}>{u.text}</span>
-                </div>
-              ))}
+              {updates.map((u, i) =>
+                editable ? (
+                  <div key={i} className="flex" style={{ gap: 4, alignItems: "flex-start" }}>
+                    <input className="input"
+                           value={u.chapter || ""}
+                           placeholder="第 N 章"
+                           onChange={e => {
+                             const copy = updates.slice();
+                             copy[i] = { ...copy[i], chapter: e.target.value };
+                             setUpdates(copy);
+                           }}
+                           style={{ fontSize: 10, padding: "2px 6px", width: 90,
+                                    fontFamily: "var(--font-mono)" }} />
+                    <textarea className="input"
+                              value={u.text || ""}
+                              placeholder="内容…"
+                              rows={1}
+                              onChange={e => {
+                                const copy = updates.slice();
+                                copy[i] = { ...copy[i], text: e.target.value };
+                                setUpdates(copy);
+                              }}
+                              style={{ fontSize: 12, padding: "2px 6px", flex: 1, resize: "vertical", lineHeight: 1.5 }} />
+                    <button className="btn-ghost"
+                            onClick={() => {
+                              const copy = updates.slice();
+                              copy.splice(i, 1);
+                              setUpdates(copy);
+                            }}
+                            title="删除此条"
+                            style={{ fontSize: 12, padding: "2px 6px", color: "var(--error)" }}>×</button>
+                  </div>
+                ) : (
+                  <div key={i} style={{ fontSize: 12, lineHeight: 1.6 }}>
+                    {u.chapter && (
+                      <span style={{
+                        color: "var(--gold)", marginRight: 6,
+                        fontFamily: "var(--font-mono)", fontWeight: 600,
+                      }}>{u.chapter}</span>
+                    )}
+                    <span style={{ color: "var(--text-secondary)" }}>{u.text}</span>
+                  </div>
+                )
+              )}
+              {editable && (
+                <button className="btn-ghost"
+                        onClick={() => setUpdates([...updates, { chapter: "", text: "" }])}
+                        style={{
+                          fontSize: 11, padding: "3px 8px",
+                          alignSelf: "flex-start", color: "var(--accent)",
+                        }}>
+                  + 添加一条更新
+                </button>
+              )}
             </div>
           ) : (
             <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.55 }}>
@@ -668,21 +851,18 @@ function SettingCard({ s }: { s: SettingItem }) {
  *  character's name. That keeps the 经历 sub-tab synced with the
  *  chronicle: editing/deleting an event there flows into here. */
 export function CharactersRichDisplay({
-  data, chronicle,
+  data, chronicle, onSave,
 }: {
   data: CharacterItem[];
   /** Optional plot outline; when supplied, the 经历 sub-section is
    *  derived from chronicle events. When omitted, falls back to the
    *  character's own experiences field (legacy data). */
   chronicle?: { epochs?: ChronicleEpoch[] } | null;
+  /** When provided, enables inline CRUD: edit/delete buttons on each
+   *  card, add/delete on appearance/personality sub-sections, and a
+   *  「+ 添加角色」 button at the top of the list. */
+  onSave?: (next: CharacterItem[]) => Promise<void> | void;
 }) {
-  if (!data || data.length === 0) {
-    return (
-      <div className="empty-state" style={{ padding: 32 }}>
-        <p>暂无角色。在上方分段提取后会自动入库。</p>
-      </div>
-    );
-  }
   // Pre-index chronicle events by subject so each card render is O(1).
   const eventsBySubject = React.useMemo(() => {
     const idx = new Map<string, CharacterListItem[]>();
@@ -704,87 +884,199 @@ export function CharactersRichDisplay({
     return idx;
   }, [chronicle]);
 
+  const editable = !!onSave;
+  const updateAt = (idx: number, next: CharacterItem) => {
+    if (!onSave) return;
+    const copy = (data || []).slice();
+    copy[idx] = next;
+    onSave(copy);
+  };
+  const removeAt = (idx: number) => {
+    if (!onSave) return;
+    const copy = (data || []).slice();
+    copy.splice(idx, 1);
+    onSave(copy);
+  };
+  const addBlank = () => {
+    if (!onSave) return;
+    const copy = (data || []).slice();
+    copy.unshift({ name: "新角色", role_tag: "其他",
+                   appearance: [], personality: [], experiences: [] });
+    onSave(copy);
+  };
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="empty-state" style={{ padding: 32 }}>
+        <p>暂无角色。在上方分段提取后会自动入库。</p>
+        {editable && (
+          <button className="btn" onClick={addBlank}
+                  style={{ fontSize: 12, padding: "4px 12px", marginTop: 12 }}>
+            + 手动添加一个角色
+          </button>
+        )}
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-6" style={{ marginTop: 8 }}>
+      {editable && (
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <button className="btn" onClick={addBlank}
+                  style={{ fontSize: 11, padding: "3px 12px" }}>
+            + 添加角色
+          </button>
+          <span className="text-xs text-muted">共 {data.length} 个角色</span>
+        </div>
+      )}
       {data.map((c, i) => (
         <CharacterCard key={i} c={c}
-                       chronicleExperiences={eventsBySubject.get(c.name) || null} />
+                       chronicleExperiences={eventsBySubject.get(c.name) || null}
+                       onChange={editable ? (next) => updateAt(i, next) : undefined}
+                       onDelete={editable ? () => removeAt(i) : undefined} />
       ))}
     </div>
   );
 }
 
 function CharacterCard({
-  c, chronicleExperiences,
+  c, chronicleExperiences, onChange, onDelete,
 }: {
   c: CharacterItem;
   chronicleExperiences: CharacterListItem[] | null;
+  onChange?: (next: CharacterItem) => void;
+  onDelete?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const editable = !!onChange;
   const tag = c.role_tag || "";
   // 经历 prefers chronicle-derived events; falls back to legacy field.
   const experiences = chronicleExperiences && chronicleExperiences.length > 0
     ? chronicleExperiences
     : (c.experiences || []);
-  const subSections: Array<{ key: string; label: string; items: CharacterListItem[] }> = [
+  const subSections: Array<{ key: "appearance" | "personality" | "experiences"; label: string; items: CharacterListItem[]; readOnly?: boolean }> = [
     { key: "appearance",  label: "外貌", items: c.appearance  || [] },
     { key: "personality", label: "性格", items: c.personality || [] },
-    { key: "experiences", label: "经历", items: experiences },
+    // 经历 is derived from chronicle when available — read-only here.
+    { key: "experiences", label: "经历", items: experiences, readOnly: !!chronicleExperiences && chronicleExperiences.length > 0 },
   ];
   const totalItems = subSections.reduce((n, s) => n + s.items.length, 0);
   const hasAnything = totalItems > 0 || !!c.intro;
+
+  const updateSubList = (key: "appearance" | "personality", next: CharacterListItem[]) => {
+    if (!onChange) return;
+    onChange({ ...c, [key]: next });
+  };
 
   return (
     <div style={{
       border: "1px solid var(--border)", borderRadius: 4,
       background: "var(--bg-card)",
     }}>
-      <button
-        className="btn-ghost w-full"
-        onClick={() => setOpen(o => !o)}
-        disabled={!hasAnything}
-        style={{
-          display: "flex", alignItems: "center", gap: 8,
-          padding: "6px 10px", textAlign: "left",
-          justifyContent: "flex-start", borderRadius: 0,
-        }}>
-        <span style={{
-          transition: "transform 0.15s",
-          transform: open ? "rotate(90deg)" : "none",
-          display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
-        }}>▶</span>
-        <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>
-          {c.name}
-        </span>
-        {tag && (
-          <span className="tag" style={{
-            fontSize: 10, padding: "0 6px",
-            color: ROLE_COLORS[tag] || "var(--text-tertiary)",
-            border: `1px solid ${ROLE_COLORS[tag] || "var(--text-tertiary)"}`,
-            borderRadius: 3,
-          }}>{tag}</span>
+      <div style={{
+        display: "flex", alignItems: "center", gap: 8,
+        padding: "4px 6px 4px 10px",
+      }}>
+        <button
+          className="btn-ghost"
+          onClick={() => setOpen(o => !o)}
+          disabled={!hasAnything && !editable}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, flex: 1,
+            padding: "2px 4px", textAlign: "left",
+            justifyContent: "flex-start", borderRadius: 0, minWidth: 0,
+          }}>
+          <span style={{
+            transition: "transform 0.15s",
+            transform: open ? "rotate(90deg)" : "none",
+            display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
+          }}>▶</span>
+          <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>
+            {c.name || "(未命名)"}
+          </span>
+          {tag && (
+            <span className="tag" style={{
+              fontSize: 10, padding: "0 6px",
+              color: ROLE_COLORS[tag] || "var(--text-tertiary)",
+              border: `1px solid ${ROLE_COLORS[tag] || "var(--text-tertiary)"}`,
+              borderRadius: 3,
+            }}>{tag}</span>
+          )}
+          {c.mentions ? (
+            <span className="text-xs text-muted">{c.mentions} 次提及</span>
+          ) : null}
+          {c.first_chapter && (
+            <span className="tag" style={{
+              fontSize: 10, padding: "0 5px",
+              color: "var(--jade)", border: "1px solid var(--jade)",
+              borderRadius: 3,
+            }}>{c.first_chapter}</span>
+          )}
+        </button>
+        {editable && (
+          <>
+            <button className="btn-ghost"
+                    onClick={() => { setEditing(e => !e); setOpen(true); }}
+                    title={editing ? "完成编辑" : "编辑名称/角色/简介"}
+                    style={{ fontSize: 11, padding: "2px 8px", color: "var(--text-tertiary)" }}>
+              {editing ? "完成" : "编辑"}
+            </button>
+            <button className="btn-ghost"
+                    onClick={() => {
+                      if (confirm(`确认删除角色「${c.name}」？此操作不可撤销。`)) onDelete?.();
+                    }}
+                    title="删除角色"
+                    style={{ fontSize: 14, padding: "2px 8px", color: "var(--error)" }}>×</button>
+          </>
         )}
-        {c.mentions ? (
-          <span className="text-xs text-muted">{c.mentions} 次提及</span>
-        ) : null}
-        {c.first_chapter && (
-          <span className="tag" style={{
-            fontSize: 10, padding: "0 5px",
-            color: "var(--jade)", border: "1px solid var(--jade)",
-            borderRadius: 3,
-          }}>{c.first_chapter}</span>
-        )}
-      </button>
+      </div>
       {open && (
         <div style={{ padding: "4px 10px 10px", borderTop: "1px dashed var(--border)" }}>
-          {c.intro && (
-            <div style={{ fontSize: 12, marginBottom: 6, color: "var(--text-secondary)", lineHeight: 1.55 }}>
-              {c.intro}
+          {editing && editable ? (
+            <div className="flex flex-col gap-6" style={{ marginBottom: 8 }}>
+              <div className="flex items-center" style={{ gap: 6 }}>
+                <span className="text-xs text-muted" style={{ minWidth: 50 }}>名称</span>
+                <input className="input" value={c.name}
+                       onChange={e => onChange?.({ ...c, name: e.target.value })}
+                       style={{ fontSize: 12, padding: "3px 8px", flex: 1 }} />
+              </div>
+              <div className="flex items-center" style={{ gap: 6 }}>
+                <span className="text-xs text-muted" style={{ minWidth: 50 }}>角色</span>
+                <select className="select" value={c.role_tag || ""}
+                        onChange={e => onChange?.({ ...c, role_tag: (e.target.value || undefined) as CharacterItem["role_tag"] })}
+                        style={{ fontSize: 12, padding: "3px 8px", flex: 1 }}>
+                  {["主角", "女主角", "反派", "男配", "女配", "师长", "重要配角", "路人", "其他"].map(o =>
+                    <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center" style={{ gap: 6 }}>
+                <span className="text-xs text-muted" style={{ minWidth: 50 }}>首章</span>
+                <input className="input" value={c.first_chapter || ""}
+                       placeholder="如：第 4 章"
+                       onChange={e => onChange?.({ ...c, first_chapter: e.target.value })}
+                       style={{ fontSize: 12, padding: "3px 8px", flex: 1 }} />
+              </div>
+              <div className="flex" style={{ gap: 6, alignItems: "flex-start" }}>
+                <span className="text-xs text-muted" style={{ minWidth: 50, paddingTop: 4 }}>简介</span>
+                <textarea className="input" rows={2} value={c.intro || ""}
+                          onChange={e => onChange?.({ ...c, intro: e.target.value })}
+                          style={{ fontSize: 12, padding: "3px 8px", flex: 1, resize: "vertical" }} />
+              </div>
             </div>
+          ) : (
+            c.intro && (
+              <div style={{ fontSize: 12, marginBottom: 6, color: "var(--text-secondary)", lineHeight: 1.55 }}>
+                {c.intro}
+              </div>
+            )
           )}
           <div className="flex flex-col gap-4">
             {subSections.map(s => (
-              <CharacterSubSection key={s.key} label={s.label} items={s.items} />
+              <CharacterSubSection key={s.key} label={s.label} items={s.items}
+                                   onChange={editable && !s.readOnly
+                                     ? (next) => updateSubList(s.key as "appearance" | "personality", next)
+                                     : undefined} />
             ))}
           </div>
         </div>
@@ -796,11 +1088,16 @@ function CharacterCard({
 /** Collapsible per-sub-type list (外貌 / 性格 / 经历). Each row is
  *  `[chapter tag][content text]`. The whole card stays compact until
  *  the user expands it. Empty lists render a muted placeholder so the
- *  user can see which sub-types haven't been filled yet. */
-function CharacterSubSection({ label, items }: {
+ *  user can see which sub-types haven't been filled yet.
+ *
+ *  When `onChange` is provided, inline add/delete is enabled: each row
+ *  gets a × button and the sub-section gets a "+ 添加" button. */
+function CharacterSubSection({ label, items, onChange }: {
   label: string;
   items: CharacterListItem[];
+  onChange?: (next: CharacterListItem[]) => void;
 }) {
+  const editable = !!onChange;
   const [open, setOpen] = useState(false);
   const empty = !items || items.length === 0;
   return (
@@ -811,7 +1108,7 @@ function CharacterSubSection({ label, items }: {
       <button
         className="btn-ghost w-full"
         onClick={() => setOpen(o => !o)}
-        disabled={empty}
+        disabled={empty && !editable}
         style={{
           display: "flex", alignItems: "center", gap: 6,
           padding: "4px 8px", textAlign: "left",
@@ -829,27 +1126,82 @@ function CharacterSubSection({ label, items }: {
           {empty ? "(空)" : `${items.length} 条`}
         </span>
       </button>
-      {open && !empty && (
+      {open && (
         <div style={{
           padding: "4px 8px 6px", borderTop: "1px dashed var(--border)",
         }}>
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-4">
             {items.map((it, i) => (
-              <div key={i} style={{ fontSize: 11, lineHeight: 1.55 }}>
-                {it.chapter && (
-                  <span style={{
-                    marginRight: 6, padding: "0 5px",
-                    fontSize: 10, color: "var(--gold)",
-                    fontFamily: "var(--font-mono)",
-                    border: "1px solid var(--gold)", borderRadius: 3,
-                  }}>{it.chapter}</span>
-                )}
-                <span style={{ color: "var(--text-secondary)" }}>{it.text}</span>
-              </div>
+              <CharacterSubItem key={i} item={it}
+                                onChange={editable ? (next) => {
+                                  const copy = items.slice();
+                                  copy[i] = next;
+                                  onChange?.(copy);
+                                } : undefined}
+                                onDelete={editable ? () => {
+                                  const copy = items.slice();
+                                  copy.splice(i, 1);
+                                  onChange?.(copy);
+                                } : undefined} />
             ))}
+            {editable && (
+              <button className="btn-ghost"
+                      onClick={() => onChange?.([...items, { chapter: "", text: "" }])}
+                      style={{
+                        fontSize: 11, padding: "3px 8px",
+                        alignSelf: "flex-start", color: "var(--accent)",
+                      }}>
+                + 添加一条
+              </button>
+            )}
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** One row in 外貌 / 性格 sub-section. Read-only by default; when
+ *  `onChange` is supplied, the chapter tag becomes an editable inline
+ *  input and the text content an inline textarea, plus a × delete. */
+function CharacterSubItem({ item, onChange, onDelete }: {
+  item: CharacterListItem;
+  onChange?: (next: CharacterListItem) => void;
+  onDelete?: () => void;
+}) {
+  const editable = !!onChange;
+  if (!editable) {
+    return (
+      <div style={{ fontSize: 11, lineHeight: 1.55 }}>
+        {item.chapter && (
+          <span style={{
+            marginRight: 6, padding: "0 5px",
+            fontSize: 10, color: "var(--gold)",
+            fontFamily: "var(--font-mono)",
+            border: "1px solid var(--gold)", borderRadius: 3,
+          }}>{item.chapter}</span>
+        )}
+        <span style={{ color: "var(--text-secondary)" }}>{item.text}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex" style={{ gap: 4, alignItems: "flex-start" }}>
+      <input className="input"
+             value={item.chapter || ""}
+             placeholder="第 N 章"
+             onChange={e => onChange?.({ ...item, chapter: e.target.value })}
+             style={{ fontSize: 10, padding: "2px 6px", width: 90,
+                      fontFamily: "var(--font-mono)" }} />
+      <textarea className="input"
+                value={item.text || ""}
+                placeholder="内容…"
+                rows={1}
+                onChange={e => onChange?.({ ...item, text: e.target.value })}
+                style={{ fontSize: 11, padding: "2px 6px", flex: 1, resize: "vertical", lineHeight: 1.4 }} />
+      <button className="btn-ghost" onClick={onDelete}
+              title="删除此条"
+              style={{ fontSize: 12, padding: "2px 6px", color: "var(--error)" }}>×</button>
     </div>
   );
 }
@@ -1046,6 +1398,13 @@ function ExtractionSection<T>(props: ExtractionSectionProps<T>) {
                     const k = ckKey(seg.index, ck.chunk_index);
                     const phase = chunkPhases[k] || { status: "idle" as Phase };
                     const isCkOpen = openChunks.has(k);
+                    // Persistent marker: count items in the global data
+                    // whose chapter tag falls inside this chunk's range,
+                    // so the "已提取 · N" tag survives page reloads even
+                    // though chunkPhases is in-memory only.
+                    const priorCount = countPriorItemsInChunk(
+                      data as any[], ck.start_chapter, ck.end_chapter,
+                    );
                     return (
                       <ExtractionChunkRow
                         key={k}
@@ -1054,6 +1413,8 @@ function ExtractionSection<T>(props: ExtractionSectionProps<T>) {
                         segIdx={seg.index}
                         chunk={ck}
                         phase={phase}
+                        priorCount={priorCount}
+                        kind={kind}
                         open={isCkOpen}
                         onToggle={() => toggleChunk(seg.index, ck.chunk_index)}
                         onRunAI={() => runAI(seg.index, ck.chunk_index)}
@@ -1079,7 +1440,7 @@ function ExtractionSection<T>(props: ExtractionSectionProps<T>) {
 }
 
 function ExtractionChunkRow<T>({
-  refId, promptKey, segIdx, chunk, phase, open,
+  refId, promptKey, segIdx, chunk, phase, priorCount, kind, open,
   onToggle, onRunAI, onPasteChange, onParsePaste, onCommit, onReset, Preview,
 }: {
   refId: string;
@@ -1087,6 +1448,11 @@ function ExtractionChunkRow<T>({
   segIdx: number;
   chunk: ChunkMeta;
   phase: ChunkPhase<T>;
+  /** Number of persisted items whose first_chapter falls inside this
+   *  chunk's range. Used to show "已提取 · N 条" when chunkPhases lost
+   *  its committed state (e.g. after a page reload). */
+  priorCount: number;
+  kind: "characters" | "settings";
   open: boolean;
   onToggle: () => void;
   onRunAI: () => void;
@@ -1103,13 +1469,17 @@ function ExtractionChunkRow<T>({
   const committing = phase.status === "committing";
   const committed = phase.status === "committed";
   const itemCount = (phase.items || []).length;
+  // "Persisted" = this chunk already has data in the work-level list
+  // even though chunkPhases status is still idle (typical on page reload).
+  const hasPriorData = !committed && priorCount > 0 && phase.status === "idle";
+  const label = kind === "characters" ? "角色" : "设定";
 
   return (
     <div style={{
       marginTop: 6, marginBottom: 6,
-      border: `1px solid ${committed ? "var(--jade)" : ready ? "var(--accent)" : failed ? "var(--error)" : "var(--border)"}`,
+      border: `1px solid ${committed || hasPriorData ? "var(--jade)" : ready ? "var(--accent)" : failed ? "var(--error)" : "var(--border)"}`,
       borderRadius: 4,
-      background: committed ? "rgba(52,168,83,0.04)" : "var(--bg-card)",
+      background: committed || hasPriorData ? "rgba(52,168,83,0.04)" : "var(--bg-card)",
     }}>
       <button
         className="btn-ghost w-full"
@@ -1136,6 +1506,14 @@ function ExtractionChunkRow<T>({
             fontSize: 10, padding: "1px 6px",
             color: "var(--jade)", border: "1px solid var(--jade)",
           }}>已入库 · {itemCount}</span>
+        )}
+        {hasPriorData && (
+          <span className="tag" style={{
+            fontSize: 10, padding: "1px 6px",
+            color: "var(--jade)", border: "1px solid var(--jade)",
+          }} title={`已有 ${priorCount} 条${label}的首章落在本段范围内`}>
+            已提取 · {priorCount}
+          </span>
         )}
         {ready && !committed && (
           <span className="tag" style={{
