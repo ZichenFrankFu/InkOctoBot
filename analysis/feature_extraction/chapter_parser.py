@@ -1503,9 +1503,11 @@ def detect_aside_paragraphs(chapters: list[dict],
     misalign indices.
     """
     keywords = get_effective_author_keywords(extra_keywords)
-    # Horizontal-rule markers signaling "everything after this is an
-    # author aside": ---/===/***/——/＝＝ runs of ≥ 3 chars on their own
-    # line. Web-novel authors use these to fence off PS / 求月票 etc.
+    # Horizontal-rule markers (---/===/***/——/＝＝ runs of ≥ 3 chars on
+    # their own line). Web-novel authors fence off trailing PS / 求月票
+    # with these — BUT a --- in the chapter BODY is a scene break, not
+    # an author-aside fence. Author asides live at the chapter TAIL, so
+    # a rule line only counts as a fence when it sits near the end.
     rule_pat = re.compile(r"^[\s　]*([-=*＝—─]{3,})[\s　]*$")
     out: list[dict] = []
     for c in chapters:
@@ -1516,18 +1518,24 @@ def detect_aside_paragraphs(chapters: list[dict],
             continue
         paragraphs = re.split(r"\n\s*\n", content)
         n_paras = len(paragraphs)
-        # Locate the FIRST horizontal-rule paragraph; everything after
-        # it (up to chapter end) is treated as author-aside trailing
-        # block — fence-style asides that web-novel authors append
-        # without using the keyword vocabulary.
-        fence_idx: int | None = None
+        # Collect every rule-line paragraph, then keep only the LAST one
+        # — and only if it sits in the chapter's tail zone. A rule in
+        # the first ¾ of the chapter is a scene break; flagging content
+        # after it caused heavy false positives.
+        rule_idxs: list[int] = []
         for pi, para in enumerate(paragraphs):
             for line in para.splitlines():
                 if rule_pat.match(line):
-                    fence_idx = pi
+                    rule_idxs.append(pi)
                     break
-            if fence_idx is not None:
-                break
+        fence_idx: int | None = None
+        if rule_idxs:
+            tail_zone = max(3, n_paras // 4)
+            last_rule = rule_idxs[-1]
+            # Fence only when the last rule is within the tail zone AND
+            # past the chapter's midpoint (guards very short chapters).
+            if last_rule >= n_paras - tail_zone and last_rule >= n_paras // 2:
+                fence_idx = last_rule
         for pi, para in enumerate(paragraphs):
             ps = para.strip()
             if not ps:
@@ -1536,7 +1544,10 @@ def detect_aside_paragraphs(chapters: list[dict],
             if len(ps) > max_para_chars:
                 continue
             hits = [kw for kw in keywords if kw in ps]
-            after_fence = fence_idx is not None and pi >= fence_idx
+            # An "after-fence" paragraph is an aside candidate only when
+            # it's SHORT and the fence itself was tail-located — not just
+            # "anything after a ---".
+            after_fence = fence_idx is not None and pi > fence_idx
             short_aside = after_fence and len(ps) < 200
             if not hits and not short_aside:
                 continue
@@ -1545,10 +1556,7 @@ def detect_aside_paragraphs(chapters: list[dict],
                 reasons.append("命中：" + "、".join(hits[:3])
                                 + (f"…(+{len(hits) - 3})" if len(hits) > 3 else ""))
             if after_fence:
-                reasons.append(
-                    "分割线（---）之后" if pi > (fence_idx or 0)
-                    else "章节末分割线"
-                )
+                reasons.append("章节末分割线（---）之后")
             is_at_end = pi >= n_paras - 2
             if is_at_end and "位于章节末尾" not in reasons:
                 reasons.append("位于章节末尾")

@@ -6,6 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Any, Optional
 from ..settings import settings
@@ -2315,6 +2316,46 @@ def preprocess_saved_summary(ref_id: str):
         ).fetchone()
     cnt = int(row[0] or 0) if row else 0
     return {"saved_count": cnt, "saved_at": row[1] if row else None}
+
+
+@router.get("/works/{ref_id}/preprocess/export_text")
+def preprocess_export_text(ref_id: str):
+    """Concatenate every committed (cleaned) chapter from
+    ``reference_chapters`` into a single .txt and return it as a file
+    download. This is the post-cleanup full text — exclusions applied,
+    题外话 段落 stripped — so it can be archived or re-fed elsewhere."""
+    import sqlite3
+    from urllib.parse import quote
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    with sqlite3.connect(db.db_path) as conn:
+        from database.reference_schema import ensure_reference_tables
+        ensure_reference_tables(conn)
+        rows = conn.execute(
+            "SELECT number, raw_marker, title, content FROM reference_chapters "
+            "WHERE ref_id = ? ORDER BY number",
+            (ref_id,),
+        ).fetchall()
+    if not rows:
+        raise HTTPException(400, "数据库中没有已存储的章节 — 请先在「预处理」保存章节")
+    parts: list[str] = []
+    for num, raw_marker, title, content in rows:
+        heading = (raw_marker or "").strip() or (title or "").strip() or f"第{num}章"
+        body = (content or "").strip()
+        parts.append(f"{heading}\n{body}" if body else heading)
+    text = "\n\n".join(parts)
+    title = (w.get("title") or ref_id).strip()
+    safe = re.sub(r"[^\w一-鿿-]", "_", title)[:60] or ref_id
+    fname = f"{safe}_已清理全文.txt"
+    return Response(
+        content=text,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}",
+        },
+    )
 
 
 @router.get("/works/{ref_id}/preprocess/saved_chapters")

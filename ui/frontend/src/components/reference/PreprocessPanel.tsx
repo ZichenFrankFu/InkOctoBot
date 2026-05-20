@@ -1873,6 +1873,19 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 {" "}· 如需重新识别 / 清理，点上方「智能章节识别」的「重新识别」
               </div>
             </div>
+            <button className="btn"
+                    style={{ fontSize: 11, padding: "4px 12px" }}
+                    onClick={() => {
+                      const a = document.createElement("a");
+                      a.href = `/api/references/works/${refId}/preprocess/export_text`;
+                      a.download = "";
+                      document.body.appendChild(a);
+                      a.click();
+                      a.remove();
+                    }}
+                    title="把已清理的全部章节拼接成一个 txt 文件下载">
+              导出已清理全文（txt）
+            </button>
           </div>
           <div className="flex flex-col gap-2" style={{
             maxHeight: 360, overflowY: "auto",
