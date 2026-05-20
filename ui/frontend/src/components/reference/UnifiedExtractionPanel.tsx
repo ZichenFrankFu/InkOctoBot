@@ -98,8 +98,10 @@ function normalizeSetting(s: any): SettingItem {
   const content =
     stripBrackets(((s.summary || s.content) || "").toString())
     || (updates[0]?.text || "");
+  // 世界观规则 (hard_rules) was merged into 世界观 (worldview).
+  const cat = (s.category || "other").toString();
   return {
-    category: (s.category || "other").toString(),
+    category: cat === "hard_rules" ? "worldview" : cat,
     title: stripBrackets((s.title || "").toString()),
     content,
     updates,
@@ -382,7 +384,7 @@ export function UnifiedExtractionPanel({
     await onSaveStyle(nextStyle);
     if (sections.includes("style")) {
       // Rhythm derives from the aggregated per-chapter signals.
-      await onSaveRhythm(buildRhythmFromSignals(nextStyle.chapter_signals));
+      await onSaveRhythm(buildRhythmFromSignals(nextStyle));
     }
     return { plot, chars, settings, ledger };
   };
@@ -596,7 +598,12 @@ export function UnifiedExtractionPanel({
           const isOpen = openSegs.has(seg.index);
           const chunks = segChunks[seg.index] || [];
           const loading = chunkLoading.has(seg.index);
-          const segDone = chunks.filter(ck => ledger[ckKey(seg.index, ck.chunk_index)]).length;
+          // 「已入库」counts a chunk only when all four sections are
+          // committed — same definition as the 原始文件 tab progress bar.
+          const segDone = chunks.filter(ck => {
+            const d = ledger[ckKey(seg.index, ck.chunk_index)]?.done || {};
+            return !!(d.events && d.characters && d.settings && d.style);
+          }).length;
           return (
             <div key={seg.index}>
               <button

@@ -103,7 +103,6 @@ const CATEGORY_LABEL_CN: Record<string, string> = {
   geography:    "地理",
   social_rules: "社会规则",
   history:      "历史背景",
-  hard_rules:   "世界观规则",
   worldview:    "世界观",
   other:        "其他",
 };
@@ -113,7 +112,6 @@ const CATEGORY_COLOR: Record<string, string> = {
   geography:    "var(--jade)",
   social_rules: "var(--indigo)",
   history:      "var(--gold)",
-  hard_rules:   "#f472b6",
   worldview:    "var(--cyan)",
   other:        "var(--text-tertiary)",
 };
@@ -121,13 +119,19 @@ const CATEGORY_COLOR: Record<string, string> = {
 /** Render the rich settings list. 全书视图 groups by category; 分段视图
  *  groups by the volume each setting's first_chapter falls into. When
  *  `onSave` is given, each card gets inline edit/delete. */
-export function SettingsRichDisplay({ data, onSave, chunkList }: {
+export function SettingsRichDisplay({ data: rawData, onSave, chunkList }: {
   data: SettingItem[];
   onSave?: (next: SettingItem[]) => Promise<void> | void;
   chunkList?: ChunkLoc[];
 }) {
   const [viewMode, setViewMode] = useState<"segment" | "book">("book");
   const editable = !!onSave;
+  // 世界观规则 (hard_rules) was merged into 世界观 (worldview); fold any
+  // legacy category so old data groups under 世界观 and the next save
+  // migrates it on disk.
+  const data = (rawData || []).map(
+    s => s.category === "hard_rules" ? { ...s, category: "worldview" } : s,
+  );
   // Map from grouped index back to global index so handlers patch the
   // right entry in the source array.
   const findGlobalIdx = (target: SettingItem) =>

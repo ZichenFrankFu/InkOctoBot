@@ -267,6 +267,39 @@ const OPENING_LABELS: Record<string, string> = {
   character_intro: "人物登场",
 };
 
+const OPENING_DESC: Record<string, string> = {
+  in_medias_res: "直接切入冲突或关键场面，事后再补叙背景。",
+  dialogue_open: "以人物对话开场，靠台词带出信息与张力。",
+  worldbuilding: "先铺陈世界观与背景设定，再引入主线人物。",
+  character_intro: "以主要人物的登场和日常切入故事。",
+};
+
+/** 开篇模式 — read-only display of how the work opens. The pattern is
+ *  system-computed by the unified extraction; there is nothing to edit. */
+export function OpeningPatternView({ pattern }: { pattern: string }) {
+  if (!pattern) {
+    return (
+      <div className="text-xs text-muted text-center" style={{ padding: 14 }}>
+        暂无开篇模式数据。请到「特征提取」tab 提取首段后查看。
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-12" style={{ flexWrap: "wrap", padding: "2px 0" }}>
+      <span className="tag" style={{
+        fontSize: 13, fontWeight: 700, padding: "3px 12px",
+        color: "var(--accent)", background: "var(--accent-subtle)",
+        border: "1px solid var(--accent)",
+      }}>
+        {OPENING_LABELS[pattern] || pattern}
+      </span>
+      <span className="text-xs text-muted" style={{ lineHeight: 1.6, flex: 1, minWidth: 220 }}>
+        {OPENING_DESC[pattern] || ""}
+      </span>
+    </div>
+  );
+}
+
 const PACING_LABEL: Record<string, string> = {
   fast: "快节奏",
   medium: "中节奏",
@@ -2165,7 +2198,6 @@ export const SETTING_CATEGORIES: { key: string; label: string; color: string }[]
   { key: "geography",    label: "地理",     color: "var(--jade)" },
   { key: "social_rules", label: "社会规则", color: "var(--indigo)" },
   { key: "history",      label: "历史",     color: "var(--gold)" },
-  { key: "hard_rules",   label: "世界观规则", color: "#f472b6" },
   { key: "worldview",    label: "世界观",   color: "var(--cyan)" },
   { key: "other",        label: "其他",     color: "var(--text-tertiary)" },
 ];
@@ -2691,7 +2723,7 @@ export function RhythmEditor({ data, legacyNarrative, legacyRhythm, onSave }: {
     return (
       <div>
         <div className="text-xs text-muted" style={{ marginBottom: 10, lineHeight: 1.6 }}>
-          编辑每章的类型（多选）、信息密度（0-1）、摘要和钩子。开篇模式、高潮章节由系统计算，重新提取时刷新。
+          编辑每章的类型（多选）、信息密度（0-1）、摘要和钩子。高潮章节由系统计算，重新提取时刷新。
         </div>
         <div style={{ maxHeight: 460, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
           <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
@@ -2747,14 +2779,10 @@ export function RhythmEditor({ data, legacyNarrative, legacyRhythm, onSave }: {
         borderRadius: 4, fontSize: 12,
         color: "var(--accent)", fontWeight: 600,
       }}>
-        本数据截止到第 {cov.chapters} 章（约 {_fmtChars(cov.chars)}）
+        本数据截止到第 {cov.chapters} 章{cov.chars > 0 ? `（约 ${_fmtChars(cov.chars)}）` : ""}
       </div>
 
       <div className="flex gap-12" style={{ flexWrap: "wrap", fontSize: 12, marginBottom: 10 }}>
-        <div>
-          <span className="text-xs text-muted">开篇模式：</span>
-          <span style={{ fontWeight: 600 }}>{OPENING_LABELS[effective.opening_pattern] || effective.opening_pattern || "—"}</span>
-        </div>
         <div>
           <span className="text-xs text-muted">高潮章：</span>
           {effective.climax_positions.length === 0 ? (

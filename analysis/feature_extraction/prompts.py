@@ -71,7 +71,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
   ],
   "settings": [
     {{
-      "category": "power_system | factions | geography | social_rules | history | hard_rules | worldview | other",
+      "category": "power_system | factions | geography | social_rules | history | worldview | other",
       "title": "概括性短标题，≤ 12 字，如 机械义肢、18 号监狱",
       "summary": "该设定的一句话简介，≤ 50 字，讲清它是什么、有何作用，必填",
       "first_chapter": "本段里首次出现的章号，如 第 4 章",
@@ -79,6 +79,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
     }}
   ],
   "style": {{
+    "opening_pattern": 字符串，本段第一章的开篇方式，从 in_medias_res / dialogue_open / worldbuilding / character_intro 四个英文 key 中选 1 个,
     "dialogue_ratio": 0–1 浮点，对话（含心理独白）占本段篇幅的比例,
     "rhetoric_frequency": 数字，每千字使用比喻/排比/反问/夸张等修辞的次数,
     "description_density": 0–1 浮点，环境/外貌/动作等描写性文字占比,
@@ -105,7 +106,8 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 
 类别中文对照（用英文 key 输出）：
 - 事件 category：plot_main 主线  plot_side 支线  character 角色  setting 设定  conflict 冲突  revelation 揭示  foreshadow 伏笔  other 其他
-- 设定 category：power_system 力量体系  factions 势力组织  geography 地理  social_rules 社会规则  history 历史  hard_rules 世界观规则  worldview 世界观  other 其他
+- 设定 category：power_system 力量体系  factions 势力组织  geography 地理  social_rules 社会规则  history 历史  worldview 世界观  other 其他
+- 开篇模式 opening_pattern：in_medias_res 高潮开局  dialogue_open 对话开局  worldbuilding 世界观铺陈  character_intro 人物登场
 
 要求：
 - 事件颗粒度为章节弧标题级别，每章 1-3 条最佳；不要写镜头级细节。
@@ -115,6 +117,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 - 每条设定必须填写 `summary` 简介；`updates` 至少 1 条；最多 25 条设定。
 - 设定的 `title`、`summary`、`updates[].text` 一律使用纯文字陈述，禁止出现任何括号，包括 （）()【】[]｛｝ 等；需要补充说明时用逗号或破折号接着写。
 - `style.chapter_signals` **必须覆盖本段的每一章**（共 {n_chapters} 章），逐章给出信息密度 / 爽点 / 钩子；`pacing_profile` 三项之和约等于 1。
+- `style.opening_pattern` 必须是四个英文 key 之一，依据本段第一章的实际写法判断。
 - 平均句长、词汇丰富度、标点等纯统计特征由 NLP 离线计算，**不要**输出。
 - 某一类没有内容时返回空数组（events/characters/settings）或合理估计（style）。
 
@@ -264,7 +267,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 {{
   "settings": [
     {{
-      "category": "power_system | factions | geography | social_rules | history | hard_rules | worldview | other",
+      "category": "power_system | factions | geography | social_rules | history | worldview | other",
       "title": "概括性短标题，≤ 12 字，例如 机械义肢、18 号监狱",
       "summary": "该设定的一句话简介，≤ 50 字，讲清它是什么、有何作用，必填",
       "first_chapter": "本卷里首次出现的章号，如 第 4 章，必填",
@@ -278,7 +281,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 
 类别中文对照（请用英文 key 输出）：
 - power_system 力量体系   factions 势力组织   geography 地理   social_rules 社会规则
-- history 历史背景        hard_rules 世界观规则   worldview 世界观  other 其他
+- history 历史背景        worldview 世界观  other 其他
 
 要求：
 - 每条设定必须填写 `summary` 简介；`updates` 至少 1 条，若本段只是首次提及，把首次出现的描述作为第 1 条。
@@ -471,7 +474,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 格式约束：
 - plot_outline 的形态保持「epochs[].periods[].events[]」，每个 event 字段为 {{subject, category, name, description, hidden?, time_marker?}}。
 - characters 项形态 {{name, mentions?, intro?, speech_samples?[], appearance_chapters?, appearance_word_count?, first_seen_at?}}。
-- settings 项形态 {{category, title, content, hidden?, first_introduced_at?}}。category 必须为 power_system/factions/geography/social_rules/history/hard_rules/worldview/other 之一。""",
+- settings 项形态 {{category, title, content, hidden?, first_introduced_at?}}。category 必须为 power_system/factions/geography/social_rules/history/worldview/other 之一。""",
         "vars": [],
         "description": "分段大纲对话框系统 prompt（驱动「与 AI 对话调整本段」）",
     },

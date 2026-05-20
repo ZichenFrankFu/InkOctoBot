@@ -3201,7 +3201,7 @@ _CHAT_SYSTEM_PROMPT = """你是参考作品分段提取的协作助手。用户�
 格式约束：
 - plot_outline 的形态保持「epochs[].periods[].events[]」，每个 event 字段为 {subject, category, name, description, hidden?}。
 - characters 项形态 {name, mentions?, intro?, speech_samples?[], appearance_chapters?, appearance_word_count?}。
-- settings 项形态 {category, title, content, hidden?}。category 必须为 power_system/factions/geography/social_rules/history/hard_rules/worldview/other 之一。"""
+- settings 项形态 {category, title, content, hidden?}。category 必须为 power_system/factions/geography/social_rules/history/worldview/other 之一。"""
 
 
 def _serialize_for_chat(current: dict | None) -> str:

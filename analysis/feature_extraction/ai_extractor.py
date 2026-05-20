@@ -479,8 +479,23 @@ async def ai_extract_style(chapters: list[dict], router: Any,
 
 _SETTING_CATS = frozenset({
     "power_system", "factions", "geography", "social_rules",
-    "history", "hard_rules", "worldview", "other",
+    "history", "worldview", "other",
 })
+
+# 开篇模式 — the four narrative-opening styles the unified prompt picks from.
+_OPENING_PATTERNS = frozenset({
+    "in_medias_res", "dialogue_open", "worldbuilding", "character_intro",
+})
+
+
+def _norm_setting_cat(cat: str) -> str:
+    """Canonicalize a setting category. `hard_rules` (旧「世界观规则」) is
+    merged into `worldview`; anything unrecognized falls back to `other`."""
+    cat = (cat or "other").strip()
+    if cat == "hard_rules":
+        cat = "worldview"
+    return cat if cat in _SETTING_CATS else "other"
+
 
 # Settings text must read as plain prose — the user explicitly asked for
 # no parentheses/brackets in any 设定 field. The prompt forbids them, but
@@ -526,6 +541,10 @@ def _normalize_unified_style(raw: Any, n_chars: int, n_chapters: int) -> dict:
     pp = raw.get("pacing_profile") or {}
     if not isinstance(pp, dict):
         pp = {}
+    op = raw.get("opening_pattern")
+    op = op.strip() if isinstance(op, str) else ""
+    if op not in _OPENING_PATTERNS:
+        op = ""
     _HOOK_POS = {"章首", "段中", "章末"}
     signals: list[dict] = []
     total_payoffs = 0
@@ -586,6 +605,7 @@ def _normalize_unified_style(raw: Any, n_chars: int, n_chapters: int) -> dict:
         info_sum += info
     n_sig = len(signals)
     return {
+        "opening_pattern":     op,
         "dialogue_ratio":      round(_f("dialogue_ratio"), 4),
         "rhetoric_frequency":  round(_f("rhetoric_frequency"), 4),
         "description_density": round(_f("description_density"), 4),
@@ -668,9 +688,7 @@ async def ai_extract_all(chapters: list[dict], router: Any,
             content = updates[0]["text"]
         if not title and not content and not updates:
             continue
-        cat = (it.get("category") or "other").strip()
-        if cat not in _SETTING_CATS:
-            cat = "other"
+        cat = _norm_setting_cat(it.get("category"))
         settings.append({
             "category": cat,
             "title": title,
@@ -758,8 +776,6 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
     )
     raw = await _invoke(router, prompt, use_web_search=use_web_search, expect="list")
     items = _parse_listish(raw)
-    valid_cats = {"power_system", "factions", "geography", "social_rules",
-                  "history", "hard_rules", "worldview", "other"}
     out: list[dict] = []
     for it in items:
         title = _strip_brackets((it.get("title") or "").strip())
@@ -775,9 +791,7 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
             content = updates[0]["text"]
         if not title and not content and not updates:
             continue
-        cat = (it.get("category") or "other").strip()
-        if cat not in valid_cats:
-            cat = "other"
+        cat = _norm_setting_cat(it.get("category"))
         out.append({
             "category": cat,
             "title": title,

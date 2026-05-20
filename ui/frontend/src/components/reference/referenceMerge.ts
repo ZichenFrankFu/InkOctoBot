@@ -352,6 +352,9 @@ export interface ChapterSignal {
   hooks?: ChapterHook[];
 }
 export interface StyleFingerprint {
+  /** 开篇模式 — narrative-opening style. Set per chunk by the unified
+   *  extraction; the book-level value is the earliest chunk's. */
+  opening_pattern?: string;
   avg_sentence_length?: number;
   vocab_complexity?: number;
   punctuation_profile?: {
@@ -447,6 +450,8 @@ export function normalizeUnifiedStyle(
     return Number.isFinite(n) ? n : 0;
   };
   const signals = normalizeChapterSignals(s.chapter_signals);
+  const _VALID_OPENING = ["in_medias_res", "dialogue_open", "worldbuilding", "character_intro"];
+  const opening = String(s.opening_pattern || "");
   let payoffs = 0, hooks = 0, infoSum = 0;
   for (const sig of signals) {
     payoffs += (sig.payoffs || []).length;
@@ -455,6 +460,7 @@ export function normalizeUnifiedStyle(
   }
   const pp = (s.pacing_profile && typeof s.pacing_profile === "object") ? s.pacing_profile : {};
   return {
+    opening_pattern:     _VALID_OPENING.includes(opening) ? opening : "",
     dialogue_ratio:      r4(num(s.dialogue_ratio)),
     rhetoric_frequency:  r4(num(s.rhetoric_frequency)),
     description_density: r4(num(s.description_density)),
@@ -495,7 +501,21 @@ export function aggregateStyleChunks(
     return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER;
   };
   signals.sort((a, b) => chNum(a.chapter) - chNum(b.chapter));
+  // 开篇模式 belongs to whichever committed chunk owns the earliest chapter.
+  let opening_pattern = "";
+  let earliestCh = Number.MAX_SAFE_INTEGER;
+  for (const e of entries) {
+    const op = e.fp!.opening_pattern;
+    if (!op) continue;
+    let minCh = Number.MAX_SAFE_INTEGER;
+    for (const sig of (e.fp!.chapter_signals || [])) {
+      const c = chNum(sig.chapter);
+      if (c < minCh) minCh = c;
+    }
+    if (minCh < earliestCh) { earliestCh = minCh; opening_pattern = op; }
+  }
   return {
+    opening_pattern,
     avg_sentence_length: r2(w(f => f.avg_sentence_length)),
     vocab_complexity:    r4(w(f => f.vocab_complexity)),
     dialogue_ratio:      r4(w(f => f.dialogue_ratio)),
@@ -530,8 +550,15 @@ export function aggregateStyleChunks(
  *  therefore fully DERIVED from chapter_signals (single source of
  *  truth) rather than extracted separately. */
 export function buildRhythmFromSignals(
-  signals: ChapterSignal[] | undefined,
+  style: StyleFingerprint | undefined,
 ): RhythmJson {
+  const signals = style?.chapter_signals;
+  // coverage.chars = total chars of the STYLE-committed chunks — exactly
+  // the chunks whose chapter_signals feed `features` below.
+  let chars = 0;
+  for (const e of Object.values(style?._chunks || {})) {
+    if (e.fp && Object.keys(e.fp).length > 0) chars += e.chars || 0;
+  }
   const valid = new Set<string>(CHAPTER_TYPE_VALUES as readonly string[]);
   const chNum = (s: string) => {
     const m = (s || "").match(/(\d+)/);
@@ -567,8 +594,8 @@ export function buildRhythmFromSignals(
   }
   shuangdian.sort((a, b) => a.chapter - b.chapter);
   return {
-    coverage: { chapters: features.length, chars: 0 },
-    opening_pattern: "",
+    coverage: { chapters: features.length, chars },
+    opening_pattern: style?.opening_pattern || "",
     climax_positions: features
       .filter(f => (f.types as string[]).includes("高潮"))
       .map(f => f.chapter),

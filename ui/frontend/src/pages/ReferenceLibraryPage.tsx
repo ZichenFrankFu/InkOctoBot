@@ -8,6 +8,7 @@ import {
   Section,
   StyleFingerprintEditor,
   RhythmEditor,
+  OpeningPatternView,
   PlotOutlineEditor,
   StyleByChunkView,
 } from "../components/reference/AnalysisEditors";
@@ -360,7 +361,7 @@ export default function ReferenceLibraryPage() {
             )}
           </>
         )}
-        <span className="text-xs text-muted" style={{ marginLeft: "auto" }}>
+        <span className="text-xs text-muted">
           {loading ? "加载中..." : `${total} 部作品`}
         </span>
       </div>
@@ -375,7 +376,7 @@ export default function ReferenceLibraryPage() {
                 key={w.ref_id}
                 className={`report-list-item ${sel?.ref_id === w.ref_id ? "active" : ""}`}
                 onClick={() => selectWork(w)}
-                style={{ padding: "10px 12px", gap: 8 }}
+                style={{ padding: "10px 12px", gap: 8, borderLeft: "none" }}
               >
                 {batchMode && (
                   <input
@@ -706,22 +707,29 @@ function WorkDetail({
     return out;
   }, [segmentPlan, segChunks]);
 
-  // Feature-extraction progress — how many chapters' info has been
-  // pulled (a chunk counts once it has any committed section, recorded
-  // in style_fingerprint_json._chunks).
+  // Feature-extraction progress. Mirrors the 特征提取 tab: each chunk
+  // has four sections (events / characters / settings / style) and is
+  // "done" only when all four are committed (style_fingerprint_json
+  // ._chunks[key].done). The bar tracks committed sections so it moves
+  // in step with the per-chunk「已入库 N/4」shown in the 特征提取 tab.
   const extractionProgress = useMemo(() => {
     const ledger = ((pj(sel.style_fingerprint_json) as any)?._chunks) || {};
-    const total = segmentPlan?.total_chapters || 0;
-    let doneChapters = 0;
+    const SECTIONS = ["events", "characters", "settings", "style"];
+    let doneSections = 0;
     let doneChunks = 0;
     for (const ck of chunkList) {
-      if (ledger[ck.key]) {
-        doneChunks += 1;
-        doneChapters += Math.max(0, ck.endChapter - ck.startChapter + 1);
-      }
+      const done = ledger[ck.key]?.done || {};
+      const n = SECTIONS.filter(s => done[s]).length;
+      doneSections += n;
+      if (n === SECTIONS.length) doneChunks += 1;
     }
-    return { doneChapters, total, doneChunks, totalChunks: chunkList.length };
-  }, [sel.style_fingerprint_json, segmentPlan, chunkList]);
+    return {
+      doneSections,
+      totalSections: chunkList.length * SECTIONS.length,
+      doneChunks,
+      totalChunks: chunkList.length,
+    };
+  }, [sel.style_fingerprint_json, chunkList]);
 
   useEffect(() => {
     setWhyDraft(sel.user_why_i_like || "");
@@ -872,22 +880,26 @@ function WorkDetail({
                 <Stat label="设定" value={settingsCount} />
                 <Stat label="评分" value={sel.user_rating ? stars(sel.user_rating) : "—"} />
               </div>
-              {/* Feature-extraction progress bar. */}
-              {extractionProgress.total > 0 && (
+              {/* Feature-extraction progress bar — section-based, in
+                * step with the 特征提取 tab's per-chunk「已入库 N/4」. */}
+              {extractionProgress.totalChunks > 0 && (
                 <div style={{ marginTop: 14 }}>
                   <div className="flex items-center justify-between" style={{ marginBottom: 5 }}>
                     <span className="text-xs text-muted">特征提取进度</span>
                     <span className="text-xs" style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
-                      {extractionProgress.doneChapters} / {extractionProgress.total} 章
-                      {extractionProgress.totalChunks > 0 &&
-                        ` · ${extractionProgress.doneChunks}/${extractionProgress.totalChunks} 分段`}
+                      {extractionProgress.doneChunks}/{extractionProgress.totalChunks} 分段已入库
+                      {` · ${Math.round(
+                        (extractionProgress.doneSections /
+                          Math.max(1, extractionProgress.totalSections)) * 100,
+                      )}%`}
                     </span>
                   </div>
                   <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
                     <div style={{
                       height: "100%",
-                      width: `${extractionProgress.total > 0
-                        ? Math.min(100, (extractionProgress.doneChapters / extractionProgress.total) * 100) : 0}%`,
+                      width: `${Math.min(100,
+                        (extractionProgress.doneSections /
+                          Math.max(1, extractionProgress.totalSections)) * 100)}%`,
                       background: "var(--jade)", borderRadius: 4, transition: "width 0.3s",
                     }} />
                   </div>
@@ -1057,7 +1069,18 @@ function WorkDetail({
                   onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
                 />
               </Section>
-              <Section title="节奏（全书）" subtitle="每章特征 · 信息密度 · 钩子 · 节奏分段（含叙事结构）"
+              <Section title="开篇模式" subtitle="作品开篇所采用的叙事手法"
+                defaultOpen
+              >
+                <OpeningPatternView
+                  pattern={
+                    ((pj(sel.rhythm_json) as any)?.opening_pattern as string)
+                    || ((pj(sel.narrative_structure_json) as any)?.opening_pattern as string)
+                    || ""
+                  }
+                />
+              </Section>
+              <Section title="节奏" subtitle="每章特征 · 信息密度 · 钩子 · 节奏分段"
                 defaultOpen
               >
                 <RhythmEditor
