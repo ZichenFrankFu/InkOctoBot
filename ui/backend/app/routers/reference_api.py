@@ -2489,6 +2489,11 @@ class ChunkExtractRequest(BaseModel):
     use_web_search: bool = False
     prompt_override: Optional[str] = None
     max_chars: int = 32_000
+    # Only consulted by extract_chunk_style: when False the endpoint
+    # returns just the offline NLP metrics; when True it also runs the
+    # LLM for the discriminated metrics. The other per-chunk extractors
+    # ignore this (they always run the model).
+    use_ai: bool = False
 
 
 @router.post("/works/{ref_id}/segments/{segment_index}/chunks/{chunk_index}/extract")
@@ -2795,65 +2800,22 @@ async def extract_chunk_settings(
         raise HTTPException(500, f"设定提取失败: {e}")
 
 
-class StyleExtractRequest(BaseModel):
-    """Body for style fingerprint extraction. `segment_index` is optional —
-    when omitted, the whole work is processed. `use_ai` selects the AI
-    path (otherwise the NLP rule-based extractor runs locally). The
-    `prompt_override` is only used by the AI path."""
-    segment_index: Optional[int] = None
-    use_ai: bool = False
-    use_web_search: bool = False
-    prompt_override: Optional[str] = None
+@router.post("/works/{ref_id}/segments/{segment_index}/chunks/{chunk_index}/extract_style")
+async def extract_chunk_style(
+    ref_id: str, segment_index: int, chunk_index: int,
+    body: Optional[ChunkExtractRequest] = None,
+):
+    """Per-chunk style fingerprint extraction. Always computes the
+    deterministic NLP metrics (avg_sentence_length, vocab_complexity,
+    punctuation_profile) via ``compute_nlp_style`` — offline, no tokens.
+    When ``use_ai`` is set, ALSO calls the LLM (``ai_extract_style``)
+    for the discriminated metrics (dialogue ratio, rhetoric, payoff /
+    info / hook density, pacing).
 
-
-def _load_style_chapters(db, w, ref_id: str, segment_index: int | None):
-    """Resolve the chapters that should feed the style extractor. When
-    ``segment_index`` is None, returns the full chapter list. Otherwise
-    returns just the chapters inside that segment's chapter range,
-    along with a small ``work_ctx`` for the AI prompt vars."""
-    from analysis.feature_extraction.pipeline import (
-        FeatureExtractionPipeline, build_work_ctx,
-    )
-    pipe = FeatureExtractionPipeline(db.db_path)
-    text = pipe._load_text(w)
-    if not text:
-        raise HTTPException(400, "作品尚未上传正文")
-    all_chapters = pipe._split_chapters(text)
-    if segment_index is None:
-        ctx = {
-            "title":        (w.get("title") or "").strip() or "(未命名)",
-            "author":       (w.get("creator") or "").strip() or "(未知)",
-            "platform":     (w.get("platform") or "").strip() or "(未知)",
-            "volume_index": 0,
-            "volume_title": "全书",
-            "start_chapter": 1,
-            "end_chapter":   len(all_chapters),
-        }
-        return all_chapters, ctx
-    plan = pipe.get_effective_plan(ref_id, all_chapters)
-    segs = plan["segments"]
-    if not segs:
-        plan = pipe.plan_segments(all_chapters)
-        segs = plan["segments"]
-    if segment_index < 0 or segment_index >= len(segs):
-        raise HTTPException(400, "segment_index 超出范围")
-    seg = segs[segment_index]
-    seg_chapters = [
-        all_chapters[j - 1]
-        for j in range(seg["start_chapter"], seg["end_chapter"] + 1)
-    ]
-    ctx = build_work_ctx(w, seg, segment_index)
-    return seg_chapters, ctx
-
-
-@router.post("/works/{ref_id}/style/extract")
-async def extract_style(ref_id: str, body: StyleExtractRequest):
-    """Compute a style fingerprint for either the whole work (when
-    ``segment_index`` is None) or a single segment. The NLP path uses
-    ``compute_style_fingerprint`` (jieba + regex; offline, no tokens).
-    The AI path uses ``ai_extract_style`` (LLM call via ModelRouter).
-    Does NOT persist — the UI saves via the usual style_fingerprint_json
-    PATCH endpoint."""
+    Returns ``{nlp, ai, n_chars, chunk, elapsed_s, errors}``. The UI
+    merges nlp + ai into one per-chunk fingerprint and char-weighted-
+    averages every committed chunk into the work-level fingerprint."""
+    body = body or ChunkExtractRequest()
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -2861,9 +2823,13 @@ async def extract_style(ref_id: str, body: StyleExtractRequest):
     import time as _time
     t0 = _time.perf_counter()
     try:
-        chapters, ctx = _load_style_chapters(db, w, ref_id, body.segment_index)
-        if not chapters:
-            raise HTTPException(400, "未找到任何章节文本")
+        from analysis.feature_extraction.nlp_stats import compute_nlp_style
+        chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
+            db, w, ref_id, segment_index, chunk_index, body.max_chars,
+        )
+        nlp = compute_nlp_style(chunk_chapters)
+        ai: dict = {}
+        errors: list[str] = []
         if body.use_ai:
             from analysis.feature_extraction.ai_extractor import ai_extract_style
             from models.router import ModelRouter
@@ -2871,37 +2837,40 @@ async def extract_style(ref_id: str, body: StyleExtractRequest):
                 router_inst = ModelRouter()
             except Exception as e:
                 raise HTTPException(503, f"AI 路由初始化失败：{e}")
-            fp = await ai_extract_style(
-                chapters, router_inst,
-                prompt_override=body.prompt_override,
-                use_web_search=body.use_web_search,
-                work_ctx=ctx,
-            )
-        else:
-            from analysis.feature_extraction.nlp_stats import compute_style_fingerprint
-            fp = compute_style_fingerprint(chapters)
+            # Narrow the prompt's "本次范围" to this chunk's chapter range.
+            chunk_ctx = {
+                **work_ctx,
+                "start_chapter": chunk_meta["start_chapter"],
+                "end_chapter": chunk_meta["end_chapter"],
+            }
+            try:
+                ai = await ai_extract_style(
+                    chunk_chapters, router_inst,
+                    prompt_override=body.prompt_override,
+                    use_web_search=body.use_web_search,
+                    work_ctx=chunk_ctx,
+                )
+            except Exception as e:
+                errors.append(f"AI 提取失败：{str(e)[:240]}")
         elapsed = round(_time.perf_counter() - t0, 2)
         return {
-            "style_fingerprint": fp,
+            "nlp": nlp,
+            "ai": ai,
+            "n_chars": chunk_meta["n_chars"],
             "elapsed_s": elapsed,
-            "errors": [],
-            "scope": {
-                "segment_index": body.segment_index,
-                "label": ctx.get("volume_title") or "全书",
-                "start_chapter": ctx.get("start_chapter"),
-                "end_chapter": ctx.get("end_chapter"),
-                "n_chapters": len(chapters),
+            "errors": errors,
+            "chunk": {
+                "chunk_index": chunk_index, "total_chunks": total,
+                "start_chapter": chunk_meta["start_chapter"],
+                "end_chapter": chunk_meta["end_chapter"],
+                "n_chapters": chunk_meta["n_chapters"],
+                "n_chars": chunk_meta["n_chars"],
             },
         }
     except HTTPException:
         raise
     except Exception as e:
-        elapsed = round(_time.perf_counter() - t0, 2)
-        return {
-            "style_fingerprint": {}, "elapsed_s": elapsed,
-            "errors": [f"提取失败：{str(e)[:240]}"],
-            "scope": {"segment_index": body.segment_index},
-        }
+        raise HTTPException(500, f"风格指纹提取失败: {e}")
 
 
 @router.get("/works/{ref_id}/segments/{segment_index}/chunks")
@@ -3647,6 +3616,13 @@ def preview_prompt_chunks(
                 "chunk_end_chapter": ci["end_chapter"],
                 "chunk_n_chapters": ci["n_chapters"],
             }
+            # reference.style's template references {start_chapter}/
+            # {end_chapter}/{n_chapters} as the *chunk* range (it has no
+            # separate chunk_* vars), so narrow them to this chunk.
+            if key == "reference.style":
+                vars_["start_chapter"] = ci["start_chapter"]
+                vars_["end_chapter"] = ci["end_chapter"]
+                vars_["n_chapters"] = ci["n_chapters"]
             try:
                 rendered = render(key, **vars_)
             except ValueError as e:

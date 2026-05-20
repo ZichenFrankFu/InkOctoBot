@@ -425,15 +425,47 @@ def _norm_tagged_list(raw: Any, max_items: int = 20, max_text: int = 80) -> list
     return out
 
 
+def normalize_ai_style(obj: Any) -> dict:
+    """Coerce an LLM/pasted style-fingerprint object into the canonical
+    LLM-side shape: dialogue_ratio, rhetoric_frequency, description_density,
+    payoff_density, info_density, hook_density, pacing_profile. The
+    NLP-side fields (avg_sentence_length, vocab_complexity,
+    punctuation_profile) are intentionally NOT produced here — they come
+    from compute_nlp_style. Returns {} when obj isn't a dict."""
+    if not isinstance(obj, dict):
+        return {}
+    def _f(k: str, default: float = 0.0) -> float:
+        v = obj.get(k)
+        try:
+            return float(v) if v is not None else default
+        except (TypeError, ValueError):
+            return default
+    pp = obj.get("pacing_profile") or {}
+    if not isinstance(pp, dict):
+        pp = {}
+    return {
+        "dialogue_ratio":      round(_f("dialogue_ratio"), 4),
+        "rhetoric_frequency":  round(_f("rhetoric_frequency"), 4),
+        "description_density": round(_f("description_density"), 4),
+        "payoff_density":      round(_f("payoff_density"), 4),
+        "info_density":        round(_f("info_density"), 4),
+        "hook_density":        round(_f("hook_density"), 4),
+        "pacing_profile": {
+            "fast":   round(float(pp.get("fast") or 0), 3),
+            "medium": round(float(pp.get("medium") or 0), 3),
+            "slow":   round(float(pp.get("slow") or 0), 3),
+        },
+    }
+
+
 async def ai_extract_style(chapters: list[dict], router: Any,
                             *, prompt_override: str | None = None,
                             use_web_search: bool = False,
                             work_ctx: dict | None = None) -> dict:
-    """Run the LLM on a segment / work and return a style fingerprint
-    dict shaped like ``compute_style_fingerprint`` (avg_sentence_length,
-    dialogue_ratio, description_density, rhetoric_frequency,
-    vocab_complexity, pacing_profile). Used by the features tab when
-    the user wants an LLM second-opinion on the NLP-computed values."""
+    """Run the LLM on a chunk and return the LLM-discriminated half of
+    a style fingerprint (dialogue ratio, rhetoric, description density,
+    payoff/info/hook density, pacing). The deterministic half
+    (sentence length, vocab, punctuation) comes from compute_nlp_style."""
     from analysis.feature_extraction.prompts import render
     text, nchars = _build_segment_text(chapters)
     prompt = render(
@@ -442,28 +474,7 @@ async def ai_extract_style(chapters: list[dict], router: Any,
         **_ctx(work_ctx),
     )
     raw = await _invoke(router, prompt, use_web_search=use_web_search, expect="dict")
-    obj = _parse_obj(raw)
-    if not isinstance(obj, dict):
-        return {}
-    def _f(k: str, default: float = 0.0) -> float:
-        v = obj.get(k)
-        try: return float(v) if v is not None else default
-        except (TypeError, ValueError): return default
-    pp = obj.get("pacing_profile") or {}
-    if not isinstance(pp, dict): pp = {}
-    out = {
-        "avg_sentence_length": round(_f("avg_sentence_length"), 2),
-        "dialogue_ratio":      round(_f("dialogue_ratio"), 4),
-        "description_density": round(_f("description_density"), 4),
-        "rhetoric_frequency":  round(_f("rhetoric_frequency"), 4),
-        "vocab_complexity":    round(_f("vocab_complexity"), 4),
-        "pacing_profile": {
-            "fast":   round(float(pp.get("fast") or 0), 3),
-            "medium": round(float(pp.get("medium") or 0), 3),
-            "slow":   round(float(pp.get("slow") or 0), 3),
-        },
-    }
-    return out
+    return normalize_ai_style(_parse_obj(raw))
 
 
 async def ai_extract_characters(chapters: list[dict], router: Any,

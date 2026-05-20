@@ -12,7 +12,7 @@
  * (by chapter range vs by name vs by category+title). A generic
  * component would be more abstract than helpful.
  */
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { apiPost } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { PromptCopyPanel } from "./AnalysisEditors";
@@ -688,12 +688,15 @@ function SettingCard({ s, onChange, onDelete }: {
 }) {
   const editable = !!onChange;
   const [open, setOpen] = useState(false);
+  // Single per-card toggle: 「编辑」 opens edit mode for the header
+  // fields AND the updates list; 「完成」 exits all of it at once.
   const [editing, setEditing] = useState(false);
   const updates = s.updates || [];
   const setUpdates = (next: SettingUpdate[]) => onChange?.({ ...s, updates: next });
   return (
     <div style={{
-      border: "1px solid var(--border)", borderRadius: 4,
+      border: `1px solid ${editing ? "var(--accent)" : "var(--border)"}`,
+      borderRadius: 4,
       background: "var(--bg-card)",
     }}>
       <div style={{
@@ -702,8 +705,8 @@ function SettingCard({ s, onChange, onDelete }: {
       }}>
         <button
           className="btn-ghost"
-          onClick={() => setOpen(o => !o)}
-          disabled={updates.length === 0 && !s.content && !editable}
+          onClick={() => { if (!editing) setOpen(o => !o); }}
+          disabled={(updates.length === 0 && !s.content && !editable) || editing}
           style={{
             display: "flex", alignItems: "center", gap: 8, flex: 1,
             padding: "2px 4px", textAlign: "left",
@@ -711,7 +714,7 @@ function SettingCard({ s, onChange, onDelete }: {
           }}>
           <span style={{
             transition: "transform 0.15s",
-            transform: open ? "rotate(90deg)" : "none",
+            transform: (open || editing) ? "rotate(90deg)" : "none",
             display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
           }}>▶</span>
           <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>
@@ -728,13 +731,19 @@ function SettingCard({ s, onChange, onDelete }: {
             }}>{s.first_chapter}</span>
           )}
         </button>
-        {editable && (
+        {editable && (editing ? (
+          <button className="btn-primary"
+                  onClick={() => setEditing(false)}
+                  style={{ fontSize: 11, padding: "3px 12px" }}>
+            完成
+          </button>
+        ) : (
           <>
             <button className="btn-ghost"
-                    onClick={() => { setEditing(e => !e); setOpen(true); }}
-                    title={editing ? "完成编辑" : "编辑标题/类别/首章"}
+                    onClick={() => { setEditing(true); setOpen(true); }}
+                    title="编辑此设定的全部字段"
                     style={{ fontSize: 11, padding: "2px 8px", color: "var(--text-tertiary)" }}>
-              {editing ? "完成" : "编辑"}
+              编辑
             </button>
             <button className="btn-ghost"
                     onClick={() => {
@@ -743,9 +752,9 @@ function SettingCard({ s, onChange, onDelete }: {
                     title="删除设定"
                     style={{ fontSize: 14, padding: "2px 8px", color: "var(--error)" }}>×</button>
           </>
-        )}
+        ))}
       </div>
-      {open && (
+      {(open || editing) && (
         <div style={{ padding: "6px 10px 10px", borderTop: "1px dashed var(--border)" }}>
           {editing && editable && (
             <div className="flex flex-col gap-6" style={{ marginBottom: 8 }}>
@@ -773,10 +782,10 @@ function SettingCard({ s, onChange, onDelete }: {
               </div>
             </div>
           )}
-          {updates.length > 0 || editable ? (
+          {updates.length > 0 || editing ? (
             <div className="flex flex-col gap-4">
               {updates.map((u, i) =>
-                editable ? (
+                editing ? (
                   <div key={i} className="flex" style={{ gap: 4, alignItems: "flex-start" }}>
                     <input className="input"
                            value={u.chapter || ""}
@@ -819,7 +828,7 @@ function SettingCard({ s, onChange, onDelete }: {
                   </div>
                 )
               )}
-              {editable && (
+              {editing && (
                 <button className="btn-ghost"
                         onClick={() => setUpdates([...updates, { chapter: "", text: "" }])}
                         style={{
@@ -918,6 +927,31 @@ export function CharactersRichDisplay({
       </div>
     );
   }
+  // Display order: 主角 first, 女主角 second, then everyone else by
+  // "出场次数" (appearance frequency) descending — more screen time
+  // means a more important character. Frequency proxy: explicit
+  // `mentions`, else the count of chronicle events for this character,
+  // else the total of the rich fact lists. We keep the ORIGINAL index
+  // alongside each entry so edit/delete handlers still patch the right
+  // slot in the source array.
+  const roleRank = (r?: string): number =>
+    r === "主角" ? 0 : r === "女主角" ? 1 : 2;
+  const frequency = (c: CharacterItem): number => {
+    if (c.mentions && c.mentions > 0) return c.mentions;
+    const chron = eventsBySubject.get(c.name);
+    if (chron && chron.length > 0) return chron.length;
+    return (c.appearance?.length || 0) + (c.personality?.length || 0)
+         + (c.experiences?.length || 0);
+  };
+  const ordered = (data || [])
+    .map((c, originalIndex) => ({ c, originalIndex }))
+    .sort((a, b) => {
+      const ra = roleRank(a.c.role_tag), rb = roleRank(b.c.role_tag);
+      if (ra !== rb) return ra - rb;
+      if (ra < 2) return a.originalIndex - b.originalIndex; // 主角/女主角 stable
+      return frequency(b.c) - frequency(a.c);
+    });
+
   return (
     <div className="flex flex-col gap-6" style={{ marginTop: 8 }}>
       {editable && (
@@ -926,14 +960,16 @@ export function CharactersRichDisplay({
                   style={{ fontSize: 11, padding: "3px 12px" }}>
             + 添加角色
           </button>
-          <span className="text-xs text-muted">共 {data.length} 个角色</span>
+          <span className="text-xs text-muted">
+            共 {data.length} 个角色 · 主角/女主角置顶，其余按出场次数排序
+          </span>
         </div>
       )}
-      {data.map((c, i) => (
-        <CharacterCard key={i} c={c}
+      {ordered.map(({ c, originalIndex }) => (
+        <CharacterCard key={originalIndex} c={c}
                        chronicleExperiences={eventsBySubject.get(c.name) || null}
-                       onChange={editable ? (next) => updateAt(i, next) : undefined}
-                       onDelete={editable ? () => removeAt(i) : undefined} />
+                       onChange={editable ? (next) => updateAt(originalIndex, next) : undefined}
+                       onDelete={editable ? () => removeAt(originalIndex) : undefined} />
       ))}
     </div>
   );
@@ -948,30 +984,42 @@ function CharacterCard({
   onDelete?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  // A single per-card edit toggle: 「编辑」 puts the whole card —
+  // header fields AND every sub-section — into edit mode; 「完成」
+  // exits all of it at once.
   const [editing, setEditing] = useState(false);
   const editable = !!onChange;
   const tag = c.role_tag || "";
-  // 经历 prefers chronicle-derived events; falls back to legacy field.
-  const experiences = chronicleExperiences && chronicleExperiences.length > 0
-    ? chronicleExperiences
-    : (c.experiences || []);
-  const subSections: Array<{ key: "appearance" | "personality" | "experiences"; label: string; items: CharacterListItem[]; readOnly?: boolean }> = [
-    { key: "appearance",  label: "外貌", items: c.appearance  || [] },
-    { key: "personality", label: "性格", items: c.personality || [] },
-    // 经历 is derived from chronicle when available — read-only here.
-    { key: "experiences", label: "经历", items: experiences, readOnly: !!chronicleExperiences && chronicleExperiences.length > 0 },
+  // Read-mode 经历: prefer the character's OWN experiences field (so
+  // manual edits stick); fall back to chronicle-derived events only
+  // when the character has no experiences of its own.
+  const ownExp = c.experiences || [];
+  const expDerived = ownExp.length === 0
+    && !!chronicleExperiences && chronicleExperiences.length > 0;
+  const readExperiences = ownExp.length > 0
+    ? ownExp
+    : (chronicleExperiences || []);
+  // Sub-sections. In edit mode all three bind to the character's own
+  // field; in read mode 经历 may show chronicle-derived events.
+  const subSections: Array<{
+    key: "appearance" | "personality" | "experiences";
+    label: string; readItems: CharacterListItem[]; note?: string;
+  }> = [
+    { key: "appearance",  label: "外貌", readItems: c.appearance  || [] },
+    { key: "personality", label: "性格", readItems: c.personality || [] },
+    { key: "experiences", label: "经历", readItems: readExperiences,
+      note: expDerived ? "（自动读取自编年史，可在此覆盖）" : undefined },
   ];
-  const totalItems = subSections.reduce((n, s) => n + s.items.length, 0);
+  const totalItems = subSections.reduce((n, s) => n + s.readItems.length, 0);
   const hasAnything = totalItems > 0 || !!c.intro;
 
-  const updateSubList = (key: "appearance" | "personality", next: CharacterListItem[]) => {
-    if (!onChange) return;
-    onChange({ ...c, [key]: next });
-  };
+  const startEdit = () => { setEditing(true); setOpen(true); };
+  const finishEdit = () => setEditing(false);
 
   return (
     <div style={{
-      border: "1px solid var(--border)", borderRadius: 4,
+      border: `1px solid ${editing ? "var(--accent)" : "var(--border)"}`,
+      borderRadius: 4,
       background: "var(--bg-card)",
     }}>
       <div style={{
@@ -980,8 +1028,8 @@ function CharacterCard({
       }}>
         <button
           className="btn-ghost"
-          onClick={() => setOpen(o => !o)}
-          disabled={!hasAnything && !editable}
+          onClick={() => { if (!editing) setOpen(o => !o); }}
+          disabled={(!hasAnything && !editable) || editing}
           style={{
             display: "flex", alignItems: "center", gap: 8, flex: 1,
             padding: "2px 4px", textAlign: "left",
@@ -989,7 +1037,7 @@ function CharacterCard({
           }}>
           <span style={{
             transition: "transform 0.15s",
-            transform: open ? "rotate(90deg)" : "none",
+            transform: (open || editing) ? "rotate(90deg)" : "none",
             display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
           }}>▶</span>
           <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>
@@ -1004,7 +1052,7 @@ function CharacterCard({
             }}>{tag}</span>
           )}
           {c.mentions ? (
-            <span className="text-xs text-muted">{c.mentions} 次提及</span>
+            <span className="text-xs text-muted">{c.mentions} 次出场</span>
           ) : null}
           {c.first_chapter && (
             <span className="tag" style={{
@@ -1014,13 +1062,19 @@ function CharacterCard({
             }}>{c.first_chapter}</span>
           )}
         </button>
-        {editable && (
+        {editable && (editing ? (
+          <button className="btn-primary"
+                  onClick={finishEdit}
+                  style={{ fontSize: 11, padding: "3px 12px" }}>
+            完成
+          </button>
+        ) : (
           <>
             <button className="btn-ghost"
-                    onClick={() => { setEditing(e => !e); setOpen(true); }}
-                    title={editing ? "完成编辑" : "编辑名称/角色/简介"}
+                    onClick={startEdit}
+                    title="编辑此角色的全部字段"
                     style={{ fontSize: 11, padding: "2px 8px", color: "var(--text-tertiary)" }}>
-              {editing ? "完成" : "编辑"}
+              编辑
             </button>
             <button className="btn-ghost"
                     onClick={() => {
@@ -1029,11 +1083,11 @@ function CharacterCard({
                     title="删除角色"
                     style={{ fontSize: 14, padding: "2px 8px", color: "var(--error)" }}>×</button>
           </>
-        )}
+        ))}
       </div>
-      {open && (
+      {(open || editing) && (
         <div style={{ padding: "4px 10px 10px", borderTop: "1px dashed var(--border)" }}>
-          {editing && editable ? (
+          {editing ? (
             <div className="flex flex-col gap-6" style={{ marginBottom: 8 }}>
               <div className="flex items-center" style={{ gap: 6 }}>
                 <span className="text-xs text-muted" style={{ minWidth: 50 }}>名称</span>
@@ -1049,6 +1103,14 @@ function CharacterCard({
                   {["主角", "女主角", "反派", "男配", "女配", "师长", "重要配角", "路人", "其他"].map(o =>
                     <option key={o} value={o}>{o}</option>)}
                 </select>
+              </div>
+              <div className="flex items-center" style={{ gap: 6 }}>
+                <span className="text-xs text-muted" style={{ minWidth: 50 }}>出场次数</span>
+                <input className="input" type="number" min={0}
+                       value={c.mentions ?? 0}
+                       onChange={e => onChange?.({ ...c, mentions: parseInt(e.target.value, 10) || 0 })}
+                       style={{ fontSize: 12, padding: "3px 8px", width: 100 }} />
+                <span className="text-xs text-muted">用于角色列表排序</span>
               </div>
               <div className="flex items-center" style={{ gap: 6 }}>
                 <span className="text-xs text-muted" style={{ minWidth: 50 }}>首章</span>
@@ -1073,9 +1135,12 @@ function CharacterCard({
           )}
           <div className="flex flex-col gap-4">
             {subSections.map(s => (
-              <CharacterSubSection key={s.key} label={s.label} items={s.items}
-                                   onChange={editable && !s.readOnly
-                                     ? (next) => updateSubList(s.key as "appearance" | "personality", next)
+              <CharacterSubSection key={s.key} label={s.label}
+                                   items={editing ? (c[s.key] || []) : s.readItems}
+                                   note={s.note}
+                                   editing={editing}
+                                   onChange={editing
+                                     ? (next) => onChange?.({ ...c, [s.key]: next })
                                      : undefined} />
             ))}
           </div>
@@ -1085,20 +1150,19 @@ function CharacterCard({
   );
 }
 
-/** Collapsible per-sub-type list (外貌 / 性格 / 经历). Each row is
- *  `[chapter tag][content text]`. The whole card stays compact until
- *  the user expands it. Empty lists render a muted placeholder so the
- *  user can see which sub-types haven't been filled yet.
- *
- *  When `onChange` is provided, inline add/delete is enabled: each row
- *  gets a × button and the sub-section gets a "+ 添加" button. */
-function CharacterSubSection({ label, items, onChange }: {
+/** Per-sub-type list (外貌 / 性格 / 经历). In read mode it's a
+ *  collapsible `[chapter tag][text]` list; in edit mode (`editing`)
+ *  it stays expanded and every row becomes editable with ×/+ controls. */
+function CharacterSubSection({ label, items, note, editing, onChange }: {
   label: string;
   items: CharacterListItem[];
+  note?: string;
+  editing: boolean;
   onChange?: (next: CharacterListItem[]) => void;
 }) {
-  const editable = !!onChange;
+  const editable = editing && !!onChange;
   const [open, setOpen] = useState(false);
+  const isOpen = editing || open;
   const empty = !items || items.length === 0;
   return (
     <div style={{
@@ -1107,8 +1171,8 @@ function CharacterSubSection({ label, items, onChange }: {
     }}>
       <button
         className="btn-ghost w-full"
-        onClick={() => setOpen(o => !o)}
-        disabled={empty && !editable}
+        onClick={() => { if (!editing) setOpen(o => !o); }}
+        disabled={(empty && !editable) || editing}
         style={{
           display: "flex", alignItems: "center", gap: 6,
           padding: "4px 8px", textAlign: "left",
@@ -1116,7 +1180,7 @@ function CharacterSubSection({ label, items, onChange }: {
         }}>
         <span style={{
           transition: "transform 0.15s",
-          transform: open ? "rotate(90deg)" : "none",
+          transform: isOpen ? "rotate(90deg)" : "none",
           display: "inline-block", fontSize: 9, color: "var(--text-tertiary)",
         }}>▶</span>
         <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)" }}>
@@ -1125,12 +1189,18 @@ function CharacterSubSection({ label, items, onChange }: {
         <span className="text-xs text-muted">
           {empty ? "(空)" : `${items.length} 条`}
         </span>
+        {note && (
+          <span className="text-xs text-muted" style={{ fontSize: 10 }}>{note}</span>
+        )}
       </button>
-      {open && (
+      {isOpen && (
         <div style={{
           padding: "4px 8px 6px", borderTop: "1px dashed var(--border)",
         }}>
           <div className="flex flex-col gap-4">
+            {empty && !editable && (
+              <span className="text-xs text-muted">（暂无内容）</span>
+            )}
             {items.map((it, i) => (
               <CharacterSubItem key={i} item={it}
                                 onChange={editable ? (next) => {
@@ -1243,6 +1313,21 @@ function ExtractionSection<T>(props: ExtractionSectionProps<T>) {
   const [openSegs, setOpenSegs] = useState<Set<number>>(new Set());
   const [openChunks, setOpenChunks] = useState<Set<string>>(new Set());
   const [chunkPhases, setChunkPhases] = useState<Record<string, ChunkPhase<T>>>({});
+  // Bulk-run ("一键处理全部分段") state — mirrors the chronicle tab's
+  // runAllChunksAI. The cancel flag is a ref so the in-flight loop can
+  // poll it without re-rendering each tick; data/chunk refs give the
+  // loop a race-free read of values that React updates asynchronously.
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<
+    { done: number; total: number; label: string; failed: number } | null
+  >(null);
+  const bulkCancelRef = useRef(false);
+  const dataRef = useRef(data);
+  useEffect(() => { dataRef.current = data; }, [data]);
+  const segChunksRef = useRef(segChunks);
+  useEffect(() => { segChunksRef.current = segChunks; }, [segChunks]);
+  const chunkPhasesRef = useRef(chunkPhases);
+  useEffect(() => { chunkPhasesRef.current = chunkPhases; }, [chunkPhases]);
 
   const toggleSeg = async (i: number) => {
     const isOpen = openSegs.has(i);
@@ -1322,6 +1407,107 @@ function ExtractionSection<T>(props: ExtractionSectionProps<T>) {
     }
   };
 
+  /** Run the built-in AI on every chunk of every segment, committing
+   *  each chunk's results before moving on. Skips chunks already
+   *  committed this session or that already have persisted data in
+   *  their chapter range (so a partial run can be safely resumed).
+   *  Accumulates into a local mirror of `data` because onSave's parent
+   *  update is async — each merge must see the prior chunk's items. */
+  const label = kind === "characters" ? "角色" : "设定";
+  const runAll = async () => {
+    if (!plan || bulkRunning) return;
+    setBulkRunning(true);
+    bulkCancelRef.current = false;
+    try {
+      // 1. Make sure every segment's chunk list is loaded.
+      const loaded: Array<{ segIdx: number; chunks: ChunkMeta[] }> = [];
+      for (const seg of plan.segments) {
+        let cs = segChunksRef.current[seg.index];
+        if (!cs) {
+          try {
+            await ensureChunks(seg.index);
+            cs = segChunksRef.current[seg.index] || [];
+          } catch (e: any) {
+            toast(`第 ${seg.index + 1} 卷分段加载失败：${e?.message || e}`, "error");
+            continue;
+          }
+        }
+        loaded.push({ segIdx: seg.index, chunks: cs });
+      }
+      // 2. Build the task list, skipping chunks that are committed or
+      //    already have data so a partial run resumes cleanly.
+      const tasks: Array<{ segIdx: number; chunk: ChunkMeta }> = [];
+      for (const { segIdx, chunks } of loaded) {
+        for (const ck of chunks) {
+          const k = ckKey(segIdx, ck.chunk_index);
+          if (chunkPhasesRef.current[k]?.status === "committed") continue;
+          const prior = countPriorItemsInChunk(
+            dataRef.current as any[], ck.start_chapter, ck.end_chapter,
+          );
+          if (prior > 0) continue;
+          tasks.push({ segIdx, chunk: ck });
+        }
+      }
+      if (tasks.length === 0) {
+        toast("所有分段都已提取，无需重复处理。", "info");
+        return;
+      }
+      // 3. Iterate, accumulating into a local mirror of the work data.
+      let acc: T[] = (dataRef.current || []).slice();
+      let failed = 0;
+      setBulkProgress({
+        done: 0, total: tasks.length, failed: 0,
+        label: `第 ${tasks[0].segIdx + 1} 卷 · 分段 ${tasks[0].chunk.chunk_index + 1}`,
+      });
+      for (let i = 0; i < tasks.length; i++) {
+        if (bulkCancelRef.current) break;
+        const { segIdx, chunk } = tasks[i];
+        const c = chunk.chunk_index;
+        setBulkProgress({
+          done: i, total: tasks.length, failed,
+          label: `第 ${segIdx + 1} 卷 · 分段 ${c + 1}`,
+        });
+        patch(segIdx, c, { status: "extracting", error: undefined, startedAt: Date.now() });
+        try {
+          const r = await apiPost<{ [k: string]: any; elapsed_s: number; errors: string[] }>(
+            `/api/references/works/${refId}/segments/${segIdx}/chunks/${c}/${extractPath}`,
+            {},
+            { timeoutMs: 600_000 },
+          );
+          const items = (r[itemsKey] || []) as T[];
+          if ((r.errors && r.errors.length > 0) || items.length === 0) {
+            failed++;
+            patch(segIdx, c, {
+              status: "failed",
+              error: (r.errors && r.errors.join("; ")) || `AI 返回 0 ${label}`,
+              elapsedS: r.elapsed_s,
+            });
+            continue;
+          }
+          acc = mergeIntoWork(acc, items);
+          await onSave(acc);
+          dataRef.current = acc;
+          patch(segIdx, c, { status: "committed", source: "ai", items, elapsedS: r.elapsed_s });
+        } catch (e: any) {
+          failed++;
+          patch(segIdx, c, { status: "failed", error: e?.message || "AI 提取失败" });
+        }
+      }
+      setBulkProgress({
+        done: tasks.length, total: tasks.length, failed, label: "",
+      });
+      toast(
+        bulkCancelRef.current
+          ? `已取消，完成 ${tasks.length - failed}/${tasks.length}`
+          : `批量处理完成：${tasks.length - failed} 成功${failed ? ` · ${failed} 失败` : ""}`,
+        failed > 0 ? "info" : "success",
+      );
+    } finally {
+      setBulkRunning(false);
+    }
+  };
+  const cancelBulk = () => { bulkCancelRef.current = true; };
+
   if (!hasFullText) {
     return (
       <div className="text-xs text-muted" style={{ padding: 12 }}>
@@ -1345,9 +1531,56 @@ function ExtractionSection<T>(props: ExtractionSectionProps<T>) {
       border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
       padding: 12, background: "var(--bg-surface)",
     }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
-        {sectionTitle}
+      <div className="flex items-center justify-between" style={{
+        marginBottom: 8, gap: 8, flexWrap: "wrap",
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>
+          {sectionTitle}
+        </div>
+        <button
+          className="btn-primary"
+          style={{ fontSize: 12, padding: "4px 14px" }}
+          onClick={runAll}
+          disabled={bulkRunning}
+          title={`对每一卷的每一分段都调用内置 AI 提取${label}，已提取的分段会跳过`}>
+          {bulkRunning ? "批量处理中…" : "使用内置 AI 一键处理全部分段"}
+        </button>
       </div>
+
+      {/* Bulk-run progress bar */}
+      {bulkProgress && (
+        <div style={{
+          marginBottom: 10, padding: "8px 10px",
+          border: "1px solid var(--accent)", borderRadius: 4,
+          background: "var(--bg-card)",
+        }}>
+          <div className="flex items-center" style={{ gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)" }}>
+              {bulkRunning ? "批量处理中" : "已完成"}
+            </span>
+            <span className="text-xs text-muted">
+              {bulkProgress.done}/{bulkProgress.total}
+              {bulkProgress.label ? ` · ${bulkProgress.label}` : ""}
+              {bulkProgress.failed > 0 ? ` · 失败 ${bulkProgress.failed}` : ""}
+            </span>
+            <div style={{ flex: 1 }} />
+            {bulkRunning && (
+              <button className="btn" onClick={cancelBulk}
+                      style={{ fontSize: 11, padding: "2px 10px", color: "var(--error)" }}>
+                取消
+              </button>
+            )}
+          </div>
+          <div style={{ height: 6, background: "var(--bg-surface-2)", borderRadius: 3, overflow: "hidden" }}>
+            <div style={{
+              height: "100%",
+              width: `${bulkProgress.total > 0 ? (bulkProgress.done / bulkProgress.total) * 100 : 0}%`,
+              background: "var(--jade)", borderRadius: 3, transition: "width 0.3s",
+            }} />
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col gap-4">
         {plan.segments.map(seg => {
           const isOpen = openSegs.has(seg.index);

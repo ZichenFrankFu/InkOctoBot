@@ -1149,9 +1149,15 @@ export default function PlotOutlinePanel({
         * section above has populated events from every segment, the
         * user can run the "全时间线总结" feature inside this editor
         * to story-time-reorder the whole book. */}
-      <div style={{ marginTop: 16, paddingTop: 12, borderTop: "2px solid var(--border)" }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
-          编年史
+      <div style={{ marginTop: 20, paddingTop: 16, borderTop: "2px solid var(--border)" }}>
+        <div className="flex items-center" style={{
+          gap: 8, marginBottom: 12,
+          paddingLeft: 10, borderLeft: "4px solid var(--accent)",
+        }}>
+          <span style={{ fontSize: 17, fontWeight: 800, color: "var(--text-primary)", letterSpacing: 0.5 }}>
+            编年史
+          </span>
+          <span className="text-xs text-muted">事件时间线 · 可逐条编辑</span>
         </div>
         <PlotOutlineEditor
           data={plotOutline}

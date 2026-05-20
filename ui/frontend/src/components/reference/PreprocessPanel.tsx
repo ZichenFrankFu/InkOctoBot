@@ -214,6 +214,12 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   // Persisted-chapters summary (for the 保存全部章节 button label)
   const [savedSummary, setSavedSummary] = useState<{ saved_count: number; saved_at: string | null }>({ saved_count: 0, saved_at: null });
   const [savingAll, setSavingAll] = useState(false);
+  // Once chapters are written to the database the "章节清理" editing
+  // section collapses to a compact read-only summary; the user clicks
+  // 「修改数据库中章节」 to re-open the full editor. This stays false
+  // until the user explicitly asks to edit, and flips back to false
+  // after a fresh save.
+  const [chapterEditMode, setChapterEditMode] = useState(false);
   // Multi-file upload (append mode)
   const appendFileInputRef = useRef<HTMLInputElement | null>(null);
   const [appending, setAppending] = useState(false);
@@ -445,6 +451,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       toast(`已保存 ${r.saved_count} 章到数据库`, "success");
       await fetchSavedSummary();
+      // Collapse back to the read-only summary now that the DB is current.
+      setChapterEditMode(false);
     } catch (e: any) {
       toast(e?.message || "保存失败", "error");
     } finally {
@@ -1809,8 +1817,61 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         </div>
       )}
 
-      {/* Section 2: chapter list + author-note flags + outlier flags */}
-      {chapters.length > 0 && (
+      {/* Section 2 (read-only): once chapters are saved to the DB, the
+          cleaning editor collapses to this compact summary. The user
+          clicks 「修改数据库中章节」 to re-open the full editor. */}
+      {chapters.length > 0 && savedSummary.saved_count > 0 && !chapterEditMode && (
+        <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
+          <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
+            <div>
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  已存储章节
+                </span>
+                <span className="tag" style={{
+                  fontSize: 10, padding: "1px 8px",
+                  color: "var(--jade)", border: "1px solid var(--jade)", borderRadius: 3,
+                }}>已写入数据库</span>
+              </div>
+              <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                数据库中共 {savedSummary.saved_count} 章
+                {savedSummary.saved_at && ` · 保存于 ${new Date(savedSummary.saved_at).toLocaleString("zh-CN")}`}
+              </div>
+            </div>
+            <button className="btn"
+                    style={{ fontSize: 11, padding: "4px 12px" }}
+                    onClick={() => setChapterEditMode(true)}
+                    title="重新打开「章节清理」以增删改章节">
+              修改数据库中章节
+            </button>
+          </div>
+          <div className="flex flex-col gap-2" style={{
+            maxHeight: 360, overflowY: "auto",
+            padding: 6, border: "1px solid var(--border)", borderRadius: 4,
+          }}>
+            {chapters.map(c => (
+              <div key={cid(c)} className="flex items-center" style={{
+                gap: 8, fontSize: 12, padding: "3px 6px",
+                borderBottom: "1px dashed var(--border)",
+              }}>
+                <span style={{
+                  fontFamily: "var(--font-mono)", color: "var(--accent)",
+                  minWidth: 56,
+                }}>第 {displayNum(c)} 章</span>
+                <span className="truncate" style={{ flex: 1, color: "var(--text-secondary)" }}>
+                  {c.title_only || c.title || "(无标题)"}
+                </span>
+                <span className="text-xs text-muted" style={{ fontFamily: "var(--font-mono)" }}>
+                  {c.char_count.toLocaleString()} 字
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Section 2 (editor): chapter list + author-note flags + outlier flags */}
+      {chapters.length > 0 && (savedSummary.saved_count === 0 || chapterEditMode) && (
         <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
           <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
             <div>
@@ -1822,6 +1883,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               </div>
             </div>
             <div className="flex items-center gap-6">
+              {savedSummary.saved_count > 0 && chapterEditMode && (
+                <button className="btn"
+                        style={{ fontSize: 11, padding: "4px 12px", color: "var(--text-tertiary)" }}
+                        onClick={() => setChapterEditMode(false)}
+                        title="收起编辑器，回到只读的已存储章节视图">
+                  收起编辑
+                </button>
+              )}
               {status?.can_undo && (
                 <button className="btn"
                         style={{ fontSize: 11, padding: "4px 12px", color: "var(--gold)" }}

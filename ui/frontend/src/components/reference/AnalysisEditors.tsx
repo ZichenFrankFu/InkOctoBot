@@ -332,11 +332,20 @@ export function Section({ title, subtitle, onExtract, extractLabel, extracting, 
 /* ──────────────── Style Fingerprint ──────────────── */
 
 interface StyleFingerprint {
+  // NLP-computed (deterministic / statistical):
   avg_sentence_length?: number;
+  vocab_complexity?: number;
+  punctuation_profile?: {
+    ellipsis?: number; dash?: number; exclamation?: number;
+    question?: number; comma?: number;
+  };
+  // LLM-discriminated (need semantic judgement):
   dialogue_ratio?: number;
   description_density?: number;
   rhetoric_frequency?: number;
-  vocab_complexity?: number;
+  payoff_density?: number;
+  info_density?: number;
+  hook_density?: number;
   pacing_profile?: { fast?: number; medium?: number; slow?: number };
 }
 
@@ -419,9 +428,12 @@ export function StyleFingerprintEditor({ data, onSave }: { data: StyleFingerprin
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 12 }}>
           <NumInput label="平均句长 (字)" step={0.1} min={0} value={d.avg_sentence_length} onChange={v => setDraft({ ...draft, avg_sentence_length: v })} />
           <NumInput label="修辞频率 (每千字)" min={0} value={d.rhetoric_frequency} onChange={v => setDraft({ ...draft, rhetoric_frequency: v })} />
+          <NumInput label="爽点密度 (每万字)" min={0} value={d.payoff_density} onChange={v => setDraft({ ...draft, payoff_density: v })} />
+          <NumInput label="钩子密度 (每章)" min={0} value={d.hook_density} onChange={v => setDraft({ ...draft, hook_density: v })} />
         </div>
         <Slider01 label="对话占比" hint="对话内容 / 全文" value={d.dialogue_ratio} onChange={v => setDraft({ ...draft, dialogue_ratio: v })} />
-        <Slider01 label="描写密度" hint="形容/状语词比例" value={d.description_density} onChange={v => setDraft({ ...draft, description_density: v })} />
+        <Slider01 label="描写密度" hint="环境/外貌/动作描写" value={d.description_density} onChange={v => setDraft({ ...draft, description_density: v })} />
+        <Slider01 label="信息密度" hint="单位篇幅有效信息量" value={d.info_density} onChange={v => setDraft({ ...draft, info_density: v })} />
         <Slider01 label="词汇丰富度" hint="归一化 TTR" value={d.vocab_complexity} onChange={v => setDraft({ ...draft, vocab_complexity: v })} />
         <div className="label" style={{ marginTop: 12, marginBottom: 6 }}>节奏分布（占比，总和应为 1）</div>
         <Slider01 label="快节奏" value={pacing.fast} onChange={v => setPacing("fast", v)} />
@@ -435,13 +447,27 @@ export function StyleFingerprintEditor({ data, onSave }: { data: StyleFingerprin
     );
   }
 
+  const punct = d.punctuation_profile || {};
   return (
     <div>
+      <div className="label" style={{ marginBottom: 6, color: "var(--jade)" }}>
+        NLP 统计特征
+      </div>
       <MetricRow label="平均句长" value={d.avg_sentence_length} unit="字" max={60} hint="越长越书面化" />
-      <MetricRow label="对话占比" value={d.dialogue_ratio} max={1} hint="对话内容 / 全文" />
-      <MetricRow label="描写密度" value={d.description_density} max={1} hint="形容/状语词比例" />
-      <MetricRow label="修辞频率" value={d.rhetoric_frequency} max={20} hint="每千字使用次数" />
       <MetricRow label="词汇丰富度" value={d.vocab_complexity} max={1} hint="归一化 TTR" />
+      <MetricRow label="省略号" value={punct.ellipsis} unit="/千字" max={10} hint="标点使用特征" />
+      <MetricRow label="破折号" value={punct.dash} unit="/千字" max={10} />
+      <MetricRow label="感叹号" value={punct.exclamation} unit="/千字" max={20} />
+      <MetricRow label="问号" value={punct.question} unit="/千字" max={20} />
+      <div className="label" style={{ marginTop: 12, marginBottom: 6, color: "var(--accent)" }}>
+        LLM 语义维度
+      </div>
+      <MetricRow label="对话占比" value={d.dialogue_ratio} max={1} hint="对话内容 / 全文" />
+      <MetricRow label="描写密度" value={d.description_density} max={1} hint="环境/外貌/动作描写" />
+      <MetricRow label="修辞频率" value={d.rhetoric_frequency} max={20} hint="每千字使用次数" />
+      <MetricRow label="爽点密度" value={d.payoff_density} max={10} hint="每万字爽点个数" />
+      <MetricRow label="信息密度" value={d.info_density} max={1} hint="单位篇幅有效信息量" />
+      <MetricRow label="钩子密度" value={d.hook_density} max={5} hint="每章悬念/张力点" />
       <div className="label" style={{ marginTop: 12, marginBottom: 6 }}>节奏分布</div>
       <div style={{ display: "flex", height: 24, borderRadius: 4, overflow: "hidden", background: "var(--bg-surface-2)" }}>
         {(["fast", "medium", "slow"] as const).map(k => {
@@ -1468,15 +1494,6 @@ function regroupChronicleByStoryTime(rawEpochs: ChronicleEpoch[]): ChronicleEpoc
   return [{ title: "按故事时间排序", periods }];
 }
 
-const CHRONICLE_INSTRUCTIONS = `编年史是「世界内史学家」的客观记录：
-1. 视角：第三人称客观史学家，只记录「发生了什么」——不写心理、不写对话原文、不写场景细节。
-2. 颗粒度：章节弧标题级别。「主角拜师」是一个事件；「主角拿茶杯/喝茶/放下」就太细，要合并成一个。每章 1-3 条为佳。
-3. 时间标签有两个：
-   • 故事中时间（time_marker）—— 故事世界的时钟，如「1954 年 3 月」「春末」。没有就留空。
-   • 首次出现章节（first_chapter）—— 原文里事件首次描写的章号，如「第 12 章」。两个都尽量填。
-4. 删除：阅读视图每条事件右上角 × 直接删除；时间段或大段的 × 在它们各自的标题行。
-5. AI 提取分两步：先逐章抽事件（按文本顺序），再用「整理时间线」prompt 让 LLM 按故事时间重排（处理倒叙/插叙）。`;
-
 /* ─── Chronicle 全时间线总结 panel ──────────────────────────────
  * Lives at the top of the chronicle display section. Two-phase UX:
  *
@@ -1855,7 +1872,6 @@ export function PlotOutlineEditor({
   // Instructions disclosure — collapsible because chronicle conventions
   // can be unfamiliar to first-time users, but veteran users won't want
   // to see the wall of text on every load.
-  const [showInstructions, setShowInstructions] = useState(false);
 
   // View mode for the chronicle:
   //   "chapter" = 章节顺序 — events grouped by first_chapter, the
@@ -1929,36 +1945,6 @@ export function PlotOutlineEditor({
           )}
         </div>
       )}
-
-      {/* Chronicle usage instructions — collapsed by default to keep
-        * the read view dense, but always one click away. */}
-      <div style={{
-        marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4,
-      }}>
-        <button className="btn-ghost w-full" onClick={() => setShowInstructions(s => !s)}
-                style={{
-                  justifyContent: "space-between", padding: "6px 10px",
-                  fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
-                  borderRadius: 0,
-                }}>
-          <span>编年史格式使用说明</span>
-          <span className="text-xs text-muted" style={{
-            transition: "transform 0.15s",
-            transform: showInstructions ? "rotate(180deg)" : "none",
-            display: "inline-block",
-          }}>&#x25BC;</span>
-        </button>
-        {showInstructions && (
-          <pre style={{
-            margin: 0, padding: "8px 12px",
-            background: "var(--bg-surface)",
-            fontSize: 11, lineHeight: 1.65,
-            color: "var(--text-secondary)",
-            whiteSpace: "pre-wrap", wordBreak: "break-word",
-            fontFamily: "inherit",
-          }}>{CHRONICLE_INSTRUCTIONS}</pre>
-        )}
-      </div>
 
       {legacy && (
         <div style={{
@@ -2112,21 +2098,27 @@ export function PlotOutlineEditor({
                                 {" "}
                                 <span style={{ color: "var(--text-secondary)" }}>{ev.description}</span>
                               </div>
-                              {/* CRUD buttons. Hidden in 时间顺序 view
+                              {/* CRUD buttons — always visible so the
+                                * per-event edit/delete affordance is
+                                * discoverable. Hidden in 时间顺序 view
                                 * because the displayed event no longer
                                 * lives at the (ei, pi, evi) index — the
                                 * read view is built from a synthetic
                                 * regrouping. The user is told to switch
-                                * back to 章节顺序 to edit/delete. */}
+                                * back to 章节顺序 to edit/delete.
+                                * position:static overrides the .ref-inline-edit
+                                * absolute rule so the flex wrapper can lay
+                                * the two buttons out side by side. */}
                               {viewMode === "chapter" && <div style={{
-                                position: "absolute", top: 0, right: 0,
-                                display: "flex", gap: 2,
+                                position: "absolute", top: 2, right: 0,
+                                display: "flex", gap: 3,
                               }}>
                                 <button
                                   className="ref-inline-edit"
                                   onClick={() => startEventEdit(ei, pi, evi, ev)}
                                   title="编辑这条事件"
                                   aria-label="编辑这条事件"
+                                  style={{ position: "static" }}
                                 >
                                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
                                        stroke="currentColor" strokeWidth="2"
@@ -2140,7 +2132,7 @@ export function PlotOutlineEditor({
                                   onClick={() => deleteEventInRead(ei, pi, evi)}
                                   title="删除这条事件"
                                   aria-label="删除这条事件"
-                                  style={{ color: "var(--error)" }}
+                                  style={{ position: "static", color: "var(--error)" }}
                                 >
                                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
                                        stroke="currentColor" strokeWidth="2"
