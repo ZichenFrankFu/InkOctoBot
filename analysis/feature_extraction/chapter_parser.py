@@ -1555,12 +1555,26 @@ def detect_aside_paragraphs(chapters: list[dict],
             if _DIALOGUE_RE.search(ps):
                 continue
             hits = [kw for kw in keywords if kw in ps]
-            # An "after-fence" paragraph is an aside candidate only when
-            # it's SHORT and the fence itself was tail-located — not just
-            # "anything after a ---".
+            plen = len(ps)
+            is_at_end = pi >= n_paras - 2
             after_fence = fence_idx is not None and pi > fence_idx
-            short_aside = after_fence and len(ps) < 200
-            if not hits and not short_aside:
+            # Confidence gate — author asides are SHORT meta pleas at the
+            # chapter tail. A lone keyword inside a normal-length or
+            # mid-chapter paragraph is almost always narrative, so it is
+            # NOT flagged. This is what keeps the false-positive rate down:
+            #   - long paragraph (> 160 chars)            → never an aside
+            #   - 2+ meta keywords in a short paragraph   → aside
+            #   - 1 keyword in a SHORT tail paragraph     → aside
+            #   - tiny tail block right after a fence     → aside
+            emit = False
+            if plen <= 160:
+                if len(hits) >= 2:
+                    emit = True
+                elif len(hits) >= 1 and (is_at_end or after_fence):
+                    emit = True
+                elif after_fence and is_at_end and plen < 80:
+                    emit = True
+            if not emit:
                 continue
             reasons: list[str] = []
             if hits:
@@ -1568,13 +1582,12 @@ def detect_aside_paragraphs(chapters: list[dict],
                                 + (f"…(+{len(hits) - 3})" if len(hits) > 3 else ""))
             if after_fence:
                 reasons.append("章节末分割线（---）之后")
-            is_at_end = pi >= n_paras - 2
             if is_at_end and "位于章节末尾" not in reasons:
                 reasons.append("位于章节末尾")
             score = (
                 len(hits)
                 + (2 if is_at_end else 0)
-                + (1 if len(ps) < 100 else 0)
+                + (1 if plen < 100 else 0)
                 + (3 if after_fence else 0)
             )
             out.append({

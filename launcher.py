@@ -130,7 +130,14 @@ def main():
         width=1200,
         height=800,
     )
-    webview.start(gui="edgechromium")
+    # Window / taskbar icon — without an explicit icon the OS falls back
+    # to the bare Python interpreter icon. Windows needs .ico; GTK/macOS .png.
+    icon_path = _project_root() / "assets" / (
+        "icon.ico" if os.name == "nt" else "icon.png")
+    start_kwargs = {"gui": "edgechromium"}
+    if icon_path.exists():
+        start_kwargs["icon"] = str(icon_path)
+    webview.start(**start_kwargs)
 
 
 if __name__ == "__main__":

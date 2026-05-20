@@ -2145,9 +2145,9 @@ export interface SettingUpdate {
 export interface SettingItem {
   category: string;
   title: string;
-  /** Brief summary line shown when the setting card is collapsed.
-   *  When extractor doesn't supply it explicitly we synthesise from
-   *  the first update so older display code keeps working. */
+  /** 简介 — a one-line summary of what the setting is. Populated from
+   *  the extractor's `summary` field; falls back to the first update's
+   *  text when the extractor omits it. */
   content: string;
   /** Per-chapter history of how the setting evolves in the text.
    *  Populated by the new per-chunk extractor. */
@@ -2165,7 +2165,7 @@ export const SETTING_CATEGORIES: { key: string; label: string; color: string }[]
   { key: "geography",    label: "地理",     color: "var(--jade)" },
   { key: "social_rules", label: "社会规则", color: "var(--indigo)" },
   { key: "history",      label: "历史",     color: "var(--gold)" },
-  { key: "hard_rules",   label: "硬规则",   color: "#f472b6" },
+  { key: "hard_rules",   label: "世界观规则", color: "#f472b6" },
   { key: "worldview",    label: "世界观",   color: "var(--cyan)" },
   { key: "other",        label: "其他",     color: "var(--text-tertiary)" },
 ];

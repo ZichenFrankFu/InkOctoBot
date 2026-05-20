@@ -16,7 +16,7 @@ const BUILTIN_CATEGORIES: { key: string; label: string; icon: string }[] = [
   { key: "geography", label: "地理", icon: "\u2295" },
   { key: "social_rules", label: "社会规则/习俗", icon: "\u2261" },
   { key: "history", label: "历史", icon: "\u229E" },
-  { key: "hard_rules", label: "硬规则", icon: "\u2500" },
+  { key: "hard_rules", label: "世界观规则", icon: "\u2500" },
   { key: "other", label: "其他", icon: "\u25CB" },
 ];
 

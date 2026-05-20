@@ -59,6 +59,55 @@ interface ChunkPhase {
   committingSection?: Section;
 }
 
+/** Settings text must read as plain prose — no parentheses/brackets.
+ *  Mirrors the backend `_strip_brackets`: an opening bracket becomes a
+ *  comma separator, closing brackets are dropped. */
+function stripBrackets(text: string): string {
+  if (!text) return text;
+  const open = "（(【[｛{［〔";
+  const close = "）)】]｝}］〕";
+  const noSep = "，,、；;：: \t　";
+  let out = "";
+  for (const ch of text) {
+    if (open.includes(ch)) {
+      if (out && !noSep.includes(out[out.length - 1])) out += "，";
+    } else if (close.includes(ch)) {
+      continue;
+    } else {
+      out += ch;
+    }
+  }
+  return out.replace(/，{2,}/g, "，")
+            .replace(/，([。；！？，、])/g, "$1")
+            .replace(/^[，、\s]+|[，、\s]+$/g, "");
+}
+
+/** Coerce a pasted setting object into a SettingItem: map the new
+ *  `summary` 简介 field onto `content`, strip brackets everywhere. The
+ *  AI path is normalized server-side; this covers the paste path. */
+function normalizeSetting(s: any): SettingItem {
+  if (!s || typeof s !== "object") {
+    return { category: "other", title: "", content: "", updates: [] };
+  }
+  const updates = (Array.isArray(s.updates) ? s.updates : [])
+    .map((u: any) => ({
+      chapter: ((u && u.chapter) || "").toString(),
+      text: stripBrackets(((u && u.text) || "").toString()),
+    }))
+    .filter((u: { text: string }) => u.text);
+  const content =
+    stripBrackets(((s.summary || s.content) || "").toString())
+    || (updates[0]?.text || "");
+  return {
+    category: (s.category || "other").toString(),
+    title: stripBrackets((s.title || "").toString()),
+    content,
+    updates,
+    first_introduced_at: (s.first_introduced_at || "").toString(),
+    first_chapter: (s.first_chapter || "").toString(),
+  };
+}
+
 /** Lenient parser for a pasted unified web-LLM response. Strips
  *  <think>/code-fences, normalizes smart quotes, repairs unescaped
  *  inner quotes, finds the balanced object carrying events/characters. */
@@ -133,7 +182,7 @@ function parseUnifiedPaste(raw: string): {
         result: {
           events: Array.isArray(obj.events) ? obj.events : [],
           characters: Array.isArray(obj.characters) ? obj.characters : [],
-          settings: Array.isArray(obj.settings) ? obj.settings : [],
+          settings: Array.isArray(obj.settings) ? obj.settings.map(normalizeSetting) : [],
           style: (obj.style && typeof obj.style === "object") ? obj.style : {},
         },
       };
@@ -964,6 +1013,11 @@ function UnifiedResultPreview({
                   <span className="text-xs text-muted" style={{ marginLeft: 4 }}>
                     {s.updates?.length || 0} 条更新
                   </span>
+                  {s.content && (
+                    <div style={{ color: "var(--text-secondary)", marginTop: 1 }}>
+                      简介：{s.content}
+                    </div>
+                  )}
                   {(s.updates || []).map((u, ui) => (
                     <div key={ui} style={{ color: "var(--text-secondary)", marginTop: 1 }}>
                       {u.chapter && (

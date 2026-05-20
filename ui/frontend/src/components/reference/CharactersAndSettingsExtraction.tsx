@@ -103,7 +103,7 @@ const CATEGORY_LABEL_CN: Record<string, string> = {
   geography:    "地理",
   social_rules: "社会规则",
   history:      "历史背景",
-  hard_rules:   "硬规则",
+  hard_rules:   "世界观规则",
   worldview:    "世界观",
   other:        "其他",
 };
@@ -279,7 +279,9 @@ function SettingCard({ s, segNo, onChange, onDelete }: {
             {s.title || "(未命名)"}
           </span>
           <span className="text-xs text-muted">
-            {updates.length > 0 ? `${updates.length} 条记录` : (s.content ? "1 条简介" : "(空)")}
+            {[s.content ? "简介" : null,
+              updates.length > 0 ? `${updates.length} 条更新` : null]
+              .filter(Boolean).join(" · ") || "(空)"}
           </span>
           {s.first_chapter && (
             <span className="tag" style={{
@@ -344,8 +346,25 @@ function SettingCard({ s, segNo, onChange, onDelete }: {
               </div>
             </div>
           )}
-          {updates.length > 0 || editing ? (
+          {editing ? (
+            <div className="flex" style={{ gap: 6, marginBottom: 10, alignItems: "flex-start" }}>
+              <span className="text-xs text-muted" style={{ minWidth: 50, paddingTop: 4 }}>简介</span>
+              <textarea className="input"
+                        value={s.content || ""}
+                        placeholder="一句话简介这个设定是什么、有何作用"
+                        rows={2}
+                        onChange={e => onChange?.({ ...s, content: e.target.value })}
+                        style={{ fontSize: 12, padding: "3px 8px", flex: 1, resize: "vertical", lineHeight: 1.6 }} />
+            </div>
+          ) : (s.content ? (
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6,
+                          marginBottom: updates.length > 0 ? 10 : 0 }}>
+              {s.content}
+            </div>
+          ) : null)}
+          {(updates.length > 0 || editing) && (
             <div className="flex flex-col gap-4">
+              <span className="text-xs text-muted" style={{ fontWeight: 600 }}>更新章节</span>
               {updates.map((u, i) =>
                 editing ? (
                   <div key={i} className="flex" style={{ gap: 4, alignItems: "flex-start" }}>
@@ -400,10 +419,6 @@ function SettingCard({ s, segNo, onChange, onDelete }: {
                   + 添加一条更新
                 </button>
               )}
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.55 }}>
-              {s.content}
             </div>
           )}
         </div>

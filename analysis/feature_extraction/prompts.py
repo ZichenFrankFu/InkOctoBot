@@ -72,9 +72,10 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
   "settings": [
     {{
       "category": "power_system | factions | geography | social_rules | history | hard_rules | worldview | other",
-      "title": "概括性短标题（≤ 12 字，如「机械义肢」「18 号监狱」）",
-      "first_chapter": "本段里首次出现的章号，如「第 4 章」",
-      "updates": [{{"chapter": "第 N 章", "text": "本章关于此设定的新事实/扩展/反转（≤ 50 字）"}}]
+      "title": "概括性短标题，≤ 12 字，如 机械义肢、18 号监狱",
+      "summary": "该设定的一句话简介，≤ 50 字，讲清它是什么、有何作用，必填",
+      "first_chapter": "本段里首次出现的章号，如 第 4 章",
+      "updates": [{{"chapter": "第 N 章", "text": "本章关于此设定的新事实或扩展或反转，≤ 50 字"}}]
     }}
   ],
   "style": {{
@@ -85,7 +86,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
     "chapter_signals": [
       {{
         "chapter": "第 N 章（本段每一章都要有一条）",
-        "info_density": 0–1 浮点，本章信息密度（推进剧情/抛设定/铺垫的有效信息量，灌水越多越低）,
+        "info_density": 0–1 浮点，本章信息密度（推进剧情/抛设定/铺垫的有效信息量，灌水越多越低）；**务必拉开各章差距**，过渡/灌水章给 0.2-0.4，普通章 0.5-0.6，信息量大的关键章给 0.8-1.0，不要把所有章都挤在 0.5-0.7,
         "chapter_types": ["本章类型，从 日常/战斗/高潮/角色个人回/主线事件/支线事件/伏笔铺垫/收束/转折/其他 中选 1-2 个"],
         "summary": "本章一句话摘要（≤ 30 字）",
         "payoffs": [
@@ -104,14 +105,15 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 
 类别中文对照（用英文 key 输出）：
 - 事件 category：plot_main 主线  plot_side 支线  character 角色  setting 设定  conflict 冲突  revelation 揭示  foreshadow 伏笔  other 其他
-- 设定 category：power_system 力量体系  factions 势力组织  geography 地理  social_rules 社会规则  history 历史  hard_rules 硬规则  worldview 世界观  other 其他
+- 设定 category：power_system 力量体系  factions 势力组织  geography 地理  social_rules 社会规则  history 历史  hard_rules 世界观规则  worldview 世界观  other 其他
 
 要求：
 - 事件颗粒度为章节弧标题级别，每章 1-3 条最佳；不要写镜头级细节。
 - 事件的 `time_marker` 必须带日期锚点，不能只是「上午」「傍晚」「次日」。
 - 角色的 appearance/personality/experiences 至少给主要角色填写；次要角色可只填 experiences。
 - **personality 务必精简**：只有当本段对该角色性格有**重要揭示**时才新增一条；条目之间不得重复或近义；同一角色性格条目宁少勿滥。
-- 设定 `updates` 至少 1 条；最多 25 条设定。
+- 每条设定必须填写 `summary` 简介；`updates` 至少 1 条；最多 25 条设定。
+- 设定的 `title`、`summary`、`updates[].text` 一律使用纯文字陈述，禁止出现任何括号，包括 （）()【】[]｛｝ 等；需要补充说明时用逗号或破折号接着写。
 - `style.chapter_signals` **必须覆盖本段的每一章**（共 {n_chapters} 章），逐章给出信息密度 / 爽点 / 钩子；`pacing_profile` 三项之和约等于 1。
 - 平均句长、词汇丰富度、标点等纯统计特征由 NLP 离线计算，**不要**输出。
 - 某一类没有内容时返回空数组（events/characters/settings）或合理估计（style）。
@@ -263,11 +265,12 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
   "settings": [
     {{
       "category": "power_system | factions | geography | social_rules | history | hard_rules | worldview | other",
-      "title": "概括性短标题（≤ 12 字，例如「机械义肢」「18 号监狱」）",
-      "first_chapter": "本卷里首次出现的章号，如「第 4 章」（必填）",
-      "first_introduced_at": "首次出现的故事中时间（如「2022 年秋」），无则留空",
+      "title": "概括性短标题，≤ 12 字，例如 机械义肢、18 号监狱",
+      "summary": "该设定的一句话简介，≤ 50 字，讲清它是什么、有何作用，必填",
+      "first_chapter": "本卷里首次出现的章号，如 第 4 章，必填",
+      "first_introduced_at": "首次出现的故事中时间，如 2022 年秋，无则留空",
       "updates": [
-        {{"chapter": "第 N 章", "text": "本章里关于此设定的新事实/扩展/反转（≤ 50 字）"}}
+        {{"chapter": "第 N 章", "text": "本章里关于此设定的新事实或扩展或反转，≤ 50 字"}}
       ]
     }}
   ]
@@ -275,11 +278,12 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 
 类别中文对照（请用英文 key 输出）：
 - power_system 力量体系   factions 势力组织   geography 地理   social_rules 社会规则
-- history 历史背景        hard_rules 硬规则   worldview 世界观  other 其他
+- history 历史背景        hard_rules 世界观规则   worldview 世界观  other 其他
 
 要求：
-- `updates` 至少 1 条；若本段只是首次提及，把首次出现的描述作为第 1 条。
+- 每条设定必须填写 `summary` 简介；`updates` 至少 1 条，若本段只是首次提及，把首次出现的描述作为第 1 条。
 - 同一设定在本段中多次扩展时按章序排列；不要把无关事实塞进 `updates`。
+- 设定的 `title`、`summary`、`updates[].text` 一律使用纯文字陈述，禁止出现任何括号，包括 （）()【】[]｛｝ 等；需要补充说明时用逗号或破折号接着写。
 - 最多 25 条设定。
 
 本段正文（约 {n_chars} 字）：

@@ -424,7 +424,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       } else {
         const categoryNames: Record<string, string> = {
           power_system: "力量体系", factions: "势力", geography: "地理",
-          social_rules: "社会规则", history: "历史", hard_rules: "硬规则", other: "其他",
+          social_rules: "社会规则", history: "历史", hard_rules: "世界观规则", other: "其他",
         };
         // Group by category
         const grouped: Record<string, any[]> = {};

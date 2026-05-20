@@ -482,6 +482,31 @@ _SETTING_CATS = frozenset({
     "history", "hard_rules", "worldview", "other",
 })
 
+# Settings text must read as plain prose — the user explicitly asked for
+# no parentheses/brackets in any 设定 field. The prompt forbids them, but
+# we strip defensively too: an opening bracket becomes a comma so
+# `义肢（机械的）` reads `义肢，机械的`; closing brackets are dropped.
+_BRACKET_OPEN = "（(【[｛{［〔"
+_BRACKET_CLOSE = "）)】]｝}］〕"
+_NO_SEP_BEFORE = "，,、；;：: \t　"
+
+
+def _strip_brackets(text: str) -> str:
+    if not text:
+        return text
+    out: list[str] = []
+    for ch in text:
+        if ch in _BRACKET_OPEN:
+            if out and out[-1] not in _NO_SEP_BEFORE:
+                out.append("，")
+        elif ch in _BRACKET_CLOSE:
+            continue
+        else:
+            out.append(ch)
+    s = re.sub(r"，{2,}", "，", "".join(out))
+    s = re.sub(r"，([。；！？，、])", r"\1", s)
+    return s.strip("，、 \t　")
+
 
 def _normalize_unified_style(raw: Any, n_chars: int, n_chapters: int) -> dict:
     """Coerce the `style` block of a unified extraction into the canonical
@@ -630,9 +655,15 @@ async def ai_extract_all(chapters: list[dict], router: Any,
     for it in (obj.get("settings") or []):
         if not isinstance(it, dict):
             continue
-        title = (it.get("title") or "").strip()
+        title = _strip_brackets((it.get("title") or "").strip())
         updates = _norm_tagged_list(it.get("updates"), max_items=30, max_text=120)
-        content = (it.get("content") or "").strip()
+        for u in updates:
+            u["text"] = _strip_brackets(u["text"])
+        updates = [u for u in updates if u["text"]]
+        # `summary` is the new 简介 field; older responses may still send
+        # `content`. Either way it lands in the canonical `content` slot.
+        content = _strip_brackets(
+            (it.get("summary") or it.get("content") or "").strip())
         if not content and updates:
             content = updates[0]["text"]
         if not title and not content and not updates:
@@ -731,13 +762,16 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
                   "history", "hard_rules", "worldview", "other"}
     out: list[dict] = []
     for it in items:
-        title = (it.get("title") or "").strip()
+        title = _strip_brackets((it.get("title") or "").strip())
         updates = _norm_tagged_list(it.get("updates"), max_items=30, max_text=120)
-        content = (it.get("content") or "").strip()
+        for u in updates:
+            u["text"] = _strip_brackets(u["text"])
+        updates = [u for u in updates if u["text"]]
+        # `summary` is the 简介 field; fall back to the first update so
+        # older display code that hasn't been updated still shows something.
+        content = _strip_brackets(
+            (it.get("summary") or it.get("content") or "").strip())
         if not content and updates:
-            # Synthesize legacy `content` from the first update so older
-            # display code that hasn't been updated to read `updates`
-            # still shows something.
             content = updates[0]["text"]
         if not title and not content and not updates:
             continue
