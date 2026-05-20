@@ -91,6 +91,32 @@ function leniencyParse<T>(
     return null;
   };
 
+  // Repair pass for the common breakage where inner string quotes get
+  // unescaped by a clipboard / web UI (Claude.ai's copy button strips
+  // `\` before `"`). A `"` is treated as a real string terminator only
+  // when the next non-whitespace char is `,`, `}`, `]`, `:`, or EOF.
+  const repairUnescapedQuotes = (input: string): string => {
+    const out: string[] = [];
+    let inString = false, escape = false;
+    for (let i = 0; i < input.length; i++) {
+      const c = input[i];
+      if (escape) { out.push(c); escape = false; continue; }
+      if (c === "\\") { out.push(c); escape = true; continue; }
+      if (c !== '"') { out.push(c); continue; }
+      if (!inString) { out.push(c); inString = true; continue; }
+      let j = i + 1;
+      while (j < input.length && /\s/.test(input[j])) j++;
+      const nxt = j < input.length ? input[j] : "";
+      if (nxt === "" || nxt === "," || nxt === "}" || nxt === "]" || nxt === ":") {
+        out.push(c);
+        inString = false;
+      } else {
+        out.push('\\"');
+      }
+    }
+    return out.join("");
+  };
+
   const extract = (parsed: any): T[] => {
     if (Array.isArray(parsed)) {
       // Array of items, or array of {[itemsKey]: [...]} wrappers
@@ -111,6 +137,20 @@ function leniencyParse<T>(
   const candidates: T[][] = [];
   const tried = new Set<number>();
   let lastErr = "";
+  const tryParse = (ext: string): T[] | null => {
+    try {
+      const arr = extract(JSON.parse(ext));
+      if (arr.length > 0) return arr;
+    } catch (e: any) { lastErr = e?.message || String(e); }
+    const repaired = repairUnescapedQuotes(ext);
+    if (repaired !== ext) {
+      try {
+        const arr = extract(JSON.parse(repaired));
+        if (arr.length > 0) return arr;
+      } catch (e: any) { lastErr = e?.message || String(e); }
+    }
+    return null;
+  };
   const wrapperPattern = new RegExp(`\\{\\s*"${itemsKey}"\\s*:`, "g");
   let m: RegExpExecArray | null;
   while ((m = wrapperPattern.exec(s)) !== null) {
@@ -118,11 +158,8 @@ function leniencyParse<T>(
     tried.add(m.index);
     const ext = balancedExtract(m.index);
     if (!ext) continue;
-    try {
-      const v = JSON.parse(ext);
-      const arr = extract(v);
-      if (arr.length > 0) candidates.push(arr);
-    } catch (e: any) { lastErr = e?.message || String(e); }
+    const arr = tryParse(ext);
+    if (arr) candidates.push(arr);
   }
   // Fallback: try every { or [ position
   if (candidates.length === 0) {
@@ -132,11 +169,8 @@ function leniencyParse<T>(
       tried.add(i);
       const ext = balancedExtract(i);
       if (!ext) continue;
-      try {
-        const v = JSON.parse(ext);
-        const arr = extract(v);
-        if (arr.length > 0) candidates.push(arr);
-      } catch (e: any) { lastErr = e?.message || String(e); }
+      const arr = tryParse(ext);
+      if (arr) candidates.push(arr);
     }
   }
   if (candidates.length === 0) {

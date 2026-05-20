@@ -444,6 +444,56 @@ export default function PlotOutlinePanel({
       return null;
     };
 
+    // Some web UIs (notably Claude.ai's copy button) drop the backslash
+    // from \" when copying, leaving inner string quotes unescaped. That
+    // produces JSON like   "description":"...喊出"前兵进一"主动..."   which
+    // JSON.parse rejects mid-value. This pass re-escapes inner quotes:
+    // walks char-by-char, and treats a `"` as a real string terminator
+    // ONLY if the next non-whitespace char is `,`, `}`, `]`, `:`, or EOF.
+    // Otherwise it's an inner quote and we escape it.
+    const repairUnescapedQuotes = (input: string): string => {
+      const out: string[] = [];
+      let inString = false;
+      let escape = false;
+      for (let i = 0; i < input.length; i++) {
+        const c = input[i];
+        if (escape) { out.push(c); escape = false; continue; }
+        if (c === "\\") { out.push(c); escape = true; continue; }
+        if (c !== '"') { out.push(c); continue; }
+        if (!inString) { out.push(c); inString = true; continue; }
+        let j = i + 1;
+        while (j < input.length && /\s/.test(input[j])) j++;
+        const nxt = j < input.length ? input[j] : "";
+        if (nxt === "" || nxt === "," || nxt === "}" || nxt === "]" || nxt === ":") {
+          out.push(c);
+          inString = false;
+        } else {
+          out.push('\\"');
+        }
+      }
+      return out.join("");
+    };
+
+    // Try standard parse, then a repair-pass parse as a fallback.
+    const tryParse = (ext: string): any[] | null => {
+      try {
+        const events = eventsFromParsed(JSON.parse(ext));
+        if (events.length > 0) return events;
+      } catch (e: any) {
+        lastErrorMsg = e?.message || String(e);
+      }
+      const repaired = repairUnescapedQuotes(ext);
+      if (repaired !== ext) {
+        try {
+          const events = eventsFromParsed(JSON.parse(repaired));
+          if (events.length > 0) return events;
+        } catch (e: any) {
+          lastErrorMsg = e?.message || String(e);
+        }
+      }
+      return null;
+    };
+
     const eventsFromParsed = (parsed: any): any[] => {
       if (Array.isArray(parsed)) {
         // Either a bare events array, or an array of {events: [...]} chunks.
@@ -482,13 +532,8 @@ export default function PlotOutlinePanel({
         tried.add(m.index);
         const extracted = balancedExtract(m.index);
         if (!extracted) continue;
-        try {
-          const parsed = JSON.parse(extracted);
-          const events = eventsFromParsed(parsed);
-          if (events.length > 0) candidates.push(events);
-        } catch (e: any) {
-          lastErrorMsg = e?.message || String(e);
-        }
+        const events = tryParse(extracted);
+        if (events) candidates.push(events);
       }
     }
 
@@ -501,13 +546,8 @@ export default function PlotOutlinePanel({
         tried.add(i);
         const extracted = balancedExtract(i);
         if (!extracted) continue;
-        try {
-          const parsed = JSON.parse(extracted);
-          const events = eventsFromParsed(parsed);
-          if (events.length > 0) candidates.push(events);
-        } catch (e: any) {
-          lastErrorMsg = e?.message || String(e);
-        }
+        const events = tryParse(extracted);
+        if (events) candidates.push(events);
       }
     }
 
