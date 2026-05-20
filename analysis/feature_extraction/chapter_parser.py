@@ -1486,6 +1486,12 @@ def replace_chapter_content(text: str, chapters: list[dict],
     return "\n\n".join(p for p in parts if p)
 
 
+# Story-dialogue signal: 说道 (and 道/问道/喊道 variants) or a CJK /
+# full-width double-quote pair. A paragraph matching this is narrative
+# dialogue, not an author aside.
+_DIALOGUE_RE = re.compile(r'说道|[“”「」『』]')
+
+
 def detect_aside_paragraphs(chapters: list[dict],
                               max_para_chars: int = 500,
                               extra_keywords: list[str] | None = None) -> list[dict]:
@@ -1542,6 +1548,11 @@ def detect_aside_paragraphs(chapters: list[dict],
                 continue
             # Skip long paragraphs — narrative, not asides.
             if len(ps) > max_para_chars:
+                continue
+            # A paragraph carrying story dialogue (「说道」 / quoted
+            # speech) is almost certainly narrative, NOT an author
+            # aside — author 题外话 (求月票 / PS) never quote characters.
+            if _DIALOGUE_RE.search(ps):
                 continue
             hits = [kw for kw in keywords if kw in ps]
             # An "after-fence" paragraph is an aside candidate only when

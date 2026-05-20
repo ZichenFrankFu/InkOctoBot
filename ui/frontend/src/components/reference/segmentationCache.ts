@@ -25,6 +25,9 @@ import { apiGet } from "../../api/client";
 export interface SegmentInfo {
   index: number;
   title: string;
+  /** Volume ordinal (第N卷 / 上卷 / 卷一) — stored separately from the
+   *  volume name so the UI can render them as two tags. */
+  volume_no?: string;
   start_chapter: number;
   end_chapter: number;
   chapter_count?: number;

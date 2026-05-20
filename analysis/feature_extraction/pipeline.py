@@ -405,6 +405,7 @@ class FeatureExtractionPipeline:
                         cleaned.append({
                             "index": i,
                             "title": (seg.get("title") or f"第 {sc}–{ec} 章").strip(),
+                            "volume_no": (seg.get("volume_no") or "").strip() or f"第 {i + 1} 卷",
                             "start_chapter": sc,
                             "end_chapter": ec,
                             "chapter_count": ec - sc + 1,
@@ -638,9 +639,13 @@ class FeatureExtractionPipeline:
             else:
                 ec = max(ec, sc)
             title = str(seg.get("title") or f"第 {sc}–{ec} 章").strip()
+            # 卷号 (第N卷) is stored separately from the volume name so
+            # the UI can show them as two tags. Defaults to 第(i+1)卷.
+            volume_no = str(seg.get("volume_no") or "").strip() or f"第 {i + 1} 卷"
             cleaned.append({
                 "index": i,
                 "title": title,
+                "volume_no": volume_no,
                 "start_chapter": sc,
                 "end_chapter": ec,
             })

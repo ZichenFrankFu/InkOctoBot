@@ -87,6 +87,8 @@ interface PreprocessStatus {
 interface SegmentInfo {
   index: number;
   title: string;
+  /** Volume ordinal (第N卷) — stored separately from the volume name. */
+  volume_no?: string;
   start_chapter: number;
   end_chapter: number;
   chapter_count?: number;
@@ -200,7 +202,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [starting, setStarting] = useState(false);
   // Volume plan editor (moved here from PlotOutlinePanel)
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
-  const [planDraft, setPlanDraft] = useState<{ title: string; start_chapter: number; end_chapter: number }[] | null>(null);
+  const [planDraft, setPlanDraft] = useState<VolumeRow[] | null>(null);
   const [planSaving, setPlanSaving] = useState(false);
   // AI-driven volume detection state (separate from the per-segment
   // AI extraction state — this one targets the volume-boundary detector).
@@ -1006,9 +1008,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     if (!plan) return;
     if (plan.segments.length === 0) {
       const total = plan.total_chapters || 1;
-      setPlanDraft([{ title: `第 1–${total} 章`, start_chapter: 1, end_chapter: total }]);
+      setPlanDraft([{ volume_no: "第 1 卷", title: `第 1–${total} 章`, start_chapter: 1, end_chapter: total }]);
     } else {
-      setPlanDraft(plan.segments.map(s => ({
+      setPlanDraft(plan.segments.map((s, i) => ({
+        volume_no: s.volume_no || `第 ${i + 1} 卷`,
         title: s.title || `第 ${s.start_chapter}–${s.end_chapter} 章`,
         start_chapter: s.start_chapter,
         end_chapter: s.end_chapter,
@@ -1039,7 +1042,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         toast(sug.warning || "自动检测未识别到可分卷的结构，可复制 prompt 手动尝试", "info");
         return;
       }
-      setPlanDraft(sug.segments.map(s => ({
+      setPlanDraft(sug.segments.map((s, i) => ({
+        volume_no: s.volume_no || `第 ${i + 1} 卷`,
         title: s.title || `第 ${s.start_chapter}–${s.end_chapter} 章`,
         start_chapter: s.start_chapter,
         end_chapter: s.end_chapter,
@@ -1096,6 +1100,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     const newEnd = total > 0 ? Math.min(total, newStart) : newStart;
     const next = [...planDraft];
     next.splice(afterIdx + 1, 0, {
+      volume_no: `第 ${afterIdx + 2} 卷`,
       title: `第 ${newStart}–${newEnd} 章`,
       start_chapter: newStart,
       end_chapter: newEnd,
@@ -1110,7 +1115,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
 
   const savePlan = async () => {
     if (!planDraft) return;
-    const cleaned = planDraft.map(s => ({
+    const cleaned = planDraft.map((s, i) => ({
+      volume_no: (s.volume_no || "").trim() || `第 ${i + 1} 卷`,
       title: (s.title || "").trim(),
       start_chapter: Math.max(1, Math.floor(s.start_chapter || 1)),
       end_chapter: Math.max(1, Math.floor(s.end_chapter || 1)),
@@ -1147,6 +1153,58 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   };
 
   const cancelPlanEdit = () => setPlanDraft(null);
+
+  /** Export the committed (cleaned) full text. Opens a native "save
+   *  as" dialog via the File System Access API when available, so the
+   *  user picks the destination; falls back to a normal download. */
+  const exportCleanedText = async () => {
+    try {
+      const resp = await fetch(
+        `/api/references/works/${refId}/preprocess/export_text`,
+      );
+      if (!resp.ok) {
+        toast((await resp.text().catch(() => "")) || "导出失败", "error");
+        return;
+      }
+      const blob = await resp.blob();
+      let filename = "已清理全文.txt";
+      const cd = resp.headers.get("Content-Disposition") || "";
+      const m = cd.match(/filename\*=UTF-8''([^;]+)/i);
+      if (m) {
+        try { filename = decodeURIComponent(m[1]); } catch { /* keep default */ }
+      }
+      const picker = (window as any).showSaveFilePicker;
+      if (typeof picker === "function") {
+        let handle: any;
+        try {
+          handle = await picker.call(window, {
+            suggestedName: filename,
+            types: [{ description: "文本文件", accept: { "text/plain": [".txt"] } }],
+          });
+        } catch (e: any) {
+          if (e?.name === "AbortError") return;  // user cancelled the dialog
+          throw e;
+        }
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        toast("已导出全文", "success");
+      } else {
+        // Fallback for browsers without the save-picker API.
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast("已开始下载全文", "success");
+      }
+    } catch (e: any) {
+      toast(e?.message || "导出失败", "error");
+    }
+  };
 
   // ── Render ──
 
@@ -1875,15 +1933,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
             <button className="btn"
                     style={{ fontSize: 11, padding: "4px 12px" }}
-                    onClick={() => {
-                      const a = document.createElement("a");
-                      a.href = `/api/references/works/${refId}/preprocess/export_text`;
-                      a.download = "";
-                      document.body.appendChild(a);
-                      a.click();
-                      a.remove();
-                    }}
-                    title="把已清理的全部章节拼接成一个 txt 文件下载">
+                    onClick={() => { void exportCleanedText(); }}
+                    title="把已清理的全部章节拼接成一个 txt，弹出对话框选择保存位置">
               导出已清理全文（txt）
             </button>
           </div>
@@ -2826,7 +2877,7 @@ function AiPromptModal({ prompt, onClose, onCopy }: {
   );
 }
 
-type VolumeRow = { title: string; start_chapter: number; end_chapter: number };
+type VolumeRow = { volume_no: string; title: string; start_chapter: number; end_chapter: number };
 
 /** Parse a web-LLM volume-detection response into plan rows. Tolerates
  *  <think> blocks, ```json fences, surrounding prose, and either
@@ -2875,6 +2926,7 @@ function parseVolumesJson(raw: string, total: number): VolumeRow[] | null {
     if (!Number.isFinite(sc) || !Number.isFinite(ec)) continue;
     const cap = total > 0 ? total : Math.max(sc, ec);
     rows.push({
+      volume_no: String(v.volume_no || v.no || "").trim() || `第 ${rows.length + 1} 卷`,
       title: String(v.title || v.name || "").trim() || `第 ${sc}–${ec} 章`,
       start_chapter: Math.max(1, Math.min(sc, cap)),
       end_chapter: Math.max(1, Math.min(ec, cap)),
@@ -2930,7 +2982,7 @@ function VolumePasteBox({ totalChapters, onParsed }: {
 
 interface VolumeEditorProps {
   plan: SegmentPlan | null;
-  planDraft: { title: string; start_chapter: number; end_chapter: number }[] | null;
+  planDraft: VolumeRow[] | null;
   planSaving: boolean;
   aiDetecting: boolean;
   startPlanEdit: () => void;
@@ -2940,7 +2992,7 @@ interface VolumeEditorProps {
   removePlanRow: (idx: number) => void;
   savePlan: () => Promise<void>;
   cancelPlanEdit: () => void;
-  setPlanDraft: (d: { title: string; start_chapter: number; end_chapter: number }[] | null) => void;
+  setPlanDraft: (d: VolumeRow[] | null) => void;
 }
 
 function VolumeEditor(p: VolumeEditorProps) {
@@ -3053,11 +3105,23 @@ function VolumeEditor(p: VolumeEditorProps) {
                   padding: 6, border: "1px solid var(--border)", borderRadius: 4,
                 }}>
                   <span className="text-xs text-muted" style={{
-                    minWidth: 30, textAlign: "center", fontFamily: "var(--font-mono)",
+                    minWidth: 24, textAlign: "center", fontFamily: "var(--font-mono)",
                   }}>#{i + 1}</span>
                   <input
                     className="input"
-                    placeholder='故事时间（如 "1954 年"，无则填 "第 1–8 章"）'
+                    placeholder="卷号"
+                    value={s.volume_no}
+                    onChange={e => {
+                      const next = [...planDraft];
+                      next[i] = { ...s, volume_no: e.target.value };
+                      p.setPlanDraft(next);
+                    }}
+                    style={{ width: 90, fontSize: 12 }}
+                    title="卷号（如「第一卷」「上卷」）"
+                  />
+                  <input
+                    className="input"
+                    placeholder="卷名（如「风起云涌」，可留空）"
                     value={s.title}
                     onChange={e => {
                       const next = [...planDraft];
@@ -3065,6 +3129,7 @@ function VolumeEditor(p: VolumeEditorProps) {
                       p.setPlanDraft(next);
                     }}
                     style={{ flex: 1, fontSize: 12 }}
+                    title="卷名"
                   />
                   <input
                     className="input" type="number" min={1} max={plan.total_chapters || undefined}
@@ -3132,10 +3197,19 @@ function VolumeEditor(p: VolumeEditorProps) {
             <div key={s.index} style={{
               padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 4,
             }}>
-              <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)" }}>
-                #{s.index + 1} · {s.title}
+              <div className="flex items-center" style={{ gap: 6, flexWrap: "wrap" }}>
+                <span className="tag" style={{
+                  fontSize: 10, padding: "1px 7px",
+                  color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 3,
+                }}>{s.volume_no || `第 ${s.index + 1} 卷`}</span>
+                {s.title && (
+                  <span className="tag" style={{
+                    fontSize: 10, padding: "1px 7px",
+                    color: "var(--text-secondary)", border: "1px solid var(--border)", borderRadius: 3,
+                  }}>{s.title}</span>
+                )}
               </div>
-              <div className="text-xs text-muted">
+              <div className="text-xs text-muted" style={{ marginTop: 3 }}>
                 第 {s.start_chapter}–{s.end_chapter} 章 · 共 {s.chapter_count ?? (s.end_chapter - s.start_chapter + 1)} 章 · {fmtChars(s.char_count)}
               </div>
             </div>
