@@ -452,6 +452,13 @@ export default function ReferenceLibraryPage() {
                     setWorks(prev => prev.map(x => x.ref_id === updated.ref_id ? updated : x));
                   } catch (e: any) { toast(e.message || "保存失败", "error"); }
                 }}
+                onUpdateChapterComments={async (comments) => {
+                  try {
+                    const updated = await apiPut<ReferenceWork>(`/api/references/works/${sel.ref_id}`, { chapter_comments: comments });
+                    setSel(updated);
+                    setWorks(prev => prev.map(x => x.ref_id === updated.ref_id ? updated : x));
+                  } catch (e: any) { toast(e.message || "保存失败", "error"); }
+                }}
                 onSaveAnalysisField={saveAnalysisField}
                 onAfterMerge={async () => {
                   try {
@@ -663,21 +670,123 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   not_applicable: { label: "手动维护", color: "var(--text-tertiary)" },
 };
 
+interface ChapterComment { chapter: string; text: string; }
+
+const _chComNum = (s: string): number => {
+  const m = (s || "").match(/\d+/);
+  return m ? parseInt(m[0], 10) : Number.MAX_SAFE_INTEGER;
+};
+
+/** Per-chapter reader notes for the 为什么喜欢 card. View mode lists
+ *  comments sorted by chapter; 「编辑」opens inline add / edit / delete. */
+function ChapterCommentsEditor({ value, onSave }: {
+  value: ChapterComment[];
+  onSave: (next: ChapterComment[]) => Promise<void> | void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<ChapterComment[]>(value);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { if (!editing) setDraft(value); }, [value, editing]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const clean = draft
+        .map(c => ({ chapter: (c.chapter || "").trim(), text: (c.text || "").trim() }))
+        .filter(c => c.chapter || c.text);
+      await onSave(clean);
+      setEditing(false);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+        <div className="label" style={{ color: "var(--accent)", margin: 0 }}>章节笔记</div>
+        {!editing && (
+          <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }}
+            onClick={() => { setDraft(value); setEditing(true); }}>编辑</button>
+        )}
+      </div>
+      {editing ? (
+        <div className="flex flex-col gap-6">
+          {draft.map((c, i) => (
+            <div key={i} className="flex" style={{ gap: 6, alignItems: "flex-start" }}>
+              <div className="flex items-center" style={{ gap: 3, flexShrink: 0, paddingTop: 4 }}>
+                <span className="text-xs text-muted">第</span>
+                <input className="input" value={c.chapter} placeholder="N"
+                  onChange={e => { const d = draft.slice(); d[i] = { ...d[i], chapter: e.target.value }; setDraft(d); }}
+                  style={{ width: 46, fontSize: 12, padding: "3px 4px", textAlign: "center", fontFamily: "var(--font-mono)" }} />
+                <span className="text-xs text-muted">章</span>
+              </div>
+              <textarea className="input" value={c.text} placeholder="对这一章的想法…" rows={2}
+                onChange={e => { const d = draft.slice(); d[i] = { ...d[i], text: e.target.value }; setDraft(d); }}
+                style={{ flex: 1, fontSize: 12, padding: "3px 8px", resize: "vertical", lineHeight: 1.6 }} />
+              <button className="btn-ghost" title="删除"
+                onClick={() => { const d = draft.slice(); d.splice(i, 1); setDraft(d); }}
+                style={{ fontSize: 13, padding: "2px 7px", color: "var(--error)" }}>×</button>
+            </div>
+          ))}
+          <button className="btn-ghost"
+            onClick={() => setDraft([...draft, { chapter: "", text: "" }])}
+            style={{ fontSize: 11, padding: "3px 8px", alignSelf: "flex-start", color: "var(--accent)" }}>
+            + 添加章节笔记
+          </button>
+          <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
+            <button className="btn" onClick={() => { setEditing(false); setDraft(value); }} disabled={saving}>取消</button>
+            <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "保存中..." : "保存"}</button>
+          </div>
+        </div>
+      ) : value.length === 0 ? (
+        <div className="text-xs text-muted" style={{ fontStyle: "italic" }}>
+          暂无章节笔记。点击「编辑」为具体章节留下评论。
+        </div>
+      ) : (
+        <div className="flex flex-col gap-6">
+          {[...value].sort((a, b) => _chComNum(a.chapter) - _chComNum(b.chapter)).map((c, i) => (
+            <div key={i} className="flex" style={{ gap: 8, alignItems: "flex-start" }}>
+              <span className="tag" style={{
+                fontSize: 10, padding: "1px 6px", flexShrink: 0, marginTop: 2,
+                color: "var(--gold)", border: "1px solid var(--gold)",
+                fontFamily: "var(--font-mono)",
+              }}>{c.chapter ? `第 ${c.chapter} 章` : "—"}</span>
+              <span className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                {c.text}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WorkDetail({
   sel, onUpload, onDelete,
-  onUpdateRating, onUpdateWhy, onSaveAnalysisField, onAfterMerge,
+  onUpdateRating, onUpdateWhy, onUpdateChapterComments,
+  onSaveAnalysisField, onAfterMerge,
 }: {
   sel: ReferenceWork;
   onUpload: () => void;
   onDelete: () => void;
   onUpdateRating: (rating: number) => void;
   onUpdateWhy: (text: string) => Promise<void> | void;
+  onUpdateChapterComments: (comments: ChapterComment[]) => Promise<void> | void;
   onSaveAnalysisField: (fieldKey: string, data: any) => Promise<void> | void;
   onAfterMerge: () => Promise<void> | void;
 }) {
   const [tab, setTab] = useState<WorkDetailTab>("files");
   const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
   const [editingWhy, setEditingWhy] = useState(false);
+  const chapterComments = useMemo<ChapterComment[]>(() => {
+    const arr = pj(sel.chapter_comments_json);
+    return Array.isArray(arr)
+      ? arr.map((c: any) => ({
+          chapter: String(c?.chapter ?? "").trim(),
+          text: String(c?.text ?? ""),
+        }))
+      : [];
+  }, [sel.chapter_comments_json]);
   // 文本特征 tab: 分段视图 vs 全书视图.
   const [featuresView, setFeaturesView] = useState<"segment" | "book">("book");
   // Shared segmentation — powers the 分段视图 of the browse tabs. We
@@ -707,29 +816,23 @@ function WorkDetail({
     return out;
   }, [segmentPlan, segChunks]);
 
-  // Feature-extraction progress. Mirrors the 特征提取 tab: each chunk
-  // has four sections (events / characters / settings / style) and is
-  // "done" only when all four are committed (style_fingerprint_json
-  // ._chunks[key].done). The bar tracks committed sections so it moves
-  // in step with the per-chunk「已入库 N/4」shown in the 特征提取 tab.
+  // Feature-extraction progress, measured in CHAPTERS. A chunk's
+  // chapters count as processed once all four sections (events /
+  // characters / settings / style) are committed — the same "fully
+  // done" notion the 特征提取 tab marks with a green chunk border.
   const extractionProgress = useMemo(() => {
     const ledger = ((pj(sel.style_fingerprint_json) as any)?._chunks) || {};
     const SECTIONS = ["events", "characters", "settings", "style"];
-    let doneSections = 0;
-    let doneChunks = 0;
+    const total = segmentPlan?.total_chapters || 0;
+    let doneChapters = 0;
     for (const ck of chunkList) {
       const done = ledger[ck.key]?.done || {};
-      const n = SECTIONS.filter(s => done[s]).length;
-      doneSections += n;
-      if (n === SECTIONS.length) doneChunks += 1;
+      if (SECTIONS.every(s => done[s])) {
+        doneChapters += Math.max(0, ck.endChapter - ck.startChapter + 1);
+      }
     }
-    return {
-      doneSections,
-      totalSections: chunkList.length * SECTIONS.length,
-      doneChunks,
-      totalChunks: chunkList.length,
-    };
-  }, [sel.style_fingerprint_json, chunkList]);
+    return { doneChapters, total };
+  }, [sel.style_fingerprint_json, segmentPlan, chunkList]);
 
   useEffect(() => {
     setWhyDraft(sel.user_why_i_like || "");
@@ -880,26 +983,21 @@ function WorkDetail({
                 <Stat label="设定" value={settingsCount} />
                 <Stat label="评分" value={sel.user_rating ? stars(sel.user_rating) : "—"} />
               </div>
-              {/* Feature-extraction progress bar — section-based, in
-                * step with the 特征提取 tab's per-chunk「已入库 N/4」. */}
-              {extractionProgress.totalChunks > 0 && (
+              {/* Feature-extraction progress bar — measured in chapters. */}
+              {extractionProgress.total > 0 && (
                 <div style={{ marginTop: 14 }}>
                   <div className="flex items-center justify-between" style={{ marginBottom: 5 }}>
                     <span className="text-xs text-muted">特征提取进度</span>
                     <span className="text-xs" style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
-                      {extractionProgress.doneChunks}/{extractionProgress.totalChunks} 分段已入库
-                      {` · ${Math.round(
-                        (extractionProgress.doneSections /
-                          Math.max(1, extractionProgress.totalSections)) * 100,
-                      )}%`}
+                      已处理 {extractionProgress.doneChapters} / {extractionProgress.total} 章
                     </span>
                   </div>
                   <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
                     <div style={{
                       height: "100%",
                       width: `${Math.min(100,
-                        (extractionProgress.doneSections /
-                          Math.max(1, extractionProgress.totalSections)) * 100)}%`,
+                        (extractionProgress.doneChapters /
+                          Math.max(1, extractionProgress.total)) * 100)}%`,
                       background: "var(--jade)", borderRadius: 4, transition: "width 0.3s",
                     }} />
                   </div>
@@ -948,6 +1046,9 @@ function WorkDetail({
                   暂无笔记。点击「编辑」记录你为什么喜欢这部作品。
                 </div>
               )}
+              <div style={{ borderTop: "1px dashed var(--border)", marginTop: 14, paddingTop: 12 }}>
+                <ChapterCommentsEditor value={chapterComments} onSave={onUpdateChapterComments} />
+              </div>
             </div>
           </div>
 

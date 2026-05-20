@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import type { ReferenceWork } from "../api/types";
+import InspirationLibrary from "../components/InspirationLibrary";
 
 interface SearchHit {
   id: string;
@@ -57,7 +58,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
   const { toast } = useToast();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [progressByRef, setProgressByRef] = useState<Record<string, IndexProgressRow[]>>({});
-  const [activeTab, setActiveTab] = useState<"search" | "index">("search");
+  const [activeTab, setActiveTab] = useState<"search" | "library" | "index">("search");
 
   // Search state
   const [q, setQ] = useState("");
@@ -238,8 +239,9 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
       {/* Tabs */}
       <div className="flex" style={{ marginBottom: 12, gap: 4, borderBottom: "1px solid var(--border)" }}>
         {([
-          { key: "search" as const, label: "灵感搜索" },
-          { key: "index"  as const, label: `索引管理 · ${works.length} 部作品` },
+          { key: "search"  as const, label: "灵感搜索" },
+          { key: "library" as const, label: "灵感库" },
+          { key: "index"   as const, label: `索引管理 · ${works.length} 部作品` },
         ]).map(t => (
           <button
             key={t.key}
@@ -344,6 +346,8 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
           )}
         </>
       )}
+
+      {activeTab === "library" && <InspirationLibrary />}
 
       {activeTab === "index" && (
         <>

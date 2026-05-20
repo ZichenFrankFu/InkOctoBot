@@ -60,6 +60,8 @@ class WorkUpdate(BaseModel):
     learning_dimensions: Optional[list[str]] = None
     tags: Optional[list[str]] = None
     serial_status: Optional[str] = None
+    # Per-chapter reader notes — list of {chapter, text}.
+    chapter_comments: Optional[list[Any]] = None
 
 
 @router.get("/works")
@@ -505,6 +507,9 @@ def update_work(ref_id: str, body: WorkUpdate):
             body.learning_dimensions, ensure_ascii=False)
     if body.tags is not None:
         fields["tags_json"] = json.dumps(body.tags, ensure_ascii=False)
+    if body.chapter_comments is not None:
+        fields["chapter_comments_json"] = json.dumps(
+            body.chapter_comments, ensure_ascii=False)
     w = _db().update_work(ref_id, **fields)
     if not w:
         raise HTTPException(404, "not found")
@@ -4246,3 +4251,77 @@ async def search_works(
         return {"q": q, "k": k, "levels": level_list, "hits": hits}
     except Exception as e:
         raise HTTPException(500, f"搜索失败：{e}")
+
+
+# ═══ Inspiration library ═════════════════════════════════
+# A personal store of free-text idea snippets (scenes / plot devices /
+# character designs / …) with lexical similarity search. Independent of
+# any reference work — see rag/inspiration_search.py for the ranking.
+
+
+class InspirationCreate(BaseModel):
+    category: str = "other"
+    title: str = ""
+    content: str
+
+
+class InspirationUpdate(BaseModel):
+    category: Optional[str] = None
+    title: Optional[str] = None
+    content: Optional[str] = None
+
+
+@router.get("/inspirations")
+def list_inspirations():
+    """All inspirations, newest-updated first."""
+    return {"items": _db().list_inspirations()}
+
+
+@router.get("/inspirations/search")
+def search_inspirations(
+    q: str = Query(..., min_length=1, description="查询文本"),
+    k: int = Query(20, ge=1, le=100),
+    exclude_id: Optional[str] = None,
+):
+    """Rank stored inspirations by lexical similarity to ``q``. Pass
+    ``exclude_id`` to omit the seed inspiration when finding similar."""
+    from rag.inspiration_search import rank_inspirations
+    items = _db().list_inspirations()
+    hits = rank_inspirations(q, items, top_k=k, exclude_id=exclude_id)
+    return {"q": q, "k": k, "hits": hits}
+
+
+@router.post("/inspirations")
+def create_inspiration(body: InspirationCreate):
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "灵感内容不能为空")
+    return _db().create_inspiration(
+        (body.category or "other").strip() or "other",
+        (body.title or "").strip(),
+        content,
+    )
+
+
+@router.put("/inspirations/{insp_id}")
+def update_inspiration(insp_id: str, body: InspirationUpdate):
+    if not _db().get_inspiration(insp_id):
+        raise HTTPException(404, "灵感不存在")
+    fields: dict = {}
+    if body.category is not None:
+        fields["category"] = body.category.strip() or "other"
+    if body.title is not None:
+        fields["title"] = body.title.strip()
+    if body.content is not None:
+        content = body.content.strip()
+        if not content:
+            raise HTTPException(400, "灵感内容不能为空")
+        fields["content"] = content
+    return _db().update_inspiration(insp_id, **fields)
+
+
+@router.delete("/inspirations/{insp_id}")
+def delete_inspiration(insp_id: str):
+    if not _db().delete_inspiration(insp_id):
+        raise HTTPException(404, "灵感不存在")
+    return {"ok": True}

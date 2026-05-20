@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS reference_works (
     style_fingerprint_json TEXT, narrative_structure_json TEXT,
     extracted_characters_json TEXT, rhythm_template_json TEXT,
     plot_outline_json TEXT, segments_json TEXT, settings_json TEXT,
-    rhythm_json TEXT,
+    rhythm_json TEXT, chapter_comments_json TEXT,
     serial_status TEXT CHECK (serial_status IN ('ongoing','completed','hiatus','unknown')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"""
@@ -82,7 +82,20 @@ CREATE TABLE IF NOT EXISTS reference_chapters (
     FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
 );"""
 
-ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS, _REFERENCE_CHAPTERS]
+# User-authored inspiration library — free-text idea snippets (scenes,
+# plot devices, character designs, …) that the 灵感搜索 page can store and
+# similarity-search. Independent of any single reference work.
+_INSPIRATIONS = """
+CREATE TABLE IF NOT EXISTS inspirations (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL DEFAULT 'other',
+    title TEXT,
+    content TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);"""
+
+ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS, _REFERENCE_CHAPTERS, _INSPIRATIONS]
 
 def ensure_reference_tables(conn: sqlite3.Connection) -> None:
     for ddl in ALL_DDL: conn.executescript(ddl)
@@ -98,4 +111,6 @@ def ensure_reference_tables(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE reference_works ADD COLUMN serial_status TEXT")
     if "rhythm_json" not in cols:
         conn.execute("ALTER TABLE reference_works ADD COLUMN rhythm_json TEXT")
+    if "chapter_comments_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN chapter_comments_json TEXT")
     conn.commit()

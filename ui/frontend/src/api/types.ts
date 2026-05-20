@@ -109,6 +109,8 @@ export interface ReferenceWork {
   segments_json?: string;
   settings_json?: string;
   rhythm_json?: string;
+  /** JSON array of {chapter, text} — per-chapter reader notes. */
+  chapter_comments_json?: string;
   serial_status?: "ongoing" | "completed" | "hiatus" | "unknown" | null;
   created_at?: string;
   updated_at?: string;
