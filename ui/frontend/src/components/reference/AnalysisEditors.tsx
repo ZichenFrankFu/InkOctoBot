@@ -2780,15 +2780,137 @@ function _legacyToRhythmJson(narr: any, rhythm: any): RhythmJson | null {
 }
 
 
-function InfoDensitySparkline({ data }: { data: number[] }) {
-  if (!data || data.length === 0) return null;
-  const w = 600, h = 50;
-  const step = data.length > 1 ? w / (data.length - 1) : w;
-  const pts = data.map((v, i) => `${i * step},${h - Math.max(0, Math.min(1, v)) * h}`).join(" ");
+/** Per-chapter rhythm chart: info-density bars coloured by chapter type,
+ *  with 爽点 / 钩子 markers above each bar and 高潮章 columns highlighted.
+ *  Hovering a bar reveals that chapter's summary / 爽点情节 / 钩子 in the
+ *  detail strip below. */
+function RhythmChart({ features, shuangdian, climax }: {
+  features: RhythmChapterFeature[];
+  shuangdian: { chapter: number; type: string; plot?: string }[];
+  climax: number[];
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  if (!features || features.length === 0) return null;
+
+  const payoffsByCh = new Map<number, { type: string; plot?: string }[]>();
+  for (const s of (shuangdian || [])) {
+    const arr = payoffsByCh.get(s.chapter) || [];
+    arr.push({ type: s.type, plot: s.plot });
+    payoffsByCh.set(s.chapter, arr);
+  }
+  const climaxSet = new Set(climax || []);
+  const n = features.length;
+  const colW = n > 80 ? 8 : n > 40 ? 13 : n > 20 ? 20 : 30;
+  const barAreaH = 92;
+  const sel = hover != null ? features[hover] : null;
+  const selPayoffs = sel ? (payoffsByCh.get(sel.chapter) || []) : [];
+
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: "100%", height: 50, background: "var(--bg-surface-2)", borderRadius: 4 }}>
-      <polyline points={pts} fill="none" stroke="var(--accent)" strokeWidth={1.5} />
-    </svg>
+    <div style={{ marginBottom: 12 }}>
+      <div className="flex items-center" style={{ gap: 14, flexWrap: "wrap", marginBottom: 6, fontSize: 10, color: "var(--text-tertiary)" }}>
+        <span>柱高 = 信息密度</span>
+        <span><span style={{ color: "var(--gold)" }}>●</span> 爽点</span>
+        <span><span style={{ color: "var(--accent)" }}>●</span> 钩子</span>
+        <span><span style={{
+          display: "inline-block", width: 8, height: 8, borderRadius: 2,
+          background: "var(--gold-subtle)", border: "1px solid var(--gold)",
+          verticalAlign: "middle",
+        }} /> 高潮章</span>
+      </div>
+      <div style={{
+        overflowX: "auto", border: "1px solid var(--border)", borderRadius: 4,
+        background: "var(--bg-surface-2)", padding: "8px 6px",
+      }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 1, minWidth: "100%" }}>
+          {features.map((cf, i) => {
+            const d = Math.max(0, Math.min(1, cf.info_density || 0));
+            const hasPayoff = payoffsByCh.has(cf.chapter);
+            const hasHook = (cf.hooks || []).length > 0;
+            const isClimax = climaxSet.has(cf.chapter);
+            const col = CHAPTER_TYPE_COLOR[cf.types?.[0] as ChapterType] || "var(--accent)";
+            const active = hover === i;
+            return (
+              <div key={i}
+                   onMouseEnter={() => setHover(i)}
+                   style={{
+                     width: colW, flexShrink: 0, cursor: "pointer",
+                     display: "flex", flexDirection: "column", alignItems: "center",
+                     background: active ? "var(--bg-surface-hover)"
+                       : isClimax ? "var(--gold-subtle)" : "transparent",
+                     borderRadius: 2,
+                   }}>
+                <div style={{ height: 9, display: "flex", gap: 1, alignItems: "center" }}>
+                  {hasPayoff && <span style={{ width: 4, height: 4, borderRadius: "50%", background: "var(--gold)" }} />}
+                  {hasHook && <span style={{ width: 4, height: 4, borderRadius: "50%", background: "var(--accent)" }} />}
+                </div>
+                <div style={{ height: barAreaH, display: "flex", alignItems: "flex-end", width: "100%", padding: "0 1px" }}>
+                  <div style={{
+                    width: "100%", height: `${Math.max(2, d * 100)}%`,
+                    background: col, opacity: active ? 1 : 0.8,
+                    borderRadius: "2px 2px 0 0",
+                    outline: isClimax ? "1px solid var(--gold)" : "none",
+                  }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="flex justify-between" style={{ fontSize: 9, marginTop: 2, color: "var(--text-tertiary)" }}>
+        <span>第 {features[0].chapter} 章</span>
+        <span>第 {features[n - 1].chapter} 章</span>
+      </div>
+      {/* hover detail strip */}
+      <div style={{
+        marginTop: 6, padding: "6px 10px", minHeight: 50,
+        border: "1px solid var(--border)", borderRadius: 4,
+        background: "var(--bg-surface)", fontSize: 11, lineHeight: 1.6,
+      }}>
+        {sel ? (
+          <>
+            <div className="flex items-center" style={{ gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontWeight: 700, color: "var(--text-primary)" }}>第 {sel.chapter} 章</span>
+              <span style={{ color: "var(--accent)", fontFamily: "var(--font-mono)" }}>
+                信息密度 {((sel.info_density || 0) * 100).toFixed(0)}%
+              </span>
+              {(sel.types || []).map((t, ti) => (
+                <span key={ti} className="tag" style={{
+                  fontSize: 9, padding: "0 5px",
+                  color: CHAPTER_TYPE_COLOR[t] || "var(--text-tertiary)",
+                  border: `1px solid ${CHAPTER_TYPE_COLOR[t] || "var(--border)"}`,
+                }}>{t}</span>
+              ))}
+              {climaxSet.has(sel.chapter) && (
+                <span className="tag" style={{
+                  fontSize: 9, padding: "0 5px",
+                  color: "var(--gold)", border: "1px solid var(--gold)",
+                }}>高潮章</span>
+              )}
+            </div>
+            {sel.summary && (
+              <div className="text-muted" style={{ marginTop: 2 }}>{sel.summary}</div>
+            )}
+            {selPayoffs.map((p, pi) => (
+              <div key={`p${pi}`} style={{ marginTop: 2 }}>
+                <span className="tag" style={{
+                  fontSize: 9, padding: "0 5px", marginRight: 5,
+                  color: "var(--gold)", border: "1px solid var(--gold)",
+                }}>爽点 · {_SHUANGDIAN_LABEL_RHYTHM[p.type] || p.type}</span>
+                <span style={{ color: "var(--text-secondary)" }}>{p.plot || "（无具体情节）"}</span>
+              </div>
+            ))}
+            {(sel.hooks || []).map((h, hi) => (
+              <div key={`h${hi}`} style={{ marginTop: 2, color: "var(--text-secondary)" }}>
+                <span style={{ color: "var(--accent)", marginRight: 5 }}>钩子 · {h.position}</span>
+                {h.content}
+              </div>
+            ))}
+          </>
+        ) : (
+          <span className="text-muted">悬停柱状图查看每章节奏详情（信息密度 / 爽点 / 钩子）</span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -2901,34 +3023,28 @@ export function RhythmEditor({ data, legacyNarrative, legacyRhythm, onSave }: {
           {effective.climax_positions.length === 0 ? (
             <span className="text-xs text-muted">—</span>
           ) : (
-            <div className="flex gap-4" style={{ display: "inline-flex", flexWrap: "wrap" }}>
-              {effective.climax_positions.map(c => (
-                <span key={c} className="tag accent" style={{ fontSize: 10, padding: "1px 6px" }}>第{c}章</span>
-              ))}
-            </div>
+            <span style={{ fontWeight: 600, color: "var(--gold)" }}>
+              {effective.climax_positions.length} 章
+            </span>
           )}
         </div>
-        {effective.shuangdian.length > 0 && (
-          <div>
-            <span className="text-xs text-muted">爽点：</span>
-            <div className="flex gap-4" style={{ display: "inline-flex", flexWrap: "wrap" }}>
-              {effective.shuangdian.map((s, i) => (
-                <span key={i} className="tag" style={{ fontSize: 10, padding: "1px 6px" }}>
-                  第{s.chapter}章 · {_SHUANGDIAN_LABEL_RHYTHM[s.type] || s.type}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+        <div>
+          <span className="text-xs text-muted">爽点 / 钩子：</span>
+          <span style={{ fontWeight: 600 }}>
+            {effective.shuangdian.length} / {effective.chapter_features.reduce((n, c) => n + (c.hooks?.length || 0), 0)}
+          </span>
+        </div>
       </div>
 
-      {effective.info_density_curve.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <div className="text-xs text-muted" style={{ marginBottom: 4 }}>
-            信息密度曲线（共 {effective.info_density_curve.length} 章）
-          </div>
-          <InfoDensitySparkline data={effective.info_density_curve} />
-        </div>
+      {effective.chapter_features.length > 0 && (
+        <>
+          <div className="label" style={{ marginBottom: 6 }}>节奏图谱</div>
+          <RhythmChart
+            features={effective.chapter_features}
+            shuangdian={effective.shuangdian}
+            climax={effective.climax_positions}
+          />
+        </>
       )}
 
       <div className="label" style={{ marginBottom: 6 }}>章节特征</div>

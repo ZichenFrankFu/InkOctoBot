@@ -503,10 +503,11 @@ export function UnifiedExtractionPanel({
           {bulkRunning ? "批量处理中…" : "使用内置 AI 一键处理全部分段"}
         </button>
       </div>
-      <div className="text-xs text-muted" style={{ marginBottom: 10, lineHeight: 1.6 }}>
-        每个分段只调用一次 LLM，同时抽取<strong>事件 / 角色 / 设定 / 风格</strong>四类信息——同一段正文不再重复上传，省 token。入库后可在「剧情大纲 / 角色 / 设定 / 文本特征」四个 tab 浏览与编辑。
-        {committedCount > 0 && ` · 已入库 ${committedCount} 个分段。`}
-      </div>
+      {committedCount > 0 && (
+        <div className="text-xs text-muted" style={{ marginBottom: 8 }}>
+          已入库 {committedCount} 个分段
+        </div>
+      )}
 
       {bulkProgress && (
         <div style={{
@@ -719,9 +720,6 @@ function UnifiedChunkRow({
                 justifyContent: "flex-end", marginTop: 8,
                 paddingTop: 8, borderTop: "1px dashed var(--border)",
               }}>
-                <span className="text-xs text-muted" style={{ flex: 1 }}>
-                  逐个 section 点「确认入库」分发到对应 tab；可只入库需要的部分。
-                </span>
                 <button className="btn" onClick={onReset}
                         disabled={!!phase.committingSection}
                         style={{ fontSize: 11, padding: "3px 10px" }}>重新提取</button>

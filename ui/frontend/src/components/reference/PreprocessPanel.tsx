@@ -1105,12 +1105,15 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     }))) return;
     setPlanSaving(true);
     try {
-      await apiPut(`/api/references/works/${refId}/segments/plan`,
+      // The PUT returns the saved plan — use it directly instead of a
+      // second GET round-trip.
+      const saved = await apiPut<SegmentPlan>(
+        `/api/references/works/${refId}/segments/plan`,
         { segments: cleaned, plan_type: cleaned.length > 1 ? "volumes" : "custom" },
         { timeoutMs: 60_000 });
       toast("分段计划已保存", "success");
       setPlanDraft(null);
-      await fetchPlan();
+      setPlan(saved);
       // The chronicle / characters / settings tabs share a segmentation
       // cache keyed by refId — invalidate it so the next tab they
       // open sees the new plan, not the cached old one.
@@ -1878,9 +1881,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
                 章节清理（共 {chapters.length} 章 · 已勾选排除 {excluded.size}）
               </div>
-              <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                勾选要排除的章节 → 点「清理章节」会从正文中<span style={{ color: "var(--error)" }}>物理删除</span>（可撤销一次）。
-              </div>
             </div>
             <div className="flex items-center gap-6">
               {savedSummary.saved_count > 0 && chapterEditMode && (
@@ -2307,10 +2307,9 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             gap: 12, flexWrap: "wrap",
           }}>
             <div className="text-xs text-muted" style={{ flex: 1, minWidth: 200 }}>
-              确认章节列表无误后，将完整章节结构写入数据库供后续提取使用。
-              {savedSummary.saved_count > 0 && (
-                <> · <strong style={{ color: "var(--text-secondary)" }}>已存 {savedSummary.saved_count} 章</strong>，再次点击会覆盖。</>
-              )}
+              {savedSummary.saved_count > 0
+                ? <>已存 {savedSummary.saved_count} 章</>
+                : null}
             </div>
             <button className="btn-primary"
                     style={{ fontSize: 12, padding: "5px 14px" }}
@@ -2849,8 +2848,8 @@ function VolumeEditor(p: VolumeEditorProps) {
           padding: 16, textAlign: "center",
           border: "1px dashed var(--border)", borderRadius: 4,
         }}>
-          <div className="text-xs text-muted" style={{ marginBottom: 12, lineHeight: 1.6 }}>
-            还没有分卷。卷标题代表故事中的时间（如「1954 年」），无明确时间时填写章节范围。
+          <div className="text-xs text-muted" style={{ marginBottom: 12 }}>
+            还没有分卷。
           </div>
           <div className="flex gap-8" style={{ justifyContent: "center", flexWrap: "wrap" }}>
             <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }} onClick={p.startPlanEdit}>
@@ -2874,9 +2873,8 @@ function VolumeEditor(p: VolumeEditorProps) {
       {plan && planDraft && (
         <div>
           <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
-            <div className="text-xs text-muted" style={{ lineHeight: 1.55, flex: 1, minWidth: 220 }}>
-              卷标题代表故事中的时间（如「1954 年」），无明确时间时填写章节范围。共 {plan.total_chapters} 章。
-              {plan.segments.length > 0 && <><br />保存后会清空已有的提取结果。</>}
+            <div className="text-xs text-muted" style={{ flex: 1, minWidth: 180 }}>
+              共 {plan.total_chapters} 章
             </div>
             <div className="flex gap-6" style={{ flexShrink: 0 }}>
               <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}

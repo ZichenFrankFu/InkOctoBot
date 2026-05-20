@@ -296,6 +296,16 @@ class FeatureExtractionPipeline:
             )
         return ""
 
+    # Module-level cache for _split_chapters: the chapter detection
+    # (multi-format regex scan + scoring) is the dominant cost of the
+    # /segments/plan load + save path, and the same text is re-split on
+    # every call. Keyed by a hash of (text, chapter-patterns) so it's
+    # invalidated automatically when the novel text or the user's custom
+    # patterns change. Bounded to the few most-recent works.
+    _CHAPTER_CACHE: dict[str, list[dict]] = {}
+    _CHAPTER_CACHE_ORDER: list[str] = []
+    _CHAPTER_CACHE_MAX = 6
+
     @staticmethod
     def _split_chapters(text: str) -> list[dict]:
         """Smart chapter splitter — tries multiple formats (第N章 / 第N回 /
@@ -304,9 +314,23 @@ class FeatureExtractionPipeline:
 
         Also honors user-defined patterns from
         ``settings.json["chapter_patterns"]`` so users can add their own
-        format without code changes."""
+        format without code changes.
+
+        Result is memoized on a hash of (text, patterns) — repeated
+        calls for the same novel (the /segments/plan load/save path) are
+        served from cache instead of re-running detection."""
         from analysis.feature_extraction.chapter_parser import detect_chapters
+        import hashlib
         extras = _load_chapter_patterns()
+        key = hashlib.md5(
+            (text or "").encode("utf-8", "ignore")
+        ).hexdigest() + ":" + hashlib.md5(
+            json.dumps(extras, sort_keys=True, ensure_ascii=False).encode("utf-8", "ignore")
+        ).hexdigest()
+        cls = FeatureExtractionPipeline
+        cached = cls._CHAPTER_CACHE.get(key)
+        if cached is not None:
+            return cached
         result = detect_chapters(text, extra_patterns=extras)
         # Strip extra metadata to keep the shape compatible with existing
         # callers that only read {index, title, volume, content}.
@@ -318,6 +342,11 @@ class FeatureExtractionPipeline:
                 "volume": c.get("volume") or "",
                 "content": c.get("content") or "",
             })
+        cls._CHAPTER_CACHE[key] = out
+        cls._CHAPTER_CACHE_ORDER.append(key)
+        if len(cls._CHAPTER_CACHE_ORDER) > cls._CHAPTER_CACHE_MAX:
+            old = cls._CHAPTER_CACHE_ORDER.pop(0)
+            cls._CHAPTER_CACHE.pop(old, None)
         return out
 
     # ── Segment planning & per-segment extraction (incremental) ──

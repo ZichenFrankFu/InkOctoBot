@@ -143,9 +143,6 @@ export default function FilesPanel({ refId, onAfterChange }: Props) {
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
               原始文件{hasFiles ? `（共 ${data!.files.length} 个 · ${fmtChars(data!.total_chars)}）` : ""}
             </div>
-            <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-              支持 .txt（UTF-8 / GB18030）。多个文件按上传顺序拼接为同一正文 — 点「查看」打开文件内容；删除某个文件会精确移除它的内容。
-            </div>
           </div>
           <div className="flex gap-6" style={{ flexWrap: "wrap" }}>
             <input ref={replaceInputRef} type="file" accept=".txt" style={{ display: "none" }} onChange={onPickReplace} />

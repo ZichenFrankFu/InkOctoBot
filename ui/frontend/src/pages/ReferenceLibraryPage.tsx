@@ -432,7 +432,11 @@ export default function ReferenceLibraryPage() {
 
         {/* ======== RIGHT: Detail Panel ======== */}
         <div className="panel flex-1" style={{ overflowY: "auto" }}>
-          <div className="panel-body" style={{ padding: "16px 20px" }}>
+          {/* No top padding here — the sticky work-header below provides
+            * its own top spacing. A padding-top on the scroll container
+            * is exactly what let content peek through above the sticky
+            * bar; removing it fixes that seam. */}
+          <div className="panel-body" style={{ padding: "0 20px 24px", background: "var(--bg-app)" }}>
             {sel ? (
               <WorkDetail
                 key={sel.ref_id}
@@ -750,27 +754,16 @@ function WorkDetail({
 
   return (
     <div>
-      {/* Compact, sticky work header.
-       *
-       * Gap-during-scroll fix (the bug user reported as "向下 scroll 时
-       * 有一条缝隙把后面的页面漏出来")—the previous attempt used
-       * top:0 with margin:-16px and only covered the parent's padding
-       * cleanly when sub-pixel rounding agreed. Now:
-       *   - top:-1px parks the sticky 1px above the scroll-container
-       *     edge so any rounding has 1px to absorb.
-       *   - margin-top:-17px + padding-top:17px keeps the visible top
-       *     edge of content at panel-body's content-area top (where it
-       *     was originally) while extending the opaque background up
-       *     past the panel-body padding.
-       *   - margin-left/right:-20px makes the bar edge-to-edge inside
-       *     panel-body's 20px horizontal padding. */}
+      {/* Sticky work header. The scroll container (panel-body) has no
+       * top padding, so the bar sits flush at the top and sticks at
+       * top:0 — no negative top margin, no sub-pixel seam above it. */}
       <div style={{
         position: "sticky",
-        top: -1,
+        top: 0,
         zIndex: 10,
         background: "var(--bg-app)",
-        margin: "-17px -20px 12px",
-        padding: "17px 20px 10px",
+        margin: "0 -20px 12px",
+        padding: "16px 20px 10px",
         boxSizing: "border-box",
         borderBottom: "1px solid var(--border)",
         boxShadow: "0 6px 6px -6px rgba(0,0,0,0.18)",
