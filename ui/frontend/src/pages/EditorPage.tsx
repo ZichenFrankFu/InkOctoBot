@@ -110,6 +110,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Last successfully-persisted snapshot per chapter — lets the
+  // auto-save skip no-op writes (e.g. right after a chapter switch).
+  const persistedRef = useRef<{ chId: string; content: string; title: string }>({ chId: "", content: "", title: "" });
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
@@ -238,7 +241,11 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const activeVol = useMemo(() => volumes.find(v => v.chapters.some(c => c.id === activeChId)) || null, [volumes, activeChId]);
 
   useEffect(() => {
-    if (activeCh && loaded) { setContent(activeCh.content || ""); setTitleVal(activeCh.title); }
+    if (activeCh && loaded) {
+      setContent(activeCh.content || "");
+      setTitleVal(activeCh.title);
+      persistedRef.current = { chId: activeChId, content: activeCh.content || "", title: activeCh.title };
+    }
     setEditingTitle(false); setSelection(null);
   }, [activeChId, loaded]);
 
@@ -251,14 +258,25 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   useEffect(() => {
     if (!loaded) return;
+    // Skip the auto-save entirely when nothing actually changed — e.g.
+    // a chapter switch just loaded identical content. Saving here would
+    // be a no-op network write + a spurious version bump.
+    const p = persistedRef.current;
+    if (p.chId === activeChId && p.content === content && p.title === titleVal) {
+      return;
+    }
     setSaveStatus("unsaved");
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    const chId = activeChId;
     saveTimer.current = setTimeout(async () => {
       setSaveStatus("saving");
-      const updatedVolumes = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
+      const updatedVolumes = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === chId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
       setVolumes(updatedVolumes);
-      try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: updatedVolumes }); setSaveStatus("saved"); }
-      catch (e: any) { setSaveStatus("unsaved"); console.warn("自动保存失败:", e.message); }
+      try {
+        await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: updatedVolumes });
+        persistedRef.current = { chId, content, title: titleVal };
+        setSaveStatus("saved");
+      } catch (e: any) { setSaveStatus("unsaved"); console.warn("自动保存失败:", e.message); }
     }, 1500);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [content, titleVal]);
@@ -369,11 +387,34 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       .filter(v => v.chapters.length > 0 || v.title.toLowerCase().includes(searchLower));
   }, [volumes, searchLower]);
 
-  const handleExport = () => {
-    const lines: string[] = [];
-    for (const v of volumes) { lines.push(`===== ${v.title} =====\n`); for (const c of v.chapters) { lines.push(`--- ${c.title} ---\n`); lines.push((c.content || "") + "\n\n"); } }
-    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `export_${Date.now()}.txt`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  // Save text via the browser save-as dialog (lets the user pick the path);
+  // falls back to a plain download for browsers without showSaveFilePicker.
+  const saveTextFile = async (text: string, suggestedName: string): Promise<boolean> => {
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const picker = (window as any).showSaveFilePicker;
+    if (typeof picker === "function") {
+      let handle: any;
+      try {
+        handle = await picker.call(window, {
+          suggestedName,
+          types: [{ description: "文本文件", accept: { "text/plain": [".txt"] } }],
+        });
+      } catch (e: any) {
+        if (e?.name === "AbortError") return false;  // user cancelled the dialog
+        throw e;
+      }
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return true;
+    }
+    // Fallback for browsers without the save-picker API.
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = suggestedName;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return true;
   };
 
   const handleBundleExport = async () => {
@@ -461,46 +502,62 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       }
 
       const text = lines.join("\n");
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = `bundle_export_${Date.now()}.txt`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-      toast("已导出角色+世界书+章节大纲", "success");
+      const ok = await saveTextFile(text, `导出_${Date.now()}.txt`);
+      if (ok) toast("已导出角色+世界书+章节大纲", "success");
     } catch (e: any) {
       toast(e.message || "导出失败", "error");
     }
   };
 
-  // A1: Batch generation state
-  const [batchStatus, setBatchStatus] = useState<{ running: boolean; sessionId?: string; current?: number; completed: number[]; total: number; errors: Record<number, string> } | null>(null);
+  // Batch multi-select mode: clicking "批量" enters a chapter-picking mode in
+  // the tree, then the action bar bulk-deletes or bulk-exports the selection.
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedChIds, setSelectedChIds] = useState<Set<string>>(new Set());
 
-  const startBatchGeneration = async () => {
-    const allChapters = volumes.flatMap(v => v.chapters);
-    if (allChapters.length < 2) { alert("至少需要2个章节才能批量生成"); return; }
-    const start = parseInt(prompt("起始章节号：", "1") || "0");
-    const end = parseInt(prompt("结束章节号：", String(Math.min(allChapters.length, start + 4))) || "0");
-    if (!start || !end || start > end) return;
+  const toggleChSelected = (chId: string) => {
+    setSelectedChIds(prev => {
+      const next = new Set(prev);
+      if (next.has(chId)) next.delete(chId); else next.add(chId);
+      return next;
+    });
+  };
+
+  const exitBatchMode = () => { setBatchMode(false); setSelectedChIds(new Set()); };
+
+  const selectAllChapters = () => {
+    setSelectedChIds(new Set(volumes.flatMap(v => v.chapters).map(c => c.id)));
+  };
+
+  const deleteSelectedChapters = () => {
+    if (selectedChIds.size === 0) return;
+    const allChs = volumes.flatMap(v => v.chapters);
+    const remaining = allChs.filter(c => !selectedChIds.has(c.id));
+    if (remaining.length === 0) { toast("至少需保留一个章节", "error"); return; }
+    if (!confirm(`确认删除选中的 ${selectedChIds.size} 个章节？此操作不可撤销。`)) return;
+    setVolumes(volumes.map(v => ({ ...v, chapters: v.chapters.filter(c => !selectedChIds.has(c.id)) })));
+    if (activeChId && selectedChIds.has(activeChId)) setActiveChId(remaining[0].id);
+    exitBatchMode();
+    toast("已删除选中章节", "success");
+  };
+
+  const exportSelectedChapters = async () => {
+    if (selectedChIds.size === 0) { toast("请先选择章节", "error"); return; }
+    const lines: string[] = [];
+    for (const v of volumes) {
+      const picked = v.chapters.filter(c => selectedChIds.has(c.id));
+      if (picked.length === 0) continue;
+      lines.push(`===== ${v.title} =====\n`);
+      for (const c of picked) {
+        lines.push(`--- ${c.title} ---\n`);
+        lines.push((c.content || "") + "\n\n");
+      }
+    }
     try {
-      const resp = await apiPost<{ session_id: string; chapter_count: number }>("/api/generation/batch/start", {
-        project_id: projectId || "default",
-        chapter_range: [start, end],
-        volume_outline: volumes.map(v => v.chapters.map(c => c.synopsis || "").join("\n")).join("\n"),
-        style_notes: "",
-        world_rules: "",
-      });
-      setBatchStatus({ running: true, sessionId: resp.session_id, current: start, completed: [], total: resp.chapter_count, errors: {} });
-      // Poll for status
-      const pollBatch = setInterval(async () => {
-        try {
-          const s = await apiGet<any>(`/api/generation/batch/status/${resp.session_id}`);
-          setBatchStatus(prev => prev ? { ...prev, current: s.current_chapter, completed: s.completed || [], errors: s.errors || {} } : prev);
-          if (s.status !== "running") {
-            clearInterval(pollBatch);
-            setBatchStatus(prev => prev ? { ...prev, running: false } : prev);
-          }
-        } catch { clearInterval(pollBatch); setBatchStatus(prev => prev ? { ...prev, running: false } : prev); }
-      }, 3000);
-    } catch (e: any) { alert("批量生成启动失败: " + (e?.message || e)); }
+      const ok = await saveTextFile(lines.join("\n"), `章节导出_${Date.now()}.txt`);
+      if (ok) toast(`已导出 ${selectedChIds.size} 个章节`, "success");
+    } catch (e: any) {
+      toast(e?.message || "导出失败", "error");
+    }
   };
 
   const generatedTextRef = useRef<string>("");
@@ -1158,30 +1215,23 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
           <div style={{ padding: "4px 10px 6px", display: "flex", gap: 6 }}>
             <button className="btn-icon" onClick={addVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+卷</button>
             <button className="btn-icon" onClick={addChapterToFirstVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+章</button>
-            <button className="btn-icon" onClick={handleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }} title="导出正文">导出</button>
-            <button className="btn-icon" onClick={handleBundleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} title="打包导出：角色+世界书+章节大纲">打包</button>
-            <button className="btn-icon" onClick={startBatchGeneration} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--jade)", borderRadius: "var(--radius-sm)", color: "var(--jade)" }} disabled={batchStatus?.running}>批量</button>
+            <button className="btn-icon" onClick={handleBundleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} title="导出角色+世界书+章节大纲，可自选保存位置">导出</button>
+            <button className="btn-icon" onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--jade)", borderRadius: "var(--radius-sm)", color: batchMode ? "#fff" : "var(--jade)", background: batchMode ? "var(--jade)" : undefined }} title="批量选择章节后删除 / 导出">批量</button>
           </div>
-          {batchStatus && (
-            <div style={{ padding: "6px 10px", background: batchStatus.running ? "var(--jade-subtle)" : "var(--bg-surface-2)", borderBottom: "1px solid var(--border)", fontSize: 11 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span>{batchStatus.running ? `批量生成中: 第${batchStatus.current}章` : `批量完成 (${batchStatus.completed.length}/${batchStatus.total})`}</span>
-                {batchStatus.running && batchStatus.sessionId && (
-                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px", color: "var(--error)" }}
-                    onClick={() => { apiPost(`/api/generation/batch/stop/${batchStatus.sessionId}`, {}).catch((e) => toast(e.message || "操作失败", "error")); setBatchStatus(prev => prev ? { ...prev, running: false } : prev); }}>停止</button>
-                )}
-                {!batchStatus.running && <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={() => setBatchStatus(null)}>关闭</button>}
+          {batchMode && (
+            <div style={{ padding: "6px 10px", background: "var(--jade-subtle)", borderBottom: "1px solid var(--border)", fontSize: 11 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span>已选 {selectedChIds.size} 章</span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={selectAllChapters}>全选</button>
+                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={() => setSelectedChIds(new Set())}>清空</button>
+                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={exitBatchMode}>退出</button>
+                </div>
               </div>
-              {batchStatus.completed.length > 0 && (
-                <div style={{ marginTop: 4, color: "var(--jade)", fontSize: 10 }}>
-                  已完成: {batchStatus.completed.join(", ")}章
-                </div>
-              )}
-              {Object.keys(batchStatus.errors).length > 0 && (
-                <div style={{ marginTop: 4, color: "var(--error)", fontSize: 10 }}>
-                  失败: {Object.keys(batchStatus.errors).join(", ")}章
-                </div>
-              )}
+              <div style={{ display: "flex", gap: 4 }}>
+                <button className="btn-icon" style={{ fontSize: 11, flex: 1, padding: "3px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} disabled={selectedChIds.size === 0} onClick={exportSelectedChapters}>导出选中</button>
+                <button className="btn-icon" style={{ fontSize: 11, flex: 1, padding: "3px 0", border: "1px solid var(--error)", borderRadius: "var(--radius-sm)", color: "var(--error)" }} disabled={selectedChIds.size === 0} onClick={deleteSelectedChapters}>删除选中</button>
+              </div>
             </div>
           )}
           <div className="panel-body" style={{ padding: "8px 6px" }}>
@@ -1194,11 +1244,13 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                   <button className="btn-icon" style={{ width: 22, height: 22, fontSize: 13 }} onClick={() => addChapter(v.id)}>+</button>
                 </div>
                 {!v.collapsed && v.chapters.map(c => (
-                  <div key={c.id} className={`chapter-tree-item indent ${c.id === activeChId ? "active" : ""}`} onClick={() => setActiveChId(c.id)}
+                  <div key={c.id} className={`chapter-tree-item indent ${(batchMode ? selectedChIds.has(c.id) : c.id === activeChId) ? "active" : ""}`}
+                    onClick={() => (batchMode ? toggleChSelected(c.id) : setActiveChId(c.id))}
                     style={searchLower && (c.content || "").toLowerCase().includes(searchLower) ? { background: "var(--accent-subtle, rgba(255,200,0,0.15))" } : undefined}>
+                    {batchMode && <input type="checkbox" checked={selectedChIds.has(c.id)} onChange={() => toggleChSelected(c.id)} onClick={e => e.stopPropagation()} style={{ flexShrink: 0, margin: 0, cursor: "pointer" }} />}
                     {renamingId === c.id ? <input className="input" value={renameVal} onChange={e => setRenameVal(e.target.value)} onBlur={commitRename} onKeyDown={e => e.key === "Enter" && commitRename()} autoFocus style={{ padding: "2px 6px", fontSize: 12, flex: 1 }} onClick={e => e.stopPropagation()} />
                       : <><span className="truncate" style={{ flex: 1 }} onDoubleClick={() => startRename(c.id, c.title)}>{c.title}</span><span className="font-mono text-xs text-muted">{wc(c.content || "")}字</span></>}
-                    {totalCh > 1 && <button className="btn-icon" style={{ width: 18, height: 18, fontSize: 11 }} onClick={e => { e.stopPropagation(); deleteChapter(c.id); }}>&times;</button>}
+                    {!batchMode && totalCh > 1 && <button className="btn-icon" style={{ width: 18, height: 18, fontSize: 11 }} onClick={e => { e.stopPropagation(); deleteChapter(c.id); }}>&times;</button>}
                   </div>
                 ))}
               </div>
