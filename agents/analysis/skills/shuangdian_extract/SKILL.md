@@ -1,14 +1,11 @@
 ---
 name: shuangdian_extract
-display_name: 爽点提取
-description: 从网文文本中提取"爽点"（满足感/兴奋点），包括爽点类型、位置、强度及触发机制。
-version: 1.0.0
-model_role: analyzer
-tags: [analysis, shuangdian, extraction, webnovel]
-permissions: [read_narrative]
+description: 从网文文本中提取爽点（满足感/兴奋点），包括爽点类型、位置、强度及触发机制。
 ---
 
-## Description
+# 爽点提取
+
+## 说明
 
 从输入的网络小说文本中，识别并提取"爽点"（读者满足感/兴奋点）。包括但不限于：
 - 打脸爽点（face-slapping）：主角反击轻视者
@@ -24,13 +21,13 @@ permissions: [read_narrative]
 
 使用 LLM 进行深度语义分析，能够识别隐含的爽点结构和节奏编排。
 
-## Input
+## 输入
 
 | 字段   | 类型   | 必填 | 说明           |
 | ------ | ------ | ---- | -------------- |
 | text   | string | 是   | 待分析的网文文本 |
 
-## Output
+## 输出
 
 返回 JSON 对象，包含以下字段：
 

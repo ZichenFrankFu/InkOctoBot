@@ -75,6 +75,25 @@ class Skill(BaseSkill):
                 },
                 "required": ["text"],
             },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "events": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "subject": {"type": "string"},
+                                "category": {"type": "string"},
+                                "name": {"type": "string"},
+                                "description": {"type": "string"},
+                                "time_marker": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                "required": ["events"],
+            },
         )
 
     async def build_prompt(self, inputs: dict[str, Any]) -> str:

@@ -1,27 +1,24 @@
 ---
 name: slop_detect
-display_name: AI味检测
-description: 基于规则的AI生成文本风格检测，使用模式匹配识别AI常见表达（参考arXiv:2509.19163），无需LLM调用。
-version: 1.0.0
-model_role: none
-tags: [evaluation, quality, slop, ai-detection, rule-based]
-permissions: []
+description: 基于规则的AI生成文本风格检测，使用模式匹配识别AI常见表达，无需LLM调用。
 ---
 
-## Description
+# AI味检测
+
+## 说明
 
 Rule-based AI-flavor (slop) detection using pattern matching against a
 configurable library of known AI-generated text patterns. Based on slop
 detection research (arXiv:2509.19163). Identifies cliche phrases, cliche
 actions, cliche similes, and AI-tell markers. Operates without LLM calls.
 
-## Input
+## 输入
 
 | Field | Type   | Required | Description             |
 |-------|--------|----------|-------------------------|
 | text  | string | yes      | The text to analyze     |
 
-## Output
+## 输出
 
 ```json
 {
@@ -38,13 +35,4 @@ actions, cliche similes, and AI-tell markers. Operates without LLM calls.
   "density": 1.234,
   "has_issues": false
 }
-```
-
-## Usage
-
-```python
-from agents.evaluation.skills.slop_detect.skill import Skill
-
-skill = Skill()
-result = await skill.execute({"text": "..."}, model_router=None)
 ```

@@ -148,7 +148,13 @@ class SkillRegistry:
 
     @staticmethod
     def _load_skill(skill_py: Path) -> BaseSkill:
-        """Dynamically load a skill.py module and return its Skill() instance."""
+        """Load a skill.py module, instantiate Skill(), attach its SKILL.md.
+
+        Each skill directory pairs an executable ``skill.py`` with a
+        Claude-format ``SKILL.md`` manifest. The parsed manifest (name +
+        description + markdown body) is attached as ``skill.manifest`` and is
+        the source of truth for the skill's identity and documentation.
+        """
         module_name = f"skill_{skill_py.parent.name}"
         spec = importlib.util.spec_from_file_location(module_name, skill_py)
         if spec is None or spec.loader is None:
@@ -162,4 +168,21 @@ class SkillRegistry:
             raise AttributeError(
                 f"{skill_py} must export a class named 'Skill'"
             )
-        return skill_cls()
+        skill = skill_cls()
+
+        # Attach the Claude-format SKILL.md manifest.
+        skill_md = skill_py.parent / "SKILL.md"
+        if skill_md.exists():
+            from agents.base_skill import parse_skill_md
+            try:
+                manifest = parse_skill_md(skill_md)
+                skill.manifest = manifest
+                if manifest.name and manifest.name != skill.meta().name:
+                    logger.warning(
+                        "SKILL.md name '%s' != skill.py name '%s' in %s",
+                        manifest.name, skill.meta().name, skill_md,
+                    )
+            except Exception as e:
+                logger.warning("Failed to parse %s: %s", skill_md, e)
+
+        return skill

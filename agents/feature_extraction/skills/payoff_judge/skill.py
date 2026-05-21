@@ -64,6 +64,22 @@ class Skill(BaseSkill):
                 "properties": {"text": {"type": "string"}},
                 "required": ["text"],
             },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "payoffs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string"},
+                                "plot": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                "required": ["payoffs"],
+            },
         )
 
     async def build_prompt(self, inputs: dict[str, Any]) -> str:

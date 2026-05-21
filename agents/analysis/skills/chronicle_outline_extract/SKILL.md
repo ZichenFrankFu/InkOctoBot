@@ -1,14 +1,11 @@
 ---
 name: chronicle_outline_extract
-display_name: 编年史大纲提取
-description: 从小说文本中提取「编年史」格式的剧情大纲：epochs（大段/纪元）→ periods（时间段）→ events（事件）。每个事件包含主语、类别、名称、描述、隐藏信息、时间锚点。
-version: 1.0.0
-model_role: reference_extractor
-tags: [analysis, narrative, outline, chronicle, extraction]
-permissions: [read_narrative]
+description: 从小说文本中提取「编年史」格式的剧情大纲（epochs → periods → events），每个事件含主语、类别、名称、描述、隐藏信息、时间锚点。
 ---
 
-## 用途
+# 编年史大纲提取
+
+## 说明
 
 把一段小说原文（最好已按「故事时间」切过卷）转成结构化的编年史大纲。
 适用场景：

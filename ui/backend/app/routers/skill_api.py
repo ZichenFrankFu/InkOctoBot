@@ -73,21 +73,62 @@ def _skill_domain(skill) -> str:
     return "unknown"
 
 
+def _skill_public_dict(skill, deactivated: set[str]) -> dict[str, Any]:
+    """Build a skill's public dict: execution meta + Claude SKILL.md manifest.
+
+    The Claude-format ``SKILL.md`` manifest, when present, is authoritative
+    for the skill's ``description``; its markdown body is exposed as
+    ``skill_md``. ``is_basic`` marks built-in skills as read-only (only
+    learned skills may be edited or deleted).
+    """
+    meta = skill.meta()
+    info = _meta_to_dict(meta)
+    info["agent_domain"] = _skill_domain(skill)
+    is_learned = "learned_skills" in (
+        getattr(type(skill), "__module__", "") or ""
+    )
+    info["is_learned"] = is_learned
+    info["is_basic"] = not is_learned
+    info["active"] = meta.name not in deactivated
+    manifest = getattr(skill, "manifest", None)
+    if manifest is not None:
+        if manifest.description:
+            info["description"] = manifest.description
+        info["skill_md"] = manifest.body
+    else:
+        info["skill_md"] = ""
+    return info
+
+
+def _render_claude_skill_md(name: str, display: str, desc: str) -> str:
+    """Render a Claude Agent Skill SKILL.md (minimal name+description frontmatter)."""
+    import yaml
+    fm = yaml.safe_dump(
+        {"name": name, "description": desc},
+        allow_unicode=True, default_flow_style=False, sort_keys=False,
+    )
+    return (
+        f"---\n{fm}---\n\n"
+        f"# {display}\n\n"
+        f"## 说明\n\n{desc}\n\n"
+        f"## 输入\n\n"
+        f"- `text`（string，必填）：技能的输入文本\n\n"
+        f"## 输出\n\n"
+        f"```json\n"
+        f'{{ "result": "技能生成的文本结果" }}\n'
+        f"```\n"
+    )
+
+
 @router.get("")
 def list_skills():
     """List all registered skills with metadata."""
     registry = _get_registry()
     deactivated = _get_deactivated()
-    skills = []
-    for skill in registry._skills.values():
-        meta = skill.meta()
-        info = _meta_to_dict(meta)
-        info["agent_domain"] = _skill_domain(skill)
-        info["is_learned"] = "learned_skills" in (
-            getattr(type(skill), "__module__", "") or ""
-        )
-        info["active"] = meta.name not in deactivated
-        skills.append(info)
+    skills = [
+        _skill_public_dict(skill, deactivated)
+        for skill in registry._skills.values()
+    ]
     return {"skills": skills, "total": len(skills)}
 
 
@@ -296,45 +337,23 @@ def add_learning_log_entry(body: dict = Body(...)):
 def list_learned_skills():
     """List skills from the learned_skills directory."""
     registry = _get_registry()
-    learned = []
-    for skill in registry._skills.values():
-        domain = _skill_domain(skill)
-        if domain == "learned_skills":
-            meta = skill.meta()
-            info = _meta_to_dict(meta)
-            info["agent_domain"] = domain
-            info["is_learned"] = True
-            learned.append(info)
+    deactivated = _get_deactivated()
+    learned = [
+        _skill_public_dict(skill, deactivated)
+        for skill in registry._skills.values()
+        if _skill_domain(skill) == "learned_skills"
+    ]
     return {"skills": learned, "total": len(learned)}
 
 
 @router.get("/{name}")
 def get_skill(name: str):
-    """Get detailed info for a single skill, including SKILL.md content."""
+    """Get detailed info for a single skill, including its SKILL.md body."""
     registry = _get_registry()
     if not registry.has(name):
         raise HTTPException(404, f"Skill '{name}' not found")
     skill = registry.get(name)
-    meta = skill.meta()
-    info = _meta_to_dict(meta)
-    info["agent_domain"] = _skill_domain(skill)
-    info["is_learned"] = "learned_skills" in (
-        getattr(type(skill), "__module__", "") or ""
-    )
-
-    # Read SKILL.md if available
-    skill_md_content = ""
-    try:
-        import inspect
-        src = inspect.getfile(type(skill))
-        skill_md = Path(src).parent / "SKILL.md"
-        if skill_md.exists():
-            skill_md_content = skill_md.read_text("utf-8")
-    except Exception:
-        pass
-
-    info["skill_md"] = skill_md_content
-    return info
+    return _skill_public_dict(skill, _get_deactivated())
 
 
 class SkillCreateRequest(BaseModel):
@@ -358,36 +377,12 @@ def create_skill(req: SkillCreateRequest):
     skill_dir.mkdir(parents=True, exist_ok=True)
     display = req.display_name or req.name.replace("_", " ").title()
     desc = req.description or f"Custom skill: {display}"
-    tags_str = ", ".join(req.tags) if req.tags else "custom"
     prompt = req.prompt_template or "请根据以下输入生成内容：\\n\\n{text}"
 
-    # Write SKILL.md
-    skill_md = f"""---
-name: {req.name}
-display_name: {display}
-version: "1.0"
-model_role: {req.model_role}
-tags: [{tags_str}]
-temperature: 0.7
-max_tokens: 2000
-permissions: []
----
-
-# {display}
-
-{desc}
-
-## Input
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| text  | str  | yes      | Input text  |
-
-## Output
-| Field  | Type | Description    |
-|--------|------|----------------|
-| result | str  | Generated text |
-"""
-    (skill_dir / "SKILL.md").write_text(skill_md, "utf-8")
+    # Write SKILL.md (Claude Agent Skill format — name + description only)
+    (skill_dir / "SKILL.md").write_text(
+        _render_claude_skill_md(req.name, display, desc), "utf-8"
+    )
 
     # Write skill.py
     skill_py = f'''"""Auto-generated learned skill: {display}"""
@@ -462,7 +457,7 @@ def update_skill(name: str, req: SkillUpdateRequest):
     except Exception:
         raise HTTPException(500, "Cannot locate skill source")
 
-    # Update SKILL.md
+    # Update SKILL.md (Claude Agent Skill format — name + description only)
     skill_md_path = skill_dir / "SKILL.md"
     meta = skill.meta()
     display = req.display_name or meta.display_name
@@ -471,24 +466,10 @@ def update_skill(name: str, req: SkillUpdateRequest):
     model_role = req.model_role or meta.model_role
     temperature = req.temperature if req.temperature is not None else meta.temperature
     max_tokens = req.max_tokens if req.max_tokens is not None else meta.max_tokens
-    tags_str = ", ".join(tags)
 
-    skill_md_content = f"""---
-name: {name}
-display_name: {display}
-version: "{meta.version}"
-model_role: {model_role}
-tags: [{tags_str}]
-temperature: {temperature}
-max_tokens: {max_tokens}
-permissions: []
----
-
-# {display}
-
-{desc}
-"""
-    skill_md_path.write_text(skill_md_content, "utf-8")
+    skill_md_path.write_text(
+        _render_claude_skill_md(name, display, desc), "utf-8"
+    )
 
     # Update skill.py
     prompt = req.prompt_template or "请根据以下输入生成内容：\\n\\n{text}"

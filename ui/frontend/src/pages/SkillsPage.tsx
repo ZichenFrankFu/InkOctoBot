@@ -344,8 +344,9 @@ export default function SkillsPage({ projects, activeProject }: Props) {
     return !logDeactivated.has(name);
   };
 
-  // Helper: is a skill from a workflow (non-learned, non-deletable)
-  const isWorkflowSkill = (skill: SkillInfo): boolean => !skill.is_learned;
+  // Helper: is a skill a basic (built-in) skill — read-only, non-deletable.
+  // Only non-basic (learned) skills can be created / modified / deleted.
+  const isBasicSkill = (skill: SkillInfo): boolean => skill.is_basic ?? !skill.is_learned;
 
   if (loading) {
     return (
@@ -363,7 +364,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   const renderSkillRow = (skill: SkillInfo, idx: number, total: number) => {
     const isExp = expanded === skill.name;
     const isTst = testSkill === skill.name;
-    const workflow = isWorkflowSkill(skill);
+    const basic = isBasicSkill(skill);
     return (
       <div key={skill.name} style={{ borderBottom: idx < total - 1 ? "1px solid var(--border-subtle)" : "none" }}>
         <div
@@ -398,7 +399,9 @@ export default function SkillsPage({ projects, activeProject }: Props) {
             <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => handleToggleSkill(skill.name)}>
               {skill.active === false ? "启用" : "停用"}
             </button>
-            {!workflow && (
+            {basic ? (
+              <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-disabled)", lineHeight: "18px" }} title="基础技能不可修改或删除">基础</span>
+            ) : (
               <>
                 <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => handleEditSkill(skill)}>修改</button>
                 <button className="btn" style={{ fontSize: 10, padding: "2px 8px", color: "var(--error)" }} onClick={() => setConfirmDelete(skill.name)}>删除</button>
@@ -449,6 +452,16 @@ export default function SkillsPage({ projects, activeProject }: Props) {
         )}
         {isExp && (
           <div style={{ padding: "0 16px 14px", background: "var(--bg-secondary)", borderTop: "1px solid var(--border-subtle)" }}>
+            {skill.skill_md && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
+                  SKILL.md &middot; Claude 技能格式
+                </div>
+                <pre style={{ fontSize: 11, background: "var(--bg-surface)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 260, margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.55 }}>
+                  {skill.skill_md}
+                </pre>
+              </div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 12 }}>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Input Schema</div>
@@ -467,7 +480,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
               <span style={{ color: "var(--text-secondary)" }}>Temperature: <strong>{skill.temperature}</strong></span>
               <span style={{ color: "var(--text-secondary)" }}>Max tokens: <strong>{skill.max_tokens}</strong></span>
               <span style={{ color: "var(--text-secondary)" }}>Role: <strong>{skill.model_role}</strong></span>
-              {workflow && <span style={{ color: "var(--text-disabled)", fontStyle: "italic" }}>Workflow skill (不可删除)</span>}
+              {basic && <span style={{ color: "var(--text-disabled)", fontStyle: "italic" }}>基础技能（不可修改 / 删除）</span>}
               {skill.is_learned && <span style={{ color: "var(--purple)", fontWeight: 600 }}>Learned Skill</span>}
             </div>
             <div style={{ marginTop: 14, padding: 10, background: "var(--bg-surface)", borderRadius: 8, border: "1px solid var(--border)" }}>

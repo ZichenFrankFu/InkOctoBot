@@ -1,14 +1,11 @@
 ---
 name: style_extract
-display_name: 写作风格提取
 description: 提取文本的写作风格特征，包括句长统计、对话比例、用词丰富度、段落结构等，基于规则与NLP统计。
-version: 1.0.0
-model_role: analyzer
-tags: [analysis, style, extraction, rule-based]
-permissions: [read_style]
 ---
 
-## Description
+# 写作风格提取
+
+## 说明
 
 从输入的文本中，通过规则和 NLP 统计方法提取写作风格特征。包括：
 - 句长统计（平均句长、句长分布、最长/最短句）
@@ -21,13 +18,13 @@ permissions: [read_style]
 
 本技能以规则为主，不依赖 LLM 进行核心计算，但可选择性使用 LLM 进行风格总结。
 
-## Input
+## 输入
 
 | 字段   | 类型   | 必填 | 说明           |
 | ------ | ------ | ---- | -------------- |
 | text   | string | 是   | 待分析的文本内容 |
 
-## Output
+## 输出
 
 返回 JSON 对象，包含以下字段：
 

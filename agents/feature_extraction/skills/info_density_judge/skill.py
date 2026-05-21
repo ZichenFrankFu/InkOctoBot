@@ -62,6 +62,14 @@ class Skill(BaseSkill):
                 "properties": {"text": {"type": "string"}},
                 "required": ["text"],
             },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "info_density": {"type": "number"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["info_density", "reason"],
+            },
         )
 
     async def build_prompt(self, inputs: dict[str, Any]) -> str:

@@ -470,6 +470,7 @@ export interface SkillInfo {
   permissions: string[];
   learnable: boolean;
   is_learned: boolean;
+  is_basic?: boolean;
   active: boolean;
   agent_domain: string;
   input_schema: Record<string, unknown>;
