@@ -129,7 +129,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     try { const raw = sessionStorage.getItem(`inkocto_editor_chat_${projectId}`); return raw ? JSON.parse(raw) : null; } catch { return null; }
   })();
   const [chatLoaded, setChatLoaded] = useState(false);
-  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval" | "prompt">(_savedEditorState?.aiTab === "ab" ? "outline" : (_savedEditorState?.aiTab || "outline"));
+  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval">(
+    (_savedEditorState?.aiTab === "ab" || _savedEditorState?.aiTab === "prompt")
+      ? "outline" : (_savedEditorState?.aiTab || "outline"));
   const [selection, setSelection] = useState<{ start: number; end: number; text: string } | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [rewriteModel, setRewriteModel] = useState("default");
@@ -177,7 +179,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         const saved = JSON.parse(raw);
         if (saved?.chatMessages?.length > 0) {
           setChatMessages(saved.chatMessages);
-          if (saved.aiTab) setAiTab(saved.aiTab);
+          if (saved.aiTab && saved.aiTab !== "prompt") setAiTab(saved.aiTab);
           setChatLoaded(true);
           return;
         }
@@ -1273,7 +1275,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 面板">&#9654;</button>
           </div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
-            {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"], ["prompt", "Prompt"]] as const).map(([key, label]) => (
+            {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
             ))}
           </div>
@@ -1289,7 +1291,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} />}
-            {aiTab === "prompt" && <PromptTab projectId={projectId} chapter={activeCh} />}
           </div>
         </div>
         ) : (
@@ -1328,6 +1329,9 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   const [outlineChatInput, setOutlineChatInput] = useState("");
   const [outlineChatLoading, setOutlineChatLoading] = useState(false);
   const [pendingOutline, setPendingOutline] = useState<string | null>(null);
+  // Web-LLM workflow: copy the prompt out / paste the reply back.
+  const [pasteMode, setPasteMode] = useState(false);
+  const [pasteText, setPasteText] = useState("");
   const outlineChatEndRef = useRef<HTMLDivElement>(null);
 
   // Load outline chat from backend
@@ -1366,6 +1370,55 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
 
   const applyOutlineFromChat = (content: string) => {
     setPendingOutline(content);
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+  };
+
+  /** Copy the full outline-chat prompt so it can be run in a web LLM. */
+  const copyOutlinePrompt = async () => {
+    const pending = outlineChatInput.trim();
+    const msgs = pending
+      ? [...outlineChatMsgs, { role: "user" as const, content: pending, ts: Date.now() }]
+      : outlineChatMsgs;
+    try {
+      const res = await apiPost<{ prompt: string }>("/api/generation/outline-chat", {
+        project_id: projectId,
+        messages: msgs.map(m => ({ role: m.role, content: m.content })),
+        context: synopsis || "",
+        prompt_only: true,
+      });
+      await copyToClipboard(res.prompt || "");
+      toast("已复制 prompt，可粘贴到网页 LLM 使用", "success");
+    } catch (e: any) {
+      toast(e?.message || "复制失败", "error");
+    }
+  };
+
+  /** Apply a web-LLM reply pasted by the user as the assistant turn. */
+  const applyPastedReply = () => {
+    const text = pasteText.trim();
+    if (!text) return;
+    let msgs = outlineChatMsgs;
+    const pending = outlineChatInput.trim();
+    if (pending) {
+      msgs = [...msgs, { role: "user" as const, content: pending, ts: Date.now() }];
+      setOutlineChatInput("");
+    }
+    const finalMsgs = [...msgs, { role: "assistant" as const, content: text, ts: Date.now() }];
+    setOutlineChatMsgs(finalMsgs);
+    apiPut("/api/data/chat_history", { project_id: projectId, scope: `outline_chat_${chapter?.id || ""}`, messages: finalMsgs.slice(-200) }).catch(() => {});
+    setPasteText("");
+    setPasteMode(false);
   };
 
   const confirmOutline = () => {
@@ -1474,12 +1527,35 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           )}
           <div ref={outlineChatEndRef} />
         </div>
-        <div style={{ padding: "6px 10px", borderTop: "1px solid var(--border)", display: "flex", gap: 6 }}>
-          <textarea className="input" value={outlineChatInput} onChange={e => setOutlineChatInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendOutlineChat(); } }}
-            placeholder="描述你想要的大纲..." rows={1} style={{ flex: 1, fontSize: 11, padding: "4px 8px", minHeight: 28, maxHeight: 80, resize: "none" }} />
-          <button className="btn-primary" onClick={() => sendOutlineChat()} disabled={!outlineChatInput.trim() || outlineChatLoading}
-            style={{ fontSize: 11, padding: "4px 10px" }}>{outlineChatLoading ? "..." : "发送"}</button>
+        <div style={{ padding: "6px 10px", borderTop: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <textarea className="input" value={outlineChatInput} onChange={e => setOutlineChatInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendOutlineChat(); } }}
+              placeholder="描述你想要的大纲..." rows={1} style={{ flex: 1, fontSize: 11, padding: "4px 8px", minHeight: 28, maxHeight: 80, resize: "none" }} />
+            <button className="btn-primary" onClick={() => sendOutlineChat()} disabled={!outlineChatInput.trim() || outlineChatLoading}
+              style={{ fontSize: 11, padding: "4px 10px" }}>{outlineChatLoading ? "..." : "发送"}</button>
+          </div>
+          {/* Web-LLM workflow — copy the prompt out, paste the reply back. */}
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <button className="btn" onClick={copyOutlinePrompt}
+              style={{ fontSize: 10, padding: "3px 10px" }}
+              title="复制本次对话的完整 prompt，可粘贴到 ChatGPT / Claude.ai 等网页 LLM">复制 prompt</button>
+            <button className="btn" onClick={() => setPasteMode(m => !m)}
+              style={{ fontSize: 10, padding: "3px 10px", borderColor: pasteMode ? "var(--accent)" : "var(--border)", color: pasteMode ? "var(--accent)" : "var(--text-secondary)" }}>
+              {pasteMode ? "取消粘贴" : "粘贴网页结果"}
+            </button>
+          </div>
+          {pasteMode && (
+            <div style={{ marginTop: 6 }}>
+              <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)}
+                placeholder="把网页 LLM 返回的回复粘贴到这里，应用后会作为助手回复加入对话" rows={4}
+                style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5 }} />
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+                <button className="btn-primary" onClick={applyPastedReply} disabled={!pasteText.trim()}
+                  style={{ fontSize: 10, padding: "3px 12px" }}>应用为回复</button>
+              </div>
+            </div>
+          )}
         </div>
         {/* Quick prompts for outline chat */}
         {outlineChatMsgs.length === 0 && (
@@ -2418,246 +2494,3 @@ function EvalTab({ result }: { result: EvalResult | null }) {
     </div>
   );
 }
-
-function PromptTab({ projectId, chapter }: { projectId: string; chapter?: ChapterOutline | null }) {
-  const { toast } = useToast();
-  const [sections, setSections] = useState<{ label: string; content: string; shared?: boolean }[]>([]);
-  const [compactPrompt, setCompactPrompt] = useState("");
-  const [fullPrompt, setFullPrompt] = useState("");
-  const [sharedContext, setSharedContext] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [tokenEstimate, setTokenEstimate] = useState(0);
-  const [agentRole, setAgentRole] = useState("scene_director");
-  const [viewMode, setViewMode] = useState<"sections" | "compact" | "full">("compact");
-  const [copied, setCopied] = useState(false);
-  const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set());
-
-  const loadPrompt = async () => {
-    if (!chapter) return;
-    setLoading(true);
-    try {
-      const resp = await apiPost<{
-        sections: { label: string; content: string; shared?: boolean }[];
-        full_prompt: string;
-        compact_prompt: string;
-        shared_context: string;
-        token_estimate: number;
-      }>("/api/generation/prompt-preview", {
-        project_id: projectId || "default",
-        chapter_id: chapter.id,
-        synopsis: chapter.synopsis || "",
-        characters: chapter.characters || [],
-        references: chapter.references || [],
-        time_setting: chapter.time || "",
-        location: chapter.location || "",
-        existing_content: chapter.content || "",
-        chapter_num: 1,
-        character_aliases: chapter.character_aliases || {},
-        agent_role: agentRole,
-      });
-      setSections(resp.sections);
-      setCompactPrompt(resp.compact_prompt);
-      setFullPrompt(resp.full_prompt);
-      setSharedContext(resp.shared_context || "");
-      setTokenEstimate(resp.token_estimate);
-    } catch (e: any) {
-      toast(e?.message || "加载 Prompt 失败", "error");
-    }
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    if (chapter) loadPrompt();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chapter?.id, agentRole]);
-
-  const handleCopy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      toast("已复制到剪贴板", "success");
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback for non-HTTPS environments
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textarea);
-      setCopied(true);
-      toast("已复制到剪贴板", "success");
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  const toggleSection = (idx: number) => {
-    setExpandedSections(prev => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx); else next.add(idx);
-      return next;
-    });
-  };
-
-  if (!chapter) return (
-    <div className="empty-state" style={{ padding: "32px 16px" }}>
-      <h4>请选择章节</h4>
-      <p>选择一个章节后可预览完整 Prompt</p>
-    </div>
-  );
-
-  const currentText = viewMode === "compact" ? compactPrompt : viewMode === "full" ? fullPrompt : "";
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* Header */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div className="text-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-          预览发送给 LLM 的完整 Prompt（含 Memory + RAG）。◈ 标记的「通用上下文」部分所有 Agent 通用，可单独复制用于单Agent生成。
-        </div>
-
-        {/* Agent role selector */}
-        <div className="flex items-center gap-8">
-          <span className="text-xs" style={{ color: "var(--text-secondary)", whiteSpace: "nowrap" }}>Agent:</span>
-          <select
-            value={agentRole}
-            onChange={e => setAgentRole(e.target.value)}
-            style={{
-              flex: 1, fontSize: 12, padding: "4px 8px", borderRadius: 6,
-              border: "1px solid var(--border)", background: "var(--bg-primary)",
-              color: "var(--text-primary)", outline: "none",
-            }}
-          >
-            <option value="scene_director">Scene Director (场景导演)</option>
-            <option value="editor_writer">Editor-Writer (编辑作家)</option>
-            <option value="actor_agent">Actor Agent (角色演员)</option>
-            <option value="evaluator">Evaluator (评估器)</option>
-          </select>
-        </div>
-      </div>
-
-      {/* View mode + token count + action buttons */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-        {(["sections", "compact", "full"] as const).map(mode => (
-          <button key={mode} onClick={() => setViewMode(mode)} style={{
-            fontSize: 11, padding: "3px 10px", borderRadius: 12,
-            border: viewMode === mode ? "1px solid var(--accent)" : "1px solid var(--border)",
-            background: viewMode === mode ? "var(--accent-subtle)" : "transparent",
-            color: viewMode === mode ? "var(--accent)" : "var(--text-secondary)",
-            cursor: "pointer",
-          }}>
-            {mode === "sections" ? "分段" : mode === "compact" ? "紧凑" : "完整"}
-          </button>
-        ))}
-        <span className="text-xs" style={{ color: "var(--text-tertiary)", marginLeft: "auto" }}>
-          ~{tokenEstimate.toLocaleString()} tokens
-        </span>
-      </div>
-
-      {/* Action buttons */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div className="flex gap-6">
-          <button
-            className="btn-primary"
-            onClick={() => handleCopy(viewMode === "sections" ? fullPrompt : currentText)}
-            disabled={loading || (!compactPrompt && sections.length === 0)}
-            style={{ flex: 1, fontSize: 12, padding: "7px 14px" }}
-          >
-            {copied ? "已复制" : "复制完整 Prompt"}
-          </button>
-          <button
-            className="btn"
-            onClick={loadPrompt}
-            disabled={loading}
-            style={{ fontSize: 12, padding: "7px 14px", border: "1px solid var(--border)" }}
-          >
-            {loading ? "加载中..." : "刷新"}
-          </button>
-        </div>
-        {sharedContext && (
-          <button
-            className="btn"
-            onClick={() => handleCopy(sharedContext)}
-            disabled={loading}
-            style={{ fontSize: 11, padding: "5px 14px", border: "1px solid var(--indigo, var(--border))", color: "var(--indigo, var(--text-secondary))" }}
-          >
-            复制通用上下文（适用于单Agent模式）
-          </button>
-        )}
-      </div>
-
-      {/* Content display */}
-      {loading ? (
-        <div style={{ textAlign: "center", padding: 24, color: "var(--text-tertiary)" }}>
-          正在组装 Prompt...
-        </div>
-      ) : viewMode === "sections" ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {sections.map((sec, i) => {
-            const isShared = sec.shared === true;
-            return (
-            <div key={i} style={{
-              border: isShared ? "1px solid var(--indigo, var(--border))" : "1px solid var(--border)", borderRadius: 8,
-              background: "var(--bg-surface-2)", overflow: "hidden",
-            }}>
-              <div
-                onClick={() => toggleSection(i)}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  padding: "8px 12px", cursor: "pointer",
-                  background: expandedSections.has(i) ? "var(--bg-surface)" : isShared ? "rgba(99,102,241,0.05)" : "transparent",
-                }}
-              >
-                <span style={{ fontSize: 12, fontWeight: 600, color: isShared ? "var(--indigo, var(--text-primary))" : "var(--text-primary)" }}>
-                  {isShared && "\u25C8 "}{sec.label}
-                </span>
-                <div className="flex items-center gap-6">
-                  <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
-                    {sec.content.length} 字
-                  </span>
-                  <button
-                    onClick={e => { e.stopPropagation(); handleCopy(sec.content); }}
-                    style={{
-                      fontSize: 10, padding: "2px 8px", borderRadius: 4,
-                      border: "1px solid var(--border)", background: "transparent",
-                      color: "var(--text-secondary)", cursor: "pointer",
-                    }}
-                  >
-                    复制
-                  </button>
-                  <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-                    {expandedSections.has(i) ? "\u25B2" : "\u25BC"}
-                  </span>
-                </div>
-              </div>
-              {expandedSections.has(i) && (
-                <pre style={{
-                  padding: "10px 12px", margin: 0, fontSize: 11, lineHeight: 1.6,
-                  color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-                  maxHeight: 300, overflowY: "auto", borderTop: "1px solid var(--border)",
-                  fontFamily: "var(--font-mono)",
-                }}>
-                  {sec.content}
-                </pre>
-              )}
-            </div>
-            );
-          })}
-        </div>
-      ) : (
-        <pre style={{
-          padding: "12px 14px", margin: 0, fontSize: 11, lineHeight: 1.6,
-          color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-          background: "var(--bg-surface-2)", borderRadius: 8,
-          border: "1px solid var(--border)", maxHeight: 500, overflowY: "auto",
-          fontFamily: "var(--font-mono)",
-        }}>
-          {currentText || "（暂无内容，请先在大纲栏输入章节信息）"}
-        </pre>
-      )}
-    </div>
-  );
-}
-

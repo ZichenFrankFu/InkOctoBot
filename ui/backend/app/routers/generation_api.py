@@ -790,6 +790,9 @@ class OutlineChatRequest(BaseModel):
     context: str = ""        # world book / character summary for context
     provider: str = ""
     model: str = ""
+    # When true, skip the LLM call and just return the assembled prompt
+    # text so the user can run it in a web LLM and paste the reply back.
+    prompt_only: bool = False
 
 
 @router.post("/outline-chat")
@@ -810,6 +813,14 @@ async def outline_chat(req: OutlineChatRequest):
         )
         if req.context:
             system += f"\n\n[参考设定]\n{req.context}"
+
+        if req.prompt_only:
+            # Assemble a copy-pasteable prompt for use in a web LLM.
+            parts = [system, ""]
+            for m in req.messages:
+                who = "用户" if m.get("role") == "user" else "助手"
+                parts.append(f"【{who}】\n{m.get('content', '')}\n")
+            return {"status": "ok", "prompt": "\n".join(parts).strip()}
 
         llm_messages = [LLMMessage(role="system", content=system)]
         for m in req.messages:
