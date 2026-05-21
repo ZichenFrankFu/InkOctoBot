@@ -3712,9 +3712,16 @@ def preview_prompt(
         rendered = render(key, **vars_)
         return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
 
-    # Fallback: render with empty vars (will raise on missing required vars)
-    rendered = render(key)
-    return {"key": key, "template": template, "rendered": rendered, "vars": {}}
+    # Fallback (assistant.* / generation.* / pipeline.* prompts): these
+    # are not work-scoped, so there are no real vars to splice. Render
+    # with placeholder values so the preview still shows the structure.
+    placeholder_vars = {v: f"〔{v}〕" for v in required_vars}
+    try:
+        rendered = render(key, **placeholder_vars)
+    except ValueError:
+        rendered = template
+    return {"key": key, "template": template, "rendered": rendered,
+            "vars": placeholder_vars}
 
 
 @router.get("/prompts/{key}/preview_chunks")

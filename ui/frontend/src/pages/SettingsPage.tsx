@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut } from "../api/client";
 import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
 import type { AppSettings } from "../api/types";
 import PromptPreview from "../components/reference/PromptPreview";
 
@@ -611,6 +612,7 @@ function SystemTab({
   const [usageLoading, setUsageLoading] = useState(false);
 
   const { toast } = useToast();
+  const { confirm } = useDialog();
 
   // Auto-refresh usage every 10s
   useEffect(() => {
@@ -953,7 +955,12 @@ function SystemTab({
             ))}
           </div>
           <div style={{ marginTop: 16 }}>
-            <button className="btn" onClick={() => { if (window.confirm("确定要清除所有缓存数据吗？此操作不可撤销。")) { localStorage.clear(); window.location.reload(); } }}
+            <button className="btn" onClick={async () => {
+              if (await confirm({ message: "确定要清除所有缓存数据吗？此操作不可撤销。", destructive: true })) {
+                localStorage.clear();
+                window.location.reload();
+              }
+            }}
               style={{ fontSize: 12, padding: "6px 16px", color: "var(--error)", borderColor: "var(--error)" }}>
               清除缓存
             </button>
@@ -973,6 +980,21 @@ interface PromptItem {
   has_override: boolean;
 }
 
+// Group prompts into readable sections by their key prefix.
+const PROMPT_GROUPS: { label: string; prefixes: string[] }[] = [
+  { label: "参考作品", prefixes: ["reference."] },
+  { label: "AI 助手", prefixes: ["assistant."] },
+  { label: "正文生成 / 重写 / 评估", prefixes: ["generation."] },
+  { label: "创作管线 Agent", prefixes: ["pipeline."] },
+];
+
+function promptGroupLabel(key: string): string {
+  for (const g of PROMPT_GROUPS) {
+    if (g.prefixes.some(p => key.startsWith(p))) return g.label;
+  }
+  return "其他";
+}
+
 function PromptsTab() {
   const [items, setItems] = useState<PromptItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -990,53 +1012,68 @@ function PromptsTab() {
 
   useEffect(() => { load(); }, []);
 
+  // Build ordered groups: known sections first, then any leftover.
+  const grouped: { label: string; items: PromptItem[] }[] = [];
+  const knownLabels = PROMPT_GROUPS.map(g => g.label);
+  for (const label of [...knownLabels, "其他"]) {
+    const groupItems = items.filter(it => promptGroupLabel(it.key) === label);
+    if (groupItems.length > 0) grouped.push({ label, items: groupItems });
+  }
+
   return (
     <div>
       <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
-        参考作品 LLM 调用使用的 prompt 模板。点击「编辑」可查看出厂默认 + 当前内容、修改、并保存为新默认。
+        所有预设 AI prompt 模板（参考作品提取、AI 助手、正文生成、评估、创作管线）。点击「编辑」可查看出厂默认 + 当前内容、修改、并保存为新默认。
         每次提取/对话时可单独覆盖（不影响保存的默认）。
       </div>
 
       {loading ? (
         <div className="text-xs text-muted" style={{ padding: 20, textAlign: "center" }}>加载中...</div>
       ) : (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-body" style={{ padding: 0 }}>
-            {items.map((it, idx) => (
-              <div key={it.key} style={{
-                padding: "14px 18px",
-                borderBottom: idx < items.length - 1 ? "1px solid var(--border-subtle)" : "none",
-                display: "flex", alignItems: "center", gap: 12,
-              }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
-                      {it.key}
-                    </span>
-                    {it.has_override && (
-                      <span className="tag" style={{
-                        fontSize: 10, padding: "1px 6px",
-                        color: "var(--gold)", background: "var(--bg-surface-2)",
-                        border: "1px solid var(--gold)",
-                      }}>已覆盖</span>
-                    )}
-                  </div>
-                  <div className="text-xs text-muted">{it.description || "—"}</div>
-                  {it.vars.length > 0 && (
-                    <div className="text-xs text-muted" style={{ marginTop: 2, fontFamily: "var(--font-mono)" }}>
-                      vars: {it.vars.join(", ")}
+        grouped.map(group => (
+          <div key={group.label} style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", margin: "0 0 6px 2px", letterSpacing: 0.5 }}>
+              {group.label}（{group.items.length}）
+            </div>
+            <div className="card">
+              <div className="card-body" style={{ padding: 0 }}>
+                {group.items.map((it, idx) => (
+                  <div key={it.key} style={{
+                    padding: "14px 18px",
+                    borderBottom: idx < group.items.length - 1 ? "1px solid var(--border-subtle)" : "none",
+                    display: "flex", alignItems: "center", gap: 12,
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+                          {it.key}
+                        </span>
+                        {it.has_override && (
+                          <span className="tag" style={{
+                            fontSize: 10, padding: "1px 6px",
+                            color: "var(--gold)", background: "var(--bg-surface-2)",
+                            border: "1px solid var(--gold)",
+                          }}>已覆盖</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-muted">{it.description || "—"}</div>
+                      {it.vars.length > 0 && (
+                        <div className="text-xs text-muted" style={{ marginTop: 2, fontFamily: "var(--font-mono)" }}>
+                          vars: {it.vars.join(", ")}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-                <button
-                  className={selected === it.key ? "btn-primary" : "btn"}
-                  style={{ fontSize: 12, padding: "4px 12px" }}
-                  onClick={() => setSelected(selected === it.key ? null : it.key)}
-                >{selected === it.key ? "关闭" : "编辑"}</button>
+                    <button
+                      className={selected === it.key ? "btn-primary" : "btn"}
+                      style={{ fontSize: 12, padding: "4px 12px" }}
+                      onClick={() => setSelected(selected === it.key ? null : it.key)}
+                    >{selected === it.key ? "关闭" : "编辑"}</button>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
           </div>
-        </div>
+        ))
       )}
 
       {selected && (

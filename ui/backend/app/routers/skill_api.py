@@ -142,153 +142,51 @@ def list_tags():
     return {"tags": sorted(tags)}
 
 
+# Section layout for the 智能体 & skills tab. 特征提取 is a curated set
+# spanning multiple skill directories; the other sections map to a domain.
+_FEATURE_EXTRACTION_SKILLS = [
+    "chronicle_outline_extract", "character_profile", "narrative_extract",
+    "style_extract", "hook_extract", "info_density_judge",
+    "opening_pattern_judge", "payoff_judge",
+]
+_SKILL_SECTIONS = [
+    ("feature_extraction", "特征提取",
+     "编年史、角色、叙事、风格、钩子、信息密度、开篇模式、爽点等特征抽取技能"),
+    ("planner", "规划", "故事规划与架构设计"),
+    ("evaluation", "评估", "质量评估与一致性检查"),
+    ("production", "生产", "内容创作与场景执行"),
+]
+
+
 @router.get("/agents")
 def list_agents():
-    """List all agents with their associated skills, grouped by domain."""
-    agents_dir = Path(__file__).resolve().parents[4] / "agents"
+    """List skill sections for the 智能体 & skills tab.
+
+    Four curated sections: 特征提取 (an explicit cross-directory skill set),
+    规划 / 评估 / 生产 (each backed by its skill domain).
+    """
     registry = _get_registry()
-    deactivated = _get_deactivated()
 
-    AGENT_DOMAINS = {
-        "planner": {"label": "规划", "description": "故事规划与架构设计"},
-        "production": {"label": "生产", "description": "内容创作与场景执行"},
-        "evaluation": {"label": "评估", "description": "质量评估与一致性检查"},
-        "analysis": {"label": "分析", "description": "风格分析与特征提取"},
-        "feature_extraction": {"label": "特征提取", "description": "编年史、信息密度、爽点、钩子、开篇模式等特征抽取技能"},
-        "constraints": {"label": "约束", "description": "约束消歧与规则执行"},
-        "learned_skills": {"label": "自学习", "description": "通过使用自动习得的技能"},
-    }
+    by_name: set[str] = set()
+    by_domain: dict[str, list[str]] = {}
+    for skill in registry._skills.values():
+        name = skill.meta().name
+        by_name.add(name)
+        by_domain.setdefault(_skill_domain(skill), []).append(name)
 
-    # Map skill name -> skill directory parent name for agent matching
-    def _skill_info(meta):
-        return {
-            "name": meta.name,
-            "display_name": meta.display_name,
-            "active": meta.name not in deactivated,
-            "is_learned": False,
-        }
-
-    result = []
-    for domain, info in AGENT_DOMAINS.items():
-        domain_dir = agents_dir / domain
-        if not domain_dir.is_dir():
-            continue
-
-        # Collect all domain skills with their file paths
-        domain_skills_map: dict[str, dict] = {}
-        for skill in registry._skills.values():
-            if _skill_domain(skill) == domain:
-                meta = skill.meta()
-                si = _skill_info(meta)
-                si["is_learned"] = domain == "learned_skills"
-                # Determine which subdirectory this skill lives in
-                try:
-                    import inspect
-                    src = Path(inspect.getfile(type(skill)))
-                    # e.g. agents/evaluation/skills/quality_score/skill.py
-                    # parent = quality_score, parent.parent = skills
-                    skill_subdir = src.parent.name  # e.g. "quality_score"
-                    si["_subdir"] = skill_subdir
-                except Exception:
-                    si["_subdir"] = ""
-                domain_skills_map[meta.name] = si
-
-        # Find agents and map skills to each agent
-        agents_list = []
-        # Scan for agent classes (BaseAgent subclasses + other agent-like classes)
-        for py in sorted(domain_dir.glob("*.py")):
-            if py.name.startswith("__"):
-                continue
-            try:
-                text = py.read_text("utf-8", errors="ignore")
-            except Exception:
-                continue
-            # Extract agent_name or class name
-            agent_name = ""
-            class_name = ""
-            agent_desc = ""
-            for line in text.splitlines():
-                if "agent_name" in line and "=" in line and not line.strip().startswith("#"):
-                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if val and val != "base":
-                        agent_name = val
-                if line.strip().startswith("class ") and ":" in line:
-                    class_name = line.strip().split("class ", 1)[1].split("(")[0].split(":")[0].strip()
-                if '"""' in line and not agent_desc:
-                    agent_desc = line.strip().strip('"').strip()
-            if not agent_name:
-                # Use snake_case of filename for non-BaseAgent classes
-                if class_name:
-                    agent_name = py.stem
-                else:
-                    continue
-
-            agents_list.append({
-                "name": agent_name,
-                "class_name": class_name,
-                "skills": [],
-            })
-
-        # Map skills to agents by naming convention
-        assigned_skills: set[str] = set()
-        for agent_info in agents_list:
-            aname = agent_info["name"]
-            for sname, sinfo in domain_skills_map.items():
-                if sname in assigned_skills:
-                    continue  # Already assigned to another agent
-                subdir = sinfo.get("_subdir", "")
-                skill_name_lower = sname.lower()
-                # Match by: skill subdir contains agent name fragment, or vice versa
-                # e.g. actor_agent ↔ actor_perform, editor_writer ↔ editor_write
-                abase = aname.replace("_agent", "").replace("agent_", "")
-                sbase = subdir.replace("_", "")
-                abase_clean = abase.replace("_", "")
-                # Also try matching against the skill's registered name
-                sname_clean = skill_name_lower.replace("_", "")
-                if (abase_clean and (
-                    (sbase and (
-                        abase_clean in sbase or sbase in abase_clean
-                        or abase.split("_")[0] == subdir.split("_")[0]
-                    ))
-                    or abase_clean in sname_clean or sname_clean in abase_clean
-                    or (abase.split("_")[0] and abase.split("_")[0] in skill_name_lower.split("_"))
-                )):
-                    skill_copy = {k: v for k, v in sinfo.items() if not k.startswith("_")}
-                    agent_info["skills"].append(skill_copy)
-                    assigned_skills.add(sname)
-
-        # Unassigned skills go as domain-level
-        unassigned = []
-        for sname, sinfo in domain_skills_map.items():
-            if sname not in assigned_skills:
-                unassigned.append({k: v for k, v in sinfo.items() if not k.startswith("_")})
-
-        # If domain has skills but no agents, create a synthetic domain-level agent
-        # so the skills remain visible in the UI
-        if not agents_list and domain_skills_map:
-            agents_list.append({
-                "name": domain,
-                "class_name": f"{domain.title()}Domain",
-                "skills": [
-                    {k: v for k, v in sinfo.items() if not k.startswith("_")}
-                    for sinfo in domain_skills_map.values()
-                ],
-            })
-            # All skills are now assigned to the synthetic agent
-            unassigned = []
-
-        result.append({
+    sections = []
+    for domain, label, description in _SKILL_SECTIONS:
+        if domain == "feature_extraction":
+            names = [n for n in _FEATURE_EXTRACTION_SKILLS if n in by_name]
+        else:
+            names = sorted(by_domain.get(domain, []))
+        sections.append({
             "domain": domain,
-            "label": info["label"],
-            "description": info["description"],
-            "agents": [
-                {"name": a["name"], "class_name": a["class_name"], "skills": a["skills"]}
-                for a in agents_list
-            ],
-            "unassigned_skills": unassigned,
+            "label": label,
+            "description": description,
+            "skills": names,
         })
-
-    return {"agents": result}
+    return {"sections": sections}
 
 
 @router.get("/learning-log")
@@ -715,14 +613,13 @@ _COMPARE_PROMPT_DEFAULT = """你是创作技巧分析师。下面是 {n} 部参�
 """
 
 
-@router.post("/compare_works")
-async def compare_works(body: CompareWorksRequest):
-    """Pull each work's extracted features, ask the AI to find common
-    patterns + differences, return a draft Skill object that the client
-    can review and then save via the existing /api/skills/create."""
+def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
+    """Fetch the selected works and build the cross-work comparison prompt.
+
+    Shared by the built-in-AI path and the copy-prompt (web-LLM) path.
+    """
     from rag.reference_db import ReferenceDB
     from ui.backend.app.settings import settings as _app_settings
-    from models.router import ModelRouter
 
     if not body.ref_ids:
         raise HTTPException(400, "请至少选择一部作品")
@@ -806,6 +703,30 @@ async def compare_works(body: CompareWorksRequest):
         instruction_block=instruction_block,
         bundle=bundle_str,
     )
+    return prompt, works
+
+
+@router.post("/compare_works/prompt")
+def compare_works_prompt(body: CompareWorksRequest):
+    """Build the cross-work comparison prompt for the user to copy into a
+    web LLM (the manual alternative to the built-in /compare_works AI call)."""
+    prompt, works = _build_compare_prompt(body)
+    return {
+        "prompt": prompt,
+        "source_works": [
+            {"ref_id": w["ref_id"], "title": w.get("title")} for w in works
+        ],
+    }
+
+
+@router.post("/compare_works")
+async def compare_works(body: CompareWorksRequest):
+    """Pull each work's extracted features, ask the AI to find common
+    patterns + differences, return a draft Skill object that the client
+    can review and then save via the existing /api/skills/create."""
+    from models.router import ModelRouter
+
+    prompt, works = _build_compare_prompt(body)
 
     try:
         router_inst = ModelRouter()

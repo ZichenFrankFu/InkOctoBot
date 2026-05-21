@@ -716,14 +716,25 @@ async def generate_scene_plan(req: GenerateRequest):
 @router.post("/rewrite")
 async def rewrite_text(req: RewriteRequest):
     try:
+        from models.base import LLMMessage
+        from analysis.feature_extraction.prompts import render, get_template
         router_inst = _build_router(req.provider, req.model)
         from agents.production.editor_writer import EditorWriter
         editor = EditorWriter(router_inst, project_id="rewrite")
-        result = await editor.targeted_rewrite(
+        user_content = render(
+            "generation.rewrite",
+            instruction=req.instruction or "润色并提升文学质量",
             original_text=req.text,
-            instruction=req.instruction,
         )
-        return {"status": "ok", "rewritten": result}
+        messages = [
+            LLMMessage(role="system", content=editor.system_prompt),
+            LLMMessage(role="user", content=user_content),
+        ]
+        resp = await router_inst.generate(
+            agent_role="editor_writer", messages=messages,
+            temperature=0.5, max_tokens=8000,
+        )
+        return {"status": "ok", "rewritten": resp.content}
     except Exception as e:
         logger.error("Rewrite error: %s", e, exc_info=True)
         raise HTTPException(500, detail=str(e))
@@ -747,15 +758,11 @@ async def quick_generate(req: GenerateRequest):
     """Single-step generation: synopsis -> full chapter text."""
     try:
         from models.base import LLMMessage
+        from analysis.feature_extraction.prompts import get_template
         router_inst = _build_router(req.provider, req.model)
 
-        system_prompt = req.system_hint if req.system_hint else (
-            "你是一个专业的小说写作AI。根据提供的大纲和设定，"
-            "写出高质量的章节内容。要求：\n"
-            "1. 文字生动，有画面感\n"
-            "2. 对话自然，符合人物性格\n"
-            "3. 情节紧凑，节奏合理\n"
-            "4. 保持叙事视角一致"
+        system_prompt = req.system_hint if req.system_hint else get_template(
+            "generation.single_agent"
         )
 
         # When system_hint is set, it's a conversational/studio mode
@@ -844,17 +851,10 @@ async def outline_chat(req: OutlineChatRequest):
     """Interactive outline brainstorming: multi-turn conversation with AI."""
     try:
         from models.base import LLMMessage
+        from analysis.feature_extraction.prompts import get_template
         router_inst = _build_router(req.provider, req.model)
 
-        system = (
-            "你是一位资深小说策划编辑，擅长帮助作者构思故事大纲。你的职责：\n"
-            "1. 帮助作者发展和完善故事构思\n"
-            "2. 提出有建设性的问题，引导作者深入思考情节、人物、冲突\n"
-            "3. 在作者的想法基础上给出具体化建议（不要完全替代作者创作）\n"
-            "4. 指出可能的逻辑漏洞或情节问题\n"
-            "5. 适当时输出结构化的大纲段落\n"
-            "回复用中文。保持简洁但有深度。"
-        )
+        system = get_template("assistant.outline")
         if req.context:
             system += f"\n\n[参考设定]\n{req.context}"
 

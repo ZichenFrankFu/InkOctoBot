@@ -1,18 +1,28 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
-import type { SkillInfo, SkillExecuteResult, Project } from "../api/types";
+import type { SkillInfo, Project } from "../api/types";
 import { useToast } from "../components/shared/Toast";
 
-const DOMAIN_LABELS: Record<string, { label: string; color: string }> = {
-  planner: { label: "Planner", color: "var(--indigo)" },
-  production: { label: "Production", color: "var(--gold)" },
-  evaluation: { label: "Evaluation", color: "var(--accent)" },
-  analysis: { label: "Analysis", color: "var(--jade)" },
-  feature_extraction: { label: "特征提取", color: "var(--cyan)" },
-  constraints: { label: "Constraints", color: "var(--text-secondary)" },
-  learned_skills: { label: "Learned", color: "var(--purple)" },
-  unknown: { label: "Other", color: "var(--text-secondary)" },
+const SECTION_COLORS: Record<string, string> = {
+  feature_extraction: "var(--cyan)",
+  planner: "var(--indigo)",
+  evaluation: "var(--accent)",
+  production: "var(--gold)",
 };
+
+// Curated feature-extraction set, used to build a fallback view if the
+// /api/skills/agents endpoint is unavailable.
+const FEATURE_EXTRACTION_SKILLS = [
+  "chronicle_outline_extract", "character_profile", "narrative_extract",
+  "style_extract", "hook_extract", "info_density_judge",
+  "opening_pattern_judge", "payoff_judge",
+];
+const FALLBACK_SECTIONS: { domain: string; label: string; description: string }[] = [
+  { domain: "feature_extraction", label: "特征提取", description: "编年史、角色、叙事、风格、钩子、信息密度、开篇模式、爽点等特征抽取技能" },
+  { domain: "planner", label: "规划", description: "故事规划与架构设计" },
+  { domain: "evaluation", label: "评估", description: "质量评估与一致性检查" },
+  { domain: "production", label: "生产", description: "内容创作与场景执行" },
+];
 
 interface LearningLogEntry {
   id: string;
@@ -40,25 +50,11 @@ interface PrefEntry {
   role?: string;
 }
 
-interface AgentSkillSummary {
-  name: string;
-  display_name: string;
-  active: boolean;
-  is_learned: boolean;
-}
-
-interface AgentEntry {
-  name: string;
-  class_name: string;
-  skills: AgentSkillSummary[];
-}
-
-interface AgentDomain {
+interface SkillSection {
   domain: string;
   label: string;
   description: string;
-  agents: AgentEntry[];
-  unassigned_skills: AgentSkillSummary[];
+  skills: string[];
 }
 
 interface Props {
@@ -71,14 +67,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [filterTag, setFilterTag] = useState("");
-  const [allTags, setAllTags] = useState<string[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [testSkill, setTestSkill] = useState<string | null>(null);
-  const [testInput, setTestInput] = useState("{}");
-  const [testResult, setTestResult] = useState<SkillExecuteResult | null>(null);
-  const [testing, setTesting] = useState(false);
-  const [testError, setTestError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [newSkill, setNewSkill] = useState({ name: "", display_name: "", description: "", tags: "", prompt_template: "" });
   const [creating, setCreating] = useState(false);
@@ -97,72 +86,48 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
   const [editingMemoryText, setEditingMemoryText] = useState("");
 
-  // Agents
-  const [agentDomains, setAgentDomains] = useState<AgentDomain[]>([]);
+  // Skill sections (智能体 & skills tab)
+  const [sections, setSections] = useState<SkillSection[]>([]);
 
   // Track deactivated state for learning log entries not in registry
   const [logDeactivated, setLogDeactivated] = useState<Set<string>>(new Set());
 
-  // Active tab: "agents" | "learning"
   const [activeTab, setActiveTab] = useState<"agents" | "learning" | "compare">("agents");
-  // Expanded domain in agents tab
+  // Expanded section in the agents tab
   const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
 
-  const buildFallbackDomains = useCallback((skillsList: SkillInfo[]): AgentDomain[] => {
-    // Group skills by domain to build a fallback view when the agents API fails
-    const domainMap: Record<string, SkillInfo[]> = {};
+  const buildFallbackSections = useCallback((skillsList: SkillInfo[]): SkillSection[] => {
+    const names = new Set(skillsList.map(s => s.name));
+    const byDomain: Record<string, string[]> = {};
     for (const s of skillsList) {
       const d = (s as any).agent_domain || "unknown";
-      if (!domainMap[d]) domainMap[d] = [];
-      domainMap[d].push(s);
+      (byDomain[d] ||= []).push(s.name);
     }
-    return Object.entries(domainMap).map(([domain, domainSkills]) => {
-      const meta = DOMAIN_LABELS[domain] || DOMAIN_LABELS.unknown;
-      return {
-        domain,
-        label: meta.label,
-        description: "",
-        agents: [{
-          name: domain,
-          class_name: "",
-          skills: domainSkills.map(s => ({
-            name: s.name,
-            display_name: s.display_name || s.name,
-            active: s.active !== false,
-            is_learned: !!(s as any).is_learned,
-          })),
-        }],
-        unassigned_skills: [],
-      };
-    });
+    return FALLBACK_SECTIONS.map(sec => ({
+      ...sec,
+      skills: sec.domain === "feature_extraction"
+        ? FEATURE_EXTRACTION_SKILLS.filter(n => names.has(n))
+        : (byDomain[sec.domain] || []).slice().sort(),
+    }));
   }, []);
 
   const loadSkills = useCallback(() => {
     setLoading(true);
-    // Fetch skills, tags, and learning-log independently from agents
-    // so a failure in one does not block the others
     const skillsP = apiGet<{ skills: SkillInfo[]; total: number }>("/api/skills").catch(() => ({ skills: [] as SkillInfo[], total: 0 }));
-    const tagsP = apiGet<{ tags: string[] }>("/api/skills/tags").catch(() => ({ tags: [] as string[] }));
     const logP = apiGet<{ entries: LearningLogEntry[] }>("/api/skills/learning-log").catch(() => ({ entries: [] as LearningLogEntry[] }));
-    const agentsP = apiGet<{ agents: AgentDomain[] }>("/api/skills/agents").catch(() => ({ agents: [] as AgentDomain[] }));
+    const sectionsP = apiGet<{ sections: SkillSection[] }>("/api/skills/agents").catch(() => ({ sections: [] as SkillSection[] }));
 
-    Promise.all([skillsP, tagsP, logP, agentsP])
-      .then(([skillsResp, tagsResp, logResp, agentsResp]) => {
+    Promise.all([skillsP, logP, sectionsP])
+      .then(([skillsResp, logResp, sectionsResp]) => {
         const fetchedSkills = skillsResp.skills || [];
         setSkills(fetchedSkills);
-        setAllTags(tagsResp.tags || []);
         setLearningLog(logResp.entries || []);
-        const agents = agentsResp.agents || [];
-        // If agents API returned empty but we have skills, build fallback domains
-        if (agents.length === 0 && fetchedSkills.length > 0) {
-          setAgentDomains(buildFallbackDomains(fetchedSkills));
-        } else {
-          setAgentDomains(agents);
-        }
+        const secs = sectionsResp.sections || [];
+        setSections(secs.length > 0 ? secs : buildFallbackSections(fetchedSkills));
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [buildFallbackDomains]);
+  }, [buildFallbackSections]);
 
   useEffect(() => { loadSkills(); }, [loadSkills]);
 
@@ -236,7 +201,6 @@ export default function SkillsPage({ projects, activeProject }: Props) {
     try {
       const resp = await apiPost<{ active: boolean }>(`/api/skills/${name}/toggle`, {});
       setSkills(prev => prev.map(s => s.name === name ? { ...s, active: resp.active } : s));
-      // Also update local deactivated tracking
       setLogDeactivated(prev => {
         const next = new Set(prev);
         if (resp.active) next.delete(name); else next.add(name);
@@ -244,7 +208,6 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       });
       toast(resp.active ? "技能已启用" : "技能已停用", "success");
     } catch (e: any) {
-      // For test mode entries not in registry, toggle locally
       setLogDeactivated(prev => {
         const next = new Set(prev);
         if (next.has(name)) next.delete(name); else next.add(name);
@@ -297,55 +260,23 @@ export default function SkillsPage({ projects, activeProject }: Props) {
     setSaving(false);
   };
 
-  const filtered = skills.filter((s) => {
-    if (search && !s.name.includes(search) && !s.display_name.includes(search) && !s.description.includes(search)) return false;
-    if (filterTag && !s.tags.includes(filterTag)) return false;
-    return true;
-  });
-
-  // Group by domain
-  const grouped: Record<string, SkillInfo[]> = {};
-  for (const s of filtered) {
-    const domain = s.agent_domain || "unknown";
-    if (!grouped[domain]) grouped[domain] = [];
-    grouped[domain].push(s);
-  }
-
-  const domainOrder = ["planner", "production", "evaluation", "analysis", "feature_extraction", "constraints", "learned_skills", "unknown"];
-  const sortedDomains = Object.keys(grouped).sort(
-    (a, b) => domainOrder.indexOf(a) - domainOrder.indexOf(b)
-  );
-
-  const handleTest = async (skillName: string) => {
-    setTesting(true);
-    setTestResult(null);
-    setTestError("");
-    try {
-      const inputs = JSON.parse(testInput);
-      const resp = await apiPost<SkillExecuteResult>("/api/skills/execute", {
-        name: skillName,
-        inputs,
-      });
-      setTestResult(resp);
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      setTestError(msg);
-      toast(msg || "操作失败", "error");
-    }
-    setTesting(false);
+  const matchesSearch = (s: SkillInfo): boolean => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return s.name.toLowerCase().includes(q)
+      || (s.display_name || "").toLowerCase().includes(q)
+      || (s.description || "").toLowerCase().includes(q);
   };
 
   const projectName = (pid: string) => projects.find(p => p.id === pid)?.name || pid;
 
-  // Helper: is a skill active (check registry first, then local state)
   const isSkillActive = (name: string): boolean => {
     const registrySkill = skills.find(s => s.name === name);
     if (registrySkill) return registrySkill.active !== false;
     return !logDeactivated.has(name);
   };
 
-  // Helper: is a skill a basic (built-in) skill — read-only, non-deletable.
-  // Only non-basic (learned) skills can be created / modified / deleted.
+  // Basic (built-in) skills are read-only; only learned skills are editable.
   const isBasicSkill = (skill: SkillInfo): boolean => skill.is_basic ?? !skill.is_learned;
 
   if (loading) {
@@ -357,13 +288,13 @@ export default function SkillsPage({ projects, activeProject }: Props) {
     );
   }
 
-  const learnedCount = skills.filter(s => s.is_learned).length;
-  const workflowCount = skills.filter(s => !s.is_learned).length;
+  const learnedSkills = skills.filter(s => s.is_learned);
+  const learnedCount = learnedSkills.length;
+  const sectionSkillTotal = sections.reduce((n, sec) => n + sec.skills.length, 0);
 
-  // Render a skill row with expand/edit/test/delete capabilities
+  // Render a skill row with expand / edit / delete capabilities
   const renderSkillRow = (skill: SkillInfo, idx: number, total: number) => {
     const isExp = expanded === skill.name;
-    const isTst = testSkill === skill.name;
     const basic = isBasicSkill(skill);
     return (
       <div key={skill.name} style={{ borderBottom: idx < total - 1 ? "1px solid var(--border-subtle)" : "none" }}>
@@ -383,7 +314,6 @@ export default function SkillsPage({ projects, activeProject }: Props) {
               <code style={{ fontSize: 10, color: "var(--text-tertiary)", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>
                 {skill.name}
               </code>
-              <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>v{skill.version}</span>
               {skill.is_learned && (
                 <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--purple-subtle, rgba(147,51,234,0.1))", color: "var(--purple, #9333ea)", fontWeight: 600 }}>自学习</span>
               )}
@@ -408,11 +338,6 @@ export default function SkillsPage({ projects, activeProject }: Props) {
               </>
             )}
           </div>
-          <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
-            {skill.tags.slice(0, 3).map(t => (
-              <span key={t} style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-secondary)" }}>{t}</span>
-            ))}
-          </div>
           <span style={{ fontSize: 11, color: "var(--text-disabled)", transition: "transform 0.2s", transform: isExp ? "rotate(90deg)" : "none" }}>&#9654;</span>
         </div>
         {confirmDelete === skill.name && (
@@ -427,20 +352,20 @@ export default function SkillsPage({ projects, activeProject }: Props) {
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 10 }}>修改技能</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
               <div className="field">
-                <label className="label">Display Name</label>
+                <label className="label">显示名</label>
                 <input className="input" value={editForm.display_name} onChange={e => setEditForm(prev => ({ ...prev, display_name: e.target.value }))} />
               </div>
               <div className="field">
-                <label className="label">Tags (逗号分隔)</label>
+                <label className="label">标签（逗号分隔）</label>
                 <input className="input" value={editForm.tags} onChange={e => setEditForm(prev => ({ ...prev, tags: e.target.value }))} />
               </div>
             </div>
             <div className="field mb-12">
-              <label className="label">Description</label>
+              <label className="label">描述</label>
               <input className="input" value={editForm.description} onChange={e => setEditForm(prev => ({ ...prev, description: e.target.value }))} />
             </div>
             <div className="field mb-12">
-              <label className="label">Prompt Template (留空保持不变)</label>
+              <label className="label">Prompt 模板（留空保持不变）</label>
               <textarea className="input" value={editForm.prompt_template} onChange={e => setEditForm(prev => ({ ...prev, prompt_template: e.target.value }))}
                 placeholder="留空则保持原有模板" rows={3} style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
             </div>
@@ -462,52 +387,17 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                 </pre>
               </div>
             )}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 12 }}>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Input Schema</div>
-                <pre style={{ fontSize: 11, background: "var(--bg-surface)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 200, margin: 0 }}>
-                  {JSON.stringify(skill.input_schema, null, 2)}
-                </pre>
-              </div>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Output Schema</div>
-                <pre style={{ fontSize: 11, background: "var(--bg-surface)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 200, margin: 0 }}>
-                  {JSON.stringify(skill.output_schema, null, 2)}
-                </pre>
-              </div>
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>输出 Schema</div>
+              <pre style={{ fontSize: 11, background: "var(--bg-surface)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 220, margin: 0 }}>
+                {JSON.stringify(skill.output_schema, null, 2)}
+              </pre>
             </div>
             <div style={{ display: "flex", gap: 12, marginTop: 10, fontSize: 11, flexWrap: "wrap" }}>
               <span style={{ color: "var(--text-secondary)" }}>Temperature: <strong>{skill.temperature}</strong></span>
               <span style={{ color: "var(--text-secondary)" }}>Max tokens: <strong>{skill.max_tokens}</strong></span>
               <span style={{ color: "var(--text-secondary)" }}>Role: <strong>{skill.model_role}</strong></span>
               {basic && <span style={{ color: "var(--text-disabled)", fontStyle: "italic" }}>基础技能（不可修改 / 删除）</span>}
-              {skill.is_learned && <span style={{ color: "var(--purple)", fontWeight: 600 }}>Learned Skill</span>}
-            </div>
-            <div style={{ marginTop: 14, padding: 10, background: "var(--bg-surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>Test Skill</span>
-                <button className="btn-primary" onClick={() => { setTestSkill(skill.name); handleTest(skill.name); }}
-                  disabled={testing && isTst} style={{ fontSize: 11, padding: "3px 10px" }}>
-                  {testing && isTst ? "Running..." : "Execute"}
-                </button>
-              </div>
-              <textarea
-                value={isTst || testSkill === skill.name ? testInput : "{}"}
-                onChange={e => { setTestSkill(skill.name); setTestInput(e.target.value); }}
-                placeholder='{"text": "sample input..."}'
-                style={{ width: "100%", minHeight: 50, fontFamily: "var(--font-mono)", fontSize: 11, padding: 8, borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", resize: "vertical", boxSizing: "border-box" }}
-              />
-              {testResult && isTst && (
-                <div style={{ marginTop: 8 }}>
-                  <div style={{ fontSize: 11, color: "var(--jade)", marginBottom: 4 }}>Completed in {testResult.execution_time_ms}ms</div>
-                  <pre style={{ fontSize: 11, background: "var(--bg-secondary)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 300, margin: 0 }}>
-                    {JSON.stringify(testResult.result, null, 2)}
-                  </pre>
-                </div>
-              )}
-              {testError && isTst && (
-                <div style={{ marginTop: 8, fontSize: 11, color: "var(--error)" }}>{testError}</div>
-              )}
             </div>
           </div>
         )}
@@ -524,10 +414,10 @@ export default function SkillsPage({ projects, activeProject }: Props) {
             智能体管理
           </h2>
           <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
-            {agentDomains.reduce((s, d) => s + d.agents.length, 0)} Agents &middot; {workflowCount} Skills &middot; {learnedCount} Learned
+            {skills.length} 个技能 &middot; {learnedCount} 个自学习技能
           </p>
         </div>
-        <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => setShowCreate(!showCreate)}>
+        <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => { setActiveTab("learning"); setShowCreate(true); }}>
           + 新建技能
         </button>
       </div>
@@ -535,9 +425,9 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       {/* Tabs */}
       <div style={{ display: "flex", gap: 0, marginBottom: 20, borderBottom: "2px solid var(--border-subtle)" }}>
         {([
-          { key: "agents" as const, label: "智能体 & Skills", count: agentDomains.reduce((s, d) => s + d.agents.length, 0) },
+          { key: "agents" as const, label: "智能体 & Skills", count: sectionSkillTotal },
           { key: "compare" as const, label: "作品对比", count: 0 },
-          { key: "learning" as const, label: "自学习成果", count: learningLog.length },
+          { key: "learning" as const, label: "自学习成果", count: learnedCount },
         ]).map(tab => (
           <button
             key={tab.key}
@@ -556,217 +446,89 @@ export default function SkillsPage({ projects, activeProject }: Props) {
             }}
           >
             {tab.label}
-            <span style={{ fontSize: 10, marginLeft: 6, color: "var(--text-tertiary)" }}>({tab.count})</span>
+            {tab.count > 0 && <span style={{ fontSize: 10, marginLeft: 6, color: "var(--text-tertiary)" }}>({tab.count})</span>}
           </button>
         ))}
       </div>
 
-      {/* Create skill form (shown on learning tab) */}
-      {showCreate && activeTab === "learning" && (
-        <div className="card mb-20" style={{ animation: "slideUp 0.2s var(--ease-out)" }}>
-          <div className="card-header"><h3>新建自学习技能</h3></div>
-          <div className="card-body">
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-              <div className="field">
-                <label className="label">Skill Name (snake_case)</label>
-                <input className="input" value={newSkill.name} onChange={e => setNewSkill(prev => ({ ...prev, name: e.target.value }))} placeholder="my_custom_skill" />
-              </div>
-              <div className="field">
-                <label className="label">Display Name</label>
-                <input className="input" value={newSkill.display_name} onChange={e => setNewSkill(prev => ({ ...prev, display_name: e.target.value }))} placeholder="My Custom Skill" />
-              </div>
-            </div>
-            <div className="field mb-12">
-              <label className="label">Description</label>
-              <input className="input" value={newSkill.description} onChange={e => setNewSkill(prev => ({ ...prev, description: e.target.value }))} placeholder="What this skill does..." />
-            </div>
-            <div className="field mb-12">
-              <label className="label">Tags (comma separated)</label>
-              <input className="input" value={newSkill.tags} onChange={e => setNewSkill(prev => ({ ...prev, tags: e.target.value }))} placeholder="custom, writing, analysis" />
-            </div>
-            <div className="field mb-12">
-              <label className="label">Prompt Template</label>
-              <textarea className="input" value={newSkill.prompt_template} onChange={e => setNewSkill(prev => ({ ...prev, prompt_template: e.target.value }))}
-                placeholder="请根据以下输入生成内容：\n\n{text}" rows={3} style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
-            </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button className="btn" onClick={() => setShowCreate(false)}>取消</button>
-              <button className="btn-primary" onClick={handleCreateSkill} disabled={creating || !newSkill.name.trim()}>
-                {creating ? "创建中..." : "创建技能"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ═══════════════════════ TAB: Agents & Skills ═══════════════════════ */}
       {activeTab === "agents" && (
         <>
-          {/* Search + filter */}
-          <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+          <div style={{ marginBottom: 16 }}>
             <input
               className="input"
               placeholder="搜索技能..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              style={{ flex: 1, maxWidth: 300 }}
+              style={{ maxWidth: 320 }}
             />
-            <select className="select" value={filterTag} onChange={(e) => setFilterTag(e.target.value)} style={{ minWidth: 140 }}>
-              <option value="">全部标签</option>
-              {allTags.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
           </div>
 
-          {/* Domain → Agent → Skills hierarchy */}
-          {agentDomains.length === 0 && skills.length === 0 && !loading && (
+          {sections.length === 0 && (
             <div className="card" style={{ padding: 24, textAlign: "center" }}>
               <div style={{ fontSize: 13, color: "var(--text-tertiary)" }}>
-                暂无注册的技能或 Agent。请检查后端服务是否正常运行。
+                暂无注册的技能。请检查后端服务是否正常运行。
               </div>
             </div>
           )}
+
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {agentDomains.map(domain => {
-              const meta = DOMAIN_LABELS[domain.domain] || DOMAIN_LABELS.unknown;
-              const totalSkills = domain.agents.reduce((s, a) => s + a.skills.length, 0) + domain.unassigned_skills.length;
-              const isDomainExpanded = expandedDomain === domain.domain;
+            {sections.map(section => {
+              const color = SECTION_COLORS[section.domain] || "var(--text-secondary)";
+              const sectionSkills = section.skills
+                .map(name => skills.find(s => s.name === name))
+                .filter((s): s is SkillInfo => !!s);
+              const visibleSkills = sectionSkills.filter(matchesSearch);
+              const isOpen = expandedDomain === section.domain;
               return (
-                <div key={domain.domain} className="card">
-                  {/* Domain header (功能板块) */}
+                <div key={section.domain} className="card">
                   <div
                     className="card-header"
-                    style={{ borderLeft: `3px solid ${meta.color}`, padding: "10px 16px", cursor: "pointer" }}
-                    onClick={() => setExpandedDomain(isDomainExpanded ? null : domain.domain)}
+                    style={{ borderLeft: `3px solid ${color}`, padding: "10px 16px", cursor: "pointer" }}
+                    onClick={() => setExpandedDomain(isOpen ? null : section.domain)}
                   >
                     <div style={{ flex: 1 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <h3 style={{ fontSize: 14, margin: 0, color: meta.color }}>{domain.label}</h3>
+                        <h3 style={{ fontSize: 14, margin: 0, color }}>{section.label}</h3>
                         <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                          {domain.agents.length} agents &middot; {totalSkills} skills
+                          {sectionSkills.length} 个技能
                         </span>
                       </div>
-                      <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>{domain.description}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>{section.description}</div>
                     </div>
-                    <span style={{ fontSize: 12, color: "var(--text-disabled)", transition: "transform 0.2s", transform: isDomainExpanded ? "rotate(90deg)" : "none" }}>&#9654;</span>
+                    <span style={{ fontSize: 12, color: "var(--text-disabled)", transition: "transform 0.2s", transform: isOpen ? "rotate(90deg)" : "none" }}>&#9654;</span>
                   </div>
 
-                  <div className="card-body" style={{ padding: 0 }}>
-                    {/* Agent list with their skills */}
-                    {domain.agents.map((agent, agentIdx) => {
-                      const agentSkills = filtered.filter(s =>
-                        agent.skills.some(as => as.name === s.name)
-                      );
-                      const hasSkills = agent.skills.length > 0;
-                      return (
-                        <div key={agent.name} style={{
-                          borderBottom: agentIdx < domain.agents.length - 1 || domain.unassigned_skills.length > 0
-                            ? "1px solid var(--border-subtle)" : "none",
-                        }}>
-                          {/* Agent row */}
-                          <div style={{
-                            display: "flex", alignItems: "center", gap: 10,
-                            padding: "10px 16px", paddingLeft: 24,
-                          }}>
-                            <span style={{ color: meta.color, fontSize: 10, flexShrink: 0 }}>&#9679;</span>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                                  {agent.name}
-                                </span>
-                                {agent.class_name && (
-                                  <code style={{ fontSize: 10, color: "var(--text-tertiary)", background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 4 }}>
-                                    {agent.class_name}
-                                  </code>
-                                )}
-                                {!hasSkills && (
-                                  <span style={{ fontSize: 10, color: "var(--text-disabled)", fontStyle: "italic" }}>无技能</span>
-                                )}
-                              </div>
-                            </div>
-                            {hasSkills && (
-                              <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-                                {agent.skills.length} skill{agent.skills.length > 1 ? "s" : ""}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Skills belonging to this agent */}
-                          {hasSkills && !isDomainExpanded && (
-                            <div style={{ padding: "0 16px 10px", paddingLeft: 44 }}>
-                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                {agent.skills.map(s => (
-                                  <div key={s.name} style={{
-                                    padding: "3px 10px", borderRadius: 6,
-                                    background: s.active ? "var(--bg-surface)" : "var(--bg-secondary)",
-                                    border: "1px solid var(--border-subtle)", fontSize: 11,
-                                    color: s.active ? "var(--text-primary)" : "var(--text-disabled)",
-                                    opacity: s.active ? 1 : 0.6,
-                                    textDecoration: s.active ? "none" : "line-through",
-                                    cursor: "pointer",
-                                  }} onClick={() => setExpandedDomain(domain.domain)}>
-                                    {s.display_name || s.name}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Expanded: full skill detail rows */}
-                          {isDomainExpanded && agentSkills.length > 0 && (
-                            <div style={{ marginLeft: 24, borderLeft: `2px solid ${meta.color}22` }}>
-                              {agentSkills.map((skill, idx) => renderSkillRow(skill, idx, agentSkills.length))}
-                            </div>
-                          )}
+                  {isOpen && (
+                    <div className="card-body" style={{ padding: 0 }}>
+                      {visibleSkills.length === 0 ? (
+                        <div style={{ padding: "12px 16px", fontSize: 12, color: "var(--text-tertiary)" }}>
+                          {sectionSkills.length === 0 ? "暂无技能" : "无匹配技能"}
                         </div>
-                      );
-                    })}
+                      ) : (
+                        visibleSkills.map((skill, idx) => renderSkillRow(skill, idx, visibleSkills.length))
+                      )}
+                    </div>
+                  )}
 
-                    {/* Unassigned skills (domain-level, not tied to a specific agent) */}
-                    {domain.unassigned_skills.length > 0 && (() => {
-                      const unassignedFiltered = filtered.filter(s =>
-                        domain.unassigned_skills.some(us => us.name === s.name)
-                      );
-                      return (
-                        <div style={{ borderTop: domain.agents.length > 0 ? "1px solid var(--border-subtle)" : "none" }}>
-                          <div style={{ padding: "8px 16px 4px", paddingLeft: 24 }}>
-                            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)" }}>
-                              独立技能
-                            </span>
-                            <span style={{ fontSize: 10, color: "var(--text-tertiary)", marginLeft: 6 }}>
-                              ({domain.unassigned_skills.length})
-                            </span>
+                  {!isOpen && sectionSkills.length > 0 && (
+                    <div className="card-body" style={{ padding: "8px 16px 12px" }}>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {sectionSkills.map(s => (
+                          <div key={s.name} style={{
+                            padding: "3px 10px", borderRadius: 6,
+                            background: s.active !== false ? "var(--bg-surface)" : "var(--bg-secondary)",
+                            border: "1px solid var(--border-subtle)", fontSize: 11,
+                            color: s.active !== false ? "var(--text-primary)" : "var(--text-disabled)",
+                            textDecoration: s.active !== false ? "none" : "line-through",
+                            cursor: "pointer",
+                          }} onClick={() => setExpandedDomain(section.domain)}>
+                            {s.display_name || s.name}
                           </div>
-                          {!isDomainExpanded && (
-                            <div style={{ padding: "4px 16px 10px", paddingLeft: 44 }}>
-                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                {domain.unassigned_skills.map(s => (
-                                  <div key={s.name} style={{
-                                    padding: "3px 10px", borderRadius: 6,
-                                    background: s.active ? "var(--bg-surface)" : "var(--bg-secondary)",
-                                    border: "1px solid var(--border-subtle)", fontSize: 11,
-                                    color: s.active ? "var(--text-primary)" : "var(--text-disabled)",
-                                    opacity: s.active ? 1 : 0.6,
-                                    cursor: "pointer",
-                                  }} onClick={() => setExpandedDomain(domain.domain)}>
-                                    {s.display_name || s.name}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {isDomainExpanded && unassignedFiltered.length > 0 && (
-                            <div style={{ marginLeft: 24, borderLeft: "2px solid var(--border-subtle)" }}>
-                              {unassignedFiltered.map((skill, idx) => renderSkillRow(skill, idx, unassignedFiltered.length))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-
-                    {domain.agents.length === 0 && domain.unassigned_skills.length === 0 && (
-                      <div style={{ padding: "12px 16px", fontSize: 12, color: "var(--text-tertiary)" }}>暂无注册的 agent 或 skill</div>
-                    )}
-                  </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -776,229 +538,283 @@ export default function SkillsPage({ projects, activeProject }: Props) {
 
       {/* ═══════════════════════ TAB: Compare Works ═══════════════════════ */}
       {activeTab === "compare" && (
-        <CompareWorksPanel onSaved={() => { loadSkills(); setActiveTab("agents"); }} />
+        <CompareWorksPanel onSaved={() => { loadSkills(); setActiveTab("learning"); }} />
       )}
 
       {/* ═══════════════════════ TAB: Self-Learning ═══════════════════════ */}
       {activeTab === "learning" && (
-        <div className="card" style={{ borderLeft: "3px solid var(--purple)" }}>
-          <div className="card-header" style={{ background: "var(--purple-subtle, rgba(147,51,234,0.06))" }}>
-            <h3 style={{ fontSize: 15, margin: 0, color: "var(--purple, #9333ea)" }}>自学习成果</h3>
-            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-              EditAnalyzer &middot; 偏好记忆 &middot; 自动习得技能
-            </span>
-          </div>
-          <div className="card-body" style={{ padding: 0 }}>
-            {/* ── Skill Learning Log ── */}
-            <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border-subtle)" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 10 }}>
-                技能习得记录
-                <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 8 }}>
-                  {learningLog.length} 条
-                </span>
-              </div>
-              {learningLog.length === 0 ? (
-                <div style={{ fontSize: 12, color: "var(--text-tertiary)", padding: "8px 0" }}>
-                  暂无自学习记录。当系统检测到重复的用户修改模式或评估失败时，将自动生成新技能。
+        <>
+          {showCreate && (
+            <div className="card mb-20" style={{ animation: "slideUp 0.2s var(--ease-out)" }}>
+              <div className="card-header"><h3>新建自学习技能</h3></div>
+              <div className="card-body">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                  <div className="field">
+                    <label className="label">技能名（snake_case）</label>
+                    <input className="input" value={newSkill.name} onChange={e => setNewSkill(prev => ({ ...prev, name: e.target.value }))} placeholder="my_custom_skill" />
+                  </div>
+                  <div className="field">
+                    <label className="label">显示名</label>
+                    <input className="input" value={newSkill.display_name} onChange={e => setNewSkill(prev => ({ ...prev, display_name: e.target.value }))} placeholder="我的技能" />
+                  </div>
                 </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {learningLog.map(entry => {
-                    const active = isSkillActive(entry.skill_name);
-                    return (
-                      <div key={entry.id} style={{
-                        padding: "10px 14px", background: "var(--bg-surface)", borderRadius: 8,
-                        border: "1px solid var(--border-subtle)",
-                        opacity: active ? 1 : 0.6,
-                      }}>
-                        <div className="flex items-center gap-8" style={{ marginBottom: 4 }}>
-                          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--purple, #9333ea)", textDecoration: active ? "none" : "line-through" }}>
-                            {entry.display_name || entry.skill_name}
-                          </span>
-                          <code style={{ fontSize: 10, color: "var(--text-tertiary)", background: "var(--bg-secondary)", padding: "1px 6px", borderRadius: 4 }}>
-                            {entry.skill_name}
-                          </code>
-                          {entry.project_id && (
-                            <span style={{ fontSize: 10, padding: "1px 8px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-secondary)" }}>
-                              {projectName(entry.project_id)}
+                <div className="field mb-12">
+                  <label className="label">描述</label>
+                  <input className="input" value={newSkill.description} onChange={e => setNewSkill(prev => ({ ...prev, description: e.target.value }))} placeholder="这个技能做什么..." />
+                </div>
+                <div className="field mb-12">
+                  <label className="label">标签（逗号分隔）</label>
+                  <input className="input" value={newSkill.tags} onChange={e => setNewSkill(prev => ({ ...prev, tags: e.target.value }))} placeholder="custom, writing" />
+                </div>
+                <div className="field mb-12">
+                  <label className="label">Prompt 模板</label>
+                  <textarea className="input" value={newSkill.prompt_template} onChange={e => setNewSkill(prev => ({ ...prev, prompt_template: e.target.value }))}
+                    placeholder="请根据以下输入生成内容：{text}" rows={3} style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} />
+                </div>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button className="btn" onClick={() => setShowCreate(false)}>取消</button>
+                  <button className="btn-primary" onClick={handleCreateSkill} disabled={creating || !newSkill.name.trim()}>
+                    {creating ? "创建中..." : "创建技能"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="card" style={{ borderLeft: "3px solid var(--purple)" }}>
+            <div className="card-header" style={{ background: "var(--purple-subtle, rgba(147,51,234,0.06))" }}>
+              <h3 style={{ fontSize: 15, margin: 0, color: "var(--purple, #9333ea)" }}>自学习成果</h3>
+              <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                自学习技能 &middot; 习得记录 &middot; 偏好记忆
+              </span>
+            </div>
+            <div className="card-body" style={{ padding: 0 }}>
+              {/* ── Learned skills ── */}
+              <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border-subtle)" }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 10 }}>
+                  自学习技能
+                  <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 8 }}>
+                    {learnedCount} 个
+                  </span>
+                </div>
+                {learnedSkills.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "var(--text-tertiary)", padding: "8px 0" }}>
+                    暂无自学习技能。可通过上方「新建技能」或「作品对比」生成。
+                  </div>
+                ) : (
+                  <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 8, overflow: "hidden" }}>
+                    {learnedSkills.map((skill, idx) => renderSkillRow(skill, idx, learnedSkills.length))}
+                  </div>
+                )}
+              </div>
+
+              {/* ── Skill Learning Log ── */}
+              <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border-subtle)" }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 10 }}>
+                  技能习得记录
+                  <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 8 }}>
+                    {learningLog.length} 条
+                  </span>
+                </div>
+                {learningLog.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "var(--text-tertiary)", padding: "8px 0" }}>
+                    暂无自学习记录。当系统检测到重复的用户修改模式或评估失败时，将自动生成新技能。
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {learningLog.map(entry => {
+                      const active = isSkillActive(entry.skill_name);
+                      return (
+                        <div key={entry.id} style={{
+                          padding: "10px 14px", background: "var(--bg-surface)", borderRadius: 8,
+                          border: "1px solid var(--border-subtle)",
+                          opacity: active ? 1 : 0.6,
+                        }}>
+                          <div className="flex items-center gap-8" style={{ marginBottom: 4 }}>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--purple, #9333ea)", textDecoration: active ? "none" : "line-through" }}>
+                              {entry.display_name || entry.skill_name}
                             </span>
-                          )}
-                          {!active && (
-                            <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-disabled)" }}>已停用</span>
-                          )}
-                          <span style={{ fontSize: 10, color: "var(--text-disabled)", marginLeft: "auto" }}>
-                            {entry.created_at}
-                          </span>
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>
-                          <span style={{ color: "var(--gold)", fontWeight: 600 }}>触发：</span>{entry.trigger}
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-                          <span style={{ color: "var(--jade)", fontWeight: 600 }}>用途：</span>{entry.need_description}
-                        </div>
-                        {/* Actions — always show for learning log entries */}
-                        <div style={{ display: "flex", gap: 6, marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border-subtle)" }}>
-                          <button
-                            className="btn"
-                            style={{ fontSize: 10, padding: "3px 10px" }}
-                            onClick={() => handleToggleSkill(entry.skill_name)}
-                          >
-                            {active ? "停用" : "启用"}
-                          </button>
-                          {confirmDelete === entry.skill_name ? (
-                            <>
-                              <span style={{ fontSize: 10, color: "var(--error)", lineHeight: "22px" }}>确认删除？</span>
-                              <button className="btn" style={{ fontSize: 10, padding: "3px 8px" }} onClick={() => setConfirmDelete(null)}>取消</button>
-                              <button className="btn" style={{ fontSize: 10, padding: "3px 8px", color: "var(--error)", borderColor: "var(--error)" }} onClick={() => handleDeleteSkill(entry.skill_name)}>确认</button>
-                            </>
-                          ) : (
+                            <code style={{ fontSize: 10, color: "var(--text-tertiary)", background: "var(--bg-secondary)", padding: "1px 6px", borderRadius: 4 }}>
+                              {entry.skill_name}
+                            </code>
+                            {entry.project_id && (
+                              <span style={{ fontSize: 10, padding: "1px 8px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-secondary)" }}>
+                                {projectName(entry.project_id)}
+                              </span>
+                            )}
+                            {!active && (
+                              <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--bg-secondary)", color: "var(--text-disabled)" }}>已停用</span>
+                            )}
+                            <span style={{ fontSize: 10, color: "var(--text-disabled)", marginLeft: "auto" }}>
+                              {entry.created_at}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>
+                            <span style={{ color: "var(--gold)", fontWeight: 600 }}>触发：</span>{entry.trigger}
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                            <span style={{ color: "var(--jade)", fontWeight: 600 }}>用途：</span>{entry.need_description}
+                          </div>
+                          <div style={{ display: "flex", gap: 6, marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border-subtle)" }}>
                             <button
                               className="btn"
-                              style={{ fontSize: 10, padding: "3px 10px", color: "var(--error)" }}
-                              onClick={() => setConfirmDelete(entry.skill_name)}
+                              style={{ fontSize: 10, padding: "3px 10px" }}
+                              onClick={() => handleToggleSkill(entry.skill_name)}
                             >
-                              删除
+                              {active ? "停用" : "启用"}
                             </button>
-                          )}
+                            {confirmDelete === entry.skill_name ? (
+                              <>
+                                <span style={{ fontSize: 10, color: "var(--error)", lineHeight: "22px" }}>确认删除？</span>
+                                <button className="btn" style={{ fontSize: 10, padding: "3px 8px" }} onClick={() => setConfirmDelete(null)}>取消</button>
+                                <button className="btn" style={{ fontSize: 10, padding: "3px 8px", color: "var(--error)", borderColor: "var(--error)" }} onClick={() => handleDeleteSkill(entry.skill_name)}>确认</button>
+                              </>
+                            ) : (
+                              <button
+                                className="btn"
+                                style={{ fontSize: 10, padding: "3px 10px", color: "var(--error)" }}
+                                onClick={() => setConfirmDelete(entry.skill_name)}
+                              >
+                                删除
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {/* ── Per-Project Preference Memories ── */}
-            <div style={{ padding: "14px 16px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>偏好记忆</div>
-                <select className="select" style={{ fontSize: 11, minWidth: 140 }}
-                  value={prefProject} onChange={e => setPrefProject(e.target.value)}>
-                  {projects.length === 0 && <option value="default">默认项目</option>}
-                  {projects.map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-                <button className="btn" style={{ fontSize: 11, padding: "3px 10px", marginLeft: "auto" }}
-                  onClick={analyzePreferences} disabled={prefLoading}>
-                  {prefLoading ? "分析中..." : prefEntries.length > 0 ? "刷新" : "收集交互记录"}
-                </button>
-              </div>
-
-              <div style={{ padding: "8px 12px", background: "var(--purple-subtle, rgba(147,51,234,0.06))", borderRadius: 6, marginBottom: 12, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                根据该项目内所有AI对话交互记录，自动提取创作偏好。各项目的偏好记忆独立存储，用于改进AI生成质量。
-              </div>
-
-              {/* Summary */}
-              {prefSummary && (
-                <div style={{ padding: "8px 12px", background: "var(--bg-surface)", borderRadius: 6, marginBottom: 12, fontSize: 12, color: "var(--text-secondary)" }}>
-                  {prefSummary}
-                </div>
-              )}
-
-              {/* Extracted memories */}
-              {extractedMemories.length > 0 && (
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>
-                    提取的创作偏好
-                    <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 6 }}>
-                      {extractedMemories.length} 条
-                    </span>
+                      );
+                    })}
                   </div>
-                  {extractedMemories.map(mem => (
-                    <div key={mem.id} style={{
-                      padding: "8px 12px", borderBottom: "1px solid var(--border-subtle)",
-                      display: "flex", alignItems: "flex-start", gap: 8,
-                      borderLeft: "3px solid var(--indigo)",
-                    }}>
-                      <div style={{
-                        width: 20, height: 20, borderRadius: "50%", flexShrink: 0, marginTop: 1,
-                        background: "var(--indigo-subtle)", border: "1.5px solid var(--indigo)",
-                        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9,
-                        color: "var(--indigo)",
-                      }}>M</div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="flex items-center gap-8" style={{ marginBottom: 2 }}>
-                          <span style={{ fontSize: 10, color: "var(--text-disabled)" }}>{mem.timestamp}</span>
-                          <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "var(--indigo-subtle)", color: "var(--indigo)" }}>{mem.source}</span>
-                        </div>
-                        {editingMemoryId === mem.id ? (
-                          <div>
-                            <textarea className="input" value={editingMemoryText}
-                              onChange={e => setEditingMemoryText(e.target.value)}
-                              rows={2} style={{ fontSize: 11, width: "100%", boxSizing: "border-box", marginBottom: 4 }} />
-                            <div className="flex gap-4">
-                              <button className="btn-primary" style={{ fontSize: 10, padding: "2px 8px" }}
-                                onClick={() => updateExtractedMemory(mem.id, editingMemoryText)}>保存</button>
-                              <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }}
-                                onClick={() => setEditingMemoryId(null)}>取消</button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                            {mem.content}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex gap-2" style={{ flexShrink: 0 }}>
-                        <button className="btn-icon" style={{ fontSize: 10 }}
-                          onClick={() => { setEditingMemoryId(mem.id); setEditingMemoryText(mem.content); }}
-                          title="编辑">&#9998;</button>
-                        <button className="btn-icon" style={{ fontSize: 11 }}
-                          onClick={() => removeExtractedMemory(mem.id)}
-                          title="删除">&times;</button>
-                      </div>
+                )}
+              </div>
+
+              {/* ── Per-Project Preference Memories ── */}
+              <div style={{ padding: "14px 16px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>偏好记忆</div>
+                  <select className="select" style={{ fontSize: 11, minWidth: 140 }}
+                    value={prefProject} onChange={e => setPrefProject(e.target.value)}>
+                    {projects.length === 0 && <option value="default">默认项目</option>}
+                    {projects.map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                  <button className="btn" style={{ fontSize: 11, padding: "3px 10px", marginLeft: "auto" }}
+                    onClick={analyzePreferences} disabled={prefLoading}>
+                    {prefLoading ? "分析中..." : prefEntries.length > 0 ? "刷新" : "收集交互记录"}
+                  </button>
+                </div>
+
+                <div style={{ padding: "8px 12px", background: "var(--purple-subtle, rgba(147,51,234,0.06))", borderRadius: 6, marginBottom: 12, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                  根据该项目内所有AI对话交互记录，自动提取创作偏好。各项目的偏好记忆独立存储，用于改进AI生成质量。
+                </div>
+
+                {prefSummary && (
+                  <div style={{ padding: "8px 12px", background: "var(--bg-surface)", borderRadius: 6, marginBottom: 12, fontSize: 12, color: "var(--text-secondary)" }}>
+                    {prefSummary}
+                  </div>
+                )}
+
+                {extractedMemories.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>
+                      提取的创作偏好
+                      <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 6 }}>
+                        {extractedMemories.length} 条
+                      </span>
                     </div>
-                  ))}
-                </div>
-              )}
-
-              {/* User interaction entries */}
-              {prefEntries.length > 0 && (
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>
-                    用户交互记录
-                    <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 6 }}>
-                      {prefEntries.length} 条
-                    </span>
-                  </div>
-                  <div style={{ maxHeight: 300, overflowY: "auto" }}>
-                    {prefEntries.map(entry => (
-                      <div key={entry.id} style={{
+                    {extractedMemories.map(mem => (
+                      <div key={mem.id} style={{
                         padding: "8px 12px", borderBottom: "1px solid var(--border-subtle)",
                         display: "flex", alignItems: "flex-start", gap: 8,
-                        borderLeft: "3px solid var(--purple, #9333ea)",
+                        borderLeft: "3px solid var(--indigo)",
                       }}>
                         <div style={{
                           width: 20, height: 20, borderRadius: "50%", flexShrink: 0, marginTop: 1,
-                          background: "var(--purple-subtle)", border: "1.5px solid var(--purple, #9333ea)",
+                          background: "var(--indigo-subtle)", border: "1.5px solid var(--indigo)",
                           display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9,
-                        }}>U</div>
+                          color: "var(--indigo)",
+                        }}>M</div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div className="flex items-center gap-8" style={{ marginBottom: 2 }}>
-                            <span style={{ fontSize: 10, color: "var(--text-disabled)" }}>{entry.timestamp}</span>
-                            <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "var(--bg-secondary)", color: "var(--text-secondary)" }}>{entry.action}</span>
+                            <span style={{ fontSize: 10, color: "var(--text-disabled)" }}>{mem.timestamp}</span>
+                            <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "var(--indigo-subtle)", color: "var(--indigo)" }}>{mem.source}</span>
                           </div>
-                          <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                            {entry.detail.length > 300 ? entry.detail.slice(0, 300) + "..." : entry.detail}
-                          </div>
+                          {editingMemoryId === mem.id ? (
+                            <div>
+                              <textarea className="input" value={editingMemoryText}
+                                onChange={e => setEditingMemoryText(e.target.value)}
+                                rows={2} style={{ fontSize: 11, width: "100%", boxSizing: "border-box", marginBottom: 4 }} />
+                              <div className="flex gap-4">
+                                <button className="btn-primary" style={{ fontSize: 10, padding: "2px 8px" }}
+                                  onClick={() => updateExtractedMemory(mem.id, editingMemoryText)}>保存</button>
+                                <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }}
+                                  onClick={() => setEditingMemoryId(null)}>取消</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                              {mem.content}
+                            </div>
+                          )}
                         </div>
-                        <button className="btn-icon" style={{ fontSize: 11, flexShrink: 0 }}
-                          onClick={() => removePrefEntry(entry.id)}>&times;</button>
+                        <div className="flex gap-2" style={{ flexShrink: 0 }}>
+                          <button className="btn-icon" style={{ fontSize: 10 }}
+                            onClick={() => { setEditingMemoryId(mem.id); setEditingMemoryText(mem.content); }}
+                            title="编辑">&#9998;</button>
+                          <button className="btn-icon" style={{ fontSize: 11 }}
+                            onClick={() => removeExtractedMemory(mem.id)}
+                            title="删除">&times;</button>
+                        </div>
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                )}
 
-              {prefEntries.length === 0 && !prefSummary && extractedMemories.length === 0 && (
-                <div style={{ textAlign: "center", padding: "16px 0", color: "var(--text-tertiary)", fontSize: 12 }}>
-                  点击「收集交互记录」按钮来分析该项目的AI对话历史
-                </div>
-              )}
+                {prefEntries.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>
+                      用户交互记录
+                      <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 6 }}>
+                        {prefEntries.length} 条
+                      </span>
+                    </div>
+                    <div style={{ maxHeight: 300, overflowY: "auto" }}>
+                      {prefEntries.map(entry => (
+                        <div key={entry.id} style={{
+                          padding: "8px 12px", borderBottom: "1px solid var(--border-subtle)",
+                          display: "flex", alignItems: "flex-start", gap: 8,
+                          borderLeft: "3px solid var(--purple, #9333ea)",
+                        }}>
+                          <div style={{
+                            width: 20, height: 20, borderRadius: "50%", flexShrink: 0, marginTop: 1,
+                            background: "var(--purple-subtle)", border: "1.5px solid var(--purple, #9333ea)",
+                            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9,
+                          }}>U</div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div className="flex items-center gap-8" style={{ marginBottom: 2 }}>
+                              <span style={{ fontSize: 10, color: "var(--text-disabled)" }}>{entry.timestamp}</span>
+                              <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "var(--bg-secondary)", color: "var(--text-secondary)" }}>{entry.action}</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                              {entry.detail.length > 300 ? entry.detail.slice(0, 300) + "..." : entry.detail}
+                            </div>
+                          </div>
+                          <button className="btn-icon" style={{ fontSize: 11, flexShrink: 0 }}
+                            onClick={() => removePrefEntry(entry.id)}>&times;</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {prefEntries.length === 0 && !prefSummary && extractedMemories.length === 0 && (
+                  <div style={{ textAlign: "center", padding: "16px 0", color: "var(--text-tertiary)", fontSize: 12 }}>
+                    点击「收集交互记录」按钮来分析该项目的AI对话历史
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );
@@ -1037,15 +853,21 @@ const FOCUS_OPTIONS: { value: string; label: string }[] = [
 ];
 
 function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
+  const { toast } = useToast();
   const [works, setWorks] = useState<WorkRow[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focus, setFocus] = useState<string>("all");
   const [instruction, setInstruction] = useState("");
   const [searching, setSearching] = useState("");
+  const [mode, setMode] = useState<"ai" | "manual">("ai");
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<CompareDraft | null>(null);
   const [sourceWorks, setSourceWorks] = useState<{ ref_id: string; title: string }[]>([]);
+  // Manual (copy-prompt / paste-result) mode
+  const [promptText, setPromptText] = useState("");
+  const [pasteText, setPasteText] = useState("");
+  const [loadingPrompt, setLoadingPrompt] = useState(false);
 
   useEffect(() => {
     apiGet<{ items: WorkRow[]; total: number }>("/api/references/works?limit=500")
@@ -1071,7 +893,7 @@ function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
 
   const generate = async () => {
     if (selected.size < 2) {
-      alert("请选择至少 2 部作品对比");
+      toast("请选择至少 2 部作品对比", "error");
       return;
     }
     setGenerating(true);
@@ -1085,14 +907,60 @@ function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
       setDraft(r.draft);
       setSourceWorks(r.source_works || []);
     } catch (e: any) {
-      alert(`生成失败: ${e?.message || e}`);
+      toast(`生成失败: ${e?.message || e}`, "error");
     } finally { setGenerating(false); }
+  };
+
+  const loadPrompt = async () => {
+    if (selected.size < 2) {
+      toast("请选择至少 2 部作品对比", "error");
+      return;
+    }
+    setLoadingPrompt(true);
+    try {
+      const r = await apiPost<{ prompt: string }>(
+        "/api/skills/compare_works/prompt",
+        { ref_ids: Array.from(selected), focus, instruction },
+      );
+      setPromptText(r.prompt || "");
+      try {
+        await navigator.clipboard.writeText(r.prompt || "");
+        toast("Prompt 已生成并复制到剪贴板", "success");
+      } catch {
+        toast("Prompt 已生成（请手动复制下方文本）", "info");
+      }
+    } catch (e: any) {
+      toast(`生成 Prompt 失败: ${e?.message || e}`, "error");
+    } finally { setLoadingPrompt(false); }
+  };
+
+  const parsePasted = () => {
+    let s = pasteText.trim();
+    if (!s) { toast("请先粘贴网页 LLM 返回的结果", "error"); return; }
+    const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+    if (fence) s = fence[1].trim();
+    const a = s.indexOf("{"), b = s.lastIndexOf("}");
+    if (a >= 0 && b > a) s = s.slice(a, b + 1);
+    try {
+      const obj = JSON.parse(s);
+      setDraft({
+        name: String(obj.name || ""),
+        display_name: String(obj.display_name || ""),
+        description: String(obj.description || ""),
+        prompt_template: String(obj.prompt_template || ""),
+        tags: Array.isArray(obj.tags) ? obj.tags.map((t: any) => String(t)) : [],
+      });
+      setSourceWorks(works.filter(w => selected.has(w.ref_id)).map(w => ({ ref_id: w.ref_id, title: w.title })));
+      toast("解析成功", "success");
+    } catch {
+      toast("解析失败：粘贴的内容不是合法 JSON", "error");
+    }
   };
 
   const save = async () => {
     if (!draft) return;
     if (!draft.name.trim() || !draft.prompt_template.trim()) {
-      alert("请填写 name 和 prompt_template");
+      toast("请填写技能名和 Prompt 模板", "error");
       return;
     }
     setSaving(true);
@@ -1106,18 +974,21 @@ function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
         tags: draft.tags,
         prompt_template: draft.prompt_template,
       });
+      toast("已保存为自学习技能", "success");
       onSaved?.();
       setDraft(null);
       setSelected(new Set());
+      setPromptText("");
+      setPasteText("");
     } catch (e: any) {
-      alert(`保存失败: ${e?.message || e}`);
+      toast(`保存失败: ${e?.message || e}`, "error");
     } finally { setSaving(false); }
   };
 
   return (
     <div>
       <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
-        选择 2-8 部参考作品，AI 会对比它们的提取数据并生成一条可保存为 Skill 的洞察。Skill 保存后会出现在「智能体 & Skills」的「自学习」域，可被任何 agent 调用。
+        选择 2-8 部参考作品，对比它们的提取数据并生成一条可保存为技能的洞察。可使用内置 AI 处理，也可复制 Prompt 到网页 LLM 再粘回结果。保存后会出现在「自学习成果」标签页。
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
@@ -1171,7 +1042,7 @@ function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
           </div>
         </div>
 
-        {/* RIGHT: focus + instruction + generate */}
+        {/* RIGHT: focus + instruction + run */}
         <div className="card">
           <div className="card-header"><h3>对比设置</h3></div>
           <div className="card-body">
@@ -1184,19 +1055,55 @@ function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
             <div className="field" style={{ marginBottom: 12 }}>
               <label className="label">额外指示（可选）</label>
               <textarea
-                className="input" rows={3}
-                placeholder="例如：把对比结果包装成一个能指导 chapter director agent 选择 hook 类型的 skill"
+                className="input" rows={2}
+                placeholder="例如：把对比结果包装成一个能指导章节导演选择 hook 类型的技能"
                 value={instruction}
                 onChange={e => setInstruction(e.target.value)}
               />
             </div>
-            <button
-              className="btn-primary w-full"
-              onClick={generate}
-              disabled={generating || selected.size < 2}
-            >
-              {generating ? "AI 对比生成中..." : `生成对比 Skill (${selected.size} 部作品)`}
-            </button>
+            <div className="field" style={{ marginBottom: 12 }}>
+              <label className="label">处理方式</label>
+              <div style={{ display: "flex", gap: 6 }}>
+                {([["ai", "内置 AI 处理"], ["manual", "复制 Prompt / 粘贴结果"]] as const).map(([k, lbl]) => (
+                  <button key={k} className={mode === k ? "btn-primary" : "btn"}
+                    style={{ fontSize: 11, flex: 1, padding: "5px 0" }}
+                    onClick={() => setMode(k)}>{lbl}</button>
+                ))}
+              </div>
+            </div>
+
+            {mode === "ai" ? (
+              <button
+                className="btn-primary w-full"
+                onClick={generate}
+                disabled={generating || selected.size < 2}
+              >
+                {generating ? "AI 对比生成中..." : `生成对比技能 (${selected.size} 部作品)`}
+              </button>
+            ) : (
+              <div>
+                <button
+                  className="btn w-full"
+                  onClick={loadPrompt}
+                  disabled={loadingPrompt || selected.size < 2}
+                  style={{ marginBottom: 8 }}
+                >
+                  {loadingPrompt ? "生成中..." : `复制对比 Prompt (${selected.size} 部作品)`}
+                </button>
+                {promptText && (
+                  <textarea className="input font-mono" rows={4} readOnly value={promptText}
+                    style={{ fontSize: 11, marginBottom: 8, width: "100%", boxSizing: "border-box" }} />
+                )}
+                <label className="label">粘贴网页 LLM 返回的结果</label>
+                <textarea className="input font-mono" rows={4} value={pasteText}
+                  onChange={e => setPasteText(e.target.value)}
+                  placeholder='{"name": "...", "display_name": "...", "description": "...", "prompt_template": "...", "tags": [...]}'
+                  style={{ fontSize: 11, marginBottom: 8, width: "100%", boxSizing: "border-box" }} />
+                <button className="btn-primary w-full" onClick={parsePasted} disabled={!pasteText.trim()}>
+                  解析为技能草稿
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1206,15 +1113,17 @@ function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
         <div className="card" style={{ marginTop: 16 }}>
           <div className="card-header">
             <h3>
-              草稿 Skill
-              <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
-                来源：{sourceWorks.map(w => w.title).join(" · ")}
-              </span>
+              草稿技能
+              {sourceWorks.length > 0 && (
+                <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
+                  来源：{sourceWorks.map(w => w.title).join(" · ")}
+                </span>
+              )}
             </h3>
           </div>
           <div className="card-body">
             <div className="field" style={{ marginBottom: 10 }}>
-              <label className="label">技能名（snake_case，会创建 agents/learned_skills/&lt;name&gt;/）</label>
+              <label className="label">技能名（snake_case）</label>
               <input
                 className="input"
                 value={draft.name}
@@ -1256,8 +1165,7 @@ function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
             </div>
             <div className="flex gap-8" style={{ justifyContent: "flex-end" }}>
               <button className="btn" onClick={() => setDraft(null)} disabled={saving}>丢弃</button>
-              <button className="btn" onClick={generate} disabled={saving || generating}>重新生成</button>
-              <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "保存中..." : "保存为 Skill"}</button>
+              <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "保存中..." : "保存为技能"}</button>
             </div>
           </div>
         </div>

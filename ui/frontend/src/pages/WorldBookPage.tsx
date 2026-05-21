@@ -5,6 +5,7 @@ import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { WorldBookEntry, WorldBookCategory } from "../api/types";
 import TagAutocomplete from "../components/shared/TagAutocomplete";
+import { renderPrompt } from "../utils/promptTemplate";
 
 interface Props {
   projectId: string;
@@ -224,6 +225,21 @@ export default function WorldBookPage({ projectId, projects }: Props) {
     aiAbortRef.current = controller;
 
     try {
+      const systemHint = await renderPrompt(
+        "assistant.worldbook",
+        {
+          entry_title: editing.title,
+          category: catLabel(editing.category, customCategories),
+          content: editing.content || "（空）",
+        },
+        `你是AI设定助手。当前正在编辑世界书条目「${editing.title}」（分类：${catLabel(editing.category, customCategories)}）。
+已有内容：${editing.content || "（空）"}
+
+帮助用户完善设定，回答设定相关问题。如果用户确认了某些内容，可以提供快速补全建议。
+回答后主动追加一个追问来帮助用户进一步完善设定。
+追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
+用自然语言回答，不要使用JSON格式。`,
+      );
       const resp = await fetch("/api/generation/quick-generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -231,13 +247,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
           project_id: projectId || "default",
           chapter_id: "wb_chat",
           synopsis: msg,
-          system_hint: `你是AI设定助手。当前正在编辑世界书条目「${editing.title}」（分类：${catLabel(editing.category, customCategories)}）。
-已有内容：${editing.content || "（空）"}
-
-帮助用户完善设定，回答设定相关问题。如果用户确认了某些内容，可以提供快速补全建议。
-回答后主动追加一个追问来帮助用户进一步完善设定。
-追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
-用自然语言回答，不要使用JSON格式。`,
+          system_hint: systemHint,
         }),
         signal: controller.signal,
       });

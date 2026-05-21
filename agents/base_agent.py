@@ -30,6 +30,16 @@ logger = logging.getLogger("inkoctobot.agents.base_agent")
 
 _PROMPT_DIR = Path(__file__).resolve().parent.parent / "config" / "prompts"
 
+# Maps an agent_name to the registry key whose (possibly user-overridden)
+# template should take precedence over the static config/prompts/*.yaml
+# `system` block. Lets the Settings → LLM Prompt tab edit these prompts.
+_AGENT_PROMPT_KEYS: dict[str, str] = {
+    "scene_director": "pipeline.scene_direct",
+    "actor_agent": "pipeline.actor",
+    "narrator_agent": "pipeline.narrator",
+    "editor_writer": "pipeline.editor",
+}
+
 
 class BaseAgent:
     """Base class for all creative pipeline agents."""
@@ -68,6 +78,15 @@ class BaseAgent:
     @property
     def system_prompt(self) -> str:
         base = self._prompt_template.get("system", "")
+        # Prefer a user-editable prompt from the registry (Settings → LLM
+        # Prompt). Falls back to the config/prompts/*.yaml `system` block.
+        reg_key = _AGENT_PROMPT_KEYS.get(self.agent_name)
+        if reg_key:
+            try:
+                from analysis.feature_extraction.prompts import get_template
+                base = get_template(reg_key) or base
+            except Exception:
+                pass
         if self._extra_system:
             base += "\n\n" + self._extra_system
         return base.strip()

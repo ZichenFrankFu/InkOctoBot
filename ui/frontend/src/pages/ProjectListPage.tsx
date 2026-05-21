@@ -4,6 +4,7 @@ import { useResizable } from "../hooks/useResizable";
 import { useDialog } from "../components/shared/Dialog";
 import type { Project, FollowUpQuestion, SampleFeedback, CalibrationHistory } from "../api/types";
 import AIChatPanel, { ChatMessage } from "../components/shared/AIChatPanel";
+import { renderPrompt } from "../utils/promptTemplate";
 
 interface Props {
   activeProject: string;
@@ -294,7 +295,18 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
         ? `以下是对话历史：\n\n${conversationContext}\n\n用户：${text}\n\n请基于以上对话上下文回答用户最新的问题。`
         : text;
 
-      const systemHint = `${config.systemHint}
+      // Static portion of the system hint comes from the prompt
+      // registry (Settings → LLM Prompt), so user edits take effect.
+      const promptKey = studioTab === "trending"
+        ? "assistant.book_start_trending"
+        : studioTab === "brainstorm"
+          ? "assistant.book_start_brainstorm"
+          : "";
+      const baseHint = promptKey
+        ? await renderPrompt(promptKey, {}, config.systemHint)
+        : config.systemHint;
+
+      const systemHint = `${baseHint}
 
 回答用户问题后，必须追加1个追问来引导用户进入下一步创作讨论。
 追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]

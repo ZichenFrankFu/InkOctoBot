@@ -4,6 +4,7 @@ import { useResizable } from "../hooks/useResizable";
 import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { Character, CharacterLayerB, CharacterRelationship, DynamicPropertySnapshot } from "../api/types";
+import { renderPrompt } from "../utils/promptTemplate";
 
 interface CharChatMsg {
   role: "user" | "assistant";
@@ -133,6 +134,17 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     charAbortRef.current = controller;
 
     try {
+      const systemHint = await renderPrompt(
+        "assistant.character",
+        {
+          char_name: editing.name,
+          char_role: editing.role || "配角",
+          personality: editing.personality || "未设定",
+          background: editing.background || "未设定",
+          speech_style: editing.speech_style || "未设定",
+        },
+        `你是一个专业的小说角色设计师。当前正在设计角色「${editing.name}」（定位：${editing.role || "配角"}）。\n已有信息：\n- 性格：${editing.personality || "未设定"}\n- 背景：${editing.background || "未设定"}\n- 说话风格：${editing.speech_style || "未设定"}\n\n请根据用户的需求提供角色设计建议、润色人设、或生成新的角色信息。如果用户要求生成完整人设，请以 JSON 格式输出：{"personality":"...","background":"...","speech_style":"..."}。否则用自然语言回答。`,
+      );
       const resp = await fetch("/api/generation/quick-generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -140,7 +152,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
           project_id: projectId || "default",
           chapter_id: "char_chat",
           synopsis: msg,
-          system_hint: `你是一个专业的小说角色设计师。当前正在设计角色「${editing.name}」（定位：${editing.role || "配角"}）。\n已有信息：\n- 性格：${editing.personality || "未设定"}\n- 背景：${editing.background || "未设定"}\n- 说话风格：${editing.speech_style || "未设定"}\n\n请根据用户的需求提供角色设计建议、润色人设、或生成新的角色信息。如果用户要求生成完整人设，请以 JSON 格式输出：{"personality":"...","background":"...","speech_style":"..."}。否则用自然语言回答。`,
+          system_hint: systemHint,
         }),
         signal: controller.signal,
       });
