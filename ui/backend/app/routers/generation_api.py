@@ -632,6 +632,7 @@ async def start_generation(req: GenerateRequest):
                 ctx["blocks"].get("worldbook", ""),
                 ctx["blocks"].get("reference_summary", ""),
                 ctx["blocks"].get("writing_knowledge", ""),
+                ctx["blocks"].get("writing_skills", ""),
             ) if (b or "").strip()
         ).strip()
         if rag_text:

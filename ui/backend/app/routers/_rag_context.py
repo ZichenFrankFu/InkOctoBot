@@ -32,6 +32,7 @@ _BUDGET = {
     "reference_summary": 2000,
     "referenced_materials": 1400,
     "writing_knowledge": 1600,
+    "writing_skills": 2400,
     "foreshadowing": 800,
     "user_preferences": 800,
 }
@@ -446,6 +447,7 @@ def build_generation_context(
         "worldbook": _load_worldbook(project_id),
         "reference_summary": _load_reference_blocks(project_id, db_path or ""),
         "writing_knowledge": _load_writing_knowledge(project_id),
+        "writing_skills": _load_writing_skills(),
         "foreshadowing": _load_foreshadowing(project_id, db_path or "", chapter_num),
         "user_preferences": _load_user_preferences(project_id, db_path or ""),
     }
@@ -497,6 +499,49 @@ def build_referenced_materials_block(
         return ""
     body = _clip("\n".join(lines), _BUDGET["referenced_materials"])
     return _section("关联参考事件与灵感", body)
+
+
+def _load_writing_skills() -> str:
+    """Inject the active learned skills (Claude-style SKILL.md) so the
+    generating model can self-select and apply relevant writing techniques.
+
+    Only user-created learned skills are injected — built-in extraction /
+    evaluation skills are not writing techniques. The generating model
+    decides which of the listed skills apply to the current chapter."""
+    try:
+        from ui.backend.app.routers.skill_api import (
+            _get_registry, _get_deactivated, _skill_public_dict,
+        )
+        registry = _get_registry()
+        deactivated = _get_deactivated()
+        parts: list[str] = []
+        for skill in registry._skills.values():
+            try:
+                info = _skill_public_dict(skill, deactivated)
+            except Exception:
+                continue
+            if not info.get("is_learned") or not info.get("active"):
+                continue
+            name = str(info.get("display_name") or info.get("name") or "").strip()
+            if not name:
+                continue
+            desc = str(info.get("description") or "").strip()
+            body = str(info.get("skill_md") or "").strip()
+            seg = f"### {name}"
+            if desc:
+                seg += f"\n{desc}"
+            if body:
+                seg += f"\n{body}"
+            parts.append(seg)
+        if not parts:
+            return ""
+        body = _clip("\n\n".join(parts), _BUDGET["writing_skills"])
+        return _section(
+            "可用创作技能（请自动判断本章适用哪些技能并运用，无需全部使用）", body,
+        )
+    except Exception as e:
+        logger.debug("writing skills block skipped: %s", e)
+        return ""
 
 
 def load_chapter_fields(project_id: str, chapter_id: str) -> dict:
@@ -581,7 +626,9 @@ def single_agent_vars(
         else ""
     )
 
-    blocks["skills_block"] = build_skills_block(skills)
+    # Active learned skills (from build_generation_context) take priority;
+    # fall back to an explicit name list when no learned skills are active.
+    blocks["skills_block"] = blocks.pop("writing_skills", "") or build_skills_block(skills)
     blocks["referenced_materials"] = build_referenced_materials_block(
         referenced_events, referenced_inspirations,
     )
