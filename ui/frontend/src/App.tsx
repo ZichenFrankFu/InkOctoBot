@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { apiGet } from "./api/client";
 
 import { ToastProvider, useToast } from "./components/shared/Toast";
+import { DialogProvider } from "./components/shared/Dialog";
 import ErrorBoundary from "./components/shared/ErrorBoundary";
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts";
 import ShortcutHint from "./components/shared/ShortcutHint";
@@ -211,7 +212,9 @@ function AppInner() {
 export default function App() {
   return (
     <ToastProvider>
-      <AppInner />
+      <DialogProvider>
+        <AppInner />
+      </DialogProvider>
     </ToastProvider>
   );
 }

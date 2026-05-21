@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost } from "../../api/client";
+import { useDialog } from "../shared/Dialog";
 
 /* ════════════════════════════════════════════════════════════
  * Human-readable editors for reference-work analysis fields.
@@ -1905,6 +1906,7 @@ export function PlotOutlineEditor({
    *  gets a「· 第 N 段」label so the user can locate the events. */
   chunkList?: { globalIndex: number; startChapter: number; endChapter: number }[];
 }) {
+  const { confirm } = useDialog();
   /** Find which 分段 a period (labelled "第 N 章") belongs to. */
   const chunkOfChapter = (periodTime: string): number | null => {
     if (!chunkList || chunkList.length === 0) return null;
@@ -1962,8 +1964,7 @@ export function PlotOutlineEditor({
   // change immediately via onSave so the user sees the DB-backed
   // chronicle update right after pressing the button.
   const deleteEventInRead = async (ei: number, pi: number, evi: number) => {
-    if (typeof window !== "undefined" &&
-        !window.confirm("确认删除这条事件？此操作会立即保存到数据库。")) return;
+    if (!(await confirm({ message: "确认删除这条事件？此操作会立即保存到数据库。", destructive: true }))) return;
     const base = cloneData();
     const epochs = base.epochs || [];
     if (!epochs[ei]?.periods[pi]?.events) return;
@@ -1971,8 +1972,7 @@ export function PlotOutlineEditor({
     await onSave(base);
   };
   const deletePeriodInRead = async (ei: number, pi: number) => {
-    if (typeof window !== "undefined" &&
-        !window.confirm("确认删除这个时间段及其下所有事件？此操作会立即保存。")) return;
+    if (!(await confirm({ message: "确认删除这个时间段及其下所有事件？此操作会立即保存。", destructive: true }))) return;
     const base = cloneData();
     const epochs = base.epochs || [];
     if (!epochs[ei]?.periods) return;
@@ -1980,8 +1980,7 @@ export function PlotOutlineEditor({
     await onSave(base);
   };
   const deleteEpochInRead = async (ei: number) => {
-    if (typeof window !== "undefined" &&
-        !window.confirm("确认删除这个大段及其下所有时间段/事件？此操作会立即保存。")) return;
+    if (!(await confirm({ message: "确认删除这个大段及其下所有时间段/事件？此操作会立即保存。", destructive: true }))) return;
     const base = cloneData();
     base.epochs = (base.epochs || []).filter((_, i) => i !== ei);
     await onSave(base);

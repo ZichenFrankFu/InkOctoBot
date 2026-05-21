@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from "react"
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
 import type { Character, CharacterLayerB, CharacterRelationship, DynamicPropertySnapshot } from "../api/types";
 
 interface CharChatMsg {
@@ -30,6 +31,7 @@ const DEFAULT_LAYER_B: CharacterLayerB = {
 
 export default function CharacterManagerPage({ projectId, projects }: Props) {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [items, setItems] = useState<Character[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Character | null>(null);
@@ -256,7 +258,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   };
 
   const remove = async (id: string) => {
-    if (!confirm("确定删除该角色？")) return;
+    if (!(await confirm({ message: "确定删除该角色？", destructive: true }))) return;
     try {
       await apiDelete(`/api/data/characters/${id}`);
       if (editing?.id === id) setEditing(null);
@@ -483,7 +485,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </button>
                 <button className="btn" style={{ fontSize: 11, flex: 1, color: "var(--error)" }}
                   onClick={async () => {
-                    if (!confirm(`确定删除 ${selectedIds.size} 个角色？`)) return;
+                    if (!(await confirm({ message: `确定删除 ${selectedIds.size} 个角色？`, destructive: true }))) return;
                     for (const id of selectedIds) {
                       await apiDelete(`/api/data/characters/${id}`).catch((e: any) => toast(e.message || "操作失败", "error"));
                     }

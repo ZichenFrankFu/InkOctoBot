@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useToast } from "./shared/Toast";
+import { useDialog } from "./shared/Dialog";
 
 interface Inspiration {
   id: string;
@@ -33,6 +34,7 @@ export default function InspirationLibrary({ onSearchWorks }: {
   onSearchWorks: (query: string) => void;
 }) {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [items, setItems] = useState<Inspiration[]>([]);
   const [loading, setLoading] = useState(false);
   const [catFilter, setCatFilter] = useState("");
@@ -75,7 +77,7 @@ export default function InspirationLibrary({ onSearchWorks }: {
 
   const remove = async (insp: Inspiration) => {
     const label = insp.title || insp.content.slice(0, 20);
-    if (!confirm(`确认删除灵感「${label}」？此操作不可撤销。`)) return;
+    if (!(await confirm({ message: `确认删除灵感「${label}」？此操作不可撤销。`, destructive: true }))) return;
     try {
       await apiDelete(`/api/references/inspirations/${insp.id}`);
       toast("已删除", "success");

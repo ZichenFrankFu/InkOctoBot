@@ -7,6 +7,7 @@
  */
 import React, { useState } from "react";
 import { EditIconButton } from "./AnalysisEditors";
+import { useDialog } from "../shared/Dialog";
 import type {
   CharacterItem, CharacterListItem,
   SettingItem, SettingUpdate,
@@ -248,6 +249,7 @@ function SettingCard({ s, segNo, onChange, onDelete }: {
   onChange?: (next: SettingItem) => void;
   onDelete?: () => void;
 }) {
+  const { confirm } = useDialog();
   const editable = !!onChange;
   const [open, setOpen] = useState(false);
   // Single per-card toggle: 「编辑」 opens edit mode for the header
@@ -314,8 +316,8 @@ function SettingCard({ s, segNo, onChange, onDelete }: {
               onClick={() => { setEditing(true); setOpen(true); }}
               title="编辑此设定的全部字段" />
             <button className="btn-ghost"
-                    onClick={() => {
-                      if (confirm(`确认删除设定「${s.title}」？此操作不可撤销。`)) onDelete?.();
+                    onClick={async () => {
+                      if (await confirm({ message: `确认删除设定「${s.title}」？此操作不可撤销。`, destructive: true })) onDelete?.();
                     }}
                     title="删除设定"
                     style={{ fontSize: 14, padding: "2px 8px", color: "var(--error)" }}>×</button>
@@ -603,6 +605,7 @@ function CharacterCard({
   onChange?: (next: CharacterItem) => void;
   onDelete?: () => void;
 }) {
+  const { confirm } = useDialog();
   const [open, setOpen] = useState(false);
   // A single per-card edit toggle: 「编辑」 puts the whole card —
   // header fields AND every sub-section — into edit mode; 「完成」
@@ -699,8 +702,8 @@ function CharacterCard({
           <>
             <EditIconButton onClick={startEdit} title="编辑此角色的全部字段" />
             <button className="btn-ghost"
-                    onClick={() => {
-                      if (confirm(`确认删除角色「${c.name}」？此操作不可撤销。`)) onDelete?.();
+                    onClick={async () => {
+                      if (await confirm({ message: `确认删除角色「${c.name}」？此操作不可撤销。`, destructive: true })) onDelete?.();
                     }}
                     title="删除角色"
                     style={{ fontSize: 14, padding: "2px 8px", color: "var(--error)" }}>×</button>

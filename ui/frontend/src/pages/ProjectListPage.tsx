@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
+import { useDialog } from "../components/shared/Dialog";
 import type { Project, FollowUpQuestion, SampleFeedback, CalibrationHistory } from "../api/types";
 import AIChatPanel, { ChatMessage } from "../components/shared/AIChatPanel";
 
@@ -157,6 +158,8 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   }, [activeProject]);
 
   const rightPanel = useResizable({ direction: "horizontal", initialSize: 460, minSize: 340, maxSize: 720 });
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const { confirm } = useDialog();
   const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
@@ -210,7 +213,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm("确定删除该项目？此操作不可撤销。")) return;
+    if (!(await confirm({ message: "确定删除该项目？此操作不可撤销。", destructive: true }))) return;
     await apiDelete(`/api/data/projects/${id}`);
     load();
   };
@@ -762,13 +765,15 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
           </div>
         </div>
 
-        <div className="panel-resize-h" {...rightPanel.handleProps} />
+        {rightPanelOpen && <div className="panel-resize-h" {...rightPanel.handleProps} />}
 
         {/* ══════ RIGHT PANEL: AI 开书助手 ══════ */}
+        {rightPanelOpen ? (
         <div className="panel" style={{ width: rightPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderLeft: "1px solid var(--border)", display: "flex", flexDirection: "column" }}>
           <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 6, paddingBottom: 8 }}>
             <div className="flex items-center justify-between">
               <h3 style={{ fontSize: 15, fontWeight: 700 }}>AI 开书助手</h3>
+              <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 开书助手">&#9654;</button>
             </div>
             <div className="text-xs text-muted">
               {projects.find(p => p.id === activeProject)?.name || "未选择项目"}
@@ -1148,6 +1153,13 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
             ) : null}
           </div>
         </div>
+        ) : (
+        <div style={{ width: 36, flexShrink: 0, background: "var(--bg-surface)", borderLeft: "1px solid var(--border)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 12 }}>
+          <button onClick={() => setRightPanelOpen(true)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 13, padding: "4px", writingMode: "vertical-rl", letterSpacing: 2 }} title="展开 AI 开书助手">
+            &#9664; AI 开书助手
+          </button>
+        </div>
+        )}
       </div>
     </div>
   );

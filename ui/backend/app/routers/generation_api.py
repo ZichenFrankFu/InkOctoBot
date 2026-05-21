@@ -735,7 +735,7 @@ async def evaluate_text(req: EvalRequest):
         router_inst = _build_router(req.provider, req.model)
         from agents.evaluation.evaluator import Evaluator
         evaluator = Evaluator(router_inst, project_id="eval")
-        result = await evaluator.evaluate(text=req.text, chapter_num=req.chapter_num)
+        result = await evaluator.evaluate_chapter(req.text, chapter_num=req.chapter_num)
         return {"status": "ok", "evaluation": result}
     except Exception as e:
         logger.error("Evaluate error: %s", e, exc_info=True)

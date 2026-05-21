@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../api/client";
 import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
 import type { ReferenceWork } from "../api/types";
 import InspirationLibrary from "../components/InspirationLibrary";
 
@@ -56,6 +57,7 @@ interface Props { onNavigate?: (tab: string) => void; }
 
 export default function ReferenceSearchPage({ onNavigate }: Props) {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [progressByRef, setProgressByRef] = useState<Record<string, IndexProgressRow[]>>({});
   const [activeTab, setActiveTab] = useState<"search" | "library" | "index">("search");
@@ -171,7 +173,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
   };
 
   const buildAllIndexes = async () => {
-    if (!confirm(`确认为全部 ${works.length} 部作品建立 L1+L2 索引？L3（正文片段）不会包含；如需逐部勾选 L3。`)) return;
+    if (!(await confirm({ message: `确认为全部 ${works.length} 部作品建立 L1+L2 索引？L3（正文片段）不会包含；如需逐部勾选 L3。` }))) return;
     for (const w of works) {
       // Sequential to avoid hammering local embedding backend with parallel requests.
       // eslint-disable-next-line no-await-in-loop
@@ -180,7 +182,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
   };
 
   const clearIndex = async (refId: string) => {
-    if (!confirm("确认删除本作品的全部向量索引？")) return;
+    if (!(await confirm({ message: "确认删除本作品的全部向量索引？", destructive: true }))) return;
     try {
       await fetch(`/api/references/works/${refId}/index`, { method: "DELETE" });
       toast("已清除", "success");

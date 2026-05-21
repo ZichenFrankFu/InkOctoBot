@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet } from "../../api/client";
 import { useToast } from "../shared/Toast";
+import { useDialog } from "../shared/Dialog";
 
 interface UploadedFile {
   index: number;
@@ -31,6 +32,7 @@ interface Props {
 
 export default function FilesPanel({ refId, onAfterChange }: Props) {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [data, setData] = useState<FilesResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -61,10 +63,10 @@ export default function FilesPanel({ refId, onAfterChange }: Props) {
     // user confirm before wiping the chronicle / characters / settings /
     // features and the stored chapters.
     if (!append && data && data.files.length > 0) {
-      if (!confirm(
+      if (!(await confirm({ message:
         "重新上传会覆盖全部正文，并清除所有已提取的内容（编年史 / 角色 / 设定 / 文本特征）"
-        + "以及预处理已存储的章节。此操作不可撤销，确定继续？"
-      )) return;
+        + "以及预处理已存储的章节。此操作不可撤销，确定继续？",
+        destructive: true }))) return;
     }
     setUploading(true);
     try {
@@ -86,7 +88,7 @@ export default function FilesPanel({ refId, onAfterChange }: Props) {
   };
 
   const deleteFile = async (index: number, filename: string) => {
-    if (!confirm(`从正文中删除「${filename}」？此操作不可撤销。`)) return;
+    if (!(await confirm({ message: `从正文中删除「${filename}」？此操作不可撤销。`, destructive: true }))) return;
     try {
       const resp = await fetch(`/api/references/works/${refId}/files/${index}`, {
         method: "DELETE",
@@ -101,7 +103,7 @@ export default function FilesPanel({ refId, onAfterChange }: Props) {
   };
 
   const clearAll = async () => {
-    if (!confirm("清空所有上传文件？这会删除全部正文内容。")) return;
+    if (!(await confirm({ message: "清空所有上传文件？这会删除全部正文内容。", destructive: true }))) return;
     try {
       const resp = await fetch(`/api/references/works/${refId}/files`, { method: "DELETE" });
       if (!resp.ok) throw new Error(await resp.text());

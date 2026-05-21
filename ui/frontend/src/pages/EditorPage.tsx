@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import { useResizable } from "../hooks/useResizable";
+import { useDialog } from "../components/shared/Dialog";
 import useDebounce from "../hooks/useDebounce";
 import { computeDiff, groupIntoHunks, assembleFromHunks } from "../utils/simpleDiff";
 import type { DiffHunk } from "../utils/simpleDiff";
@@ -150,6 +151,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 160, maxSize: 350 });
   const rightPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 200, maxSize: 500, invert: true });
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
+  const { confirm } = useDialog();
 
   // Persist editor chat state to sessionStorage + backend (per chapter)
   const EDITOR_CHAT_KEY = `inkocto_editor_chat_${projectId}_${activeChId}`;
@@ -528,12 +531,12 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setSelectedChIds(new Set(volumes.flatMap(v => v.chapters).map(c => c.id)));
   };
 
-  const deleteSelectedChapters = () => {
+  const deleteSelectedChapters = async () => {
     if (selectedChIds.size === 0) return;
     const allChs = volumes.flatMap(v => v.chapters);
     const remaining = allChs.filter(c => !selectedChIds.has(c.id));
     if (remaining.length === 0) { toast("至少需保留一个章节", "error"); return; }
-    if (!confirm(`确认删除选中的 ${selectedChIds.size} 个章节？此操作不可撤销。`)) return;
+    if (!(await confirm({ message: `确认删除选中的 ${selectedChIds.size} 个章节？此操作不可撤销。`, destructive: true }))) return;
     setVolumes(volumes.map(v => ({ ...v, chapters: v.chapters.filter(c => !selectedChIds.has(c.id)) })));
     if (activeChId && selectedChIds.has(activeChId)) setActiveChId(remaining[0].id);
     exitBatchMode();
@@ -1207,8 +1210,12 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     <div className="page-full">
       <div className="editor-layout">
         {/* LEFT PANEL */}
+        {leftPanelOpen ? (
         <div className="panel" style={{ width: leftPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)" }}>
-          <div className="panel-header"><div className="flex gap-4"></div></div>
+          <div className="panel-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3>章节</h3>
+            <button onClick={() => setLeftPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起章节列表">&#9664;</button>
+          </div>
           <div style={{ padding: "8px 10px 4px" }}>
             <input className="input" type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="搜索章节..." style={{ fontSize: 12, padding: "5px 10px", width: "100%", boxSizing: "border-box" }} />
           </div>
@@ -1286,8 +1293,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                   onMouseEnter={e => e.currentTarget.style.background = "var(--bg-surface-hover)"}
                   onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                 >
-                  <span style={{ cursor: "pointer", flex: 1 }} onClick={() => {
-                    if (confirm(`回滚到版本 ${v.version}？当前内容将被替换。`)) {
+                  <span style={{ cursor: "pointer", flex: 1 }} onClick={async () => {
+                    if (await confirm(`回滚到版本 ${v.version}？当前内容将被替换。`)) {
                       setContent(v.text);
                       if (v.synopsis) {
                         setVolumes(prev => prev.map(vol => ({ ...vol, chapters: vol.chapters.map(c => c.id === activeChId ? { ...c, synopsis: v.synopsis || c.synopsis } : c) })));
@@ -1298,9 +1305,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                   </span>
                   <span style={{ fontSize: 9, flexShrink: 0 }}>{new Date(v.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" })}</span>
                   <button
-                    onClick={(e) => {
+                    onClick={async (e) => {
                       e.stopPropagation();
-                      if (confirm(`删除版本 v${v.version}？此操作不可撤销。`)) {
+                      if (await confirm({ message: `删除版本 v${v.version}？此操作不可撤销。`, destructive: true })) {
                         setVersionHistory(prev => prev.filter(x => x.version_id !== v.version_id));
                         apiDelete(`/api/data/versions/${v.version_id}?project_id=${projectId || "default"}`).catch((e) => toast(e.message || "操作失败", "error"));
                       }
@@ -1323,7 +1330,14 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
           </div>
           <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)", fontSize: 11, color: "var(--text-tertiary)", flexShrink: 0 }}>{totalCh} 章 &middot; {totalW.toLocaleString()} 字</div>
         </div>
-        <div className="panel-resize-h" {...leftPanel.handleProps} />
+        ) : (
+        <div style={{ width: 36, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 12 }}>
+          <button onClick={() => setLeftPanelOpen(true)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "4px", writingMode: "vertical-rl", letterSpacing: 2 }} title="展开章节列表">
+            章节 &#9654;
+          </button>
+        </div>
+        )}
+        {leftPanelOpen && <div className="panel-resize-h" {...leftPanel.handleProps} />}
 
         {/* CENTER PANEL */}
         <div className="panel flex-1" style={{ background: "var(--bg-app)" }}>
@@ -1997,6 +2011,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
   onCopyPrompt?: () => void; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
 }) {
+  const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [pasteMode, setPasteMode] = useState(false);
   const [pasteText, setPasteText] = useState("");
@@ -2123,9 +2138,9 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
                         <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                           {msg.warningOptions.map((opt, oi) => (
                             <button key={oi} className="btn" style={{ fontSize: 11, padding: "4px 12px", borderRadius: 14 }}
-                              onClick={() => {
+                              onClick={async () => {
                                 if (opt.includes("故意")) {
-                                  const reason = window.prompt("请说明原因：", "");
+                                  const reason = await prompt({ title: "请说明原因", placeholder: "请输入原因" });
                                   if (reason !== null) {
                                     onChatInputChange(`${opt}：${reason}`);
                                     onSendMessage();

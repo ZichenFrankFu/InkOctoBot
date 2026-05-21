@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { apiGet, apiPut, apiPost } from "../../api/client";
 import { useToast } from "../shared/Toast";
+import { useDialog } from "../shared/Dialog";
 
 interface PromptInfo {
   key: string;
@@ -52,6 +53,7 @@ export default function PromptPreview({
   promptKey, refId, segmentIndex, initialEdit, onApplyOnce, onSaved, onClose,
 }: Props) {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [info, setInfo] = useState<PromptInfo | null>(null);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [edit, setEdit] = useState<string>(initialEdit || "");
@@ -122,7 +124,7 @@ export default function PromptPreview({
   };
 
   const resetToFactory = async () => {
-    if (!confirm("确定重置为出厂默认？当前的覆盖会被删除。")) return;
+    if (!(await confirm({ message: "确定重置为出厂默认？当前的覆盖会被删除。", destructive: true }))) return;
     setSaving(true);
     try {
       const r = await apiPut<PromptInfo>(`/api/references/prompts/${promptKey}`, { template: null });

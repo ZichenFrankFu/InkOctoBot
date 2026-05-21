@@ -3,6 +3,7 @@ import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import useDebounce from "../hooks/useDebounce";
 import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
 import type { ReferenceWork, MediaType } from "../api/types";
 import {
   Section,
@@ -78,6 +79,7 @@ function StarRating({ value, onChange }: { value: number; onChange: (n: number) 
 
 export default function ReferenceLibraryPage() {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
@@ -240,7 +242,7 @@ export default function ReferenceLibraryPage() {
   }
 
   async function delWork(id: string) {
-    if (!confirm("确定删除这部参考作品？")) return;
+    if (!(await confirm({ message: "确定删除这部参考作品？", destructive: true }))) return;
     try {
       await apiDelete(`/api/references/works/${id}`);
       setSel(null);
@@ -252,7 +254,7 @@ export default function ReferenceLibraryPage() {
 
   async function batchDelete() {
     if (!selectedIds.size) return;
-    if (!confirm(`确定删除选中的 ${selectedIds.size} 部作品？`)) return;
+    if (!(await confirm({ message: `确定删除选中的 ${selectedIds.size} 部作品？`, destructive: true }))) return;
     for (const id of selectedIds) {
       try {
         await apiDelete(`/api/references/works/${id}`);

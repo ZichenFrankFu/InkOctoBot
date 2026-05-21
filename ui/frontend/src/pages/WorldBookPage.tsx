@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from "react"
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
 import type { WorldBookEntry, WorldBookCategory } from "../api/types";
 import TagAutocomplete from "../components/shared/TagAutocomplete";
 
@@ -44,6 +45,7 @@ interface AIChatMsg {
 
 export default function WorldBookPage({ projectId, projects }: Props) {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [items, setItems] = useState<WorldBookEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterCat, setFilterCat] = useState<string>("");
@@ -160,7 +162,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   };
 
   const remove = async (id: string) => {
-    if (!confirm("确定删除该条目？")) return;
+    if (!(await confirm({ message: "确定删除该条目？", destructive: true }))) return;
     try {
       await apiDelete(`/api/data/worldbook/${id}`);
       if (editing?.id === id) setEditing(null);
@@ -294,7 +296,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                 </button>
                 <button className="btn" style={{ fontSize: 11, flex: 1, color: "var(--error)" }}
                   onClick={async () => {
-                    if (!confirm(`确定删除 ${selectedIds.size} 个条目？`)) return;
+                    if (!(await confirm({ message: `确定删除 ${selectedIds.size} 个条目？`, destructive: true }))) return;
                     for (const id of selectedIds) {
                       await apiDelete(`/api/data/worldbook/${id}`).catch((e) => toast(e.message || "操作失败", "error"));
                     }
@@ -348,7 +350,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
               自定义分类：
               {customCategories.map(c => (
                 <span key={c.key} style={{ marginLeft: 4, padding: "1px 6px", background: "var(--bg-surface-2)", borderRadius: 8, cursor: "pointer" }}
-                  onClick={() => { if (confirm(`删除自定义分类「${c.label}」？`)) removeCustomCategory(c.key); }}>
+                  onClick={async () => { if (await confirm({ message: `删除自定义分类「${c.label}」？`, destructive: true })) removeCustomCategory(c.key); }}>
                   {c.label} &times;
                 </span>
               ))}
