@@ -1755,6 +1755,136 @@ function regroupChronicleByStoryTime(rawEpochs: ChronicleEpoch[]): ChronicleEpoc
 }
 
 
+const GRAN_LEVELS: { key: string; label: string }[] = [
+  { key: "chapter", label: "章节级" },
+  { key: "major_event", label: "大事件级" },
+  { key: "volume", label: "卷级" },
+  { key: "book", label: "全书级" },
+];
+
+/** 剧情大纲颗粒度调节 — condense the chapter-level outline to a more
+ *  macro view (大事件 / 卷 / 全书) via built-in AI or the web-LLM
+ *  copy-prompt / paste workflow. Applying overwrites plot_outline_json. */
+function GranularityControl({ refId, onApply }: {
+  refId: string;
+  onApply: (plot: PlotOutline) => Promise<void> | void;
+}) {
+  const [level, setLevel] = useState("chapter");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<PlotOutline | null>(null);
+  const [pasteMode, setPasteMode] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const reset = () => { setResult(null); setPasteMode(false); setPasteText(""); setMsg(""); };
+  const evCount = (p: PlotOutline | null): number => {
+    let n = 0;
+    for (const ep of (p?.epochs || [])) for (const per of (ep.periods || [])) n += (per.events || []).length;
+    return n;
+  };
+
+  const genAI = async () => {
+    setLoading(true); setMsg(""); setResult(null);
+    try {
+      const r = await apiPost<{ ok: boolean; plot_outline?: PlotOutline; error?: string }>(
+        `/api/references/works/${refId}/plot_outline/summarize`, { level });
+      if (r.ok && r.plot_outline) setResult(r.plot_outline);
+      else setMsg(r.error || "概括失败");
+    } catch (e: any) { setMsg(e?.message || "概括失败"); }
+    finally { setLoading(false); }
+  };
+
+  const copyPrompt = async () => {
+    try {
+      const r = await apiPost<{ prompt?: string }>(
+        `/api/references/works/${refId}/plot_outline/summarize`, { level, prompt_only: true });
+      if (r.prompt) {
+        try { await navigator.clipboard.writeText(r.prompt); }
+        catch {
+          const ta = document.createElement("textarea");
+          ta.value = r.prompt; ta.style.position = "fixed"; ta.style.opacity = "0";
+          document.body.appendChild(ta); ta.select(); document.execCommand("copy");
+          document.body.removeChild(ta);
+        }
+        setMsg("已复制 prompt，可粘贴到网页 LLM");
+      }
+    } catch (e: any) { setMsg(e?.message || "复制失败"); }
+  };
+
+  const parsePaste = () => {
+    try {
+      const obj = JSON.parse(pasteText);
+      if (obj && Array.isArray(obj.epochs)) { setResult(obj); setMsg(""); setPasteMode(false); }
+      else setMsg("粘贴内容不是有效的大纲 JSON（需含 epochs 数组）");
+    } catch { setMsg("JSON 解析失败，请检查粘贴内容"); }
+  };
+
+  const apply = async () => {
+    if (!result) return;
+    await onApply(result);
+    reset();
+    setMsg("已应用为剧情大纲");
+  };
+
+  return (
+    <div style={{ marginBottom: 10, padding: 8, border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-surface)" }}>
+      <div className="flex items-center" style={{ gap: 6, flexWrap: "wrap" }}>
+        <span className="text-xs text-muted">颗粒度：</span>
+        {GRAN_LEVELS.map(l => (
+          <button key={l.key} className="btn-ghost"
+            onClick={() => { setLevel(l.key); reset(); }}
+            style={{
+              padding: "3px 10px", fontSize: 11, borderRadius: 3, border: "1px solid var(--border)",
+              fontWeight: level === l.key ? 600 : 400,
+              color: level === l.key ? "var(--accent)" : "var(--text-secondary)",
+              background: level === l.key ? "var(--accent-subtle)" : "transparent",
+            }}>{l.label}</button>
+        ))}
+      </div>
+      {level === "chapter" ? (
+        <div className="text-xs text-muted" style={{ marginTop: 6, lineHeight: 1.5 }}>
+          当前为最细颗粒度（来自预处理 + 特征提取）。选择更粗的颗粒度可生成更宏观的大纲。
+        </div>
+      ) : (
+        <div style={{ marginTop: 6 }}>
+          <div className="flex" style={{ gap: 6, flexWrap: "wrap" }}>
+            <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} onClick={genAI} disabled={loading}>
+              {loading ? "概括中..." : "内置 AI 概括"}
+            </button>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={copyPrompt}>复制 prompt</button>
+            <button className="btn" style={{
+              fontSize: 11, padding: "3px 10px",
+              borderColor: pasteMode ? "var(--accent)" : "var(--border)",
+              color: pasteMode ? "var(--accent)" : "var(--text-secondary)",
+            }} onClick={() => setPasteMode(m => !m)}>{pasteMode ? "取消解析" : "解析网页结果"}</button>
+          </div>
+          {pasteMode && (
+            <div style={{ marginTop: 6 }}>
+              <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)}
+                placeholder="把网页 LLM 返回的大纲 JSON 粘贴到这里" rows={4}
+                style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5 }} />
+              <button className="btn-primary" style={{ fontSize: 11, padding: "3px 12px", marginTop: 4 }}
+                onClick={parsePaste} disabled={!pasteText.trim()}>解析</button>
+            </div>
+          )}
+          {result && (
+            <div style={{ marginTop: 6, padding: "6px 8px", background: "var(--accent-subtle)", border: "1px solid var(--accent)", borderRadius: 4 }}>
+              <span className="text-xs" style={{ color: "var(--accent)" }}>
+                已生成「{GRAN_LEVELS.find(l => l.key === level)?.label}」大纲：{(result.epochs || []).length} 段 · {evCount(result)} 事件
+              </span>
+              <button className="btn-primary" style={{ fontSize: 11, padding: "3px 12px", marginLeft: 8 }}
+                onClick={apply} title="替换当前剧情大纲（章节级可在「特征提取」中重新生成）">应用为剧情大纲</button>
+            </div>
+          )}
+          {msg && (
+            <div className="text-xs" style={{ marginTop: 4, color: msg.startsWith("已") ? "var(--jade)" : "var(--error)" }}>{msg}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PlotOutlineEditor({
   data,
   onSave,
@@ -1922,6 +2052,8 @@ export function PlotOutlineEditor({
           )}
         </div>
       )}
+
+      {refId && hasContent && <GranularityControl refId={refId} onApply={onSave} />}
 
       {legacy && (
         <div style={{

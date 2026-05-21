@@ -3966,6 +3966,79 @@ async def summarize_chronicle(ref_id: str):
         raise HTTPException(500, f"总结失败: {e}")
 
 
+# ── Plot-outline granularity ────────────────────────────────────────
+# The chapter-level outline from preprocessing + feature extraction is
+# the finest grain. This lets the user condense it to a more macro view.
+
+_OUTLINE_LEVELS = {
+    "major_event": ("大事件级", "只保留推动主线与重要支线的关键事件，合并琐碎情节；事件总数约压缩到原来的三分之一。"),
+    "volume": ("卷级", "每个 epoch（卷 / 大阶段）只保留 3-6 个里程碑级事件，periods 大幅合并。"),
+    "book": ("全书级", "把整本书概括为 1 个 epoch、5-10 个事件，只呈现全书主干脉络。"),
+}
+
+
+class OutlineGranularityRequest(BaseModel):
+    level: str = "major_event"   # major_event | volume | book
+    prompt_only: bool = False
+
+
+def _build_granularity_prompt(plot: dict, level: str) -> str:
+    level_cn, level_hint = _OUTLINE_LEVELS[level]
+    return (
+        "[自动化数据抽取 · 不是对话] 你的输出会被 json.loads 直接解析；"
+        "任何非 JSON 字符都会导致失败。\n\n"
+        "下面是一部作品的「章节级」细颗粒度剧情大纲（编年史）。\n"
+        f"请把它**概括**为更宏观的「{level_cn}」颗粒度大纲：{level_hint}\n\n"
+        "严格禁止：寒暄 / 解释 / markdown 包装 / <think> 块 / JSON 之外的文字。\n"
+        "只输出以 { 开始、} 结束的合法 JSON，结构与输入保持一致：\n"
+        '{ "logline": "≤ 50 字一句话概括", "epochs": [ { "title": "大段标题", '
+        '"periods": [ { "title": "时间段标题", "time_marker": "可选时间锚点", '
+        '"events": [ { "subject": "主语", "category": '
+        '"plot_main|plot_side|character|setting|conflict|revelation|foreshadow|other", '
+        '"name": "事件名 ≤ 12 字", "description": "1-2 句客观描述", '
+        '"time_marker": "可选" } ] } ] } ] }\n\n'
+        "原始章节级大纲：\n"
+        + json.dumps(plot, ensure_ascii=False, indent=1)
+    )
+
+
+@router.post("/works/{ref_id}/plot_outline/summarize")
+async def summarize_plot_outline(ref_id: str, body: OutlineGranularityRequest):
+    """Condense the chapter-level plot outline to a coarser granularity
+    (大事件 / 卷 / 全书). Does NOT persist — the UI applies the result.
+    With prompt_only=true, returns the prompt for the web-LLM path."""
+    db = _db()
+    w = db.get_work(ref_id)
+    if not w:
+        raise HTTPException(404, "参考作品不存在")
+    if body.level not in _OUTLINE_LEVELS:
+        raise HTTPException(400, f"无效的颗粒度：{body.level}")
+    try:
+        plot = json.loads(w.get("plot_outline_json") or "{}")
+    except Exception:
+        plot = {}
+    if not (isinstance(plot, dict) and plot.get("epochs")):
+        raise HTTPException(400, "暂无章节级剧情大纲，请先在「特征提取」中生成")
+    prompt = _build_granularity_prompt(plot, body.level)
+    if body.prompt_only:
+        return {"ok": True, "prompt": prompt}
+    try:
+        from models.router import ModelRouter
+        from models.base import LLMMessage
+        router_inst = ModelRouter()
+        provider = router_inst._get_provider("reference_extractor")
+        resp = await provider.generate(
+            [LLMMessage(role="user", content=prompt)],
+            temperature=0.2, max_tokens=4096,
+        )
+        result = json.loads(_strip_json_blob(resp.content or ""))
+    except Exception as e:
+        return {"ok": False, "error": f"AI 概括失败：{str(e)[:200]}", "prompt": prompt}
+    if not isinstance(result, dict) or not result.get("epochs"):
+        return {"ok": False, "error": "AI 返回为空，请改用复制 prompt 的方式", "prompt": prompt}
+    return {"ok": True, "plot_outline": result}
+
+
 @router.post("/prompts/reference.outline_summary/render")
 def render_outline_summary_prompt(body: OutlineSummaryPromptRequest):
     """Render the chronological-summary prompt with the user's
