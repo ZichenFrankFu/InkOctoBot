@@ -151,6 +151,53 @@ def tag_stats(platform: str | None = None, limit: int = Query(default=30, ge=1, 
         sql += " GROUP BY t.tag_name ORDER BY novel_count DESC LIMIT ?"; p.append(limit)
         return {"rows": [dict(r) for r in con.execute(sql, p).fetchall()]}
 
+@router.get("/market_brief")
+def market_brief(platform: str | None = None):
+    """Concise market-data summary text for grounding the AI 开书助手."""
+    con = _get_con()
+    if con is None:
+        return {"brief": ""}
+    with con:
+        if not _table_exists(con, "novels"):
+            return {"brief": ""}
+        pp = [platform] if platform else []
+        pw = " WHERE platform=?" if platform else ""
+        novel_count = con.execute(f"SELECT COUNT(*) AS c FROM novels{pw}", pp).fetchone()["c"]
+        cats = con.execute(
+            "SELECT main_category, COUNT(*) AS count FROM novels" + pw
+            + " GROUP BY main_category ORDER BY count DESC LIMIT 10", pp,
+        ).fetchall()
+        tag_sql = ("SELECT t.tag_name, COUNT(DISTINCT m.novel_uid) AS c "
+                   "FROM tags t JOIN novel_tag_map m ON m.tag_id=t.tag_id")
+        tp: list = []
+        if platform:
+            tag_sql += " JOIN novels n ON n.novel_uid=m.novel_uid WHERE n.platform=?"
+            tp.append(platform)
+        tag_sql += " GROUP BY t.tag_name ORDER BY c DESC LIMIT 20"
+        tags = con.execute(tag_sql, tp).fetchall()
+        tn = []
+        if _table_exists(con, "rank_entries"):
+            tnw = " WHERE l.platform=?" if platform else ""
+            tnp: list = ([platform] if platform else []) + [12]
+            tn = con.execute(
+                "SELECT nt.title, n.main_category, COUNT(DISTINCT e.snapshot_id) AS apps "
+                "FROM rank_entries e JOIN rank_snapshots s ON s.snapshot_id=e.snapshot_id "
+                "JOIN rank_lists l ON l.rank_list_id=s.rank_list_id "
+                "JOIN novels n ON n.novel_uid=e.novel_uid "
+                "LEFT JOIN novel_titles nt ON nt.novel_uid=n.novel_uid AND nt.is_primary=1"
+                + tnw + " GROUP BY n.novel_uid ORDER BY apps DESC LIMIT ?", tnp,
+            ).fetchall()
+    parts = [f"市场数据库共收录 {novel_count} 部作品。"]
+    if cats:
+        parts.append("热门分类（按作品数）："
+                      + "、".join(f"{r['main_category']}({r['count']})" for r in cats if r["main_category"]))
+    if tags:
+        parts.append("高频题材标签：" + "、".join(f"{r['tag_name']}({r['c']})" for r in tags))
+    if tn:
+        parts.append("近期上榜热门作品：" + "、".join(f"《{r['title']}》" for r in tn if r["title"]))
+    return {"brief": "\n".join(parts)}
+
+
 @router.get("/info")
 def db_info():
     if settings.test_mode and settings.data_dir:

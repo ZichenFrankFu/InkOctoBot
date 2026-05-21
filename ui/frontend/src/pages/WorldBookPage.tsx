@@ -5,6 +5,7 @@ import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { WorldBookEntry, WorldBookCategory } from "../api/types";
 import TagAutocomplete from "../components/shared/TagAutocomplete";
+import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 import { renderPrompt } from "../utils/promptTemplate";
 
 interface Props {
@@ -215,6 +216,41 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   // AI Chat for worldbook
   useEffect(() => { aiChatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [aiChatMessages]);
 
+  const buildAIChatSystemHint = useCallback(async (): Promise<string> => {
+    if (!editing) return "";
+    return renderPrompt(
+      "assistant.worldbook",
+      {
+        entry_title: editing.title,
+        category: catLabel(editing.category, customCategories),
+        content: editing.content || "（空）",
+      },
+      `你是AI设定助手。当前正在编辑世界书条目「${editing.title}」（分类：${catLabel(editing.category, customCategories)}）。
+已有内容：${editing.content || "（空）"}
+
+帮助用户完善设定，回答设定相关问题。如果用户确认了某些内容，可以提供快速补全建议。
+回答后主动追加一个追问来帮助用户进一步完善设定。
+追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
+用自然语言回答，不要使用JSON格式。`,
+    );
+  }, [editing, customCategories]);
+
+  const fetchAIChatPrompt = useCallback(async (): Promise<string> => {
+    const systemHint = await buildAIChatSystemHint();
+    const resp = await apiPost<{ status?: string; prompt?: string }>("/api/generation/quick-generate", {
+      project_id: projectId || "default",
+      chapter_id: "wb_chat",
+      synopsis: aiChatInput,
+      system_hint: systemHint,
+      prompt_only: true,
+    });
+    return resp.prompt || "";
+  }, [buildAIChatSystemHint, projectId, aiChatInput]);
+
+  const applyAIChatResult = useCallback((text: string) => {
+    setAiChatMessages(prev => [...prev, { role: "assistant", content: text, timestamp: Date.now() }]);
+  }, []);
+
   const sendAIChat = async () => {
     const msg = aiChatInput.trim();
     if (!msg || aiChatLoading || !editing) return;
@@ -226,21 +262,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
     aiAbortRef.current = controller;
 
     try {
-      const systemHint = await renderPrompt(
-        "assistant.worldbook",
-        {
-          entry_title: editing.title,
-          category: catLabel(editing.category, customCategories),
-          content: editing.content || "（空）",
-        },
-        `你是AI设定助手。当前正在编辑世界书条目「${editing.title}」（分类：${catLabel(editing.category, customCategories)}）。
-已有内容：${editing.content || "（空）"}
-
-帮助用户完善设定，回答设定相关问题。如果用户确认了某些内容，可以提供快速补全建议。
-回答后主动追加一个追问来帮助用户进一步完善设定。
-追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
-用自然语言回答，不要使用JSON格式。`,
-      );
+      const systemHint = await buildAIChatSystemHint();
       const resp = await fetch("/api/generation/quick-generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -583,6 +605,12 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                         style={{ fontSize: 12, padding: "6px 14px" }}>
                         {aiChatLoading ? "..." : "发送"}
                       </button>
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <WebLLMPromptPanel
+                        fetchPrompt={fetchAIChatPrompt}
+                        onApplyResult={applyAIChatResult}
+                      />
                     </div>
                   </div>
                 </div>

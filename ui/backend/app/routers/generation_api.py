@@ -367,6 +367,7 @@ class RewriteRequest(BaseModel):
     instruction: str = ""
     provider: str = ""
     model: str = ""
+    prompt_only: bool = False
 
 
 class EvalRequest(BaseModel):
@@ -374,6 +375,7 @@ class EvalRequest(BaseModel):
     chapter_num: int = 1
     provider: str = ""
     model: str = ""
+    prompt_only: bool = False
 
 
 def _get_user_settings() -> dict:
@@ -533,7 +535,7 @@ def _build_router(provider: str = "", model: str = ""):
 
     if not fb_provider or not fb_model:
         # Try pipeline config
-        for role_key in ("scene_director", "editor_stylist", "actor_default"):
+        for role_key in ("scene_director", "editor_stylist", "editor_writer", "actor_default", "evaluator"):
             role_cfg = pipeline.get(role_key, {})
             p = role_cfg.get("provider", "")
             m = role_cfg.get("model", "")
@@ -721,16 +723,18 @@ async def generate_scene_plan(req: GenerateRequest):
 @router.post("/rewrite")
 async def rewrite_text(req: RewriteRequest):
     try:
-        from models.base import LLMMessage
-        from analysis.feature_extraction.prompts import render, get_template
-        router_inst = _build_router(req.provider, req.model)
-        from agents.production.editor_writer import EditorWriter
-        editor = EditorWriter(router_inst, project_id="rewrite")
+        from analysis.feature_extraction.prompts import render
         user_content = render(
             "generation.rewrite",
             instruction=req.instruction or "润色并提升文学质量",
             original_text=req.text,
         )
+        if req.prompt_only:
+            return {"status": "ok", "prompt": user_content}
+        from models.base import LLMMessage
+        router_inst = _build_router(req.provider, req.model)
+        from agents.production.editor_writer import EditorWriter
+        editor = EditorWriter(router_inst, project_id="rewrite")
         messages = [
             LLMMessage(role="system", content=editor.system_prompt),
             LLMMessage(role="user", content=user_content),
@@ -748,6 +752,13 @@ async def rewrite_text(req: RewriteRequest):
 @router.post("/evaluate")
 async def evaluate_text(req: EvalRequest):
     try:
+        if req.prompt_only:
+            from analysis.feature_extraction.prompts import render
+            prompt = render(
+                "generation.evaluate",
+                chapter_num=req.chapter_num, checklist="", text=req.text,
+            )
+            return {"status": "ok", "prompt": prompt}
         router_inst = _build_router(req.provider, req.model)
         from agents.evaluation.evaluator import Evaluator
         evaluator = Evaluator(router_inst, project_id="eval")

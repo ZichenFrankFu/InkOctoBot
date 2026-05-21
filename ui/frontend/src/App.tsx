@@ -76,6 +76,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
 function AppInner() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [sidebarW, setSidebarW] = useState(220);
+  const [collapsed, setCollapsed] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<string>("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -129,13 +130,13 @@ function AppInner() {
   return (
     <div className="app-layout">
       <a href="#main-content" className="sr-only">Skip to main content</a>
-      <aside className="sidebar" style={{ width: sidebarW }} role="navigation" aria-label="Main navigation">
-        <div className="sidebar-brand">
-          <h1>
-            <img src="/favicon.svg" alt="InkOctoBot" style={{ width: 24, height: 24, verticalAlign: "middle", marginRight: 6 }} />
-            InkOctoBot
+      <aside className="sidebar" style={{ width: collapsed ? 56 : sidebarW }} role="navigation" aria-label="Main navigation">
+        <div className="sidebar-brand" style={collapsed ? { padding: "14px 0", textAlign: "center" } : undefined}>
+          <h1 style={collapsed ? { margin: 0 } : undefined}>
+            <img src="/favicon.svg" alt="InkOctoBot" style={{ width: 24, height: 24, verticalAlign: "middle", marginRight: collapsed ? 0 : 6 }} />
+            {!collapsed && "InkOctoBot"}
           </h1>
-          <p>AI 小说智能体工作台</p>
+          {!collapsed && <p>AI 小说智能体工作台</p>}
         </div>
 
         {/* Search trigger */}
@@ -143,19 +144,24 @@ function AppInner() {
           className="nav-btn"
           onClick={() => setSearchOpen(true)}
           aria-label="Search (Ctrl+K)"
-          style={{ margin: "10px 8px 6px", width: "auto", padding: "5px 10px", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 30 }}
+          title="搜索 (Ctrl+K)"
+          style={{ margin: collapsed ? "10px auto 6px" : "10px 8px 6px", width: collapsed ? 38 : "auto", padding: collapsed ? "5px 0" : "5px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 30 }}
         >
           <span style={{ fontSize: 12, opacity: 0.6 }}>&#x2315;</span>
-          <span style={{ flex: 1, textAlign: "left" }}>搜索...</span>
-          <kbd style={{ fontSize: 9, color: "var(--text-disabled)", background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 4px", fontFamily: "var(--font-mono)", lineHeight: 1.4 }}>
-            {/Mac|iPod|iPhone|iPad/.test(navigator?.platform || "") ? "⌘K" : "Ctrl+K"}
-          </kbd>
+          {!collapsed && (
+            <>
+              <span style={{ flex: 1, textAlign: "left" }}>搜索...</span>
+              <kbd style={{ fontSize: 9, color: "var(--text-disabled)", background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 4px", fontFamily: "var(--font-mono)", lineHeight: 1.4 }}>
+                {/Mac|iPod|iPhone|iPad/.test(navigator?.platform || "") ? "⌘K" : "Ctrl+K"}
+              </kbd>
+            </>
+          )}
         </button>
 
         <nav className="sidebar-nav" aria-label="Page navigation">
           {NAV.map(group => (
             <React.Fragment key={group.section}>
-              {group.section === "首页" ? null : group.section === "创作" ? (
+              {collapsed || group.section === "首页" ? null : group.section === "创作" ? (
                 <div className="sidebar-section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingRight: 8 }}>
                   <span>{group.section}</span>
                   <span
@@ -175,19 +181,31 @@ function AppInner() {
                   onClick={() => setTab(item.key)}
                   aria-current={tab === item.key ? "page" : undefined}
                   aria-label={item.label}
+                  title={collapsed ? item.label : undefined}
+                  style={collapsed ? { justifyContent: "center" } : undefined}
                 >
                   <span className="nav-icon" aria-hidden="true">{item.icon}</span>
-                  <span>{item.label}</span>
+                  {!collapsed && <span>{item.label}</span>}
                 </button>
               ))}
             </React.Fragment>
           ))}
         </nav>
 
-        <div className="sidebar-footer">InkOctoBot v2.1</div>
+        <button
+          className="nav-btn"
+          onClick={() => setCollapsed(c => !c)}
+          title={collapsed ? "展开导航" : "收起导航"}
+          style={{ margin: "4px 8px", justifyContent: collapsed ? "center" : undefined, color: "var(--text-tertiary)" }}
+        >
+          <span className="nav-icon" aria-hidden="true">{collapsed ? "»" : "«"}</span>
+          {!collapsed && <span>收起导航</span>}
+        </button>
+
+        {!collapsed && <div className="sidebar-footer">InkOctoBot v2.1</div>}
       </aside>
 
-      <div className="resize-handle" onMouseDown={onMouseDown} />
+      {!collapsed && <div className="resize-handle" onMouseDown={onMouseDown} />}
 
       <main id="main-content" className="main-content" role="main" aria-label="Page content">
         {tab === "dashboard" && <ErrorBoundary key="dashboard"><DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} onSelectProject={setActiveProject} /></ErrorBoundary>}

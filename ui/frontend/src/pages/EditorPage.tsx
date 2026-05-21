@@ -10,7 +10,7 @@ import type { Volume, ChapterOutline, PipelineStatus, EvalResult, FollowUpQuesti
 import EvalReport from "../components/editor/EvalReport";
 import type { EvalReportData } from "../components/editor/EvalReport";
 import FollowUpQuestions from "../components/shared/FollowUpQuestions";
-import PromptPreview from "../components/reference/PromptPreview";
+import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 
 const vuid = () => `v_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -149,8 +149,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [waitingForConfirm, setWaitingForConfirm] = useState(false);
   const [mergePreview, setMergePreview] = useState<{ original: string; generated: string } | null>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
-  const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 160, maxSize: 350 });
-  const rightPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 200, maxSize: 500, invert: true });
+  const leftPanel = useResizable({ direction: "horizontal", initialSize: 240, minSize: 160, maxSize: 400 });
+  const rightPanel = useResizable({ direction: "horizontal", initialSize: 400, minSize: 260, maxSize: 680, invert: true });
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const { confirm } = useDialog();
@@ -880,9 +880,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     return idx >= 0 ? idx + 1 : 1;
   }, [volumes, activeChId]);
 
-  /** Per-call prompt-template override edited via the prompt preview. */
-  const [promptOverride, setPromptOverride] = useState("");
-
   /** Assemble the structured chapter-generation payload. The backend
    *  (/quick-generate) assembles the RAG context — character cards /
    *  worldbook / platform / references / writing-knowledge — from these
@@ -899,6 +896,13 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     chapter_num: chapterNum,
   }), [activeCh, projectId, activeChId, content, chapterNum]);
 
+  const fetchGenPrompt = useCallback(async (): Promise<string> => {
+    const r = await apiPost<{ prompt: string }>("/api/generation/quick-generate", {
+      ...buildGenPayload(), prompt_only: true,
+    });
+    return r.prompt || "";
+  }, [buildGenPayload]);
+
   const runQuickGenerate = useCallback(async () => {
     if (!activeCh) return;
     setGenerating(true);
@@ -913,7 +917,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     try {
       const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
         ...buildGenPayload(),
-        prompt_override: promptOverride || undefined,
       });
 
       generatedTextRef.current = resp.text;
@@ -937,7 +940,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }
     setGenerating(false);
     setCurrentAgent(null);
-  }, [activeCh, buildGenPayload, promptOverride]);
+  }, [activeCh, buildGenPayload]);
 
   const runPlainAgent = useCallback(async () => {
     if (!activeCh) return;
@@ -952,7 +955,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     try {
       const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
         ...buildGenPayload(),
-        prompt_override: promptOverride || undefined,
       });
       generatedTextRef.current = resp.text;
       setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "已完成", progress: 100 }]);
@@ -972,7 +974,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }
     setGenerating(false);
     setCurrentAgent(null);
-  }, [activeCh, projectId, activeChId, buildGenPayload, promptOverride]);
+  }, [activeCh, projectId, activeChId, buildGenPayload]);
 
   /** Apply a web-LLM-generated chapter the user pasted back. */
   const applyPlainPaste = useCallback((text: string) => {
@@ -1358,8 +1360,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
-              projectId={projectId} chapterId={activeChId} chapterNum={chapterNum}
-              onApplyPromptOverride={(tpl) => { setPromptOverride(tpl); toast("已应用编辑后的 prompt，下次「单 Agent 生成」生效", "success"); }}
+              onFetchPrompt={fetchGenPrompt}
               onApplyPaste={applyPlainPaste}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
@@ -1499,8 +1500,6 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   const [outlineChatLoading, setOutlineChatLoading] = useState(false);
   const [pendingOutline, setPendingOutline] = useState<string | null>(null);
   // Web-LLM workflow: copy the prompt out / paste the reply back.
-  const [pasteMode, setPasteMode] = useState(false);
-  const [pasteText, setPasteText] = useState("");
   const outlineChatEndRef = useRef<HTMLDivElement>(null);
 
   // Load outline chat from backend
@@ -1553,29 +1552,24 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
     }
   };
 
-  /** Copy the full outline-chat prompt so it can be run in a web LLM. */
-  const copyOutlinePrompt = async () => {
+  /** Build the full outline-chat prompt for running in a web LLM. */
+  const fetchOutlinePrompt = async (): Promise<string> => {
     const pending = outlineChatInput.trim();
     const msgs = pending
       ? [...outlineChatMsgs, { role: "user" as const, content: pending, ts: Date.now() }]
       : outlineChatMsgs;
-    try {
-      const res = await apiPost<{ prompt: string }>("/api/generation/outline-chat", {
-        project_id: projectId,
-        messages: msgs.map(m => ({ role: m.role, content: m.content })),
-        context: synopsis || "",
-        prompt_only: true,
-      });
-      await copyToClipboard(res.prompt || "");
-      toast("已复制 prompt，可粘贴到网页 LLM 使用", "success");
-    } catch (e: any) {
-      toast(e?.message || "复制失败", "error");
-    }
+    const res = await apiPost<{ prompt: string }>("/api/generation/outline-chat", {
+      project_id: projectId,
+      messages: msgs.map(m => ({ role: m.role, content: m.content })),
+      context: synopsis || "",
+      prompt_only: true,
+    });
+    return res.prompt || "";
   };
 
   /** Apply a web-LLM reply pasted by the user as the assistant turn. */
-  const applyPastedReply = () => {
-    const text = pasteText.trim();
+  const applyPastedReply = (raw: string) => {
+    const text = (raw || "").trim();
     if (!text) return;
     let msgs = outlineChatMsgs;
     const pending = outlineChatInput.trim();
@@ -1586,8 +1580,6 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
     const finalMsgs = [...msgs, { role: "assistant" as const, content: text, ts: Date.now() }];
     setOutlineChatMsgs(finalMsgs);
     apiPut("/api/data/chat_history", { project_id: projectId, scope: `outline_chat_${chapter?.id || ""}`, messages: finalMsgs.slice(-200) }).catch(() => {});
-    setPasteText("");
-    setPasteMode(false);
   };
 
   const confirmOutline = () => {
@@ -1772,27 +1764,11 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
             <button className="btn-primary" onClick={() => sendOutlineChat()} disabled={!outlineChatInput.trim() || outlineChatLoading}
               style={{ fontSize: 11, padding: "4px 10px" }}>{outlineChatLoading ? "..." : "发送"}</button>
           </div>
-          {/* 复制 prompt / 解析网页结果 — the web-LLM workflow, below the box */}
-          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-            <button className="btn" onClick={copyOutlinePrompt}
-              style={{ fontSize: 10, padding: "3px 10px" }}
-              title="把当前对话打包成完整 prompt 复制走，可贴到 ChatGPT / Claude.ai 等">复制 prompt</button>
-            <button className="btn" onClick={() => setPasteMode(m => !m)}
-              style={{ fontSize: 10, padding: "3px 10px", borderColor: pasteMode ? "var(--accent)" : "var(--border)", color: pasteMode ? "var(--accent)" : "var(--text-secondary)" }}>
-              {pasteMode ? "取消解析" : "解析网页结果"}
-            </button>
+          {/* Web-LLM workflow */}
+          <div style={{ marginTop: 6 }}>
+            <WebLLMPromptPanel fetchPrompt={fetchOutlinePrompt} onApplyResult={applyPastedReply}
+              applyLabel="解析并加入对话" resultPlaceholder="把网页 LLM 返回的回复粘贴到这里" />
           </div>
-          {pasteMode && (
-            <div style={{ marginTop: 6 }}>
-              <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)}
-                placeholder="把网页 LLM 返回的回复粘贴到这里，解析后作为助手回复加入对话" rows={4}
-                style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5 }} />
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
-                <button className="btn-primary" onClick={applyPastedReply} disabled={!pasteText.trim()}
-                  style={{ fontSize: 10, padding: "3px 12px" }}>解析并应用</button>
-              </div>
-            </div>
-          )}
         </div>
         {outlineChatMsgs.length > 0 && outlineChatMsgs[outlineChatMsgs.length - 1].role === "assistant" && !pendingOutline && (
           <div style={{ padding: "4px 10px 8px", display: "flex", gap: 4 }}>
@@ -1863,8 +1839,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         <button className="btn-ghost" onClick={() => setShowRefLink(v => !v)}
           style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
             background: showRefLink ? "var(--bg-surface-2)" : "transparent" }}>
-          {showRefLink ? "▾ " : "▸ "}关联参考作品 & 灵感{(selectedRefs.length + refEvents.length + refInsps.length) > 0
-            ? ` · 作品 ${selectedRefs.length}·事件 ${refEvents.length}·灵感 ${refInsps.length}` : ""}
+          {showRefLink ? "▾ " : "▸ "}关联参考作品 & 灵感
         </button>
         {showRefLink && (
           <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
@@ -1947,9 +1922,6 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
             ) : (
               <div className="text-xs text-muted">灵感库为空，请在「灵感搜索 → 灵感库」中添加</div>
             )}
-
-            <button className="btn" onClick={() => setShowRefLink(false)}
-              style={{ width: "100%", fontSize: 10, padding: "3px 0", marginTop: 12 }}>▴ 收起本节</button>
           </div>
         )}
       </div>
@@ -1975,17 +1947,16 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
-function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, projectId, chapterId, chapterNum, onApplyPromptOverride, onApplyPaste, onDeleteMessage }: {
+function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, onDeleteMessage }: {
   steps: PipelineStatus[]; generating: boolean; onStart: () => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
-  projectId?: string; chapterId?: string; chapterNum?: number; onApplyPromptOverride?: (tpl: string) => void; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
+  onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const [pasteMode, setPasteMode] = useState(false);
-  const [pasteText, setPasteText] = useState("");
   const [showPrompt, setShowPrompt] = useState(false);
+  const [pipelineMode, setPipelineMode] = useState(false);
   const [expandedPromptIdx, setExpandedPromptIdx] = useState<number | null>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
 
@@ -2011,6 +1982,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {pipelineMode && <>
       <div className="label mb-8">Creative Writing Pipeline · 群聊生成</div>
       {/* Progress bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 10, padding: "6px 0" }}>
@@ -2039,6 +2011,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
           </div>
         ))}
       </div>
+      </>}
       {/* Model change detection banner */}
       {modelChanged && generating && (
         <div style={{ padding: "8px 12px", marginBottom: 8, borderRadius: 6, background: "var(--accent-subtle)", border: "1px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -2053,9 +2026,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
       <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
           <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
-            <div style={{ fontSize: 13, marginBottom: 8, color: "var(--text-secondary)" }}>正文创作</div>
-            <div>默认用「单 Agent」直接生成全文；也可切换到多 Agent Pipeline。</div>
-            <div style={{ marginTop: 6, fontSize: 11 }}>点击下方「单 Agent 生成」开始，或「复制 prompt」用网页 LLM。</div>
+            正文创作
           </div>
         )}
         {chatMessages.map((msg, i) => {
@@ -2278,59 +2249,35 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
         <div style={{ marginBottom: 6 }}>
           <div style={{ display: "flex", gap: 6 }}>
             {onStartPlain && (
-              <button className="btn-primary" style={{ flex: 2 }} onClick={onStartPlain}>
+              <button className="btn-primary" style={{ flex: 2 }} onClick={() => { setPipelineMode(false); onStartPlain(); }}>
                 {chatMessages.length > 0 ? "单 Agent 重新生成" : "单 Agent 生成"}
               </button>
             )}
-            <button className="btn" style={{ flex: 1, borderColor: "var(--indigo)", color: "var(--indigo)" }} onClick={onStart}
-              title="切换到多 Agent 协作 Pipeline（导演→角色→编辑→评估），质量更高但更慢">
+            <button className="btn" style={{ flex: 1, borderColor: "var(--indigo)", color: "var(--indigo)" }}
+              onClick={() => { setPipelineMode(true); onStart(); }}
+              title="切换到多 Agent 协作 Pipeline（导演→角色→编辑→评估）">
               {chatMessages.length > 0 ? "改用 Pipeline" : "切换 Pipeline"}
             </button>
           </div>
-          {/* Web-LLM workflow for the single-Agent generation prompt. */}
-          {(projectId || onApplyPaste) && (
-            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-              {projectId && (
+          {onFetchPrompt && (
+            <>
+              <div style={{ display: "flex", marginTop: 6 }}>
                 <button className="btn" style={{ fontSize: 10, padding: "3px 10px", borderColor: showPrompt ? "var(--accent)" : "var(--border)", color: showPrompt ? "var(--accent)" : "var(--text-secondary)" }}
-                  onClick={() => setShowPrompt(s => !s)}
-                  title="预览并编辑单 Agent 生成 prompt（含角色/世界书/参考作品等 RAG 上下文），可复制到网页 LLM">
-                  {showPrompt ? "收起 prompt" : "预览/编辑 prompt"}</button>
-              )}
-              {onApplyPaste && (
-                <button className="btn" style={{ fontSize: 10, padding: "3px 10px", borderColor: pasteMode ? "var(--accent)" : "var(--border)", color: pasteMode ? "var(--accent)" : "var(--text-secondary)" }}
-                  onClick={() => setPasteMode(m => !m)}>{pasteMode ? "取消解析" : "解析网页结果"}</button>
-              )}
-            </div>
-          )}
-          {showPrompt && projectId && (
-            <div style={{ marginTop: 6 }}>
-              <PromptPreview
-                promptKey="generation.single_agent"
-                projectId={projectId}
-                chapterId={chapterId}
-                chapterNum={chapterNum}
-                onApplyOnce={(tpl) => { onApplyPromptOverride?.(tpl); setShowPrompt(false); }}
-                onClose={() => setShowPrompt(false)}
-              />
-            </div>
-          )}
-          {pasteMode && onApplyPaste && (
-            <div style={{ marginTop: 6 }}>
-              <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)}
-                placeholder="把网页 LLM 生成的章节正文粘贴到这里" rows={5}
-                style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5 }} />
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
-                <button className="btn-primary" style={{ fontSize: 10, padding: "3px 12px" }} disabled={!pasteText.trim()}
-                  onClick={() => { onApplyPaste(pasteText); setPasteText(""); setPasteMode(false); }}>解析并应用</button>
+                  onClick={() => setShowPrompt(s => !s)}>
+                  {showPrompt ? "收起 prompt" : "预览 / 复制 prompt"}
+                </button>
               </div>
-            </div>
+              {showPrompt && (
+                <div style={{ marginTop: 6 }}>
+                  <WebLLMPromptPanel autoLoad fetchPrompt={onFetchPrompt}
+                    onApplyResult={onApplyPaste} applyLabel="解析并写入编辑器"
+                    resultPlaceholder="把网页 LLM 生成的章节正文粘贴到这里" />
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
-      <p className="text-xs text-muted mt-8" style={{ lineHeight: 1.6 }}>
-        <strong>单 Agent</strong>（默认）：直接生成全文，速度快；prompt 可复制到网页 LLM。<br />
-        <strong>Pipeline</strong>：4 步 Agent 协作（导演→角色→编辑→评估），质量高但耗时长。
-      </p>
     </div>
   );
 }
@@ -2379,6 +2326,19 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange }:
             </button>
           </div>
         </>)}
+        <div style={{ marginTop: 10 }}>
+          <WebLLMPromptPanel
+            fetchPrompt={async () => {
+              const r = await apiPost<{ prompt: string }>("/api/generation/rewrite", {
+                text: selection.text, instruction: prompt || "润色并提升文学质量", prompt_only: true,
+              });
+              return r.prompt || "";
+            }}
+            onApplyResult={(t) => setRewriteResult(t.trim())}
+            applyLabel="应用为重写结果"
+            resultPlaceholder="把网页 LLM 返回的重写文本粘贴到这里"
+          />
+        </div>
       </>) : (<div className="empty-state" style={{ padding: "32px 16px" }}><h4>选中文本以重写</h4><p>在编辑器中选中文本，将出现「AI重写」按钮</p></div>)}
     </div>
   );
@@ -2593,15 +2553,37 @@ function EvalTab({ result, chapterContent }: { result: EvalResult | null; chapte
     } finally { setEvaluating(false); }
   };
 
+  const applyPastedEval = (raw: string) => {
+    let s = (raw || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+    const a = s.indexOf("{"), b = s.lastIndexOf("}");
+    if (a >= 0 && b > a) s = s.slice(a, b + 1);
+    try {
+      setLocalResult(JSON.parse(s) as EvalResult);
+      toast("已应用网页 LLM 的评估结果", "success");
+    } catch {
+      toast("无法解析评估 JSON，请检查粘贴的内容", "error");
+    }
+  };
+
   return (
     <div>
       <div style={{ marginBottom: 12 }}>
         <button className="btn-primary" style={{ width: "100%" }} onClick={runEval} disabled={evaluating}>
           {evaluating ? "评估中..." : "评估当前正文"}
         </button>
-        <p className="text-xs text-muted" style={{ marginTop: 4, lineHeight: 1.5 }}>
-          直接评估编辑器中当前章节的正文，无需先生成。
-        </p>
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <WebLLMPromptPanel
+          fetchPrompt={async () => {
+            const text = (chapterContent || "").trim();
+            if (!text) throw new Error("当前章节没有正文可评估");
+            const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true });
+            return r.prompt || "";
+          }}
+          onApplyResult={applyPastedEval}
+          applyLabel="应用评估结果"
+          resultPlaceholder="把网页 LLM 返回的评估 JSON 粘贴到这里"
+        />
       </div>
       {displayResult
         ? <EvalResultView result={displayResult} />

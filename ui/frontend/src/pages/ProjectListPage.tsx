@@ -79,6 +79,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   // Trending data
   const [trendingTags, setTrendingTags] = useState<{ tag_name: string; novel_count: number }[]>([]);
   const [trendingLoading, setTrendingLoading] = useState(false);
+  const [marketBrief, setMarketBrief] = useState("");
 
   // Calibration sample
   const [sampleType, setSampleType] = useState("opening");
@@ -187,6 +188,13 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     }
   }, [studioTab]);
 
+  // Market-data RAG for the 开书助手 — grounds answers in real data.
+  useEffect(() => {
+    apiGet<{ brief: string }>("/api/db/market_brief")
+      .then(r => setMarketBrief(r.brief || ""))
+      .catch(() => {});
+  }, []);
+
 
   const handleCreate = async () => {
     if (!formName.trim()) return;
@@ -272,6 +280,57 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     return configs[tab];
   };
 
+  // Build the prompt (conversation + system hint + market-data RAG) for the
+  // current 开书助手 turn. Shared by send and the web-LLM preview.
+  const buildChatPrompt = async (text: string): Promise<{ fullPrompt: string; systemHint: string }> => {
+    const config = getAgentConfig(studioTab);
+    const recentMessages = chatMessages.filter(m => m.role !== "system").slice(-20);
+    const conversationContext = recentMessages.map(m =>
+      `${m.role === "user" ? "用户" : m.agentName || "AI"}：${m.content}`,
+    ).join("\n\n");
+    const fullPrompt = recentMessages.length > 0
+      ? `以下是对话历史：\n\n${conversationContext}\n\n用户：${text}\n\n请基于以上对话上下文回答用户最新的问题。`
+      : text;
+    const promptKey = studioTab === "trending"
+      ? "assistant.book_start_trending"
+      : studioTab === "brainstorm"
+        ? "assistant.book_start_brainstorm"
+        : "";
+    const baseHint = promptKey
+      ? await renderPrompt(promptKey, {}, config.systemHint)
+      : config.systemHint;
+    let systemHint = `${baseHint}
+
+回答用户问题后，必须追加1个追问来引导用户进入下一步创作讨论。
+追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
+追问规则：3个选项，具体有区分度，不重复已确认内容。`;
+    if (marketBrief) {
+      systemHint += `\n\n[市场数据参考——以下为市场数据库的真实统计，回答须据此，不要编造市场数据]\n${marketBrief}`;
+    }
+    return { fullPrompt, systemHint };
+  };
+
+  const fetchChatPrompt = async (): Promise<string> => {
+    const { fullPrompt, systemHint } = await buildChatPrompt(chatInput.trim() || "（用户尚未输入问题）");
+    const r = await apiPost<{ prompt: string }>("/api/generation/quick-generate", {
+      project_id: activeProject || "default",
+      chapter_id: `studio_${studioTab}`,
+      synopsis: fullPrompt, system_hint: systemHint, prompt_only: true,
+    });
+    return r.prompt || "";
+  };
+
+  const applyChatResult = (text: string) => {
+    const cfg = getAgentConfig(studioTab);
+    const msgs: ChatMessage[] = [];
+    if (chatInput.trim()) {
+      msgs.push({ id: uid(), role: "user", content: chatInput.trim(), timestamp: Date.now(), status: "done" });
+    }
+    msgs.push({ id: uid(), role: "assistant", content: text, agentName: cfg.agentName, timestamp: Date.now(), status: "done" });
+    setChatMessages(prev => [...prev, ...msgs]);
+    setChatInput("");
+  };
+
   const sendMessageInternal = async (text: string, skipUserMsg = false) => {
     const config = getAgentConfig(studioTab);
     if (!skipUserMsg) {
@@ -286,31 +345,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     abortRef.current = controller;
 
     try {
-      const recentMessages = chatMessages.filter(m => m.role !== "system").slice(-20);
-      const conversationContext = recentMessages.map(m =>
-        `${m.role === "user" ? "用户" : m.agentName || "AI"}：${m.content}`
-      ).join("\n\n");
-
-      const fullPrompt = recentMessages.length > 0
-        ? `以下是对话历史：\n\n${conversationContext}\n\n用户：${text}\n\n请基于以上对话上下文回答用户最新的问题。`
-        : text;
-
-      // Static portion of the system hint comes from the prompt
-      // registry (Settings → LLM Prompt), so user edits take effect.
-      const promptKey = studioTab === "trending"
-        ? "assistant.book_start_trending"
-        : studioTab === "brainstorm"
-          ? "assistant.book_start_brainstorm"
-          : "";
-      const baseHint = promptKey
-        ? await renderPrompt(promptKey, {}, config.systemHint)
-        : config.systemHint;
-
-      const systemHint = `${baseHint}
-
-回答用户问题后，必须追加1个追问来引导用户进入下一步创作讨论。
-追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
-追问规则：3个选项，具体有区分度，不重复已确认内容。`;
+      const { fullPrompt, systemHint } = await buildChatPrompt(text);
 
       const resp = await fetch("/api/generation/quick-generate", {
         method: "POST",
@@ -809,6 +844,8 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
               /* ── 热点题材 (Marketing Agent chat) ── */
               <AIChatPanel
                 messages={trendingMessages}
+                fetchPrompt={fetchChatPrompt}
+                onApplyResult={applyChatResult}
                 onSendMessage={sendMessage}
                 onStopGeneration={stopGeneration}
                 onRegenerateMessage={handleRegenerate}
@@ -873,6 +910,8 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
               /* ── 头脑风暴 (Story Architect chat) ── */
               <AIChatPanel
                 messages={brainstormMessages}
+                fetchPrompt={fetchChatPrompt}
+                onApplyResult={applyChatResult}
                 onSendMessage={sendMessage}
                 onStopGeneration={stopGeneration}
                 onRegenerateMessage={handleRegenerate}

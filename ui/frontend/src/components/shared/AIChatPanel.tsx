@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { apiGet, apiPost, apiPut } from "../../api/client";
+import WebLLMPromptPanel from "./WebLLMPromptPanel";
 
 /** Render basic markdown (bold, italic, numbered/bullet lists, line breaks) to React elements */
 function renderMarkdown(text: string): React.ReactNode[] {
@@ -87,6 +88,10 @@ interface Props {
   quickPrompts?: string[];
   /** Template prompts shown as dropdown above input */
   templates?: { label: string; prompt: string }[];
+  /** Web-LLM workflow: fetch the rendered prompt for the current draft. */
+  fetchPrompt?: () => Promise<string>;
+  /** Web-LLM workflow: apply a pasted web-LLM reply as an assistant turn. */
+  onApplyResult?: (text: string) => void;
 }
 
 const uid = () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -95,11 +100,12 @@ export default function AIChatPanel({
   messages, onSendMessage, onStopGeneration, onRegenerateMessage,
   onSelectFollowUpOption, isGenerating, placeholder, preservedInput,
   onInputChange, onClearHistory, onDeleteMessage, compact, headerContent, emptyState, quickPrompts,
-  templates,
+  templates, fetchPrompt, onApplyResult,
 }: Props) {
   const [input, setInput] = useState(preservedInput || "");
   const [customFollowUp, setCustomFollowUp] = useState<{ msgId: string; text: string } | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [showPromptPanel, setShowPromptPanel] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -392,6 +398,33 @@ export default function AIChatPanel({
                 <div style={{ fontSize: 11, color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.prompt}</div>
               </button>
             ))}
+          </div>
+        )}
+
+        {/* Web-LLM prompt workflow */}
+        {fetchPrompt && (
+          <div style={{ marginBottom: 6 }}>
+            <button
+              onClick={() => setShowPromptPanel(s => !s)}
+              style={{
+                fontSize: 10, padding: "3px 10px", background: "transparent",
+                border: `1px solid ${showPromptPanel ? "var(--accent)" : "var(--border)"}`,
+                borderRadius: "var(--radius-sm)", cursor: "pointer",
+                color: showPromptPanel ? "var(--accent)" : "var(--text-tertiary)",
+              }}
+            >
+              {showPromptPanel ? "收起 prompt" : "预览 / 复制 prompt"}
+            </button>
+            {showPromptPanel && (
+              <div style={{ marginTop: 6 }}>
+                <WebLLMPromptPanel
+                  fetchPrompt={fetchPrompt}
+                  onApplyResult={onApplyResult}
+                  applyLabel="作为回复应用"
+                  resultPlaceholder="把网页 LLM 的回复粘贴到这里"
+                />
+              </div>
+            )}
           </div>
         )}
 

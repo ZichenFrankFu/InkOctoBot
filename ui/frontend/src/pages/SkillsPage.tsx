@@ -889,10 +889,6 @@ export default function SkillsPage({ projects, activeProject }: Props) {
             </button>
           </div>
 
-          <div style={{ padding: "8px 12px", background: "var(--accent-subtle)", borderRadius: 6, marginBottom: 16, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-            储存科学、历史、地理等专业领域知识，让世界观与设定更严谨。在「项目设置 → 写作知识引用」中勾选要注入各项目生成的条目。
-          </div>
-
           {knShowForm && (
             <div className="card mb-20" style={{ animation: "slideUp 0.2s var(--ease-out)" }}>
               <div className="card-header"><h3>{knEditing ? "编辑写作知识" : "新建写作知识"}</h3></div>

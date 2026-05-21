@@ -193,12 +193,7 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
       <div className="card mb-24">
         <div className="card-body">
           <div className="flex items-center gap-12" style={{ flexWrap: "wrap" }}>
-            <div style={{ minWidth: 0 }}>
-              <div className="label" style={{ marginBottom: 4 }}>发布平台</div>
-              <div className="text-xs text-muted">
-                AI 生成时会按平台特性调整章节长度与节奏（如番茄偏短章快节奏、起点章节更长）。
-              </div>
-            </div>
+            <div className="label" style={{ marginBottom: 0 }}>发布平台</div>
             <select
               className="select"
               value={platform}
@@ -224,10 +219,6 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
           </button>
         }
       >
-        <p className="text-sm text-muted mb-12">
-          概述你的故事世界：时代背景、力量体系、社会结构等核心设定。
-          详细条目请在「世界书」页面管理。
-        </p>
         <textarea
           className="input"
           value={worldSummary}
@@ -325,9 +316,6 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
           </button>
         }
       >
-        <p className="text-sm text-muted mb-12">
-          在这里撰写全书的分卷大纲。每章的细纲可在编辑器右侧面板编辑。
-        </p>
         <textarea
           className="input"
           value={outlineText}
@@ -345,10 +333,6 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
         expanded={expandedSections.constraints}
         onToggle={() => toggleSection("constraints")}
       >
-        <p className="text-sm text-muted mb-12">
-          定义创作约束规则：字数限制、禁用词汇、风格要求、一致性规则等。
-          AI 生成时将严格遵守这些约束。
-        </p>
         <textarea
           className="input"
           value={constraints}
@@ -371,10 +355,6 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
           </button>
         }
       >
-        <p className="text-sm text-muted mb-12">
-          为每部已关联的参考作品勾选要注入生成的特征类型。AI 创作时会借鉴对应特征，
-          勾选越少越省 token。
-        </p>
         {refLinks.length === 0 ? (
           <div className="empty-state" style={{ padding: "24px 0" }}>
             <p>暂无关联的参考作品</p>
@@ -430,9 +410,6 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
           </button>
         }
       >
-        <p className="text-sm text-muted mb-12">
-          勾选要注入本项目生成的专业写作知识条目，AI 会据此让世界观与设定更严谨。
-        </p>
         {knowledge.length === 0 ? (
           <div className="empty-state" style={{ padding: "24px 0" }}>
             <p>知识库暂无条目</p>
