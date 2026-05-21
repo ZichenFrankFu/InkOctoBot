@@ -88,6 +88,13 @@ def list_works(
     }
 
 
+@router.get("/stats")
+def reference_stats():
+    """Lightweight aggregate summary for the dashboard overview — counts
+    only, with no per-work JSON payloads."""
+    return _db().stats()
+
+
 @router.get("/works/{ref_id}")
 def get_work(ref_id: str):
     w = _db().get_work(ref_id)

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { apiGet } from "../api/client";
 import { useToast } from "../components/shared/Toast";
-import type { Novel, ReferenceWork } from "../api/types";
+import type { Novel } from "../api/types";
 import { splitGenres } from "../utils/genre";
 
 /* ── local response types ── */
@@ -90,32 +90,31 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
       })));
     };
 
-    // Load reference library overview
+    // Reference-DB overview — a tiny aggregate endpoint, not the full works list.
     const loadRefSummary = async () => {
       try {
-        const r = await apiGet<{ items: ReferenceWork[]; total: number }>("/api/references/works?limit=500");
-        const items = r.items || [];
+        const r = await apiGet<{
+          total: number; with_full_text: number; done: number;
+          with_plot: number; with_characters: number;
+          avg_rating: number | null; rated_count: number; genres: string[];
+        }>("/api/references/stats");
         const genreMap: Record<string, number> = {};
-        let ratingSum = 0, ratingCount = 0;
-        let withFullText = 0, done = 0, withPlot = 0, withCharacters = 0;
-        for (const w of items) {
-          for (const g of splitGenres(w.genre)) genreMap[g] = (genreMap[g] || 0) + 1;
-          if (w.user_rating) { ratingSum += w.user_rating; ratingCount++; }
-          if (w.has_full_text) withFullText++;
-          if (w.preprocessing_status === "done") done++;
-          if (w.plot_outline_json) withPlot++;
-          let chars: any = null;
-          try { chars = w.extracted_characters_json ? JSON.parse(w.extracted_characters_json) : null; } catch { chars = null; }
-          if (Array.isArray(chars) && chars.length) withCharacters++;
+        for (const g of r.genres || []) {
+          for (const tag of splitGenres(g)) genreMap[tag] = (genreMap[tag] || 0) + 1;
         }
         const byGenre = Object.entries(genreMap)
           .sort((a, b) => b[1] - a[1])
           .map(([genre, count]) => ({ genre, count }));
         setRefSummary({
-          total: r.total || items.length,
+          total: r.total || 0,
           topGenres: byGenre.slice(0, 5).map(g => g.genre),
-          avgRating: ratingCount > 0 ? ratingSum / ratingCount : 0,
-          withFullText, done, withPlot, withCharacters, ratedCount: ratingCount, byGenre,
+          avgRating: r.avg_rating || 0,
+          withFullText: r.with_full_text || 0,
+          done: r.done || 0,
+          withPlot: r.with_plot || 0,
+          withCharacters: r.with_characters || 0,
+          ratedCount: r.rated_count || 0,
+          byGenre,
         });
       } catch {
         // reference db might not exist yet
