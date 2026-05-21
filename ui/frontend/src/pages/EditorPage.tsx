@@ -1294,7 +1294,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
-            {aiTab === "eval" && <EvalTab result={evalResult} />}
+            {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} />}
           </div>
         </div>
         ) : (
@@ -1310,20 +1310,62 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 }
 
 /** Flatten a reference work's plot_outline_json into a flat event list. */
-function workEvents(plotJson: any): { name: string; description: string }[] {
+function workEvents(plotJson: any): { name: string; description: string; chapter: string }[] {
   let p: any = plotJson;
   if (typeof plotJson === "string") {
     try { p = JSON.parse(plotJson); } catch { return []; }
   }
-  const out: { name: string; description: string }[] = [];
+  const out: { name: string; description: string; chapter: string }[] = [];
   for (const ep of (p?.epochs || [])) {
     for (const per of (ep?.periods || [])) {
+      const perMark = String(per?.time_marker || per?.title || "");
       for (const ev of (per?.events || [])) {
-        if (ev?.name) out.push({ name: String(ev.name), description: String(ev.description || "") });
+        if (ev?.name) out.push({
+          name: String(ev.name),
+          description: String(ev.description || ""),
+          chapter: String(ev.time_marker || perMark || ""),
+        });
       }
     }
   }
   return out;
+}
+
+/** A selectable chronicle-event row: 章节 tag + 事件名, with click-to-expand
+ *  details — keeps each row compact in the narrow AI 助手 column. */
+function EventRow({ ev, on, onToggle }: {
+  ev: { name: string; description: string; chapter: string };
+  on: boolean; onToggle: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--gold)", fontWeight: 700 }}>{on ? "✓" : ""}</span>
+        {ev.chapter && (
+          <span style={{
+            fontSize: 9, padding: "0 5px", flexShrink: 0, borderRadius: 3,
+            color: "var(--gold)", border: "1px solid var(--gold)", fontFamily: "var(--font-mono)",
+          }}>{ev.chapter}</span>
+        )}
+        <span onClick={onToggle} style={{
+          flex: 1, minWidth: 0, cursor: "pointer",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          fontWeight: on ? 600 : 400, color: on ? "var(--gold)" : "var(--text-secondary)",
+        }}>{ev.name}</span>
+        {ev.description && (
+          <span onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
+            {expanded ? "收起 ▲" : "详情 ▼"}
+          </span>
+        )}
+      </div>
+      {expanded && ev.description && (
+        <div style={{ padding: "0 8px 5px 25px", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          {ev.description}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Toggle-chip style shared by the chapter linker. */
@@ -1373,7 +1415,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   }, [chapter?.id]);
 
   const [characters, setCharacters] = useState<{ id: string; name: string; selected: boolean }[]>([]);
-  const [references, setReferences] = useState<{ id: string; title: string; selected: boolean; events: { name: string; description: string }[] }[]>([]);
+  const [references, setReferences] = useState<{ id: string; title: string; selected: boolean; events: { name: string; description: string; chapter: string }[] }[]>([]);
   const [inspirations, setInspirations] = useState<{ id: string; category: string; title: string; content: string }[]>([]);
   const [showCharLink, setShowCharLink] = useState(false);
   const [showRefLink, setShowRefLink] = useState(false);
@@ -1534,10 +1576,10 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       return next;
     });
   };
-  const toggleEvent = (refId: string, workTitle: string, ev: { name: string; description: string }) => {
+  const toggleEvent = (refId: string, workTitle: string, ev: { name: string; description: string; chapter: string }) => {
     const next = isEventLinked(refId, ev.name)
       ? refEvents.filter(e => !(e.ref_id === refId && e.name === ev.name))
-      : [...refEvents, { ref_id: refId, work_title: workTitle, name: ev.name, description: ev.description }];
+      : [...refEvents, { ref_id: refId, work_title: workTitle, name: ev.name, description: ev.description, chapter: ev.chapter }];
     onUpdateChapter?.("referenced_events", next);
   };
   const toggleInspiration = (it: { id: string; category: string; title: string; content: string }) => {
@@ -1622,50 +1664,13 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           )}
           <div ref={outlineChatEndRef} />
         </div>
-        <div style={{ padding: "6px 10px", borderTop: "1px solid var(--border)" }}>
-          <div style={{ display: "flex", gap: 6 }}>
-            <textarea className="input" value={outlineChatInput} onChange={e => setOutlineChatInput(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendOutlineChat(); } }}
-              placeholder="描述你想要的大纲..." rows={1} style={{ flex: 1, fontSize: 11, padding: "4px 8px", minHeight: 28, maxHeight: 80, resize: "none" }} />
-            <button className="btn-primary" onClick={() => sendOutlineChat()} disabled={!outlineChatInput.trim() || outlineChatLoading}
-              style={{ fontSize: 11, padding: "4px 10px" }}>{outlineChatLoading ? "..." : "发送"}</button>
-          </div>
-          {/* 网页 LLM workflow — distinct from the 快捷指令 templates
-              below. These take the prompt OUT to an external LLM and
-              bring the reply back; they don't call the in-app model. */}
-          <div style={{ marginTop: 8, paddingTop: 6, borderTop: "1px dashed var(--border)" }}>
-            <div style={{ fontSize: 9, fontWeight: 700, color: "var(--text-tertiary)", marginBottom: 4, letterSpacing: 0.5 }}>
-              网页 LLM · 用外部模型，不消耗本地额度
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button className="btn" onClick={copyOutlinePrompt}
-                style={{ fontSize: 10, padding: "3px 10px" }}
-                title="把当前对话打包成完整 prompt 复制走">① 复制 prompt</button>
-              <button className="btn" onClick={() => setPasteMode(m => !m)}
-                style={{ fontSize: 10, padding: "3px 10px", borderColor: pasteMode ? "var(--accent)" : "var(--border)", color: pasteMode ? "var(--accent)" : "var(--text-secondary)" }}>
-                ② {pasteMode ? "取消粘贴" : "粘贴网页结果"}
-              </button>
-            </div>
-            <div className="text-xs text-muted" style={{ marginTop: 3, lineHeight: 1.5 }}>
-              复制 prompt → 贴到 ChatGPT / Claude.ai 等 → 把回复用「粘贴网页结果」贴回。
-            </div>
-            {pasteMode && (
-              <div style={{ marginTop: 6 }}>
-                <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)}
-                  placeholder="把网页 LLM 返回的回复粘贴到这里，应用后会作为助手回复加入对话" rows={4}
-                  style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5 }} />
-                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
-                  <button className="btn-primary" onClick={applyPastedReply} disabled={!pasteText.trim()}
-                    style={{ fontSize: 10, padding: "3px 12px" }}>应用为回复</button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-        {/* 快捷指令 — pre-written prompts sent straight to the in-app AI. */}
-        {outlineChatMsgs.length === 0 && (
-          <div style={{ padding: "4px 10px 8px" }}>
-            <div style={{ fontSize: 9, fontWeight: 700, color: "var(--text-tertiary)", marginBottom: 4, letterSpacing: 0.5 }}>
+        {/* 快捷指令 — a bubble floating just above the input box */}
+        <div style={{ padding: "6px 10px 0" }}>
+          <div style={{
+            background: "var(--bg-surface-2)", border: "1px solid var(--border)",
+            borderRadius: 10, padding: "5px 8px",
+          }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: "var(--text-tertiary)", marginBottom: 3, letterSpacing: 0.5 }}>
               快捷指令 · 点击直接发给本地 AI
             </div>
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -1682,7 +1687,44 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
               ))}
             </div>
           </div>
-        )}
+          {/* downward pointer — makes the bubble read as hovering over the box */}
+          <div style={{
+            width: 0, height: 0, marginLeft: 22,
+            borderLeft: "6px solid transparent", borderRight: "6px solid transparent",
+            borderTop: "6px solid var(--bg-surface-2)",
+          }} />
+        </div>
+        {/* Input box + 网页 LLM actions below it */}
+        <div style={{ padding: "0 10px 6px" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <textarea className="input" value={outlineChatInput} onChange={e => setOutlineChatInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendOutlineChat(); } }}
+              placeholder="描述你想要的大纲..." rows={1} style={{ flex: 1, fontSize: 11, padding: "4px 8px", minHeight: 28, maxHeight: 80, resize: "none" }} />
+            <button className="btn-primary" onClick={() => sendOutlineChat()} disabled={!outlineChatInput.trim() || outlineChatLoading}
+              style={{ fontSize: 11, padding: "4px 10px" }}>{outlineChatLoading ? "..." : "发送"}</button>
+          </div>
+          {/* 复制 prompt / 解析网页结果 — the web-LLM workflow, below the box */}
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <button className="btn" onClick={copyOutlinePrompt}
+              style={{ fontSize: 10, padding: "3px 10px" }}
+              title="把当前对话打包成完整 prompt 复制走，可贴到 ChatGPT / Claude.ai 等">复制 prompt</button>
+            <button className="btn" onClick={() => setPasteMode(m => !m)}
+              style={{ fontSize: 10, padding: "3px 10px", borderColor: pasteMode ? "var(--accent)" : "var(--border)", color: pasteMode ? "var(--accent)" : "var(--text-secondary)" }}>
+              {pasteMode ? "取消解析" : "解析网页结果"}
+            </button>
+          </div>
+          {pasteMode && (
+            <div style={{ marginTop: 6 }}>
+              <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)}
+                placeholder="把网页 LLM 返回的回复粘贴到这里，解析后作为助手回复加入对话" rows={4}
+                style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5 }} />
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+                <button className="btn-primary" onClick={applyPastedReply} disabled={!pasteText.trim()}
+                  style={{ fontSize: 10, padding: "3px 12px" }}>解析并应用</button>
+              </div>
+            </div>
+          )}
+        </div>
         {outlineChatMsgs.length > 0 && outlineChatMsgs[outlineChatMsgs.length - 1].role === "assistant" && !pendingOutline && (
           <div style={{ padding: "4px 10px 8px", display: "flex", gap: 4 }}>
             <button className="btn" style={{ fontSize: 10, padding: "2px 10px", borderColor: "var(--jade)", color: "var(--jade)" }}
@@ -1698,13 +1740,15 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       </div>
       )}
 
-      {/* 关联角色 — its own section */}
-      <div style={{ marginTop: 10 }}>
-        <button className="btn" style={{ fontSize: 11, padding: "4px 12px", width: "100%" }} onClick={() => setShowCharLink(v => !v)}>
-          {showCharLink ? "收起" : "关联角色"}{selectedChars.length > 0 ? ` (已选 ${selectedChars.length})` : ""}
+      {/* 关联角色 — cohesive collapsible section (header attached to panel) */}
+      <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+        <button className="btn-ghost" onClick={() => setShowCharLink(v => !v)}
+          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
+            background: showCharLink ? "var(--bg-surface-2)" : "transparent" }}>
+          {showCharLink ? "▾ " : "▸ "}关联角色{selectedChars.length > 0 ? ` · 已选 ${selectedChars.length}` : ""}
         </button>
         {showCharLink && (
-          <div style={{ marginTop: 8, padding: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
+          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
             {characters.length > 0 ? (
               <>
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -1745,15 +1789,16 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         )}
       </div>
 
-      {/* 关联参考作品 & 灵感 — its own section, searchable */}
-      <div style={{ marginTop: 8 }}>
-        <button className="btn" style={{ fontSize: 11, padding: "4px 12px", width: "100%" }} onClick={() => setShowRefLink(v => !v)}>
-          {showRefLink ? "收起" : "关联参考作品 & 灵感"}
-          {(selectedRefs.length + refEvents.length + refInsps.length) > 0
-            ? ` (作品 ${selectedRefs.length} · 事件 ${refEvents.length} · 灵感 ${refInsps.length})` : ""}
+      {/* 关联参考作品 & 灵感 — cohesive collapsible section */}
+      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+        <button className="btn-ghost" onClick={() => setShowRefLink(v => !v)}
+          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
+            background: showRefLink ? "var(--bg-surface-2)" : "transparent" }}>
+          {showRefLink ? "▾ " : "▸ "}关联参考作品 & 灵感{(selectedRefs.length + refEvents.length + refInsps.length) > 0
+            ? ` · 作品 ${selectedRefs.length}·事件 ${refEvents.length}·灵感 ${refInsps.length}` : ""}
         </button>
         {showRefLink && (
-          <div style={{ marginTop: 8, padding: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
+          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
             {/* 参考作品 — searchable scrollable list */}
             <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--jade)" }}>参考作品</div>
             {references.length > 0 ? (
@@ -1775,12 +1820,14 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
               <div className="text-xs text-muted">暂无参考作品，请在「参考作品详情」中导入</div>
             )}
 
-            {/* 编年史事件 — per selected work, searchable scrollable list */}
+            {/* 编年史事件 — per selected work; each row = 章节 tag + 事件名,
+                click「详情」to expand details (the column is narrow). */}
             {selectedRefs.map(r => {
               const eq = eventSearch.trim().toLowerCase();
               const evs = r.events.filter(ev => !eq
                 || ev.name.toLowerCase().includes(eq)
-                || ev.description.toLowerCase().includes(eq));
+                || ev.description.toLowerCase().includes(eq)
+                || ev.chapter.toLowerCase().includes(eq));
               const linkedN = refEvents.filter(e => e.ref_id === r.id).length;
               return (
                 <div key={r.id} style={{ marginTop: 10 }}>
@@ -1790,13 +1837,12 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
                   {r.events.length > 0 ? (
                     <>
                       <input className="input" value={eventSearch} onChange={e => setEventSearch(e.target.value)}
-                        placeholder="搜索事件名 / 描述..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
-                      <div style={{ maxHeight: 160, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+                        placeholder="搜索章节 / 事件名..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
+                      <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
                         {evs.map((ev, i) => (
-                          <PickRow key={i} label={ev.name}
-                            sub={ev.description ? ev.description.slice(0, 16) : undefined}
-                            on={isEventLinked(r.id, ev.name)} color="var(--gold)"
-                            onClick={() => toggleEvent(r.id, r.title, ev)} />
+                          <EventRow key={i} ev={ev}
+                            on={isEventLinked(r.id, ev.name)}
+                            onToggle={() => toggleEvent(r.id, r.title, ev)} />
                         ))}
                         {evs.length === 0 && (
                           <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配事件</div>
@@ -1832,6 +1878,9 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
             ) : (
               <div className="text-xs text-muted">灵感库为空，请在「灵感搜索 → 灵感库」中添加</div>
             )}
+
+            <button className="btn" onClick={() => setShowRefLink(false)}
+              style={{ width: "100%", fontSize: 10, padding: "3px 0", marginTop: 12 }}>▴ 收起本节</button>
           </div>
         )}
       </div>
@@ -2416,16 +2465,53 @@ function ScoreDots({ score, max }: { score: number; max: number }) {
   );
 }
 
-function EvalTab({ result }: { result: EvalResult | null }) {
-  const [expandedCat, setExpandedCat] = useState<string | null>(null);
-  const displayResult = result;
+/** 评估 tab — evaluate the current chapter text on demand (no need to
+ *  generate first), or show the result from a pipeline run. */
+function EvalTab({ result, chapterContent }: { result: EvalResult | null; chapterContent: string }) {
+  const { toast } = useToast();
+  const [localResult, setLocalResult] = useState<EvalResult | null>(null);
+  const [evaluating, setEvaluating] = useState(false);
+  const displayResult = localResult || result;
 
-  if (!displayResult) return (
-    <div className="empty-state" style={{ padding: "32px 16px" }}>
-      <h4>暂无评估结果</h4>
-      <p>在「灵感」面板完成一次生成后，评估结果将显示在这里</p>
+  const runEval = async () => {
+    const text = (chapterContent || "").trim();
+    if (!text) { toast("当前章节没有正文可评估", "error"); return; }
+    setEvaluating(true);
+    try {
+      const resp = await apiPost<{ evaluation: EvalResult }>("/api/generation/evaluate", { text });
+      if (resp.evaluation) setLocalResult(resp.evaluation);
+      else toast("评估未返回结果", "error");
+    } catch (e: any) {
+      toast(e?.message || "评估失败，请检查模型连接", "error");
+    } finally { setEvaluating(false); }
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 12 }}>
+        <button className="btn-primary" style={{ width: "100%" }} onClick={runEval} disabled={evaluating}>
+          {evaluating ? "评估中..." : "评估当前正文"}
+        </button>
+        <p className="text-xs text-muted" style={{ marginTop: 4, lineHeight: 1.5 }}>
+          直接评估编辑器中当前章节的正文，无需先生成。
+        </p>
+      </div>
+      {displayResult
+        ? <EvalResultView result={displayResult} />
+        : (
+          <div className="empty-state" style={{ padding: "24px 16px" }}>
+            <h4>暂无评估结果</h4>
+            <p>点击「评估当前正文」评估编辑器中的章节。</p>
+          </div>
+        )}
     </div>
   );
+}
+
+/** Renders one evaluation result — dimension scores / categories / issues. */
+function EvalResultView({ result }: { result: EvalResult }) {
+  const [expandedCat, setExpandedCat] = useState<string | null>(null);
+  const displayResult = result;
 
   // Use EvalReport component when dimension_scores are available
   const hasDimensionScores = displayResult.dimension_scores && Object.keys(displayResult.dimension_scores).length > 0;
