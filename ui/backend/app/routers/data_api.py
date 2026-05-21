@@ -253,6 +253,47 @@ def save_knowledge_injection(project_id: str, body: dict = Body(...)):
     _wj(_knowledge_injection_path(project_id), data)
     return {"ok": True}
 
+# ═══ Project Memory (per-project memory shared across all AI conversations) ═══
+def _project_memory_path(project_id: str) -> Path:
+    d = _col("project_memory"); return d / f"{_safe_id(project_id)}.json"
+@router.get("/project_memory/{project_id}")
+def get_project_memory(project_id: str):
+    p = _project_memory_path(project_id)
+    if not p.exists():
+        return {"project_id": project_id, "memories": []}
+    return json.loads(p.read_text("utf-8"))
+@router.put("/project_memory/{project_id}")
+def save_project_memory(project_id: str, body: dict = Body(...)):
+    mems = body.get("memories", [])
+    data = {"project_id": project_id,
+            "memories": mems if isinstance(mems, list) else [],
+            "updated_at": time.time()}
+    _wj(_project_memory_path(project_id), data)
+    return {"ok": True}
+@router.post("/project_memory/{project_id}")
+def add_project_memory(project_id: str, body: dict = Body(...)):
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(400, detail="记忆内容不能为空")
+    p = _project_memory_path(project_id)
+    data = json.loads(p.read_text("utf-8")) if p.exists() else {"project_id": project_id, "memories": []}
+    mems = data.get("memories", []) if isinstance(data.get("memories"), list) else []
+    entry = {"id": _nid(), "content": content,
+             "source": (body.get("source") or "manual"), "created_at": time.time()}
+    mems.append(entry)
+    data.update({"project_id": project_id, "memories": mems, "updated_at": time.time()})
+    _wj(_project_memory_path(project_id), data)
+    return entry
+@router.delete("/project_memory/{project_id}/{memory_id}")
+def delete_project_memory(project_id: str, memory_id: str):
+    p = _project_memory_path(project_id)
+    if p.exists():
+        data = json.loads(p.read_text("utf-8"))
+        data["memories"] = [m for m in data.get("memories", []) if m.get("id") != memory_id]
+        data["updated_at"] = time.time()
+        _wj(_project_memory_path(project_id), data)
+    return {"ok": True}
+
 # ═══ Editor ═══
 def _editor_path(project_id: str = "default") -> Path:
     d = _col("editor"); return d / f"{_safe_id(project_id)}.json"

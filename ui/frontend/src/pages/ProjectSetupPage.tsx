@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { apiGet, apiPut } from "../api/client";
+import { apiGet, apiPut, apiPost, apiDelete } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import { PLATFORMS } from "../utils/platforms";
 import type {
@@ -38,6 +38,7 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
     constraints: false,
     references: false,
     knowledge: false,
+    memory: false,
   });
 
   // Editable project fields
@@ -54,6 +55,11 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
   // R4 — writing-knowledge injection selection
   const [knowledge, setKnowledge] = useState<WritingKnowledgeEntry[]>([]);
   const [knowledgeIds, setKnowledgeIds] = useState<string[]>([]);
+
+  // Per-project memory — shared across every AI conversation in the project
+  const [memories, setMemories] = useState<{ id: string; content: string; source?: string }[]>([]);
+  const [memInput, setMemInput] = useState("");
+  const [memSaving, setMemSaving] = useState(false);
 
   useEffect(() => {
     if (!dirty) return;
@@ -157,6 +163,35 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
     } catch (e: any) {
       toast(e.message || "保存失败", "error");
     }
+  };
+
+  // Per-project memory — load + add + delete.
+  useEffect(() => {
+    if (!projectId) return;
+    apiGet<{ memories: { id: string; content: string; source?: string }[] }>(
+      `/api/data/project_memory/${projectId}`,
+    ).then(r => setMemories(r.memories || [])).catch(() => {});
+  }, [projectId]);
+
+  const addMemory = async () => {
+    const content = memInput.trim();
+    if (!content) return;
+    setMemSaving(true);
+    try {
+      const entry = await apiPost<{ id: string; content: string }>(
+        `/api/data/project_memory/${projectId}`, { content },
+      );
+      setMemories(prev => [...prev, entry]);
+      setMemInput("");
+    } catch (e: any) {
+      toast(e?.message || "保存失败", "error");
+    }
+    setMemSaving(false);
+  };
+
+  const deleteMemory = (id: string) => {
+    setMemories(prev => prev.filter(m => m.id !== id));
+    apiDelete(`/api/data/project_memory/${projectId}/${id}`).catch(() => {});
   };
 
   const nav = (page: string) => {
@@ -451,6 +486,52 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
                   <div className="text-xs text-muted truncate">{k.content}</div>
                 </div>
               </label>
+            ))}
+          </div>
+        )}
+      </SectionCard>
+
+      <SectionCard
+        title="项目记忆"
+        icon="&#x25C8;"
+        expanded={expandedSections.memory}
+        onToggle={() => toggleSection("memory")}
+      >
+        <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+          <input
+            className="input"
+            value={memInput}
+            onChange={e => setMemInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") addMemory(); }}
+            placeholder="添加一条贯穿本项目所有 AI 对话的记忆，例如：主角的剑名叫「霜见」"
+            style={{ flex: 1, fontSize: 13 }}
+          />
+          <button className="btn-primary" onClick={addMemory} disabled={memSaving || !memInput.trim()}>
+            添加
+          </button>
+        </div>
+        {memories.length === 0 ? (
+          <div className="empty-state" style={{ padding: "16px 0" }}><p>暂无项目记忆</p></div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {memories.map(m => (
+              <div
+                key={m.id}
+                style={{
+                  display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 12px",
+                  background: "var(--bg-surface)", borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                <span style={{ flex: 1, fontSize: 13, color: "var(--text-primary)", lineHeight: 1.6 }}>{m.content}</span>
+                <button
+                  onClick={() => deleteMemory(m.id)}
+                  style={{ background: "none", border: "none", color: "var(--text-disabled)", cursor: "pointer", fontSize: 14, flexShrink: 0 }}
+                  title="删除"
+                >
+                  &times;
+                </button>
+              </div>
             ))}
           </div>
         )}

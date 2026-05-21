@@ -629,6 +629,7 @@ async def start_generation(req: GenerateRequest):
             req.project_id, req.chapter_num, req.characters)
         rag_text = "\n".join(
             b for b in (
+                ctx["blocks"].get("project_memory", ""),
                 ctx["blocks"].get("worldbook", ""),
                 ctx["blocks"].get("reference_summary", ""),
                 ctx["blocks"].get("writing_knowledge", ""),
@@ -801,6 +802,10 @@ async def quick_generate(req: GenerateRequest):
         # the synopsis is the full user message, no RAG assembly.
         if req.system_hint:
             system_prompt = req.system_hint
+            from ._rag_context import load_project_memory_block
+            _mem = load_project_memory_block(req.project_id)
+            if _mem:
+                system_prompt = f"{system_prompt}\n\n{_mem}"
             user_content = req.synopsis
             if req.prompt_only:
                 return {
@@ -902,6 +907,10 @@ async def outline_chat(req: OutlineChatRequest):
         system = get_template("assistant.outline")
         if req.context:
             system += f"\n\n[参考设定]\n{req.context}"
+        from ._rag_context import load_project_memory_block
+        _mem = load_project_memory_block(req.project_id)
+        if _mem:
+            system += f"\n\n{_mem}"
 
         if req.prompt_only:
             # Assemble a copy-pasteable prompt for use in a web LLM.

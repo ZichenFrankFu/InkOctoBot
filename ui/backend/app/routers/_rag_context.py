@@ -33,6 +33,7 @@ _BUDGET = {
     "referenced_materials": 1400,
     "writing_knowledge": 1600,
     "writing_skills": 2400,
+    "project_memory": 1600,
     "foreshadowing": 800,
     "user_preferences": 800,
 }
@@ -443,6 +444,7 @@ def build_generation_context(
     blocks: dict[str, str] = {
         "platform_directive": _load_platform_directive(project_id),
         "style_calibration": _load_style_calibration(project_id),
+        "project_memory": _load_project_memory(project_id),
         "character_cards": _load_character_cards(project_id, characters),
         "worldbook": _load_worldbook(project_id),
         "reference_summary": _load_reference_blocks(project_id, db_path or ""),
@@ -542,6 +544,37 @@ def _load_writing_skills() -> str:
     except Exception as e:
         logger.debug("writing skills block skipped: %s", e)
         return ""
+
+
+def _load_project_memory(project_id: str) -> str:
+    """Inject the project's shared memory — confirmed facts / decisions
+    that persist across every AI conversation in the project."""
+    try:
+        from ui.backend.app.routers.data_api import _col, _safe_id
+
+        p = _col("project_memory") / f"{_safe_id(project_id)}.json"
+        if not p.exists():
+            return ""
+        data = json.loads(p.read_text("utf-8"))
+        lines = [
+            f"- {str(m.get('content') or '').strip()}"
+            for m in data.get("memories", [])
+            if str(m.get("content") or "").strip()
+        ]
+        if not lines:
+            return ""
+        body = _clip("\n".join(lines), _BUDGET["project_memory"])
+        return _section(
+            "项目记忆（贯穿本项目所有 AI 对话的已确认信息，须与之保持一致）", body,
+        )
+    except Exception as e:
+        logger.debug("project memory skipped: %s", e)
+        return ""
+
+
+def load_project_memory_block(project_id: str) -> str:
+    """Public accessor for the project-memory block (used by chat endpoints)."""
+    return _load_project_memory(project_id)
 
 
 def load_chapter_fields(project_id: str, chapter_id: str) -> dict:
