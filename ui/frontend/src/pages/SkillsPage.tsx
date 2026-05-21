@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
-import type { SkillInfo, Project } from "../api/types";
+import type { SkillInfo, Project, WritingKnowledgeEntry } from "../api/types";
 import { useToast } from "../components/shared/Toast";
 
 const SECTION_COLORS: Record<string, string> = {
@@ -17,6 +17,8 @@ const FEATURE_EXTRACTION_SKILLS = [
   "style_extract", "hook_extract", "info_density_judge",
   "opening_pattern_judge", "payoff_judge",
 ];
+
+const KNOWLEDGE_DOMAINS = ["科学", "历史", "地理", "军事", "法律", "民俗", "其他"];
 const FALLBACK_SECTIONS: { domain: string; label: string; description: string }[] = [
   { domain: "feature_extraction", label: "特征提取", description: "编年史、角色、叙事、风格、钩子、信息密度、开篇模式、爽点等特征抽取技能" },
   { domain: "planner", label: "规划", description: "故事规划与架构设计" },
@@ -92,9 +94,73 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   // Track deactivated state for learning log entries not in registry
   const [logDeactivated, setLogDeactivated] = useState<Set<string>>(new Set());
 
-  const [activeTab, setActiveTab] = useState<"agents" | "learning">("agents");
+  const [activeTab, setActiveTab] = useState<"agents" | "learning" | "knowledge">("agents");
   // Expanded section in the agents tab
   const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
+
+  // ── Writing-knowledge library (R4) ──
+  const [knowledgeList, setKnowledgeList] = useState<WritingKnowledgeEntry[]>([]);
+  const [knForm, setKnForm] = useState({ id: "", title: "", domain: "科学", content: "", tags: "", source: "" });
+  const [knEditing, setKnEditing] = useState(false);
+  const [knShowForm, setKnShowForm] = useState(false);
+  const [knSaving, setKnSaving] = useState(false);
+  const [knConfirmDelete, setKnConfirmDelete] = useState<string | null>(null);
+  const [knSearch, setKnSearch] = useState("");
+
+  const loadKnowledge = useCallback(async () => {
+    try {
+      const r = await apiGet<{ items: WritingKnowledgeEntry[] }>("/api/data/writing_knowledge");
+      setKnowledgeList(r.items || []);
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => { loadKnowledge(); }, [loadKnowledge]);
+
+  const openKnCreate = () => {
+    setKnForm({ id: "", title: "", domain: "科学", content: "", tags: "", source: "" });
+    setKnEditing(false); setKnShowForm(true);
+  };
+  const openKnEdit = (k: WritingKnowledgeEntry) => {
+    setKnForm({
+      id: k.id, title: k.title, domain: k.domain || "其他",
+      content: k.content, tags: (k.tags || []).join(", "), source: k.source || "",
+    });
+    setKnEditing(true); setKnShowForm(true);
+  };
+  const saveKnowledge = async () => {
+    if (!knForm.title.trim() || !knForm.content.trim()) {
+      toast("标题和内容不能为空", "error"); return;
+    }
+    setKnSaving(true);
+    const body = {
+      title: knForm.title.trim(), domain: knForm.domain, content: knForm.content.trim(),
+      tags: knForm.tags.split(/[,，]/).map(t => t.trim()).filter(Boolean),
+      source: knForm.source.trim(),
+    };
+    try {
+      if (knEditing) {
+        const orig = knowledgeList.find(k => k.id === knForm.id);
+        await apiPut(`/api/data/writing_knowledge/${knForm.id}`, { ...orig, ...body, id: knForm.id });
+      } else {
+        await apiPost("/api/data/writing_knowledge", body);
+      }
+      setKnShowForm(false);
+      toast(knEditing ? "写作知识已更新" : "写作知识已创建", "success");
+      loadKnowledge();
+    } catch (e: any) {
+      toast(e?.message || "保存失败", "error");
+    }
+    setKnSaving(false);
+  };
+  const deleteKnowledge = async (id: string) => {
+    try {
+      await apiDelete(`/api/data/writing_knowledge/${id}`);
+      setKnConfirmDelete(null);
+      toast("写作知识已删除", "success");
+      loadKnowledge();
+    } catch (e: any) {
+      toast(e?.message || "删除失败", "error");
+    }
+  };
 
   const buildFallbackSections = useCallback((skillsList: SkillInfo[]): SkillSection[] => {
     const names = new Set(skillsList.map(s => s.name));
@@ -427,6 +493,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
         {([
           { key: "agents" as const, label: "智能体 & Skills", count: sectionSkillTotal },
           { key: "learning" as const, label: "自学习成果", count: learnedCount },
+          { key: "knowledge" as const, label: "写作知识", count: knowledgeList.length },
         ]).map(tab => (
           <button
             key={tab.key}
@@ -808,6 +875,119 @@ export default function SkillsPage({ projects, activeProject }: Props) {
               </div>
             </div>
           </div>
+        </>
+      )}
+
+      {/* ═══════════════════════ TAB: Writing Knowledge ═══════════════════════ */}
+      {activeTab === "knowledge" && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+            <input className="input" placeholder="搜索写作知识..." value={knSearch}
+              onChange={e => setKnSearch(e.target.value)} style={{ maxWidth: 280 }} />
+            <button className="btn-primary" style={{ fontSize: 12, marginLeft: "auto" }} onClick={openKnCreate}>
+              + 新建写作知识
+            </button>
+          </div>
+
+          <div style={{ padding: "8px 12px", background: "var(--accent-subtle)", borderRadius: 6, marginBottom: 16, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+            储存科学、历史、地理等专业领域知识，让世界观与设定更严谨。在「项目设置 → 写作知识引用」中勾选要注入各项目生成的条目。
+          </div>
+
+          {knShowForm && (
+            <div className="card mb-20" style={{ animation: "slideUp 0.2s var(--ease-out)" }}>
+              <div className="card-header"><h3>{knEditing ? "编辑写作知识" : "新建写作知识"}</h3></div>
+              <div className="card-body">
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginBottom: 12 }}>
+                  <div className="field">
+                    <label className="label">标题</label>
+                    <input className="input" value={knForm.title}
+                      onChange={e => setKnForm(p => ({ ...p, title: e.target.value }))}
+                      placeholder="例：冷兵器时代的攻城战术" />
+                  </div>
+                  <div className="field">
+                    <label className="label">领域</label>
+                    <select className="select" value={knForm.domain}
+                      onChange={e => setKnForm(p => ({ ...p, domain: e.target.value }))} style={{ width: "100%" }}>
+                      {KNOWLEDGE_DOMAINS.map(d => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="field mb-12">
+                  <label className="label">内容</label>
+                  <textarea className="input" value={knForm.content}
+                    onChange={e => setKnForm(p => ({ ...p, content: e.target.value }))}
+                    rows={5} placeholder="详细描述该专业知识，AI 创作时会据此保持设定严谨..."
+                    style={{ lineHeight: 1.7 }} />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                  <div className="field">
+                    <label className="label">标签（逗号分隔）</label>
+                    <input className="input" value={knForm.tags}
+                      onChange={e => setKnForm(p => ({ ...p, tags: e.target.value }))} placeholder="军事, 古代" />
+                  </div>
+                  <div className="field">
+                    <label className="label">来源（选填）</label>
+                    <input className="input" value={knForm.source}
+                      onChange={e => setKnForm(p => ({ ...p, source: e.target.value }))} placeholder="资料出处" />
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button className="btn" onClick={() => setKnShowForm(false)}>取消</button>
+                  <button className="btn-primary" onClick={saveKnowledge} disabled={knSaving || !knForm.title.trim()}>
+                    {knSaving ? "保存中..." : (knEditing ? "保存修改" : "创建")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {knowledgeList.length === 0 ? (
+            <div className="card" style={{ padding: 24, textAlign: "center" }}>
+              <div style={{ fontSize: 13, color: "var(--text-tertiary)" }}>
+                知识库暂无条目。点击「新建写作知识」添加专业领域知识。
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {knowledgeList
+                .filter(k => {
+                  const q = knSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (k.title || "").toLowerCase().includes(q)
+                    || (k.content || "").toLowerCase().includes(q)
+                    || (k.domain || "").toLowerCase().includes(q)
+                    || (k.tags || []).some(t => t.toLowerCase().includes(q));
+                })
+                .map(k => (
+                  <div key={k.id} className="card" style={{ padding: "12px 16px" }}>
+                    <div className="flex items-center gap-8" style={{ marginBottom: 4 }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{k.title}</span>
+                      {k.domain && <span className="tag category" style={{ fontSize: 10 }}>{k.domain}</span>}
+                      <div className="flex gap-4" style={{ marginLeft: "auto" }}>
+                        <button className="btn" style={{ fontSize: 10, padding: "3px 10px" }} onClick={() => openKnEdit(k)}>编辑</button>
+                        {knConfirmDelete === k.id ? (
+                          <>
+                            <button className="btn" style={{ fontSize: 10, padding: "3px 8px" }} onClick={() => setKnConfirmDelete(null)}>取消</button>
+                            <button className="btn" style={{ fontSize: 10, padding: "3px 8px", color: "var(--error)", borderColor: "var(--error)" }} onClick={() => deleteKnowledge(k.id)}>确认删除</button>
+                          </>
+                        ) : (
+                          <button className="btn" style={{ fontSize: 10, padding: "3px 10px", color: "var(--error)" }} onClick={() => setKnConfirmDelete(k.id)}>删除</button>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                      {k.content}
+                    </div>
+                    {k.tags && k.tags.length > 0 && (
+                      <div className="flex gap-4" style={{ flexWrap: "wrap", marginTop: 6 }}>
+                        {k.tags.map(t => <span key={t} className="tag" style={{ fontSize: 9 }}>{t}</span>)}
+                      </div>
+                    )}
+                    {k.source && <div className="text-xs text-muted" style={{ marginTop: 4 }}>来源：{k.source}</div>}
+                  </div>
+                ))}
+            </div>
+          )}
         </>
       )}
     </div>

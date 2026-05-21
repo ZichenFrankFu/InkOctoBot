@@ -182,6 +182,77 @@ def update_worldbook_entry(eid: str, body: dict = Body(...)):
 @router.delete("/worldbook/{eid}")
 def delete_worldbook_entry(eid: str): _del("worldbook", eid); return {"ok": True}
 
+# ═══ Writing Knowledge (global library) ═══
+@router.get("/writing_knowledge")
+def list_writing_knowledge(domain: str | None = None, page: int = 0, size: int = 0):
+    if domain:
+        items = _list("writing_knowledge", filter_key="domain", filter_value=domain)
+    else:
+        items = _list("writing_knowledge")
+    total = len(items)
+    if size > 0:
+        start = page * size
+        items = items[start:start + size]
+    return {"items": items, "total": total}
+@router.post("/writing_knowledge")
+def create_writing_knowledge(body: dict = Body(...)):
+    kid = _nid()
+    body.update({"id": kid, "title": body.get("title", "新知识条目"),
+        "domain": body.get("domain", "其他"), "content": body.get("content", ""),
+        "tags": body.get("tags", []), "source": body.get("source", ""),
+        "created_at": time.time()})
+    title = body.get("title", "")
+    if title and any(k.get("title") == title for k in _list("writing_knowledge")):
+        raise HTTPException(409, detail=f"写作知识「{title}」已存在，请使用不同的标题")
+    return _save("writing_knowledge", kid, body)
+@router.get("/writing_knowledge/{kid}")
+def get_writing_knowledge(kid: str): return _get("writing_knowledge", kid)
+@router.put("/writing_knowledge/{kid}")
+def update_writing_knowledge(kid: str, body: dict = Body(...)):
+    title = body.get("title", "")
+    if title and any(k.get("title") == title and k.get("id") != kid
+                     for k in _list("writing_knowledge")):
+        raise HTTPException(409, detail=f"写作知识「{title}」已存在，请使用不同的标题")
+    return _save("writing_knowledge", kid, body)
+@router.delete("/writing_knowledge/{kid}")
+def delete_writing_knowledge(kid: str): _del("writing_knowledge", kid); return {"ok": True}
+
+# ═══ Reference Injection (per-project reference-work × feature selection) ═══
+def _ref_injection_path(project_id: str) -> Path:
+    d = _col("reference_injection"); return d / f"{_safe_id(project_id)}.json"
+@router.get("/reference_injection/{project_id}")
+def get_reference_injection(project_id: str):
+    p = _ref_injection_path(project_id)
+    if not p.exists():
+        return {"project_id": project_id, "selections": {}}
+    return json.loads(p.read_text("utf-8"))
+@router.put("/reference_injection/{project_id}")
+def save_reference_injection(project_id: str, body: dict = Body(...)):
+    selections = body.get("selections", {})
+    data = {"project_id": project_id,
+            "selections": selections if isinstance(selections, dict) else {},
+            "updated_at": time.time()}
+    _wj(_ref_injection_path(project_id), data)
+    return {"ok": True}
+
+# ═══ Knowledge Injection (per-project writing-knowledge selection) ═══
+def _knowledge_injection_path(project_id: str) -> Path:
+    d = _col("knowledge_injection"); return d / f"{_safe_id(project_id)}.json"
+@router.get("/knowledge_injection/{project_id}")
+def get_knowledge_injection(project_id: str):
+    p = _knowledge_injection_path(project_id)
+    if not p.exists():
+        return {"project_id": project_id, "knowledge_ids": []}
+    return json.loads(p.read_text("utf-8"))
+@router.put("/knowledge_injection/{project_id}")
+def save_knowledge_injection(project_id: str, body: dict = Body(...)):
+    ids = body.get("knowledge_ids", [])
+    data = {"project_id": project_id,
+            "knowledge_ids": ids if isinstance(ids, list) else [],
+            "updated_at": time.time()}
+    _wj(_knowledge_injection_path(project_id), data)
+    return {"ok": True}
+
 # ═══ Editor ═══
 def _editor_path(project_id: str = "default") -> Path:
     d = _col("editor"); return d / f"{_safe_id(project_id)}.json"

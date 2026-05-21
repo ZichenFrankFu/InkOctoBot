@@ -595,13 +595,21 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
     # ── 正文生成 / 重写 / 评估 ──────────────────────────────────────
 
     "generation.single_agent": {
-        "template": """你是一个专业的小说写作AI。根据提供的大纲和设定，写出高质量的章节内容。要求：
-1. 文字生动，有画面感
-2. 对话自然，符合人物性格
-3. 情节紧凑，节奏合理
-4. 保持叙事视角一致""",
-        "vars": [],
-        "description": "单 Agent / 快速生成正文的默认 system 提示",
+        "template": """你是一名资深的中文网文写作者，擅长依据大纲与设定创作高质量的章节正文。请综合以下信息进行创作。
+{platform_directive}{style_calibration}{chapter_outline}{time_location}{characters_block}{character_cards}{worldbook}{reference_summary}{writing_knowledge}{foreshadowing}{user_preferences}{existing_content}{skills_block}
+
+## 写作要求
+1. 文字生动，有画面感；对话自然，符合人物性格。
+2. 情节紧凑，节奏合理；保持叙事视角一致。
+3. 严格遵守上述世界观设定、人物档案、专业知识与平台特性，不得自相矛盾。
+4. 直接输出小说正文，不要输出标题、解释、大纲或任何格式标记。""",
+        "vars": [
+            "platform_directive", "style_calibration", "chapter_outline",
+            "time_location", "characters_block", "character_cards", "worldbook",
+            "reference_summary", "writing_knowledge", "foreshadowing",
+            "user_preferences", "existing_content", "skills_block",
+        ],
+        "description": "单 Agent / 快速生成正文的提示模板（含平台特性、角色档案、世界书、参考作品、写作知识等 RAG 上下文槽位）",
     },
 
     "generation.rewrite": {
@@ -862,4 +870,9 @@ def render(key: str, override: str | None = None, **vars: Any) -> str:
     except KeyError as e:
         raise ValueError(
             f"prompt {key!r} expects variable {e.args[0]!r} which was not provided"
+        ) from e
+    except (ValueError, IndexError) as e:
+        # A stray "{" / "}" in an edited override would land here.
+        raise ValueError(
+            f"prompt {key!r} 模板格式有误（请检查花括号是否成对）: {e}"
         ) from e

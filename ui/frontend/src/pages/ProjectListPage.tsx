@@ -5,6 +5,7 @@ import { useDialog } from "../components/shared/Dialog";
 import type { Project, FollowUpQuestion, SampleFeedback, CalibrationHistory } from "../api/types";
 import AIChatPanel, { ChatMessage } from "../components/shared/AIChatPanel";
 import { renderPrompt } from "../utils/promptTemplate";
+import { PLATFORMS } from "../utils/platforms";
 
 interface Props {
   activeProject: string;
@@ -36,7 +37,6 @@ const SAMPLE_TYPES: { key: string; label: string }[] = [
   { key: "scenery", label: "场景描写" },
 ];
 
-const PLATFORMS = ["起点中文网", "番茄小说", "晋江文学", "其他"];
 const GENDERS = [
   { key: "male", label: "男频" },
   { key: "female", label: "女频" },

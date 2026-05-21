@@ -355,6 +355,11 @@ class GenerateRequest(BaseModel):
     # When true, /quick-generate skips the LLM call and returns the
     # assembled prompt so it can be run in a web LLM instead.
     prompt_only: bool = False
+    # Per-call ephemeral prompt-template override (edited in the editor's
+    # prompt preview); falls back to the registry default if it fails.
+    prompt_override: str = ""
+    # Writing skills to invoke for this generation (R3 — skills_block slot).
+    skills: list[str] = []
 
 
 class RewriteRequest(BaseModel):
@@ -758,36 +763,43 @@ async def quick_generate(req: GenerateRequest):
     """Single-step generation: synopsis -> full chapter text."""
     try:
         from models.base import LLMMessage
-        from analysis.feature_extraction.prompts import get_template
+        from analysis.feature_extraction.prompts import render as _render_prompt
         router_inst = _build_router(req.provider, req.model)
 
-        system_prompt = req.system_hint if req.system_hint else get_template(
-            "generation.single_agent"
-        )
-
-        # When system_hint is set, it's a conversational/studio mode
+        # When system_hint is set, it's a conversational/studio mode —
+        # the synopsis is the full user message, no RAG assembly.
         if req.system_hint:
-            parts = [req.synopsis]
+            system_prompt = req.system_hint
+            user_content = req.synopsis
+            if req.prompt_only:
+                return {
+                    "status": "ok",
+                    "prompt": f"{system_prompt}\n\n{user_content}",
+                }
         else:
-            parts = [f"## 章节大纲\n{req.synopsis}"]
-            if req.time_setting:
-                parts.append(f"## 时间\n{req.time_setting}")
-            if req.location:
-                parts.append(f"## 地点\n{req.location}")
-            if req.characters:
-                parts.append(f"## 出场角色\n{', '.join(req.characters)}")
-            if req.world_rules:
-                parts.append(f"## 世界观设定\n{req.world_rules}")
-            if req.style_notes:
-                parts.append(f"## 风格要求\n{req.style_notes}")
-            parts.append("\n请根据以上信息，写出完整的章节内容（800-1500字）：")
-
-        user_content = "\n\n".join(parts)
-        if req.prompt_only:
-            return {
-                "status": "ok",
-                "prompt": f"{system_prompt}\n\n{user_content}",
-            }
+            # Chapter generation — assemble the RAG context and render the
+            # generation.single_agent template (platform / characters /
+            # worldbook / references / writing-knowledge etc.).
+            from ._rag_context import single_agent_vars
+            prompt_vars = single_agent_vars(
+                req.project_id, req.chapter_num, req.synopsis, req.time_setting,
+                req.location, req.characters, req.existing_content,
+                req.character_aliases, req.skills,
+            )
+            try:
+                user_content = _render_prompt(
+                    "generation.single_agent",
+                    override=(req.prompt_override or None),
+                    **prompt_vars,
+                )
+            except ValueError as ve:
+                logger.warning(
+                    "single_agent prompt render failed (%s); using default template", ve
+                )
+                user_content = _render_prompt("generation.single_agent", **prompt_vars)
+            system_prompt = "你是一名专业的中文网文写作者，请严格依据用户提供的资料创作。"
+            if req.prompt_only:
+                return {"status": "ok", "prompt": user_content}
 
         messages = [
             LLMMessage(role="system", content=system_prompt),

@@ -3598,12 +3598,17 @@ def preview_prompt(
     key: str,
     ref_id: Optional[str] = None,
     segment_index: Optional[int] = None,
+    project_id: Optional[str] = None,
+    chapter_id: Optional[str] = None,
+    chapter_num: int = 1,
 ):
     """Render the prompt with the real `vars` for a specific upcoming call.
 
     For segment-scoped prompts (characters/settings/rhythm/chat_system),
     the server loads the work, builds the segment text and splices it in,
-    so the UI shows EXACTLY what the model will see.
+    so the UI shows EXACTLY what the model will see. For
+    `generation.single_agent`, when `project_id` is given, the full RAG
+    context is assembled so the preview matches what generation will use.
     """
     from analysis.feature_extraction.prompts import DEFAULT_PROMPTS, render, get_template
     if key not in DEFAULT_PROMPTS:
@@ -3718,6 +3723,26 @@ def preview_prompt(
         }
         rendered = render(key, **vars_)
         return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
+
+    # generation.single_agent: RAG-assembled, chapter-scoped. When a
+    # project (and optionally a chapter) is supplied, render the prompt
+    # with the SAME context that /quick-generate will use.
+    if key == "generation.single_agent" and project_id:
+        try:
+            from ui.backend.app.routers._rag_context import (
+                single_agent_vars, load_chapter_fields,
+            )
+            fields = load_chapter_fields(project_id, chapter_id or "")
+            vars_ = single_agent_vars(
+                project_id, chapter_num,
+                fields.get("synopsis", ""), fields.get("time_setting", ""),
+                fields.get("location", ""), fields.get("characters", []),
+                fields.get("existing_content", ""),
+            )
+            rendered = render(key, **vars_)
+            return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
+        except Exception as e:
+            raise HTTPException(500, f"构建预览失败: {e}")
 
     # Fallback (assistant.* / generation.* / pipeline.* prompts): these
     # are not work-scoped, so there are no real vars to splice. Render

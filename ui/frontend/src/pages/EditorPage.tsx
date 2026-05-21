@@ -10,6 +10,7 @@ import type { Volume, ChapterOutline, PipelineStatus, EvalResult, FollowUpQuesti
 import EvalReport from "../components/editor/EvalReport";
 import type { EvalReportData } from "../components/editor/EvalReport";
 import FollowUpQuestions from "../components/shared/FollowUpQuestions";
+import PromptPreview from "../components/reference/PromptPreview";
 
 const vuid = () => `v_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -872,6 +873,32 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }, 500);
   }, [handleEvent, SESS_KEY]);
 
+  /** Global 1-based chapter number for the active chapter. */
+  const chapterNum = useMemo(() => {
+    const all = volumes.flatMap(v => v.chapters);
+    const idx = all.findIndex(c => c.id === activeChId);
+    return idx >= 0 ? idx + 1 : 1;
+  }, [volumes, activeChId]);
+
+  /** Per-call prompt-template override edited via the prompt preview. */
+  const [promptOverride, setPromptOverride] = useState("");
+
+  /** Assemble the structured chapter-generation payload. The backend
+   *  (/quick-generate) assembles the RAG context — character cards /
+   *  worldbook / platform / references / writing-knowledge — from these
+   *  fields, so the editor only sends chapter-local inputs. */
+  const buildGenPayload = useCallback((): Record<string, any> => ({
+    project_id: projectId || "default",
+    chapter_id: activeChId,
+    synopsis: activeCh?.synopsis || "",
+    time_setting: activeCh?.time || "",
+    location: activeCh?.location || "",
+    characters: activeCh?.characters || [],
+    character_aliases: activeCh?.character_aliases || {},
+    existing_content: content || "",
+    chapter_num: chapterNum,
+  }), [activeCh, projectId, activeChId, content, chapterNum]);
+
   const runQuickGenerate = useCallback(async () => {
     if (!activeCh) return;
     setGenerating(true);
@@ -885,9 +912,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
     try {
       const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
-        project_id: projectId,
-        chapter_id: activeChId,
-        synopsis: activeCh.synopsis || "",
+        ...buildGenPayload(),
+        prompt_override: promptOverride || undefined,
       });
 
       generatedTextRef.current = resp.text;
@@ -911,44 +937,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }
     setGenerating(false);
     setCurrentAgent(null);
-  }, [activeCh, projectId, activeChId]);
-
-  /** Assemble the single-Agent generation context (大纲 / 设定 / 风格 /
-   *  已有内容). Shared by 生成 and 复制 prompt. */
-  const buildPlainSynopsis = useCallback(async (): Promise<string> => {
-    if (!activeCh) return "";
-    const synopsis = activeCh.synopsis || "";
-    const chars = activeCh.characters || [];
-    const parts = [`## 章节大纲\n${synopsis}`];
-    if (activeCh.time) parts.push(`## 时间\n${activeCh.time}`);
-    if (activeCh.location) parts.push(`## 地点\n${activeCh.location}`);
-    if (chars.length > 0) parts.push(`## 出场角色\n${chars.join("、")}`);
-    try {
-      const charResp = await apiGet<{ items: any[] }>(`/api/data/characters?project_id=${projectId || "default"}`);
-      const relevantChars = (charResp.items || []).filter((c: any) => chars.includes(c.name));
-      if (relevantChars.length > 0) {
-        parts.push("## 角色设定\n" + relevantChars.map((c: any) =>
-          `【${c.name}】${c.personality ? `性格：${c.personality}` : ""}${c.speech_style ? ` 说话风格：${c.speech_style}` : ""}`
-        ).join("\n"));
-      }
-    } catch { /* ignore */ }
-    try {
-      const calResp = await apiGet<any>(`/api/data/calibration/${projectId || "default"}`);
-      if (calResp?.style_params) {
-        const sp = calResp.style_params;
-        const toneDesc = sp.tone < 30 ? "轻松幽默" : sp.tone > 70 ? "严肃深沉" : "均衡";
-        const pacingDesc = sp.pacing < 30 ? "快节奏" : sp.pacing > 70 ? "慢热" : "中等";
-        parts.push(`## 风格\n文风：${toneDesc}，节奏：${pacingDesc}`);
-      }
-    } catch { /* ignore */ }
-    if (content && content.length > 10) {
-      parts.push(`## 已有内容（续写）\n${content.slice(-500)}`);
-      parts.push("\n请续写以上内容，保持风格一致，输出800-1500字的完整章节正文。");
-    } else {
-      parts.push("\n请根据以上信息，写出完整的章节内容（800-1500字）。直接输出小说正文，不要输出标题或格式标记。");
-    }
-    return parts.join("\n\n");
-  }, [activeCh, projectId, content]);
+  }, [activeCh, buildGenPayload, promptOverride]);
 
   const runPlainAgent = useCallback(async () => {
     if (!activeCh) return;
@@ -961,9 +950,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }]);
     generatedTextRef.current = "";
     try {
-      const synopsis = await buildPlainSynopsis();
       const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
-        project_id: projectId, chapter_id: activeChId, synopsis,
+        ...buildGenPayload(),
+        prompt_override: promptOverride || undefined,
       });
       generatedTextRef.current = resp.text;
       setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "已完成", progress: 100 }]);
@@ -983,29 +972,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }
     setGenerating(false);
     setCurrentAgent(null);
-  }, [activeCh, projectId, activeChId, buildPlainSynopsis]);
-
-  /** Copy the single-Agent generation prompt for running in a web LLM. */
-  const copyPlainPrompt = useCallback(async () => {
-    if (!activeCh) return;
-    try {
-      const synopsis = await buildPlainSynopsis();
-      const resp = await apiPost<{ prompt: string }>("/api/generation/quick-generate", {
-        project_id: projectId, chapter_id: activeChId, synopsis, prompt_only: true,
-      });
-      const text = resp.prompt || "";
-      try { await navigator.clipboard.writeText(text); }
-      catch {
-        const ta = document.createElement("textarea");
-        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
-        document.body.appendChild(ta); ta.select(); document.execCommand("copy");
-        document.body.removeChild(ta);
-      }
-      toast("已复制单 Agent 生成 prompt，可粘贴到网页 LLM", "success");
-    } catch (e: any) {
-      toast(e?.message || "复制 prompt 失败", "error");
-    }
-  }, [activeCh, projectId, activeChId, buildPlainSynopsis, toast]);
+  }, [activeCh, projectId, activeChId, buildGenPayload, promptOverride]);
 
   /** Apply a web-LLM-generated chapter the user pasted back. */
   const applyPlainPaste = useCallback((text: string) => {
@@ -1391,7 +1358,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
-              onCopyPrompt={copyPlainPrompt} onApplyPaste={applyPlainPaste}
+              projectId={projectId} chapterId={activeChId} chapterNum={chapterNum}
+              onApplyPromptOverride={(tpl) => { setPromptOverride(tpl); toast("已应用编辑后的 prompt，下次「单 Agent 生成」生效", "success"); }}
+              onApplyPaste={applyPlainPaste}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} />}
@@ -2006,16 +1975,17 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
-function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onCopyPrompt, onApplyPaste, onDeleteMessage }: {
+function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, projectId, chapterId, chapterNum, onApplyPromptOverride, onApplyPaste, onDeleteMessage }: {
   steps: PipelineStatus[]; generating: boolean; onStart: () => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
-  onCopyPrompt?: () => void; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
+  projectId?: string; chapterId?: string; chapterNum?: number; onApplyPromptOverride?: (tpl: string) => void; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [pasteMode, setPasteMode] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  const [showPrompt, setShowPrompt] = useState(false);
   const [expandedPromptIdx, setExpandedPromptIdx] = useState<number | null>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
 
@@ -2318,16 +2288,30 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
             </button>
           </div>
           {/* Web-LLM workflow for the single-Agent generation prompt. */}
-          {(onCopyPrompt || onApplyPaste) && (
+          {(projectId || onApplyPaste) && (
             <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-              {onCopyPrompt && (
-                <button className="btn" style={{ fontSize: 10, padding: "3px 10px" }} onClick={onCopyPrompt}
-                  title="复制单 Agent 生成 prompt，可贴到 ChatGPT / Claude.ai 等">复制 prompt</button>
+              {projectId && (
+                <button className="btn" style={{ fontSize: 10, padding: "3px 10px", borderColor: showPrompt ? "var(--accent)" : "var(--border)", color: showPrompt ? "var(--accent)" : "var(--text-secondary)" }}
+                  onClick={() => setShowPrompt(s => !s)}
+                  title="预览并编辑单 Agent 生成 prompt（含角色/世界书/参考作品等 RAG 上下文），可复制到网页 LLM">
+                  {showPrompt ? "收起 prompt" : "预览/编辑 prompt"}</button>
               )}
               {onApplyPaste && (
                 <button className="btn" style={{ fontSize: 10, padding: "3px 10px", borderColor: pasteMode ? "var(--accent)" : "var(--border)", color: pasteMode ? "var(--accent)" : "var(--text-secondary)" }}
                   onClick={() => setPasteMode(m => !m)}>{pasteMode ? "取消解析" : "解析网页结果"}</button>
               )}
+            </div>
+          )}
+          {showPrompt && projectId && (
+            <div style={{ marginTop: 6 }}>
+              <PromptPreview
+                promptKey="generation.single_agent"
+                projectId={projectId}
+                chapterId={chapterId}
+                chapterNum={chapterNum}
+                onApplyOnce={(tpl) => { onApplyPromptOverride?.(tpl); setShowPrompt(false); }}
+                onClose={() => setShowPrompt(false)}
+              />
             </div>
           )}
           {pasteMode && onApplyPaste && (

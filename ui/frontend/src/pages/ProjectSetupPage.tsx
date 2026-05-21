@@ -1,12 +1,28 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { apiGet, apiPut } from "../api/client";
 import { useToast } from "../components/shared/Toast";
-import type { Project, Character, WorldBookEntry } from "../api/types";
+import { PLATFORMS } from "../utils/platforms";
+import type {
+  Project, Character, WorldBookEntry,
+  ReferenceFeatureSelection, WritingKnowledgeEntry,
+} from "../api/types";
 
 interface SetupProps {
   projectId: string;
   onNavigate?: (page: string) => void;
 }
+
+interface RefLink {
+  ref_id: string;
+  title: string;
+}
+
+const FEATURE_TYPES: { key: keyof ReferenceFeatureSelection; label: string }[] = [
+  { key: "characters", label: "角色原型" },
+  { key: "settings", label: "世界设定" },
+  { key: "plot", label: "剧情结构" },
+  { key: "rhythm", label: "叙事节奏" },
+];
 
 export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) {
   const { toast } = useToast();
@@ -20,13 +36,24 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
     characters: true,
     outline: true,
     constraints: false,
+    references: false,
+    knowledge: false,
   });
 
-  // Editable fields
+  // Editable project fields
+  const [platform, setPlatform] = useState("");
   const [worldSummary, setWorldSummary] = useState("");
   const [outlineText, setOutlineText] = useState("");
   const [constraints, setConstraints] = useState("");
   const [dirty, setDirty] = useState(false);
+
+  // R2 — reference-work × feature-type injection selection
+  const [refLinks, setRefLinks] = useState<RefLink[]>([]);
+  const [refSelections, setRefSelections] = useState<Record<string, ReferenceFeatureSelection>>({});
+
+  // R4 — writing-knowledge injection selection
+  const [knowledge, setKnowledge] = useState<WritingKnowledgeEntry[]>([]);
+  const [knowledgeIds, setKnowledgeIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -38,14 +65,43 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [proj, chars, wb] = await Promise.all([
+      const [proj, chars, wb, links, refInj, kn, knInj] = await Promise.all([
         apiGet<Project>(`/api/data/projects/${projectId}`),
-        apiGet<{ items: Character[] }>(`/api/data/projects/${projectId}/characters`).catch(() => ({ items: [] })),
-        apiGet<{ items: WorldBookEntry[] }>(`/api/data/projects/${projectId}/worldbook`).catch(() => ({ items: [] })),
+        apiGet<{ items: Character[] }>(`/api/data/characters?project_id=${projectId}`)
+          .catch(() => ({ items: [] as Character[] })),
+        apiGet<{ items: WorldBookEntry[] }>(`/api/data/worldbook?project_id=${projectId}`)
+          .catch(() => ({ items: [] as WorldBookEntry[] })),
+        apiGet<{ items: any[] }>(`/api/references/links/${projectId}`)
+          .catch(() => ({ items: [] as any[] })),
+        apiGet<{ selections: Record<string, ReferenceFeatureSelection> }>(
+          `/api/data/reference_injection/${projectId}`,
+        ).catch(() => ({ selections: {} })),
+        apiGet<{ items: WritingKnowledgeEntry[] }>(`/api/data/writing_knowledge`)
+          .catch(() => ({ items: [] as WritingKnowledgeEntry[] })),
+        apiGet<{ knowledge_ids: string[] }>(`/api/data/knowledge_injection/${projectId}`)
+          .catch(() => ({ knowledge_ids: [] as string[] })),
       ]);
       setProject(proj);
+      setPlatform((proj as any).platform || "");
+      setWorldSummary((proj as any).world_summary || "");
+      setOutlineText((proj as any).outline_text || "");
+      setConstraints((proj as any).constraints || "");
       setCharacters(chars.items || []);
       setWorldEntries(wb.items || []);
+      // Dedupe links by ref_id (a work may be linked under several dimensions).
+      const seen = new Set<string>();
+      const uniqueLinks: RefLink[] = [];
+      for (const l of links.items || []) {
+        if (l.ref_id && !seen.has(l.ref_id)) {
+          seen.add(l.ref_id);
+          uniqueLinks.push({ ref_id: l.ref_id, title: l.title || l.ref_id });
+        }
+      }
+      setRefLinks(uniqueLinks);
+      setRefSelections(refInj.selections || {});
+      setKnowledge(kn.items || []);
+      setKnowledgeIds(knInj.knowledge_ids || []);
+      setDirty(false);
     } catch (e) {
       console.error(e);
     }
@@ -64,6 +120,7 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
     try {
       await apiPut(`/api/data/projects/${projectId}`, {
         ...project,
+        platform,
         world_summary: worldSummary,
         outline_text: outlineText,
         constraints,
@@ -72,6 +129,33 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
       toast("设置已保存", "success");
     } catch (e: any) {
       toast(e.message || "操作失败", "error");
+    }
+  };
+
+  // R2 — toggle a reference-work feature type; persist immediately.
+  const toggleRefFeature = async (refId: string, feat: keyof ReferenceFeatureSelection) => {
+    const next = { ...refSelections };
+    const cur: ReferenceFeatureSelection = { ...(next[refId] || {}) };
+    cur[feat] = !cur[feat];
+    next[refId] = cur;
+    setRefSelections(next);
+    try {
+      await apiPut(`/api/data/reference_injection/${projectId}`, { selections: next });
+    } catch (e: any) {
+      toast(e.message || "保存失败", "error");
+    }
+  };
+
+  // R4 — toggle a writing-knowledge entry; persist immediately.
+  const toggleKnowledge = async (id: string) => {
+    const next = knowledgeIds.includes(id)
+      ? knowledgeIds.filter(k => k !== id)
+      : [...knowledgeIds, id];
+    setKnowledgeIds(next);
+    try {
+      await apiPut(`/api/data/knowledge_injection/${projectId}`, { knowledge_ids: next });
+    } catch (e: any) {
+      toast(e.message || "保存失败", "error");
     }
   };
 
@@ -95,13 +179,36 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
         <div className="page-header-row mb-24">
           <div>
             <h2>{project?.name || "项目设置"}</h2>
-            <p>配置项目的四大创作维度与约束规则</p>
+            <p>配置项目的创作维度、约束规则与 AI 注入素材</p>
           </div>
           {dirty && (
             <button className="btn-primary" onClick={handleSave}>
               保存设置
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Publishing platform */}
+      <div className="card mb-24">
+        <div className="card-body">
+          <div className="flex items-center gap-12" style={{ flexWrap: "wrap" }}>
+            <div style={{ minWidth: 0 }}>
+              <div className="label" style={{ marginBottom: 4 }}>发布平台</div>
+              <div className="text-xs text-muted">
+                AI 生成时会按平台特性调整章节长度与节奏（如番茄偏短章快节奏、起点章节更长）。
+              </div>
+            </div>
+            <select
+              className="select"
+              value={platform}
+              onChange={e => { setPlatform(e.target.value); setDirty(true); }}
+              style={{ minWidth: 160, marginLeft: "auto" }}
+            >
+              <option value="">未选择</option>
+              {PLATFORMS.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
         </div>
       </div>
 
@@ -250,6 +357,126 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
           placeholder={"例：\n· 每章字数：2000-4000字\n· 禁止出现现代网络用语\n· 主角性格不可突变（除非有重大剧情触发）\n· 武力体系严格遵循九境划分\n· 对话风格偏古风，但不用文言文\n· 不写后宫剧情"}
           style={{ lineHeight: 1.8 }}
         />
+      </SectionCard>
+
+      {/* Section: Reference-work injection (R2) */}
+      <SectionCard
+        title="参考作品注入"
+        icon="&#x29C9;"
+        expanded={expandedSections.references}
+        onToggle={() => toggleSection("references")}
+        actions={
+          <button className="btn-ghost" onClick={() => nav("references")}>
+            参考作品库 &rarr;
+          </button>
+        }
+      >
+        <p className="text-sm text-muted mb-12">
+          为每部已关联的参考作品勾选要注入生成的特征类型。AI 创作时会借鉴对应特征，
+          勾选越少越省 token。
+        </p>
+        {refLinks.length === 0 ? (
+          <div className="empty-state" style={{ padding: "24px 0" }}>
+            <p>暂无关联的参考作品</p>
+            <button className="btn-primary mt-12" onClick={() => nav("references")}>
+              去参考作品库关联
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {refLinks.map(link => (
+              <div
+                key={link.ref_id}
+                style={{
+                  padding: "10px 12px",
+                  background: "var(--bg-surface)",
+                  borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                <div className="truncate" style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 6 }}>
+                  《{link.title}》
+                </div>
+                <div className="flex gap-12" style={{ flexWrap: "wrap" }}>
+                  {FEATURE_TYPES.map(ft => (
+                    <label
+                      key={ft.key}
+                      style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, cursor: "pointer", color: "var(--text-secondary)" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!refSelections[link.ref_id]?.[ft.key]}
+                        onChange={() => toggleRefFeature(link.ref_id, ft.key)}
+                      />
+                      {ft.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
+
+      {/* Section: Writing-knowledge injection (R4) */}
+      <SectionCard
+        title="写作知识引用"
+        icon="&#x2756;"
+        expanded={expandedSections.knowledge}
+        onToggle={() => toggleSection("knowledge")}
+        actions={
+          <button className="btn-ghost" onClick={() => nav("skills")}>
+            知识库管理 &rarr;
+          </button>
+        }
+      >
+        <p className="text-sm text-muted mb-12">
+          勾选要注入本项目生成的专业写作知识条目，AI 会据此让世界观与设定更严谨。
+        </p>
+        {knowledge.length === 0 ? (
+          <div className="empty-state" style={{ padding: "24px 0" }}>
+            <p>知识库暂无条目</p>
+            <button className="btn-primary mt-12" onClick={() => nav("skills")}>
+              + 添加写作知识
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {knowledge.map(k => (
+              <label
+                key={k.id}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 8,
+                  padding: "8px 12px",
+                  background: "var(--bg-surface)",
+                  borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--border)",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={knowledgeIds.includes(k.id)}
+                  onChange={() => toggleKnowledge(k.id)}
+                  style={{ marginTop: 3 }}
+                />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                    {k.title}
+                    {k.domain && (
+                      <span className="tag category" style={{ marginLeft: 6, fontSize: 10 }}>
+                        {k.domain}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted truncate">{k.content}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+        )}
       </SectionCard>
     </div>
   );
