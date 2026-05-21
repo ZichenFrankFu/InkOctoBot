@@ -199,6 +199,7 @@ body {
   align-items: center;
   gap: 10px;
   width: 100%;
+  box-sizing: border-box;
   padding: 9px 12px;
   border: none;
   border-radius: var(--radius-sm);

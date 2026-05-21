@@ -143,7 +143,7 @@ function AppInner() {
           className="nav-btn"
           onClick={() => setSearchOpen(true)}
           aria-label="Search (Ctrl+K)"
-          style={{ margin: "10px 8px 6px", padding: "5px 10px", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 30 }}
+          style={{ margin: "10px 8px 6px", width: "auto", padding: "5px 10px", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 30 }}
         >
           <span style={{ fontSize: 12, opacity: 0.6 }}>&#x2315;</span>
           <span style={{ flex: 1, textAlign: "left" }}>搜索...</span>
