@@ -874,6 +874,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   const runQuickGenerate = useCallback(async () => {
     if (!activeCh) return;
+    setGenerating(true);
     setPipelineSteps(prev => prev.map((s, i) =>
       i === 0 ? { ...s, status: "running" as const } : s
     ));

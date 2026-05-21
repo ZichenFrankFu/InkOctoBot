@@ -159,6 +159,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
       setDirty(false);
       setItems(prev => prev.map(item => item.id === editing.id ? { ...editing, ...updated } : item));
       setEditing({ ...editing, ...updated });
+      toast("已保存", "success");
     } catch (e: any) { toast(e?.message || "操作失败", "error"); }
   };
 

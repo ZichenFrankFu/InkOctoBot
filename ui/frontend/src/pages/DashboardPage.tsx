@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { apiGet } from "../api/client";
 import { useToast } from "../components/shared/Toast";
-import type { Novel, RankList, ReferenceWork, Volume } from "../api/types";
+import type { Novel, ReferenceWork } from "../api/types";
 import { splitGenres } from "../utils/genre";
 
 /* ── local response types ── */
@@ -55,9 +55,7 @@ type PlatformFilter = "" | "qidian" | "fanqie";
 const platformLabel = (p: string) =>
   p === "qidian" ? "起点" : p === "fanqie" ? "番茄" : p || "未知";
 
-const wc = (t: string) => (t ? t.replace(/[\s\p{P}]/gu, "").length : 0);
-
-export default function DashboardPage({ projects, onNavigate, onSelectProject }: { projects: { id: string; name: string; genre?: string }[]; onNavigate: (tab: string) => void; onSelectProject?: (id: string) => void }) {
+export default function DashboardPage({ projects, onNavigate, onSelectProject }: { projects: { id: string; name: string; genre?: string; word_count?: number; chapter_count?: number }[]; onNavigate: (tab: string) => void; onSelectProject?: (id: string) => void }) {
   const { toast } = useToast();
   const [platform, setPlatform] = useState<PlatformFilter>("");
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -82,28 +80,14 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
 
   /* ── fetch project stats ── */
   useEffect(() => {
-    // Load editor data for each project to get word count & chapter count
-    const loadStats = async () => {
-      const results = await Promise.all(
-        projects.map(async (proj) => {
-          try {
-            const data = await apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${proj.id}`);
-            const vols = data.volumes || [];
-            let totalWords = 0;
-            let chapterCount = 0;
-            for (const v of vols) {
-              for (const ch of v.chapters) {
-                chapterCount++;
-                totalWords += ch.word_count || wc(ch.content || "");
-              }
-            }
-            return { ...proj, totalWords, chapterCount };
-          } catch {
-            return { ...proj, totalWords: 0, chapterCount: 0 };
-          }
-        })
-      );
-      setProjectStats(results);
+    // Word/chapter counts already arrive enriched on /api/data/projects,
+    // so derive project stats directly instead of a per-project fetch.
+    const loadStats = () => {
+      setProjectStats(projects.map((proj) => ({
+        ...proj,
+        totalWords: proj.word_count ?? 0,
+        chapterCount: proj.chapter_count ?? 0,
+      })));
     };
 
     // Load reference library overview

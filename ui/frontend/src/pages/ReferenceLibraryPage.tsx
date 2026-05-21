@@ -104,6 +104,7 @@ export default function ReferenceLibraryPage() {
   const [uMedia, setUMedia] = useState<MediaType>("web_novel");
   const [uFile, setUFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [adding, setAdding] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Batch management
@@ -168,10 +169,12 @@ export default function ReferenceLibraryPage() {
   }
 
   async function addWork() {
-    if (!nTitle.trim()) return;
+    const title = nTitle.trim();
+    if (!title || adding) return;
+    setAdding(true);
     try {
       await apiPost("/api/references/works", {
-        title: nTitle.trim(),
+        title,
         creator: nCreator.trim() || undefined,
         media_type: nMedia,
         genre: nGenre.trim() || undefined,
@@ -182,8 +185,11 @@ export default function ReferenceLibraryPage() {
       setShowAddWork(false);
       setNTitle(""); setNCreator(""); setNGenre(""); setNWhy(""); setNRating(0);
       load();
+      toast(`已添加「${title}」`, "success");
     } catch (e: any) {
       toast(e.message || "操作失败", "error");
+    } finally {
+      setAdding(false);
     }
   }
 
@@ -235,6 +241,7 @@ export default function ReferenceLibraryPage() {
       setUTitle(""); setUCreator(""); setUGenre(""); setUFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       load();
+      toast(`已上传新作品正文：${uFile.name}`, "success");
     } catch (e: any) {
       toast(e.message || "操作失败", "error");
     }
@@ -569,7 +576,7 @@ export default function ReferenceLibraryPage() {
                 </div>
                 <div className="flex gap-8 mt-24" style={{ justifyContent: "flex-end" }}>
                   <button className="btn" onClick={() => setShowAddWork(false)}>取消</button>
-                  <button className="btn-primary" onClick={addWork} disabled={!nTitle.trim()}>保存</button>
+                  <button className="btn-primary" onClick={addWork} disabled={!nTitle.trim() || adding}>{adding ? "保存中…" : "保存"}</button>
                 </div>
               </div>
             </div>

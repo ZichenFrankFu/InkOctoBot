@@ -95,9 +95,35 @@ CREATE TABLE IF NOT EXISTS inspirations (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"""
 
-ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS, _REFERENCE_CHAPTERS, _INSPIRATIONS]
+# Secondary indexes on foreign-key columns — list/link lookups filter by
+# these, and without indexes SQLite full-scans the tables.
+_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_reference_entries_ref ON reference_entries (ref_id);
+CREATE INDEX IF NOT EXISTS idx_project_reference_links_project ON project_reference_links (project_id);
+CREATE INDEX IF NOT EXISTS idx_project_reference_links_ref ON project_reference_links (ref_id);
+"""
+
+ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS, _REFERENCE_CHAPTERS, _INSPIRATIONS, _INDEXES]
+
+# Schema setup is process-global and idempotent; once a DB file has been
+# ensured we skip the (non-trivial) DDL + migration work on later calls.
+_ensured_paths: set[str] = set()
+
+
+def _conn_path(conn: sqlite3.Connection) -> str:
+    try:
+        for _seq, name, file in conn.execute("PRAGMA database_list"):
+            if name == "main":
+                return file or ":memory:"
+    except Exception:
+        pass
+    return ":memory:"
+
 
 def ensure_reference_tables(conn: sqlite3.Connection) -> None:
+    path = _conn_path(conn)
+    if path != ":memory:" and path in _ensured_paths:
+        return
     for ddl in ALL_DDL: conn.executescript(ddl)
     # Lightweight migrations for additive columns on pre-existing DBs
     cols = {r[1] for r in conn.execute("PRAGMA table_info(reference_works)").fetchall()}
@@ -114,3 +140,5 @@ def ensure_reference_tables(conn: sqlite3.Connection) -> None:
     if "chapter_comments_json" not in cols:
         conn.execute("ALTER TABLE reference_works ADD COLUMN chapter_comments_json TEXT")
     conn.commit()
+    if path != ":memory:":
+        _ensured_paths.add(path)

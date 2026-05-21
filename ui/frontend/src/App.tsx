@@ -30,7 +30,7 @@ type Tab =
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
   | "skills" | "settings";
 
-interface Project { id: string; name: string; genre?: string; }
+interface Project { id: string; name: string; genre?: string; word_count?: number; chapter_count?: number; }
 
 const NAV: { section: string; items: { key: Tab; icon: string; label: string }[] }[] = [
   {

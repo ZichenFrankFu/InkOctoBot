@@ -264,6 +264,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
       await apiPut(`/api/data/characters/${editing.id}`, editing);
       setDirty(false);
       load();
+      toast("已保存", "success");
     } catch (e: any) {
       toast(e.message || "操作失败", "error");
     }
