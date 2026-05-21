@@ -796,6 +796,8 @@ async def quick_generate(req: GenerateRequest):
                 req.project_id, req.chapter_num, req.synopsis, req.time_setting,
                 req.location, req.characters, req.existing_content,
                 req.character_aliases, req.skills,
+                referenced_events=req.referenced_events,
+                referenced_inspirations=req.referenced_inspirations,
             )
             try:
                 user_content = _render_prompt(

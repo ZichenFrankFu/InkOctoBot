@@ -105,7 +105,6 @@ export default function AIChatPanel({
   const [input, setInput] = useState(preservedInput || "");
   const [customFollowUp, setCustomFollowUp] = useState<{ msgId: string; text: string } | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
-  const [showPromptPanel, setShowPromptPanel] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -404,27 +403,12 @@ export default function AIChatPanel({
         {/* Web-LLM prompt workflow */}
         {fetchPrompt && (
           <div style={{ marginBottom: 6 }}>
-            <button
-              onClick={() => setShowPromptPanel(s => !s)}
-              style={{
-                fontSize: 10, padding: "3px 10px", background: "transparent",
-                border: `1px solid ${showPromptPanel ? "var(--accent)" : "var(--border)"}`,
-                borderRadius: "var(--radius-sm)", cursor: "pointer",
-                color: showPromptPanel ? "var(--accent)" : "var(--text-tertiary)",
-              }}
-            >
-              {showPromptPanel ? "收起 prompt" : "预览 / 复制 prompt"}
-            </button>
-            {showPromptPanel && (
-              <div style={{ marginTop: 6 }}>
-                <WebLLMPromptPanel
-                  fetchPrompt={fetchPrompt}
-                  onApplyResult={onApplyResult}
-                  applyLabel="作为回复应用"
-                  resultPlaceholder="把网页 LLM 的回复粘贴到这里"
-                />
-              </div>
-            )}
+            <WebLLMPromptPanel
+              fetchPrompt={fetchPrompt}
+              onApplyResult={onApplyResult}
+              applyLabel="作为回复应用"
+              resultPlaceholder="把网页 LLM 的回复粘贴到这里"
+            />
           </div>
         )}
 

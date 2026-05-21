@@ -30,6 +30,7 @@ _BUDGET = {
     "character_cards": 1800,
     "worldbook": 1600,
     "reference_summary": 2000,
+    "referenced_materials": 1400,
     "writing_knowledge": 1600,
     "foreshadowing": 800,
     "user_preferences": 800,
@@ -471,6 +472,33 @@ def build_skills_block(skills: list[str] | None) -> str:
     return _section("写作技能", body)
 
 
+def build_referenced_materials_block(
+    events: list[dict] | None,
+    inspirations: list[dict] | None,
+) -> str:
+    """Format the chapter's linked chronicle events + inspirations into a
+    prompt block so single-agent generation can draw on them as reference."""
+    lines: list[str] = []
+    for e in (events or []):
+        wt = str(e.get("work_title") or e.get("ref_title") or "").strip()
+        nm = str(e.get("name") or "").strip()
+        desc = str(e.get("description") or "").strip()
+        head = (f"《{wt}》{nm}" if wt else nm).strip()
+        if not head and not desc:
+            continue
+        lines.append(f"- 参考事件 {head}：{desc}" if desc else f"- 参考事件 {head}")
+    for ins in (inspirations or []):
+        t = str(ins.get("title") or "").strip()
+        c = str(ins.get("content") or "").strip()
+        if not t and not c:
+            continue
+        lines.append(f"- 关联灵感 {t}：{c}" if t else f"- 关联灵感 {c}")
+    if not lines:
+        return ""
+    body = _clip("\n".join(lines), _BUDGET["referenced_materials"])
+    return _section("关联参考事件与灵感", body)
+
+
 def load_chapter_fields(project_id: str, chapter_id: str) -> dict:
     """Read a chapter's local fields (outline / time / location / characters /
     existing text) from the editor data file."""
@@ -511,6 +539,8 @@ def single_agent_vars(
     existing_content: str = "",
     character_aliases: dict[str, str] | None = None,
     skills: list[str] | None = None,
+    referenced_events: list[dict] | None = None,
+    referenced_inspirations: list[dict] | None = None,
     db_path: str | None = None,
 ) -> dict:
     """Assemble the full variable dict for the ``generation.single_agent``
@@ -552,4 +582,7 @@ def single_agent_vars(
     )
 
     blocks["skills_block"] = build_skills_block(skills)
+    blocks["referenced_materials"] = build_referenced_materials_block(
+        referenced_events, referenced_inspirations,
+    )
     return blocks

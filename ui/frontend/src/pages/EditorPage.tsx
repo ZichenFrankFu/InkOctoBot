@@ -894,6 +894,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     character_aliases: activeCh?.character_aliases || {},
     existing_content: content || "",
     chapter_num: chapterNum,
+    references: activeCh?.references || [],
+    referenced_events: activeCh?.referenced_events || [],
+    referenced_inspirations: activeCh?.referenced_inspirations || [],
   }), [activeCh, projectId, activeChId, content, chapterNum]);
 
   const fetchGenPrompt = useCallback(async (): Promise<string> => {
@@ -1955,7 +1958,6 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const [showPrompt, setShowPrompt] = useState(false);
   const [pipelineMode, setPipelineMode] = useState(false);
   const [expandedPromptIdx, setExpandedPromptIdx] = useState<number | null>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
@@ -2260,21 +2262,11 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
             </button>
           </div>
           {onFetchPrompt && (
-            <>
-              <div style={{ display: "flex", marginTop: 6 }}>
-                <button className="btn" style={{ fontSize: 10, padding: "3px 10px", borderColor: showPrompt ? "var(--accent)" : "var(--border)", color: showPrompt ? "var(--accent)" : "var(--text-secondary)" }}
-                  onClick={() => setShowPrompt(s => !s)}>
-                  {showPrompt ? "收起 prompt" : "预览 / 复制 prompt"}
-                </button>
-              </div>
-              {showPrompt && (
-                <div style={{ marginTop: 6 }}>
-                  <WebLLMPromptPanel autoLoad fetchPrompt={onFetchPrompt}
-                    onApplyResult={onApplyPaste} applyLabel="解析并写入编辑器"
-                    resultPlaceholder="把网页 LLM 生成的章节正文粘贴到这里" />
-                </div>
-              )}
-            </>
+            <div style={{ marginTop: 6 }}>
+              <WebLLMPromptPanel fetchPrompt={onFetchPrompt}
+                onApplyResult={onApplyPaste} applyLabel="解析并写入编辑器"
+                resultPlaceholder="把网页 LLM 生成的章节正文粘贴到这里" />
+            </div>
           )}
         </div>
       )}
