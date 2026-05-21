@@ -239,7 +239,8 @@ _JSON_SYSTEM_LIST = (
 async def _invoke(router: Any, prompt: str, *,
                     max_tokens: int = 4096,
                     use_web_search: bool = False,
-                    expect: str = "object") -> str:
+                    expect: str = "object",
+                    role: str = _ROLE) -> str:
     """Single entry-point for AI calls. When ``use_web_search`` is True we
     route to the ``reference_web_search`` role and use the provider's
     ``generate_with_web_search`` path; otherwise the regular
@@ -270,7 +271,7 @@ async def _invoke(router: Any, prompt: str, *,
         if expect == "object":
             kw["response_format"] = {"type": "json_object"}
         raw = await router.invoke(
-            role=_ROLE, prompt=prompt, system=system,
+            role=role, prompt=prompt, system=system,
             max_tokens=max_tokens, temperature=0.1, **kw,
         )
     raw = raw or ""

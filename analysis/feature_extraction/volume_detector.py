@@ -106,6 +106,7 @@ async def ai_detect_volumes(
         raw = await ai_extractor._invoke(
             router, prompt, max_tokens=4096,
             use_web_search=use_web, expect="object",
+            role="reference_volume_detect",
         )
         obj = ai_extractor._parse_obj(raw)
     except Exception as e:

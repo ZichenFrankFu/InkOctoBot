@@ -11,7 +11,8 @@ const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string
   {
     group: "参考作品数据库",
     roles: [
-      { key: "reference_extractor", label: "特征提取 / 作品对比", desc: "分卷提取角色 / 设定 / 叙事 / 节奏特征，以及作品对比内置 AI（无 AI 时回退 NLP）" },
+      { key: "reference_volume_detect", label: "AI 分卷", desc: "用内置 AI 识别作品的分卷边界（联网模型可用时优先联网检索官方分卷）" },
+      { key: "reference_extractor", label: "AI 提取特征", desc: "提取角色 / 设定 / 叙事 / 节奏特征，以及作品对比内置 AI（无 AI 时回退 NLP）" },
       { key: "reference_web_search", label: "AI 联网补全", desc: "联网补全作品元数据；需支持 web search 的模型（如 Claude Sonnet / GPT-4o）" },
     ],
   },

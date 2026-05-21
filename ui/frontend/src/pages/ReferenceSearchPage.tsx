@@ -4,6 +4,7 @@ import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { ReferenceWork } from "../api/types";
 import InspirationLibrary from "../components/InspirationLibrary";
+import CompareWorksPanel from "../components/CompareWorksPanel";
 
 interface SearchHit {
   id: string;
@@ -60,7 +61,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
   const { confirm } = useDialog();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [progressByRef, setProgressByRef] = useState<Record<string, IndexProgressRow[]>>({});
-  const [activeTab, setActiveTab] = useState<"search" | "library" | "index">("search");
+  const [activeTab, setActiveTab] = useState<"search" | "library" | "index" | "compare">("search");
 
   // Search state
   const [q, setQ] = useState("");
@@ -244,6 +245,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
         {([
           { key: "search"  as const, label: "灵感搜索" },
           { key: "library" as const, label: "灵感库" },
+          { key: "compare" as const, label: "作品对比" },
           { key: "index"   as const, label: `索引管理 · ${works.length} 部作品` },
         ]).map(t => (
           <button
@@ -422,6 +424,8 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
           </div>
         </>
       )}
+
+      {activeTab === "compare" && <CompareWorksPanel />}
     </div>
   );
 }

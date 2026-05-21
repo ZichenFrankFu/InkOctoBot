@@ -3023,11 +3023,18 @@ function VolumeEditor(p: VolumeEditorProps) {
           </div>
         </div>
         {plan && !planDraft && plan.segments.length > 0 && (
-          <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                  onClick={p.startPlanEdit}
-                  title="编辑卷的标题和章节范围">
-            编辑分卷
-          </button>
+          <div className="flex" style={{ gap: 6 }}>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                    onClick={p.loadAutoSuggest} disabled={p.aiDetecting}
+                    title="用内置 AI 重新检测分卷边界（模型可在 设置 · Pipeline 配置 中选择）">
+              {p.aiDetecting ? "检测中…" : "使用内置AI检测"}
+            </button>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                    onClick={p.startPlanEdit}
+                    title="编辑卷的标题和章节范围">
+              编辑分卷
+            </button>
+          </div>
         )}
       </div>
 
@@ -3064,8 +3071,8 @@ function VolumeEditor(p: VolumeEditorProps) {
             </button>
             <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={p.loadAutoSuggest}
                     disabled={p.aiDetecting}
-                    title="优先用联网 AI 检索官方分卷信息；联网模型不可用时回退到正文卷标记扫描">
-              {p.aiDetecting ? "检测中…" : "自动检测分卷"}
+                    title="用内置 AI 检测分卷（联网模型可用时优先联网检索官方分卷；模型可在 设置 · Pipeline 配置 中选择）">
+              {p.aiDetecting ? "检测中…" : "使用内置AI检测"}
             </button>
             <button className="btn-ghost" style={{ fontSize: 11, padding: "5px 10px" }}
                     onClick={p.showAiPrompt}

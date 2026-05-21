@@ -1216,10 +1216,10 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <h3>章节</h3>
             <button onClick={() => setLeftPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起章节列表">&#9664;</button>
           </div>
-          <div style={{ padding: "8px 10px 4px" }}>
+          <div style={{ padding: "8px 14px 4px" }}>
             <input className="input" type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="搜索章节..." style={{ fontSize: 12, padding: "5px 10px", width: "100%", boxSizing: "border-box" }} />
           </div>
-          <div style={{ padding: "4px 10px 6px", display: "flex", gap: 6 }}>
+          <div style={{ padding: "4px 14px 6px", display: "flex", gap: 6 }}>
             <button className="btn-icon" onClick={addVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+卷</button>
             <button className="btn-icon" onClick={addChapterToFirstVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+章</button>
             <button className="btn-icon" onClick={handleBundleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} title="导出角色+世界书+章节大纲，可自选保存位置">导出</button>
