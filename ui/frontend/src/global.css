@@ -705,6 +705,7 @@ body {
 
 .input {
   width: 100%;
+  box-sizing: border-box;
   padding: 8px 12px;
   background: var(--bg-input);
   border: 1px solid var(--border);

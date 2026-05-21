@@ -5,42 +5,43 @@ import { useDialog } from "../components/shared/Dialog";
 import type { AppSettings } from "../api/types";
 import PromptPreview from "../components/reference/PromptPreview";
 
+// Pipeline roles laid out in workflow order: 参考作品 → 开书 → 角色 & 世界书
+// → 正文创作 → 评估. Every group covers operations that run a built-in AI.
 const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string; desc: string }[] }[] = [
   {
     group: "参考作品数据库",
     roles: [
-      { key: "reference_extractor", label: "参考作品分段提取", desc: "角色 / 设定 / 叙事 / 节奏（无 AI 时回退 NLP）" },
-      { key: "reference_web_search", label: "参考作品 AI 联网补全", desc: "元数据补全；需要支持 web search 的模型（如 Claude Sonnet 4 / GPT-4o）" },
+      { key: "reference_extractor", label: "特征提取 / 作品对比", desc: "分卷提取角色 / 设定 / 叙事 / 节奏特征，以及作品对比内置 AI（无 AI 时回退 NLP）" },
+      { key: "reference_web_search", label: "AI 联网补全", desc: "联网补全作品元数据；需支持 web search 的模型（如 Claude Sonnet / GPT-4o）" },
     ],
   },
   {
-    group: "开书（头脑风暴 & 校准）",
+    group: "开书助手",
     roles: [
-      { key: "scene_planner", label: "头脑风暴", desc: "大纲、角色、世界观综合构思" },
-    ],
-  },
-  {
-    group: "Creative Writing Pipeline（编辑器）",
-    roles: [
-      { key: "scene_director", label: "场景导演", desc: "拆分场景、生成导演指令" },
-      { key: "actor_default", label: "默认角色", desc: "通用角色对话与行为" },
-      { key: "actor_protagonist", label: "主角专属", desc: "主角视角的深度演绎" },
-      { key: "editor_stylist", label: "风格编辑", desc: "文学风格化与章节组装" },
-      { key: "editor_agent", label: "编辑代理", desc: "自动修改与质量提升" },
-      { key: "evaluator", label: "评估器", desc: "一致性与约束检测" },
+      { key: "scene_planner", label: "开书 / 大纲助手", desc: "AI 开书助手的头脑风暴、世界观构思与 AI 大纲助手对话" },
     ],
   },
   {
     group: "角色 & 世界书",
     roles: [
-      { key: "character_profile_gen", label: "AI 生成人设", desc: "根据名字和定位生成角色档案" },
-      { key: "worldbook_consistency", label: "一致性检查", desc: "检测世界观设定矛盾与冲突" },
+      { key: "character_profile_gen", label: "AI 角色助手", desc: "根据名字与定位生成 / 完善角色人设" },
+      { key: "worldbook_consistency", label: "AI 设定助手", desc: "世界书设定补全与一致性检查" },
     ],
   },
   {
-    group: "分析 Skills",
+    group: "正文创作（Creative Writing Pipeline）",
     roles: [
-      { key: "analyzer", label: "分析器", desc: "文本分析与特征提取" },
+      { key: "scene_director", label: "场景导演", desc: "拆分场景、生成导演指令" },
+      { key: "actor_default", label: "默认角色", desc: "通用角色对话与行为演绎" },
+      { key: "actor_protagonist", label: "主角专属", desc: "主角视角的深度演绎" },
+      { key: "editor_stylist", label: "编辑写作 / 单 Agent", desc: "风格化章节组装，以及单 Agent 一键成文" },
+      { key: "editor_writer", label: "AI 重写", desc: "对选中正文做针对性重写与润色" },
+    ],
+  },
+  {
+    group: "评估",
+    roles: [
+      { key: "evaluator", label: "章节评估", desc: "一致性、约束与质量检测" },
     ],
   },
 ];
