@@ -8,6 +8,7 @@ const DOMAIN_LABELS: Record<string, { label: string; color: string }> = {
   production: { label: "Production", color: "var(--gold)" },
   evaluation: { label: "Evaluation", color: "var(--accent)" },
   analysis: { label: "Analysis", color: "var(--jade)" },
+  feature_extraction: { label: "特征提取", color: "var(--cyan)" },
   constraints: { label: "Constraints", color: "var(--text-secondary)" },
   learned_skills: { label: "Learned", color: "var(--purple)" },
   unknown: { label: "Other", color: "var(--text-secondary)" },
@@ -310,7 +311,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
     grouped[domain].push(s);
   }
 
-  const domainOrder = ["planner", "production", "evaluation", "analysis", "constraints", "learned_skills", "unknown"];
+  const domainOrder = ["planner", "production", "evaluation", "analysis", "feature_extraction", "constraints", "learned_skills", "unknown"];
   const sortedDomains = Object.keys(grouped).sort(
     (a, b) => domainOrder.indexOf(a) - domainOrder.indexOf(b)
   );

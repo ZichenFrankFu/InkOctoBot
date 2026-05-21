@@ -113,6 +113,7 @@ def list_agents():
         "production": {"label": "生产", "description": "内容创作与场景执行"},
         "evaluation": {"label": "评估", "description": "质量评估与一致性检查"},
         "analysis": {"label": "分析", "description": "风格分析与特征提取"},
+        "feature_extraction": {"label": "特征提取", "description": "编年史、信息密度、爽点、钩子、开篇模式等特征抽取技能"},
         "constraints": {"label": "约束", "description": "约束消歧与规则执行"},
         "learned_skills": {"label": "自学习", "description": "通过使用自动习得的技能"},
     }
