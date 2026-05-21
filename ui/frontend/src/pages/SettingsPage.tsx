@@ -1039,11 +1039,16 @@ function PromptsTab() {
             </div>
             <div className="card">
               <div className="card-body" style={{ padding: 0 }}>
-                {group.items.map((it, idx) => (
-                  <div key={it.key} style={{
+                {group.items.map((it, idx) => {
+                  const isLast = idx === group.items.length - 1;
+                  const isOpen = selected === it.key;
+                  return (
+                  <React.Fragment key={it.key}>
+                  <div style={{
                     padding: "14px 18px",
-                    borderBottom: idx < group.items.length - 1 ? "1px solid var(--border-subtle)" : "none",
+                    borderBottom: (!isLast || isOpen) ? "1px solid var(--border-subtle)" : "none",
                     display: "flex", alignItems: "center", gap: 12,
+                    background: isOpen ? "var(--bg-secondary)" : undefined,
                   }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
@@ -1066,24 +1071,23 @@ function PromptsTab() {
                       )}
                     </div>
                     <button
-                      className={selected === it.key ? "btn-primary" : "btn"}
+                      className={isOpen ? "btn-primary" : "btn"}
                       style={{ fontSize: 12, padding: "4px 12px" }}
-                      onClick={() => setSelected(selected === it.key ? null : it.key)}
-                    >{selected === it.key ? "关闭" : "编辑"}</button>
+                      onClick={() => setSelected(isOpen ? null : it.key)}
+                    >{isOpen ? "关闭" : "编辑"}</button>
                   </div>
-                ))}
+                  {isOpen && (
+                    <div style={{ padding: "0 18px 16px", background: "var(--bg-secondary)", borderBottom: !isLast ? "1px solid var(--border-subtle)" : "none" }}>
+                      <PromptPreview promptKey={it.key} onSaved={load} onClose={() => setSelected(null)} />
+                    </div>
+                  )}
+                  </React.Fragment>
+                  );
+                })}
               </div>
             </div>
           </div>
         ))
-      )}
-
-      {selected && (
-        <PromptPreview
-          promptKey={selected}
-          onSaved={load}
-          onClose={() => setSelected(null)}
-        />
       )}
     </div>
   );

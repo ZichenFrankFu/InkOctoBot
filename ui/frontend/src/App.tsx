@@ -34,31 +34,41 @@ interface Project { id: string; name: string; genre?: string; }
 
 const NAV: { section: string; items: { key: Tab; icon: string; label: string }[] }[] = [
   {
+    section: "首页",
+    items: [
+      { key: "dashboard", icon: "▣", label: "首页" },
+    ],
+  },
+  {
     section: "市场信息",
     items: [
-      { key: "dashboard", icon: "\u25A3", label: "首页" },
-      { key: "rankings", icon: "\u2261", label: "市场数据库" },
-      { key: "analysis", icon: "\u2197", label: "分析面板" },
+      { key: "rankings", icon: "≡", label: "市场数据库" },
+      { key: "analysis", icon: "↗", label: "分析面板" },
     ],
   },
   {
     section: "参考作品数据库",
     items: [
-      { key: "references-overview", icon: "\u25A6", label: "数据库概览" },
-      { key: "references-search", icon: "\u2315", label: "灵感搜索" },
-      { key: "references", icon: "\u229E", label: "参考作品详情" },
+      { key: "references-overview", icon: "▦", label: "数据库概览" },
+      { key: "references-search", icon: "⌕", label: "灵感搜索" },
+      { key: "references", icon: "⊞", label: "参考作品详情" },
     ],
   },
   {
     section: "创作",
     items: [
-      { key: "projects", icon: "\u25A1", label: "开书" },
-      { key: "characters", icon: "\u2662", label: "角色管理" },
-      { key: "worldbook", icon: "\u2295", label: "世界书" },
-      { key: "editor", icon: "\u270E", label: "编辑器" },
-      { key: "storyline", icon: "\u2500", label: "剧情线" },
-      { key: "skills", icon: "\u2699", label: "智能体" },
-      { key: "settings", icon: "\u2638", label: "设置" },
+      { key: "projects", icon: "□", label: "开书" },
+      { key: "characters", icon: "♢", label: "角色管理" },
+      { key: "worldbook", icon: "⊕", label: "世界书" },
+      { key: "editor", icon: "✎", label: "编辑器" },
+      { key: "storyline", icon: "─", label: "剧情线" },
+    ],
+  },
+  {
+    section: "智能体与设置",
+    items: [
+      { key: "skills", icon: "⚙", label: "智能体" },
+      { key: "settings", icon: "☸", label: "设置" },
     ],
   },
 ];
@@ -138,14 +148,14 @@ function AppInner() {
           <span style={{ fontSize: 12, opacity: 0.6 }}>&#x2315;</span>
           <span style={{ flex: 1, textAlign: "left" }}>搜索...</span>
           <kbd style={{ fontSize: 9, color: "var(--text-disabled)", background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 4px", fontFamily: "var(--font-mono)", lineHeight: 1.4 }}>
-            {/Mac|iPod|iPhone|iPad/.test(navigator?.platform || "") ? "\u2318K" : "Ctrl+K"}
+            {/Mac|iPod|iPhone|iPad/.test(navigator?.platform || "") ? "⌘K" : "Ctrl+K"}
           </kbd>
         </button>
 
         <nav className="sidebar-nav" aria-label="Page navigation">
           {NAV.map(group => (
             <React.Fragment key={group.section}>
-              {group.section === "创作" ? (
+              {group.section === "首页" ? null : group.section === "创作" ? (
                 <div className="sidebar-section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingRight: 8 }}>
                   <span>{group.section}</span>
                   <span
