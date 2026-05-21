@@ -620,6 +620,25 @@ async def start_generation(req: GenerateRequest):
     if materials:
         existing = (req_data.get("world_rules") or "").strip()
         req_data["world_rules"] = f"{existing}\n\n{materials}".strip() if existing else materials
+    # Fold the project RAG context (worldbook / reference works /
+    # writing-knowledge) into world_rules so the pipeline agents are
+    # grounded in the same material as single-agent generation.
+    try:
+        from ._rag_context import build_generation_context
+        ctx = build_generation_context(
+            req.project_id, req.chapter_num, req.characters)
+        rag_text = "\n".join(
+            b for b in (
+                ctx["blocks"].get("worldbook", ""),
+                ctx["blocks"].get("reference_summary", ""),
+                ctx["blocks"].get("writing_knowledge", ""),
+            ) if (b or "").strip()
+        ).strip()
+        if rag_text:
+            existing = (req_data.get("world_rules") or "").strip()
+            req_data["world_rules"] = f"{existing}\n\n{rag_text}".strip() if existing else rag_text
+    except Exception as e:
+        logger.debug("pipeline RAG context skipped: %s", e)
     _active_sessions[session_id] = {
         "status": "running",
         "request": req_data,
