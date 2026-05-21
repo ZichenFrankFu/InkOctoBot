@@ -352,6 +352,9 @@ class GenerateRequest(BaseModel):
     # Chapter-linked reference material (chronicle events / inspirations).
     referenced_events: list[dict] = []
     referenced_inspirations: list[dict] = []
+    # When true, /quick-generate skips the LLM call and returns the
+    # assembled prompt so it can be run in a web LLM instead.
+    prompt_only: bool = False
 
 
 class RewriteRequest(BaseModel):
@@ -772,9 +775,16 @@ async def quick_generate(req: GenerateRequest):
                 parts.append(f"## 风格要求\n{req.style_notes}")
             parts.append("\n请根据以上信息，写出完整的章节内容（800-1500字）：")
 
+        user_content = "\n\n".join(parts)
+        if req.prompt_only:
+            return {
+                "status": "ok",
+                "prompt": f"{system_prompt}\n\n{user_content}",
+            }
+
         messages = [
             LLMMessage(role="system", content=system_prompt),
-            LLMMessage(role="user", content="\n\n".join(parts)),
+            LLMMessage(role="user", content=user_content),
         ]
 
         response = await router_inst.generate(

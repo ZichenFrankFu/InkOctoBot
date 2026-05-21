@@ -852,61 +852,58 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setCurrentAgent(null);
   }, [activeCh, projectId, activeChId]);
 
+  /** Assemble the single-Agent generation context (大纲 / 设定 / 风格 /
+   *  已有内容). Shared by 生成 and 复制 prompt. */
+  const buildPlainSynopsis = useCallback(async (): Promise<string> => {
+    if (!activeCh) return "";
+    const synopsis = activeCh.synopsis || "";
+    const chars = activeCh.characters || [];
+    const parts = [`## 章节大纲\n${synopsis}`];
+    if (activeCh.time) parts.push(`## 时间\n${activeCh.time}`);
+    if (activeCh.location) parts.push(`## 地点\n${activeCh.location}`);
+    if (chars.length > 0) parts.push(`## 出场角色\n${chars.join("、")}`);
+    try {
+      const charResp = await apiGet<{ items: any[] }>(`/api/data/characters?project_id=${projectId || "default"}`);
+      const relevantChars = (charResp.items || []).filter((c: any) => chars.includes(c.name));
+      if (relevantChars.length > 0) {
+        parts.push("## 角色设定\n" + relevantChars.map((c: any) =>
+          `【${c.name}】${c.personality ? `性格：${c.personality}` : ""}${c.speech_style ? ` 说话风格：${c.speech_style}` : ""}`
+        ).join("\n"));
+      }
+    } catch { /* ignore */ }
+    try {
+      const calResp = await apiGet<any>(`/api/data/calibration/${projectId || "default"}`);
+      if (calResp?.style_params) {
+        const sp = calResp.style_params;
+        const toneDesc = sp.tone < 30 ? "轻松幽默" : sp.tone > 70 ? "严肃深沉" : "均衡";
+        const pacingDesc = sp.pacing < 30 ? "快节奏" : sp.pacing > 70 ? "慢热" : "中等";
+        parts.push(`## 风格\n文风：${toneDesc}，节奏：${pacingDesc}`);
+      }
+    } catch { /* ignore */ }
+    if (content && content.length > 10) {
+      parts.push(`## 已有内容（续写）\n${content.slice(-500)}`);
+      parts.push("\n请续写以上内容，保持风格一致，输出800-1500字的完整章节正文。");
+    } else {
+      parts.push("\n请根据以上信息，写出完整的章节内容（800-1500字）。直接输出小说正文，不要输出标题或格式标记。");
+    }
+    return parts.join("\n\n");
+  }, [activeCh, projectId, content]);
+
   const runPlainAgent = useCallback(async () => {
     if (!activeCh) return;
     setGenerating(true);
     setPipelineSteps([{ step: "Plain Agent", status: "running", detail: "单Agent直接生成中..." }]);
     setChatMessages([{
       agent: "System",
-      content: `单Agent模式启动（跳过Pipeline）。基于大纲「${(activeCh.synopsis || "").slice(0, 50)}...」直接生成全文。`,
+      content: `单Agent模式启动。基于大纲「${(activeCh.synopsis || "").slice(0, 50)}...」直接生成全文。`,
       status: "done", timestamp: Date.now(),
     }]);
     generatedTextRef.current = "";
-
     try {
-      // Gather context
-      const synopsis = activeCh.synopsis || "";
-      const chars = activeCh.characters || [];
-      const parts = [`## 章节大纲\n${synopsis}`];
-      if (activeCh.time) parts.push(`## 时间\n${activeCh.time}`);
-      if (activeCh.location) parts.push(`## 地点\n${activeCh.location}`);
-      if (chars.length > 0) parts.push(`## 出场角色\n${chars.join("、")}`);
-
-      // Fetch character details for richer context
-      try {
-        const charResp = await apiGet<{ items: any[] }>(`/api/data/characters?project_id=${projectId || "default"}`);
-        const relevantChars = (charResp.items || []).filter((c: any) => chars.includes(c.name));
-        if (relevantChars.length > 0) {
-          parts.push("## 角色设定\n" + relevantChars.map((c: any) =>
-            `【${c.name}】${c.personality ? `性格：${c.personality}` : ""}${c.speech_style ? ` 说话风格：${c.speech_style}` : ""}`
-          ).join("\n"));
-        }
-      } catch { /* ignore */ }
-
-      // Fetch calibration style params
-      try {
-        const calResp = await apiGet<any>(`/api/data/calibration/${projectId || "default"}`);
-        if (calResp?.style_params) {
-          const sp = calResp.style_params;
-          const toneDesc = sp.tone < 30 ? "轻松幽默" : sp.tone > 70 ? "严肃深沉" : "均衡";
-          const pacingDesc = sp.pacing < 30 ? "快节奏" : sp.pacing > 70 ? "慢热" : "中等";
-          parts.push(`## 风格\n文风：${toneDesc}，节奏：${pacingDesc}`);
-        }
-      } catch { /* ignore */ }
-
-      if (content && content.length > 10) {
-        parts.push(`## 已有内容（续写）\n${content.slice(-500)}`);
-        parts.push("\n请续写以上内容，保持风格一致，输出800-1500字的完整章节正文。");
-      } else {
-        parts.push("\n请根据以上信息，写出完整的章节内容（800-1500字）。直接输出小说正文，不要输出标题或格式标记。");
-      }
-
+      const synopsis = await buildPlainSynopsis();
       const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
-        project_id: projectId,
-        chapter_id: activeChId,
-        synopsis: parts.join("\n\n"),
+        project_id: projectId, chapter_id: activeChId, synopsis,
       });
-
       generatedTextRef.current = resp.text;
       setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "已完成", progress: 100 }]);
       setChatMessages(prev => {
@@ -925,7 +922,42 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }
     setGenerating(false);
     setCurrentAgent(null);
-  }, [activeCh, projectId, activeChId, content]);
+  }, [activeCh, projectId, activeChId, buildPlainSynopsis]);
+
+  /** Copy the single-Agent generation prompt for running in a web LLM. */
+  const copyPlainPrompt = useCallback(async () => {
+    if (!activeCh) return;
+    try {
+      const synopsis = await buildPlainSynopsis();
+      const resp = await apiPost<{ prompt: string }>("/api/generation/quick-generate", {
+        project_id: projectId, chapter_id: activeChId, synopsis, prompt_only: true,
+      });
+      const text = resp.prompt || "";
+      try { await navigator.clipboard.writeText(text); }
+      catch {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select(); document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      toast("已复制单 Agent 生成 prompt，可粘贴到网页 LLM", "success");
+    } catch (e: any) {
+      toast(e?.message || "复制 prompt 失败", "error");
+    }
+  }, [activeCh, projectId, activeChId, buildPlainSynopsis, toast]);
+
+  /** Apply a web-LLM-generated chapter the user pasted back. */
+  const applyPlainPaste = useCallback((text: string) => {
+    const t = (text || "").trim();
+    if (!t) return;
+    generatedTextRef.current = t;
+    setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "已解析网页结果", progress: 100 }]);
+    setChatMessages([
+      { agent: "System", content: "已解析网页 LLM 返回的正文，可点「写入编辑器」。", status: "done", timestamp: Date.now() },
+      { agent: "Editor-Writer", content: t, status: "done", timestamp: Date.now() },
+    ]);
+    setGenerating(false);
+  }, []);
 
   const startGeneration = useCallback(async () => {
     if (!activeCh) return;
@@ -1279,19 +1311,20 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 面板">&#9654;</button>
           </div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
-            {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
+            {([["outline", "大纲"], ["inspire", "正文创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
             ))}
           </div>
           <div className="panel-body" style={{ padding: "14px 16px" }}>
             {aiTab === "outline" && <OutlineTab synopsis={activeCh?.synopsis || ""} onChange={updateSynopsis} onSave={handleSaveOutline}
-              onStartGeneration={() => { setAiTab("inspire"); setTimeout(() => { if (!generating) startGeneration(); }, 300); }} projectId={projectId}
+              onStartGeneration={() => { setAiTab("inspire"); setTimeout(() => { if (!generating) runPlainAgent(); }, 300); }} projectId={projectId}
               chapter={activeCh} onUpdateChapter={(field, value) => {
                 setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
               }} />}
             {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
+              onCopyPrompt={copyPlainPrompt} onApplyPaste={applyPlainPaste}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} />}
@@ -1906,12 +1939,15 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
-function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onDeleteMessage }: {
+function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onCopyPrompt, onApplyPaste, onDeleteMessage }: {
   steps: PipelineStatus[]; generating: boolean; onStart: () => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
-  modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void; onDeleteMessage?: (index: number) => void;
+  modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
+  onCopyPrompt?: () => void; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
 }) {
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [pasteMode, setPasteMode] = useState(false);
+  const [pasteText, setPasteText] = useState("");
   const [expandedPromptIdx, setExpandedPromptIdx] = useState<number | null>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
 
@@ -1979,9 +2015,9 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
       <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
           <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
-            <div style={{ fontSize: 14, marginBottom: 8, letterSpacing: 4, color: "var(--text-tertiary)" }}>SD / AC / EW / EV</div>
-            <div>Scene Director → 角色扮演（旁白+角色名） → Editor-Writer → Evaluator</div>
-            <div style={{ marginTop: 6, fontSize: 11 }}>在「大纲」标签中点击「开始生成」启动 Pipeline</div>
+            <div style={{ fontSize: 13, marginBottom: 8, color: "var(--text-secondary)" }}>正文创作</div>
+            <div>默认用「单 Agent」直接生成全文；也可切换到多 Agent Pipeline。</div>
+            <div style={{ marginTop: 6, fontSize: 11 }}>点击下方「单 Agent 生成」开始，或「复制 prompt」用网页 LLM。</div>
           </div>
         )}
         {chatMessages.map((msg, i) => {
@@ -2199,30 +2235,49 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
           placeholder={waitingForConfirm ? "输入修改意见，或点击确认继续..." : "输入消息与 Agent 对话..."} rows={1} style={{ flex: 1, fontSize: 12, padding: "6px 10px", minHeight: 32, maxHeight: 100, resize: "none" }} />
         <button className="btn-primary" onClick={onSendMessage} disabled={!chatInput.trim()} style={{ fontSize: 12, padding: "6px 12px", flexShrink: 0 }}>发送</button>
       </div>
-      {!generating && chatMessages.length === 0 && (
-        <div style={{ display: "flex", gap: 6 }}>
-          <button className="btn-primary" style={{ flex: 1 }} onClick={onStart}>Pipeline 生成</button>
-          {onStartPlain && (
-            <button className="btn" style={{ flex: 1, borderColor: "var(--jade)", color: "var(--jade)" }} onClick={onStartPlain}
-              title="跳过Pipeline多步骤流程，单Agent直接生成全文">
-              单Agent生成
+      {/* Generation controls — 单 Agent is the default; Pipeline is opt-in. */}
+      {!generating && !waitingForConfirm && (
+        <div style={{ marginBottom: 6 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {onStartPlain && (
+              <button className="btn-primary" style={{ flex: 2 }} onClick={onStartPlain}>
+                {chatMessages.length > 0 ? "单 Agent 重新生成" : "单 Agent 生成"}
+              </button>
+            )}
+            <button className="btn" style={{ flex: 1, borderColor: "var(--indigo)", color: "var(--indigo)" }} onClick={onStart}
+              title="切换到多 Agent 协作 Pipeline（导演→角色→编辑→评估），质量更高但更慢">
+              {chatMessages.length > 0 ? "改用 Pipeline" : "切换 Pipeline"}
             </button>
+          </div>
+          {/* Web-LLM workflow for the single-Agent generation prompt. */}
+          {(onCopyPrompt || onApplyPaste) && (
+            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+              {onCopyPrompt && (
+                <button className="btn" style={{ fontSize: 10, padding: "3px 10px" }} onClick={onCopyPrompt}
+                  title="复制单 Agent 生成 prompt，可贴到 ChatGPT / Claude.ai 等">复制 prompt</button>
+              )}
+              {onApplyPaste && (
+                <button className="btn" style={{ fontSize: 10, padding: "3px 10px", borderColor: pasteMode ? "var(--accent)" : "var(--border)", color: pasteMode ? "var(--accent)" : "var(--text-secondary)" }}
+                  onClick={() => setPasteMode(m => !m)}>{pasteMode ? "取消解析" : "解析网页结果"}</button>
+              )}
+            </div>
           )}
-        </div>
-      )}
-      {!generating && chatMessages.length > 0 && !waitingForConfirm && (
-        <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-          <button className="btn" style={{ flex: 1 }} onClick={onStart}>重启 Pipeline</button>
-          {onStartPlain && (
-            <button className="btn" style={{ flex: 1, borderColor: "var(--jade)", color: "var(--jade)" }} onClick={onStartPlain}>
-              单Agent生成
-            </button>
+          {pasteMode && onApplyPaste && (
+            <div style={{ marginTop: 6 }}>
+              <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)}
+                placeholder="把网页 LLM 生成的章节正文粘贴到这里" rows={5}
+                style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5 }} />
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+                <button className="btn-primary" style={{ fontSize: 10, padding: "3px 12px" }} disabled={!pasteText.trim()}
+                  onClick={() => { onApplyPaste(pasteText); setPasteText(""); setPasteMode(false); }}>解析并应用</button>
+              </div>
+            </div>
           )}
         </div>
       )}
       <p className="text-xs text-muted mt-8" style={{ lineHeight: 1.6 }}>
-        <strong>Pipeline</strong>：4步Agent协作（导演→角色→编辑→评估），质量高但耗时长。<br />
-        <strong>单Agent</strong>：跳过Pipeline，直接生成全文，速度快。
+        <strong>单 Agent</strong>（默认）：直接生成全文，速度快；prompt 可复制到网页 LLM。<br />
+        <strong>Pipeline</strong>：4 步 Agent 协作（导演→角色→编辑→评估），质量高但耗时长。
       </p>
     </div>
   );
