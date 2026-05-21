@@ -216,6 +216,10 @@ export interface ChapterOutline {
   location?: string;
   characters?: string[];
   references?: string[];
+  /** Chronicle events linked from reference works (denormalized text). */
+  referenced_events?: { ref_id: string; work_title: string; name: string; description: string }[];
+  /** Inspirations linked from the 灵感库 (denormalized text). */
+  referenced_inspirations?: { id: string; category: string; title: string; content: string }[];
   /** Map of real character name -> alias for hidden identity (e.g. "李悦" -> "神秘女人") */
   character_aliases?: Record<string, string>;
 }

@@ -349,6 +349,9 @@ class GenerateRequest(BaseModel):
     existing_content: str = ""
     chapter_num: int = 1
     character_aliases: dict[str, str] = {}
+    # Chapter-linked reference material (chronicle events / inspirations).
+    referenced_events: list[dict] = []
+    referenced_inspirations: list[dict] = []
 
 
 class RewriteRequest(BaseModel):
@@ -573,12 +576,43 @@ def health():
     return {"status": "ok", "router": "generation"}
 
 
+def _format_referenced_materials(events: list[dict], inspirations: list[dict]) -> str:
+    """Render chapter-linked chronicle events + inspirations as a text
+    block the generation pipeline can use as background reference."""
+    blocks: list[str] = []
+    if events:
+        lines = ["【关联参考事件】"]
+        for e in events:
+            wt = str(e.get("work_title") or "").strip()
+            nm = str(e.get("name") or "").strip()
+            desc = str(e.get("description") or "").strip()
+            head = f"《{wt}》{nm}" if wt else nm
+            lines.append(f"- {head}：{desc}" if desc else f"- {head}")
+        blocks.append("\n".join(lines))
+    if inspirations:
+        lines = ["【关联灵感】"]
+        for ins in inspirations:
+            t = str(ins.get("title") or "").strip()
+            c = str(ins.get("content") or "").strip()
+            lines.append(f"- {t}：{c}" if t else f"- {c}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 @router.post("/start")
 async def start_generation(req: GenerateRequest):
     session_id = f"gen_{uuid.uuid4().hex[:12]}"
+    req_data = req.model_dump()
+    # Fold the chapter's linked chronicle events + inspirations into
+    # world_rules so scene planning treats them as background reference.
+    materials = _format_referenced_materials(
+        req.referenced_events, req.referenced_inspirations)
+    if materials:
+        existing = (req_data.get("world_rules") or "").strip()
+        req_data["world_rules"] = f"{existing}\n\n{materials}".strip() if existing else materials
     _active_sessions[session_id] = {
         "status": "running",
-        "request": req.model_dump(),
+        "request": req_data,
         "created_at": time.time(),
         "events": [],           # list of dicts — full event log
         "result": None,
