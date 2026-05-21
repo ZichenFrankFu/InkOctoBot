@@ -492,49 +492,63 @@ function IndexRow({ w, rows, indexing, onBuild, onClear, onOpen, topBorder }: {
 function ResultsList({ rows }: { rows: SearchHit[] }) {
   return (
     <div className="flex flex-col gap-8">
-      {rows.map(h => {
-        const src = (h.metadata.source_type as string) || "chapter_chunk";
-        const tm = (h.metadata.time_marker as string)
-                || (h.metadata.first_seen_at as string)
-                || (h.metadata.first_introduced_at as string)
-                || (typeof h.metadata.chapter === "number" ? `第 ${h.metadata.chapter} 章` : "");
-        const color = SOURCE_COLOR[src] || "var(--text-tertiary)";
-        return (
-          <div key={h.id} style={{
-            padding: "8px 12px",
-            background: "var(--bg-surface)",
-            borderRadius: 4,
-            borderLeft: `3px solid ${color}`,
-          }}>
-            <div className="flex items-center gap-6" style={{ marginBottom: 4, flexWrap: "wrap" }}>
-              <span className="tag" style={{
-                fontSize: 10, padding: "1px 6px",
-                color, background: "var(--bg-surface-2)",
-                border: `1px solid ${color}`,
-              }}>{SOURCE_LABEL[src] || src}</span>
-              {tm && (
-                <span className="tag" style={{
-                  fontSize: 10, padding: "1px 6px",
-                  color: "var(--accent)", background: "var(--accent-subtle)",
-                  border: "1px solid var(--accent)",
-                }}>{tm}</span>
-              )}
-              <span className="text-xs text-muted" style={{ marginLeft: "auto", fontFamily: "var(--font-mono)" }}>
-                距离 {h.distance.toFixed(3)}
-              </span>
-            </div>
-            <div style={{
-              fontSize: 12, lineHeight: 1.6,
-              color: "var(--text-secondary)",
-              whiteSpace: "pre-wrap",
-              display: "-webkit-box",
-              WebkitBoxOrient: "vertical",
-              WebkitLineClamp: 5,
-              overflow: "hidden",
-            }}>{h.text}</div>
-          </div>
-        );
-      })}
+      {rows.map(h => <ResultRow key={h.id} h={h} />)}
+    </div>
+  );
+}
+
+/** One search hit. The matched passage collapses to 5 lines by default;
+ *  long passages get a 展开 / 收起 toggle. */
+function ResultRow({ h }: { h: SearchHit }) {
+  const [expanded, setExpanded] = useState(false);
+  const src = (h.metadata.source_type as string) || "chapter_chunk";
+  const tm = (h.metadata.time_marker as string)
+          || (h.metadata.first_seen_at as string)
+          || (h.metadata.first_introduced_at as string)
+          || (typeof h.metadata.chapter === "number" ? `第 ${h.metadata.chapter} 章` : "");
+  const color = SOURCE_COLOR[src] || "var(--text-tertiary)";
+  const longText = (h.text || "").length > 120;
+  return (
+    <div style={{
+      padding: "8px 12px",
+      background: "var(--bg-surface)",
+      borderRadius: 4,
+      borderLeft: `3px solid ${color}`,
+    }}>
+      <div className="flex items-center gap-6" style={{ marginBottom: 4, flexWrap: "wrap" }}>
+        <span className="tag" style={{
+          fontSize: 10, padding: "1px 6px",
+          color, background: "var(--bg-surface-2)",
+          border: `1px solid ${color}`,
+        }}>{SOURCE_LABEL[src] || src}</span>
+        {tm && (
+          <span className="tag" style={{
+            fontSize: 10, padding: "1px 6px",
+            color: "var(--accent)", background: "var(--accent-subtle)",
+            border: "1px solid var(--accent)",
+          }}>{tm}</span>
+        )}
+        <span className="text-xs text-muted" style={{ marginLeft: "auto", fontFamily: "var(--font-mono)" }}>
+          距离 {h.distance.toFixed(3)}
+        </span>
+      </div>
+      <div style={{
+        fontSize: 12, lineHeight: 1.6,
+        color: "var(--text-secondary)",
+        whiteSpace: "pre-wrap",
+        ...(expanded ? {} : {
+          display: "-webkit-box",
+          WebkitBoxOrient: "vertical" as const,
+          WebkitLineClamp: 5,
+          overflow: "hidden",
+        }),
+      }}>{h.text}</div>
+      {longText && (
+        <button className="btn-ghost" onClick={() => setExpanded(e => !e)}
+          style={{ fontSize: 11, padding: "3px 0 0", color: "var(--accent)" }}>
+          {expanded ? "收起 ▲" : "展开 ▼"}
+        </button>
+      )}
     </div>
   );
 }

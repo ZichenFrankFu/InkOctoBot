@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost } from "../api/client";
-import { useToast } from "../components/shared/Toast";
+import { apiGet } from "../api/client";
 import type { ReferenceWork, MediaType } from "../api/types";
 import { splitGenres } from "../utils/genre";
 
@@ -72,45 +71,32 @@ function readChapterMetrics(w: ReferenceWork): ChapterMetrics {
   };
 }
 
-interface CompletenessFlags {
-  text: boolean;
-  plot: boolean;
-  chars: boolean;
-  settings: boolean;
-  style: boolean;
+interface FeatureProgress {
+  total: number;
+  events: number;
+  characters: number;
+  settings: number;
+  style: number;
 }
 
-function readCompleteness(w: ReferenceWork): CompletenessFlags {
-  return {
-    text: Boolean(w.has_full_text),
-    plot: Boolean(w.plot_outline_json) && (() => {
-      const p = pj(w.plot_outline_json);
-      return Boolean(p && ((p.epochs && p.epochs.length) || p.logline));
-    })(),
-    chars: (() => {
-      const c = pj(w.extracted_characters_json);
-      return Array.isArray(c) && c.length > 0;
-    })(),
-    settings: (() => {
-      const s = pj(w.settings_json);
-      return Array.isArray(s) && s.length > 0;
-    })(),
-    style: Boolean(w.style_fingerprint_json) && (() => {
-      const fp = pj(w.style_fingerprint_json);
-      return Boolean(fp && Object.keys(fp).length > 0);
-    })(),
-  };
-}
-
-function completenessScore(c: CompletenessFlags): number {
-  return (Number(c.text) + Number(c.plot) + Number(c.chars) + Number(c.settings) + Number(c.style)) / 5;
-}
-
-interface Capability {
-  enabled: boolean;
-  provider: string;
-  model: string;
-  reason: string;
+/** Per-feature chapter coverage from the unified-extraction ledger
+ *  (style_fingerprint_json._chunks): a committed chunk's chapter span
+ *  is the length of its per-chapter signal list. */
+function readFeatureProgress(w: ReferenceWork): FeatureProgress {
+  const fp = pj(w.style_fingerprint_json) as any;
+  const chunks = (fp && fp._chunks) || {};
+  const acc = { events: 0, characters: 0, settings: 0, style: 0 };
+  for (const key of Object.keys(chunks)) {
+    const e = chunks[key] || {};
+    const span = Array.isArray(e.fp?.chapter_signals) ? e.fp.chapter_signals.length : 0;
+    const done = e.done || {};
+    if (done.events) acc.events += span;
+    if (done.characters) acc.characters += span;
+    if (done.settings) acc.settings += span;
+    if (done.style) acc.style += span;
+  }
+  const sigTotal = Array.isArray(fp?.chapter_signals) ? fp.chapter_signals.length : 0;
+  return { total: readChapterMetrics(w).chapters || sigTotal, ...acc };
 }
 
 interface Props {
@@ -119,13 +105,10 @@ interface Props {
 }
 
 export default function ReferenceOverviewPage({ onNavigate }: Props) {
-  const { toast } = useToast();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [loading, setLoading] = useState(true);
-  const [capability, setCapability] = useState<Capability | null>(null);
   const [genreFilter, setGenreFilter] = useState<string>("");
   const [genreOpen, setGenreOpen] = useState<boolean>(true);
-  const [completingIds, setCompletingIds] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -140,16 +123,7 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
     setLoading(false);
   }, []);
 
-  const loadCapability = useCallback(async () => {
-    try {
-      const c = await apiGet<Capability>("/api/references/web_search/capability");
-      setCapability(c);
-    } catch {
-      setCapability({ enabled: false, provider: "", model: "", reason: "无法获取联网能力状态" });
-    }
-  }, []);
-
-  useEffect(() => { load(); loadCapability(); }, [load, loadCapability]);
+  useEffect(() => { load(); }, [load]);
 
   const stats = useMemo(() => {
     const byMedia: Record<string, number> = {};
@@ -191,33 +165,6 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
     onNavigate?.("references");
   };
 
-  const runAiComplete = async (refId: string) => {
-    setCompletingIds(prev => new Set(prev).add(refId));
-    try {
-      const r = await apiPost<any>(
-        `/api/references/works/${refId}/ai_complete`, {},
-        { timeoutMs: 90_000 },
-      );
-      if (!r.updated_keys || r.updated_keys.length === 0) {
-        toast(r.message || "未更新任何字段", "info");
-      } else {
-        toast(`已补全：${r.updated_keys.join(" · ")}`, "success");
-      }
-      // patch the work in-place
-      if (r.work) {
-        setWorks(prev => prev.map(w => w.ref_id === refId ? r.work as ReferenceWork : w));
-      }
-    } catch (e: any) {
-      toast(e?.message || "联网补全失败", "error");
-    } finally {
-      setCompletingIds(prev => {
-        const next = new Set(prev);
-        next.delete(refId);
-        return next;
-      });
-    }
-  };
-
   return (
     // Wrap as a plain block so the outer .main-content (which already
     // has overflow-y: auto) handles scrolling. Using `.page-full` here
@@ -231,7 +178,7 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
             <p>参考作品数据库的全局视图 · 共 {stats.total} 部作品</p>
           </div>
           <div className="flex gap-8">
-            <button className="btn" onClick={() => { load(); loadCapability(); }}>刷新</button>
+            <button className="btn" onClick={load}>刷新</button>
           </div>
         </div>
       </div>
@@ -342,7 +289,7 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
 
           {/* Per-work attribute grid */}
           <div className="card">
-            <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div className="card-header">
               <h3>
                 作品列表
                 {genreFilter && (
@@ -351,16 +298,9 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
                   </span>
                 )}
               </h3>
-              <CapabilityBadge capability={capability} />
             </div>
             <div className="card-body">
-              <WorkAttributeGrid
-                works={filteredWorks}
-                capability={capability}
-                completingIds={completingIds}
-                onOpen={openDetail}
-                onAiComplete={runAiComplete}
-              />
+              <WorkAttributeGrid works={filteredWorks} onOpen={openDetail} />
             </div>
           </div>
         </>
@@ -462,32 +402,9 @@ function GenreBarChart({ byGenre, selected, onSelect }: {
   );
 }
 
-function CapabilityBadge({ capability }: { capability: Capability | null }) {
-  if (!capability) return null;
-  const enabled = capability.enabled;
-  return (
-    <span
-      title={capability.reason}
-      className="tag"
-      style={{
-        fontSize: 11, padding: "2px 8px",
-        background: enabled ? "var(--accent-subtle)" : "var(--bg-surface-2)",
-        color: enabled ? "var(--accent)" : "var(--text-tertiary)",
-        border: `1px solid ${enabled ? "var(--accent)" : "var(--border)"}`,
-        cursor: "help",
-      }}
-    >
-      AI 联网补全：{enabled ? "可用" : "未配置"}
-    </span>
-  );
-}
-
-function WorkAttributeGrid({ works, capability, completingIds, onOpen, onAiComplete }: {
+function WorkAttributeGrid({ works, onOpen }: {
   works: ReferenceWork[];
-  capability: Capability | null;
-  completingIds: Set<string>;
   onOpen: (refId: string) => void;
-  onAiComplete: (refId: string) => void;
 }) {
   if (works.length === 0) {
     return (
@@ -503,37 +420,47 @@ function WorkAttributeGrid({ works, capability, completingIds, onOpen, onAiCompl
       gap: 12,
     }}>
       {works.map(w => (
-        <WorkCard
-          key={w.ref_id}
-          w={w}
-          capability={capability}
-          completing={completingIds.has(w.ref_id)}
-          onOpen={() => onOpen(w.ref_id)}
-          onAiComplete={() => onAiComplete(w.ref_id)}
-        />
+        <WorkCard key={w.ref_id} w={w} onOpen={() => onOpen(w.ref_id)} />
       ))}
     </div>
   );
 }
 
-function WorkCard({ w, capability, completing, onOpen, onAiComplete }: {
+/** Per-chapter coverage bar for one extracted feature. */
+function FeatureBar({ label, done, total }: { label: string; done: number; total: number }) {
+  const ratio = total > 0 ? Math.min(1, done / total) : 0;
+  return (
+    <div className="flex items-center gap-8">
+      <span className="text-xs text-muted" style={{ minWidth: 30 }}>{label}</span>
+      <div style={{
+        flex: 1, height: 7, background: "var(--bg-surface-2)",
+        borderRadius: 4, overflow: "hidden",
+      }}>
+        <div style={{
+          height: "100%", width: `${Math.round(ratio * 100)}%`,
+          background: ratio >= 1 ? "var(--jade)" : "var(--accent)",
+          borderRadius: 4, transition: "width 0.3s",
+        }} />
+      </div>
+      <span className="text-xs" style={{
+        fontFamily: "var(--font-mono)", minWidth: 56,
+        textAlign: "right", color: "var(--text-tertiary)",
+      }}>{total > 0 ? `${Math.min(done, total)}/${total} 章` : "—"}</span>
+    </div>
+  );
+}
+
+function WorkCard({ w, onOpen }: {
   w: ReferenceWork;
-  capability: Capability | null;
-  completing: boolean;
   onOpen: () => void;
-  onAiComplete: () => void;
 }) {
   const ch = readChapterMetrics(w);
-  const c = readCompleteness(w);
-  const score = completenessScore(c);
+  const hasText = Boolean(w.has_full_text);
+  const fp = readFeatureProgress(w);
   const isEpisode = EPISODE_MEDIA.has(w.media_type);
   const genres = splitGenres(w.genre);
   const serialKey = (w.serial_status || "unknown") as keyof typeof SERIAL_LABEL;
-  const serial = SERIAL_LABEL[serialKey] || SERIAL_LABEL.unknown;
-  const canAi = !!capability?.enabled && !completing;
-  const aiTooltip = capability?.enabled
-    ? `通过 ${capability.provider}/${capability.model} 联网补全空字段`
-    : (capability?.reason || "未配置联网模型");
+  const serial = SERIAL_LABEL[serialKey];
 
   return (
     <div style={{
@@ -556,13 +483,16 @@ function WorkCard({ w, capability, completing, onOpen, onAiComplete }: {
             {w.user_rating ? <span style={{ color: "var(--gold)" }}>{stars(w.user_rating)}</span> : null}
           </div>
         </div>
-        <span className="tag" title={`连载状态：${serial.label}`} style={{
-          fontSize: 10, padding: "1px 7px",
-          color: serial.color,
-          background: "var(--bg-surface-2)",
-          border: `1px solid ${serial.color}`,
-          whiteSpace: "nowrap",
-        }}>{serial.label}</span>
+        {/* Serial status — shown only when known; the 未知 tag is dropped. */}
+        {serialKey !== "unknown" && serial && (
+          <span className="tag" title={`连载状态：${serial.label}`} style={{
+            fontSize: 10, padding: "1px 7px",
+            color: serial.color,
+            background: "var(--bg-surface-2)",
+            border: `1px solid ${serial.color}`,
+            whiteSpace: "nowrap",
+          }}>{serial.label}</span>
+        )}
       </div>
 
       {/* Genre chips */}
@@ -587,51 +517,33 @@ function WorkCard({ w, capability, completing, onOpen, onAiComplete }: {
             <span>{ch.chapters} {isEpisode ? "集" : "章"}</span>
             {ch.charCount > 0 && <span> · {fmtChars(ch.charCount)}</span>}
           </>
-        ) : c.text ? (
+        ) : hasText ? (
           <span>已上传正文（尚未分段）</span>
         ) : (
           <span style={{ color: "var(--text-tertiary)", fontStyle: "italic" }}>未上传正文</span>
         )}
       </div>
 
-      {/* Completeness pills */}
-      <div>
-        <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
-          <span className="text-xs text-muted">数据完整度</span>
-          <span className="text-xs" style={{
-            fontFamily: "var(--font-mono)",
-            color: score >= 0.6 ? "var(--jade)" : score >= 0.3 ? "var(--gold)" : "var(--text-tertiary)",
-          }}>{Math.round(score * 100)}%</span>
+      {/* Data completeness — 正文 flag + per-chapter feature progress */}
+      <div className="flex flex-col gap-5">
+        <div className="text-xs text-muted">数据完整度</div>
+        <div className="flex items-center gap-8">
+          <span className="text-xs text-muted" style={{ minWidth: 30 }}>正文</span>
+          <span className="tag" style={{
+            fontSize: 9.5, padding: "1px 8px",
+            background: hasText ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+            color: hasText ? "var(--jade)" : "var(--text-tertiary)",
+            border: `1px solid ${hasText ? "var(--jade)" : "var(--border)"}`,
+          }}>{hasText ? "已上传" : "未上传"}</span>
         </div>
-        <div className="flex gap-4">
-          {[
-            { k: "text", label: "正文", on: c.text },
-            { k: "plot", label: "大纲", on: c.plot },
-            { k: "chars", label: "角色", on: c.chars },
-            { k: "settings", label: "设定", on: c.settings },
-            { k: "style", label: "特征", on: c.style },
-          ].map(p => (
-            <span key={p.k} className="tag" title={`${p.label}${p.on ? "（已生成）" : "（缺）"}`} style={{
-              fontSize: 9.5, padding: "1px 6px", flex: 1, textAlign: "center",
-              background: p.on ? "var(--accent-subtle)" : "var(--bg-surface-2)",
-              color: p.on ? "var(--jade)" : "var(--text-tertiary)",
-              border: `1px solid ${p.on ? "var(--jade)" : "var(--border)"}`,
-            }}>{p.label}</span>
-          ))}
-        </div>
+        <FeatureBar label="大纲" done={fp.events} total={fp.total} />
+        <FeatureBar label="角色" done={fp.characters} total={fp.total} />
+        <FeatureBar label="设定" done={fp.settings} total={fp.total} />
+        <FeatureBar label="特征" done={fp.style} total={fp.total} />
       </div>
 
       {/* Actions */}
       <div className="flex gap-6" style={{ marginTop: "auto" }}>
-        <button
-          className="btn"
-          style={{ fontSize: 11, padding: "4px 10px", flex: 1, opacity: canAi ? 1 : 0.5 }}
-          onClick={onAiComplete}
-          disabled={!canAi}
-          title={aiTooltip}
-        >
-          {completing ? "联网中…" : "AI 补全"}
-        </button>
         <button
           className="btn-primary"
           style={{ fontSize: 11, padding: "4px 10px", flex: 1 }}
