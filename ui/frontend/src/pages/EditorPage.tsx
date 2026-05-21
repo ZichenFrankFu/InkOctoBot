@@ -1337,6 +1337,27 @@ function chipStyle(on: boolean, color: string, bg: string): React.CSSProperties 
   };
 }
 
+/** A selectable row in a searchable pick-list (works / events / inspirations). */
+function PickRow({ label, sub, on, color, onClick }: {
+  label: string; sub?: string; on: boolean; color: string; onClick: () => void;
+}) {
+  return (
+    <div onClick={onClick} title={label} style={{
+      display: "flex", alignItems: "center", gap: 6,
+      padding: "4px 8px", cursor: "pointer", fontSize: 11,
+      borderBottom: "1px solid var(--border)",
+      background: on ? "var(--bg-surface)" : "transparent",
+    }}>
+      <span style={{ width: 11, flexShrink: 0, color, fontWeight: 700 }}>{on ? "✓" : ""}</span>
+      <span style={{
+        flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+        fontWeight: on ? 600 : 400, color: on ? color : "var(--text-secondary)",
+      }}>{label}</span>
+      {sub && <span className="text-xs text-muted" style={{ flexShrink: 0 }}>{sub}</span>}
+    </div>
+  );
+}
+
 function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, onUpdateChapter }: {
   synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; projectId: string;
   chapter?: ChapterOutline | null; onUpdateChapter?: (field: string, value: any) => void;
@@ -1354,7 +1375,11 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   const [characters, setCharacters] = useState<{ id: string; name: string; selected: boolean }[]>([]);
   const [references, setReferences] = useState<{ id: string; title: string; selected: boolean; events: { name: string; description: string }[] }[]>([]);
   const [inspirations, setInspirations] = useState<{ id: string; category: string; title: string; content: string }[]>([]);
-  const [showLinker, setShowLinker] = useState(false);
+  const [showCharLink, setShowCharLink] = useState(false);
+  const [showRefLink, setShowRefLink] = useState(false);
+  const [refSearch, setRefSearch] = useState("");
+  const [eventSearch, setEventSearch] = useState("");
+  const [inspSearch, setInspSearch] = useState("");
 
   // Outline chat state (overlay dialog)
   const [showOutlineChat, setShowOutlineChat] = useState(false);
@@ -1523,7 +1548,11 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   };
   const selectedChars = characters.filter(c => c.selected);
   const selectedRefs = references.filter(r => r.selected);
-  const linkCount = selectedChars.length + selectedRefs.length + refEvents.length + refInsps.length;
+  const refQ = refSearch.trim().toLowerCase();
+  const filteredRefs = references.filter(r => !refQ || r.title.toLowerCase().includes(refQ));
+  const inspQ = inspSearch.trim().toLowerCase();
+  const filteredInsps = inspirations.filter(
+    it => !inspQ || `${it.title} ${it.content}`.toLowerCase().includes(inspQ));
 
   return (
     <div>
@@ -1601,42 +1630,57 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
             <button className="btn-primary" onClick={() => sendOutlineChat()} disabled={!outlineChatInput.trim() || outlineChatLoading}
               style={{ fontSize: 11, padding: "4px 10px" }}>{outlineChatLoading ? "..." : "发送"}</button>
           </div>
-          {/* Web-LLM workflow — copy the prompt out, paste the reply back. */}
-          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-            <button className="btn" onClick={copyOutlinePrompt}
-              style={{ fontSize: 10, padding: "3px 10px" }}
-              title="复制本次对话的完整 prompt，可粘贴到 ChatGPT / Claude.ai 等网页 LLM">复制 prompt</button>
-            <button className="btn" onClick={() => setPasteMode(m => !m)}
-              style={{ fontSize: 10, padding: "3px 10px", borderColor: pasteMode ? "var(--accent)" : "var(--border)", color: pasteMode ? "var(--accent)" : "var(--text-secondary)" }}>
-              {pasteMode ? "取消粘贴" : "粘贴网页结果"}
-            </button>
-          </div>
-          {pasteMode && (
-            <div style={{ marginTop: 6 }}>
-              <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)}
-                placeholder="把网页 LLM 返回的回复粘贴到这里，应用后会作为助手回复加入对话" rows={4}
-                style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5 }} />
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
-                <button className="btn-primary" onClick={applyPastedReply} disabled={!pasteText.trim()}
-                  style={{ fontSize: 10, padding: "3px 12px" }}>应用为回复</button>
-              </div>
+          {/* 网页 LLM workflow — distinct from the 快捷指令 templates
+              below. These take the prompt OUT to an external LLM and
+              bring the reply back; they don't call the in-app model. */}
+          <div style={{ marginTop: 8, paddingTop: 6, borderTop: "1px dashed var(--border)" }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: "var(--text-tertiary)", marginBottom: 4, letterSpacing: 0.5 }}>
+              网页 LLM · 用外部模型，不消耗本地额度
             </div>
-          )}
-        </div>
-        {/* Quick prompts for outline chat */}
-        {outlineChatMsgs.length === 0 && (
-          <div style={{ padding: "4px 10px 8px", display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {[
-              { label: "生成大纲", prompt: "根据这一章的定位，帮我生成详细的章节大纲" },
-              { label: "冲突设计", prompt: "帮我设计这一章的核心冲突和转折点" },
-              { label: "节奏优化", prompt: "分析并优化这章大纲的叙事节奏" },
-              { label: "悬念设置", prompt: "帮我在大纲中设计章末悬念和伏笔" },
-            ].map(t => (
-              <button key={t.label} className="btn" style={{ fontSize: 10, padding: "2px 8px", borderRadius: 12 }}
-                onClick={() => sendOutlineChat(t.prompt)}>
-                {t.label}
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="btn" onClick={copyOutlinePrompt}
+                style={{ fontSize: 10, padding: "3px 10px" }}
+                title="把当前对话打包成完整 prompt 复制走">① 复制 prompt</button>
+              <button className="btn" onClick={() => setPasteMode(m => !m)}
+                style={{ fontSize: 10, padding: "3px 10px", borderColor: pasteMode ? "var(--accent)" : "var(--border)", color: pasteMode ? "var(--accent)" : "var(--text-secondary)" }}>
+                ② {pasteMode ? "取消粘贴" : "粘贴网页结果"}
               </button>
-            ))}
+            </div>
+            <div className="text-xs text-muted" style={{ marginTop: 3, lineHeight: 1.5 }}>
+              复制 prompt → 贴到 ChatGPT / Claude.ai 等 → 把回复用「粘贴网页结果」贴回。
+            </div>
+            {pasteMode && (
+              <div style={{ marginTop: 6 }}>
+                <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)}
+                  placeholder="把网页 LLM 返回的回复粘贴到这里，应用后会作为助手回复加入对话" rows={4}
+                  style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5 }} />
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+                  <button className="btn-primary" onClick={applyPastedReply} disabled={!pasteText.trim()}
+                    style={{ fontSize: 10, padding: "3px 12px" }}>应用为回复</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        {/* 快捷指令 — pre-written prompts sent straight to the in-app AI. */}
+        {outlineChatMsgs.length === 0 && (
+          <div style={{ padding: "4px 10px 8px" }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: "var(--text-tertiary)", marginBottom: 4, letterSpacing: 0.5 }}>
+              快捷指令 · 点击直接发给本地 AI
+            </div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {[
+                { label: "生成大纲", prompt: "根据这一章的定位，帮我生成详细的章节大纲" },
+                { label: "冲突设计", prompt: "帮我设计这一章的核心冲突和转折点" },
+                { label: "节奏优化", prompt: "分析并优化这章大纲的叙事节奏" },
+                { label: "悬念设置", prompt: "帮我在大纲中设计章末悬念和伏笔" },
+              ].map(t => (
+                <button key={t.label} className="btn" style={{ fontSize: 10, padding: "2px 8px", borderRadius: 12 }}
+                  onClick={() => sendOutlineChat(t.prompt)}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {outlineChatMsgs.length > 0 && outlineChatMsgs[outlineChatMsgs.length - 1].role === "assistant" && !pendingOutline && (
@@ -1654,17 +1698,15 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       </div>
       )}
 
-      {/* Character / reference-material linker */}
+      {/* 关联角色 — its own section */}
       <div style={{ marginTop: 10 }}>
-        <button className="btn" style={{ fontSize: 11, padding: "4px 12px", width: "100%" }} onClick={() => setShowLinker(!showLinker)}>
-          {showLinker ? "收起" : "关联角色 & 参考素材"} {linkCount > 0 ? `(已选 ${linkCount})` : ""}
+        <button className="btn" style={{ fontSize: 11, padding: "4px 12px", width: "100%" }} onClick={() => setShowCharLink(v => !v)}>
+          {showCharLink ? "收起" : "关联角色"}{selectedChars.length > 0 ? ` (已选 ${selectedChars.length})` : ""}
         </button>
-        {showLinker && (
+        {showCharLink && (
           <div style={{ marginTop: 8, padding: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
-            {/* 出场角色 */}
             {characters.length > 0 ? (
-              <div style={{ marginBottom: 10 }}>
-                <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--purple)" }}>出场角色</div>
+              <>
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                   {characters.map(c => (
                     <button key={c.id} onClick={() => toggleChar(c.id)}
@@ -1673,131 +1715,126 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
                     </button>
                   ))}
                 </div>
-              </div>
-            ) : (
-              <div className="text-xs text-muted" style={{ marginBottom: 10 }}>暂无角色，请在「角色管理」中创建</div>
-            )}
-
-            {/* 参考作品 — select works, then pick their chronicle events */}
-            <div style={{ marginBottom: 10 }}>
-              <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--jade)" }}>参考作品</div>
-              {references.length > 0 ? (
-                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                  {references.map(r => (
-                    <button key={r.id} onClick={() => toggleRef(r.id)}
-                      style={chipStyle(r.selected, "var(--jade)", "var(--jade-subtle)")}>
-                      {r.title}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-xs text-muted">暂无参考作品，请在「参考作品详情」中导入</div>
-              )}
-            </div>
-
-            {/* 编年史事件 — per selected work */}
-            {selectedRefs.map(r => (
-              <div key={r.id} style={{ marginBottom: 10 }}>
-                <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--gold)" }}>
-                  「{r.title}」编年史事件
-                </div>
-                {r.events.length > 0 ? (
-                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                    {r.events.map((ev, i) => (
-                      <button key={i} onClick={() => toggleEvent(r.id, r.title, ev)}
-                        title={ev.description || ev.name}
-                        style={chipStyle(isEventLinked(r.id, ev.name), "var(--gold)", "var(--gold-subtle)")}>
-                        {ev.name}
-                      </button>
-                    ))}
+                {selectedChars.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--purple)" }}>隐藏身份（可选）</div>
+                    {selectedChars.map(c => {
+                      const alias = (chapter?.character_aliases || {})[c.name] || "";
+                      return (
+                        <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                          <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--purple-subtle)", color: "var(--purple)", whiteSpace: "nowrap" }}>{c.name}</span>
+                          <input className="input" value={alias}
+                            onChange={e => {
+                              const next = { ...(chapter?.character_aliases || {}) };
+                              if (e.target.value.trim()) next[c.name] = e.target.value;
+                              else delete next[c.name];
+                              onUpdateChapter?.("character_aliases", next);
+                            }}
+                            placeholder="隐藏身份（如：神秘女人）"
+                            style={{ flex: 1, fontSize: 10, padding: "2px 8px", height: 22 }} />
+                        </div>
+                      );
+                    })}
                   </div>
-                ) : (
-                  <div className="text-xs text-muted">该作品暂无编年史事件，请先在参考作品详情中提取剧情大纲</div>
                 )}
-              </div>
-            ))}
-
-            {/* 灵感库 */}
-            <div>
-              <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--accent)" }}>关联灵感</div>
-              {inspirations.length > 0 ? (
-                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                  {inspirations.map(it => (
-                    <button key={it.id} onClick={() => toggleInspiration(it)}
-                      title={it.content || it.title}
-                      style={chipStyle(refInsps.some(i => i.id === it.id), "var(--accent)", "var(--accent-subtle)")}>
-                      {it.title || it.content.slice(0, 12) || "未命名灵感"}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-xs text-muted">灵感库为空，请在「灵感搜索 → 灵感库」中添加</div>
-              )}
-            </div>
+              </>
+            ) : (
+              <div className="text-xs text-muted">暂无角色，请在「角色管理」中创建</div>
+            )}
           </div>
         )}
       </div>
 
-      {/* Selected items display + hidden identity aliases */}
-      {(selectedChars.length > 0 || selectedRefs.length > 0 || refEvents.length > 0 || refInsps.length > 0) && (
-        <div style={{ marginTop: 8 }}>
-          {selectedChars.map(c => {
-            const aliases = chapter?.character_aliases || {};
-            const alias = aliases[c.name] || "";
-            return (
-              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--purple-subtle)", color: "var(--purple)", whiteSpace: "nowrap" }}>
-                  {c.name}
-                </span>
-                <input
-                  className="input"
-                  value={alias}
-                  onChange={e => {
-                    const newAliases = { ...(chapter?.character_aliases || {}) };
-                    if (e.target.value.trim()) {
-                      newAliases[c.name] = e.target.value;
-                    } else {
-                      delete newAliases[c.name];
-                    }
-                    onUpdateChapter?.("character_aliases", newAliases);
-                  }}
-                  placeholder="隐藏身份（如：神秘女人）"
-                  style={{ flex: 1, fontSize: 10, padding: "2px 8px", height: 22 }}
-                />
-              </div>
-            );
-          })}
-          {selectedRefs.length > 0 && (
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
-              {selectedRefs.map(r => (
-                <span key={r.id} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--jade-subtle)", color: "var(--jade)" }}>
-                  {r.title}
-                </span>
-              ))}
-            </div>
-          )}
-          {refEvents.length > 0 && (
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
-              {refEvents.map((e, i) => (
-                <span key={i} title={`《${e.work_title}》${e.description || ""}`}
-                  style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--gold-subtle)", color: "var(--gold)" }}>
-                  {e.name}
-                </span>
-              ))}
-            </div>
-          )}
-          {refInsps.length > 0 && (
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
-              {refInsps.map(it => (
-                <span key={it.id} title={it.content}
-                  style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--accent-subtle)", color: "var(--accent)" }}>
-                  {it.title || it.content.slice(0, 12) || "灵感"}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      {/* 关联参考作品 & 灵感 — its own section, searchable */}
+      <div style={{ marginTop: 8 }}>
+        <button className="btn" style={{ fontSize: 11, padding: "4px 12px", width: "100%" }} onClick={() => setShowRefLink(v => !v)}>
+          {showRefLink ? "收起" : "关联参考作品 & 灵感"}
+          {(selectedRefs.length + refEvents.length + refInsps.length) > 0
+            ? ` (作品 ${selectedRefs.length} · 事件 ${refEvents.length} · 灵感 ${refInsps.length})` : ""}
+        </button>
+        {showRefLink && (
+          <div style={{ marginTop: 8, padding: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
+            {/* 参考作品 — searchable scrollable list */}
+            <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--jade)" }}>参考作品</div>
+            {references.length > 0 ? (
+              <>
+                <input className="input" value={refSearch} onChange={e => setRefSearch(e.target.value)}
+                  placeholder="搜索参考作品标题..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
+                <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+                  {filteredRefs.map(r => (
+                    <PickRow key={r.id} label={r.title}
+                      sub={r.events.length > 0 ? `${r.events.length} 事件` : "无事件"}
+                      on={r.selected} color="var(--jade)" onClick={() => toggleRef(r.id)} />
+                  ))}
+                  {filteredRefs.length === 0 && (
+                    <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配作品</div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="text-xs text-muted">暂无参考作品，请在「参考作品详情」中导入</div>
+            )}
+
+            {/* 编年史事件 — per selected work, searchable scrollable list */}
+            {selectedRefs.map(r => {
+              const eq = eventSearch.trim().toLowerCase();
+              const evs = r.events.filter(ev => !eq
+                || ev.name.toLowerCase().includes(eq)
+                || ev.description.toLowerCase().includes(eq));
+              const linkedN = refEvents.filter(e => e.ref_id === r.id).length;
+              return (
+                <div key={r.id} style={{ marginTop: 10 }}>
+                  <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--gold)" }}>
+                    「{r.title}」编年史事件{linkedN > 0 ? ` · 已选 ${linkedN}` : ""}
+                  </div>
+                  {r.events.length > 0 ? (
+                    <>
+                      <input className="input" value={eventSearch} onChange={e => setEventSearch(e.target.value)}
+                        placeholder="搜索事件名 / 描述..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
+                      <div style={{ maxHeight: 160, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+                        {evs.map((ev, i) => (
+                          <PickRow key={i} label={ev.name}
+                            sub={ev.description ? ev.description.slice(0, 16) : undefined}
+                            on={isEventLinked(r.id, ev.name)} color="var(--gold)"
+                            onClick={() => toggleEvent(r.id, r.title, ev)} />
+                        ))}
+                        {evs.length === 0 && (
+                          <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配事件</div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-xs text-muted">该作品暂无编年史事件，请先在参考作品详情中提取剧情大纲</div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* 灵感库 — searchable scrollable list */}
+            <div className="label" style={{ fontSize: 10, margin: "12px 0 4px", color: "var(--accent)" }}>关联灵感</div>
+            {inspirations.length > 0 ? (
+              <>
+                <input className="input" value={inspSearch} onChange={e => setInspSearch(e.target.value)}
+                  placeholder="搜索灵感..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
+                <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+                  {filteredInsps.map(it => (
+                    <PickRow key={it.id}
+                      label={it.title || it.content.slice(0, 16) || "未命名灵感"}
+                      sub={it.title ? it.content.slice(0, 14) : undefined}
+                      on={refInsps.some(i => i.id === it.id)} color="var(--accent)"
+                      onClick={() => toggleInspiration(it)} />
+                  ))}
+                  {filteredInsps.length === 0 && (
+                    <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配灵感</div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="text-xs text-muted">灵感库为空，请在「灵感搜索 → 灵感库」中添加</div>
+            )}
+          </div>
+        )}
+      </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <div className="field" style={{ flex: 1 }}>
