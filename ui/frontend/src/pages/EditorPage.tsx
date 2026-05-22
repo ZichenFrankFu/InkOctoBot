@@ -570,7 +570,12 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const sessionIdRef = useRef<string | null>(null);
   const genModeRef = useRef<"single" | "cluster">("single");
   const [manualPrompt, setManualPrompt] = useState<{ step: string; prompt: string } | null>(null);
-  const [availableSkills, setAvailableSkills] = useState<{ name: string; display_name: string }[]>([]);
+  const [manifest, setManifest] = useState<{
+    rag: { key: string; label: string; present: boolean }[];
+    default_skills: { name: string; domain: string }[];
+    learned_skills: { name: string; description?: string }[];
+    writing_knowledge: { id: string; title: string }[];
+  } | null>(null);
   const [skillSelection, setSkillSelection] = useState<Record<string, boolean>>({});
   const modelSnapshotRef = useRef<{ provider: string; model: string } | null>(null);
   const [modelChanged, setModelChanged] = useState(false);
@@ -896,22 +901,28 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
    *  (/quick-generate) assembles the RAG context — character cards /
    *  worldbook / platform / references / writing-knowledge — from these
    *  fields, so the editor only sends chapter-local inputs. */
-  // Active learned skills — the user picks which to inject per generation.
+  // Creation context manifest — RAG / default skills / learned skills /
+  // writing knowledge for the creation tab's transparency panel.
   useEffect(() => {
-    apiGet<{ skills: any[] }>("/api/skills")
-      .then(r => {
-        const learned = (r.skills || []).filter((s: any) => s.is_learned && s.active);
-        setAvailableSkills(learned.map((s: any) => ({
-          name: s.name, display_name: s.display_name || s.name,
-        })));
-        setSkillSelection(Object.fromEntries(learned.map((s: any) => [s.name, true])));
+    if (!activeChId) { setManifest(null); return; }
+    apiGet<any>(`/api/generation/context-manifest?project_id=${encodeURIComponent(projectId || "default")}&chapter_id=${encodeURIComponent(activeChId)}&chapter_num=${chapterNum}`)
+      .then(m => {
+        setManifest(m);
+        setSkillSelection(prev => {
+          const next = { ...prev };
+          for (const s of (m.learned_skills || [])) {
+            if (!(s.name in next)) next[s.name] = true;
+          }
+          return next;
+        });
       })
-      .catch(() => {});
-  }, []);
+      .catch(() => setManifest(null));
+  }, [projectId, activeChId, chapterNum]);
 
   const selectedSkillNames = useMemo(
-    () => availableSkills.filter(s => skillSelection[s.name] !== false).map(s => s.name),
-    [availableSkills, skillSelection],
+    () => (manifest?.learned_skills || [])
+      .filter(s => skillSelection[s.name] !== false).map(s => s.name),
+    [manifest, skillSelection],
   );
 
   const toggleSkill = useCallback((name: string) => {
@@ -1418,7 +1429,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               onFetchPrompt={fetchGenPrompt}
               onApplyPaste={applyPlainPaste}
               manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
-              availableSkills={availableSkills} skillSelection={skillSelection} onToggleSkill={toggleSkill}
+              manifest={manifest} skillSelection={skillSelection} onToggleSkill={toggleSkill}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId} />}
@@ -2018,14 +2029,20 @@ function formatSkillsUsed(skills?: string[]): string {
     : "本次创作未启用自定义技能";
 }
 
-function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, availableSkills, skillSelection, onToggleSkill, onDeleteMessage }: {
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, onDeleteMessage }: {
   mode: "single" | "cluster";
   steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
   onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
   manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
-  availableSkills?: { name: string; display_name: string }[]; skillSelection?: Record<string, boolean>; onToggleSkill?: (name: string) => void;
+  manifest?: {
+    rag: { key: string; label: string; present: boolean }[];
+    default_skills: { name: string; domain: string }[];
+    learned_skills: { name: string; description?: string }[];
+    writing_knowledge: { id: string; title: string }[];
+  } | null;
+  skillSelection?: Record<string, boolean>; onToggleSkill?: (name: string) => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -2335,17 +2352,46 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
       {/* Generation controls */}
       {!generating && !waitingForConfirm && (
         <div style={{ marginBottom: 6 }}>
-          {onToggleSkill && (
+          {manifest && (
             <div style={{
-              marginBottom: 6, padding: "6px 8px", background: "var(--bg-surface)",
+              marginBottom: 6, padding: "8px 10px", background: "var(--bg-surface)",
               borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
             }}>
               <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
-                创作技能（勾选本次生成启用的技能，将随 RAG 一并注入 prompt）
+                引用的 RAG 上下文
               </div>
-              {availableSkills && availableSkills.length > 0 ? (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {availableSkills.map(s => (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {manifest.rag.map(r => (
+                  <span key={r.key} style={{
+                    fontSize: 10, padding: "2px 8px", borderRadius: 10,
+                    background: r.present ? "var(--accent-subtle)" : "transparent",
+                    color: r.present ? "var(--accent)" : "var(--text-disabled)",
+                    border: `1px solid ${r.present ? "var(--accent)" : "var(--border)"}`,
+                  }}>
+                    {r.present ? "✓ " : "○ "}{r.label}
+                  </span>
+                ))}
+              </div>
+              <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
+                默认技能（系统内置，自动调用）
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {manifest.default_skills.length > 0
+                  ? manifest.default_skills.map(s => (
+                      <span key={s.name} style={{
+                        fontSize: 10, padding: "2px 8px", borderRadius: 10,
+                        background: "var(--bg-app)", color: "var(--text-secondary)",
+                        border: "1px solid var(--border)",
+                      }}>{s.name}</span>
+                    ))
+                  : <span className="text-xs text-muted">无</span>}
+              </div>
+              <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
+                自学习技能（勾选启用，注入 prompt）
+              </div>
+              {manifest.learned_skills.length > 0 ? (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                  {manifest.learned_skills.map(s => (
                     <label key={s.name} style={{
                       display: "flex", alignItems: "center", gap: 4, fontSize: 11,
                       cursor: "pointer", color: "var(--text-secondary)",
@@ -2353,16 +2399,32 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                       <input
                         type="checkbox"
                         checked={(skillSelection || {})[s.name] !== false}
-                        onChange={() => onToggleSkill(s.name)}
+                        onChange={() => onToggleSkill?.(s.name)}
                         style={{ margin: 0 }}
                       />
-                      {s.display_name}
+                      {s.name}
                     </label>
                   ))}
                 </div>
               ) : (
-                <div className="text-xs text-muted">暂无自定义技能，可在「智能体」页学习后在此勾选启用。</div>
+                <div className="text-xs text-muted" style={{ marginBottom: 8 }}>
+                  暂无自学习技能，可在「智能体」页学习后在此勾选启用。
+                </div>
               )}
+              <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
+                写作知识（在项目设置中引用）
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {manifest.writing_knowledge.length > 0
+                  ? manifest.writing_knowledge.map(k => (
+                      <span key={k.id} style={{
+                        fontSize: 10, padding: "2px 8px", borderRadius: 10,
+                        background: "var(--bg-app)", color: "var(--text-secondary)",
+                        border: "1px solid var(--border)",
+                      }}>{k.title}</span>
+                    ))
+                  : <span className="text-xs text-muted">无</span>}
+              </div>
             </div>
           )}
           {mode === "single" ? (

@@ -34,6 +34,7 @@ _BUDGET = {
     "writing_knowledge": 1600,
     "writing_skills": 2400,
     "project_memory": 1600,
+    "adjacent_context": 1200,
     "foreshadowing": 800,
     "user_preferences": 800,
 }
@@ -425,6 +426,7 @@ def build_generation_context(
     characters: list[str] | None = None,
     db_path: str | None = None,
     skills: list[str] | None = None,
+    chapter_id: str = "",
 ) -> dict:
     """Assemble the RAG context for a chapter-generation call.
 
@@ -451,6 +453,7 @@ def build_generation_context(
         "reference_summary": _load_reference_blocks(project_id, db_path or ""),
         "writing_knowledge": _load_writing_knowledge(project_id),
         "writing_skills": _load_writing_skills(skills),
+        "adjacent_context": _load_adjacent_context(project_id, chapter_id),
         "foreshadowing": _load_foreshadowing(project_id, db_path or "", chapter_num),
         "user_preferences": _load_user_preferences(project_id, db_path or ""),
     }
@@ -629,12 +632,64 @@ def load_project_memory_block(project_id: str) -> str:
     return _load_project_memory(project_id)
 
 
+def _load_adjacent_context(project_id: str, chapter_id: str) -> str:
+    """Inject the previous chapter's ending excerpt and the next chapter's
+    outline so the new chapter flows naturally from what came before and
+    sets up what follows."""
+    if not chapter_id:
+        return ""
+    try:
+        from ui.backend.app.routers.data_api import _col, _safe_id
+
+        p = _col("editor") / f"{_safe_id(project_id)}.json"
+        if not p.exists():
+            return ""
+        data = json.loads(p.read_text("utf-8"))
+        chapters: list[dict] = []
+        for vol in data.get("volumes", []):
+            for ch in vol.get("chapters", []):
+                chapters.append(ch)
+        idx = next(
+            (i for i, ch in enumerate(chapters) if ch.get("id") == chapter_id), -1,
+        )
+        if idx < 0:
+            return ""
+        parts: list[str] = []
+        if idx > 0:
+            prev = chapters[idx - 1]
+            prev_text = (prev.get("content") or "").strip()
+            if prev_text:
+                tail = prev_text[-800:]
+                if len(prev_text) > 800:
+                    tail = "……" + tail
+                parts.append(
+                    f"【前一章结尾】（{prev.get('title') or '上一章'}）\n{tail}"
+                )
+        if idx + 1 < len(chapters):
+            nxt = chapters[idx + 1]
+            nxt_outline = (nxt.get("synopsis") or "").strip()
+            if nxt_outline:
+                parts.append(
+                    f"【后一章大纲】（{nxt.get('title') or '下一章'}）\n{nxt_outline}"
+                )
+        if not parts:
+            return ""
+        body = _clip("\n\n".join(parts), _BUDGET["adjacent_context"])
+        return _section(
+            "上下文衔接（须与前一章结尾自然承接，并为后一章大纲预留铺垫）", body,
+        )
+    except Exception as e:
+        logger.debug("adjacent context skipped: %s", e)
+        return ""
+
+
 def load_chapter_fields(project_id: str, chapter_id: str) -> dict:
     """Read a chapter's local fields (outline / time / location / characters /
     existing text) from the editor data file."""
     fields: dict[str, Any] = {
         "synopsis": "", "time_setting": "", "location": "",
         "characters": [], "existing_content": "",
+        "referenced_events": [], "referenced_inspirations": [],
     }
     if not chapter_id:
         return fields
@@ -653,10 +708,103 @@ def load_chapter_fields(project_id: str, chapter_id: str) -> dict:
                     fields["location"] = ch.get("location", "") or ""
                     fields["characters"] = ch.get("characters", []) or []
                     fields["existing_content"] = ch.get("content", "") or ""
+                    fields["referenced_events"] = ch.get("referenced_events", []) or []
+                    fields["referenced_inspirations"] = ch.get("referenced_inspirations", []) or []
                     return fields
     except Exception as e:
         logger.debug("load chapter fields skipped: %s", e)
     return fields
+
+
+def _creation_default_skills() -> list[dict]:
+    """Built-in skills involved in chapter creation (production / evaluation /
+    planner domains) — shown read-only in the creation context panel."""
+    try:
+        from ui.backend.app.routers.skill_api import (
+            _get_registry, _get_deactivated, _skill_public_dict,
+        )
+        reg = _get_registry()
+        deact = _get_deactivated()
+        out: list[dict] = []
+        for sk in reg._skills.values():
+            try:
+                info = _skill_public_dict(sk, deact)
+            except Exception:
+                continue
+            if info.get("is_learned"):
+                continue
+            dom = info.get("agent_domain") or ""
+            if dom not in ("production", "evaluation", "planner"):
+                continue
+            name = str(info.get("display_name") or info.get("name") or "").strip()
+            if name:
+                out.append({"name": name, "domain": dom,
+                            "active": bool(info.get("active", True))})
+        return out
+    except Exception as e:
+        logger.debug("creation default skills skipped: %s", e)
+        return []
+
+
+def _project_writing_knowledge(project_id: str) -> list[dict]:
+    """Writing-knowledge entries injected for the project."""
+    try:
+        from ui.backend.app.routers.data_api import _col, _safe_id, _list
+
+        p = _col("knowledge_injection") / f"{_safe_id(project_id)}.json"
+        if not p.exists():
+            return []
+        ids = set(json.loads(p.read_text("utf-8")).get("knowledge_ids") or [])
+        if not ids:
+            return []
+        return [
+            {"id": k.get("id"), "title": (k.get("title") or "").strip()}
+            for k in _list("writing_knowledge")
+            if k.get("id") in ids
+        ]
+    except Exception as e:
+        logger.debug("project writing knowledge skipped: %s", e)
+        return []
+
+
+def creation_context_manifest(
+    project_id: str, chapter_id: str = "", chapter_num: int = 1,
+) -> dict:
+    """Summarize the skills / knowledge / RAG a chapter generation will use —
+    powers the creation tab's transparency panel."""
+    fields = load_chapter_fields(project_id, chapter_id)
+    characters = fields.get("characters") or []
+    ctx = build_generation_context(
+        project_id, chapter_num, characters, chapter_id=chapter_id)
+    blocks = ctx["blocks"]
+
+    def _has(k: str) -> bool:
+        return bool((blocks.get(k) or "").strip())
+
+    rag = [
+        {"key": "character_cards", "label": "人物卡", "present": _has("character_cards")},
+        {"key": "worldbook", "label": "世界书", "present": _has("worldbook")},
+        {"key": "chapter_outline", "label": "本章大纲",
+         "present": bool((fields.get("synopsis") or "").strip())},
+        {"key": "adjacent_context", "label": "前章结尾 / 后章大纲",
+         "present": _has("adjacent_context")},
+        {"key": "reference_summary", "label": "关联参考作品",
+         "present": _has("reference_summary")},
+        {"key": "referenced_materials", "label": "关联灵感 / 事件",
+         "present": bool(fields.get("referenced_events")
+                         or fields.get("referenced_inspirations"))},
+        {"key": "project_memory", "label": "项目记忆", "present": _has("project_memory")},
+        {"key": "foreshadowing", "label": "伏笔回收", "present": _has("foreshadowing")},
+    ]
+    return {
+        "rag": rag,
+        "default_skills": _creation_default_skills(),
+        "learned_skills": [
+            {"name": s["name"], "description": s["description"]}
+            for s in _active_learned_skills()
+        ],
+        "writing_knowledge": _project_writing_knowledge(project_id),
+    }
 
 
 def single_agent_vars(
@@ -672,6 +820,7 @@ def single_agent_vars(
     referenced_events: list[dict] | None = None,
     referenced_inspirations: list[dict] | None = None,
     db_path: str | None = None,
+    chapter_id: str = "",
 ) -> dict:
     """Assemble the full variable dict for the ``generation.single_agent``
     template — RAG blocks plus chapter-local blocks. Shared by
@@ -679,7 +828,8 @@ def single_agent_vars(
     copied and generated prompt are identical."""
     characters = characters or []
     ctx = build_generation_context(
-        project_id, chapter_num, characters, db_path=db_path, skills=skills)
+        project_id, chapter_num, characters, db_path=db_path, skills=skills,
+        chapter_id=chapter_id)
     blocks: dict[str, str] = dict(ctx["blocks"])
 
     synopsis = (synopsis or "").strip()

@@ -632,10 +632,12 @@ async def start_generation(req: GenerateRequest):
     try:
         from ._rag_context import build_generation_context
         ctx = build_generation_context(
-            req.project_id, req.chapter_num, req.characters, skills=req.skills)
+            req.project_id, req.chapter_num, req.characters, skills=req.skills,
+            chapter_id=req.chapter_id)
         rag_text = "\n".join(
             b for b in (
                 ctx["blocks"].get("project_memory", ""),
+                ctx["blocks"].get("adjacent_context", ""),
                 ctx["blocks"].get("character_cards", ""),
                 ctx["blocks"].get("worldbook", ""),
                 ctx["blocks"].get("reference_summary", ""),
@@ -792,6 +794,18 @@ async def rewrite_text(req: RewriteRequest):
         raise HTTPException(500, detail=str(e))
 
 
+@router.get("/context-manifest")
+def context_manifest(project_id: str = "default", chapter_id: str = "", chapter_num: int = 1):
+    """Skills / knowledge / RAG a chapter generation will use — drives the
+    creation tab's transparency panel."""
+    try:
+        from ._rag_context import creation_context_manifest
+        return creation_context_manifest(project_id, chapter_id, chapter_num)
+    except Exception as e:
+        logger.error("context manifest error: %s", e, exc_info=True)
+        return {"rag": [], "default_skills": [], "learned_skills": [], "writing_knowledge": []}
+
+
 @router.post("/evaluate")
 async def evaluate_text(req: EvalRequest):
     try:
@@ -856,6 +870,7 @@ async def quick_generate(req: GenerateRequest):
                 req.character_aliases, req.skills,
                 referenced_events=req.referenced_events,
                 referenced_inspirations=req.referenced_inspirations,
+                chapter_id=req.chapter_id,
             )
             try:
                 user_content = _render_prompt(
