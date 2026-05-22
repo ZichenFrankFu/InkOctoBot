@@ -79,23 +79,44 @@ def _coerce_json(value: Any) -> Any:
 
 
 def _load_platform_directive(project_id: str, exclude: set | None = None) -> str:
-    """Resolve the project's publishing platform to a creative directive."""
+    """Ground the project's publishing platform in real market-database
+    data (genres / tags / ranked works for that platform), plus the static
+    style profile as a supplement."""
     if exclude and "platform" in exclude:
         return ""
     try:
         from ui.backend.app.routers.data_api import _col, _safe_id
-        from analysis.feature_extraction.platform_profiles import get_platform_directive
 
         p = _col("projects") / f"{_safe_id(project_id)}.json"
         if not p.exists():
             return ""
         proj = json.loads(p.read_text("utf-8"))
-        directive = get_platform_directive(proj.get("platform", ""))
-        if not directive:
+        platform = str(proj.get("platform") or "").strip()
+        if not platform:
             return ""
+        parts = [f"目标发布平台：{platform}"]
+        try:
+            from ui.backend.app.routers.db_api import market_brief
+
+            brief = str((market_brief(platform) or {}).get("brief") or "").strip()
+            if brief:
+                parts.append(f"【该平台市场数据（来自市场数据库）】\n{brief}")
+        except Exception as me:
+            logger.debug("platform market brief skipped: %s", me)
+        try:
+            from analysis.feature_extraction.platform_profiles import get_platform_directive
+
+            directive = str(get_platform_directive(platform) or "").strip()
+            if directive:
+                parts.append(f"【平台风格参考】\n{directive}")
+        except Exception:
+            pass
+        if len(parts) == 1:
+            return ""
+        body = _clip("\n\n".join(parts), 1800)
         return _section(
-            "目标平台特性",
-            f"{directive}\n（以上为平台风格参考；若与本章具体指令冲突，以章节指令为准。）",
+            "目标平台特性（基于市场数据库真实数据）",
+            f"{body}\n（以上为平台市场与风格参考；若与本章具体指令冲突，以章节指令为准。）",
         )
     except Exception as e:
         logger.debug("platform directive skipped: %s", e)
@@ -473,7 +494,6 @@ def build_generation_context(
     blocks: dict[str, str] = {
         "platform_directive": _load_platform_directive(project_id, excl.get("platform")),
         "style_calibration": _load_style_calibration(project_id),
-        "project_memory": _load_project_memory(project_id, excl.get("project_memory")),
         "character_cards": _load_character_cards(project_id, characters, excl.get("character_cards")),
         "worldbook": _load_worldbook(project_id, excl.get("worldbook")),
         "reference_summary": _load_reference_blocks(project_id, db_path or "", excl.get("reference_summary")),
@@ -580,14 +600,14 @@ def active_writing_skill_names(only: list[str] | None = None) -> list[str]:
     return names
 
 
-def _load_writing_skills(only: list[str] | None = None) -> str:
-    """Inject the active learned skills (Claude-style SKILL.md) so the
-    generating model can apply the relevant writing techniques.
+def _load_writing_skills(only: list[str] | None = None, web_mode: bool = False) -> str:
+    """Inject the active learned skills (Claude-style SKILL.md).
 
-    Always emits a block carrying an explicit Skill-Access check: when
-    skills are present they are the authority for writing; when absent the
-    prompt says so. ``only`` is the user's explicit selection (``None`` =
-    inject every active skill)."""
+    ``web_mode`` builds the block for a copy-to-web-LLM prompt: it lists
+    the skills by name and asks the LLM to confirm it has each skill's
+    SKILL.md (the user downloads + uploads them); the default mode inlines
+    the full SKILL.md body for a direct API call. ``only`` is the user's
+    explicit selection (``None`` = inject every active skill)."""
     skills = _active_learned_skills()
     if only is not None:
         wanted = set(only)
@@ -597,6 +617,18 @@ def _load_writing_skills(only: list[str] | None = None) -> str:
             "可用创作技能（Skill Access：无）",
             "本次创作未加载任何自定义创作技能，按下方通用写作要求创作即可。",
         )
+    if web_mode:
+        names = "、".join(s["name"] for s in skills)
+        body = (
+            f"本次创作需运用以下创作技能：{names}。\n"
+            "【Skill Access 检查】这些技能的 SKILL.md 文件应已由用户下载并上传给你。"
+            "开始创作前，请逐一确认你是否能访问每个技能：\n"
+            "- 可访问：严格按该技能 SKILL.md 的指引创作；\n"
+            "- 不可访问（用户未上传）：请在正文最前面用「【缺失技能：技能名】」明确标注，"
+            "再尽量依据技能名称与已有信息创作。\n"
+            "技能指令为写作的最高准则，与通用写作要求冲突时一律以技能为准。"
+        )
+        return _section("可用创作技能（Skill Access：需确认）", body)
     parts: list[str] = []
     for s in skills:
         seg = f"### {s['name']}"
@@ -632,7 +664,6 @@ def build_rag_digest(
         return "\n".join(
             b for b in (
                 ctx["blocks"].get("platform_directive", ""),
-                ctx["blocks"].get("project_memory", ""),
                 ctx["blocks"].get("character_cards", ""),
                 ctx["blocks"].get("worldbook", ""),
                 ctx["blocks"].get("adjacent_context", ""),
@@ -882,18 +913,6 @@ def creation_context_manifest(
     except Exception:
         pass
 
-    mem_items: list[dict] = []
-    try:
-        mp = _col("project_memory") / f"{_safe_id(project_id)}.json"
-        if mp.exists():
-            for m in json.loads(mp.read_text("utf-8")).get("memories", []):
-                cc = str(m.get("content") or "").strip()
-                if cc:
-                    mem_items.append({"id": str(m.get("id") or cc[:12]),
-                                      "label": cc[:24] + ("…" if len(cc) > 24 else "")})
-    except Exception:
-        pass
-
     rm_items: list[dict] = []
     for e in (fields.get("referenced_events") or []):
         nm = str(e.get("name") or e.get("description") or "").strip()
@@ -926,9 +945,7 @@ def creation_context_manifest(
          "present": _has("reference_summary")},
         {"key": "referenced_materials", "label": "关联灵感 / 事件", "items": rm_items,
          "present": bool(rm_items)},
-        {"key": "project_memory", "label": "项目记忆", "items": mem_items,
-         "present": _has("project_memory")},
-        {"key": "foreshadowing", "label": "伏笔回收",
+        {"key": "foreshadowing", "label": "伏笔",
          "items": [{"id": "__all__", "label": "未回收伏笔"}] if _has("foreshadowing") else [],
          "present": _has("foreshadowing")},
     ]
@@ -958,6 +975,7 @@ def single_agent_vars(
     db_path: str | None = None,
     chapter_id: str = "",
     rag_excludes: list[str] | None = None,
+    web_mode: bool = False,
 ) -> dict:
     """Assemble the full variable dict for the ``generation.single_agent``
     template — RAG blocks plus chapter-local blocks. Shared by
@@ -1005,7 +1023,10 @@ def single_agent_vars(
 
     # Active learned skills (from build_generation_context) take priority;
     # fall back to an explicit name list when no learned skills are active.
+    # web_mode rebuilds the block as a Skill-Access check for a copy-to-web prompt.
     blocks["skills_block"] = blocks.pop("writing_skills", "") or build_skills_block(skills)
+    if web_mode:
+        blocks["skills_block"] = _load_writing_skills(skills, web_mode=True)
     blocks["referenced_materials"] = build_referenced_materials_block(
         referenced_events, referenced_inspirations,
     )

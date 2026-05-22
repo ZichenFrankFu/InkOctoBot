@@ -573,6 +573,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [manifest, setManifest] = useState<ContextManifest | null>(null);
   const [skillSelection, setSkillSelection] = useState<Record<string, boolean>>({});
   const [ragExcludes, setRagExcludes] = useState<Set<string>>(new Set());
+  const [manifestNonce, setManifestNonce] = useState(0);
   const modelSnapshotRef = useRef<{ provider: string; model: string } | null>(null);
   const [modelChanged, setModelChanged] = useState(false);
 
@@ -914,7 +915,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         });
       })
       .catch(() => setManifest(null));
-  }, [projectId, activeChId, chapterNum, aiTab]);
+  }, [projectId, activeChId, chapterNum, aiTab, manifestNonce]);
+
+  const refreshManifest = useCallback(() => setManifestNonce(n => n + 1), []);
 
   const selectedSkillNames = useMemo(
     () => (manifest?.learned_skills || [])
@@ -1441,12 +1444,12 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               onApplyPaste={applyPlainPaste}
               manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
               manifest={manifest} skillSelection={skillSelection} onToggleSkill={toggleSkill}
-              ragExcludes={ragExcludes} onToggleRagItem={toggleRagItem}
+              ragExcludes={ragExcludes} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId}
               chapterId={activeChId} manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
-              onToggleSkill={toggleSkill} onToggleRagItem={toggleRagItem} />}
+              onToggleSkill={toggleSkill} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest} />}
           </div>
         </div>
         ) : (
@@ -2062,25 +2065,30 @@ function formatSkillsUsed(skills?: string[]): string {
 
 /** Transparency panel: skills used + per-item RAG context (de-selectable).
  *  Shared by the creation tabs and the 评估 tab. */
-function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem }: {
+function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefresh }: {
   manifest: ContextManifest | null;
   skillSelection: Record<string, boolean>;
   ragExcludes: Set<string>;
   onToggleSkill: (name: string) => void;
   onToggleRagItem: (key: string) => void;
+  onRefresh?: () => void;
 }) {
   const [skillOpen, setSkillOpen] = useState(false);
   const [ragOpen, setRagOpen] = useState(false);
   if (!manifest) return null;
 
-  const sectionHeader = (open: boolean, toggle: () => void, text: string) => (
-    <button onClick={toggle} style={{
-      width: "100%", textAlign: "left", background: "none", border: "none", padding: "2px 0",
-      cursor: "pointer", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)",
-      display: "flex", alignItems: "center", gap: 5,
-    }}>
-      <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>{open ? "▾" : "▸"}</span>{text}
-    </button>
+  const sectionHeader = (open: boolean, toggle: () => void, text: string,
+                         rightEl?: React.ReactNode) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <button onClick={toggle} style={{
+        flex: 1, textAlign: "left", background: "none", border: "none", padding: "2px 0",
+        cursor: "pointer", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)",
+        display: "flex", alignItems: "center", gap: 5,
+      }}>
+        <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>{open ? "▾" : "▸"}</span>{text}
+      </button>
+      {rightEl}
+    </div>
   );
 
   const chip = (key: string, label: string, on: boolean,
@@ -2129,31 +2137,36 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
       marginBottom: 6, padding: "8px 10px", background: "var(--bg-surface)",
       borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
     }}>
-      {sectionHeader(skillOpen, () => setSkillOpen(o => !o), `调用的 skill（${skillCount}）`)}
+      {sectionHeader(skillOpen, () => setSkillOpen(o => !o), `调用的 skill（${skillCount}）`,
+        manifest.learned_skills.length > 0 ? (
+          <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+            onClick={downloadSkills}
+            title="下载已勾选的自学习技能 SKILL.md（连同复制的 prompt 一起用于网页版大模型）">
+            下载 SKILL.md
+          </button>
+        ) : undefined)}
       {skillOpen && (
-        <div style={{ margin: "6px 0 8px" }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {manifest.default_skills.map(s => chip("d:" + s.name, s.name, true, undefined, s.step || "默认"))}
-            {manifest.learned_skills.map(s => chip(
-              "l:" + s.name, s.name, skillSelection[s.name] !== false,
-              () => onToggleSkill(s.name), "自学习"))}
-            {manifest.writing_knowledge.map(k => chip(
-              "k:" + k.id, k.title || "（无题）",
-              !ragExcludes.has(`writing_knowledge::${k.id}`),
-              () => onToggleRagItem(`writing_knowledge::${k.id}`), "写作知识"))}
-            {skillCount === 0 && <span className="text-xs text-muted">本次无可调用 skill</span>}
-          </div>
-          {manifest.learned_skills.some(s => skillSelection[s.name] !== false) && (
-            <button className="btn" style={{ fontSize: 10, padding: "2px 10px", marginTop: 6 }}
-              onClick={downloadSkills}
-              title="下载已选自学习技能的 SKILL.md，连同复制的 prompt 一起用于网页版大模型">
-              下载 SKILL.md（用于网页版大模型）
-            </button>
-          )}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0 8px" }}>
+          {manifest.default_skills.map(s => chip("d:" + s.name, s.name, true, undefined, s.step || "默认"))}
+          {manifest.learned_skills.map(s => chip(
+            "l:" + s.name, s.name, skillSelection[s.name] !== false,
+            () => onToggleSkill(s.name), "自学习"))}
+          {manifest.writing_knowledge.map(k => chip(
+            "k:" + k.id, k.title || "（无题）",
+            !ragExcludes.has(`writing_knowledge::${k.id}`),
+            () => onToggleRagItem(`writing_knowledge::${k.id}`), "写作知识"))}
+          {skillCount === 0 && <span className="text-xs text-muted">本次无可调用 skill</span>}
         </div>
       )}
       {sectionHeader(ragOpen, () => setRagOpen(o => !o),
-        `引用的 RAG 上下文（已启用 ${selCount}/${allKeys.length} 项）`)}
+        `引用的 RAG 上下文（已启用 ${selCount}/${allKeys.length} 项）`,
+        onRefresh ? (
+          <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+            onClick={onRefresh}
+            title="重新加载 RAG —— 在角色管理 / 世界书 / 大纲等处更新数据后点此同步">
+            ↻ 刷新
+          </button>
+        ) : undefined)}
       {ragOpen && (
         <div style={{ marginTop: 2 }}>
           {manifest.rag.map(cat => {
@@ -2180,7 +2193,7 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
   );
 }
 
-function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onDeleteMessage }: {
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
   mode: "single" | "cluster";
   steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
@@ -2189,7 +2202,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
   manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
   manifest?: ContextManifest | null;
   skillSelection?: Record<string, boolean>; onToggleSkill?: (name: string) => void;
-  ragExcludes?: Set<string>; onToggleRagItem?: (key: string) => void;
+  ragExcludes?: Set<string>; onToggleRagItem?: (key: string) => void; onRefreshManifest?: () => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -2505,6 +2518,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
             ragExcludes={ragExcludes || new Set()}
             onToggleSkill={(n) => onToggleSkill?.(n)}
             onToggleRagItem={(k) => onToggleRagItem?.(k)}
+            onRefresh={onRefreshManifest}
           />
           {mode === "single" ? (
             <>
@@ -2795,10 +2809,11 @@ function ScoreDots({ score, max }: { score: number; max: number }) {
 
 /** 评估 tab — evaluate the current chapter text on demand (no need to
  *  generate first), or show the result from a pipeline run. */
-function EvalTab({ result, chapterContent, projectId, chapterId, manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem }: {
+function EvalTab({ result, chapterContent, projectId, chapterId, manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefreshManifest }: {
   result: EvalResult | null; chapterContent: string; projectId: string; chapterId: string;
   manifest: ContextManifest | null; skillSelection: Record<string, boolean>; ragExcludes: Set<string>;
   onToggleSkill: (name: string) => void; onToggleRagItem: (key: string) => void;
+  onRefreshManifest?: () => void;
 }) {
   const { toast } = useToast();
   const [localResult, setLocalResult] = useState<EvalResult | null>(null);
@@ -2838,6 +2853,7 @@ function EvalTab({ result, chapterContent, projectId, chapterId, manifest, skill
       <ContextPanel
         manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
         onToggleSkill={onToggleSkill} onToggleRagItem={onToggleRagItem}
+        onRefresh={onRefreshManifest}
       />
       <div style={{ marginBottom: 12 }}>
         <button className="btn-primary" style={{ width: "100%" }} onClick={runEval} disabled={evaluating}>

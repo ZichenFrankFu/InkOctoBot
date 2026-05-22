@@ -596,7 +596,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 
     "generation.single_agent": {
         "template": """你是一名资深的中文网文写作者，擅长依据大纲与设定创作高质量的章节正文。请综合以下信息进行创作。
-{platform_directive}{style_calibration}{project_memory}{chapter_outline}{adjacent_context}{time_location}{characters_block}{character_cards}{worldbook}{reference_summary}{referenced_materials}{writing_knowledge}{foreshadowing}{user_preferences}{existing_content}{skills_block}
+{platform_directive}{style_calibration}{chapter_outline}{adjacent_context}{time_location}{characters_block}{character_cards}{worldbook}{reference_summary}{referenced_materials}{writing_knowledge}{foreshadowing}{user_preferences}{existing_content}{skills_block}
 
 ## 写作要求
 1. 文字生动，有画面感；对话自然，符合人物性格。
@@ -604,7 +604,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 3. 严格遵守上述世界观设定、人物档案、专业知识与平台特性，不得自相矛盾。
 4. 直接输出小说正文，不要输出标题、解释、大纲或任何格式标记。""",
         "vars": [
-            "platform_directive", "style_calibration", "project_memory",
+            "platform_directive", "style_calibration",
             "chapter_outline", "adjacent_context", "time_location",
             "characters_block", "character_cards", "worldbook",
             "reference_summary", "referenced_materials", "writing_knowledge",

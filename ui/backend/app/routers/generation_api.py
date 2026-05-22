@@ -635,19 +635,21 @@ async def start_generation(req: GenerateRequest):
     # writing-knowledge) into world_rules so the pipeline agents are
     # grounded in the same material as single-agent generation.
     try:
-        from ._rag_context import build_generation_context
+        from ._rag_context import build_generation_context, _load_writing_skills
         ctx = build_generation_context(
             req.project_id, req.chapter_num, req.characters, skills=req.skills,
             chapter_id=req.chapter_id, rag_excludes=req.rag_excludes)
+        # Manual cluster runs are a copy-to-web-LLM flow → Skill-Access check.
+        _skill_block = (_load_writing_skills(req.skills, web_mode=True)
+                        if req.manual else ctx["blocks"].get("writing_skills", ""))
         rag_text = "\n".join(
             b for b in (
-                ctx["blocks"].get("project_memory", ""),
                 ctx["blocks"].get("adjacent_context", ""),
                 ctx["blocks"].get("character_cards", ""),
                 ctx["blocks"].get("worldbook", ""),
                 ctx["blocks"].get("reference_summary", ""),
                 ctx["blocks"].get("writing_knowledge", ""),
-                ctx["blocks"].get("writing_skills", ""),
+                _skill_block,
             ) if (b or "").strip()
         ).strip()
         if rag_text:
@@ -883,6 +885,7 @@ async def quick_generate(req: GenerateRequest):
                 referenced_inspirations=req.referenced_inspirations,
                 chapter_id=req.chapter_id,
                 rag_excludes=req.rag_excludes,
+                web_mode=req.prompt_only,
             )
             try:
                 user_content = _render_prompt(
