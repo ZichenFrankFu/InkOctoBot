@@ -1571,6 +1571,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   const [inspirations, setInspirations] = useState<{ id: string; category: string; title: string; content: string }[]>([]);
   const [showCharLink, setShowCharLink] = useState(false);
   const [showRefLink, setShowRefLink] = useState(false);
+  const [showInspLink, setShowInspLink] = useState(false);
   const [refSearch, setRefSearch] = useState("");
   const [eventSearch, setEventSearch] = useState("");
   const [inspSearch, setInspSearch] = useState("");
@@ -1916,19 +1917,15 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         )}
       </div>
 
-      {/* 关联参考作品 & 灵感 — cohesive collapsible section */}
+      {/* 关联参考作品 — collapsible; count shown on the collapsed title */}
       <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
         <button className="btn-ghost" onClick={() => setShowRefLink(v => !v)}
           style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
             background: showRefLink ? "var(--bg-surface-2)" : "transparent" }}>
-          {showRefLink ? "▾ " : "▸ "}关联参考作品 & 灵感
+          {showRefLink ? "▾ " : "▸ "}关联参考作品{references.length > 0 ? ` · 已选 ${selectedRefs.length}/${references.length}` : ""}
         </button>
         {showRefLink && (
           <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
-            {/* 参考作品 — searchable scrollable list */}
-            <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--jade)" }}>
-              参考作品{references.length > 0 ? ` ·已选 ${selectedRefs.length}/${references.length}` : ""}
-            </div>
             {references.length > 0 ? (
               <>
                 <input className="input" value={refSearch} onChange={e => setRefSearch(e.target.value)}
@@ -1983,11 +1980,19 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
                 </div>
               );
             })}
+          </div>
+        )}
+      </div>
 
-            {/* 灵感库 — searchable scrollable list */}
-            <div className="label" style={{ fontSize: 10, margin: "12px 0 4px", color: "var(--accent)" }}>
-              关联灵感{inspirations.length > 0 ? ` ·已选 ${refInsps.length}/${inspirations.length}` : ""}
-            </div>
+      {/* 关联灵感 — collapsible; count shown on the collapsed title */}
+      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+        <button className="btn-ghost" onClick={() => setShowInspLink(v => !v)}
+          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
+            background: showInspLink ? "var(--bg-surface-2)" : "transparent" }}>
+          {showInspLink ? "▾ " : "▸ "}关联灵感{inspirations.length > 0 ? ` · 已选 ${refInsps.length}/${inspirations.length}` : ""}
+        </button>
+        {showInspLink && (
+          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
             {inspirations.length > 0 ? (
               <>
                 <input className="input" value={inspSearch} onChange={e => setInspSearch(e.target.value)}
