@@ -134,9 +134,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     try { const raw = sessionStorage.getItem(`inkocto_editor_chat_${projectId}`); return raw ? JSON.parse(raw) : null; } catch { return null; }
   })();
   const [chatLoaded, setChatLoaded] = useState(false);
-  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval">(
-    (_savedEditorState?.aiTab === "ab" || _savedEditorState?.aiTab === "prompt")
-      ? "outline" : (_savedEditorState?.aiTab || "outline"));
+  const [aiTab, setAiTab] = useState<"outline" | "single" | "cluster" | "rewrite" | "eval">(
+    () => normalizeAiTab(_savedEditorState?.aiTab));
   const [selection, setSelection] = useState<{ start: number; end: number; text: string } | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [rewriteModel, setRewriteModel] = useState("default");
@@ -186,7 +185,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         const saved = JSON.parse(raw);
         if (saved?.chatMessages?.length > 0) {
           setChatMessages(saved.chatMessages);
-          if (saved.aiTab && saved.aiTab !== "prompt") setAiTab(saved.aiTab);
+          if (saved.aiTab) setAiTab(normalizeAiTab(saved.aiTab));
           setChatLoaded(true);
           return;
         }
@@ -202,10 +201,10 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       .catch(() => setChatLoaded(true));
   }, [projectId, activeChId]);
 
-  // Auto-switch to inspire tab when pipeline is running (including on mount/return)
+  // Auto-switch to the active generation tab when a run is in progress.
   useEffect(() => {
-    if (generating && aiTab !== "inspire") {
-      setAiTab("inspire");
+    if (generating && aiTab !== "single" && aiTab !== "cluster") {
+      setAiTab(genModeRef.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [generating]);
@@ -569,7 +568,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const eventCursorRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
-  const [manualMode, setManualMode] = useState(false);
+  const genModeRef = useRef<"single" | "cluster">("single");
   const [manualPrompt, setManualPrompt] = useState<{ step: string; prompt: string } | null>(null);
   const [availableSkills, setAvailableSkills] = useState<{ name: string; display_name: string }[]>([]);
   const [skillSelection, setSkillSelection] = useState<Record<string, boolean>>({});
@@ -983,6 +982,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   const runPlainAgent = useCallback(async () => {
     if (!activeCh) return;
+    genModeRef.current = "single";
+    setAiTab("single");
     setGenerating(true);
     setPipelineSteps([{ step: "Plain Agent", status: "running", detail: "单Agent直接生成中..." }]);
     setChatMessages([{
@@ -1028,8 +1029,10 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setGenerating(false);
   }, []);
 
-  const startGeneration = useCallback(async () => {
+  const startGeneration = useCallback(async (manual = false) => {
     if (!activeCh) return;
+    genModeRef.current = "cluster";
+    setAiTab("cluster");
     setGenerating(true);
     setModelChanged(false);
     setPipelineSteps(PIPELINE_STEPS.map(s => ({ ...s, status: "pending" })));
@@ -1068,7 +1071,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         location: activeCh.location || "",
         existing_content: content || "",
         character_aliases: activeCh.character_aliases || {},
-        manual: manualMode,
+        manual,
         skills: selectedSkillNames,
       });
       sessionIdRef.current = resp.session_id;
@@ -1078,7 +1081,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     } catch {
       runQuickGenerate();
     }
-  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY, manualMode, selectedSkillNames]);
+  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY, selectedSkillNames]);
 
   const submitManualResult = useCallback(async (text: string) => {
     const sid = sessionIdRef.current;
@@ -1399,22 +1402,21 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 面板">&#9654;</button>
           </div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
-            {([["outline", "大纲"], ["inspire", "正文创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
+            {([["outline", "大纲"], ["single", "单智能体创作"], ["cluster", "集群式智能体创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
             ))}
           </div>
           <div className="panel-body" style={{ padding: "14px 16px" }}>
             {aiTab === "outline" && <OutlineTab synopsis={activeCh?.synopsis || ""} onChange={updateSynopsis} onSave={handleSaveOutline}
-              onStartGeneration={() => { setAiTab("inspire"); setTimeout(() => { if (!generating) runPlainAgent(); }, 300); }} projectId={projectId}
+              onStartGeneration={() => { setAiTab("single"); setTimeout(() => { if (!generating) runPlainAgent(); }, 300); }} projectId={projectId}
               chapter={activeCh} onUpdateChapter={(field, value) => {
                 setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
               }} />}
-            {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
+            {(aiTab === "single" || aiTab === "cluster") && <InspireTab mode={aiTab} steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
               onFetchPrompt={fetchGenPrompt}
               onApplyPaste={applyPlainPaste}
-              manualMode={manualMode} onManualModeChange={setManualMode}
               manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
               availableSkills={availableSkills} skillSelection={skillSelection} onToggleSkill={toggleSkill}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
@@ -2002,6 +2004,13 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
+/** Normalize a persisted aiTab value (migrates the old "inspire" tab). */
+function normalizeAiTab(v: any): "outline" | "single" | "cluster" | "rewrite" | "eval" {
+  if (v === "inspire" || v === "single") return "single";
+  if (v === "cluster" || v === "rewrite" || v === "eval") return v;
+  return "outline";
+}
+
 /** One-line summary of which learned skills an AI step used. */
 function formatSkillsUsed(skills?: string[]): string {
   return skills && skills.length
@@ -2009,17 +2018,18 @@ function formatSkillsUsed(skills?: string[]): string {
     : "本次创作未启用自定义技能";
 }
 
-function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualMode, onManualModeChange, manualPrompt, onSubmitManual, availableSkills, skillSelection, onToggleSkill, onDeleteMessage }: {
-  steps: PipelineStatus[]; generating: boolean; onStart: () => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, availableSkills, skillSelection, onToggleSkill, onDeleteMessage }: {
+  mode: "single" | "cluster";
+  steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
   onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
-  manualMode?: boolean; onManualModeChange?: (v: boolean) => void; manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
+  manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
   availableSkills?: { name: string; display_name: string }[]; skillSelection?: Record<string, boolean>; onToggleSkill?: (name: string) => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const [pipelineMode, setPipelineMode] = useState(false);
+  const pipelineMode = mode === "cluster";
   const [expandedPromptIdx, setExpandedPromptIdx] = useState<number | null>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
 
@@ -2061,7 +2071,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
         </div>
       )}
       {pipelineMode && <>
-      <div className="label mb-8">Creative Writing Pipeline · 群聊生成</div>
+      <div className="label mb-8">集群式智能体创作 · 多 Agent 群聊（导演 → 角色 → 编辑 → 评估）</div>
       {/* Progress bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 10, padding: "6px 0" }}>
         {steps.map((s, i) => (
@@ -2104,7 +2114,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
       <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
           <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
-            正文创作
+            {mode === "cluster" ? "集群式智能体创作" : "单智能体创作"}
           </div>
         )}
         {chatMessages.map((msg, i) => {
@@ -2322,59 +2332,66 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
           placeholder={waitingForConfirm ? "输入修改意见，或点击确认继续..." : "输入消息与 Agent 对话..."} rows={1} style={{ flex: 1, fontSize: 12, padding: "6px 10px", minHeight: 32, maxHeight: 100, resize: "none" }} />
         <button className="btn-primary" onClick={onSendMessage} disabled={!chatInput.trim()} style={{ fontSize: 12, padding: "6px 12px", flexShrink: 0 }}>发送</button>
       </div>
-      {/* Generation controls — 单 Agent is the default; Pipeline is opt-in. */}
+      {/* Generation controls */}
       {!generating && !waitingForConfirm && (
         <div style={{ marginBottom: 6 }}>
-          {availableSkills && availableSkills.length > 0 && onToggleSkill && (
+          {onToggleSkill && (
             <div style={{
               marginBottom: 6, padding: "6px 8px", background: "var(--bg-surface)",
               borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
             }}>
               <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
-                创作技能（勾选本次生成启用的技能）
+                创作技能（勾选本次生成启用的技能，将随 RAG 一并注入 prompt）
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {availableSkills.map(s => (
-                  <label key={s.name} style={{
-                    display: "flex", alignItems: "center", gap: 4, fontSize: 11,
-                    cursor: "pointer", color: "var(--text-secondary)",
-                  }}>
-                    <input
-                      type="checkbox"
-                      checked={(skillSelection || {})[s.name] !== false}
-                      onChange={() => onToggleSkill(s.name)}
-                      style={{ margin: 0 }}
-                    />
-                    {s.display_name}
-                  </label>
-                ))}
-              </div>
+              {availableSkills && availableSkills.length > 0 ? (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {availableSkills.map(s => (
+                    <label key={s.name} style={{
+                      display: "flex", alignItems: "center", gap: 4, fontSize: 11,
+                      cursor: "pointer", color: "var(--text-secondary)",
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={(skillSelection || {})[s.name] !== false}
+                        onChange={() => onToggleSkill(s.name)}
+                        style={{ margin: 0 }}
+                      />
+                      {s.display_name}
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs text-muted">暂无自定义技能，可在「智能体」页学习后在此勾选启用。</div>
+              )}
             </div>
           )}
-          <div style={{ display: "flex", gap: 6 }}>
-            {onStartPlain && (
-              <button className="btn-primary" style={{ flex: 2 }} onClick={() => { setPipelineMode(false); onStartPlain(); }}>
-                {chatMessages.length > 0 ? "单 Agent 重新生成" : "单 Agent 生成"}
+          {mode === "single" ? (
+            <>
+              {onStartPlain && (
+                <button className="btn-primary" style={{ width: "100%" }} onClick={() => onStartPlain()}>
+                  {chatMessages.length > 0 ? "单智能体重新创作" : "单智能体创作"}
+                </button>
+              )}
+              {onFetchPrompt && (
+                <div style={{ marginTop: 6 }}>
+                  <WebLLMPromptPanel fetchPrompt={onFetchPrompt}
+                    title="AI大模型网页版"
+                    onApplyResult={onApplyPaste} applyLabel="解析并写入编辑器"
+                    resultPlaceholder="把网页 LLM 生成的章节正文粘贴到这里" />
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="btn-primary" style={{ flex: 1 }} onClick={() => onStart(false)}
+                title="多 Agent 协作 Pipeline（导演 → 角色 → 编辑 → 评估），调用 AI 大模型 API">
+                {chatMessages.length > 0 ? "重新集群创作" : "集群式智能体创作"}
               </button>
-            )}
-            <button className="btn" style={{ flex: 1, borderColor: "var(--indigo)", color: "var(--indigo)" }}
-              onClick={() => { setPipelineMode(true); onStart(); }}
-              title="切换到多 Agent 协作 Pipeline（导演→角色→编辑→评估）">
-              {chatMessages.length > 0 ? "改用 Pipeline" : "切换 Pipeline"}
-            </button>
-          </div>
-          {onManualModeChange && (
-            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 11, color: "var(--text-secondary)", cursor: "pointer" }}
-              title="开启后，Pipeline 在每个 agent 处暂停，可复制该步 prompt、粘贴网页 LLM 结果再继续">
-              <input type="checkbox" checked={!!manualMode} onChange={e => onManualModeChange(e.target.checked)} style={{ margin: 0 }} />
-              Pipeline 手动模式
-            </label>
-          )}
-          {onFetchPrompt && (
-            <div style={{ marginTop: 6 }}>
-              <WebLLMPromptPanel fetchPrompt={onFetchPrompt}
-                onApplyResult={onApplyPaste} applyLabel="解析并写入编辑器"
-                resultPlaceholder="把网页 LLM 生成的章节正文粘贴到这里" />
+              <button className="btn" style={{ flex: 1, borderColor: "var(--indigo)", color: "var(--indigo)" }}
+                onClick={() => onStart(true)}
+                title="逐 agent 暂停：复制该步 prompt 到 AI大模型网页版、粘贴返回结果再继续">
+                AI大模型网页版
+              </button>
             </div>
           )}
         </div>

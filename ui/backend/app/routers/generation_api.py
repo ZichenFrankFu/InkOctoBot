@@ -636,6 +636,7 @@ async def start_generation(req: GenerateRequest):
         rag_text = "\n".join(
             b for b in (
                 ctx["blocks"].get("project_memory", ""),
+                ctx["blocks"].get("character_cards", ""),
                 ctx["blocks"].get("worldbook", ""),
                 ctx["blocks"].get("reference_summary", ""),
                 ctx["blocks"].get("writing_knowledge", ""),
