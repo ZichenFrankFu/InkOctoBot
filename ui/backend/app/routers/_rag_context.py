@@ -78,8 +78,10 @@ def _coerce_json(value: Any) -> Any:
 # ════════════════════════════════════════════════════════════════════
 
 
-def _load_platform_directive(project_id: str) -> str:
+def _load_platform_directive(project_id: str, exclude: set | None = None) -> str:
     """Resolve the project's publishing platform to a creative directive."""
+    if exclude and "platform" in exclude:
+        return ""
     try:
         from ui.backend.app.routers.data_api import _col, _safe_id
         from analysis.feature_extraction.platform_profiles import get_platform_directive
@@ -100,7 +102,7 @@ def _load_platform_directive(project_id: str) -> str:
         return ""
 
 
-def _load_character_cards(project_id: str, names: list[str]) -> str:
+def _load_character_cards(project_id: str, names: list[str], exclude: set | None = None) -> str:
     """Build deep character cards for the chapter's on-stage characters."""
     if not names:
         return ""
@@ -111,6 +113,8 @@ def _load_character_cards(project_id: str, names: list[str]) -> str:
         by_name = {r.get("name", ""): r for r in rows}
         cards: list[str] = []
         for name in names:
+            if exclude and name in exclude:
+                continue
             c = by_name.get(name)
             if not c:
                 continue
@@ -142,7 +146,7 @@ def _load_character_cards(project_id: str, names: list[str]) -> str:
         return ""
 
 
-def _load_worldbook(project_id: str) -> str:
+def _load_worldbook(project_id: str, exclude: set | None = None) -> str:
     """Collect the project's worldbook entries."""
     try:
         from ui.backend.app.routers.data_api import _list
@@ -152,6 +156,9 @@ def _load_worldbook(project_id: str) -> str:
             return ""
         entries: list[str] = []
         for e in rows:
+            eid = str(e.get("id") or e.get("title") or "")
+            if exclude and eid in exclude:
+                continue
             title = (e.get("title") or "").strip()
             content = (e.get("content") or "").strip()
             if not title and not content:
@@ -271,7 +278,7 @@ def _condense_ref_rhythm(raw: Any, style_fp: Any) -> str:
     return "叙事节奏：\n" + "\n".join(parts) if parts else ""
 
 
-def _load_reference_blocks(project_id: str, db_path: str) -> str:
+def _load_reference_blocks(project_id: str, db_path: str, exclude: set | None = None) -> str:
     """Inject the user-selected reference-work × feature-type material."""
     selection = _ref_selection(project_id)
     if not selection:
@@ -288,6 +295,8 @@ def _load_reference_blocks(project_id: str, db_path: str) -> str:
         for link in links:
             ref_id = link.get("ref_id", "")
             if not ref_id or ref_id in seen:
+                continue
+            if exclude and ref_id in exclude:
                 continue
             seen.add(ref_id)
             feats = selection.get(ref_id)
@@ -324,7 +333,7 @@ def _load_reference_blocks(project_id: str, db_path: str) -> str:
         return ""
 
 
-def _load_writing_knowledge(project_id: str) -> str:
+def _load_writing_knowledge(project_id: str, exclude: set | None = None) -> str:
     """Inject the writing-knowledge entries selected for this project."""
     try:
         from ui.backend.app.routers.data_api import _col, _safe_id, _list
@@ -341,6 +350,8 @@ def _load_writing_knowledge(project_id: str) -> str:
         out: list[str] = []
         for k in rows:
             if k.get("id") not in wanted:
+                continue
+            if exclude and str(k.get("id")) in exclude:
                 continue
             title = (k.get("title") or "").strip()
             content = (k.get("content") or "").strip()
@@ -420,6 +431,18 @@ def _load_user_preferences(project_id: str, db_path: str) -> str:
 # ════════════════════════════════════════════════════════════════════
 
 
+def _parse_rag_excludes(rag_excludes: list[str] | None) -> dict[str, set[str]]:
+    """Parse ``["block::id", ...]`` user de-selections into ``{block: {ids}}``."""
+    excl: dict[str, set[str]] = {}
+    for item in (rag_excludes or []):
+        s = str(item or "")
+        if "::" not in s:
+            continue
+        blk, _, iid = s.partition("::")
+        excl.setdefault(blk.strip(), set()).add(iid.strip())
+    return excl
+
+
 def build_generation_context(
     project_id: str,
     chapter_num: int = 1,
@@ -427,13 +450,15 @@ def build_generation_context(
     db_path: str | None = None,
     skills: list[str] | None = None,
     chapter_id: str = "",
+    rag_excludes: list[str] | None = None,
 ) -> dict:
     """Assemble the RAG context for a chapter-generation call.
 
     Returns ``{"blocks": {...}, "sections": [{label, content}],
     "token_estimate": int}``. Every block value is either ``""`` or a
     self-contained ``\\n\\n## 标题\\n...`` string ready to splice into the
-    ``generation.single_agent`` template.
+    ``generation.single_agent`` template. ``rag_excludes`` carries the
+    user's per-item de-selections (``"block::id"``).
     """
     characters = characters or []
     if db_path is None:
@@ -444,19 +469,22 @@ def build_generation_context(
         except Exception:
             db_path = ""
 
+    excl = _parse_rag_excludes(rag_excludes)
     blocks: dict[str, str] = {
-        "platform_directive": _load_platform_directive(project_id),
+        "platform_directive": _load_platform_directive(project_id, excl.get("platform")),
         "style_calibration": _load_style_calibration(project_id),
-        "project_memory": _load_project_memory(project_id),
-        "character_cards": _load_character_cards(project_id, characters),
-        "worldbook": _load_worldbook(project_id),
-        "reference_summary": _load_reference_blocks(project_id, db_path or ""),
-        "writing_knowledge": _load_writing_knowledge(project_id),
+        "project_memory": _load_project_memory(project_id, excl.get("project_memory")),
+        "character_cards": _load_character_cards(project_id, characters, excl.get("character_cards")),
+        "worldbook": _load_worldbook(project_id, excl.get("worldbook")),
+        "reference_summary": _load_reference_blocks(project_id, db_path or "", excl.get("reference_summary")),
+        "writing_knowledge": _load_writing_knowledge(project_id, excl.get("writing_knowledge")),
         "writing_skills": _load_writing_skills(skills),
-        "adjacent_context": _load_adjacent_context(project_id, chapter_id),
+        "adjacent_context": _load_adjacent_context(project_id, chapter_id, excl.get("adjacent_context")),
         "foreshadowing": _load_foreshadowing(project_id, db_path or "", chapter_num),
         "user_preferences": _load_user_preferences(project_id, db_path or ""),
     }
+    if "__all__" in excl.get("foreshadowing", set()):
+        blocks["foreshadowing"] = ""
 
     sections: list[dict[str, str]] = []
     for val in blocks.values():
@@ -581,17 +609,23 @@ def _load_writing_skills(only: list[str] | None = None) -> str:
 
 def build_rag_digest(
     project_id: str, chapter_num: int = 1, characters: list[str] | None = None,
+    chapter_id: str = "", rag_excludes: list[str] | None = None,
 ) -> str:
     """Fold the project's RAG blocks (memory / character cards / worldbook /
-    references / writing knowledge) into one grounding digest — used to give
-    the evaluator the same project context the generation step had."""
+    references / writing knowledge / adjacent chapters) into one grounding
+    digest — used to give the evaluator the same project context the
+    generation step had."""
     try:
-        ctx = build_generation_context(project_id, chapter_num, characters or [])
+        ctx = build_generation_context(
+            project_id, chapter_num, characters or [],
+            chapter_id=chapter_id, rag_excludes=rag_excludes)
         return "\n".join(
             b for b in (
+                ctx["blocks"].get("platform_directive", ""),
                 ctx["blocks"].get("project_memory", ""),
                 ctx["blocks"].get("character_cards", ""),
                 ctx["blocks"].get("worldbook", ""),
+                ctx["blocks"].get("adjacent_context", ""),
                 ctx["blocks"].get("reference_summary", ""),
                 ctx["blocks"].get("writing_knowledge", ""),
             ) if (b or "").strip()
@@ -601,7 +635,7 @@ def build_rag_digest(
         return ""
 
 
-def _load_project_memory(project_id: str) -> str:
+def _load_project_memory(project_id: str, exclude: set | None = None) -> str:
     """Inject the project's shared memory — confirmed facts / decisions
     that persist across every AI conversation in the project."""
     try:
@@ -615,6 +649,7 @@ def _load_project_memory(project_id: str) -> str:
             f"- {str(m.get('content') or '').strip()}"
             for m in data.get("memories", [])
             if str(m.get("content") or "").strip()
+            and not (exclude and str(m.get("id")) in exclude)
         ]
         if not lines:
             return ""
@@ -632,12 +667,15 @@ def load_project_memory_block(project_id: str) -> str:
     return _load_project_memory(project_id)
 
 
-def _load_adjacent_context(project_id: str, chapter_id: str) -> str:
+def _load_adjacent_context(
+    project_id: str, chapter_id: str, exclude: set | None = None,
+) -> str:
     """Inject the previous chapter's ending excerpt and the next chapter's
     outline so the new chapter flows naturally from what came before and
     sets up what follows."""
     if not chapter_id:
         return ""
+    exclude = exclude or set()
     try:
         from ui.backend.app.routers.data_api import _col, _safe_id
 
@@ -655,7 +693,7 @@ def _load_adjacent_context(project_id: str, chapter_id: str) -> str:
         if idx < 0:
             return ""
         parts: list[str] = []
-        if idx > 0:
+        if idx > 0 and "prev" not in exclude:
             prev = chapters[idx - 1]
             prev_text = (prev.get("content") or "").strip()
             if prev_text:
@@ -665,7 +703,7 @@ def _load_adjacent_context(project_id: str, chapter_id: str) -> str:
                 parts.append(
                     f"【前一章结尾】（{prev.get('title') or '上一章'}）\n{tail}"
                 )
-        if idx + 1 < len(chapters):
+        if idx + 1 < len(chapters) and "next" not in exclude:
             nxt = chapters[idx + 1]
             nxt_outline = (nxt.get("synopsis") or "").strip()
             if nxt_outline:
@@ -716,15 +754,20 @@ def load_chapter_fields(project_id: str, chapter_id: str) -> dict:
     return fields
 
 
-def _creation_default_skills() -> list[dict]:
-    """Built-in skills involved in chapter creation (production / evaluation /
-    planner domains) — shown read-only in the creation context panel."""
+def _creation_default_skills(mode: str = "cluster") -> list[dict]:
+    """Built-in skills invoked by the given creation mode — single-agent
+    creation uses just the writing skill; the cluster pipeline calls the
+    production agents plus the evaluation skills."""
     try:
         from ui.backend.app.routers.skill_api import (
             _get_registry, _get_deactivated, _skill_public_dict,
         )
         reg = _get_registry()
         deact = _get_deactivated()
+        if mode == "single":
+            want_names, want_domains = {"editor_write"}, set()
+        else:
+            want_names, want_domains = set(), {"production", "evaluation"}
         out: list[dict] = []
         for sk in reg._skills.values():
             try:
@@ -733,13 +776,13 @@ def _creation_default_skills() -> list[dict]:
                 continue
             if info.get("is_learned"):
                 continue
+            nm = str(info.get("name") or "")
             dom = info.get("agent_domain") or ""
-            if dom not in ("production", "evaluation", "planner"):
+            if not (nm in want_names or dom in want_domains):
                 continue
             name = str(info.get("display_name") or info.get("name") or "").strip()
             if name:
-                out.append({"name": name, "domain": dom,
-                            "active": bool(info.get("active", True))})
+                out.append({"name": name, "domain": dom})
         return out
     except Exception as e:
         logger.debug("creation default skills skipped: %s", e)
@@ -768,10 +811,13 @@ def _project_writing_knowledge(project_id: str) -> list[dict]:
 
 
 def creation_context_manifest(
-    project_id: str, chapter_id: str = "", chapter_num: int = 1,
+    project_id: str, chapter_id: str = "", chapter_num: int = 1, mode: str = "cluster",
 ) -> dict:
-    """Summarize the skills / knowledge / RAG a chapter generation will use —
-    powers the creation tab's transparency panel."""
+    """Summarize the skills + RAG a chapter generation will use, with the
+    concrete items behind each RAG category so the creation tab can show
+    them and let the user de-select individual items."""
+    from ui.backend.app.routers.data_api import _col, _safe_id, _list
+
     fields = load_chapter_fields(project_id, chapter_id)
     characters = fields.get("characters") or []
     ctx = build_generation_context(
@@ -781,24 +827,95 @@ def creation_context_manifest(
     def _has(k: str) -> bool:
         return bool((blocks.get(k) or "").strip())
 
+    platform_items: list[dict] = []
+    try:
+        pp = _col("projects") / f"{_safe_id(project_id)}.json"
+        if pp.exists():
+            plat = (json.loads(pp.read_text("utf-8")).get("platform") or "").strip()
+            if plat:
+                platform_items = [{"id": "platform", "label": plat}]
+    except Exception:
+        pass
+
+    wb_items: list[dict] = []
+    try:
+        for e in _list("worldbook", filter_key="project_id", filter_value=project_id):
+            t = (e.get("title") or "").strip()
+            if t or (e.get("content") or "").strip():
+                wb_items.append({"id": str(e.get("id") or t), "label": t or "（无题）"})
+    except Exception:
+        pass
+
+    ref_items: list[dict] = []
+    try:
+        from rag.reference_db import ReferenceDB
+        from ui.backend.app.routers.generation_api import _get_db_path
+
+        rdb = ReferenceDB(_get_db_path())
+        seen: set[str] = set()
+        for link in (rdb.get_project_links(project_id) or []):
+            rid = link.get("ref_id")
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            w = rdb.get_work(rid) or {}
+            ref_items.append({"id": str(rid), "label": w.get("title") or str(rid)})
+    except Exception:
+        pass
+
+    mem_items: list[dict] = []
+    try:
+        mp = _col("project_memory") / f"{_safe_id(project_id)}.json"
+        if mp.exists():
+            for m in json.loads(mp.read_text("utf-8")).get("memories", []):
+                cc = str(m.get("content") or "").strip()
+                if cc:
+                    mem_items.append({"id": str(m.get("id") or cc[:12]),
+                                      "label": cc[:24] + ("…" if len(cc) > 24 else "")})
+    except Exception:
+        pass
+
+    rm_items: list[dict] = []
+    for e in (fields.get("referenced_events") or []):
+        nm = str(e.get("name") or e.get("description") or "").strip()
+        if nm:
+            rm_items.append({"id": "event:" + str(e.get("id") or nm),
+                             "label": "事件·" + nm[:20]})
+    for ins in (fields.get("referenced_inspirations") or []):
+        t = str(ins.get("title") or ins.get("content") or "").strip()
+        if t:
+            rm_items.append({"id": "insp:" + str(ins.get("id") or t),
+                             "label": "灵感·" + t[:20]})
+
+    has_outline = bool((fields.get("synopsis") or "").strip())
     rag = [
-        {"key": "character_cards", "label": "人物卡", "present": _has("character_cards")},
-        {"key": "worldbook", "label": "世界书", "present": _has("worldbook")},
+        {"key": "platform", "label": "发布平台", "items": platform_items,
+         "present": bool(platform_items)},
+        {"key": "character_cards", "label": "人物卡",
+         "items": [{"id": n, "label": n} for n in characters],
+         "present": _has("character_cards")},
+        {"key": "worldbook", "label": "世界书", "items": wb_items,
+         "present": _has("worldbook")},
         {"key": "chapter_outline", "label": "本章大纲",
-         "present": bool((fields.get("synopsis") or "").strip())},
+         "items": [{"id": "__all__", "label": "本章大纲"}] if has_outline else [],
+         "present": has_outline},
         {"key": "adjacent_context", "label": "前章结尾 / 后章大纲",
+         "items": [{"id": "prev", "label": "前一章结尾"}, {"id": "next", "label": "后一章大纲"}]
+         if _has("adjacent_context") else [],
          "present": _has("adjacent_context")},
-        {"key": "reference_summary", "label": "关联参考作品",
+        {"key": "reference_summary", "label": "关联参考作品", "items": ref_items,
          "present": _has("reference_summary")},
-        {"key": "referenced_materials", "label": "关联灵感 / 事件",
-         "present": bool(fields.get("referenced_events")
-                         or fields.get("referenced_inspirations"))},
-        {"key": "project_memory", "label": "项目记忆", "present": _has("project_memory")},
-        {"key": "foreshadowing", "label": "伏笔回收", "present": _has("foreshadowing")},
+        {"key": "referenced_materials", "label": "关联灵感 / 事件", "items": rm_items,
+         "present": bool(rm_items)},
+        {"key": "project_memory", "label": "项目记忆", "items": mem_items,
+         "present": _has("project_memory")},
+        {"key": "foreshadowing", "label": "伏笔回收",
+         "items": [{"id": "__all__", "label": "未回收伏笔"}] if _has("foreshadowing") else [],
+         "present": _has("foreshadowing")},
     ]
     return {
         "rag": rag,
-        "default_skills": _creation_default_skills(),
+        "default_skills": _creation_default_skills(mode),
         "learned_skills": [
             {"name": s["name"], "description": s["description"]}
             for s in _active_learned_skills()
@@ -821,6 +938,7 @@ def single_agent_vars(
     referenced_inspirations: list[dict] | None = None,
     db_path: str | None = None,
     chapter_id: str = "",
+    rag_excludes: list[str] | None = None,
 ) -> dict:
     """Assemble the full variable dict for the ``generation.single_agent``
     template — RAG blocks plus chapter-local blocks. Shared by
@@ -829,14 +947,18 @@ def single_agent_vars(
     characters = characters or []
     ctx = build_generation_context(
         project_id, chapter_num, characters, db_path=db_path, skills=skills,
-        chapter_id=chapter_id)
+        chapter_id=chapter_id, rag_excludes=rag_excludes)
     blocks: dict[str, str] = dict(ctx["blocks"])
+    _excl = _parse_rag_excludes(rag_excludes)
 
     synopsis = (synopsis or "").strip()
-    blocks["chapter_outline"] = _section(
-        "章节大纲",
-        synopsis or "（未提供章节大纲，请根据已有正文与设定合理推进剧情）",
-    )
+    if "__all__" in _excl.get("chapter_outline", set()):
+        blocks["chapter_outline"] = ""
+    else:
+        blocks["chapter_outline"] = _section(
+            "章节大纲",
+            synopsis or "（未提供章节大纲，请根据已有正文与设定合理推进剧情）",
+        )
 
     tl: list[str] = []
     if time_setting:

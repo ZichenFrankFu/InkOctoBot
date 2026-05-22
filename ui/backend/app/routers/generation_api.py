@@ -364,6 +364,8 @@ class GenerateRequest(BaseModel):
     # When true, the pipeline pauses at every agent, surfaces the rendered
     # prompt, and uses the result the user pastes back from a web LLM.
     manual: bool = False
+    # Per-item RAG de-selections the user unchecked ("block::id").
+    rag_excludes: list[str] = []
 
 
 class RewriteRequest(BaseModel):
@@ -382,6 +384,9 @@ class EvalRequest(BaseModel):
     prompt_only: bool = False
     # Project to pull RAG grounding from (worldbook / characters / etc.).
     project_id: str = ""
+    chapter_id: str = ""
+    # Per-item RAG de-selections the user unchecked ("block::id").
+    rag_excludes: list[str] = []
 
 
 def _get_user_settings() -> dict:
@@ -633,7 +638,7 @@ async def start_generation(req: GenerateRequest):
         from ._rag_context import build_generation_context
         ctx = build_generation_context(
             req.project_id, req.chapter_num, req.characters, skills=req.skills,
-            chapter_id=req.chapter_id)
+            chapter_id=req.chapter_id, rag_excludes=req.rag_excludes)
         rag_text = "\n".join(
             b for b in (
                 ctx["blocks"].get("project_memory", ""),
@@ -795,12 +800,15 @@ async def rewrite_text(req: RewriteRequest):
 
 
 @router.get("/context-manifest")
-def context_manifest(project_id: str = "default", chapter_id: str = "", chapter_num: int = 1):
+def context_manifest(
+    project_id: str = "default", chapter_id: str = "",
+    chapter_num: int = 1, mode: str = "cluster",
+):
     """Skills / knowledge / RAG a chapter generation will use — drives the
-    creation tab's transparency panel."""
+    creation (and 评估) tab's transparency panel."""
     try:
         from ._rag_context import creation_context_manifest
-        return creation_context_manifest(project_id, chapter_id, chapter_num)
+        return creation_context_manifest(project_id, chapter_id, chapter_num, mode)
     except Exception as e:
         logger.error("context manifest error: %s", e, exc_info=True)
         return {"rag": [], "default_skills": [], "learned_skills": [], "writing_knowledge": []}
@@ -812,7 +820,10 @@ async def evaluate_text(req: EvalRequest):
         # Ground the evaluation in the same project RAG context the
         # generation step used (worldbook / characters / knowledge).
         from ._rag_context import build_rag_digest
-        rag = build_rag_digest(req.project_id, req.chapter_num) if req.project_id else ""
+        rag = build_rag_digest(
+            req.project_id, req.chapter_num, chapter_id=req.chapter_id,
+            rag_excludes=req.rag_excludes,
+        ) if req.project_id else ""
         if req.prompt_only:
             from analysis.feature_extraction.prompts import render
             prompt = render(
@@ -871,6 +882,7 @@ async def quick_generate(req: GenerateRequest):
                 referenced_events=req.referenced_events,
                 referenced_inspirations=req.referenced_inspirations,
                 chapter_id=req.chapter_id,
+                rag_excludes=req.rag_excludes,
             )
             try:
                 user_content = _render_prompt(
