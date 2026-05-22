@@ -294,6 +294,24 @@ def delete_project_memory(project_id: str, memory_id: str):
         _wj(_project_memory_path(project_id), data)
     return {"ok": True}
 
+# ═══ Foreshadowing (per-project 伏笔 — title/content + linked chapters) ═══
+def _foreshadowing_path(project_id: str) -> Path:
+    d = _col("foreshadowing"); return d / f"{_safe_id(project_id)}.json"
+@router.get("/foreshadowing/{project_id}")
+def get_foreshadowing(project_id: str):
+    p = _foreshadowing_path(project_id)
+    if not p.exists():
+        return {"project_id": project_id, "items": []}
+    return json.loads(p.read_text("utf-8"))
+@router.put("/foreshadowing/{project_id}")
+def save_foreshadowing(project_id: str, body: dict = Body(...)):
+    items = body.get("items", [])
+    data = {"project_id": project_id,
+            "items": items if isinstance(items, list) else [],
+            "updated_at": time.time()}
+    _wj(_foreshadowing_path(project_id), data)
+    return {"ok": True}
+
 # ═══ Editor ═══
 def _editor_path(project_id: str = "default") -> Path:
     d = _col("editor"); return d / f"{_safe_id(project_id)}.json"

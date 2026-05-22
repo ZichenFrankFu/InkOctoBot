@@ -1434,7 +1434,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
           <div className="panel-body" style={{ padding: "14px 16px" }}>
             {aiTab === "outline" && <OutlineTab synopsis={activeCh?.synopsis || ""} onChange={updateSynopsis} onSave={handleSaveOutline}
               onStartGeneration={() => { setAiTab("single"); setTimeout(() => { if (!generating) runPlainAgent(); }, 300); }} projectId={projectId}
-              chapter={activeCh} onUpdateChapter={(field, value) => {
+              chapter={activeCh}
+              allChapters={volumes.flatMap(v => (v.chapters || []).map(c => ({ id: c.id, title: c.title })))}
+              onUpdateChapter={(field, value) => {
                 setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
               }} />}
             {(aiTab === "single" || aiTab === "cluster") && <InspireTab mode={aiTab} steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
@@ -1555,9 +1557,10 @@ function PickRow({ label, sub, on, color, onClick }: {
   );
 }
 
-function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, onUpdateChapter }: {
+function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, onUpdateChapter, allChapters }: {
   synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; projectId: string;
   chapter?: ChapterOutline | null; onUpdateChapter?: (field: string, value: any) => void;
+  allChapters?: { id: string; title: string }[];
 }) {
   const { toast } = useToast();
   const [time, setTime] = useState(chapter?.time || "");
@@ -1575,6 +1578,41 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   const [showCharLink, setShowCharLink] = useState(false);
   const [showRefLink, setShowRefLink] = useState(false);
   const [showInspLink, setShowInspLink] = useState(false);
+  const [showForeshadow, setShowForeshadow] = useState(false);
+  const [foreshadow, setForeshadow] = useState<{ id: string; title: string; content: string; chapter_ids: string[] }[]>([]);
+  const fsLoadedRef = useRef(false);
+
+  useEffect(() => {
+    fsLoadedRef.current = false;
+    apiGet<{ items: any[] }>(`/api/data/foreshadowing/${projectId}`)
+      .then(r => setForeshadow(Array.isArray(r.items) ? r.items : []))
+      .catch(() => setForeshadow([]))
+      .finally(() => { fsLoadedRef.current = true; });
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!fsLoadedRef.current) return;
+    const t = setTimeout(() => {
+      apiPut(`/api/data/foreshadowing/${projectId}`, { items: foreshadow }).catch(() => {});
+    }, 700);
+    return () => clearTimeout(t);
+  }, [foreshadow, projectId]);
+
+  const addForeshadow = () => setForeshadow(prev => [
+    { id: `fs_${Date.now()}`, title: "新伏笔", content: "",
+      chapter_ids: chapter?.id ? [chapter.id] : [] },
+    ...prev,
+  ]);
+  const updateForeshadow = (id: string, patch: Partial<{ title: string; content: string }>) =>
+    setForeshadow(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
+  const deleteForeshadow = (id: string) =>
+    setForeshadow(prev => prev.filter(f => f.id !== id));
+  const toggleFsChapter = (id: string, chId: string) =>
+    setForeshadow(prev => prev.map(f => {
+      if (f.id !== id) return f;
+      const has = f.chapter_ids.includes(chId);
+      return { ...f, chapter_ids: has ? f.chapter_ids.filter(x => x !== chId) : [...f.chapter_ids, chId] };
+    }));
   const [refSearch, setRefSearch] = useState("");
   const [eventSearch, setEventSearch] = useState("");
   const [inspSearch, setInspSearch] = useState("");
@@ -2015,6 +2053,64 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
               </>
             ) : (
               <div className="text-xs text-muted">灵感库为空，请在「灵感搜索 → 灵感库」中添加</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 伏笔 — collapsible CRUD section; each 伏笔 links chapters bidirectionally */}
+      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+        <button className="btn-ghost" onClick={() => setShowForeshadow(v => !v)}
+          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
+            background: showForeshadow ? "var(--bg-surface-2)" : "transparent" }}>
+          {showForeshadow ? "▾ " : "▸ "}伏笔{foreshadow.length > 0 ? ` · ${foreshadow.length}` : ""}
+        </button>
+        {showForeshadow && (
+          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 12px", marginBottom: 8 }} onClick={addForeshadow}>
+              + 新建伏笔
+            </button>
+            {foreshadow.length === 0 ? (
+              <div className="text-xs text-muted">暂无伏笔。新建后可关联多个章节——任一关联章节生成时都会带上该伏笔。</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {foreshadow.map(f => (
+                  <div key={f.id} style={{ border: "1px solid var(--border)", borderRadius: 4, padding: 8 }}>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+                      <input className="input" value={f.title}
+                        onChange={e => updateForeshadow(f.id, { title: e.target.value })}
+                        placeholder="伏笔标题" style={{ flex: 1, fontSize: 12, padding: "3px 8px" }} />
+                      <button onClick={() => deleteForeshadow(f.id)}
+                        style={{ background: "none", border: "none", color: "var(--text-disabled)", cursor: "pointer", fontSize: 15 }}
+                        title="删除伏笔">&times;</button>
+                    </div>
+                    <textarea className="input" value={f.content}
+                      onChange={e => updateForeshadow(f.id, { content: e.target.value })}
+                      placeholder="伏笔内容（埋设了什么、计划如何回收）" rows={2}
+                      style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", marginBottom: 4, boxSizing: "border-box" }} />
+                    <div className="text-xs text-muted" style={{ marginBottom: 3 }}>关联章节（点击切换；关联为双向）：</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                      {(allChapters || []).map(ch => {
+                        const on = f.chapter_ids.includes(ch.id);
+                        return (
+                          <span key={ch.id} onClick={() => toggleFsChapter(f.id, ch.id)}
+                            style={{
+                              fontSize: 10, padding: "2px 8px", borderRadius: 10, cursor: "pointer", userSelect: "none",
+                              background: on ? "var(--accent-subtle)" : "transparent",
+                              color: on ? "var(--accent)" : "var(--text-tertiary)",
+                              border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                            }}>
+                            {ch.title || "未命名"}
+                          </span>
+                        );
+                      })}
+                      {(allChapters || []).length === 0 && (
+                        <span className="text-xs text-muted">暂无章节</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}

@@ -421,14 +421,31 @@ def _load_style_calibration(project_id: str) -> str:
         return ""
 
 
-def _load_foreshadowing(project_id: str, db_path: str, chapter_num: int) -> str:
+def _load_foreshadowing(project_id: str, chapter_id: str = "") -> str:
+    """Inject the user-managed 伏笔 (from the 大纲 tab) linked to this
+    chapter — so the model knows what to plant or pay off here."""
+    if not chapter_id:
+        return ""
     try:
-        from ui.backend.app.routers.generation_api import _load_unresolved_foreshadowing
+        from ui.backend.app.routers.data_api import _col, _safe_id
 
-        txt = _load_unresolved_foreshadowing(project_id, db_path, chapter_num)
-        if not txt:
+        p = _col("foreshadowing") / f"{_safe_id(project_id)}.json"
+        if not p.exists():
             return ""
-        return _section("未回收伏笔提醒", txt)
+        items = json.loads(p.read_text("utf-8")).get("items", [])
+        lines: list[str] = []
+        for f in items:
+            if chapter_id not in (f.get("chapter_ids") or []):
+                continue
+            title = str(f.get("title") or "").strip()
+            content = str(f.get("content") or "").strip()
+            if not title and not content:
+                continue
+            lines.append(f"- 【{title or '伏笔'}】{content}".rstrip())
+        if not lines:
+            return ""
+        body = _clip("\n".join(lines), _BUDGET["foreshadowing"])
+        return _section("关联伏笔（本章需埋设或回收的伏笔）", body)
     except Exception as e:
         logger.debug("foreshadowing skipped: %s", e)
         return ""
@@ -500,7 +517,7 @@ def build_generation_context(
         "writing_knowledge": _load_writing_knowledge(project_id, excl.get("writing_knowledge")),
         "writing_skills": _load_writing_skills(skills),
         "adjacent_context": _load_adjacent_context(project_id, chapter_id, excl.get("adjacent_context")),
-        "foreshadowing": _load_foreshadowing(project_id, db_path or "", chapter_num),
+        "foreshadowing": _load_foreshadowing(project_id, chapter_id),
         "user_preferences": _load_user_preferences(project_id, db_path or ""),
     }
     if "__all__" in excl.get("foreshadowing", set()):
