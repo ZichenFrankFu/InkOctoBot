@@ -755,9 +755,15 @@ def load_chapter_fields(project_id: str, chapter_id: str) -> dict:
 
 
 def _creation_default_skills(mode: str = "cluster") -> list[dict]:
-    """Built-in skills invoked by the given creation mode — single-agent
-    creation uses just the writing skill; the cluster pipeline calls the
-    production agents plus the evaluation skills."""
+    """Built-in skills invoked by the given creation mode, tagged with the
+    pipeline step that calls them — single-agent creation uses just the
+    writing skill; the cluster pipeline calls each step's own skill."""
+    _STEP = {
+        "scene_direct": "场景导演", "actor_perform": "演员",
+        "editor_write": "编辑撰写", "repetition_detect": "评估",
+        "quality_score": "评估", "consistency_check": "评估",
+        "slop_detect": "评估", "style_drift_detect": "评估",
+    }
     try:
         from ui.backend.app.routers.skill_api import (
             _get_registry, _get_deactivated, _skill_public_dict,
@@ -784,7 +790,8 @@ def _creation_default_skills(mode: str = "cluster") -> list[dict]:
                 continue
             name = str(info.get("display_name") or info.get("name") or "").strip()
             if name:
-                out.append({"name": name, "domain": dom})
+                out.append({"name": name, "domain": dom,
+                            "step": _STEP.get(nm, "默认")})
         return out
     except Exception as e:
         logger.debug("creation default skills skipped: %s", e)

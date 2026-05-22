@@ -1926,7 +1926,9 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         {showRefLink && (
           <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
             {/* 参考作品 — searchable scrollable list */}
-            <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--jade)" }}>参考作品</div>
+            <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--jade)" }}>
+              参考作品{references.length > 0 ? ` ·已选 ${selectedRefs.length}/${references.length}` : ""}
+            </div>
             {references.length > 0 ? (
               <>
                 <input className="input" value={refSearch} onChange={e => setRefSearch(e.target.value)}
@@ -1983,7 +1985,9 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
             })}
 
             {/* 灵感库 — searchable scrollable list */}
-            <div className="label" style={{ fontSize: 10, margin: "12px 0 4px", color: "var(--accent)" }}>关联灵感</div>
+            <div className="label" style={{ fontSize: 10, margin: "12px 0 4px", color: "var(--accent)" }}>
+              关联灵感{inspirations.length > 0 ? ` ·已选 ${refInsps.length}/${inspirations.length}` : ""}
+            </div>
             {inspirations.length > 0 ? (
               <>
                 <input className="input" value={inspSearch} onChange={e => setInspSearch(e.target.value)}
@@ -2032,7 +2036,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
 type RagItem = { id: string; label: string };
 type ContextManifest = {
   rag: { key: string; label: string; present: boolean; items: RagItem[] }[];
-  default_skills: { name: string; domain: string }[];
+  default_skills: { name: string; domain: string; step?: string }[];
   learned_skills: { name: string; description?: string }[];
   writing_knowledge: { id: string; title: string }[];
 };
@@ -2060,84 +2064,92 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
   onToggleSkill: (name: string) => void;
   onToggleRagItem: (key: string) => void;
 }) {
+  const [skillOpen, setSkillOpen] = useState(true);
   const [ragOpen, setRagOpen] = useState(false);
   if (!manifest) return null;
 
-  const tag = (t: string) => (
-    <span style={{
-      fontSize: 9, padding: "1px 5px", borderRadius: 8, marginRight: 2,
-      background: "var(--bg-app)", border: "1px solid var(--border)", color: "var(--text-tertiary)",
-    }}>{t}</span>
-  );
-  const skillRow = (key: string, label: string, t: string, checked: boolean,
-                    onToggle?: () => void) => (
-    <label key={key} style={{
-      display: "flex", alignItems: "center", gap: 4, fontSize: 11,
-      cursor: onToggle ? "pointer" : "default", color: "var(--text-secondary)",
+  const sectionHeader = (open: boolean, toggle: () => void, text: string) => (
+    <button onClick={toggle} style={{
+      width: "100%", textAlign: "left", background: "none", border: "none", padding: "2px 0",
+      cursor: "pointer", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)",
+      display: "flex", alignItems: "center", gap: 5,
     }}>
-      <input type="checkbox" checked={checked} disabled={!onToggle}
-        onChange={() => onToggle?.()} style={{ margin: 0 }} />
-      {tag(t)}{label}
-    </label>
+      <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>{open ? "▾" : "▸"}</span>{text}
+    </button>
+  );
+
+  const chip = (key: string, label: string, on: boolean,
+                onClick?: () => void, tagText?: string) => (
+    <span key={key} onClick={onClick} title={onClick ? "点击启用 / 停用" : "系统自动调用"}
+      style={{
+        fontSize: 11, padding: "3px 9px", borderRadius: 12, userSelect: "none",
+        cursor: onClick ? "pointer" : "default",
+        display: "inline-flex", alignItems: "center", gap: 5,
+        background: on ? "var(--accent-subtle)" : "transparent",
+        color: on ? "var(--accent)" : "var(--text-tertiary)",
+        border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+        opacity: on ? 1 : 0.65,
+        transition: "background 0.12s, border-color 0.12s, opacity 0.12s",
+      }}>
+      {tagText && (
+        <span style={{
+          fontSize: 8, padding: "0 4px", borderRadius: 6, lineHeight: "13px",
+          background: "var(--bg-app)", color: "var(--text-tertiary)",
+          border: "1px solid var(--border)",
+        }}>{tagText}</span>
+      )}
+      {label}
+    </span>
   );
 
   const allKeys = manifest.rag.flatMap(r => r.items.map(it => `${r.key}::${it.id}`));
   const selCount = allKeys.filter(k => !ragExcludes.has(k)).length;
-  const hasSkills = manifest.default_skills.length + manifest.learned_skills.length
-    + manifest.writing_knowledge.length > 0;
+  const skillCount = manifest.default_skills.length + manifest.learned_skills.length
+    + manifest.writing_knowledge.length;
 
   return (
     <div style={{
       marginBottom: 6, padding: "8px 10px", background: "var(--bg-surface)",
       borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
     }}>
-      <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
-        调用的技能（勾选本次启用）
-      </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-        {manifest.default_skills.map(s => skillRow("d:" + s.name, s.name, "默认", true))}
-        {manifest.learned_skills.map(s => skillRow(
-          "l:" + s.name, s.name, "自学习", skillSelection[s.name] !== false,
-          () => onToggleSkill(s.name)))}
-        {manifest.writing_knowledge.map(k => skillRow(
-          "k:" + k.id, k.title || "（无题）", "写作知识",
-          !ragExcludes.has(`writing_knowledge::${k.id}`),
-          () => onToggleRagItem(`writing_knowledge::${k.id}`)))}
-        {!hasSkills && <span className="text-xs text-muted">本次无可调用技能</span>}
-      </div>
-      <button onClick={() => setRagOpen(o => !o)} style={{
-        width: "100%", textAlign: "left", background: "none", border: "none",
-        padding: 0, cursor: "pointer", fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
-      }}>
-        {ragOpen ? "▾" : "▸"} 引用的 RAG 上下文（已启用 {selCount}/{allKeys.length} 项）
-      </button>
-      {ragOpen && manifest.rag.map(cat => {
-        const sel = cat.items.filter(it => !ragExcludes.has(`${cat.key}::${it.id}`)).length;
-        return (
-          <div key={cat.key} style={{ marginTop: 6 }}>
-            <div className="text-xs" style={{ color: "var(--text-tertiary)", marginBottom: 2 }}>
-              {cat.label}{cat.items.length > 0 ? ` ·已选 ${sel}/${cat.items.length}` : ""}
-            </div>
-            {cat.items.length > 0 ? (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {cat.items.map(it => {
-                  const key = `${cat.key}::${it.id}`;
-                  return (
-                    <label key={key} style={{
-                      display: "flex", alignItems: "center", gap: 4, fontSize: 11,
-                      cursor: "pointer", color: "var(--text-secondary)",
-                    }}>
-                      <input type="checkbox" checked={!ragExcludes.has(key)}
-                        onChange={() => onToggleRagItem(key)} style={{ margin: 0 }} />
-                      {it.label}
-                    </label>
-                  );
-                })}
+      {sectionHeader(skillOpen, () => setSkillOpen(o => !o), `调用的 skill（${skillCount}）`)}
+      {skillOpen && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0 8px" }}>
+          {manifest.default_skills.map(s => chip("d:" + s.name, s.name, true, undefined, s.step || "默认"))}
+          {manifest.learned_skills.map(s => chip(
+            "l:" + s.name, s.name, skillSelection[s.name] !== false,
+            () => onToggleSkill(s.name), "自学习"))}
+          {manifest.writing_knowledge.map(k => chip(
+            "k:" + k.id, k.title || "（无题）",
+            !ragExcludes.has(`writing_knowledge::${k.id}`),
+            () => onToggleRagItem(`writing_knowledge::${k.id}`), "写作知识"))}
+          {skillCount === 0 && <span className="text-xs text-muted">本次无可调用 skill</span>}
+        </div>
+      )}
+      {sectionHeader(ragOpen, () => setRagOpen(o => !o),
+        `引用的 RAG 上下文（已启用 ${selCount}/${allKeys.length} 项）`)}
+      {ragOpen && (
+        <div style={{ marginTop: 2 }}>
+          {manifest.rag.map(cat => {
+            const sel = cat.items.filter(it => !ragExcludes.has(`${cat.key}::${it.id}`)).length;
+            return (
+              <div key={cat.key} style={{ marginTop: 7 }}>
+                <div className="text-xs" style={{ color: "var(--text-tertiary)", marginBottom: 3 }}>
+                  {cat.label}{cat.items.length > 0 ? ` ·已选 ${sel}/${cat.items.length}` : ""}
+                </div>
+                {cat.items.length > 0 ? (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {cat.items.map(it => chip(
+                      `${cat.key}::${it.id}`, it.label,
+                      !ragExcludes.has(`${cat.key}::${it.id}`),
+                      () => onToggleRagItem(`${cat.key}::${it.id}`)))}
+                  </div>
+                ) : <span className="text-xs text-muted">无</span>}
               </div>
-            ) : <span className="text-xs text-muted">无</span>}
-          </div>
-        );
-      })}
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -2491,7 +2503,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                 {chatMessages.length > 0 ? "重新集群创作" : "集群式智能体创作"}
               </button>
               <div style={{ marginTop: 6 }}>
-                <button className="btn" style={{ width: "100%", borderColor: "var(--indigo)", color: "var(--indigo)" }}
+                <button className="btn" style={{ width: "100%" }}
                   onClick={() => onStart(true)}
                   title="逐 agent 暂停：复制该步 prompt 到 AI大模型网页版、粘贴返回结果再继续">
                   AI大模型网页版（逐 agent 复制 prompt / 粘贴结果）
