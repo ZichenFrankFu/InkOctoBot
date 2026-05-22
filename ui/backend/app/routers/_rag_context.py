@@ -78,10 +78,48 @@ def _coerce_json(value: Any) -> Any:
 # ════════════════════════════════════════════════════════════════════
 
 
+_platform_market_cache: dict = {}
+
+
+def _build_platform_market_directive(plat_code: str) -> str:
+    """Run the market-database analysis panel for a platform and distil it
+    into a creative directive — real genre/tag share, not a static profile."""
+    import time as _t
+
+    cached = _platform_market_cache.get(plat_code)
+    if cached and _t.time() - cached[0] < 1800:
+        return cached[1]
+    directive = ""
+    try:
+        from ui.backend.app.routers.analysis_api import run_analysis
+
+        res = run_analysis(platform=plat_code, lookback="all", top_k=20)
+        if (not res.get("empty")) or plat_code == "both":
+            parts: list[str] = []
+            tags = [t for t in (res.get("tag_rollup") or []) if t.get("tag")]
+            if tags:
+                top = sorted(tags, key=lambda t: t.get("latest_share") or 0, reverse=True)[:12]
+                parts.append("高份额题材标签（份额）：" + "、".join(
+                    f"{t['tag']}({(t.get('latest_share') or 0):.1%})" for t in top))
+            cats = [c for c in (res.get("cat_rollup") or []) if c.get("category")]
+            if cats:
+                topc = sorted(cats, key=lambda c: c.get("latest_count") or 0, reverse=True)[:8]
+                parts.append("主流分类：" + "、".join(str(c["category"]) for c in topc))
+            opps = [o for o in (res.get("opportunities") or []) if o.get("tag")]
+            if opps:
+                topo = sorted(opps, key=lambda o: o.get("opportunity_score") or 0, reverse=True)[:6]
+                parts.append("当前开书机会（份额上升的题材）：" + "、".join(
+                    f"{o.get('category') or ''}·{o['tag']}".strip("·") for o in topo))
+            directive = "\n".join(parts)
+    except Exception as e:
+        logger.debug("platform market analysis skipped: %s", e)
+    _platform_market_cache[plat_code] = (_t.time(), directive)
+    return directive
+
+
 def _load_platform_directive(project_id: str, exclude: set | None = None) -> str:
-    """Ground the project's publishing platform in real market-database
-    data (genres / tags / ranked works for that platform), plus the static
-    style profile as a supplement."""
+    """Ground the project's publishing platform in real data — the genre /
+    tag share conclusions from the market-database analysis panel."""
     if exclude and "platform" in exclude:
         return ""
     try:
@@ -94,29 +132,22 @@ def _load_platform_directive(project_id: str, exclude: set | None = None) -> str
         platform = str(proj.get("platform") or "").strip()
         if not platform:
             return ""
-        parts = [f"目标发布平台：{platform}"]
-        try:
-            from ui.backend.app.routers.db_api import market_brief
-
-            brief = str((market_brief(platform) or {}).get("brief") or "").strip()
-            if brief:
-                parts.append(f"【该平台市场数据（来自市场数据库）】\n{brief}")
-        except Exception as me:
-            logger.debug("platform market brief skipped: %s", me)
-        try:
-            from analysis.feature_extraction.platform_profiles import get_platform_directive
-
-            directive = str(get_platform_directive(platform) or "").strip()
-            if directive:
-                parts.append(f"【平台风格参考】\n{directive}")
-        except Exception:
-            pass
-        if len(parts) == 1:
+        low = platform.lower()
+        if "番茄" in platform or "fanqie" in low:
+            plat_code = "fanqie"
+        elif "起点" in platform or "qidian" in low:
+            plat_code = "qidian"
+        else:
+            plat_code = "both"
+        directive = _build_platform_market_directive(plat_code)
+        if not directive and plat_code != "both":
+            directive = _build_platform_market_directive("both")
+        if not directive:
             return ""
-        body = _clip("\n\n".join(parts), 1800)
+        body = _clip(f"目标发布平台：{platform}\n{directive}", 1800)
         return _section(
-            "目标平台特性（基于市场数据库真实数据）",
-            f"{body}\n（以上为平台市场与风格参考；若与本章具体指令冲突，以章节指令为准。）",
+            "目标平台市场特性（基于市场数据库分析面板的真实数据）",
+            f"{body}\n（以上为该平台真实题材 / 份额分析；与本章具体指令冲突时以章节指令为准。）",
         )
     except Exception as e:
         logger.debug("platform directive skipped: %s", e)

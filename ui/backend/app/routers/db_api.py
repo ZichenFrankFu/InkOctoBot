@@ -198,6 +198,54 @@ def market_brief(platform: str | None = None):
     return {"brief": "\n".join(parts)}
 
 
+@router.get("/opening_analysis")
+def opening_analysis(platform: str | None = None):
+    """Aggregate stats on the crawled opening chapters (first_n_chapters)."""
+    con = _get_con()
+    if con is None:
+        return {"available": False}
+    with con:
+        if not _table_exists(con, "first_n_chapters"):
+            return {"available": False}
+        use_plat = bool(platform) and _table_exists(con, "novels")
+        frm = "first_n_chapters fc"
+        cond = ""
+        params: list = []
+        if use_plat:
+            frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
+            cond = " WHERE n.platform=?"
+            params = [platform]
+        novels_with = con.execute(
+            f"SELECT COUNT(DISTINCT fc.novel_uid) c FROM {frm}{cond}", params).fetchone()["c"]
+        total_ch = con.execute(
+            f"SELECT COUNT(*) c FROM {frm}{cond}", params).fetchone()["c"]
+        w_cond = (cond + " AND" if cond else " WHERE") + " fc.chapter_num=1 AND fc.word_count > 0"
+        rows = con.execute(
+            f"SELECT fc.word_count w FROM {frm}{w_cond}", params).fetchall()
+    words = sorted(int(r["w"]) for r in rows if r["w"])
+    n = len(words)
+    buckets = {"<1000": 0, "1000–2000": 0, "2000–3000": 0, "3000–4000": 0, "≥4000": 0}
+    for w in words:
+        if w < 1000: buckets["<1000"] += 1
+        elif w < 2000: buckets["1000–2000"] += 1
+        elif w < 3000: buckets["2000–3000"] += 1
+        elif w < 4000: buckets["3000–4000"] += 1
+        else: buckets["≥4000"] += 1
+    return {
+        "available": True,
+        "novels_with_chapters": novels_with,
+        "total_chapters": total_ch,
+        "first_chapter": {
+            "count": n,
+            "avg_words": round(sum(words) / n) if n else 0,
+            "median_words": words[n // 2] if n else 0,
+            "min_words": words[0] if n else 0,
+            "max_words": words[-1] if n else 0,
+            "distribution": buckets,
+        },
+    }
+
+
 @router.get("/info")
 def db_info():
     if settings.test_mode and settings.data_dir:
