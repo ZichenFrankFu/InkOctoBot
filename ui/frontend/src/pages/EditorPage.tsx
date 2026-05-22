@@ -570,13 +570,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const sessionIdRef = useRef<string | null>(null);
   const genModeRef = useRef<"single" | "cluster">("single");
   const [manualPrompt, setManualPrompt] = useState<{ step: string; prompt: string } | null>(null);
-  const [manifest, setManifest] = useState<{
-    rag: { key: string; label: string; present: boolean }[];
-    default_skills: { name: string; domain: string }[];
-    learned_skills: { name: string; description?: string }[];
-    writing_knowledge: { id: string; title: string }[];
-  } | null>(null);
+  const [manifest, setManifest] = useState<ContextManifest | null>(null);
   const [skillSelection, setSkillSelection] = useState<Record<string, boolean>>({});
+  const [ragExcludes, setRagExcludes] = useState<Set<string>>(new Set());
   const modelSnapshotRef = useRef<{ provider: string; model: string } | null>(null);
   const [modelChanged, setModelChanged] = useState(false);
 
@@ -905,7 +901,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   // writing knowledge for the creation tab's transparency panel.
   useEffect(() => {
     if (!activeChId) { setManifest(null); return; }
-    apiGet<any>(`/api/generation/context-manifest?project_id=${encodeURIComponent(projectId || "default")}&chapter_id=${encodeURIComponent(activeChId)}&chapter_num=${chapterNum}`)
+    const mode = aiTab === "cluster" ? "cluster" : aiTab === "eval" ? "eval" : "single";
+    apiGet<ContextManifest>(`/api/generation/context-manifest?project_id=${encodeURIComponent(projectId || "default")}&chapter_id=${encodeURIComponent(activeChId)}&chapter_num=${chapterNum}&mode=${mode}`)
       .then(m => {
         setManifest(m);
         setSkillSelection(prev => {
@@ -917,7 +914,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         });
       })
       .catch(() => setManifest(null));
-  }, [projectId, activeChId, chapterNum]);
+  }, [projectId, activeChId, chapterNum, aiTab]);
 
   const selectedSkillNames = useMemo(
     () => (manifest?.learned_skills || [])
@@ -927,6 +924,14 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   const toggleSkill = useCallback((name: string) => {
     setSkillSelection(prev => ({ ...prev, [name]: prev[name] === false }));
+  }, []);
+
+  const toggleRagItem = useCallback((key: string) => {
+    setRagExcludes(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
   }, []);
 
   const buildGenPayload = useCallback((): Record<string, any> => ({
@@ -940,10 +945,13 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     existing_content: content || "",
     chapter_num: chapterNum,
     references: activeCh?.references || [],
-    referenced_events: activeCh?.referenced_events || [],
-    referenced_inspirations: activeCh?.referenced_inspirations || [],
+    referenced_events: (activeCh?.referenced_events || []).filter((e: any) =>
+      !ragExcludes.has(`referenced_materials::event:${e.id || e.name || e.description || ""}`)),
+    referenced_inspirations: (activeCh?.referenced_inspirations || []).filter((x: any) =>
+      !ragExcludes.has(`referenced_materials::insp:${x.id || x.title || x.content || ""}`)),
     skills: selectedSkillNames,
-  }), [activeCh, projectId, activeChId, content, chapterNum, selectedSkillNames]);
+    rag_excludes: Array.from(ragExcludes),
+  }), [activeCh, projectId, activeChId, content, chapterNum, selectedSkillNames, ragExcludes]);
 
   const fetchGenPrompt = useCallback(async (): Promise<string> => {
     const r = await apiPost<{ prompt: string }>("/api/generation/quick-generate", {
@@ -1061,8 +1069,10 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     const synopsis = activeCh.synopsis || "";
     const chapterCharacters = activeCh.characters || [];
     const chapterReferences = activeCh.references || [];
-    const chapterRefEvents = activeCh.referenced_events || [];
-    const chapterRefInsps = activeCh.referenced_inspirations || [];
+    const chapterRefEvents = (activeCh.referenced_events || []).filter((e: any) =>
+      !ragExcludes.has(`referenced_materials::event:${e.id || e.name || e.description || ""}`));
+    const chapterRefInsps = (activeCh.referenced_inspirations || []).filter((x: any) =>
+      !ragExcludes.has(`referenced_materials::insp:${x.id || x.title || x.content || ""}`));
     setChatMessages([{
       agent: "System",
       content: `Pipeline 启动！基于大纲「${synopsis.slice(0, 50)}${synopsis.length > 50 ? "..." : ""}」开始生成。${chapterCharacters.length > 0 ? `\n关联角色：${chapterCharacters.join("、")}` : ""}${chapterReferences.length > 0 ? `\n参考作品：${chapterReferences.length}部` : ""}${chapterRefEvents.length > 0 ? `\n关联事件：${chapterRefEvents.length}个` : ""}${chapterRefInsps.length > 0 ? `\n关联灵感：${chapterRefInsps.length}条` : ""}`,
@@ -1084,6 +1094,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         character_aliases: activeCh.character_aliases || {},
         manual,
         skills: selectedSkillNames,
+        rag_excludes: Array.from(ragExcludes),
       });
       sessionIdRef.current = resp.session_id;
       // Persist session so it survives page navigation
@@ -1092,7 +1103,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     } catch {
       runQuickGenerate();
     }
-  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY, selectedSkillNames]);
+  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY, selectedSkillNames, ragExcludes]);
 
   const submitManualResult = useCallback(async (text: string) => {
     const sid = sessionIdRef.current;
@@ -1430,9 +1441,12 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               onApplyPaste={applyPlainPaste}
               manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
               manifest={manifest} skillSelection={skillSelection} onToggleSkill={toggleSkill}
+              ragExcludes={ragExcludes} onToggleRagItem={toggleRagItem}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
-            {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId} />}
+            {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId}
+              chapterId={activeChId} manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
+              onToggleSkill={toggleSkill} onToggleRagItem={toggleRagItem} />}
           </div>
         </div>
         ) : (
@@ -2015,6 +2029,14 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
+type RagItem = { id: string; label: string };
+type ContextManifest = {
+  rag: { key: string; label: string; present: boolean; items: RagItem[] }[];
+  default_skills: { name: string; domain: string }[];
+  learned_skills: { name: string; description?: string }[];
+  writing_knowledge: { id: string; title: string }[];
+};
+
 /** Normalize a persisted aiTab value (migrates the old "inspire" tab). */
 function normalizeAiTab(v: any): "outline" | "single" | "cluster" | "rewrite" | "eval" {
   if (v === "inspire" || v === "single") return "single";
@@ -2029,20 +2051,107 @@ function formatSkillsUsed(skills?: string[]): string {
     : "本次创作未启用自定义技能";
 }
 
-function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, onDeleteMessage }: {
+/** Transparency panel: skills used + per-item RAG context (de-selectable).
+ *  Shared by the creation tabs and the 评估 tab. */
+function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem }: {
+  manifest: ContextManifest | null;
+  skillSelection: Record<string, boolean>;
+  ragExcludes: Set<string>;
+  onToggleSkill: (name: string) => void;
+  onToggleRagItem: (key: string) => void;
+}) {
+  const [ragOpen, setRagOpen] = useState(false);
+  if (!manifest) return null;
+
+  const tag = (t: string) => (
+    <span style={{
+      fontSize: 9, padding: "1px 5px", borderRadius: 8, marginRight: 2,
+      background: "var(--bg-app)", border: "1px solid var(--border)", color: "var(--text-tertiary)",
+    }}>{t}</span>
+  );
+  const skillRow = (key: string, label: string, t: string, checked: boolean,
+                    onToggle?: () => void) => (
+    <label key={key} style={{
+      display: "flex", alignItems: "center", gap: 4, fontSize: 11,
+      cursor: onToggle ? "pointer" : "default", color: "var(--text-secondary)",
+    }}>
+      <input type="checkbox" checked={checked} disabled={!onToggle}
+        onChange={() => onToggle?.()} style={{ margin: 0 }} />
+      {tag(t)}{label}
+    </label>
+  );
+
+  const allKeys = manifest.rag.flatMap(r => r.items.map(it => `${r.key}::${it.id}`));
+  const selCount = allKeys.filter(k => !ragExcludes.has(k)).length;
+  const hasSkills = manifest.default_skills.length + manifest.learned_skills.length
+    + manifest.writing_knowledge.length > 0;
+
+  return (
+    <div style={{
+      marginBottom: 6, padding: "8px 10px", background: "var(--bg-surface)",
+      borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
+    }}>
+      <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
+        调用的技能（勾选本次启用）
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+        {manifest.default_skills.map(s => skillRow("d:" + s.name, s.name, "默认", true))}
+        {manifest.learned_skills.map(s => skillRow(
+          "l:" + s.name, s.name, "自学习", skillSelection[s.name] !== false,
+          () => onToggleSkill(s.name)))}
+        {manifest.writing_knowledge.map(k => skillRow(
+          "k:" + k.id, k.title || "（无题）", "写作知识",
+          !ragExcludes.has(`writing_knowledge::${k.id}`),
+          () => onToggleRagItem(`writing_knowledge::${k.id}`)))}
+        {!hasSkills && <span className="text-xs text-muted">本次无可调用技能</span>}
+      </div>
+      <button onClick={() => setRagOpen(o => !o)} style={{
+        width: "100%", textAlign: "left", background: "none", border: "none",
+        padding: 0, cursor: "pointer", fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
+      }}>
+        {ragOpen ? "▾" : "▸"} 引用的 RAG 上下文（已启用 {selCount}/{allKeys.length} 项）
+      </button>
+      {ragOpen && manifest.rag.map(cat => {
+        const sel = cat.items.filter(it => !ragExcludes.has(`${cat.key}::${it.id}`)).length;
+        return (
+          <div key={cat.key} style={{ marginTop: 6 }}>
+            <div className="text-xs" style={{ color: "var(--text-tertiary)", marginBottom: 2 }}>
+              {cat.label}{cat.items.length > 0 ? ` ·已选 ${sel}/${cat.items.length}` : ""}
+            </div>
+            {cat.items.length > 0 ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {cat.items.map(it => {
+                  const key = `${cat.key}::${it.id}`;
+                  return (
+                    <label key={key} style={{
+                      display: "flex", alignItems: "center", gap: 4, fontSize: 11,
+                      cursor: "pointer", color: "var(--text-secondary)",
+                    }}>
+                      <input type="checkbox" checked={!ragExcludes.has(key)}
+                        onChange={() => onToggleRagItem(key)} style={{ margin: 0 }} />
+                      {it.label}
+                    </label>
+                  );
+                })}
+              </div>
+            ) : <span className="text-xs text-muted">无</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onDeleteMessage }: {
   mode: "single" | "cluster";
   steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
   onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
   manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
-  manifest?: {
-    rag: { key: string; label: string; present: boolean }[];
-    default_skills: { name: string; domain: string }[];
-    learned_skills: { name: string; description?: string }[];
-    writing_knowledge: { id: string; title: string }[];
-  } | null;
+  manifest?: ContextManifest | null;
   skillSelection?: Record<string, boolean>; onToggleSkill?: (name: string) => void;
+  ragExcludes?: Set<string>; onToggleRagItem?: (key: string) => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -2352,81 +2461,13 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
       {/* Generation controls */}
       {!generating && !waitingForConfirm && (
         <div style={{ marginBottom: 6 }}>
-          {manifest && (
-            <div style={{
-              marginBottom: 6, padding: "8px 10px", background: "var(--bg-surface)",
-              borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
-            }}>
-              <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
-                引用的 RAG 上下文
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-                {manifest.rag.map(r => (
-                  <span key={r.key} style={{
-                    fontSize: 10, padding: "2px 8px", borderRadius: 10,
-                    background: r.present ? "var(--accent-subtle)" : "transparent",
-                    color: r.present ? "var(--accent)" : "var(--text-disabled)",
-                    border: `1px solid ${r.present ? "var(--accent)" : "var(--border)"}`,
-                  }}>
-                    {r.present ? "✓ " : "○ "}{r.label}
-                  </span>
-                ))}
-              </div>
-              <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
-                默认技能（系统内置，自动调用）
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-                {manifest.default_skills.length > 0
-                  ? manifest.default_skills.map(s => (
-                      <span key={s.name} style={{
-                        fontSize: 10, padding: "2px 8px", borderRadius: 10,
-                        background: "var(--bg-app)", color: "var(--text-secondary)",
-                        border: "1px solid var(--border)",
-                      }}>{s.name}</span>
-                    ))
-                  : <span className="text-xs text-muted">无</span>}
-              </div>
-              <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
-                自学习技能（勾选启用，注入 prompt）
-              </div>
-              {manifest.learned_skills.length > 0 ? (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-                  {manifest.learned_skills.map(s => (
-                    <label key={s.name} style={{
-                      display: "flex", alignItems: "center", gap: 4, fontSize: 11,
-                      cursor: "pointer", color: "var(--text-secondary)",
-                    }}>
-                      <input
-                        type="checkbox"
-                        checked={(skillSelection || {})[s.name] !== false}
-                        onChange={() => onToggleSkill?.(s.name)}
-                        style={{ margin: 0 }}
-                      />
-                      {s.name}
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-xs text-muted" style={{ marginBottom: 8 }}>
-                  暂无自学习技能，可在「智能体」页学习后在此勾选启用。
-                </div>
-              )}
-              <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
-                写作知识（在项目设置中引用）
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {manifest.writing_knowledge.length > 0
-                  ? manifest.writing_knowledge.map(k => (
-                      <span key={k.id} style={{
-                        fontSize: 10, padding: "2px 8px", borderRadius: 10,
-                        background: "var(--bg-app)", color: "var(--text-secondary)",
-                        border: "1px solid var(--border)",
-                      }}>{k.title}</span>
-                    ))
-                  : <span className="text-xs text-muted">无</span>}
-              </div>
-            </div>
-          )}
+          <ContextPanel
+            manifest={manifest || null}
+            skillSelection={skillSelection || {}}
+            ragExcludes={ragExcludes || new Set()}
+            onToggleSkill={(n) => onToggleSkill?.(n)}
+            onToggleRagItem={(k) => onToggleRagItem?.(k)}
+          />
           {mode === "single" ? (
             <>
               {onStartPlain && (
@@ -2444,17 +2485,19 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
               )}
             </>
           ) : (
-            <div style={{ display: "flex", gap: 6 }}>
-              <button className="btn-primary" style={{ flex: 1 }} onClick={() => onStart(false)}
+            <>
+              <button className="btn-primary" style={{ width: "100%" }} onClick={() => onStart(false)}
                 title="多 Agent 协作 Pipeline（导演 → 角色 → 编辑 → 评估），调用 AI 大模型 API">
                 {chatMessages.length > 0 ? "重新集群创作" : "集群式智能体创作"}
               </button>
-              <button className="btn" style={{ flex: 1, borderColor: "var(--indigo)", color: "var(--indigo)" }}
-                onClick={() => onStart(true)}
-                title="逐 agent 暂停：复制该步 prompt 到 AI大模型网页版、粘贴返回结果再继续">
-                AI大模型网页版
-              </button>
-            </div>
+              <div style={{ marginTop: 6 }}>
+                <button className="btn" style={{ width: "100%", borderColor: "var(--indigo)", color: "var(--indigo)" }}
+                  onClick={() => onStart(true)}
+                  title="逐 agent 暂停：复制该步 prompt 到 AI大模型网页版、粘贴返回结果再继续">
+                  AI大模型网页版（逐 agent 复制 prompt / 粘贴结果）
+                </button>
+              </div>
+            </>
           )}
         </div>
       )}
@@ -2714,18 +2757,25 @@ function ScoreDots({ score, max }: { score: number; max: number }) {
 
 /** 评估 tab — evaluate the current chapter text on demand (no need to
  *  generate first), or show the result from a pipeline run. */
-function EvalTab({ result, chapterContent, projectId }: { result: EvalResult | null; chapterContent: string; projectId: string }) {
+function EvalTab({ result, chapterContent, projectId, chapterId, manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem }: {
+  result: EvalResult | null; chapterContent: string; projectId: string; chapterId: string;
+  manifest: ContextManifest | null; skillSelection: Record<string, boolean>; ragExcludes: Set<string>;
+  onToggleSkill: (name: string) => void; onToggleRagItem: (key: string) => void;
+}) {
   const { toast } = useToast();
   const [localResult, setLocalResult] = useState<EvalResult | null>(null);
   const [evaluating, setEvaluating] = useState(false);
   const displayResult = localResult || result;
+  const evalBody = () => ({
+    project_id: projectId, chapter_id: chapterId, rag_excludes: Array.from(ragExcludes),
+  });
 
   const runEval = async () => {
     const text = (chapterContent || "").trim();
     if (!text) { toast("当前章节没有正文可评估", "error"); return; }
     setEvaluating(true);
     try {
-      const resp = await apiPost<{ evaluation: EvalResult }>("/api/generation/evaluate", { text, project_id: projectId });
+      const resp = await apiPost<{ evaluation: EvalResult }>("/api/generation/evaluate", { text, ...evalBody() });
       if (resp.evaluation) setLocalResult(resp.evaluation);
       else toast("评估未返回结果", "error");
     } catch (e: any) {
@@ -2747,6 +2797,10 @@ function EvalTab({ result, chapterContent, projectId }: { result: EvalResult | n
 
   return (
     <div>
+      <ContextPanel
+        manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
+        onToggleSkill={onToggleSkill} onToggleRagItem={onToggleRagItem}
+      />
       <div style={{ marginBottom: 12 }}>
         <button className="btn-primary" style={{ width: "100%" }} onClick={runEval} disabled={evaluating}>
           {evaluating ? "评估中..." : "评估当前正文"}
@@ -2754,10 +2808,11 @@ function EvalTab({ result, chapterContent, projectId }: { result: EvalResult | n
       </div>
       <div style={{ marginBottom: 12 }}>
         <WebLLMPromptPanel
+          title="AI大模型网页版"
           fetchPrompt={async () => {
             const text = (chapterContent || "").trim();
             if (!text) throw new Error("当前章节没有正文可评估");
-            const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true, project_id: projectId });
+            const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true, ...evalBody() });
             return r.prompt || "";
           }}
           onApplyResult={applyPastedEval}

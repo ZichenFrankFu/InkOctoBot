@@ -766,6 +766,8 @@ def _creation_default_skills(mode: str = "cluster") -> list[dict]:
         deact = _get_deactivated()
         if mode == "single":
             want_names, want_domains = {"editor_write"}, set()
+        elif mode == "eval":
+            want_names, want_domains = set(), {"evaluation"}
         else:
             want_names, want_domains = set(), {"production", "evaluation"}
         out: list[dict] = []
