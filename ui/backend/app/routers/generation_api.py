@@ -597,37 +597,19 @@ def health():
     return {"status": "ok", "router": "generation"}
 
 
-def _format_referenced_materials(events: list[dict], inspirations: list[dict]) -> str:
-    """Render chapter-linked chronicle events + inspirations as a text
-    block the generation pipeline can use as background reference."""
-    blocks: list[str] = []
-    if events:
-        lines = ["【关联参考事件】"]
-        for e in events:
-            wt = str(e.get("work_title") or "").strip()
-            nm = str(e.get("name") or "").strip()
-            desc = str(e.get("description") or "").strip()
-            head = f"《{wt}》{nm}" if wt else nm
-            lines.append(f"- {head}：{desc}" if desc else f"- {head}")
-        blocks.append("\n".join(lines))
-    if inspirations:
-        lines = ["【关联灵感】"]
-        for ins in inspirations:
-            t = str(ins.get("title") or "").strip()
-            c = str(ins.get("content") or "").strip()
-            lines.append(f"- {t}：{c}" if t else f"- {c}")
-        blocks.append("\n".join(lines))
-    return "\n\n".join(blocks)
-
-
 @router.post("/start")
 async def start_generation(req: GenerateRequest):
     session_id = f"gen_{uuid.uuid4().hex[:12]}"
     req_data = req.model_dump()
-    # Fold the chapter's linked chronicle events + inspirations into
-    # world_rules so scene planning treats them as background reference.
-    materials = _format_referenced_materials(
-        req.referenced_events, req.referenced_inspirations)
+    # Fold the chapter's 大纲-tab linked reference works (with their
+    # full-book outline / characters / rhythm) + inspirations into
+    # world_rules so the pipeline agents share the single-agent grounding.
+    try:
+        from ._rag_context import build_referenced_materials_block
+        materials = build_referenced_materials_block(
+            req.referenced_events, req.referenced_inspirations, _get_db_path())
+    except Exception:
+        materials = ""
     if materials:
         existing = (req_data.get("world_rules") or "").strip()
         req_data["world_rules"] = f"{existing}\n\n{materials}".strip() if existing else materials

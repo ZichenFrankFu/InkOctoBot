@@ -30,7 +30,7 @@ _BUDGET = {
     "character_cards": 1800,
     "worldbook": 1600,
     "reference_summary": 2000,
-    "referenced_materials": 1400,
+    "referenced_materials": 2600,
     "writing_knowledge": 1600,
     "writing_skills": 2400,
     "project_memory": 1600,
@@ -281,6 +281,16 @@ def _condense_ref_rhythm(raw: Any, style_fp: Any) -> str:
             kinds = [k for k in kinds if k]
             if kinds:
                 parts.append("节奏分布：" + "、".join(kinds))
+        ph: list[str] = []
+        for key, label in (("payoff_density", "爽点密度"), ("hook_density", "钩子密度")):
+            v = data.get(key)
+            if v is not None:
+                try:
+                    ph.append(f"{label} {float(v):.0%}")
+                except Exception:
+                    pass
+        if ph:
+            parts.append("爽点 / 钩子：" + "、".join(ph))
     fp = _coerce_json(style_fp)
     if isinstance(fp, dict):
         bits: list[str] = []
@@ -548,28 +558,70 @@ def build_skills_block(skills: list[str] | None) -> str:
 def build_referenced_materials_block(
     events: list[dict] | None,
     inspirations: list[dict] | None,
+    db_path: str = "",
 ) -> str:
-    """Format the chapter's linked chronicle events + inspirations into a
-    prompt block so single-agent generation can draw on them as reference."""
-    lines: list[str] = []
+    """Build the chapter's reference block from its 大纲-tab linked events
+    and inspirations. Each referenced work is enriched from the reference
+    database with its full-book plot outline, character roster and
+    rhythm / payoff / hook profile."""
+    by_work: dict[str, list[dict]] = {}
     for e in (events or []):
-        wt = str(e.get("work_title") or e.get("ref_title") or "").strip()
-        nm = str(e.get("name") or "").strip()
-        desc = str(e.get("description") or "").strip()
-        head = (f"《{wt}》{nm}" if wt else nm).strip()
-        if not head and not desc:
-            continue
-        lines.append(f"- 参考事件 {head}：{desc}" if desc else f"- 参考事件 {head}")
+        rid = str(e.get("ref_id") or e.get("work_title") or e.get("ref_title") or "")
+        by_work.setdefault(rid, []).append(e)
+    rdb = None
+    if db_path and by_work:
+        try:
+            from rag.reference_db import ReferenceDB
+
+            rdb = ReferenceDB(db_path)
+        except Exception:
+            rdb = None
+    blocks: list[str] = []
+    for rid, evs in by_work.items():
+        wt = str(evs[0].get("work_title") or evs[0].get("ref_title") or rid).strip()
+        seg = [f"《{wt}》"]
+        work = None
+        if rdb is not None:
+            try:
+                work = rdb.get_work(rid)
+            except Exception:
+                work = None
+        if work:
+            for cond in (
+                _condense_ref_plot(work.get("plot_outline_json")),
+                _condense_ref_characters(work.get("extracted_characters_json")),
+                _condense_ref_rhythm(work.get("rhythm_json"), work.get("style_fingerprint_json")),
+            ):
+                if cond and cond.strip():
+                    seg.append(cond.strip())
+        ev_lines: list[str] = []
+        for e in evs:
+            nm = str(e.get("name") or "").strip()
+            desc = str(e.get("description") or "").strip()
+            ch = str(e.get("chapter") or "").strip()
+            head = nm + (f"（{ch}）" if ch else "")
+            if not head and not desc:
+                continue
+            ev_lines.append(f"- {head}：{desc}" if desc else f"- {head}")
+        if ev_lines:
+            seg.append("关联事件（user 选取）：\n" + "\n".join(ev_lines))
+        if len(seg) > 1:
+            blocks.append("\n".join(seg))
+    insp_lines: list[str] = []
     for ins in (inspirations or []):
         t = str(ins.get("title") or "").strip()
         c = str(ins.get("content") or "").strip()
         if not t and not c:
             continue
-        lines.append(f"- 关联灵感 {t}：{c}" if t else f"- 关联灵感 {c}")
-    if not lines:
+        insp_lines.append(f"- {t}：{c}" if t else f"- {c}")
+    if insp_lines:
+        blocks.append("关联灵感：\n" + "\n".join(insp_lines))
+    if not blocks:
         return ""
-    body = _clip("\n".join(lines), _BUDGET["referenced_materials"])
-    return _section("关联参考事件与灵感", body)
+    body = _clip("\n\n".join(blocks), _BUDGET["referenced_materials"])
+    return _section(
+        "关联参考作品与灵感（参考作品含全书剧情大纲 / 角色 / 节奏·爽点·钩子）", body,
+    )
 
 
 def _active_learned_skills() -> list[dict]:
@@ -999,6 +1051,13 @@ def single_agent_vars(
     ``/quick-generate`` and the prompt preview endpoint so the previewed,
     copied and generated prompt are identical."""
     characters = characters or []
+    if db_path is None:
+        try:
+            from ui.backend.app.routers.generation_api import _get_db_path
+
+            db_path = _get_db_path()
+        except Exception:
+            db_path = ""
     ctx = build_generation_context(
         project_id, chapter_num, characters, db_path=db_path, skills=skills,
         chapter_id=chapter_id, rag_excludes=rag_excludes)
@@ -1045,6 +1104,6 @@ def single_agent_vars(
     if web_mode:
         blocks["skills_block"] = _load_writing_skills(skills, web_mode=True)
     blocks["referenced_materials"] = build_referenced_materials_block(
-        referenced_events, referenced_inspirations,
+        referenced_events, referenced_inspirations, db_path or "",
     )
     return blocks
