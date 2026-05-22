@@ -503,20 +503,17 @@ def build_referenced_materials_block(
     return _section("关联参考事件与灵感", body)
 
 
-def _load_writing_skills() -> str:
-    """Inject the active learned skills (Claude-style SKILL.md) so the
-    generating model can self-select and apply relevant writing techniques.
-
-    Only user-created learned skills are injected — built-in extraction /
-    evaluation skills are not writing techniques. The generating model
-    decides which of the listed skills apply to the current chapter."""
+def _active_learned_skills() -> list[dict]:
+    """Return the user's active learned skills as
+    ``[{name, description, body}]`` — the shared source for the skill
+    prompt block and the skill-name list surfaced in the UI."""
     try:
         from ui.backend.app.routers.skill_api import (
             _get_registry, _get_deactivated, _skill_public_dict,
         )
         registry = _get_registry()
         deactivated = _get_deactivated()
-        parts: list[str] = []
+        out: list[dict] = []
         for skill in registry._skills.values():
             try:
                 info = _skill_public_dict(skill, deactivated)
@@ -527,22 +524,66 @@ def _load_writing_skills() -> str:
             name = str(info.get("display_name") or info.get("name") or "").strip()
             if not name:
                 continue
-            desc = str(info.get("description") or "").strip()
-            body = str(info.get("skill_md") or "").strip()
-            seg = f"### {name}"
-            if desc:
-                seg += f"\n{desc}"
-            if body:
-                seg += f"\n{body}"
-            parts.append(seg)
-        if not parts:
-            return ""
-        body = _clip("\n\n".join(parts), _BUDGET["writing_skills"])
-        return _section(
-            "可用创作技能（请自动判断本章适用哪些技能并运用，无需全部使用）", body,
-        )
+            out.append({
+                "name": name,
+                "description": str(info.get("description") or "").strip(),
+                "body": str(info.get("skill_md") or "").strip(),
+            })
+        return out
     except Exception as e:
-        logger.debug("writing skills block skipped: %s", e)
+        logger.debug("active learned skills skipped: %s", e)
+        return []
+
+
+def active_writing_skill_names() -> list[str]:
+    """Public: display names of the active learned skills that generation
+    injects — surfaced in the UI so the user sees which skills were used."""
+    return [s["name"] for s in _active_learned_skills()]
+
+
+def _load_writing_skills() -> str:
+    """Inject the active learned skills (Claude-style SKILL.md) so the
+    generating model can self-select and apply relevant writing techniques.
+
+    Only user-created learned skills are injected — built-in extraction /
+    evaluation skills are not writing techniques. The generating model
+    decides which of the listed skills apply to the current chapter."""
+    skills = _active_learned_skills()
+    if not skills:
+        return ""
+    parts: list[str] = []
+    for s in skills:
+        seg = f"### {s['name']}"
+        if s["description"]:
+            seg += f"\n{s['description']}"
+        if s["body"]:
+            seg += f"\n{s['body']}"
+        parts.append(seg)
+    body = _clip("\n\n".join(parts), _BUDGET["writing_skills"])
+    return _section(
+        "可用创作技能（请自动判断本章适用哪些技能并运用，无需全部使用）", body,
+    )
+
+
+def build_rag_digest(
+    project_id: str, chapter_num: int = 1, characters: list[str] | None = None,
+) -> str:
+    """Fold the project's RAG blocks (memory / character cards / worldbook /
+    references / writing knowledge) into one grounding digest — used to give
+    the evaluator the same project context the generation step had."""
+    try:
+        ctx = build_generation_context(project_id, chapter_num, characters or [])
+        return "\n".join(
+            b for b in (
+                ctx["blocks"].get("project_memory", ""),
+                ctx["blocks"].get("character_cards", ""),
+                ctx["blocks"].get("worldbook", ""),
+                ctx["blocks"].get("reference_summary", ""),
+                ctx["blocks"].get("writing_knowledge", ""),
+            ) if (b or "").strip()
+        ).strip()
+    except Exception as e:
+        logger.debug("rag digest skipped: %s", e)
         return ""
 
 

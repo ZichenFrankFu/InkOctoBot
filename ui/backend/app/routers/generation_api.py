@@ -379,6 +379,8 @@ class EvalRequest(BaseModel):
     provider: str = ""
     model: str = ""
     prompt_only: bool = False
+    # Project to pull RAG grounding from (worldbook / characters / etc.).
+    project_id: str = ""
 
 
 def _get_user_settings() -> dict:
@@ -791,17 +793,25 @@ async def rewrite_text(req: RewriteRequest):
 @router.post("/evaluate")
 async def evaluate_text(req: EvalRequest):
     try:
+        # Ground the evaluation in the same project RAG context the
+        # generation step used (worldbook / characters / knowledge).
+        from ._rag_context import build_rag_digest
+        rag = build_rag_digest(req.project_id, req.chapter_num) if req.project_id else ""
         if req.prompt_only:
             from analysis.feature_extraction.prompts import render
             prompt = render(
                 "generation.evaluate",
                 chapter_num=req.chapter_num, checklist="", text=req.text,
             )
+            if rag:
+                prompt = f"[参考设定（用于判断一致性）]\n{rag}\n\n{prompt}"
             return {"status": "ok", "prompt": prompt}
         router_inst = _build_router(req.provider, req.model)
         from agents.evaluation.evaluator import Evaluator
-        evaluator = Evaluator(router_inst, project_id="eval")
-        result = await evaluator.evaluate_chapter(req.text, chapter_num=req.chapter_num)
+        evaluator = Evaluator(router_inst, project_id=req.project_id or "eval")
+        result = await evaluator.evaluate_chapter(
+            req.text, chapter_num=req.chapter_num, constraints=rag,
+        )
         return {"status": "ok", "evaluation": result}
     except Exception as e:
         logger.error("Evaluate error: %s", e, exc_info=True)
@@ -815,6 +825,7 @@ async def quick_generate(req: GenerateRequest):
         from models.base import LLMMessage
         from analysis.feature_extraction.prompts import render as _render_prompt
         router_inst = _build_router(req.provider, req.model)
+        skills_used: list[str] = []
 
         # When system_hint is set, it's a conversational/studio mode —
         # the synopsis is the full user message, no RAG assembly.
@@ -829,12 +840,14 @@ async def quick_generate(req: GenerateRequest):
                 return {
                     "status": "ok",
                     "prompt": f"{system_prompt}\n\n{user_content}",
+                    "skills_used": skills_used,
                 }
         else:
             # Chapter generation — assemble the RAG context and render the
             # generation.single_agent template (platform / characters /
             # worldbook / references / writing-knowledge etc.).
-            from ._rag_context import single_agent_vars
+            from ._rag_context import single_agent_vars, active_writing_skill_names
+            skills_used = active_writing_skill_names()
             prompt_vars = single_agent_vars(
                 req.project_id, req.chapter_num, req.synopsis, req.time_setting,
                 req.location, req.characters, req.existing_content,
@@ -855,7 +868,7 @@ async def quick_generate(req: GenerateRequest):
                 user_content = _render_prompt("generation.single_agent", **prompt_vars)
             system_prompt = "你是一名专业的中文网文写作者，请严格依据用户提供的资料创作。"
             if req.prompt_only:
-                return {"status": "ok", "prompt": user_content}
+                return {"status": "ok", "prompt": user_content, "skills_used": skills_used}
 
         messages = [
             LLMMessage(role="system", content=system_prompt),
@@ -873,6 +886,7 @@ async def quick_generate(req: GenerateRequest):
             "status": "ok",
             "text": response.content,
             "model": response.model,
+            "skills_used": skills_used,
             "tokens": {
                 "input": response.input_tokens,
                 "output": response.output_tokens,
@@ -1172,6 +1186,13 @@ async def _run_pipeline_background(session_id: str):
                 logger.debug("Calibration load skipped: %s", _cal_err)
 
         _emit(session_id, {"type": "pipeline_start", "session_id": session_id})
+        try:
+            from ._rag_context import active_writing_skill_names
+            _emit(session_id, {
+                "type": "skills_used", "skills": active_writing_skill_names(),
+            })
+        except Exception as _sk_err:
+            logger.debug("skills_used emit skipped: %s", _sk_err)
 
         # ── Step 1: Scene Director ──────────────────────────
         session["current_step"] = "scene_director"

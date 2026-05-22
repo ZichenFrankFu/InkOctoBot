@@ -611,6 +611,12 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       case "manual_prompt":
         setManualPrompt({ step: data.step || "", prompt: data.prompt || "" });
         break;
+      case "skills_used":
+        setChatMessages(prev => [...prev, {
+          agent: "System", content: formatSkillsUsed(data.skills),
+          status: "done", timestamp: Date.now(),
+        }]);
+        break;
       case "pipeline_start":
         setChatMessages(prev => {
           if (prev.some(m => m.content.includes("Pipeline") && m.content.includes("开始"))) return prev;
@@ -923,7 +929,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }]);
 
     try {
-      const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
+      const resp = await apiPost<{ text: string; model: string; tokens?: any; skills_used?: string[] }>("/api/generation/quick-generate", {
         ...buildGenPayload(),
       });
 
@@ -932,7 +938,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       setChatMessages(prev => {
         const filtered = prev.filter(m => m.status !== "thinking");
         return [...filtered,
-          { agent: "Actor Agents", content: `生成完成！共 ${resp.text.length} 字。使用模型: ${resp.model}`, status: "done" as const, timestamp: Date.now() },
+          { agent: "Actor Agents", content: `生成完成！共 ${resp.text.length} 字。使用模型: ${resp.model}\n${formatSkillsUsed(resp.skills_used)}`, status: "done" as const, timestamp: Date.now() },
           { agent: "System", content: "快速生成完成！点击「写入编辑器」将内容插入。", status: "done" as const, timestamp: Date.now() },
         ];
       });
@@ -961,7 +967,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }]);
     generatedTextRef.current = "";
     try {
-      const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
+      const resp = await apiPost<{ text: string; model: string; tokens?: any; skills_used?: string[] }>("/api/generation/quick-generate", {
         ...buildGenPayload(),
       });
       generatedTextRef.current = resp.text;
@@ -970,7 +976,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         const filtered = prev.filter(m => m.status !== "thinking");
         return [...filtered,
           { agent: "Editor-Writer", content: resp.text, status: "done" as const, timestamp: Date.now() },
-          { agent: "System", content: `生成完成！共 ${resp.text.length} 字。模型: ${resp.model}${resp.tokens ? ` (${resp.tokens.input}+${resp.tokens.output} tokens)` : ""}`, status: "done" as const, timestamp: Date.now() },
+          { agent: "System", content: `生成完成！共 ${resp.text.length} 字。模型: ${resp.model}${resp.tokens ? ` (${resp.tokens.input}+${resp.tokens.output} tokens)` : ""}\n${formatSkillsUsed(resp.skills_used)}`, status: "done" as const, timestamp: Date.now() },
         ];
       });
     } catch (e: any) {
@@ -1386,7 +1392,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
-            {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} />}
+            {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId} />}
           </div>
         </div>
         ) : (
@@ -1969,6 +1975,13 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
+/** One-line summary of which learned skills an AI step used. */
+function formatSkillsUsed(skills?: string[]): string {
+  return skills && skills.length
+    ? `本次创作启用技能：${skills.join("、")}`
+    : "本次创作未启用自定义技能";
+}
+
 function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualMode, onManualModeChange, manualPrompt, onSubmitManual, onDeleteMessage }: {
   steps: PipelineStatus[]; generating: boolean; onStart: () => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
@@ -2011,7 +2024,6 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
           </div>
           <WebLLMPromptPanel
             key={`${manualPrompt.step}:${manualPrompt.prompt.length}`}
-            defaultOpen
             title={`Pipeline agent prompt · ${manualPrompt.step}`}
             fetchPrompt={async () => manualPrompt.prompt}
             onApplyResult={(t) => onSubmitManual?.(t)}
@@ -2569,7 +2581,7 @@ function ScoreDots({ score, max }: { score: number; max: number }) {
 
 /** 评估 tab — evaluate the current chapter text on demand (no need to
  *  generate first), or show the result from a pipeline run. */
-function EvalTab({ result, chapterContent }: { result: EvalResult | null; chapterContent: string }) {
+function EvalTab({ result, chapterContent, projectId }: { result: EvalResult | null; chapterContent: string; projectId: string }) {
   const { toast } = useToast();
   const [localResult, setLocalResult] = useState<EvalResult | null>(null);
   const [evaluating, setEvaluating] = useState(false);
@@ -2580,7 +2592,7 @@ function EvalTab({ result, chapterContent }: { result: EvalResult | null; chapte
     if (!text) { toast("当前章节没有正文可评估", "error"); return; }
     setEvaluating(true);
     try {
-      const resp = await apiPost<{ evaluation: EvalResult }>("/api/generation/evaluate", { text });
+      const resp = await apiPost<{ evaluation: EvalResult }>("/api/generation/evaluate", { text, project_id: projectId });
       if (resp.evaluation) setLocalResult(resp.evaluation);
       else toast("评估未返回结果", "error");
     } catch (e: any) {
@@ -2612,7 +2624,7 @@ function EvalTab({ result, chapterContent }: { result: EvalResult | null; chapte
           fetchPrompt={async () => {
             const text = (chapterContent || "").trim();
             if (!text) throw new Error("当前章节没有正文可评估");
-            const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true });
+            const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true, project_id: projectId });
             return r.prompt || "";
           }}
           onApplyResult={applyPastedEval}

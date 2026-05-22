@@ -1850,9 +1850,9 @@ function GranularityControl({ refId, onApply }: {
         <div style={{ marginTop: 6 }}>
           <div className="flex" style={{ gap: 6, flexWrap: "wrap" }}>
             <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} onClick={genAI} disabled={loading}>
-              {loading ? "概括中..." : "内置 AI 概括"}
+              {loading ? "概括中..." : "AI大模型API 概括"}
             </button>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={copyPrompt}>复制 prompt</button>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={copyPrompt}>复制 prompt 以使用AI大模型网页版</button>
             <button className="btn" style={{
               fontSize: 11, padding: "3px 10px",
               borderColor: pasteMode ? "var(--accent)" : "var(--border)",

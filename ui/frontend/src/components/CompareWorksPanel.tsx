@@ -173,7 +173,7 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
   return (
     <div>
       <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
-        选择 2-8 部参考作品，对比它们的提取数据并生成一条可保存为技能的洞察。可使用内置 AI 处理，也可复制 Prompt 到网页 LLM 再粘回结果。保存后会出现在「智能体」页面的「自学习成果」标签页。
+        选择 2-8 部参考作品，对比它们的提取数据并生成一条可保存为技能的洞察。可使用AI大模型API处理，也可复制 Prompt 以使用AI大模型网页版再粘回结果。保存后会出现在「智能体」页面的「自学习成果」标签页。
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
@@ -249,7 +249,7 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
             <div className="field" style={{ marginBottom: 12 }}>
               <label className="label">处理方式</label>
               <div style={{ display: "flex", gap: 6 }}>
-                {([["ai", "内置 AI 处理"], ["manual", "复制 Prompt / 粘贴结果"]] as const).map(([k, lbl]) => (
+                {([["ai", "AI大模型API处理"], ["manual", "复制 Prompt 以使用AI大模型网页版 / 粘贴结果"]] as const).map(([k, lbl]) => (
                   <button key={k} className={mode === k ? "btn-primary" : "btn"}
                     style={{ fontSize: 11, flex: 1, padding: "5px 0" }}
                     onClick={() => setMode(k)}>{lbl}</button>
@@ -273,7 +273,7 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
                   disabled={loadingPrompt || selected.size < 2}
                   style={{ marginBottom: 8 }}
                 >
-                  {loadingPrompt ? "生成中..." : `复制对比 Prompt (${selected.size} 部作品)`}
+                  {loadingPrompt ? "生成中..." : `复制对比 Prompt 以使用AI大模型网页版 (${selected.size} 部作品)`}
                 </button>
                 {promptText && (
                   <textarea className="input font-mono" rows={4} readOnly value={promptText}

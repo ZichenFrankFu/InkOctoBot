@@ -550,8 +550,8 @@ export function UnifiedExtractionPanel({
           style={{ fontSize: 12, padding: "4px 14px" }}
           onClick={runAll}
           disabled={bulkRunning}
-          title="对每一卷的每一分段都调用内置 AI 一次性提取事件/角色/设定/风格，已提取的分段会跳过">
-          {bulkRunning ? "批量处理中…" : "使用内置 AI 一键处理全部分段"}
+          title="对每一卷的每一分段都调用AI大模型API 一次性提取事件/角色/设定/风格，已提取的分段会跳过">
+          {bulkRunning ? "批量处理中…" : "使用AI大模型API 一键处理全部分段"}
         </button>
       </div>
       {committedCount > 0 && (
@@ -759,7 +759,7 @@ function UnifiedChunkRow({
           {running && (
             <div style={{ marginBottom: 8 }}>
               <div className="text-xs" style={{ color: "var(--accent)", marginBottom: 4 }}>
-                {phase.source === "paste" ? "正在解析网页返回结果…" : "内置 AI 提取中…"}
+                {phase.source === "paste" ? "正在解析网页返回结果…" : "AI大模型API 提取中…"}
               </div>
               <div className="ink-indeterminate" />
             </div>
@@ -809,7 +809,7 @@ function UnifiedChunkRow({
                         onClick={onRunAI}
                         disabled={running}
                         style={{ fontSize: 11, padding: "3px 12px" }}>
-                  {running ? "AI 提取中…" : "用内置 AI 提取本段"}
+                  {running ? "AI 提取中…" : "用AI大模型API 提取本段"}
                 </button>
                 <button className="btn"
                         onClick={() => setShowPaste(p => !p)}

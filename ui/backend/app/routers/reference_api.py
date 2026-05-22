@@ -3988,7 +3988,7 @@ async def summarize_chronicle(ref_id: str):
         if not chronicle.get("epochs"):
             return {
                 "ok": False,
-                "error": "AI 返回为空，请改用复制 prompt 的方式",
+                "error": "AI 返回为空，请改用复制 prompt 以使用AI大模型网页版的方式",
                 "rendered_prompt": rendered_prompt,
                 "event_count": len(cleaned),
                 "events": cleaned,
@@ -4074,7 +4074,7 @@ async def summarize_plot_outline(ref_id: str, body: OutlineGranularityRequest):
     except Exception as e:
         return {"ok": False, "error": f"AI 概括失败：{str(e)[:200]}", "prompt": prompt}
     if not isinstance(result, dict) or not result.get("epochs"):
-        return {"ok": False, "error": "AI 返回为空，请改用复制 prompt 的方式", "prompt": prompt}
+        return {"ok": False, "error": "AI 返回为空，请改用复制 prompt 以使用AI大模型网页版的方式", "prompt": prompt}
     return {"ok": True, "plot_outline": result}
 
 

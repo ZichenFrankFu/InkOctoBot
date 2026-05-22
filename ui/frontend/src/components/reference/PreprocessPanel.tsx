@@ -3026,8 +3026,8 @@ function VolumeEditor(p: VolumeEditorProps) {
           <div className="flex" style={{ gap: 6 }}>
             <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
                     onClick={p.loadAutoSuggest} disabled={p.aiDetecting}
-                    title="用内置 AI 重新检测分卷边界（模型可在 设置 · Pipeline 配置 中选择）">
-              {p.aiDetecting ? "检测中…" : "使用内置AI检测"}
+                    title="用AI大模型API 重新检测分卷边界（模型可在 设置 · Pipeline 配置 中选择）">
+              {p.aiDetecting ? "检测中…" : "使用AI大模型API检测"}
             </button>
             <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
                     onClick={p.startPlanEdit}
@@ -3071,13 +3071,13 @@ function VolumeEditor(p: VolumeEditorProps) {
             </button>
             <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={p.loadAutoSuggest}
                     disabled={p.aiDetecting}
-                    title="用内置 AI 检测分卷（联网模型可用时优先联网检索官方分卷；模型可在 设置 · Pipeline 配置 中选择）">
-              {p.aiDetecting ? "检测中…" : "使用内置AI检测"}
+                    title="用AI大模型API 检测分卷（联网模型可用时优先联网检索官方分卷；模型可在 设置 · Pipeline 配置 中选择）">
+              {p.aiDetecting ? "检测中…" : "使用AI大模型API检测"}
             </button>
             <button className="btn-ghost" style={{ fontSize: 11, padding: "5px 10px" }}
                     onClick={p.showAiPrompt}
                     title="查看 / 复制发给 LLM 的 prompt（可粘到 ChatGPT、Claude.ai 等手动检测）">
-              复制 prompt
+              复制 prompt 以使用AI大模型网页版
             </button>
           </div>
         </div>
@@ -3100,7 +3100,7 @@ function VolumeEditor(p: VolumeEditorProps) {
               <button className="btn-ghost" style={{ fontSize: 11, padding: "3px 8px" }}
                       onClick={p.showAiPrompt}
                       title="查看 / 复制发给 LLM 的 prompt（可粘到 ChatGPT、Claude.ai 等手动检测）">
-                复制 prompt
+                复制 prompt 以使用AI大模型网页版
               </button>
             </div>
           </div>
