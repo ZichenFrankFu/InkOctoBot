@@ -584,15 +584,19 @@ def _load_writing_skills(only: list[str] | None = None) -> str:
     """Inject the active learned skills (Claude-style SKILL.md) so the
     generating model can apply the relevant writing techniques.
 
-    Only user-created learned skills are injected — built-in extraction /
-    evaluation skills are not writing techniques. ``only`` is the user's
-    explicit skill selection; ``None`` means inject every active skill."""
+    Always emits a block carrying an explicit Skill-Access check: when
+    skills are present they are the authority for writing; when absent the
+    prompt says so. ``only`` is the user's explicit selection (``None`` =
+    inject every active skill)."""
     skills = _active_learned_skills()
     if only is not None:
         wanted = set(only)
         skills = [s for s in skills if s["name"] in wanted]
     if not skills:
-        return ""
+        return _section(
+            "可用创作技能（Skill Access：无）",
+            "本次创作未加载任何自定义创作技能，按下方通用写作要求创作即可。",
+        )
     parts: list[str] = []
     for s in skills:
         seg = f"### {s['name']}"
@@ -602,8 +606,14 @@ def _load_writing_skills(only: list[str] | None = None) -> str:
             seg += f"\n{s['body']}"
         parts.append(seg)
     body = _clip("\n\n".join(parts), _BUDGET["writing_skills"])
+    directive = (
+        f"【写作准则】本次创作已加载 {len(skills)} 个创作技能（Skill Access：可用）。"
+        "请先判断各技能是否适用于本章，对适用的技能严格执行其指引；"
+        "当技能指令与通用写作要求冲突时，一律以技能为准。\n\n"
+    )
     return _section(
-        "可用创作技能（请自动判断本章适用哪些技能并运用，无需全部使用）", body,
+        f"可用创作技能（Skill Access：已加载 {len(skills)} 项）",
+        directive + body,
     )
 
 
@@ -926,7 +936,7 @@ def creation_context_manifest(
         "rag": rag,
         "default_skills": _creation_default_skills(mode),
         "learned_skills": [
-            {"name": s["name"], "description": s["description"]}
+            {"name": s["name"], "description": s["description"], "skill_md": s["body"]}
             for s in _active_learned_skills()
         ],
         "writing_knowledge": _project_writing_knowledge(project_id),

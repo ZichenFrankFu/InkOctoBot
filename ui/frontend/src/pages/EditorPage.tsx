@@ -2042,7 +2042,7 @@ type RagItem = { id: string; label: string };
 type ContextManifest = {
   rag: { key: string; label: string; present: boolean; items: RagItem[] }[];
   default_skills: { name: string; domain: string; step?: string }[];
-  learned_skills: { name: string; description?: string }[];
+  learned_skills: { name: string; description?: string; skill_md?: string }[];
   writing_knowledge: { id: string; title: string }[];
 };
 
@@ -2069,7 +2069,7 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
   onToggleSkill: (name: string) => void;
   onToggleRagItem: (key: string) => void;
 }) {
-  const [skillOpen, setSkillOpen] = useState(true);
+  const [skillOpen, setSkillOpen] = useState(false);
   const [ragOpen, setRagOpen] = useState(false);
   if (!manifest) return null;
 
@@ -2112,6 +2112,18 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
   const skillCount = manifest.default_skills.length + manifest.learned_skills.length
     + manifest.writing_knowledge.length;
 
+  const downloadSkills = () => {
+    const sel = manifest.learned_skills.filter(s => skillSelection[s.name] !== false);
+    if (sel.length === 0) return;
+    const md = sel.map(s => `# ${s.name}\n\n${s.skill_md || s.description || ""}`)
+      .join("\n\n---\n\n");
+    const url = URL.createObjectURL(new Blob([md], { type: "text/markdown;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = "创作技能.SKILL.md";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   return (
     <div style={{
       marginBottom: 6, padding: "8px 10px", background: "var(--bg-surface)",
@@ -2119,16 +2131,25 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
     }}>
       {sectionHeader(skillOpen, () => setSkillOpen(o => !o), `调用的 skill（${skillCount}）`)}
       {skillOpen && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0 8px" }}>
-          {manifest.default_skills.map(s => chip("d:" + s.name, s.name, true, undefined, s.step || "默认"))}
-          {manifest.learned_skills.map(s => chip(
-            "l:" + s.name, s.name, skillSelection[s.name] !== false,
-            () => onToggleSkill(s.name), "自学习"))}
-          {manifest.writing_knowledge.map(k => chip(
-            "k:" + k.id, k.title || "（无题）",
-            !ragExcludes.has(`writing_knowledge::${k.id}`),
-            () => onToggleRagItem(`writing_knowledge::${k.id}`), "写作知识"))}
-          {skillCount === 0 && <span className="text-xs text-muted">本次无可调用 skill</span>}
+        <div style={{ margin: "6px 0 8px" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {manifest.default_skills.map(s => chip("d:" + s.name, s.name, true, undefined, s.step || "默认"))}
+            {manifest.learned_skills.map(s => chip(
+              "l:" + s.name, s.name, skillSelection[s.name] !== false,
+              () => onToggleSkill(s.name), "自学习"))}
+            {manifest.writing_knowledge.map(k => chip(
+              "k:" + k.id, k.title || "（无题）",
+              !ragExcludes.has(`writing_knowledge::${k.id}`),
+              () => onToggleRagItem(`writing_knowledge::${k.id}`), "写作知识"))}
+            {skillCount === 0 && <span className="text-xs text-muted">本次无可调用 skill</span>}
+          </div>
+          {manifest.learned_skills.some(s => skillSelection[s.name] !== false) && (
+            <button className="btn" style={{ fontSize: 10, padding: "2px 10px", marginTop: 6 }}
+              onClick={downloadSkills}
+              title="下载已选自学习技能的 SKILL.md，连同复制的 prompt 一起用于网页版大模型">
+              下载 SKILL.md（用于网页版大模型）
+            </button>
+          )}
         </div>
       )}
       {sectionHeader(ragOpen, () => setRagOpen(o => !o),
