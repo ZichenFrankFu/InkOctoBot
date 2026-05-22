@@ -1852,15 +1852,16 @@ function GranularityControl({ refId, onApply }: {
             <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} onClick={genAI} disabled={loading}>
               {loading ? "概括中..." : "AI大模型API 概括"}
             </button>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={copyPrompt}>复制 prompt 以使用AI大模型网页版</button>
             <button className="btn" style={{
               fontSize: 11, padding: "3px 10px",
               borderColor: pasteMode ? "var(--accent)" : "var(--border)",
               color: pasteMode ? "var(--accent)" : "var(--text-secondary)",
-            }} onClick={() => setPasteMode(m => !m)}>{pasteMode ? "取消解析" : "解析网页结果"}</button>
+            }} onClick={() => setPasteMode(m => !m)}>AI大模型网页版</button>
           </div>
           {pasteMode && (
             <div style={{ marginTop: 6 }}>
+              <button className="btn" style={{ fontSize: 11, padding: "3px 10px", marginBottom: 6 }}
+                onClick={copyPrompt}>复制 prompt</button>
               <textarea className="input" value={pasteText} onChange={e => setPasteText(e.target.value)}
                 placeholder="把网页 LLM 返回的大纲 JSON 粘贴到这里" rows={4}
                 style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5 }} />

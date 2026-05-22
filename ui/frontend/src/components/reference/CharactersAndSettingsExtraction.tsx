@@ -13,38 +13,7 @@ import type {
   SettingItem, SettingUpdate,
   ChronicleEpoch,
 } from "./AnalysisEditors";
-import { groupByChunk, chunkLabel } from "./referenceMerge";
 import type { ChunkLoc } from "./referenceMerge";
-
-/** 分段视图 / 全书视图 toggle shared by the characters & settings tabs. */
-function ViewToggle({ mode, onChange, segmentLabel, bookLabel }: {
-  mode: "segment" | "book";
-  onChange: (m: "segment" | "book") => void;
-  segmentLabel: string;
-  bookLabel: string;
-}) {
-  return (
-    <div className="flex items-center" style={{ gap: 6 }}>
-      <span className="text-xs text-muted">视图：</span>
-      {([
-        { key: "segment" as const, label: segmentLabel },
-        { key: "book" as const, label: bookLabel },
-      ]).map(opt => (
-        <button key={opt.key} className="btn-ghost"
-                onClick={() => onChange(opt.key)}
-                style={{
-                  padding: "3px 10px", fontSize: 11,
-                  fontWeight: mode === opt.key ? 600 : 400,
-                  color: mode === opt.key ? "var(--accent)" : "var(--text-secondary)",
-                  background: mode === opt.key ? "var(--accent-subtle)" : "transparent",
-                  border: "1px solid var(--border)", borderRadius: 3,
-                }}>
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /** Collapsible group — used for the 设定 category sections (力量体系 /
  *  势力 …) so a long settings list can be folded down. */
@@ -74,19 +43,6 @@ function CollapsibleGroup({ title, color, count, children, defaultOpen = true }:
           {children}
         </div>
       )}
-    </div>
-  );
-}
-
-/** Header row for one segment bucket in 分段视图. */
-function SegmentGroupHeader({ title, count }: { title: string; count: number }) {
-  return (
-    <div className="flex items-center" style={{
-      gap: 8, padding: "4px 0 4px 8px", marginTop: 4,
-      borderLeft: "3px solid var(--accent)",
-    }}>
-      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)" }}>{title}</span>
-      <span className="text-xs text-muted">{count}</span>
     </div>
   );
 }
@@ -125,7 +81,6 @@ export function SettingsRichDisplay({ data: rawData, onSave, chunkList }: {
   onSave?: (next: SettingItem[]) => Promise<void> | void;
   chunkList?: ChunkLoc[];
 }) {
-  const [viewMode, setViewMode] = useState<"segment" | "book">("book");
   const editable = !!onSave;
   // 世界观规则 (hard_rules) was merged into 世界观 (worldview); fold any
   // legacy category so old data groups under 世界观 and the next save
@@ -178,9 +133,6 @@ export function SettingsRichDisplay({ data: rawData, onSave, chunkList }: {
     if (!groups.has(cat)) groups.set(cat, []);
     groups.get(cat)!.push(s);
   }
-  const hasSegments = !!chunkList && chunkList.length > 0;
-  const mode: "segment" | "book" = hasSegments ? viewMode : "book";
-
   const segNoOf = (firstChapter?: string): number | null => {
     if (!chunkList || chunkList.length === 0) return null;
     const m = (firstChapter || "").match(/(\d+)/);
@@ -203,41 +155,25 @@ export function SettingsRichDisplay({ data: rawData, onSave, chunkList }: {
 
   return (
     <div className="flex flex-col gap-12" style={{ marginTop: 8 }}>
-      <div className="flex items-center justify-between" style={{ gap: 8, flexWrap: "wrap" }}>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          {editable && (
-            <button className="btn" onClick={addBlank}
-                    style={{ fontSize: 11, padding: "3px 12px" }}>
-              + 添加设定
-            </button>
-          )}
-          <span className="text-xs text-muted">共 {data.length} 条设定</span>
-        </div>
-        {hasSegments && (
-          <ViewToggle mode={mode} onChange={setViewMode}
-                      segmentLabel="分段视图" bookLabel="全书（按类别）" />
+      <div className="flex items-center" style={{ gap: 8 }}>
+        {editable && (
+          <button className="btn" onClick={addBlank}
+                  style={{ fontSize: 11, padding: "3px 12px" }}>
+            + 添加设定
+          </button>
         )}
+        <span className="text-xs text-muted">共 {data.length} 条设定</span>
       </div>
-      {mode === "book" ? (
-        Array.from(groups.entries()).map(([cat, items]) => (
-          items.length > 0 ? (
-            <CollapsibleGroup key={cat}
-                              title={CATEGORY_LABEL_CN[cat] || cat}
-                              color={CATEGORY_COLOR[cat] || "var(--text-tertiary)"}
-                              count={items.length}>
-              {items.map(renderCard)}
-            </CollapsibleGroup>
-          ) : null
-        ))
-      ) : (
-        groupByChunk(data, chunkList || [], s => s.first_chapter).map((g, gi) => (
-          <CollapsibleGroup key={g.loc ? g.loc.key : `un${gi}`}
-                            title={g.loc ? chunkLabel(g.loc) : "未分段（无法定位章节）"}
-                            count={g.items.length}>
-            {g.items.map(renderCard)}
+      {Array.from(groups.entries()).map(([cat, items]) => (
+        items.length > 0 ? (
+          <CollapsibleGroup key={cat}
+                            title={CATEGORY_LABEL_CN[cat] || cat}
+                            color={CATEGORY_COLOR[cat] || "var(--text-tertiary)"}
+                            count={items.length}>
+            {items.map(renderCard)}
           </CollapsibleGroup>
-        ))
-      )}
+        ) : null
+      ))}
     </div>
   );
 }
@@ -458,7 +394,6 @@ export function CharactersRichDisplay({
    *  the 分段 their first_chapter falls into). */
   chunkList?: ChunkLoc[];
 }) {
-  const [viewMode, setViewMode] = useState<"segment" | "book">("book");
   // Pre-index chronicle events by subject so each card render is O(1).
   const eventsBySubject = React.useMemo(() => {
     const idx = new Map<string, CharacterListItem[]>();
@@ -548,9 +483,6 @@ export function CharactersRichDisplay({
       if (ra < 2) return a.originalIndex - b.originalIndex; // 主角/女主角 stable
       return frequency(b.c) - frequency(a.c);
     });
-  const hasSegments = !!chunkList && chunkList.length > 0;
-  const mode: "segment" | "book" = hasSegments ? viewMode : "book";
-
   const renderCard = ({ c, originalIndex }: { c: CharacterItem; originalIndex: number }) => (
     <CharacterCard key={originalIndex} c={c}
                    chronicleExperiences={eventsBySubject.get(c.name) || null}
@@ -561,36 +493,18 @@ export function CharactersRichDisplay({
 
   return (
     <div className="flex flex-col gap-6" style={{ marginTop: 8 }}>
-      <div className="flex items-center justify-between" style={{ gap: 8, flexWrap: "wrap" }}>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          {editable && (
-            <button className="btn" onClick={addBlank}
-                    style={{ fontSize: 11, padding: "3px 12px" }}>
-              + 添加角色
-            </button>
-          )}
-          <span className="text-xs text-muted">
-            共 {data.length} 个角色
-            {mode === "book" && " · 主角/女主角置顶，其余按出场次数排序"}
-          </span>
-        </div>
-        {hasSegments && (
-          <ViewToggle mode={mode} onChange={setViewMode}
-                      segmentLabel="分段视图" bookLabel="全书（按出场次数）" />
+      <div className="flex items-center" style={{ gap: 8 }}>
+        {editable && (
+          <button className="btn" onClick={addBlank}
+                  style={{ fontSize: 11, padding: "3px 12px" }}>
+            + 添加角色
+          </button>
         )}
+        <span className="text-xs text-muted">
+          共 {data.length} 个角色 · 主角/女主角置顶，其余按出场次数排序
+        </span>
       </div>
-      {mode === "book" ? (
-        ordered.map(renderCard)
-      ) : (
-        groupByChunk(ordered, chunkList || [], x => x.c.first_chapter).map((g, gi) => (
-          <div key={g.loc ? g.loc.key : `un${gi}`} className="flex flex-col gap-6">
-            <SegmentGroupHeader
-              title={g.loc ? chunkLabel(g.loc) : "未分段（无法定位章节）"}
-              count={g.items.length} />
-            {g.items.map(renderCard)}
-          </div>
-        ))
-      )}
+      {ordered.map(renderCard)}
     </div>
   );
 }

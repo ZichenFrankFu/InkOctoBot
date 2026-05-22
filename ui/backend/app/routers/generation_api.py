@@ -358,8 +358,9 @@ class GenerateRequest(BaseModel):
     # Per-call ephemeral prompt-template override (edited in the editor's
     # prompt preview); falls back to the registry default if it fails.
     prompt_override: str = ""
-    # Writing skills to invoke for this generation (R3 — skills_block slot).
-    skills: list[str] = []
+    # User-selected writing skills to inject. None = no explicit selection
+    # (inject every active learned skill); a list = inject exactly those.
+    skills: list[str] | None = None
     # When true, the pipeline pauses at every agent, surfaces the rendered
     # prompt, and uses the result the user pastes back from a web LLM.
     manual: bool = False
@@ -631,7 +632,7 @@ async def start_generation(req: GenerateRequest):
     try:
         from ._rag_context import build_generation_context
         ctx = build_generation_context(
-            req.project_id, req.chapter_num, req.characters)
+            req.project_id, req.chapter_num, req.characters, skills=req.skills)
         rag_text = "\n".join(
             b for b in (
                 ctx["blocks"].get("project_memory", ""),
@@ -847,7 +848,7 @@ async def quick_generate(req: GenerateRequest):
             # generation.single_agent template (platform / characters /
             # worldbook / references / writing-knowledge etc.).
             from ._rag_context import single_agent_vars, active_writing_skill_names
-            skills_used = active_writing_skill_names()
+            skills_used = active_writing_skill_names(req.skills)
             prompt_vars = single_agent_vars(
                 req.project_id, req.chapter_num, req.synopsis, req.time_setting,
                 req.location, req.characters, req.existing_content,
@@ -1189,7 +1190,8 @@ async def _run_pipeline_background(session_id: str):
         try:
             from ._rag_context import active_writing_skill_names
             _emit(session_id, {
-                "type": "skills_used", "skills": active_writing_skill_names(),
+                "type": "skills_used",
+                "skills": active_writing_skill_names(req_data.get("skills")),
             })
         except Exception as _sk_err:
             logger.debug("skills_used emit skipped: %s", _sk_err)

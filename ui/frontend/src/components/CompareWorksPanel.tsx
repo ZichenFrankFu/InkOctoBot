@@ -249,9 +249,13 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
             <div className="field" style={{ marginBottom: 12 }}>
               <label className="label">处理方式</label>
               <div style={{ display: "flex", gap: 6 }}>
-                {([["ai", "AI大模型API处理"], ["manual", "复制 Prompt 以使用AI大模型网页版 / 粘贴结果"]] as const).map(([k, lbl]) => (
+                {([["ai", "AI大模型API处理"], ["manual", "AI大模型网页版"]] as const).map(([k, lbl]) => (
                   <button key={k} className={mode === k ? "btn-primary" : "btn"}
-                    style={{ fontSize: 11, flex: 1, padding: "5px 0" }}
+                    style={{
+                      fontSize: 11, flex: 1, padding: "6px 4px",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      textAlign: "center",
+                    }}
                     onClick={() => setMode(k)}>{lbl}</button>
                 ))}
               </div>
@@ -273,7 +277,7 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
                   disabled={loadingPrompt || selected.size < 2}
                   style={{ marginBottom: 8 }}
                 >
-                  {loadingPrompt ? "生成中..." : `复制对比 Prompt 以使用AI大模型网页版 (${selected.size} 部作品)`}
+                  {loadingPrompt ? "生成中..." : `复制对比 Prompt (${selected.size} 部作品)`}
                 </button>
                 {promptText && (
                   <textarea className="input font-mono" rows={4} readOnly value={promptText}

@@ -590,7 +590,7 @@ class CompareWorksRequest(BaseModel):
     prompt_override: Optional[str] = None  # per-call ephemeral override
 
 
-_COMPARE_PROMPT_DEFAULT = """你是创作技巧分析师。下面是 {n} 部参考作品的提取数据。
+_COMPARE_PROMPT_DEFAULT = """你是创作技巧分析师。下面是 {n} 部参考作品的提取特征（剧情结构、角色原型、世界设定、叙事节奏 —— 已结构化提炼，非原文逐字数据）。
 请对比它们的 **{focus}** 特征，找出**共同模式**和**显著差异**，并提炼出一条可作为创作技巧 (Skill) 的洞察。
 
 要求：
@@ -608,7 +608,7 @@ _COMPARE_PROMPT_DEFAULT = """你是创作技巧分析师。下面是 {n} 部参�
   "tags": ["对比", "学习", ...]
 }}
 
-作品数据：
+作品特征数据：
 {bundle}
 """
 
@@ -620,6 +620,10 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
     """
     from rag.reference_db import ReferenceDB
     from ui.backend.app.settings import settings as _app_settings
+    from ui.backend.app.routers._rag_context import (
+        _condense_ref_characters, _condense_ref_settings,
+        _condense_ref_plot, _condense_ref_rhythm,
+    )
 
     if not body.ref_ids:
         raise HTTPException(400, "请至少选择一部作品")
@@ -644,45 +648,33 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
             raise HTTPException(404, f"参考作品不存在: {rid}")
         works.append(w)
 
-    def _pj(s: Optional[str]) -> Any:
-        if not s:
-            return None
-        try:
-            return json.loads(s)
-        except Exception:
-            return None
-
-    def _focused(w: dict) -> dict:
-        """Build a compact JSON bundle for one work, scoped to focus."""
-        out: dict[str, Any] = {
-            "title": w.get("title"),
-            "creator": w.get("creator"),
-            "genre": w.get("genre"),
-            "media_type": w.get("media_type"),
-        }
+    def _focused(w: dict) -> str:
+        """Condense one work into a readable feature digest (剧情/角色/
+        设定/节奏), scoped to the chosen focus — not raw extraction JSON
+        (which is dominated by low-level word/style statistics)."""
+        head = f"《{w.get('title') or '未命名'}》"
+        meta = "，".join(
+            str(x) for x in (w.get("creator"), w.get("genre"), w.get("media_type"))
+            if x
+        )
+        if meta:
+            head += f"（{meta}）"
+        segs: list[str] = []
         if body.focus in ("plot", "all"):
-            out["plot"] = _pj(w.get("plot_outline_json"))
+            segs.append(_condense_ref_plot(w.get("plot_outline_json")))
         if body.focus in ("characters", "all"):
-            out["characters"] = (_pj(w.get("extracted_characters_json")) or [])[:15]
+            segs.append(_condense_ref_characters(w.get("extracted_characters_json")))
         if body.focus in ("settings", "all"):
-            out["settings"] = (_pj(w.get("settings_json")) or [])[:15]
-        if body.focus in ("rhythm", "all"):
-            rh = _pj(w.get("rhythm_json")) or {}
-            out["rhythm"] = {
-                "coverage": rh.get("coverage"),
-                "opening_pattern": rh.get("opening_pattern"),
-                "climax_positions": rh.get("climax_positions"),
-                "shuangdian": rh.get("shuangdian"),
-                "pacing_segments": rh.get("pacing_segments"),
-                # chapter_features can be huge; sample evenly
-                "chapter_features_sample": (rh.get("chapter_features") or [])[::5],
-            }
-        if body.focus in ("style", "all"):
-            out["style_fingerprint"] = _pj(w.get("style_fingerprint_json"))
-        return out
+            segs.append(_condense_ref_settings(w.get("settings_json")))
+        if body.focus in ("rhythm", "style", "all"):
+            segs.append(_condense_ref_rhythm(
+                w.get("rhythm_json"), w.get("style_fingerprint_json")))
+        segs = [s.strip() for s in segs if s and s.strip()]
+        if not segs:
+            segs = ["（该作品尚未提取特征，请先在参考库完成特征提取）"]
+        return head + "\n" + "\n\n".join(segs)
 
-    bundle = [{"ref_id": w["ref_id"], **_focused(w)} for w in works]
-    bundle_str = json.dumps(bundle, ensure_ascii=False, indent=2)
+    bundle_str = "\n\n———\n\n".join(_focused(w) for w in works)
     # Cap bundle size to keep prompt tractable
     if len(bundle_str) > 60_000:
         bundle_str = bundle_str[:60_000] + "\n[...截断]"

@@ -571,6 +571,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const sessionIdRef = useRef<string | null>(null);
   const [manualMode, setManualMode] = useState(false);
   const [manualPrompt, setManualPrompt] = useState<{ step: string; prompt: string } | null>(null);
+  const [availableSkills, setAvailableSkills] = useState<{ name: string; display_name: string }[]>([]);
+  const [skillSelection, setSkillSelection] = useState<Record<string, boolean>>({});
   const modelSnapshotRef = useRef<{ provider: string; model: string } | null>(null);
   const [modelChanged, setModelChanged] = useState(false);
 
@@ -895,6 +897,28 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
    *  (/quick-generate) assembles the RAG context — character cards /
    *  worldbook / platform / references / writing-knowledge — from these
    *  fields, so the editor only sends chapter-local inputs. */
+  // Active learned skills — the user picks which to inject per generation.
+  useEffect(() => {
+    apiGet<{ skills: any[] }>("/api/skills")
+      .then(r => {
+        const learned = (r.skills || []).filter((s: any) => s.is_learned && s.active);
+        setAvailableSkills(learned.map((s: any) => ({
+          name: s.name, display_name: s.display_name || s.name,
+        })));
+        setSkillSelection(Object.fromEntries(learned.map((s: any) => [s.name, true])));
+      })
+      .catch(() => {});
+  }, []);
+
+  const selectedSkillNames = useMemo(
+    () => availableSkills.filter(s => skillSelection[s.name] !== false).map(s => s.name),
+    [availableSkills, skillSelection],
+  );
+
+  const toggleSkill = useCallback((name: string) => {
+    setSkillSelection(prev => ({ ...prev, [name]: prev[name] === false }));
+  }, []);
+
   const buildGenPayload = useCallback((): Record<string, any> => ({
     project_id: projectId || "default",
     chapter_id: activeChId,
@@ -908,7 +932,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     references: activeCh?.references || [],
     referenced_events: activeCh?.referenced_events || [],
     referenced_inspirations: activeCh?.referenced_inspirations || [],
-  }), [activeCh, projectId, activeChId, content, chapterNum]);
+    skills: selectedSkillNames,
+  }), [activeCh, projectId, activeChId, content, chapterNum, selectedSkillNames]);
 
   const fetchGenPrompt = useCallback(async (): Promise<string> => {
     const r = await apiPost<{ prompt: string }>("/api/generation/quick-generate", {
@@ -1044,6 +1069,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         existing_content: content || "",
         character_aliases: activeCh.character_aliases || {},
         manual: manualMode,
+        skills: selectedSkillNames,
       });
       sessionIdRef.current = resp.session_id;
       // Persist session so it survives page navigation
@@ -1052,7 +1078,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     } catch {
       runQuickGenerate();
     }
-  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY, manualMode]);
+  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY, manualMode, selectedSkillNames]);
 
   const submitManualResult = useCallback(async (text: string) => {
     const sid = sessionIdRef.current;
@@ -1390,6 +1416,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               onApplyPaste={applyPlainPaste}
               manualMode={manualMode} onManualModeChange={setManualMode}
               manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
+              availableSkills={availableSkills} skillSelection={skillSelection} onToggleSkill={toggleSkill}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId} />}
@@ -1982,12 +2009,13 @@ function formatSkillsUsed(skills?: string[]): string {
     : "本次创作未启用自定义技能";
 }
 
-function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualMode, onManualModeChange, manualPrompt, onSubmitManual, onDeleteMessage }: {
+function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualMode, onManualModeChange, manualPrompt, onSubmitManual, availableSkills, skillSelection, onToggleSkill, onDeleteMessage }: {
   steps: PipelineStatus[]; generating: boolean; onStart: () => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
   onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
   manualMode?: boolean; onManualModeChange?: (v: boolean) => void; manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
+  availableSkills?: { name: string; display_name: string }[]; skillSelection?: Record<string, boolean>; onToggleSkill?: (name: string) => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -2297,6 +2325,32 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
       {/* Generation controls — 单 Agent is the default; Pipeline is opt-in. */}
       {!generating && !waitingForConfirm && (
         <div style={{ marginBottom: 6 }}>
+          {availableSkills && availableSkills.length > 0 && onToggleSkill && (
+            <div style={{
+              marginBottom: 6, padding: "6px 8px", background: "var(--bg-surface)",
+              borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
+            }}>
+              <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
+                创作技能（勾选本次生成启用的技能）
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {availableSkills.map(s => (
+                  <label key={s.name} style={{
+                    display: "flex", alignItems: "center", gap: 4, fontSize: 11,
+                    cursor: "pointer", color: "var(--text-secondary)",
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={(skillSelection || {})[s.name] !== false}
+                      onChange={() => onToggleSkill(s.name)}
+                      style={{ margin: 0 }}
+                    />
+                    {s.display_name}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 6 }}>
             {onStartPlain && (
               <button className="btn-primary" style={{ flex: 2 }} onClick={() => { setPipelineMode(false); onStartPlain(); }}>

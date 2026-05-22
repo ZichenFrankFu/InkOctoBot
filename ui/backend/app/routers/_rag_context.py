@@ -424,6 +424,7 @@ def build_generation_context(
     chapter_num: int = 1,
     characters: list[str] | None = None,
     db_path: str | None = None,
+    skills: list[str] | None = None,
 ) -> dict:
     """Assemble the RAG context for a chapter-generation call.
 
@@ -449,7 +450,7 @@ def build_generation_context(
         "worldbook": _load_worldbook(project_id),
         "reference_summary": _load_reference_blocks(project_id, db_path or ""),
         "writing_knowledge": _load_writing_knowledge(project_id),
-        "writing_skills": _load_writing_skills(),
+        "writing_skills": _load_writing_skills(skills),
         "foreshadowing": _load_foreshadowing(project_id, db_path or "", chapter_num),
         "user_preferences": _load_user_preferences(project_id, db_path or ""),
     }
@@ -535,20 +536,30 @@ def _active_learned_skills() -> list[dict]:
         return []
 
 
-def active_writing_skill_names() -> list[str]:
+def active_writing_skill_names(only: list[str] | None = None) -> list[str]:
     """Public: display names of the active learned skills that generation
-    injects — surfaced in the UI so the user sees which skills were used."""
-    return [s["name"] for s in _active_learned_skills()]
+    injects — surfaced in the UI so the user sees which skills were used.
+
+    When ``only`` is a list the result is limited to that user selection;
+    ``None`` means the user made no explicit selection → all active."""
+    names = [s["name"] for s in _active_learned_skills()]
+    if only is not None:
+        wanted = set(only)
+        names = [n for n in names if n in wanted]
+    return names
 
 
-def _load_writing_skills() -> str:
+def _load_writing_skills(only: list[str] | None = None) -> str:
     """Inject the active learned skills (Claude-style SKILL.md) so the
-    generating model can self-select and apply relevant writing techniques.
+    generating model can apply the relevant writing techniques.
 
     Only user-created learned skills are injected — built-in extraction /
-    evaluation skills are not writing techniques. The generating model
-    decides which of the listed skills apply to the current chapter."""
+    evaluation skills are not writing techniques. ``only`` is the user's
+    explicit skill selection; ``None`` means inject every active skill."""
     skills = _active_learned_skills()
+    if only is not None:
+        wanted = set(only)
+        skills = [s for s in skills if s["name"] in wanted]
     if not skills:
         return ""
     parts: list[str] = []
@@ -667,7 +678,8 @@ def single_agent_vars(
     ``/quick-generate`` and the prompt preview endpoint so the previewed,
     copied and generated prompt are identical."""
     characters = characters or []
-    ctx = build_generation_context(project_id, chapter_num, characters, db_path=db_path)
+    ctx = build_generation_context(
+        project_id, chapter_num, characters, db_path=db_path, skills=skills)
     blocks: dict[str, str] = dict(ctx["blocks"])
 
     synopsis = (synopsis or "").strip()
