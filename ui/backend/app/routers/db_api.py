@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Body
 from ..settings import settings
 from ..utils import load_repo_config, get_crawler_db_path
 
@@ -244,6 +244,64 @@ def opening_analysis(platform: str | None = None):
             "distribution": buckets,
         },
     }
+
+
+@router.post("/opening_ai_summary")
+async def opening_ai_summary(body: dict = Body(...)):
+    """AI analysis of the crawled opening-chapter content. ``prompt_only``
+    returns the assembled prompt for the AI大模型网页版 copy-paste flow."""
+    platform = body.get("platform") or None
+    prompt_only = bool(body.get("prompt_only"))
+    con = _get_con()
+    if con is None or not _table_exists(con, "first_n_chapters"):
+        raise HTTPException(404, "暂无已采集的开篇章节")
+    with con:
+        has_titles = _table_exists(con, "novel_titles")
+        title_expr = ("COALESCE(nt.title, fc.chapter_title, '佚名')"
+                      if has_titles else "COALESCE(fc.chapter_title, '佚名')")
+        frm = "first_n_chapters fc"
+        if has_titles:
+            frm += " LEFT JOIN novel_titles nt ON nt.novel_uid=fc.novel_uid AND nt.is_primary=1"
+        cond = (" WHERE fc.chapter_num=1 AND fc.chapter_content IS NOT NULL "
+                "AND length(fc.chapter_content) > 300")
+        params: list = []
+        if platform and _table_exists(con, "novels"):
+            frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
+            cond += " AND n.platform=?"
+            params.append(platform)
+        rows = con.execute(
+            f"SELECT {title_expr} t, fc.chapter_content cc FROM {frm}{cond} LIMIT 14",
+            params,
+        ).fetchall()
+    if not rows:
+        raise HTTPException(404, "暂无可分析的开篇章节正文")
+    samples = []
+    for r in rows:
+        cc = str(r["cc"] or "").strip().replace("\r", "")
+        if len(cc) > 1200:
+            cc = cc[:1200] + "……"
+        samples.append(f"《{r['t']}》\n{cc}")
+    prompt = (
+        f"以下是 {len(rows)} 部网文（{platform or '全部平台'}）的开篇第一章节选。"
+        "请作为资深网文编辑分析这些开篇，用中文输出总结：\n"
+        "1. 常见开篇方式（高潮开局 / 对话开局 / 世界观铺陈 / 人物登场 等）及倾向占比；\n"
+        "2. 抓读者的核心手法：钩子、悬念、爽点如何设置；\n"
+        "3. 开篇的节奏与信息密度特点；\n"
+        "4. 共性规律与可直接借鉴的开篇技巧建议。\n\n"
+        "【开篇样本】\n" + "\n\n———\n\n".join(samples)
+    )
+    if prompt_only:
+        return {"prompt": prompt, "sample_count": len(rows)}
+    try:
+        from models.router import ModelRouter
+
+        summary = await ModelRouter().invoke(
+            role="reference_extractor", prompt=prompt,
+            max_tokens=1800, temperature=0.5,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"AI 总结调用失败：{e}")
+    return {"summary": str(summary or "").strip(), "sample_count": len(rows)}
 
 
 @router.get("/info")

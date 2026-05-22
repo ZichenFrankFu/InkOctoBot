@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
-import { apiGet } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
+import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 import type { RankList, RankSnapshot, RankEntry, Novel } from "../api/types";
 
 /* ── local types ── */
@@ -49,6 +50,21 @@ export default function RankingsPage() {
   const [panelLoading, setPanelLoading] = useState(false);
   const [openingStats, setOpeningStats] = useState<OpeningStats | null>(null);
   const [openingOpen, setOpeningOpen] = useState(true);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+
+  const runOpeningSummary = useCallback(async () => {
+    setAiBusy(true);
+    try {
+      const r = await apiPost<{ summary: string }>(
+        "/api/db/opening_ai_summary", { platform: platform || undefined });
+      setAiSummary(r.summary || "（AI 未返回内容）");
+    } catch (e: any) {
+      setAiSummary(`AI 总结失败：${e?.message || e}`);
+    } finally {
+      setAiBusy(false);
+    }
+  }, [platform]);
 
   /* ── Opening-chapter analysis (crawled first_n_chapters) ── */
   useEffect(() => {
@@ -222,6 +238,34 @@ export default function RankingsPage() {
                     </div>
                   );
                 })}
+              </div>
+              <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+                <div className="label" style={{ marginBottom: 6 }}>AI 总结开篇技巧（基于开篇章节正文）</div>
+                <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px", marginBottom: 8 }}
+                  disabled={aiBusy} onClick={runOpeningSummary}>
+                  {aiBusy ? "AI 分析中..." : "使用 AI 大模型 API 总结"}
+                </button>
+                {aiSummary && (
+                  <div style={{
+                    padding: "8px 12px", background: "var(--bg-app)", borderRadius: 6,
+                    fontSize: 13, lineHeight: 1.7, whiteSpace: "pre-wrap",
+                    border: "1px solid var(--border)", marginBottom: 8,
+                  }}>
+                    {aiSummary}
+                  </div>
+                )}
+                <WebLLMPromptPanel
+                  title="AI大模型网页版"
+                  fetchPrompt={async () => {
+                    const r = await apiPost<{ prompt: string }>(
+                      "/api/db/opening_ai_summary",
+                      { platform: platform || undefined, prompt_only: true });
+                    return r.prompt || "";
+                  }}
+                  onApplyResult={(t) => setAiSummary(t.trim())}
+                  applyLabel="应用 AI 总结结果"
+                  resultPlaceholder="把网页版大模型返回的开篇分析粘贴到这里"
+                />
               </div>
             </div>
           )}
