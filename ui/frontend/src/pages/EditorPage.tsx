@@ -569,6 +569,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const eventCursorRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
+  const [manualMode, setManualMode] = useState(false);
+  const [manualPrompt, setManualPrompt] = useState<{ step: string; prompt: string } | null>(null);
   const modelSnapshotRef = useRef<{ provider: string; model: string } | null>(null);
   const [modelChanged, setModelChanged] = useState(false);
 
@@ -606,6 +608,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       : s === "evaluator" ? "Evaluator" : "System";
 
     switch (data.type) {
+      case "manual_prompt":
+        setManualPrompt({ step: data.step || "", prompt: data.prompt || "" });
+        break;
       case "pipeline_start":
         setChatMessages(prev => {
           if (prev.some(m => m.content.includes("Pipeline") && m.content.includes("开始"))) return prev;
@@ -1032,6 +1037,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         location: activeCh.location || "",
         existing_content: content || "",
         character_aliases: activeCh.character_aliases || {},
+        manual: manualMode,
       });
       sessionIdRef.current = resp.session_id;
       // Persist session so it survives page navigation
@@ -1040,7 +1046,18 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     } catch {
       runQuickGenerate();
     }
-  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY]);
+  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY, manualMode]);
+
+  const submitManualResult = useCallback(async (text: string) => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    try {
+      await apiPost(`/api/generation/manual-result/${sid}`, { result: text });
+      setManualPrompt(null);
+    } catch (e: any) {
+      toast(e?.message || "提交失败", "error");
+    }
+  }, [toast]);
 
   const handleConfirmContinue = () => {
     setWaitingForConfirm(false);
@@ -1365,6 +1382,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
               onFetchPrompt={fetchGenPrompt}
               onApplyPaste={applyPlainPaste}
+              manualMode={manualMode} onManualModeChange={setManualMode}
+              manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} />}
@@ -1950,11 +1969,12 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   );
 }
 
-function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, onDeleteMessage }: {
+function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualMode, onManualModeChange, manualPrompt, onSubmitManual, onDeleteMessage }: {
   steps: PipelineStatus[]; generating: boolean; onStart: () => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
   onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
+  manualMode?: boolean; onManualModeChange?: (v: boolean) => void; manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -1984,6 +2004,22 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {manualPrompt && generating && (
+        <div style={{ marginBottom: 10 }}>
+          <div className="label mb-8" style={{ color: "var(--accent)" }}>
+            手动模式 · 当前 agent：{manualPrompt.step || "—"}
+          </div>
+          <WebLLMPromptPanel
+            key={`${manualPrompt.step}:${manualPrompt.prompt.length}`}
+            defaultOpen
+            title={`Pipeline agent prompt · ${manualPrompt.step}`}
+            fetchPrompt={async () => manualPrompt.prompt}
+            onApplyResult={(t) => onSubmitManual?.(t)}
+            applyLabel="提交结果，继续 Pipeline"
+            resultPlaceholder="把网页 LLM 针对该 agent 的返回结果粘贴到这里"
+          />
+        </div>
+      )}
       {pipelineMode && <>
       <div className="label mb-8">Creative Writing Pipeline · 群聊生成</div>
       {/* Progress bar */}
@@ -2261,6 +2297,13 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
               {chatMessages.length > 0 ? "改用 Pipeline" : "切换 Pipeline"}
             </button>
           </div>
+          {onManualModeChange && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 11, color: "var(--text-secondary)", cursor: "pointer" }}
+              title="开启后，Pipeline 在每个 agent 处暂停，可复制该步 prompt、粘贴网页 LLM 结果再继续">
+              <input type="checkbox" checked={!!manualMode} onChange={e => onManualModeChange(e.target.checked)} style={{ margin: 0 }} />
+              Pipeline 手动模式
+            </label>
+          )}
           {onFetchPrompt && (
             <div style={{ marginTop: 6 }}>
               <WebLLMPromptPanel fetchPrompt={onFetchPrompt}

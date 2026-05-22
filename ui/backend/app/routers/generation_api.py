@@ -360,6 +360,9 @@ class GenerateRequest(BaseModel):
     prompt_override: str = ""
     # Writing skills to invoke for this generation (R3 — skills_block slot).
     skills: list[str] = []
+    # When true, the pipeline pauses at every agent, surfaces the rendered
+    # prompt, and uses the result the user pastes back from a web LLM.
+    manual: bool = False
 
 
 class RewriteRequest(BaseModel):
@@ -698,6 +701,21 @@ async def confirm_session(session_id: str, body: dict):
         return {"status": "ok", "message": "not waiting"}
     session["confirm_data"] = body
     evt = session.get("confirm_event")
+    if evt:
+        evt.set()
+    return {"status": "ok"}
+
+
+@router.post("/manual-result/{session_id}")
+async def submit_manual_result(session_id: str, body: dict):
+    """Submit a web-LLM result for a pipeline agent paused in manual mode."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if not session.get("waiting_manual"):
+        return {"status": "ok", "message": "not waiting"}
+    session["manual_result"] = body.get("result", "")
+    evt = session.get("manual_event")
     if evt:
         evt.set()
     return {"status": "ok"}
@@ -1059,6 +1077,47 @@ async def _wait_for_confirm_bg(session_id: str, step: str, message: str, timeout
     return data or {"action": "continue"}
 
 
+class _ManualRouter:
+    """Router wrapper for the manual pipeline. Every generate() call
+    surfaces the rendered prompt as a `manual_prompt` event, pauses the
+    pipeline, and returns the text the user pastes back from a web LLM
+    instead of calling an LLM. All other attributes delegate to the
+    wrapped router."""
+
+    def __init__(self, real_router, session_id: str):
+        self._real = real_router
+        self._session_id = session_id
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    async def generate(self, agent_role: str = "", messages=None, **kwargs):
+        from models.base import LLMResponse
+        messages = messages or []
+        prompt = "\n\n".join(
+            f"【{getattr(m, 'role', '')}】\n{getattr(m, 'content', '')}"
+            for m in messages
+        )
+        session = _active_sessions.get(self._session_id)
+        if session is None or session.get("status") != "running":
+            return await self._real.generate(
+                agent_role=agent_role, messages=messages, **kwargs)
+        ev = asyncio.Event()
+        session["manual_event"] = ev
+        session["manual_result"] = None
+        session["waiting_manual"] = True
+        session["manual_step"] = agent_role
+        _emit(self._session_id, {
+            "type": "manual_prompt", "step": agent_role, "prompt": prompt,
+        })
+        await ev.wait()
+        session["waiting_manual"] = False
+        session["manual_event"] = None
+        text = session.get("manual_result") or ""
+        session["manual_result"] = None
+        return LLMResponse(content=text, model="web-llm")
+
+
 async def _run_pipeline_background(session_id: str):
     """Run the full pipeline as a background task. Events are logged to the session."""
     session = _active_sessions.get(session_id)
@@ -1068,6 +1127,8 @@ async def _run_pipeline_background(session_id: str):
 
     try:
         router_inst = _build_router(req_data.get("provider", ""), req_data.get("model", ""))
+        if req_data.get("manual"):
+            router_inst = _ManualRouter(router_inst, session_id)
 
         # ── Load calibration style preferences ──
         # If the frontend didn't send style_notes, try to load from saved calibration data
