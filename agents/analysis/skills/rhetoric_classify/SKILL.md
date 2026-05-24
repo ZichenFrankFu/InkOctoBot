@@ -1,14 +1,11 @@
 ---
 name: rhetoric_classify
-display_name: 修辞手法分类
 description: 识别并分类文本中的修辞手法，包括比喻、排比、拟人、夸张、反讽等。
-version: 1.0.0
-model_role: analyzer
-tags: [analysis, rhetoric, classification]
-permissions: [read_rhetoric]
 ---
 
-## Description
+# 修辞手法分类
+
+## 说明
 
 从输入的文本中，识别并分类所有使用的修辞手法。包括但不限于：
 - 比喻（明喻、暗喻、借喻）
@@ -25,13 +22,13 @@ permissions: [read_rhetoric]
 
 使用 LLM 进行深度语义分析，能够识别复杂和嵌套的修辞结构。
 
-## Input
+## 输入
 
 | 字段   | 类型   | 必填 | 说明           |
 | ------ | ------ | ---- | -------------- |
 | text   | string | 是   | 待分析的文本内容 |
 
-## Output
+## 输出
 
 返回 JSON 对象，包含以下字段：
 

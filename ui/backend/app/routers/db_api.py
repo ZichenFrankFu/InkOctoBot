@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Body
 from ..settings import settings
 from ..utils import load_repo_config, get_crawler_db_path
 
@@ -150,6 +150,159 @@ def tag_stats(platform: str | None = None, limit: int = Query(default=30, ge=1, 
         if platform: sql += " JOIN novels n ON n.novel_uid=m.novel_uid WHERE n.platform=?"; p.append(platform)
         sql += " GROUP BY t.tag_name ORDER BY novel_count DESC LIMIT ?"; p.append(limit)
         return {"rows": [dict(r) for r in con.execute(sql, p).fetchall()]}
+
+@router.get("/market_brief")
+def market_brief(platform: str | None = None):
+    """Concise market-data summary text for grounding the AI 开书助手."""
+    con = _get_con()
+    if con is None:
+        return {"brief": ""}
+    with con:
+        if not _table_exists(con, "novels"):
+            return {"brief": ""}
+        pp = [platform] if platform else []
+        pw = " WHERE platform=?" if platform else ""
+        novel_count = con.execute(f"SELECT COUNT(*) AS c FROM novels{pw}", pp).fetchone()["c"]
+        cats = con.execute(
+            "SELECT main_category, COUNT(*) AS count FROM novels" + pw
+            + " GROUP BY main_category ORDER BY count DESC LIMIT 10", pp,
+        ).fetchall()
+        tag_sql = ("SELECT t.tag_name, COUNT(DISTINCT m.novel_uid) AS c "
+                   "FROM tags t JOIN novel_tag_map m ON m.tag_id=t.tag_id")
+        tp: list = []
+        if platform:
+            tag_sql += " JOIN novels n ON n.novel_uid=m.novel_uid WHERE n.platform=?"
+            tp.append(platform)
+        tag_sql += " GROUP BY t.tag_name ORDER BY c DESC LIMIT 20"
+        tags = con.execute(tag_sql, tp).fetchall()
+        tn = []
+        if _table_exists(con, "rank_entries"):
+            tnw = " WHERE l.platform=?" if platform else ""
+            tnp: list = ([platform] if platform else []) + [12]
+            tn = con.execute(
+                "SELECT nt.title, n.main_category, COUNT(DISTINCT e.snapshot_id) AS apps "
+                "FROM rank_entries e JOIN rank_snapshots s ON s.snapshot_id=e.snapshot_id "
+                "JOIN rank_lists l ON l.rank_list_id=s.rank_list_id "
+                "JOIN novels n ON n.novel_uid=e.novel_uid "
+                "LEFT JOIN novel_titles nt ON nt.novel_uid=n.novel_uid AND nt.is_primary=1"
+                + tnw + " GROUP BY n.novel_uid ORDER BY apps DESC LIMIT ?", tnp,
+            ).fetchall()
+    parts = [f"市场数据库共收录 {novel_count} 部作品。"]
+    if cats:
+        parts.append("热门分类（按作品数）："
+                      + "、".join(f"{r['main_category']}({r['count']})" for r in cats if r["main_category"]))
+    if tags:
+        parts.append("高频题材标签：" + "、".join(f"{r['tag_name']}({r['c']})" for r in tags))
+    if tn:
+        parts.append("近期上榜热门作品：" + "、".join(f"《{r['title']}》" for r in tn if r["title"]))
+    return {"brief": "\n".join(parts)}
+
+
+@router.get("/opening_analysis")
+def opening_analysis(platform: str | None = None):
+    """Aggregate stats on the crawled opening chapters (first_n_chapters)."""
+    con = _get_con()
+    if con is None:
+        return {"available": False}
+    with con:
+        if not _table_exists(con, "first_n_chapters"):
+            return {"available": False}
+        use_plat = bool(platform) and _table_exists(con, "novels")
+        frm = "first_n_chapters fc"
+        cond = ""
+        params: list = []
+        if use_plat:
+            frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
+            cond = " WHERE n.platform=?"
+            params = [platform]
+        novels_with = con.execute(
+            f"SELECT COUNT(DISTINCT fc.novel_uid) c FROM {frm}{cond}", params).fetchone()["c"]
+        total_ch = con.execute(
+            f"SELECT COUNT(*) c FROM {frm}{cond}", params).fetchone()["c"]
+        w_cond = (cond + " AND" if cond else " WHERE") + " fc.chapter_num=1 AND fc.word_count > 0"
+        rows = con.execute(
+            f"SELECT fc.word_count w FROM {frm}{w_cond}", params).fetchall()
+    words = sorted(int(r["w"]) for r in rows if r["w"])
+    n = len(words)
+    buckets = {"<1000": 0, "1000–2000": 0, "2000–3000": 0, "3000–4000": 0, "≥4000": 0}
+    for w in words:
+        if w < 1000: buckets["<1000"] += 1
+        elif w < 2000: buckets["1000–2000"] += 1
+        elif w < 3000: buckets["2000–3000"] += 1
+        elif w < 4000: buckets["3000–4000"] += 1
+        else: buckets["≥4000"] += 1
+    return {
+        "available": True,
+        "novels_with_chapters": novels_with,
+        "total_chapters": total_ch,
+        "first_chapter": {
+            "count": n,
+            "avg_words": round(sum(words) / n) if n else 0,
+            "median_words": words[n // 2] if n else 0,
+            "min_words": words[0] if n else 0,
+            "max_words": words[-1] if n else 0,
+            "distribution": buckets,
+        },
+    }
+
+
+@router.post("/opening_ai_summary")
+async def opening_ai_summary(body: dict = Body(...)):
+    """AI analysis of the crawled opening-chapter content. ``prompt_only``
+    returns the assembled prompt for the AI大模型网页版 copy-paste flow."""
+    platform = body.get("platform") or None
+    prompt_only = bool(body.get("prompt_only"))
+    con = _get_con()
+    if con is None or not _table_exists(con, "first_n_chapters"):
+        raise HTTPException(404, "暂无已采集的开篇章节")
+    with con:
+        has_titles = _table_exists(con, "novel_titles")
+        title_expr = ("COALESCE(nt.title, fc.chapter_title, '佚名')"
+                      if has_titles else "COALESCE(fc.chapter_title, '佚名')")
+        frm = "first_n_chapters fc"
+        if has_titles:
+            frm += " LEFT JOIN novel_titles nt ON nt.novel_uid=fc.novel_uid AND nt.is_primary=1"
+        cond = (" WHERE fc.chapter_num=1 AND fc.chapter_content IS NOT NULL "
+                "AND length(fc.chapter_content) > 300")
+        params: list = []
+        if platform and _table_exists(con, "novels"):
+            frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
+            cond += " AND n.platform=?"
+            params.append(platform)
+        rows = con.execute(
+            f"SELECT {title_expr} t, fc.chapter_content cc FROM {frm}{cond} LIMIT 14",
+            params,
+        ).fetchall()
+    if not rows:
+        raise HTTPException(404, "暂无可分析的开篇章节正文")
+    samples = []
+    for r in rows:
+        cc = str(r["cc"] or "").strip().replace("\r", "")
+        if len(cc) > 1200:
+            cc = cc[:1200] + "……"
+        samples.append(f"《{r['t']}》\n{cc}")
+    prompt = (
+        f"以下是 {len(rows)} 部网文（{platform or '全部平台'}）的开篇第一章节选。"
+        "请作为资深网文编辑分析这些开篇，用中文输出总结：\n"
+        "1. 常见开篇方式（高潮开局 / 对话开局 / 世界观铺陈 / 人物登场 等）及倾向占比；\n"
+        "2. 抓读者的核心手法：钩子、悬念、爽点如何设置；\n"
+        "3. 开篇的节奏与信息密度特点；\n"
+        "4. 共性规律与可直接借鉴的开篇技巧建议。\n\n"
+        "【开篇样本】\n" + "\n\n———\n\n".join(samples)
+    )
+    if prompt_only:
+        return {"prompt": prompt, "sample_count": len(rows)}
+    try:
+        from models.router import ModelRouter
+
+        summary = await ModelRouter().invoke(
+            role="reference_extractor", prompt=prompt,
+            max_tokens=1800, temperature=0.5,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"AI 总结调用失败：{e}")
+    return {"summary": str(summary or "").strip(), "sample_count": len(rows)}
+
 
 @router.get("/info")
 def db_info():

@@ -44,6 +44,23 @@ def _slug(s: str, maxlen: int = 24) -> str:
     return out[:maxlen]
 
 
+# Vector search always returns the requested k rows, even when only a
+# couple are genuinely related — the irrelevant long tail then dilutes
+# the result list. Keep rows whose cosine distance is within a margin of
+# the best match (the top hit is always kept) so the results the user
+# sees are the ones actually close to the query.
+_RELEVANCE_MARGIN = 0.32
+
+
+def _filter_by_relevance(hits: list[dict], k: int) -> list[dict]:
+    if not hits:
+        return []
+    ranked = sorted(hits, key=lambda h: h.get("distance", 0.0))
+    best = ranked[0].get("distance", 0.0)
+    kept = [h for h in ranked if h.get("distance", 0.0) <= best + _RELEVANCE_MARGIN]
+    return kept[:k]
+
+
 class WorkIndexer:
     """Build + maintain L1/L2/L3 vectors for a reference work."""
 
@@ -395,7 +412,7 @@ class WorkIndexer:
         else:
             where = {"level": {"$in": levels}}
         hits = self._vs.query_with_embedding(q_vec[0], n_results=k, where=where)
-        return hits
+        return _filter_by_relevance(hits, k)
 
     # ── internal ──
 

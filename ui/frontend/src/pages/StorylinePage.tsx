@@ -93,6 +93,32 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
     setDirty(true);
   }, [nodes]);
 
+  // --- Sync one node's 大纲 back to the matching editor chapter ---
+  const syncOutlineToEditor = useCallback(async (node: StoryNode) => {
+    if (node?.chapter_num == null) return;
+    try {
+      const pid = projectId || "default";
+      const data = await apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${pid}`);
+      const volumes = data.volumes || [];
+      let idx = 0;
+      let changed = false;
+      const next = volumes.map(v => ({
+        ...v,
+        chapters: (v.chapters || []).map(c => {
+          idx += 1;
+          if (idx === node.chapter_num) {
+            if ((c.synopsis || "") !== (node.summary || "")) changed = true;
+            return { ...c, synopsis: node.summary || "" };
+          }
+          return c;
+        }),
+      }));
+      if (changed) await apiPut(`/api/data/editor`, { project_id: pid, volumes: next });
+    } catch (e: any) {
+      toast(e?.message || "同步到编辑器失败", "error");
+    }
+  }, [projectId, toast]);
+
   // --- Sync from editor ---
   const syncFromEditor = useCallback(async () => {
     try {
@@ -482,11 +508,13 @@ export default function StorylinePage({ projectId }: { projectId: string }) {
                   />
                 </div>
                 <div className="field mb-12">
-                  <label className="label">摘要</label>
+                  <label className="label">大纲</label>
                   <textarea
                     className="input"
                     value={sel.summary || ""}
                     onChange={e => updateNode(sel.id, "summary", e.target.value)}
+                    onBlur={() => syncOutlineToEditor(sel)}
+                    placeholder="本章剧情大纲（失焦后自动同步到编辑器对应章节）"
                     rows={3}
                   />
                 </div>

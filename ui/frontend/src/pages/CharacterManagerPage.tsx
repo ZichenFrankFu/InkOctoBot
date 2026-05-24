@@ -2,7 +2,10 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from "react"
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
+import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 import type { Character, CharacterLayerB, CharacterRelationship, DynamicPropertySnapshot } from "../api/types";
+import { renderPrompt } from "../utils/promptTemplate";
 
 interface CharChatMsg {
   role: "user" | "assistant";
@@ -30,6 +33,7 @@ const DEFAULT_LAYER_B: CharacterLayerB = {
 
 export default function CharacterManagerPage({ projectId, projects }: Props) {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [items, setItems] = useState<Character[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Character | null>(null);
@@ -120,6 +124,42 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     }
   }, [editing?.id]);
 
+  // Shared system_hint construction — used by both "send" and the web-LLM prompt preview
+  const buildCharChatSystemHint = useCallback(async () => {
+    if (!editing) return "";
+    return renderPrompt(
+      "assistant.character",
+      {
+        char_name: editing.name,
+        char_role: editing.role || "配角",
+        personality: editing.personality || "未设定",
+        background: editing.background || "未设定",
+        speech_style: editing.speech_style || "未设定",
+      },
+      `你是一个专业的小说角色设计师。当前正在设计角色「${editing.name}」（定位：${editing.role || "配角"}）。\n已有信息：\n- 性格：${editing.personality || "未设定"}\n- 背景：${editing.background || "未设定"}\n- 说话风格：${editing.speech_style || "未设定"}\n\n请根据用户的需求提供角色设计建议、润色人设、或生成新的角色信息。如果用户要求生成完整人设，请以 JSON 格式输出：{"personality":"...","background":"...","speech_style":"..."}。否则用自然语言回答。`,
+    );
+  }, [editing]);
+
+  // Web-LLM workflow: render the prompt for preview/copy
+  const fetchCharChatPrompt = useCallback(async () => {
+    const systemHint = await buildCharChatSystemHint();
+    const resp = await apiPost<{ status: string; prompt: string }>("/api/generation/quick-generate", {
+      project_id: projectId || "default",
+      chapter_id: "char_chat",
+      synopsis: charChatInput.trim(),
+      system_hint: systemHint,
+      prompt_only: true,
+    });
+    return resp.prompt || "";
+  }, [buildCharChatSystemHint, projectId, charChatInput]);
+
+  // Web-LLM workflow: apply a pasted result as an assistant message (same shape as normal replies)
+  const applyCharChatResult = useCallback((text: string) => {
+    const content = text.trim();
+    if (!content) return;
+    setCharChatMessages(prev => [...prev, { role: "assistant", content, timestamp: Date.now() }]);
+  }, []);
+
   const sendCharChatMessage = async (inputOverride?: string) => {
     const msg = (inputOverride || charChatInput).trim();
     if (!msg || charChatLoading || !editing) return;
@@ -131,6 +171,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     charAbortRef.current = controller;
 
     try {
+      const systemHint = await buildCharChatSystemHint();
       const resp = await fetch("/api/generation/quick-generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -138,7 +179,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
           project_id: projectId || "default",
           chapter_id: "char_chat",
           synopsis: msg,
-          system_hint: `你是一个专业的小说角色设计师。当前正在设计角色「${editing.name}」（定位：${editing.role || "配角"}）。\n已有信息：\n- 性格：${editing.personality || "未设定"}\n- 背景：${editing.background || "未设定"}\n- 说话风格：${editing.speech_style || "未设定"}\n\n请根据用户的需求提供角色设计建议、润色人设、或生成新的角色信息。如果用户要求生成完整人设，请以 JSON 格式输出：{"personality":"...","background":"...","speech_style":"..."}。否则用自然语言回答。`,
+          system_hint: systemHint,
         }),
         signal: controller.signal,
       });
@@ -250,13 +291,14 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
       await apiPut(`/api/data/characters/${editing.id}`, editing);
       setDirty(false);
       load();
+      toast("已保存", "success");
     } catch (e: any) {
       toast(e.message || "操作失败", "error");
     }
   };
 
   const remove = async (id: string) => {
-    if (!confirm("确定删除该角色？")) return;
+    if (!(await confirm({ message: "确定删除该角色？", destructive: true }))) return;
     try {
       await apiDelete(`/api/data/characters/${id}`);
       if (editing?.id === id) setEditing(null);
@@ -483,7 +525,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </button>
                 <button className="btn" style={{ fontSize: 11, flex: 1, color: "var(--error)" }}
                   onClick={async () => {
-                    if (!confirm(`确定删除 ${selectedIds.size} 个角色？`)) return;
+                    if (!(await confirm({ message: `确定删除 ${selectedIds.size} 个角色？`, destructive: true }))) return;
                     for (const id of selectedIds) {
                       await apiDelete(`/api/data/characters/${id}`).catch((e: any) => toast(e.message || "操作失败", "error"));
                     }
@@ -782,6 +824,14 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                             {t.label}
                           </button>
                         ))}
+                      </div>
+                      {/* Web LLM prompt workflow */}
+                      <div style={{ marginTop: 8 }}>
+                        <WebLLMPromptPanel
+                          fetchPrompt={fetchCharChatPrompt}
+                          onApplyResult={applyCharChatResult}
+                          resultPlaceholder="把网页 LLM 返回的角色设计内容粘贴到这里"
+                        />
                       </div>
                     </div>
                   </div>

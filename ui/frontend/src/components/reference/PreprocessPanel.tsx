@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut, apiPatch } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { useConfirm } from "../shared/Confirm";
@@ -47,6 +47,15 @@ interface Chapter {
 
 interface LogEntry { ts: number; message: string; chapter?: number | null; }
 
+/** A chapter committed to the reference_chapters DB table. */
+interface SavedChapter {
+  number: number;
+  title: string;
+  volume: string;
+  char_count: number;
+  is_author_note: boolean;
+}
+
 interface GapEntry {
   after_number: number;
   before_number: number;
@@ -78,6 +87,8 @@ interface PreprocessStatus {
 interface SegmentInfo {
   index: number;
   title: string;
+  /** Volume ordinal (第N卷) — stored separately from the volume name. */
+  volume_no?: string;
   start_chapter: number;
   end_chapter: number;
   chapter_count?: number;
@@ -118,6 +129,44 @@ function fmtChars(n: number): string {
   return `${n.toLocaleString()} 字`;
 }
 
+/** Live status log tail.
+ *
+ * Split out + memoized because the parent re-renders on every status
+ * poll (600ms), and `toLocaleTimeString()` is locale-formatted (slow)
+ * being called once per visible entry. The memo keys on the log
+ * entries' timestamps so only new entries trigger reformatting. */
+const LogTail = React.memo(function LogTail({
+  status, state,
+}: {
+  status: { log?: { ts: number; message: string }[] } | null | undefined;
+  state: string;
+}) {
+  const log = status?.log;
+  const formatted = useMemo(() => {
+    if (!log || log.length === 0) return [] as { time: string; message: string }[];
+    return log.slice(-30).map(e => ({
+      time: new Date(e.ts * 1000).toLocaleTimeString(),
+      message: e.message,
+    }));
+  }, [log]);
+  if (formatted.length === 0 || (state !== "running" && state !== "paused")) return null;
+  return (
+    <div style={{
+      maxHeight: 120, overflowY: "auto",
+      border: "1px solid var(--border)", borderRadius: 3,
+      background: "var(--bg-card)", padding: 6,
+      fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.5,
+      color: "var(--text-secondary)",
+    }}>
+      {formatted.map((e, i) => (
+        <div key={i} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          <span style={{ color: "var(--text-tertiary)" }}>{e.time}</span>{" "}{e.message}
+        </div>
+      ))}
+    </div>
+  );
+});
+
 interface Props {
   refId: string;
   hasFullText: boolean;
@@ -153,8 +202,13 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [starting, setStarting] = useState(false);
   // Volume plan editor (moved here from PlotOutlinePanel)
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
-  const [planDraft, setPlanDraft] = useState<{ title: string; start_chapter: number; end_chapter: number }[] | null>(null);
+  const [planDraft, setPlanDraft] = useState<VolumeRow[] | null>(null);
   const [planSaving, setPlanSaving] = useState(false);
+  // AI-driven volume detection state (separate from the per-segment
+  // AI extraction state — this one targets the volume-boundary detector).
+  const [aiDetecting, setAiDetecting] = useState(false);
+  const [aiPromptUsed, setAiPromptUsed] = useState("");
+  const [aiPromptOpen, setAiPromptOpen] = useState(false);
   // Custom chapter patterns
   const [patterns, setPatterns] = useState<ChapterPattern[]>([]);
   const [patternsOpen, setPatternsOpen] = useState(false);
@@ -170,7 +224,16 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   const [keywordInput, setKeywordInput] = useState("");
   // Persisted-chapters summary (for the 保存全部章节 button label)
   const [savedSummary, setSavedSummary] = useState<{ saved_count: number; saved_at: string | null }>({ saved_count: 0, saved_at: null });
+  // The actual chapter list committed to the reference_chapters DB
+  // table — the source of truth for the read-only「已存储章节」view.
+  const [savedChapters, setSavedChapters] = useState<SavedChapter[]>([]);
   const [savingAll, setSavingAll] = useState(false);
+  // Once chapters are written to the database the "章节清理" editing
+  // section collapses to a compact read-only summary; the user clicks
+  // 「修改数据库中章节」 to re-open the full editor. This stays false
+  // until the user explicitly asks to edit, and flips back to false
+  // after a fresh save.
+  const [chapterEditMode, setChapterEditMode] = useState(false);
   // Multi-file upload (append mode)
   const appendFileInputRef = useRef<HTMLInputElement | null>(null);
   const [appending, setAppending] = useState(false);
@@ -261,6 +324,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         `/api/references/works/${refId}/preprocess/saved_summary`,
       );
       setSavedSummary(r);
+    } catch { /* silent */ }
+    // The read-only「已存储章节」view reads the committed DB chapters
+    // here — independent of the transient detection state.
+    try {
+      const r = await apiGet<{ chapters: SavedChapter[] }>(
+        `/api/references/works/${refId}/preprocess/saved_chapters`,
+      );
+      setSavedChapters(r.chapters || []);
     } catch { /* silent */ }
   }, [refId]);
 
@@ -402,6 +473,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       );
       toast(`已保存 ${r.saved_count} 章到数据库`, "success");
       await fetchSavedSummary();
+      // Collapse back to the read-only summary now that the DB is current.
+      setChapterEditMode(false);
     } catch (e: any) {
       toast(e?.message || "保存失败", "error");
     } finally {
@@ -935,9 +1008,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     if (!plan) return;
     if (plan.segments.length === 0) {
       const total = plan.total_chapters || 1;
-      setPlanDraft([{ title: `第 1–${total} 章`, start_chapter: 1, end_chapter: total }]);
+      setPlanDraft([{ volume_no: "第 1 卷", title: `第 1–${total} 章`, start_chapter: 1, end_chapter: total }]);
     } else {
-      setPlanDraft(plan.segments.map(s => ({
+      setPlanDraft(plan.segments.map((s, i) => ({
+        volume_no: s.volume_no || `第 ${i + 1} 卷`,
         title: s.title || `第 ${s.start_chapter}–${s.end_chapter} 章`,
         start_chapter: s.start_chapter,
         end_chapter: s.end_chapter,
@@ -946,20 +1020,75 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
   };
 
   const loadAutoSuggest = async () => {
+    setAiDetecting(true);
     try {
-      const sug = await apiGet<SegmentPlan>(`/api/references/works/${refId}/segments/plan/auto_suggest`);
+      // The AI endpoint internally walks: web-search LLM → local LLM →
+      // text scan → parser tags. It always returns the prompt it used
+      // so we can show it in the modal even when AI succeeded.
+      const sug = await apiPost<{
+        segments: SegmentInfo[];
+        used_method: string;
+        prompt_used: string;
+        warning?: string;
+      }>(
+        `/api/references/works/${refId}/segments/plan/ai_detect`,
+        {},
+        { timeoutMs: 300_000 },
+      );
+      setAiPromptUsed(sug.prompt_used || "");
       if (!sug.segments || sug.segments.length === 0) {
-        toast("自动检测未识别到可分卷的结构", "info");
+        // Show the prompt so user can copy it into a web LLM.
+        setAiPromptOpen(true);
+        toast(sug.warning || "自动检测未识别到可分卷的结构，可复制 prompt 手动尝试", "info");
         return;
       }
-      setPlanDraft(sug.segments.map(s => ({
+      setPlanDraft(sug.segments.map((s, i) => ({
+        volume_no: s.volume_no || `第 ${i + 1} 卷`,
         title: s.title || `第 ${s.start_chapter}–${s.end_chapter} 章`,
         start_chapter: s.start_chapter,
         end_chapter: s.end_chapter,
       })));
-      toast(`已载入 ${sug.segments.length} 段建议，请检查后保存`, "success");
+      const methodLabel = ({
+        ai_web_search: "AI 联网搜索",
+        ai_local: "AI 本地推理",
+        text_scan: "正文卷标记扫描",
+        parser_tags: "章节解析器标记",
+      } as Record<string, string>)[sug.used_method] || "自动检测";
+      toast(`已载入 ${sug.segments.length} 段建议（${methodLabel}），请检查后保存`, "success");
     } catch (e: any) {
+      // On AI failure, still surface the prompt so the user has a path
+      // forward (copy to ChatGPT / Claude.ai → paste results back).
+      try {
+        const r = await apiGet<{ prompt: string }>(
+          `/api/references/works/${refId}/segments/plan/ai_detect_prompt`,
+        );
+        setAiPromptUsed(r.prompt || "");
+        setAiPromptOpen(true);
+      } catch { /* keep the original toast below */ }
       toast(e?.message || "自动检测失败", "error");
+    } finally { setAiDetecting(false); }
+  };
+
+  const showAiPrompt = async () => {
+    if (aiPromptUsed) { setAiPromptOpen(true); return; }
+    try {
+      const r = await apiGet<{ prompt: string }>(
+        `/api/references/works/${refId}/segments/plan/ai_detect_prompt`,
+      );
+      setAiPromptUsed(r.prompt || "");
+      setAiPromptOpen(true);
+    } catch (e: any) {
+      toast(e?.message || "获取 prompt 失败", "error");
+    }
+  };
+
+  const copyAiPrompt = async () => {
+    if (!aiPromptUsed) return;
+    try {
+      await navigator.clipboard.writeText(aiPromptUsed);
+      toast("已复制 prompt 到剪贴板", "success");
+    } catch {
+      toast("复制失败：请手动选中文本", "error");
     }
   };
 
@@ -971,6 +1100,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
     const newEnd = total > 0 ? Math.min(total, newStart) : newStart;
     const next = [...planDraft];
     next.splice(afterIdx + 1, 0, {
+      volume_no: `第 ${afterIdx + 2} 卷`,
       title: `第 ${newStart}–${newEnd} 章`,
       start_chapter: newStart,
       end_chapter: newEnd,
@@ -985,7 +1115,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
 
   const savePlan = async () => {
     if (!planDraft) return;
-    const cleaned = planDraft.map(s => ({
+    const cleaned = planDraft.map((s, i) => ({
+      volume_no: (s.volume_no || "").trim() || `第 ${i + 1} 卷`,
       title: (s.title || "").trim(),
       start_chapter: Math.max(1, Math.floor(s.start_chapter || 1)),
       end_chapter: Math.max(1, Math.floor(s.end_chapter || 1)),
@@ -995,23 +1126,85 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       return;
     }
     if (!(await confirmDialog({
-      title: "保存分段",
-      message: "保存自定义分段会清空所有已完成的提取结果。继续？",
+      title: "保存分段计划",
+      message: "更改卷的章节范围后，原来按旧范围抽取的剧情大纲会与新范围对不上，所以需要清空一次重新提取。继续保存？",
     }))) return;
     setPlanSaving(true);
     try {
-      await apiPut(`/api/references/works/${refId}/segments/plan`,
+      // The PUT returns the saved plan — use it directly instead of a
+      // second GET round-trip.
+      const saved = await apiPut<SegmentPlan>(
+        `/api/references/works/${refId}/segments/plan`,
         { segments: cleaned, plan_type: cleaned.length > 1 ? "volumes" : "custom" },
         { timeoutMs: 60_000 });
       toast("分段计划已保存", "success");
       setPlanDraft(null);
-      await fetchPlan();
+      setPlan(saved);
+      // The chronicle / characters / settings tabs share a segmentation
+      // cache keyed by refId — invalidate it so the next tab they
+      // open sees the new plan, not the cached old one.
+      try {
+        const mod = await import("./segmentationCache");
+        mod.invalidateSegmentation(refId);
+      } catch { /* shared cache module is optional */ }
     } catch (e: any) {
       toast(e?.message || "保存失败", "error");
     } finally { setPlanSaving(false); }
   };
 
   const cancelPlanEdit = () => setPlanDraft(null);
+
+  /** Export the committed (cleaned) full text. Opens a native "save
+   *  as" dialog via the File System Access API when available, so the
+   *  user picks the destination; falls back to a normal download. */
+  const exportCleanedText = async () => {
+    try {
+      const resp = await fetch(
+        `/api/references/works/${refId}/preprocess/export_text`,
+      );
+      if (!resp.ok) {
+        toast((await resp.text().catch(() => "")) || "导出失败", "error");
+        return;
+      }
+      const blob = await resp.blob();
+      let filename = "已清理全文.txt";
+      const cd = resp.headers.get("Content-Disposition") || "";
+      const m = cd.match(/filename\*=UTF-8''([^;]+)/i);
+      if (m) {
+        try { filename = decodeURIComponent(m[1]); } catch { /* keep default */ }
+      }
+      const picker = (window as any).showSaveFilePicker;
+      if (typeof picker === "function") {
+        let handle: any;
+        try {
+          handle = await picker.call(window, {
+            suggestedName: filename,
+            types: [{ description: "文本文件", accept: { "text/plain": [".txt"] } }],
+          });
+        } catch (e: any) {
+          if (e?.name === "AbortError") return;  // user cancelled the dialog
+          throw e;
+        }
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        toast("已导出全文", "success");
+      } else {
+        // Fallback for browsers without the save-picker API.
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast("已开始下载全文", "success");
+      }
+    } catch (e: any) {
+      toast(e?.message || "导出失败", "error");
+    }
+  };
 
   // ── Render ──
 
@@ -1114,7 +1307,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         borderColor: guessing ? "var(--gold)" : undefined,
                         opacity: !statusLoaded ? 0.5 : 1,
                       }}
-                      onClick={() => { void guessFormat(); }}
+                      onClick={() => { setChapterEditMode(true); void guessFormat(); }}
                       disabled={guessing || !statusLoaded}
                       title={!statusLoaded ? "正在加载历史，请稍候…" : "先扫描全文匹配章节格式，再让你确认后进行识别"}>
                 {guessing
@@ -1131,7 +1324,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                         ? Math.round(((guessProgress.current || 0) / guessProgress.total) * 100) + "%"
                         : ""}
                     </>
-                  : (state === "idle" ? "匹配章节格式" : "重新识别")}
+                  : ((state !== "idle" || savedSummary.saved_count > 0)
+                      ? "重新识别" : "匹配章节格式")}
               </button>
             )}
             {state === "running" && (
@@ -1305,7 +1499,14 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             </div>
             <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
               <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                      onClick={() => { setGuessCandidates(null); setChosenFormats(new Set()); }}>
+                      onClick={() => {
+                        setGuessCandidates(null);
+                        setChosenFormats(new Set());
+                        // Cancelling re-detection drops back to the
+                        // read-only 已存储章节 view when the DB still
+                        // has the previously-saved chapters.
+                        if (savedSummary.saved_count > 0) setChapterEditMode(false);
+                      }}>
                 取消
               </button>
               <button className="btn-primary"
@@ -1364,23 +1565,8 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         )}
 
         {/* Live log tail */}
-        {status && status.log && status.log.length > 0 && (state === "running" || state === "paused") && (
-          <div style={{
-            maxHeight: 120, overflowY: "auto",
-            border: "1px solid var(--border)", borderRadius: 3,
-            background: "var(--bg-card)", padding: 6,
-            fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.5,
-            color: "var(--text-secondary)",
-          }}>
-            {status.log.slice(-30).map((e, i) => (
-              <div key={i} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                <span style={{ color: "var(--text-tertiary)" }}>
-                  {new Date(e.ts * 1000).toLocaleTimeString()}
-                </span>{" "}{e.message}
-              </div>
-            ))}
-          </div>
-        )}
+        <LogTail status={status} state={state} />
+
 
         {status?.error && (
           <div className="text-xs" style={{ color: "var(--error)", marginTop: 6 }}>{status.error}</div>
@@ -1700,8 +1886,10 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       )}
 
       {/* Empty-state CTA: when detection has been run but no chapters
-          exist (or never run on a fresh upload). */}
-      {statusLoaded && chapters.length === 0 && (state === "idle" || state === "done") && hasFullText && (
+          exist (or never run on a fresh upload). Hidden while the
+          read-only「已存储章节」view is showing. */}
+      {statusLoaded && chapters.length === 0 && (state === "idle" || state === "done") && hasFullText
+        && (savedSummary.saved_count === 0 || chapterEditMode) && (
         <div style={{
           padding: 20, textAlign: "center",
           border: "1px dashed var(--border)", borderRadius: 4,
@@ -1720,19 +1908,84 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         </div>
       )}
 
-      {/* Section 2: chapter list + author-note flags + outlier flags */}
-      {chapters.length > 0 && (
+      {/* Section 2 (read-only): when chapters are committed to the DB,
+          show them by default — read straight from reference_chapters
+          so the view survives reloads even when the transient detection
+          state is empty. 「重新识别章节」 re-opens the cleaning editor. */}
+      {savedSummary.saved_count > 0 && !chapterEditMode && (
+        <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
+          <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
+            <div>
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  已存储章节
+                </span>
+                <span className="tag" style={{
+                  fontSize: 10, padding: "1px 8px",
+                  color: "var(--jade)", border: "1px solid var(--jade)", borderRadius: 3,
+                }}>已写入数据库</span>
+              </div>
+              <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                数据库中共 {savedSummary.saved_count} 章
+                {savedSummary.saved_at && ` · 保存于 ${new Date(savedSummary.saved_at).toLocaleString("zh-CN")}`}
+                {" "}· 如需重新识别 / 清理，点上方「智能章节识别」的「重新识别」
+              </div>
+            </div>
+            <button className="btn"
+                    style={{ fontSize: 11, padding: "4px 12px" }}
+                    onClick={() => { void exportCleanedText(); }}
+                    title="把已清理的全部章节拼接成一个 txt，弹出对话框选择保存位置">
+              导出已清理全文（txt）
+            </button>
+          </div>
+          <div className="flex flex-col gap-2" style={{
+            maxHeight: 360, overflowY: "auto",
+            padding: 6, border: "1px solid var(--border)", borderRadius: 4,
+          }}>
+            {savedChapters.map(c => (
+              <div key={c.number} className="flex items-center" style={{
+                gap: 8, fontSize: 12, padding: "3px 6px",
+                borderBottom: "1px dashed var(--border)",
+              }}>
+                <span style={{
+                  fontFamily: "var(--font-mono)", color: "var(--accent)",
+                  minWidth: 56,
+                }}>第 {c.number} 章</span>
+                <span className="truncate" style={{ flex: 1, color: "var(--text-secondary)" }}>
+                  {c.title || "(无标题)"}
+                </span>
+                <span className="text-xs text-muted" style={{ fontFamily: "var(--font-mono)" }}>
+                  {c.char_count.toLocaleString()} 字
+                </span>
+              </div>
+            ))}
+            {savedChapters.length === 0 && (
+              <div className="text-xs text-muted" style={{ padding: 8, textAlign: "center" }}>
+                正在加载已存储章节…
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Section 2 (editor): chapter list + author-note flags + outlier flags */}
+      {chapters.length > 0 && (savedSummary.saved_count === 0 || chapterEditMode) && (
         <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
           <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
                 章节清理（共 {chapters.length} 章 · 已勾选排除 {excluded.size}）
               </div>
-              <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                勾选要排除的章节 → 点「清理章节」会从正文中<span style={{ color: "var(--error)" }}>物理删除</span>（可撤销一次）。
-              </div>
             </div>
             <div className="flex items-center gap-6">
+              {savedSummary.saved_count > 0 && chapterEditMode && (
+                <button className="btn"
+                        style={{ fontSize: 11, padding: "4px 12px", color: "var(--text-tertiary)" }}
+                        onClick={() => setChapterEditMode(false)}
+                        title="收起编辑器，回到只读的已存储章节视图">
+                  收起编辑
+                </button>
+              )}
               {status?.can_undo && (
                 <button className="btn"
                         style={{ fontSize: 11, padding: "4px 12px", color: "var(--gold)" }}
@@ -2117,7 +2370,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                   display: "flex", alignItems: "center", gap: 8,
                 }}
                   title={`从第 ${gap.expected_next} 章开始 缺失 ${gap.missing_count} 章`}>
-                  <span>⚠</span>
+                  <span>[注意]</span>
                   <span style={{ flex: 1 }}>
                     缺失 <strong>{gap.missing_count}</strong> 章（{gap.pattern}）：
                     <span style={{ fontFamily: "var(--font-mono)" }}>{missingPreview}</span>
@@ -2149,10 +2402,9 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
             gap: 12, flexWrap: "wrap",
           }}>
             <div className="text-xs text-muted" style={{ flex: 1, minWidth: 200 }}>
-              确认章节列表无误后，将完整章节结构写入数据库供后续提取使用。
-              {savedSummary.saved_count > 0 && (
-                <> · <strong style={{ color: "var(--text-secondary)" }}>已存 {savedSummary.saved_count} 章</strong>，再次点击会覆盖。</>
-              )}
+              {savedSummary.saved_count > 0
+                ? <>已存 {savedSummary.saved_count} 章</>
+                : null}
             </div>
             <button className="btn-primary"
                     style={{ fontSize: 12, padding: "5px 14px" }}
@@ -2553,91 +2805,304 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
         plan={plan}
         planDraft={planDraft}
         planSaving={planSaving}
+        aiDetecting={aiDetecting}
         startPlanEdit={startPlanEdit}
         loadAutoSuggest={loadAutoSuggest}
+        showAiPrompt={showAiPrompt}
         addPlanRow={addPlanRow}
         removePlanRow={removePlanRow}
         savePlan={savePlan}
         cancelPlanEdit={cancelPlanEdit}
         setPlanDraft={setPlanDraft}
       />
+      {aiPromptOpen && (
+        <AiPromptModal
+          prompt={aiPromptUsed}
+          onClose={() => setAiPromptOpen(false)}
+          onCopy={copyAiPrompt}
+        />
+      )}
+    </div>
+  );
+}
+
+function AiPromptModal({ prompt, onClose, onCopy }: {
+  prompt: string;
+  onClose: () => void;
+  onCopy: () => void;
+}) {
+  // Modal showing the exact prompt that would be / was sent to the LLM
+  // for volume detection. Use case: configured model fails or returns
+  // unparseable output → user copies prompt to ChatGPT / Claude.ai →
+  // pastes the JSON back into the chapter range inputs manually.
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 1000,
+      }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "var(--bg-app)", border: "1px solid var(--border)",
+        borderRadius: 6, padding: 16, width: "min(720px, 92vw)",
+        maxHeight: "85vh", display: "flex", flexDirection: "column",
+      }}>
+        <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+          <h4 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>
+            自动检测分卷的 prompt
+          </h4>
+          <button className="btn-icon" onClick={onClose}
+                  style={{ fontSize: 16 }} title="关闭">&times;</button>
+        </div>
+        <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.55 }}>
+          复制这段 prompt 到网页版 LLM（ChatGPT / Claude.ai / 元宝 / 通义 等）。
+          模型返回 JSON 后，把里面的 <code>volumes</code> 数组里的每一项手动填入下方的章节范围。
+        </div>
+        <pre className="font-mono" style={{
+          flex: 1, margin: 0, padding: 10,
+          background: "var(--bg-card)", border: "1px solid var(--border)",
+          borderRadius: 4, fontSize: 11, lineHeight: 1.55,
+          overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word",
+          color: "var(--text-secondary)",
+        }}>{prompt || "（prompt 为空）"}</pre>
+        <div className="flex gap-6" style={{ justifyContent: "flex-end", marginTop: 10 }}>
+          <button className="btn" onClick={onClose}>关闭</button>
+          <button className="btn-primary" onClick={onCopy} disabled={!prompt}>
+            复制到剪贴板
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type VolumeRow = { volume_no: string; title: string; start_chapter: number; end_chapter: number };
+
+/** Parse a web-LLM volume-detection response into plan rows. Tolerates
+ *  <think> blocks, ```json fences, surrounding prose, and either
+ *  {volumes:[…]} / {segments:[…]} or a bare array. */
+function parseVolumesJson(raw: string, total: number): VolumeRow[] | null {
+  let s = (raw || "").replace(/<think>[\s\S]*?<\/think>/gi, "")
+                     .replace(/<\/?think>/gi, "");
+  const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fence) s = fence[1];
+  s = s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim();
+  if (!s) return null;
+  const balanced = (start: number): string | null => {
+    const open = s[start];
+    if (open !== "{" && open !== "[") return null;
+    const close = open === "{" ? "}" : "]";
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < s.length; i++) {
+      const c = s[i];
+      if (esc) { esc = false; continue; }
+      if (c === "\\") { esc = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c === open) depth++;
+      else if (c === close) { depth--; if (depth === 0) return s.slice(start, i + 1); }
+    }
+    return null;
+  };
+  let obj: any = null;
+  for (let i = 0; i < s.length && obj == null; i++) {
+    if (s[i] !== "{" && s[i] !== "[") continue;
+    const ext = balanced(i);
+    if (!ext) continue;
+    try { obj = JSON.parse(ext); } catch { obj = null; }
+  }
+  if (obj == null) return null;
+  const arr: any[] | null = Array.isArray(obj) ? obj
+    : Array.isArray(obj.volumes) ? obj.volumes
+    : Array.isArray(obj.segments) ? obj.segments
+    : null;
+  if (!arr) return null;
+  const rows: VolumeRow[] = [];
+  for (const v of arr) {
+    if (!v || typeof v !== "object") continue;
+    const sc = parseInt(v.start_chapter ?? v.start ?? v.from, 10);
+    const ec = parseInt(v.end_chapter ?? v.end ?? v.to, 10);
+    if (!Number.isFinite(sc) || !Number.isFinite(ec)) continue;
+    const cap = total > 0 ? total : Math.max(sc, ec);
+    rows.push({
+      volume_no: String(v.volume_no || v.no || "").trim() || `第 ${rows.length + 1} 卷`,
+      title: String(v.title || v.name || "").trim() || `第 ${sc}–${ec} 章`,
+      start_chapter: Math.max(1, Math.min(sc, cap)),
+      end_chapter: Math.max(1, Math.min(ec, cap)),
+    });
+  }
+  return rows;
+}
+
+/** Collapsible paste box — drop in a web-LLM volume-detection JSON and
+ *  it fills the plan draft. */
+function VolumePasteBox({ totalChapters, onParsed }: {
+  totalChapters: number;
+  onParsed: (rows: VolumeRow[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [raw, setRaw] = useState("");
+  const [error, setError] = useState("");
+  const parse = () => {
+    setError("");
+    const rows = parseVolumesJson(raw, totalChapters);
+    if (!rows) { setError("未能解析出分卷数组（需含 volumes 或 segments）"); return; }
+    if (rows.length === 0) { setError("解析结果为空"); return; }
+    onParsed(rows);
+    setRaw("");
+    setOpen(false);
+  };
+  return (
+    <div style={{ marginBottom: 10, border: "1px dashed var(--border)", borderRadius: 4 }}>
+      <button className="btn-ghost w-full" onClick={() => setOpen(o => !o)}
+              style={{
+                justifyContent: "space-between", padding: "6px 10px",
+                fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", borderRadius: 0,
+              }}>
+        <span>粘贴网页 LLM 返回结果（自动填入分卷）</span>
+        <span className="text-xs text-muted">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{ padding: 8 }}>
+          <textarea className="input font-mono" rows={5} value={raw}
+                    onChange={e => { setRaw(e.target.value); setError(""); }}
+                    placeholder={'粘贴 LLM 返回的 {"volumes":[{"title":"...","start_chapter":1,"end_chapter":30}, ...]}'}
+                    style={{ fontSize: 11, lineHeight: 1.5, resize: "vertical", background: "var(--bg-app)" }} />
+          <div className="flex items-center gap-6" style={{ marginTop: 6 }}>
+            <button className="btn-primary" style={{ fontSize: 11, padding: "3px 12px" }}
+                    onClick={parse} disabled={!raw.trim()}>解析并填入</button>
+            {error && <span className="text-xs" style={{ color: "var(--error)" }}>{error}</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 interface VolumeEditorProps {
   plan: SegmentPlan | null;
-  planDraft: { title: string; start_chapter: number; end_chapter: number }[] | null;
+  planDraft: VolumeRow[] | null;
   planSaving: boolean;
+  aiDetecting: boolean;
   startPlanEdit: () => void;
   loadAutoSuggest: () => Promise<void>;
+  showAiPrompt: () => void;
   addPlanRow: (afterIdx: number) => void;
   removePlanRow: (idx: number) => void;
   savePlan: () => Promise<void>;
   cancelPlanEdit: () => void;
-  setPlanDraft: (d: { title: string; start_chapter: number; end_chapter: number }[] | null) => void;
+  setPlanDraft: (d: VolumeRow[] | null) => void;
 }
 
 function VolumeEditor(p: VolumeEditorProps) {
   const { plan, planDraft, planSaving } = p;
-  if (!plan) return null;
 
   return (
-    <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, background: "var(--bg-surface)" }}>
+    <div style={{
+      border: "2px solid var(--accent)", borderRadius: "var(--radius-sm)",
+      padding: 12, background: "var(--bg-surface)",
+    }}>
       <div className="flex items-center justify-between" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-            分卷与分段
+          <div className="flex items-center" style={{ gap: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>
+              分卷与分段
+            </span>
+            <span className="tag" style={{
+              fontSize: 10, padding: "1px 7px",
+              color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 3,
+            }}>新建 / 编辑 / 删除卷</span>
           </div>
           <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-            {plan.segments.length === 0
-              ? `共 ${plan.total_chapters} 章 · 尚未划分卷`
-              : `${plan.is_custom ? "自定义" : (plan.type === "volumes" ? "按卷处理" : "按 ~10 万字分块")} · ${plan.segments.length} 段`}
+            {!plan
+              ? "加载分卷信息中…"
+              : plan.segments.length === 0
+                ? `共 ${plan.total_chapters} 章 · 尚未划分卷`
+                : `${plan.is_custom ? "自定义" : (plan.type === "volumes" ? "按卷处理" : "按 ~10 万字分块")} · ${plan.segments.length} 段`}
           </div>
         </div>
-        {!planDraft && plan.segments.length > 0 && (
-          <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                  onClick={p.startPlanEdit}
-                  title="编辑卷的标题和章节范围">
-            编辑分卷
-          </button>
+        {plan && !planDraft && plan.segments.length > 0 && (
+          <div className="flex" style={{ gap: 6 }}>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                    onClick={p.loadAutoSuggest} disabled={p.aiDetecting}
+                    title="用AI大模型API 重新检测分卷边界（模型可在 设置 · Pipeline 配置 中选择）">
+              {p.aiDetecting ? "检测中…" : "使用AI大模型API检测"}
+            </button>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                    onClick={p.startPlanEdit}
+                    title="编辑卷的标题和章节范围">
+              编辑分卷
+            </button>
+          </div>
         )}
       </div>
 
+      {!plan && (
+        <div className="text-xs text-muted" style={{
+          padding: 16, textAlign: "center",
+          border: "1px dashed var(--border)", borderRadius: 4,
+        }}>
+          正在加载分卷信息……如长时间未加载，请确认正文已上传并完成章节识别。
+        </div>
+      )}
+
+      {/* Paste-back: parse a web-LLM volume-detection response into the
+          plan draft (pairs with the「复制 prompt」button). */}
+      {plan && (
+        <VolumePasteBox
+          totalChapters={plan.total_chapters || 0}
+          onParsed={rows => p.setPlanDraft(rows)}
+        />
+      )}
+
       {/* Empty state */}
-      {plan.segments.length === 0 && !planDraft && (
+      {plan && plan.segments.length === 0 && !planDraft && (
         <div style={{
           padding: 16, textAlign: "center",
           border: "1px dashed var(--border)", borderRadius: 4,
         }}>
-          <div className="text-xs text-muted" style={{ marginBottom: 12, lineHeight: 1.6 }}>
-            还没有分卷。卷标题代表故事中的时间（如「1954 年」），无明确时间时填写章节范围。
+          <div className="text-xs text-muted" style={{ marginBottom: 12 }}>
+            还没有分卷。
           </div>
           <div className="flex gap-8" style={{ justifyContent: "center", flexWrap: "wrap" }}>
             <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }} onClick={p.startPlanEdit}>
               新建卷
             </button>
             <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={p.loadAutoSuggest}
-                    title="按文中「第 X 卷」标记或 ~10 万字切块自动建议分卷">
-              自动检测分卷
+                    disabled={p.aiDetecting}
+                    title="用AI大模型API 检测分卷（联网模型可用时优先联网检索官方分卷；模型可在 设置 · Pipeline 配置 中选择）">
+              {p.aiDetecting ? "检测中…" : "使用AI大模型API检测"}
+            </button>
+            <button className="btn-ghost" style={{ fontSize: 11, padding: "5px 10px" }}
+                    onClick={p.showAiPrompt}
+                    title="查看 / 复制发给 LLM 的 prompt（可粘到 ChatGPT、Claude.ai 等手动检测）">
+              AI大模型网页版
             </button>
           </div>
         </div>
       )}
 
       {/* Edit mode */}
-      {planDraft && (
+      {plan && planDraft && (
         <div>
           <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
-            <div className="text-xs text-muted" style={{ lineHeight: 1.55, flex: 1, minWidth: 220 }}>
-              卷标题代表故事中的时间（如「1954 年」），无明确时间时填写章节范围。共 {plan.total_chapters} 章。
-              {plan.segments.length > 0 && <><br />保存后会清空已有的提取结果。</>}
+            <div className="text-xs text-muted" style={{ flex: 1, minWidth: 180 }}>
+              共 {plan.total_chapters} 章
             </div>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                    onClick={p.loadAutoSuggest}
-                    disabled={planSaving}>
-              自动检测分卷
-            </button>
+            <div className="flex gap-6" style={{ flexShrink: 0 }}>
+              <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                      onClick={p.loadAutoSuggest}
+                      disabled={planSaving || p.aiDetecting}
+                      title="优先用联网 AI 检索官方分卷信息；联网模型不可用时回退到正文卷标记扫描">
+                {p.aiDetecting ? "检测中…" : "自动检测分卷"}
+              </button>
+              <button className="btn-ghost" style={{ fontSize: 11, padding: "3px 8px" }}
+                      onClick={p.showAiPrompt}
+                      title="查看 / 复制发给 LLM 的 prompt（可粘到 ChatGPT、Claude.ai 等手动检测）">
+                AI大模型网页版
+              </button>
+            </div>
           </div>
 
           {planDraft.length > 0 && (
@@ -2647,11 +3112,23 @@ function VolumeEditor(p: VolumeEditorProps) {
                   padding: 6, border: "1px solid var(--border)", borderRadius: 4,
                 }}>
                   <span className="text-xs text-muted" style={{
-                    minWidth: 30, textAlign: "center", fontFamily: "var(--font-mono)",
+                    minWidth: 24, textAlign: "center", fontFamily: "var(--font-mono)",
                   }}>#{i + 1}</span>
                   <input
                     className="input"
-                    placeholder='故事时间（如 "1954 年"，无则填 "第 1–8 章"）'
+                    placeholder="卷号"
+                    value={s.volume_no}
+                    onChange={e => {
+                      const next = [...planDraft];
+                      next[i] = { ...s, volume_no: e.target.value };
+                      p.setPlanDraft(next);
+                    }}
+                    style={{ width: 90, fontSize: 12 }}
+                    title="卷号（如「第一卷」「上卷」）"
+                  />
+                  <input
+                    className="input"
+                    placeholder="卷名（如「风起云涌」，可留空）"
                     value={s.title}
                     onChange={e => {
                       const next = [...planDraft];
@@ -2659,6 +3136,7 @@ function VolumeEditor(p: VolumeEditorProps) {
                       p.setPlanDraft(next);
                     }}
                     style={{ flex: 1, fontSize: 12 }}
+                    title="卷名"
                   />
                   <input
                     className="input" type="number" min={1} max={plan.total_chapters || undefined}
@@ -2687,9 +3165,9 @@ function VolumeEditor(p: VolumeEditorProps) {
                         style={{ minWidth: 56, textAlign: "right", fontFamily: "var(--font-mono)" }}>
                     {Math.max(0, (s.end_chapter || 0) - (s.start_chapter || 0) + 1)} 章
                   </span>
-                  <button className="btn" style={{ fontSize: 11, padding: "3px 8px" }}
+                  <button className="btn-icon" style={{ fontSize: 14, width: 22, height: 22 }}
                           onClick={() => p.addPlanRow(i)}
-                          title="在该段后新建一个分卷">新建卷</button>
+                          title="在该段后插入一个新的分卷">+</button>
                   <button className="btn-icon"
                           onClick={() => p.removePlanRow(i)}
                           style={{ fontSize: 14 }}
@@ -2703,35 +3181,42 @@ function VolumeEditor(p: VolumeEditorProps) {
               padding: 12, marginBottom: 10, textAlign: "center",
               border: "1px dashed var(--border)", borderRadius: 4,
             }}>
-              当前没有分卷。点击下方「新建卷」开始添加。
+              <div style={{ marginBottom: 8 }}>当前没有分卷。</div>
+              <button className="btn-primary" style={{ fontSize: 12, padding: "4px 14px" }}
+                      onClick={() => p.addPlanRow(-1)}
+                      disabled={planSaving}>新建卷</button>
             </div>
           )}
-          <div className="flex gap-6" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                    onClick={() => p.addPlanRow(planDraft.length - 1)}
-                    disabled={planSaving}>+ 新建卷</button>
-            <div className="flex gap-6">
-              <button className="btn" onClick={p.cancelPlanEdit} disabled={planSaving}>取消</button>
-              <button className="btn-primary" onClick={p.savePlan}
-                      disabled={planSaving || planDraft.length === 0}>
-                {planSaving ? "保存中..." : "保存分段计划"}
-              </button>
-            </div>
+          <div className="flex gap-6" style={{ justifyContent: "flex-end", flexWrap: "wrap" }}>
+            <button className="btn" onClick={p.cancelPlanEdit} disabled={planSaving}>取消</button>
+            <button className="btn-primary" onClick={p.savePlan}
+                    disabled={planSaving || planDraft.length === 0}>
+              {planSaving ? "保存中..." : "保存分段计划"}
+            </button>
           </div>
         </div>
       )}
 
       {/* List mode */}
-      {!planDraft && plan.segments.length > 0 && (
+      {plan && !planDraft && plan.segments.length > 0 && (
         <div className="flex flex-col gap-4">
           {plan.segments.map(s => (
             <div key={s.index} style={{
               padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 4,
             }}>
-              <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)" }}>
-                #{s.index + 1} · {s.title}
+              <div className="flex items-center" style={{ gap: 6, flexWrap: "wrap" }}>
+                <span className="tag" style={{
+                  fontSize: 10, padding: "1px 7px",
+                  color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 3,
+                }}>{s.volume_no || `第 ${s.index + 1} 卷`}</span>
+                {s.title && (
+                  <span className="tag" style={{
+                    fontSize: 10, padding: "1px 7px",
+                    color: "var(--text-secondary)", border: "1px solid var(--border)", borderRadius: 3,
+                  }}>{s.title}</span>
+                )}
               </div>
-              <div className="text-xs text-muted">
+              <div className="text-xs text-muted" style={{ marginTop: 3 }}>
                 第 {s.start_chapter}–{s.end_chapter} 章 · 共 {s.chapter_count ?? (s.end_chapter - s.start_chapter + 1)} 章 · {fmtChars(s.char_count)}
               </div>
             </div>

@@ -77,6 +77,53 @@ def compute_style_fingerprint(chapters: list[dict]) -> dict[str, Any]:
     }
 
 
+def compute_nlp_style(chapters: list[dict]) -> dict[str, Any]:
+    """Compute ONLY the deterministic / statistical style metrics that
+    don't need an LLM judgement: average sentence length, vocabulary
+    richness (root TTR, normalized 0-1), and a punctuation-usage
+    profile (uses per 1000 chars). The features tab pairs this with the
+    LLM-discriminated metrics (dialogue ratio, rhetoric, payoff/info/
+    hook density) from the reference.style prompt."""
+    full = "\n".join(ch.get("content", "") for ch in chapters)
+    if not full:
+        return {}
+    n = len(full)
+
+    sents = [s.strip() for s in _SENT.split(full) if len(s.strip()) >= 2]
+    avg_len = (sum(len(s) for s in sents) / len(sents)) if sents else 0
+
+    # Vocabulary richness — root TTR normalized to 0-1 (same scaling as
+    # compute_style_fingerprint so the two stay comparable).
+    try:
+        import jieba
+        tokens = list(jieba.cut(full[:80000]))
+    except ImportError:
+        tokens = list(full[:80000])
+    tokens = [t for t in tokens if t.strip()]
+    root_ttr = len(set(tokens)) / math.sqrt(max(len(tokens), 1))
+    vocab = min(1.0, max(0.0, (root_ttr - 3) / 12))
+
+    # Punctuation usage — counts per 1000 chars. Ellipsis matches both
+    # the CJK 省略号 (……) and ASCII (...); dash matches 破折号 (——).
+    per_k = max(n / 1000.0, 1.0)
+    ellipsis = len(re.findall(r'…+|\.{3,}', full))
+    dash = len(re.findall(r'——|—{1,}|--+', full))
+    exclaim = full.count('！') + full.count('!')
+    question = full.count('？') + full.count('?')
+    comma = full.count('，') + full.count(',')
+    return {
+        "avg_sentence_length": round(avg_len, 2),
+        "vocab_complexity": round(vocab, 4),
+        "punctuation_profile": {
+            "ellipsis": round(ellipsis / per_k, 3),
+            "dash": round(dash / per_k, 3),
+            "exclamation": round(exclaim / per_k, 3),
+            "question": round(question / per_k, 3),
+            "comma": round(comma / per_k, 3),
+        },
+    }
+
+
 # ── Character extraction ──
 
 _COMMON_SURNAMES = set(

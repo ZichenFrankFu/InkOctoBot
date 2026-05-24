@@ -15,6 +15,9 @@ a = Analysis(
         # ---- 前端 build 产物 ----
         ("ui/backend/app/static", "ui/backend/app/static"),
 
+        # ---- 应用图标（窗口 / 任务栏图标）----
+        ("assets", "assets"),
+
         # ---- 项目配置 ----
         ("config.py", "."),
 
@@ -111,7 +114,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon="assets/icon.ico",   # 如果你有图标的话
+    icon="assets/icon.ico",
 )
 
 coll = COLLECT(

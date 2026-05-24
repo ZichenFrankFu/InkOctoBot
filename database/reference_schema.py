@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS reference_works (
     style_fingerprint_json TEXT, narrative_structure_json TEXT,
     extracted_characters_json TEXT, rhythm_template_json TEXT,
     plot_outline_json TEXT, segments_json TEXT, settings_json TEXT,
-    rhythm_json TEXT,
+    rhythm_json TEXT, chapter_comments_json TEXT,
     serial_status TEXT CHECK (serial_status IN ('ongoing','completed','hiatus','unknown')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"""
@@ -82,9 +82,48 @@ CREATE TABLE IF NOT EXISTS reference_chapters (
     FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
 );"""
 
-ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS, _REFERENCE_CHAPTERS]
+# User-authored inspiration library — free-text idea snippets (scenes,
+# plot devices, character designs, …) that the 灵感搜索 page can store and
+# similarity-search. Independent of any single reference work.
+_INSPIRATIONS = """
+CREATE TABLE IF NOT EXISTS inspirations (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL DEFAULT 'other',
+    title TEXT,
+    content TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);"""
+
+# Secondary indexes on foreign-key columns — list/link lookups filter by
+# these, and without indexes SQLite full-scans the tables.
+_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_reference_entries_ref ON reference_entries (ref_id);
+CREATE INDEX IF NOT EXISTS idx_project_reference_links_project ON project_reference_links (project_id);
+CREATE INDEX IF NOT EXISTS idx_project_reference_links_ref ON project_reference_links (ref_id);
+"""
+
+ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS, _REFERENCE_CHAPTERS, _INSPIRATIONS, _INDEXES]
+
+# Schema setup is process-global and idempotent; once a DB file has been
+# ensured we skip the (non-trivial) DDL + migration work on later calls.
+_ensured_paths: set[str] = set()
+
+
+def _conn_path(conn: sqlite3.Connection) -> str:
+    try:
+        for _seq, name, file in conn.execute("PRAGMA database_list"):
+            if name == "main":
+                return file or ":memory:"
+    except Exception:
+        pass
+    return ":memory:"
+
 
 def ensure_reference_tables(conn: sqlite3.Connection) -> None:
+    path = _conn_path(conn)
+    if path != ":memory:" and path in _ensured_paths:
+        return
     for ddl in ALL_DDL: conn.executescript(ddl)
     # Lightweight migrations for additive columns on pre-existing DBs
     cols = {r[1] for r in conn.execute("PRAGMA table_info(reference_works)").fetchall()}
@@ -98,4 +137,8 @@ def ensure_reference_tables(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE reference_works ADD COLUMN serial_status TEXT")
     if "rhythm_json" not in cols:
         conn.execute("ALTER TABLE reference_works ADD COLUMN rhythm_json TEXT")
+    if "chapter_comments_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN chapter_comments_json TEXT")
     conn.commit()
+    if path != ":memory:":
+        _ensured_paths.add(path)

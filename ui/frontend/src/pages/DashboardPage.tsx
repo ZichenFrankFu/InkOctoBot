@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { apiGet } from "../api/client";
 import { useToast } from "../components/shared/Toast";
-import type { Novel, RankList, ReferenceWork, Volume } from "../api/types";
+import type { Novel } from "../api/types";
+import { splitGenres } from "../utils/genre";
 
 /* ── local response types ── */
 interface Overview {
@@ -54,9 +55,7 @@ type PlatformFilter = "" | "qidian" | "fanqie";
 const platformLabel = (p: string) =>
   p === "qidian" ? "起点" : p === "fanqie" ? "番茄" : p || "未知";
 
-const wc = (t: string) => (t ? t.replace(/[\s\p{P}]/gu, "").length : 0);
-
-export default function DashboardPage({ projects, onNavigate, onSelectProject }: { projects: { id: string; name: string; genre?: string }[]; onNavigate: (tab: string) => void; onSelectProject?: (id: string) => void }) {
+export default function DashboardPage({ projects, onNavigate, onSelectProject }: { projects: { id: string; name: string; genre?: string; word_count?: number; chapter_count?: number }[]; onNavigate: (tab: string) => void; onSelectProject?: (id: string) => void }) {
   const { toast } = useToast();
   const [platform, setPlatform] = useState<PlatformFilter>("");
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -73,54 +72,49 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
 
   /* project stats */
   const [projectStats, setProjectStats] = useState<ProjectStats[]>([]);
-  const [refSummary, setRefSummary] = useState<{ total: number; topGenres: string[]; avgRating: number }>({ total: 0, topGenres: [], avgRating: 0 });
+  const [refSummary, setRefSummary] = useState<{
+    total: number; topGenres: string[]; avgRating: number;
+    withFullText: number; done: number; withPlot: number; withCharacters: number;
+    ratedCount: number; byGenre: { genre: string; count: number }[];
+  }>({ total: 0, topGenres: [], avgRating: 0, withFullText: 0, done: 0, withPlot: 0, withCharacters: 0, ratedCount: 0, byGenre: [] });
 
   /* ── fetch project stats ── */
   useEffect(() => {
-    // Load editor data for each project to get word count & chapter count
-    const loadStats = async () => {
-      const results = await Promise.all(
-        projects.map(async (proj) => {
-          try {
-            const data = await apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${proj.id}`);
-            const vols = data.volumes || [];
-            let totalWords = 0;
-            let chapterCount = 0;
-            for (const v of vols) {
-              for (const ch of v.chapters) {
-                chapterCount++;
-                totalWords += ch.word_count || wc(ch.content || "");
-              }
-            }
-            return { ...proj, totalWords, chapterCount };
-          } catch {
-            return { ...proj, totalWords: 0, chapterCount: 0 };
-          }
-        })
-      );
-      setProjectStats(results);
+    // Word/chapter counts already arrive enriched on /api/data/projects,
+    // so derive project stats directly instead of a per-project fetch.
+    const loadStats = () => {
+      setProjectStats(projects.map((proj) => ({
+        ...proj,
+        totalWords: proj.word_count ?? 0,
+        chapterCount: proj.chapter_count ?? 0,
+      })));
     };
 
-    // Load reference library summary
+    // Reference-DB overview — a tiny aggregate endpoint, not the full works list.
     const loadRefSummary = async () => {
       try {
-        const r = await apiGet<{ items: ReferenceWork[]; total: number }>("/api/references/works");
-        const items = r.items || [];
+        const r = await apiGet<{
+          total: number; with_full_text: number; done: number;
+          with_plot: number; with_characters: number;
+          avg_rating: number | null; rated_count: number; genres: string[];
+        }>("/api/references/stats");
         const genreMap: Record<string, number> = {};
-        let ratingSum = 0;
-        let ratingCount = 0;
-        for (const w of items) {
-          if (w.genre) genreMap[w.genre] = (genreMap[w.genre] || 0) + 1;
-          if (w.user_rating) { ratingSum += w.user_rating; ratingCount++; }
+        for (const g of r.genres || []) {
+          for (const tag of splitGenres(g)) genreMap[tag] = (genreMap[tag] || 0) + 1;
         }
-        const topGenres = Object.entries(genreMap)
+        const byGenre = Object.entries(genreMap)
           .sort((a, b) => b[1] - a[1])
-          .slice(0, 5)
-          .map(([g]) => g);
+          .map(([genre, count]) => ({ genre, count }));
         setRefSummary({
-          total: r.total || items.length,
-          topGenres,
-          avgRating: ratingCount > 0 ? ratingSum / ratingCount : 0,
+          total: r.total || 0,
+          topGenres: byGenre.slice(0, 5).map(g => g.genre),
+          avgRating: r.avg_rating || 0,
+          withFullText: r.with_full_text || 0,
+          done: r.done || 0,
+          withPlot: r.with_plot || 0,
+          withCharacters: r.with_characters || 0,
+          ratedCount: r.rated_count || 0,
+          byGenre,
         });
       } catch {
         // reference db might not exist yet
@@ -161,6 +155,10 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
   const maxTag = useMemo(
     () => Math.max(1, ...(hotTags.map((t) => t.novel_count) ?? [1])),
     [hotTags],
+  );
+  const maxRefGenre = useMemo(
+    () => Math.max(1, ...refSummary.byGenre.map((g) => g.count)),
+    [refSummary],
   );
 
   const totalWords = useMemo(() => projectStats.reduce((s, p) => s + p.totalWords, 0), [projectStats]);
@@ -292,6 +290,59 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
           )}
         </div>
       </div>
+
+      {/* ══ 参考作品数据库 ══ */}
+      {refSummary.total > 0 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3>参考作品数据库</h3>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => onNavigate("references-overview")}>
+              查看完整概览
+            </button>
+          </div>
+          <div className="card-body">
+            <div className="stats-grid" style={{ marginBottom: 18 }}>
+              {[
+                { value: refSummary.total, label: "作品总数" },
+                { value: refSummary.withFullText, label: "已上传正文" },
+                { value: refSummary.done, label: "已完成分析" },
+                { value: refSummary.withPlot, label: "已生成大纲" },
+                { value: refSummary.withCharacters, label: "已提取角色" },
+                { value: refSummary.avgRating > 0 ? refSummary.avgRating.toFixed(1) : "—", label: "平均评分" },
+              ].map((s) => (
+                <div className="stat-card" key={s.label}>
+                  <div className="stat-value">{s.value}</div>
+                  <div className="stat-label">{s.label}</div>
+                </div>
+              ))}
+            </div>
+            {refSummary.byGenre.length > 0 ? (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
+                  题材分布
+                  <span className="text-xs text-muted" style={{ fontWeight: 400, marginLeft: 6 }}>
+                    {refSummary.byGenre.length} 个标签
+                  </span>
+                </div>
+                <div className="bar-chart">
+                  {refSummary.byGenre.slice(0, 12).map((g, idx) => (
+                    <div className="bar-row" key={g.genre}>
+                      <div className="bar-label">{g.genre}</div>
+                      <div className="bar-track">
+                        <div className={`bar-fill ${barColors[idx % barColors.length]}`} style={{ width: `${Math.max(4, (g.count / maxRefGenre) * 100)}%` }}>
+                          {g.count}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-muted">暂无题材数据</div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ══ 市场数据速览 ══ */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>

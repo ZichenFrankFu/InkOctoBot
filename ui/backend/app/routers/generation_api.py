@@ -349,6 +349,23 @@ class GenerateRequest(BaseModel):
     existing_content: str = ""
     chapter_num: int = 1
     character_aliases: dict[str, str] = {}
+    # Chapter-linked reference material (chronicle events / inspirations).
+    referenced_events: list[dict] = []
+    referenced_inspirations: list[dict] = []
+    # When true, /quick-generate skips the LLM call and returns the
+    # assembled prompt so it can be run in a web LLM instead.
+    prompt_only: bool = False
+    # Per-call ephemeral prompt-template override (edited in the editor's
+    # prompt preview); falls back to the registry default if it fails.
+    prompt_override: str = ""
+    # User-selected writing skills to inject. None = no explicit selection
+    # (inject every active learned skill); a list = inject exactly those.
+    skills: list[str] | None = None
+    # When true, the pipeline pauses at every agent, surfaces the rendered
+    # prompt, and uses the result the user pastes back from a web LLM.
+    manual: bool = False
+    # Per-item RAG de-selections the user unchecked ("block::id").
+    rag_excludes: list[str] = []
 
 
 class RewriteRequest(BaseModel):
@@ -356,6 +373,7 @@ class RewriteRequest(BaseModel):
     instruction: str = ""
     provider: str = ""
     model: str = ""
+    prompt_only: bool = False
 
 
 class EvalRequest(BaseModel):
@@ -363,6 +381,12 @@ class EvalRequest(BaseModel):
     chapter_num: int = 1
     provider: str = ""
     model: str = ""
+    prompt_only: bool = False
+    # Project to pull RAG grounding from (worldbook / characters / etc.).
+    project_id: str = ""
+    chapter_id: str = ""
+    # Per-item RAG de-selections the user unchecked ("block::id").
+    rag_excludes: list[str] = []
 
 
 def _get_user_settings() -> dict:
@@ -522,7 +546,7 @@ def _build_router(provider: str = "", model: str = ""):
 
     if not fb_provider or not fb_model:
         # Try pipeline config
-        for role_key in ("scene_director", "editor_stylist", "actor_default"):
+        for role_key in ("scene_director", "editor_stylist", "editor_writer", "actor_default", "evaluator"):
             role_cfg = pipeline.get(role_key, {})
             p = role_cfg.get("provider", "")
             m = role_cfg.get("model", "")
@@ -576,9 +600,48 @@ def health():
 @router.post("/start")
 async def start_generation(req: GenerateRequest):
     session_id = f"gen_{uuid.uuid4().hex[:12]}"
+    req_data = req.model_dump()
+    # Fold the chapter's 大纲-tab linked reference works (with their
+    # full-book outline / characters / rhythm) + inspirations into
+    # world_rules so the pipeline agents share the single-agent grounding.
+    try:
+        from ._rag_context import build_referenced_materials_block
+        materials = build_referenced_materials_block(
+            req.referenced_events, req.referenced_inspirations, _get_db_path())
+    except Exception:
+        materials = ""
+    if materials:
+        existing = (req_data.get("world_rules") or "").strip()
+        req_data["world_rules"] = f"{existing}\n\n{materials}".strip() if existing else materials
+    # Fold the project RAG context (worldbook / reference works /
+    # writing-knowledge) into world_rules so the pipeline agents are
+    # grounded in the same material as single-agent generation.
+    try:
+        from ._rag_context import build_generation_context, _load_writing_skills
+        ctx = build_generation_context(
+            req.project_id, req.chapter_num, req.characters, skills=req.skills,
+            chapter_id=req.chapter_id, rag_excludes=req.rag_excludes)
+        # Manual cluster runs are a copy-to-web-LLM flow → Skill-Access check.
+        _skill_block = (_load_writing_skills(req.skills, web_mode=True)
+                        if req.manual else ctx["blocks"].get("writing_skills", ""))
+        rag_text = "\n".join(
+            b for b in (
+                ctx["blocks"].get("adjacent_context", ""),
+                ctx["blocks"].get("character_cards", ""),
+                ctx["blocks"].get("worldbook", ""),
+                ctx["blocks"].get("reference_summary", ""),
+                ctx["blocks"].get("writing_knowledge", ""),
+                _skill_block,
+            ) if (b or "").strip()
+        ).strip()
+        if rag_text:
+            existing = (req_data.get("world_rules") or "").strip()
+            req_data["world_rules"] = f"{existing}\n\n{rag_text}".strip() if existing else rag_text
+    except Exception as e:
+        logger.debug("pipeline RAG context skipped: %s", e)
     _active_sessions[session_id] = {
         "status": "running",
-        "request": req.model_dump(),
+        "request": req_data,
         "created_at": time.time(),
         "events": [],           # list of dicts — full event log
         "result": None,
@@ -638,6 +701,21 @@ async def confirm_session(session_id: str, body: dict):
     return {"status": "ok"}
 
 
+@router.post("/manual-result/{session_id}")
+async def submit_manual_result(session_id: str, body: dict):
+    """Submit a web-LLM result for a pipeline agent paused in manual mode."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if not session.get("waiting_manual"):
+        return {"status": "ok", "message": "not waiting"}
+    session["manual_result"] = body.get("result", "")
+    evt = session.get("manual_event")
+    if evt:
+        evt.set()
+    return {"status": "ok"}
+
+
 @router.post("/stop/{session_id}")
 async def stop_session(session_id: str):
     """Stop/abort a running pipeline session."""
@@ -679,26 +757,72 @@ async def generate_scene_plan(req: GenerateRequest):
 @router.post("/rewrite")
 async def rewrite_text(req: RewriteRequest):
     try:
+        from analysis.feature_extraction.prompts import render
+        user_content = render(
+            "generation.rewrite",
+            instruction=req.instruction or "润色并提升文学质量",
+            original_text=req.text,
+        )
+        if req.prompt_only:
+            return {"status": "ok", "prompt": user_content}
+        from models.base import LLMMessage
         router_inst = _build_router(req.provider, req.model)
         from agents.production.editor_writer import EditorWriter
         editor = EditorWriter(router_inst, project_id="rewrite")
-        result = await editor.targeted_rewrite(
-            original_text=req.text,
-            instruction=req.instruction,
+        messages = [
+            LLMMessage(role="system", content=editor.system_prompt),
+            LLMMessage(role="user", content=user_content),
+        ]
+        resp = await router_inst.generate(
+            agent_role="editor_writer", messages=messages,
+            temperature=0.5, max_tokens=8000,
         )
-        return {"status": "ok", "rewritten": result}
+        return {"status": "ok", "rewritten": resp.content}
     except Exception as e:
         logger.error("Rewrite error: %s", e, exc_info=True)
         raise HTTPException(500, detail=str(e))
 
 
+@router.get("/context-manifest")
+def context_manifest(
+    project_id: str = "default", chapter_id: str = "",
+    chapter_num: int = 1, mode: str = "cluster",
+):
+    """Skills / knowledge / RAG a chapter generation will use — drives the
+    creation (and 评估) tab's transparency panel."""
+    try:
+        from ._rag_context import creation_context_manifest
+        return creation_context_manifest(project_id, chapter_id, chapter_num, mode)
+    except Exception as e:
+        logger.error("context manifest error: %s", e, exc_info=True)
+        return {"rag": [], "default_skills": [], "learned_skills": [], "writing_knowledge": []}
+
+
 @router.post("/evaluate")
 async def evaluate_text(req: EvalRequest):
     try:
+        # Ground the evaluation in the same project RAG context the
+        # generation step used (worldbook / characters / knowledge).
+        from ._rag_context import build_rag_digest
+        rag = build_rag_digest(
+            req.project_id, req.chapter_num, chapter_id=req.chapter_id,
+            rag_excludes=req.rag_excludes,
+        ) if req.project_id else ""
+        if req.prompt_only:
+            from analysis.feature_extraction.prompts import render
+            prompt = render(
+                "generation.evaluate",
+                chapter_num=req.chapter_num, checklist="", text=req.text,
+            )
+            if rag:
+                prompt = f"[参考设定（用于判断一致性）]\n{rag}\n\n{prompt}"
+            return {"status": "ok", "prompt": prompt}
         router_inst = _build_router(req.provider, req.model)
         from agents.evaluation.evaluator import Evaluator
-        evaluator = Evaluator(router_inst, project_id="eval")
-        result = await evaluator.evaluate(text=req.text, chapter_num=req.chapter_num)
+        evaluator = Evaluator(router_inst, project_id=req.project_id or "eval")
+        result = await evaluator.evaluate_chapter(
+            req.text, chapter_num=req.chapter_num, constraints=rag,
+        )
         return {"status": "ok", "evaluation": result}
     except Exception as e:
         logger.error("Evaluate error: %s", e, exc_info=True)
@@ -710,37 +834,59 @@ async def quick_generate(req: GenerateRequest):
     """Single-step generation: synopsis -> full chapter text."""
     try:
         from models.base import LLMMessage
+        from analysis.feature_extraction.prompts import render as _render_prompt
         router_inst = _build_router(req.provider, req.model)
+        skills_used: list[str] = []
 
-        system_prompt = req.system_hint if req.system_hint else (
-            "你是一个专业的小说写作AI。根据提供的大纲和设定，"
-            "写出高质量的章节内容。要求：\n"
-            "1. 文字生动，有画面感\n"
-            "2. 对话自然，符合人物性格\n"
-            "3. 情节紧凑，节奏合理\n"
-            "4. 保持叙事视角一致"
-        )
-
-        # When system_hint is set, it's a conversational/studio mode
+        # When system_hint is set, it's a conversational/studio mode —
+        # the synopsis is the full user message, no RAG assembly.
         if req.system_hint:
-            parts = [req.synopsis]
+            system_prompt = req.system_hint
+            from ._rag_context import load_project_memory_block
+            _mem = load_project_memory_block(req.project_id)
+            if _mem:
+                system_prompt = f"{system_prompt}\n\n{_mem}"
+            user_content = req.synopsis
+            if req.prompt_only:
+                return {
+                    "status": "ok",
+                    "prompt": f"{system_prompt}\n\n{user_content}",
+                    "skills_used": skills_used,
+                }
         else:
-            parts = [f"## 章节大纲\n{req.synopsis}"]
-            if req.time_setting:
-                parts.append(f"## 时间\n{req.time_setting}")
-            if req.location:
-                parts.append(f"## 地点\n{req.location}")
-            if req.characters:
-                parts.append(f"## 出场角色\n{', '.join(req.characters)}")
-            if req.world_rules:
-                parts.append(f"## 世界观设定\n{req.world_rules}")
-            if req.style_notes:
-                parts.append(f"## 风格要求\n{req.style_notes}")
-            parts.append("\n请根据以上信息，写出完整的章节内容（800-1500字）：")
+            # Chapter generation — assemble the RAG context and render the
+            # generation.single_agent template (platform / characters /
+            # worldbook / references / writing-knowledge etc.).
+            from ._rag_context import single_agent_vars, active_writing_skill_names
+            skills_used = active_writing_skill_names(req.skills)
+            prompt_vars = single_agent_vars(
+                req.project_id, req.chapter_num, req.synopsis, req.time_setting,
+                req.location, req.characters, req.existing_content,
+                req.character_aliases, req.skills,
+                referenced_events=req.referenced_events,
+                referenced_inspirations=req.referenced_inspirations,
+                chapter_id=req.chapter_id,
+                rag_excludes=req.rag_excludes,
+                web_mode=req.prompt_only,
+            )
+            try:
+                user_content = _render_prompt(
+                    "generation.single_agent",
+                    override=(req.prompt_override or None),
+                    **prompt_vars,
+                )
+            except ValueError as ve:
+                logger.warning(
+                    "single_agent prompt render failed (%s); using default template", ve
+                )
+                user_content = _render_prompt("generation.single_agent", **prompt_vars)
+            system_prompt = "你是一名专业的中文网文写作者，请严格依据用户提供的资料创作。"
+            if req.prompt_only:
+                return {"status": "ok", "prompt": user_content, "skills_used": skills_used}
 
         messages = [
             LLMMessage(role="system", content=system_prompt),
-            LLMMessage(role="user", content="\n\n".join(parts)),
+            LLMMessage(role="user", content=user_content),
         ]
 
         response = await router_inst.generate(
@@ -754,6 +900,7 @@ async def quick_generate(req: GenerateRequest):
             "status": "ok",
             "text": response.content,
             "model": response.model,
+            "skills_used": skills_used,
             "tokens": {
                 "input": response.input_tokens,
                 "output": response.output_tokens,
@@ -790,6 +937,9 @@ class OutlineChatRequest(BaseModel):
     context: str = ""        # world book / character summary for context
     provider: str = ""
     model: str = ""
+    # When true, skip the LLM call and just return the assembled prompt
+    # text so the user can run it in a web LLM and paste the reply back.
+    prompt_only: bool = False
 
 
 @router.post("/outline-chat")
@@ -797,19 +947,24 @@ async def outline_chat(req: OutlineChatRequest):
     """Interactive outline brainstorming: multi-turn conversation with AI."""
     try:
         from models.base import LLMMessage
+        from analysis.feature_extraction.prompts import get_template
         router_inst = _build_router(req.provider, req.model)
 
-        system = (
-            "你是一位资深小说策划编辑，擅长帮助作者构思故事大纲。你的职责：\n"
-            "1. 帮助作者发展和完善故事构思\n"
-            "2. 提出有建设性的问题，引导作者深入思考情节、人物、冲突\n"
-            "3. 在作者的想法基础上给出具体化建议（不要完全替代作者创作）\n"
-            "4. 指出可能的逻辑漏洞或情节问题\n"
-            "5. 适当时输出结构化的大纲段落\n"
-            "回复用中文。保持简洁但有深度。"
-        )
+        system = get_template("assistant.outline")
         if req.context:
             system += f"\n\n[参考设定]\n{req.context}"
+        from ._rag_context import load_project_memory_block
+        _mem = load_project_memory_block(req.project_id)
+        if _mem:
+            system += f"\n\n{_mem}"
+
+        if req.prompt_only:
+            # Assemble a copy-pasteable prompt for use in a web LLM.
+            parts = [system, ""]
+            for m in req.messages:
+                who = "用户" if m.get("role") == "user" else "助手"
+                parts.append(f"【{who}】\n{m.get('content', '')}\n")
+            return {"status": "ok", "prompt": "\n".join(parts).strip()}
 
         llm_messages = [LLMMessage(role="system", content=system)]
         for m in req.messages:
@@ -950,6 +1105,47 @@ async def _wait_for_confirm_bg(session_id: str, step: str, message: str, timeout
     return data or {"action": "continue"}
 
 
+class _ManualRouter:
+    """Router wrapper for the manual pipeline. Every generate() call
+    surfaces the rendered prompt as a `manual_prompt` event, pauses the
+    pipeline, and returns the text the user pastes back from a web LLM
+    instead of calling an LLM. All other attributes delegate to the
+    wrapped router."""
+
+    def __init__(self, real_router, session_id: str):
+        self._real = real_router
+        self._session_id = session_id
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    async def generate(self, agent_role: str = "", messages=None, **kwargs):
+        from models.base import LLMResponse
+        messages = messages or []
+        prompt = "\n\n".join(
+            f"【{getattr(m, 'role', '')}】\n{getattr(m, 'content', '')}"
+            for m in messages
+        )
+        session = _active_sessions.get(self._session_id)
+        if session is None or session.get("status") != "running":
+            return await self._real.generate(
+                agent_role=agent_role, messages=messages, **kwargs)
+        ev = asyncio.Event()
+        session["manual_event"] = ev
+        session["manual_result"] = None
+        session["waiting_manual"] = True
+        session["manual_step"] = agent_role
+        _emit(self._session_id, {
+            "type": "manual_prompt", "step": agent_role, "prompt": prompt,
+        })
+        await ev.wait()
+        session["waiting_manual"] = False
+        session["manual_event"] = None
+        text = session.get("manual_result") or ""
+        session["manual_result"] = None
+        return LLMResponse(content=text, model="web-llm")
+
+
 async def _run_pipeline_background(session_id: str):
     """Run the full pipeline as a background task. Events are logged to the session."""
     session = _active_sessions.get(session_id)
@@ -959,6 +1155,8 @@ async def _run_pipeline_background(session_id: str):
 
     try:
         router_inst = _build_router(req_data.get("provider", ""), req_data.get("model", ""))
+        if req_data.get("manual"):
+            router_inst = _ManualRouter(router_inst, session_id)
 
         # ── Load calibration style preferences ──
         # If the frontend didn't send style_notes, try to load from saved calibration data
@@ -1002,6 +1200,14 @@ async def _run_pipeline_background(session_id: str):
                 logger.debug("Calibration load skipped: %s", _cal_err)
 
         _emit(session_id, {"type": "pipeline_start", "session_id": session_id})
+        try:
+            from ._rag_context import active_writing_skill_names
+            _emit(session_id, {
+                "type": "skills_used",
+                "skills": active_writing_skill_names(req_data.get("skills")),
+            })
+        except Exception as _sk_err:
+            logger.debug("skills_used emit skipped: %s", _sk_err)
 
         # ── Step 1: Scene Director ──────────────────────────
         session["current_step"] = "scene_director"

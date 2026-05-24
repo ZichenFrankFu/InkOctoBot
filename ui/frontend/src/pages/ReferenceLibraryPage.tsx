@@ -1,18 +1,26 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import useDebounce from "../hooks/useDebounce";
 import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
 import type { ReferenceWork, MediaType } from "../api/types";
 import {
   Section,
   StyleFingerprintEditor,
-  CharactersEditor,
-  SettingsEditor,
   RhythmEditor,
+  OpeningPatternView,
+  PlotOutlineEditor,
+  StyleByChunkView,
 } from "../components/reference/AnalysisEditors";
+import {
+  CharactersRichDisplay,
+  SettingsRichDisplay,
+} from "../components/reference/CharactersAndSettingsExtraction";
+import { UnifiedExtractionPanel } from "../components/reference/UnifiedExtractionPanel";
 import type { PlotOutline } from "../components/reference/AnalysisEditors";
-import PlotOutlinePanel from "../components/reference/PlotOutlinePanel";
+import { useSegmentation } from "../components/reference/segmentationCache";
+import type { ChunkLoc } from "../components/reference/referenceMerge";
 import PreprocessPanel from "../components/reference/PreprocessPanel";
 import FilesPanel from "../components/reference/FilesPanel";
 import { splitGenres } from "../utils/genre";
@@ -71,6 +79,7 @@ function StarRating({ value, onChange }: { value: number; onChange: (n: number) 
 
 export default function ReferenceLibraryPage() {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
@@ -95,6 +104,7 @@ export default function ReferenceLibraryPage() {
   const [uMedia, setUMedia] = useState<MediaType>("web_novel");
   const [uFile, setUFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [adding, setAdding] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Batch management
@@ -159,10 +169,12 @@ export default function ReferenceLibraryPage() {
   }
 
   async function addWork() {
-    if (!nTitle.trim()) return;
+    const title = nTitle.trim();
+    if (!title || adding) return;
+    setAdding(true);
     try {
       await apiPost("/api/references/works", {
-        title: nTitle.trim(),
+        title,
         creator: nCreator.trim() || undefined,
         media_type: nMedia,
         genre: nGenre.trim() || undefined,
@@ -173,8 +185,11 @@ export default function ReferenceLibraryPage() {
       setShowAddWork(false);
       setNTitle(""); setNCreator(""); setNGenre(""); setNWhy(""); setNRating(0);
       load();
+      toast(`已添加「${title}」`, "success");
     } catch (e: any) {
       toast(e.message || "操作失败", "error");
+    } finally {
+      setAdding(false);
     }
   }
 
@@ -226,6 +241,7 @@ export default function ReferenceLibraryPage() {
       setUTitle(""); setUCreator(""); setUGenre(""); setUFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       load();
+      toast(`已上传新作品正文：${uFile.name}`, "success");
     } catch (e: any) {
       toast(e.message || "操作失败", "error");
     }
@@ -233,7 +249,7 @@ export default function ReferenceLibraryPage() {
   }
 
   async function delWork(id: string) {
-    if (!confirm("确定删除这部参考作品？")) return;
+    if (!(await confirm({ message: "确定删除这部参考作品？", destructive: true }))) return;
     try {
       await apiDelete(`/api/references/works/${id}`);
       setSel(null);
@@ -245,7 +261,7 @@ export default function ReferenceLibraryPage() {
 
   async function batchDelete() {
     if (!selectedIds.size) return;
-    if (!confirm(`确定删除选中的 ${selectedIds.size} 部作品？`)) return;
+    if (!(await confirm({ message: `确定删除选中的 ${selectedIds.size} 部作品？`, destructive: true }))) return;
     for (const id of selectedIds) {
       try {
         await apiDelete(`/api/references/works/${id}`);
@@ -354,7 +370,7 @@ export default function ReferenceLibraryPage() {
             )}
           </>
         )}
-        <span className="text-xs text-muted" style={{ marginLeft: "auto" }}>
+        <span className="text-xs text-muted">
           {loading ? "加载中..." : `${total} 部作品`}
         </span>
       </div>
@@ -369,7 +385,7 @@ export default function ReferenceLibraryPage() {
                 key={w.ref_id}
                 className={`report-list-item ${sel?.ref_id === w.ref_id ? "active" : ""}`}
                 onClick={() => selectWork(w)}
-                style={{ padding: "10px 12px", gap: 8 }}
+                style={{ padding: "10px 12px", gap: 8, borderLeft: "none" }}
               >
                 {batchMode && (
                   <input
@@ -426,7 +442,11 @@ export default function ReferenceLibraryPage() {
 
         {/* ======== RIGHT: Detail Panel ======== */}
         <div className="panel flex-1" style={{ overflowY: "auto" }}>
-          <div className="panel-body" style={{ padding: "16px 20px" }}>
+          {/* No top padding here — the sticky work-header below provides
+            * its own top spacing. A padding-top on the scroll container
+            * is exactly what let content peek through above the sticky
+            * bar; removing it fixes that seam. */}
+          <div className="panel-body" style={{ padding: "0 20px 24px", background: "var(--bg-app)" }}>
             {sel ? (
               <WorkDetail
                 key={sel.ref_id}
@@ -437,6 +457,13 @@ export default function ReferenceLibraryPage() {
                 onUpdateWhy={async (text) => {
                   try {
                     const updated = await apiPut<ReferenceWork>(`/api/references/works/${sel.ref_id}`, { user_why_i_like: text });
+                    setSel(updated);
+                    setWorks(prev => prev.map(x => x.ref_id === updated.ref_id ? updated : x));
+                  } catch (e: any) { toast(e.message || "保存失败", "error"); }
+                }}
+                onUpdateChapterComments={async (comments) => {
+                  try {
+                    const updated = await apiPut<ReferenceWork>(`/api/references/works/${sel.ref_id}`, { chapter_comments: comments });
                     setSel(updated);
                     setWorks(prev => prev.map(x => x.ref_id === updated.ref_id ? updated : x));
                   } catch (e: any) { toast(e.message || "保存失败", "error"); }
@@ -549,7 +576,7 @@ export default function ReferenceLibraryPage() {
                 </div>
                 <div className="flex gap-8 mt-24" style={{ justifyContent: "flex-end" }}>
                   <button className="btn" onClick={() => setShowAddWork(false)}>取消</button>
-                  <button className="btn-primary" onClick={addWork} disabled={!nTitle.trim()}>保存</button>
+                  <button className="btn-primary" onClick={addWork} disabled={!nTitle.trim() || adding}>{adding ? "保存中…" : "保存"}</button>
                 </div>
               </div>
             </div>
@@ -642,7 +669,7 @@ export default function ReferenceLibraryPage() {
 
 /* ───────────────── Work Detail (horizontal tabs) ───────────────── */
 
-type WorkDetailTab = "files" | "preprocess" | "plot" | "characters" | "settings" | "features" | "info";
+type WorkDetailTab = "files" | "preprocess" | "extract" | "plot" | "characters" | "settings" | "features";
 
 const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   done: { label: "已分析", color: "var(--jade)" },
@@ -652,21 +679,169 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   not_applicable: { label: "手动维护", color: "var(--text-tertiary)" },
 };
 
+interface ChapterComment { chapter: string; text: string; }
+
+const _chComNum = (s: string): number => {
+  const m = (s || "").match(/\d+/);
+  return m ? parseInt(m[0], 10) : Number.MAX_SAFE_INTEGER;
+};
+
+/** Per-chapter reader notes for the 为什么喜欢 card. View mode lists
+ *  comments sorted by chapter; 「编辑」opens inline add / edit / delete. */
+function ChapterCommentsEditor({ value, onSave }: {
+  value: ChapterComment[];
+  onSave: (next: ChapterComment[]) => Promise<void> | void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<ChapterComment[]>(value);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { if (!editing) setDraft(value); }, [value, editing]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const clean = draft
+        .map(c => ({ chapter: (c.chapter || "").trim(), text: (c.text || "").trim() }))
+        .filter(c => c.chapter || c.text);
+      await onSave(clean);
+      setEditing(false);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+        <div className="label" style={{ color: "var(--accent)", margin: 0 }}>章节笔记</div>
+        {!editing && (
+          <button className="btn-ghost" style={{ fontSize: 11, color: "var(--text-tertiary)" }}
+            onClick={() => { setDraft(value); setEditing(true); }}>编辑</button>
+        )}
+      </div>
+      {editing ? (
+        <div className="flex flex-col gap-6">
+          {draft.map((c, i) => (
+            <div key={i} className="flex" style={{ gap: 6, alignItems: "flex-start" }}>
+              <div className="flex items-center" style={{ gap: 3, flexShrink: 0, paddingTop: 4 }}>
+                <span className="text-xs text-muted">第</span>
+                <input className="input" value={c.chapter} placeholder="N"
+                  onChange={e => { const d = draft.slice(); d[i] = { ...d[i], chapter: e.target.value }; setDraft(d); }}
+                  style={{ width: 46, fontSize: 12, padding: "3px 4px", textAlign: "center", fontFamily: "var(--font-mono)" }} />
+                <span className="text-xs text-muted">章</span>
+              </div>
+              <textarea className="input" value={c.text} placeholder="对这一章的想法…" rows={2}
+                onChange={e => { const d = draft.slice(); d[i] = { ...d[i], text: e.target.value }; setDraft(d); }}
+                style={{ flex: 1, fontSize: 12, padding: "3px 8px", resize: "vertical", lineHeight: 1.6 }} />
+              <button className="btn-ghost" title="删除"
+                onClick={() => { const d = draft.slice(); d.splice(i, 1); setDraft(d); }}
+                style={{ fontSize: 13, padding: "2px 7px", color: "var(--error)" }}>×</button>
+            </div>
+          ))}
+          <button className="btn-ghost"
+            onClick={() => setDraft([...draft, { chapter: "", text: "" }])}
+            style={{ fontSize: 11, padding: "3px 8px", alignSelf: "flex-start", color: "var(--accent)" }}>
+            + 添加章节笔记
+          </button>
+          <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
+            <button className="btn" onClick={() => { setEditing(false); setDraft(value); }} disabled={saving}>取消</button>
+            <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "保存中..." : "保存"}</button>
+          </div>
+        </div>
+      ) : value.length === 0 ? (
+        <div className="text-xs text-muted" style={{ fontStyle: "italic" }}>
+          暂无章节笔记。点击「编辑」为具体章节留下评论。
+        </div>
+      ) : (
+        <div className="flex flex-col gap-6">
+          {[...value].sort((a, b) => _chComNum(a.chapter) - _chComNum(b.chapter)).map((c, i) => (
+            <div key={i} className="flex" style={{ gap: 8, alignItems: "flex-start" }}>
+              <span className="tag" style={{
+                fontSize: 10, padding: "1px 6px", flexShrink: 0, marginTop: 2,
+                color: "var(--gold)", border: "1px solid var(--gold)",
+                fontFamily: "var(--font-mono)",
+              }}>{c.chapter ? `第 ${c.chapter} 章` : "—"}</span>
+              <span className="text-sm" style={{ color: "var(--text-secondary)", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                {c.text}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WorkDetail({
   sel, onUpload, onDelete,
-  onUpdateRating, onUpdateWhy, onSaveAnalysisField, onAfterMerge,
+  onUpdateRating, onUpdateWhy, onUpdateChapterComments,
+  onSaveAnalysisField, onAfterMerge,
 }: {
   sel: ReferenceWork;
   onUpload: () => void;
   onDelete: () => void;
   onUpdateRating: (rating: number) => void;
   onUpdateWhy: (text: string) => Promise<void> | void;
+  onUpdateChapterComments: (comments: ChapterComment[]) => Promise<void> | void;
   onSaveAnalysisField: (fieldKey: string, data: any) => Promise<void> | void;
   onAfterMerge: () => Promise<void> | void;
 }) {
   const [tab, setTab] = useState<WorkDetailTab>("files");
   const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
   const [editingWhy, setEditingWhy] = useState(false);
+  const chapterComments = useMemo<ChapterComment[]>(() => {
+    const arr = pj(sel.chapter_comments_json);
+    return Array.isArray(arr)
+      ? arr.map((c: any) => ({
+          chapter: String(c?.chapter ?? "").trim(),
+          text: String(c?.text ?? ""),
+        }))
+      : [];
+  }, [sel.chapter_comments_json]);
+  // 文本特征 tab: 分段视图 vs 全书视图.
+  const [featuresView, setFeaturesView] = useState<"segment" | "book">("book");
+  // Shared segmentation — powers the 分段视图 of the browse tabs. We
+  // eagerly load every volume's chunk list so the browse tabs can group
+  // items by extraction 分段 (chunk), matching the 特征提取 tab.
+  const { plan: segmentPlan, chunks: segChunks, ensureChunks } =
+    useSegmentation(sel.ref_id, Boolean(sel.has_full_text));
+  useEffect(() => {
+    if (!segmentPlan) return;
+    for (const seg of segmentPlan.segments) ensureChunks(seg.index);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segmentPlan]);
+  const chunkList: ChunkLoc[] = useMemo(() => {
+    if (!segmentPlan) return [];
+    const out: ChunkLoc[] = [];
+    let g = 1;
+    for (const seg of segmentPlan.segments) {
+      for (const ck of (segChunks[seg.index] || [])) {
+        out.push({
+          key: `${seg.index}:${ck.chunk_index}`,
+          segIdx: seg.index, chunkIndex: ck.chunk_index,
+          globalIndex: g++, volumeTitle: seg.title,
+          startChapter: ck.start_chapter, endChapter: ck.end_chapter,
+        });
+      }
+    }
+    return out;
+  }, [segmentPlan, segChunks]);
+
+  // Feature-extraction progress, measured in CHAPTERS. A chunk's
+  // chapters count as processed once all four sections (events /
+  // characters / settings / style) are committed — the same "fully
+  // done" notion the 特征提取 tab marks with a green chunk border.
+  const extractionProgress = useMemo(() => {
+    const ledger = ((pj(sel.style_fingerprint_json) as any)?._chunks) || {};
+    const SECTIONS = ["events", "characters", "settings", "style"];
+    const total = segmentPlan?.total_chapters || 0;
+    let doneChapters = 0;
+    for (const ck of chunkList) {
+      const done = ledger[ck.key]?.done || {};
+      if (SECTIONS.every(s => done[s])) {
+        doneChapters += Math.max(0, ck.endChapter - ck.startChapter + 1);
+      }
+    }
+    return { doneChapters, total };
+  }, [sel.style_fingerprint_json, segmentPlan, chunkList]);
 
   useEffect(() => {
     setWhyDraft(sel.user_why_i_like || "");
@@ -674,50 +849,59 @@ function WorkDetail({
   }, [sel.ref_id, sel.user_why_i_like]);
 
   const status = STATUS_LABEL[sel.preprocessing_status] || STATUS_LABEL.not_applicable;
-  const plot = pj(sel.plot_outline_json) as PlotOutline | null;
-  const chars = pj(sel.extracted_characters_json) as any[] | null;
-  const epochCount = (plot?.epochs || []).length;
-  const periodCount = (plot?.epochs || []).reduce((n: number, ep: any) => n + (ep.periods?.length || 0), 0);
-  const eventCount = (plot?.epochs || []).reduce(
-    (n: number, ep: any) =>
-      n + (ep.periods || []).reduce((m: number, per: any) => m + (per.events?.length || 0), 0),
-    0,
+  // Cache JSON.parse + .reduce work — the tab-bar re-renders on every
+  // setTab() click and these parsed blobs can be megabytes (a full plot
+  // outline with hundreds of events). Without memoization a single tab
+  // switch did 3 JSON.parse + 2 nested reduce passes.
+  const plot = useMemo(
+    () => pj(sel.plot_outline_json) as PlotOutline | null,
+    [sel.plot_outline_json],
   );
+  const chars = useMemo(
+    () => pj(sel.extracted_characters_json) as any[] | null,
+    [sel.extracted_characters_json],
+  );
+  const settings = useMemo(
+    () => pj(sel.settings_json) as any[] | null,
+    [sel.settings_json],
+  );
+  const { epochCount, periodCount, eventCount } = useMemo(() => {
+    const epochs = plot?.epochs || [];
+    let periods = 0;
+    let events = 0;
+    for (const ep of epochs) {
+      const eps = ep.periods || [];
+      periods += eps.length;
+      for (const per of eps) events += (per.events?.length || 0);
+    }
+    return { epochCount: epochs.length, periodCount: periods, eventCount: events };
+  }, [plot]);
   const charCount = (chars || []).length;
-  const settings = pj(sel.settings_json) as any[] | null;
   const settingsCount = (settings || []).length;
 
   const TABS: { key: WorkDetailTab; label: string; count?: number | string }[] = [
     { key: "files", label: "原始文件" },
     { key: "preprocess", label: "预处理" },
+    { key: "extract", label: "特征提取" },
     { key: "plot", label: "剧情大纲", count: eventCount || undefined },
     { key: "characters", label: "角色", count: charCount || undefined },
     { key: "settings", label: "设定", count: settingsCount || undefined },
     { key: "features", label: "文本特征" },
-    { key: "info", label: "信息与笔记" },
   ];
 
   return (
     <div>
-      {/* Compact, sticky work header.
-       *
-       * The parent .panel-body has padding:16px 20px so the sticky
-       * region must EXTEND past that padding — otherwise during scroll
-       * there's a narrow strip above the bar where panel-body content
-       * leaks through (the bug user reported as "和搜索bar有空隙").
-       *
-       * margin:-16px -20px 12px pulls the sticky region edge-to-edge
-       * within the scroll container; padding:16px 20px 10px restores
-       * the visual inset for the bar's content. This way the opaque
-       * background fully covers the scroll container's top during
-       * scroll, regardless of intermediate sub-pixel positioning. */}
+      {/* Sticky work header. The scroll container (panel-body) has no
+       * top padding, so the bar sits flush at the top and sticks at
+       * top:0 — no negative top margin, no sub-pixel seam above it. */}
       <div style={{
         position: "sticky",
         top: 0,
         zIndex: 10,
         background: "var(--bg-app)",
-        margin: "-16px -20px 12px",
+        margin: "0 -20px 12px",
         padding: "16px 20px 10px",
+        boxSizing: "border-box",
         borderBottom: "1px solid var(--border)",
         boxShadow: "0 6px 6px -6px rgba(0,0,0,0.18)",
       }}>
@@ -787,80 +971,14 @@ function WorkDetail({
 
       {/* Tab content */}
       {tab === "files" && (
-        <FilesPanel
-          refId={sel.ref_id}
-          onAfterChange={onAfterMerge}
-        />
-      )}
-
-      {tab === "preprocess" && (
-        <PreprocessPanel
-          refId={sel.ref_id}
-          hasFullText={Boolean(sel.has_full_text)}
-          onUpload={() => setTab("files")}
-          onAfterApplyExclusions={onAfterMerge}
-        />
-      )}
-
-      {tab === "plot" && (
-        <PlotOutlinePanel
-          refId={sel.ref_id}
-          hasFullText={Boolean(sel.has_full_text)}
-          preprocessingStatus={sel.preprocessing_status}
-          plotOutline={plot}
-          onSavePlot={d => onSaveAnalysisField("plot_outline_json", d)}
-          onAfterMerge={onAfterMerge}
-          onGoToPreprocess={() => setTab("preprocess")}
-        />
-      )}
-
-      {tab === "characters" && (
-        chars && chars.length > 0 ? (
-          <CharactersEditor
-            data={chars}
-            onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+        <div className="flex flex-col gap-12">
+          <FilesPanel
+            refId={sel.ref_id}
+            onAfterChange={onAfterMerge}
           />
-        ) : (
-          <div className="empty-state" style={{ padding: 32 }}>
-            <p>暂无角色数据。前往「剧情大纲」分段提取（勾选「使用 AI」可得到带简介的角色）。</p>
-          </div>
-        )
-      )}
 
-      {tab === "settings" && (
-        <SettingsEditor
-          data={settings || []}
-          onSave={d => onSaveAnalysisField("settings_json", d)}
-        />
-      )}
-
-      {tab === "features" && (
-        <div className="flex flex-col gap-12">
-          <Section title="风格指纹" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏"
-            empty={!pj(sel.style_fingerprint_json)}
-            emptyHint="暂无风格指纹。请先提取特征。"
-            defaultOpen
-          >
-            <StyleFingerprintEditor
-              data={pj(sel.style_fingerprint_json)}
-              onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
-            />
-          </Section>
-          <Section title="节奏" subtitle="每章特征 · 信息密度 · 钩子 · 节奏分段（含叙事结构）"
-            defaultOpen
-          >
-            <RhythmEditor
-              data={pj(sel.rhythm_json) as any}
-              legacyNarrative={pj(sel.narrative_structure_json)}
-              legacyRhythm={pj(sel.rhythm_template_json)}
-              onSave={d => onSaveAnalysisField("rhythm_json", d)}
-            />
-          </Section>
-        </div>
-      )}
-
-      {tab === "info" && (
-        <div className="flex flex-col gap-12">
+          {/* 信息与笔记 — merged into the 原始文件 tab so作品元数据 /
+            * 评分 / 笔记 live next to the source files they describe. */}
           {/* Stats */}
           <div className="card">
             <div className="card-body">
@@ -874,6 +992,26 @@ function WorkDetail({
                 <Stat label="设定" value={settingsCount} />
                 <Stat label="评分" value={sel.user_rating ? stars(sel.user_rating) : "—"} />
               </div>
+              {/* Feature-extraction progress bar — measured in chapters. */}
+              {extractionProgress.total > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <div className="flex items-center justify-between" style={{ marginBottom: 5 }}>
+                    <span className="text-xs text-muted">特征提取进度</span>
+                    <span className="text-xs" style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
+                      已处理 {extractionProgress.doneChapters} / {extractionProgress.total} 章
+                    </span>
+                  </div>
+                  <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{
+                      height: "100%",
+                      width: `${Math.min(100,
+                        (extractionProgress.doneChapters /
+                          Math.max(1, extractionProgress.total)) * 100)}%`,
+                      background: "var(--jade)", borderRadius: 4, transition: "width 0.3s",
+                    }} />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -917,6 +1055,9 @@ function WorkDetail({
                   暂无笔记。点击「编辑」记录你为什么喜欢这部作品。
                 </div>
               )}
+              <div style={{ borderTop: "1px dashed var(--border)", marginTop: 14, paddingTop: 12 }}>
+                <ChapterCommentsEditor value={chapterComments} onSave={onUpdateChapterComments} />
+              </div>
             </div>
           </div>
 
@@ -935,6 +1076,141 @@ function WorkDetail({
               </dl>
             </div>
           </div>
+        </div>
+      )}
+
+      {tab === "preprocess" && (
+        <PreprocessPanel
+          refId={sel.ref_id}
+          hasFullText={Boolean(sel.has_full_text)}
+          onUpload={() => setTab("files")}
+          onAfterApplyExclusions={onAfterMerge}
+        />
+      )}
+
+      {tab === "extract" && (
+        <UnifiedExtractionPanel
+          refId={sel.ref_id}
+          hasFullText={Boolean(sel.has_full_text)}
+          plot={plot}
+          characters={(chars || []) as any}
+          settings={(settings || []) as any}
+          style={pj(sel.style_fingerprint_json) as any}
+          onSavePlot={d => onSaveAnalysisField("plot_outline_json", d)}
+          onSaveCharacters={d => onSaveAnalysisField("extracted_characters_json", d)}
+          onSaveSettings={d => onSaveAnalysisField("settings_json", d)}
+          onSaveStyle={d => onSaveAnalysisField("style_fingerprint_json", d)}
+          onSaveRhythm={d => onSaveAnalysisField("rhythm_json", d)}
+        />
+      )}
+
+      {/* The 剧情大纲 / 角色 / 设定 / 文本特征 tabs are整体浏览 — display
+        * and CRUD only. Extraction happens once in the「特征提取」tab. */}
+      {tab === "plot" && (
+        <PlotOutlineEditor
+          data={plot}
+          onSave={d => onSaveAnalysisField("plot_outline_json", d)}
+          refId={sel.ref_id}
+          chunkList={chunkList}
+        />
+      )}
+
+      {tab === "characters" && (
+        <div className="flex flex-col gap-12">
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>
+            角色列表
+          </div>
+          <CharactersRichDisplay
+            data={(chars || []) as any}
+            chronicle={plot}
+            onSave={d => onSaveAnalysisField("extracted_characters_json", d)}
+            chunkList={chunkList}
+          />
+        </div>
+      )}
+
+      {tab === "settings" && (
+        <div className="flex flex-col gap-12">
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>
+            设定列表
+          </div>
+          <SettingsRichDisplay
+            data={(settings || []) as any}
+            onSave={d => onSaveAnalysisField("settings_json", d)}
+            chunkList={chunkList}
+          />
+        </div>
+      )}
+
+      {tab === "features" && (
+        <div className="flex flex-col gap-12">
+          {/* 分段视图 / 全书视图 toggle — shown once chunks exist. */}
+          {chunkList.length > 0 && (
+            <div className="flex items-center" style={{ gap: 6 }}>
+              <span className="text-xs text-muted">视图：</span>
+              {([
+                { key: "segment" as const, label: "分段视图" },
+                { key: "book" as const, label: "全书视图" },
+              ]).map(opt => (
+                <button key={opt.key} className="btn-ghost"
+                        onClick={() => setFeaturesView(opt.key)}
+                        style={{
+                          padding: "3px 10px", fontSize: 11,
+                          fontWeight: featuresView === opt.key ? 600 : 400,
+                          color: featuresView === opt.key ? "var(--accent)" : "var(--text-secondary)",
+                          background: featuresView === opt.key ? "var(--accent-subtle)" : "transparent",
+                          border: "1px solid var(--border)", borderRadius: 3,
+                        }}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {(chunkList.length === 0 || featuresView === "book") ? (
+            <>
+              <Section title="风格指纹（全书）" subtitle="句长 / 对话 / 描写 / 修辞 / 节奏 / 信息密度 / 爽点 / 钩子"
+                empty={!pj(sel.style_fingerprint_json)}
+                emptyHint="暂无风格指纹。请到「特征提取」tab 分段提取。"
+                defaultOpen
+              >
+                <StyleFingerprintEditor
+                  data={pj(sel.style_fingerprint_json)}
+                  onSave={d => onSaveAnalysisField("style_fingerprint_json", d)}
+                />
+              </Section>
+              <Section title="开篇模式" subtitle="作品开篇所采用的叙事手法"
+                defaultOpen
+              >
+                <OpeningPatternView
+                  pattern={
+                    ((pj(sel.rhythm_json) as any)?.opening_pattern as string)
+                    || ((pj(sel.narrative_structure_json) as any)?.opening_pattern as string)
+                    || ""
+                  }
+                />
+              </Section>
+              <Section title="节奏" subtitle="每章特征 · 信息密度 · 钩子 · 节奏分段"
+                defaultOpen
+              >
+                <RhythmEditor
+                  data={pj(sel.rhythm_json) as any}
+                  legacyNarrative={pj(sel.narrative_structure_json)}
+                  legacyRhythm={pj(sel.rhythm_template_json)}
+                  onSave={d => onSaveAnalysisField("rhythm_json", d)}
+                />
+              </Section>
+            </>
+          ) : (
+            <Section title="分段风格指纹" subtitle="每个提取分段各自的风格 / 节奏特征"
+              defaultOpen
+            >
+              <StyleByChunkView
+                chunks={((pj(sel.style_fingerprint_json) as any)?._chunks) || {}}
+                chunkList={chunkList}
+              />
+            </Section>
+          )}
         </div>
       )}
     </div>

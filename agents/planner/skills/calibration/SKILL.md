@@ -1,14 +1,11 @@
 ---
 name: calibration
-display_name: 风格校准
-description: 根据创作设定生成短篇校准样本，用于风格方向确认
-version: 1.0.0
-model_role: default
-tags: [planner, calibration, style, llm]
-permissions: [read_reference_db]
+description: 根据创作设定生成短篇校准样本，用于风格方向确认。
 ---
 
-## Description
+# 风格校准
+
+## 说明
 
 基于 CalibrationAgent 的 LLM 技能。在进入章节创作循环之前，根据世界书、
 角色卡和大纲等设定信息，生成 300-500 字的短篇校准样本，供用户确认风格方向。
@@ -16,7 +13,7 @@ permissions: [read_reference_db]
 支持多种样本类型：开篇、对话场景、动作场景、内心独白，并可生成多个风格变体
 以供对比选择。
 
-## Input
+## 输入
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -28,7 +25,7 @@ permissions: [read_reference_db]
 | reference_samples | string | No | 参考风格片段 |
 | n_variants | integer | No | 生成变体数量（默认 1，设为 >1 时生成多个风格变体） |
 
-## Output
+## 输出
 
 | 字段 | 类型 | 说明 |
 |------|------|------|

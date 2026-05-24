@@ -1486,6 +1486,12 @@ def replace_chapter_content(text: str, chapters: list[dict],
     return "\n\n".join(p for p in parts if p)
 
 
+# Story-dialogue signal: 说道 (and 道/问道/喊道 variants) or a CJK /
+# full-width double-quote pair. A paragraph matching this is narrative
+# dialogue, not an author aside.
+_DIALOGUE_RE = re.compile(r'说道|[“”「」『』]')
+
+
 def detect_aside_paragraphs(chapters: list[dict],
                               max_para_chars: int = 500,
                               extra_keywords: list[str] | None = None) -> list[dict]:
@@ -1503,9 +1509,11 @@ def detect_aside_paragraphs(chapters: list[dict],
     misalign indices.
     """
     keywords = get_effective_author_keywords(extra_keywords)
-    # Horizontal-rule markers signaling "everything after this is an
-    # author aside": ---/===/***/——/＝＝ runs of ≥ 3 chars on their own
-    # line. Web-novel authors use these to fence off PS / 求月票 etc.
+    # Horizontal-rule markers (---/===/***/——/＝＝ runs of ≥ 3 chars on
+    # their own line). Web-novel authors fence off trailing PS / 求月票
+    # with these — BUT a --- in the chapter BODY is a scene break, not
+    # an author-aside fence. Author asides live at the chapter TAIL, so
+    # a rule line only counts as a fence when it sits near the end.
     rule_pat = re.compile(r"^[\s　]*([-=*＝—─]{3,})[\s　]*$")
     out: list[dict] = []
     for c in chapters:
@@ -1516,18 +1524,24 @@ def detect_aside_paragraphs(chapters: list[dict],
             continue
         paragraphs = re.split(r"\n\s*\n", content)
         n_paras = len(paragraphs)
-        # Locate the FIRST horizontal-rule paragraph; everything after
-        # it (up to chapter end) is treated as author-aside trailing
-        # block — fence-style asides that web-novel authors append
-        # without using the keyword vocabulary.
-        fence_idx: int | None = None
+        # Collect every rule-line paragraph, then keep only the LAST one
+        # — and only if it sits in the chapter's tail zone. A rule in
+        # the first ¾ of the chapter is a scene break; flagging content
+        # after it caused heavy false positives.
+        rule_idxs: list[int] = []
         for pi, para in enumerate(paragraphs):
             for line in para.splitlines():
                 if rule_pat.match(line):
-                    fence_idx = pi
+                    rule_idxs.append(pi)
                     break
-            if fence_idx is not None:
-                break
+        fence_idx: int | None = None
+        if rule_idxs:
+            tail_zone = max(3, n_paras // 4)
+            last_rule = rule_idxs[-1]
+            # Fence only when the last rule is within the tail zone AND
+            # past the chapter's midpoint (guards very short chapters).
+            if last_rule >= n_paras - tail_zone and last_rule >= n_paras // 2:
+                fence_idx = last_rule
         for pi, para in enumerate(paragraphs):
             ps = para.strip()
             if not ps:
@@ -1535,27 +1549,45 @@ def detect_aside_paragraphs(chapters: list[dict],
             # Skip long paragraphs — narrative, not asides.
             if len(ps) > max_para_chars:
                 continue
+            # A paragraph carrying story dialogue (「说道」 / quoted
+            # speech) is almost certainly narrative, NOT an author
+            # aside — author 题外话 (求月票 / PS) never quote characters.
+            if _DIALOGUE_RE.search(ps):
+                continue
             hits = [kw for kw in keywords if kw in ps]
-            after_fence = fence_idx is not None and pi >= fence_idx
-            short_aside = after_fence and len(ps) < 200
-            if not hits and not short_aside:
+            plen = len(ps)
+            is_at_end = pi >= n_paras - 2
+            after_fence = fence_idx is not None and pi > fence_idx
+            # Confidence gate — author asides are SHORT meta pleas at the
+            # chapter tail. A lone keyword inside a normal-length or
+            # mid-chapter paragraph is almost always narrative, so it is
+            # NOT flagged. This is what keeps the false-positive rate down:
+            #   - long paragraph (> 160 chars)            → never an aside
+            #   - 2+ meta keywords in a short paragraph   → aside
+            #   - 1 keyword in a SHORT tail paragraph     → aside
+            #   - tiny tail block right after a fence     → aside
+            emit = False
+            if plen <= 160:
+                if len(hits) >= 2:
+                    emit = True
+                elif len(hits) >= 1 and (is_at_end or after_fence):
+                    emit = True
+                elif after_fence and is_at_end and plen < 80:
+                    emit = True
+            if not emit:
                 continue
             reasons: list[str] = []
             if hits:
                 reasons.append("命中：" + "、".join(hits[:3])
                                 + (f"…(+{len(hits) - 3})" if len(hits) > 3 else ""))
             if after_fence:
-                reasons.append(
-                    "分割线（---）之后" if pi > (fence_idx or 0)
-                    else "章节末分割线"
-                )
-            is_at_end = pi >= n_paras - 2
+                reasons.append("章节末分割线（---）之后")
             if is_at_end and "位于章节末尾" not in reasons:
                 reasons.append("位于章节末尾")
             score = (
                 len(hits)
                 + (2 if is_at_end else 0)
-                + (1 if len(ps) < 100 else 0)
+                + (1 if plen < 100 else 0)
                 + (3 if after_fence else 0)
             )
             out.append({

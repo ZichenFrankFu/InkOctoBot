@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
-import { apiGet } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
+import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 import type { RankList, RankSnapshot, RankEntry, Novel } from "../api/types";
 
 /* ── local types ── */
@@ -14,6 +15,17 @@ interface NovelDetail {
 
 type Step = "lists" | "snapshots" | "entries";
 type PlatformFilter = "" | "qidian" | "fanqie";
+
+type OpeningStats = {
+  available: boolean;
+  novels_with_chapters?: number;
+  total_chapters?: number;
+  first_chapter?: {
+    count: number; avg_words: number; median_words: number;
+    min_words: number; max_words: number;
+    distribution: Record<string, number>;
+  };
+};
 
 const platformLabel = (p: string) =>
   p === "qidian" ? "起点" : p === "fanqie" ? "番茄" : p || "未知";
@@ -36,6 +48,31 @@ export default function RankingsPage() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelData, setPanelData] = useState<NovelDetail | null>(null);
   const [panelLoading, setPanelLoading] = useState(false);
+  const [openingStats, setOpeningStats] = useState<OpeningStats | null>(null);
+  const [openingOpen, setOpeningOpen] = useState(true);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+
+  const runOpeningSummary = useCallback(async () => {
+    setAiBusy(true);
+    try {
+      const r = await apiPost<{ summary: string }>(
+        "/api/db/opening_ai_summary", { platform: platform || undefined });
+      setAiSummary(r.summary || "（AI 未返回内容）");
+    } catch (e: any) {
+      setAiSummary(`AI 总结失败：${e?.message || e}`);
+    } finally {
+      setAiBusy(false);
+    }
+  }, [platform]);
+
+  /* ── Opening-chapter analysis (crawled first_n_chapters) ── */
+  useEffect(() => {
+    const qs = platform ? `?platform=${platform}` : "";
+    apiGet<OpeningStats>(`/api/db/opening_analysis${qs}`)
+      .then(setOpeningStats)
+      .catch(() => setOpeningStats(null));
+  }, [platform]);
 
   /* resizable panel */
   const { size: panelWidth, handleProps } = useResizable({
@@ -157,6 +194,83 @@ export default function RankingsPage() {
           </div>
         </div>
       </div>
+
+      {/* ══ 开篇章节分析 ══ */}
+      {openingStats?.available && openingStats.first_chapter && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="card-header" style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+            onClick={() => setOpeningOpen(o => !o)}>
+            <h3>{openingOpen ? "▾ " : "▸ "}开篇章节分析</h3>
+            <span className="text-xs text-muted">
+              已采集 {openingStats.novels_with_chapters} 部作品的开篇章节
+            </span>
+          </div>
+          {openingOpen && (
+            <div className="card-body">
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 20, marginBottom: 14 }}>
+                {([
+                  ["已采集作品", openingStats.novels_with_chapters ?? 0],
+                  ["开篇章节总数", openingStats.total_chapters ?? 0],
+                  ["首章平均字数", openingStats.first_chapter.avg_words],
+                  ["首章字数中位数", openingStats.first_chapter.median_words],
+                  ["首章字数范围", `${openingStats.first_chapter.min_words}–${openingStats.first_chapter.max_words}`],
+                ] as const).map(([label, val]) => (
+                  <div key={label}>
+                    <div className="text-xs text-muted">{label}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: "var(--accent)" }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="label" style={{ marginBottom: 6 }}>
+                首章字数分布（共 {openingStats.first_chapter.count} 章）
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {Object.entries(openingStats.first_chapter.distribution).map(([bucket, n]) => {
+                  const total = openingStats.first_chapter!.count || 1;
+                  const pct = Math.round(n / total * 100);
+                  return (
+                    <div key={bucket} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="text-xs" style={{ width: 84, color: "var(--text-secondary)" }}>{bucket}</span>
+                      <div style={{ flex: 1, height: 14, background: "var(--bg-app)", borderRadius: 3, overflow: "hidden" }}>
+                        <div style={{ width: `${pct}%`, height: "100%", background: "var(--accent)" }} />
+                      </div>
+                      <span className="text-xs font-mono" style={{ width: 72, textAlign: "right" }}>{n}（{pct}%）</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+                <div className="label" style={{ marginBottom: 6 }}>AI 总结开篇技巧（基于开篇章节正文）</div>
+                <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px", marginBottom: 8 }}
+                  disabled={aiBusy} onClick={runOpeningSummary}>
+                  {aiBusy ? "AI 分析中..." : "使用 AI 大模型 API 总结"}
+                </button>
+                {aiSummary && (
+                  <div style={{
+                    padding: "8px 12px", background: "var(--bg-app)", borderRadius: 6,
+                    fontSize: 13, lineHeight: 1.7, whiteSpace: "pre-wrap",
+                    border: "1px solid var(--border)", marginBottom: 8,
+                  }}>
+                    {aiSummary}
+                  </div>
+                )}
+                <WebLLMPromptPanel
+                  title="AI大模型网页版"
+                  fetchPrompt={async () => {
+                    const r = await apiPost<{ prompt: string }>(
+                      "/api/db/opening_ai_summary",
+                      { platform: platform || undefined, prompt_only: true });
+                    return r.prompt || "";
+                  }}
+                  onApplyResult={(t) => setAiSummary(t.trim())}
+                  applyLabel="应用 AI 总结结果"
+                  resultPlaceholder="把网页版大模型返回的开篇分析粘贴到这里"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ══ Breadcrumb ══ */}
       <div className="breadcrumb">

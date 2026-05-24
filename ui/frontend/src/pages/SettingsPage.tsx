@@ -1,45 +1,48 @@
 import React, { useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut } from "../api/client";
 import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
 import type { AppSettings } from "../api/types";
 import PromptPreview from "../components/reference/PromptPreview";
 
+// Pipeline roles laid out in workflow order: 参考作品 → 开书 → 角色 & 世界书
+// → 正文创作 → 评估. Every group covers operations that run a built-in AI.
 const PIPELINE_ROLE_GROUPS: { group: string; roles: { key: string; label: string; desc: string }[] }[] = [
   {
     group: "参考作品数据库",
     roles: [
-      { key: "reference_extractor", label: "参考作品分段提取", desc: "角色 / 设定 / 叙事 / 节奏（无 AI 时回退 NLP）" },
-      { key: "reference_web_search", label: "参考作品 AI 联网补全", desc: "元数据补全；需要支持 web search 的模型（如 Claude Sonnet 4 / GPT-4o）" },
+      { key: "reference_volume_detect", label: "AI 分卷", desc: "用AI大模型API 识别作品的分卷边界（联网模型可用时优先联网检索官方分卷）" },
+      { key: "reference_extractor", label: "AI 提取特征", desc: "提取角色 / 设定 / 叙事 / 节奏特征，以及作品对比AI大模型API（无 AI 时回退 NLP）" },
+      { key: "reference_web_search", label: "AI 联网补全", desc: "联网补全作品元数据；需支持 web search 的模型（如 Claude Sonnet / GPT-4o）" },
     ],
   },
   {
-    group: "开书（头脑风暴 & 校准）",
+    group: "开书助手",
     roles: [
-      { key: "scene_planner", label: "头脑风暴", desc: "大纲、角色、世界观综合构思" },
-    ],
-  },
-  {
-    group: "Creative Writing Pipeline（编辑器）",
-    roles: [
-      { key: "scene_director", label: "场景导演", desc: "拆分场景、生成导演指令" },
-      { key: "actor_default", label: "默认角色", desc: "通用角色对话与行为" },
-      { key: "actor_protagonist", label: "主角专属", desc: "主角视角的深度演绎" },
-      { key: "editor_stylist", label: "风格编辑", desc: "文学风格化与章节组装" },
-      { key: "editor_agent", label: "编辑代理", desc: "自动修改与质量提升" },
-      { key: "evaluator", label: "评估器", desc: "一致性与约束检测" },
+      { key: "scene_planner", label: "开书 / 大纲助手", desc: "AI 开书助手的头脑风暴、世界观构思与 AI 大纲助手对话" },
     ],
   },
   {
     group: "角色 & 世界书",
     roles: [
-      { key: "character_profile_gen", label: "AI 生成人设", desc: "根据名字和定位生成角色档案" },
-      { key: "worldbook_consistency", label: "一致性检查", desc: "检测世界观设定矛盾与冲突" },
+      { key: "character_profile_gen", label: "AI 角色助手", desc: "根据名字与定位生成 / 完善角色人设" },
+      { key: "worldbook_consistency", label: "AI 设定助手", desc: "世界书设定补全与一致性检查" },
     ],
   },
   {
-    group: "分析 Skills",
+    group: "正文创作（Creative Writing Pipeline）",
     roles: [
-      { key: "analyzer", label: "分析器", desc: "文本分析与特征提取" },
+      { key: "scene_director", label: "场景导演", desc: "拆分场景、生成导演指令" },
+      { key: "actor_default", label: "默认角色", desc: "通用角色对话与行为演绎" },
+      { key: "actor_protagonist", label: "主角专属", desc: "主角视角的深度演绎" },
+      { key: "editor_stylist", label: "编辑写作 / 单 Agent", desc: "风格化章节组装，以及单 Agent 一键成文" },
+      { key: "editor_writer", label: "AI 重写", desc: "对选中正文做针对性重写与润色" },
+    ],
+  },
+  {
+    group: "评估",
+    roles: [
+      { key: "evaluator", label: "章节评估", desc: "一致性、约束与质量检测" },
     ],
   },
 ];
@@ -611,6 +614,7 @@ function SystemTab({
   const [usageLoading, setUsageLoading] = useState(false);
 
   const { toast } = useToast();
+  const { confirm } = useDialog();
 
   // Auto-refresh usage every 10s
   useEffect(() => {
@@ -953,7 +957,12 @@ function SystemTab({
             ))}
           </div>
           <div style={{ marginTop: 16 }}>
-            <button className="btn" onClick={() => { if (window.confirm("确定要清除所有缓存数据吗？此操作不可撤销。")) { localStorage.clear(); window.location.reload(); } }}
+            <button className="btn" onClick={async () => {
+              if (await confirm({ message: "确定要清除所有缓存数据吗？此操作不可撤销。", destructive: true })) {
+                localStorage.clear();
+                window.location.reload();
+              }
+            }}
               style={{ fontSize: 12, padding: "6px 16px", color: "var(--error)", borderColor: "var(--error)" }}>
               清除缓存
             </button>
@@ -973,6 +982,21 @@ interface PromptItem {
   has_override: boolean;
 }
 
+// Group prompts into readable sections by their key prefix.
+const PROMPT_GROUPS: { label: string; prefixes: string[] }[] = [
+  { label: "参考作品", prefixes: ["reference."] },
+  { label: "AI 助手", prefixes: ["assistant."] },
+  { label: "正文生成 / 重写 / 评估", prefixes: ["generation."] },
+  { label: "创作管线 Agent", prefixes: ["pipeline."] },
+];
+
+function promptGroupLabel(key: string): string {
+  for (const g of PROMPT_GROUPS) {
+    if (g.prefixes.some(p => key.startsWith(p))) return g.label;
+  }
+  return "其他";
+}
+
 function PromptsTab() {
   const [items, setItems] = useState<PromptItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -990,61 +1014,80 @@ function PromptsTab() {
 
   useEffect(() => { load(); }, []);
 
+  // Build ordered groups: known sections first, then any leftover.
+  const grouped: { label: string; items: PromptItem[] }[] = [];
+  const knownLabels = PROMPT_GROUPS.map(g => g.label);
+  for (const label of [...knownLabels, "其他"]) {
+    const groupItems = items.filter(it => promptGroupLabel(it.key) === label);
+    if (groupItems.length > 0) grouped.push({ label, items: groupItems });
+  }
+
   return (
     <div>
       <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
-        参考作品 LLM 调用使用的 prompt 模板。点击「编辑」可查看出厂默认 + 当前内容、修改、并保存为新默认。
+        所有预设 AI prompt 模板（参考作品提取、AI 助手、正文生成、评估、创作管线）。点击「编辑」可查看出厂默认 + 当前内容、修改、并保存为新默认。
         每次提取/对话时可单独覆盖（不影响保存的默认）。
       </div>
 
       {loading ? (
         <div className="text-xs text-muted" style={{ padding: 20, textAlign: "center" }}>加载中...</div>
       ) : (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-body" style={{ padding: 0 }}>
-            {items.map((it, idx) => (
-              <div key={it.key} style={{
-                padding: "14px 18px",
-                borderBottom: idx < items.length - 1 ? "1px solid var(--border-subtle)" : "none",
-                display: "flex", alignItems: "center", gap: 12,
-              }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
-                      {it.key}
-                    </span>
-                    {it.has_override && (
-                      <span className="tag" style={{
-                        fontSize: 10, padding: "1px 6px",
-                        color: "var(--gold)", background: "var(--bg-surface-2)",
-                        border: "1px solid var(--gold)",
-                      }}>已覆盖</span>
-                    )}
+        grouped.map(group => (
+          <div key={group.label} style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", margin: "0 0 6px 2px", letterSpacing: 0.5 }}>
+              {group.label}（{group.items.length}）
+            </div>
+            <div className="card">
+              <div className="card-body" style={{ padding: 0 }}>
+                {group.items.map((it, idx) => {
+                  const isLast = idx === group.items.length - 1;
+                  const isOpen = selected === it.key;
+                  return (
+                  <React.Fragment key={it.key}>
+                  <div style={{
+                    padding: "14px 18px",
+                    borderBottom: (!isLast || isOpen) ? "1px solid var(--border-subtle)" : "none",
+                    display: "flex", alignItems: "center", gap: 12,
+                    background: isOpen ? "var(--bg-secondary)" : undefined,
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+                          {it.key}
+                        </span>
+                        {it.has_override && (
+                          <span className="tag" style={{
+                            fontSize: 10, padding: "1px 6px",
+                            color: "var(--gold)", background: "var(--bg-surface-2)",
+                            border: "1px solid var(--gold)",
+                          }}>已覆盖</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-muted">{it.description || "—"}</div>
+                      {it.vars.length > 0 && (
+                        <div className="text-xs text-muted" style={{ marginTop: 2, fontFamily: "var(--font-mono)" }}>
+                          vars: {it.vars.join(", ")}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      className={isOpen ? "btn-primary" : "btn"}
+                      style={{ fontSize: 12, padding: "4px 12px" }}
+                      onClick={() => setSelected(isOpen ? null : it.key)}
+                    >{isOpen ? "关闭" : "编辑"}</button>
                   </div>
-                  <div className="text-xs text-muted">{it.description || "—"}</div>
-                  {it.vars.length > 0 && (
-                    <div className="text-xs text-muted" style={{ marginTop: 2, fontFamily: "var(--font-mono)" }}>
-                      vars: {it.vars.join(", ")}
+                  {isOpen && (
+                    <div style={{ padding: "0 18px 16px", background: "var(--bg-secondary)", borderBottom: !isLast ? "1px solid var(--border-subtle)" : "none" }}>
+                      <PromptPreview promptKey={it.key} onSaved={load} onClose={() => setSelected(null)} />
                     </div>
                   )}
-                </div>
-                <button
-                  className={selected === it.key ? "btn-primary" : "btn"}
-                  style={{ fontSize: 12, padding: "4px 12px" }}
-                  onClick={() => setSelected(selected === it.key ? null : it.key)}
-                >{selected === it.key ? "关闭" : "编辑"}</button>
+                  </React.Fragment>
+                  );
+                })}
               </div>
-            ))}
+            </div>
           </div>
-        </div>
-      )}
-
-      {selected && (
-        <PromptPreview
-          promptKey={selected}
-          onSaved={load}
-          onClose={() => setSelected(null)}
-        />
+        ))
       )}
     </div>
   );

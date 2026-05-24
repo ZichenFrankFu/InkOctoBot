@@ -112,6 +112,53 @@ def _load_chapter_patterns() -> list[dict]:
         return []
 
 
+def build_work_ctx(work: dict, segment: dict, segment_index: int) -> dict[str, Any]:
+    """Build the work / volume context that gets threaded into every AI
+    extraction prompt. The prompts reference these keys via {placeholder}
+    substitution; missing/empty values fall back to defaults inside
+    ``ai_extractor._ctx``."""
+    return {
+        "title": (work.get("title") or "").strip() or "(未命名)",
+        "author": (work.get("creator") or "").strip() or "(未知)",
+        "platform": (work.get("platform") or "").strip() or "(未知)",
+        "volume_index": segment_index + 1,
+        "volume_title": (segment.get("title") or "").strip() or f"第 {segment_index + 1} 卷",
+        "start_chapter": segment.get("start_chapter") or 1,
+        "end_chapter": segment.get("end_chapter") or 1,
+    }
+
+
+def _events_to_chapter_order_chronicle(
+    events: list[dict],
+    volume_title: str = "本卷",
+) -> dict[str, Any]:
+    """Group a flat events list into the chronicle shape used by the
+    rest of the pipeline + the editor. One epoch per volume, one
+    period per ``first_chapter`` (in the order chapters first appear),
+    events within a period in the order the AI returned them.
+
+    This is the "chapter-order chronicle" produced by the extraction
+    step. The story-time reordering happens later via the chronicle
+    summary action."""
+    if not events:
+        return {"logline": "", "epochs": []}
+    by_chapter: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        key = (ev.get("first_chapter") or "").strip() or "(未指定章节)"
+        if key not in by_chapter:
+            by_chapter[key] = []
+            order.append(key)
+        by_chapter[key].append(ev)
+    periods = [{"time": k, "events": by_chapter[k]} for k in order]
+    return {
+        "logline": "",
+        "epochs": [{"title": volume_title or "本卷", "periods": periods}],
+    }
+
+
 def _enrich_settings_with_timestamp(settings_items: list[dict], chapters: list[dict],
                                       segment_start_chapter: int) -> list[dict]:
     """Fill `first_introduced_at` on settings items when AI didn't provide one.
@@ -249,6 +296,16 @@ class FeatureExtractionPipeline:
             )
         return ""
 
+    # Module-level cache for _split_chapters: the chapter detection
+    # (multi-format regex scan + scoring) is the dominant cost of the
+    # /segments/plan load + save path, and the same text is re-split on
+    # every call. Keyed by a hash of (text, chapter-patterns) so it's
+    # invalidated automatically when the novel text or the user's custom
+    # patterns change. Bounded to the few most-recent works.
+    _CHAPTER_CACHE: dict[str, list[dict]] = {}
+    _CHAPTER_CACHE_ORDER: list[str] = []
+    _CHAPTER_CACHE_MAX = 6
+
     @staticmethod
     def _split_chapters(text: str) -> list[dict]:
         """Smart chapter splitter — tries multiple formats (第N章 / 第N回 /
@@ -257,9 +314,23 @@ class FeatureExtractionPipeline:
 
         Also honors user-defined patterns from
         ``settings.json["chapter_patterns"]`` so users can add their own
-        format without code changes."""
+        format without code changes.
+
+        Result is memoized on a hash of (text, patterns) — repeated
+        calls for the same novel (the /segments/plan load/save path) are
+        served from cache instead of re-running detection."""
         from analysis.feature_extraction.chapter_parser import detect_chapters
+        import hashlib
         extras = _load_chapter_patterns()
+        key = hashlib.md5(
+            (text or "").encode("utf-8", "ignore")
+        ).hexdigest() + ":" + hashlib.md5(
+            json.dumps(extras, sort_keys=True, ensure_ascii=False).encode("utf-8", "ignore")
+        ).hexdigest()
+        cls = FeatureExtractionPipeline
+        cached = cls._CHAPTER_CACHE.get(key)
+        if cached is not None:
+            return cached
         result = detect_chapters(text, extra_patterns=extras)
         # Strip extra metadata to keep the shape compatible with existing
         # callers that only read {index, title, volume, content}.
@@ -271,6 +342,11 @@ class FeatureExtractionPipeline:
                 "volume": c.get("volume") or "",
                 "content": c.get("content") or "",
             })
+        cls._CHAPTER_CACHE[key] = out
+        cls._CHAPTER_CACHE_ORDER.append(key)
+        if len(cls._CHAPTER_CACHE_ORDER) > cls._CHAPTER_CACHE_MAX:
+            old = cls._CHAPTER_CACHE_ORDER.pop(0)
+            cls._CHAPTER_CACHE.pop(old, None)
         return out
 
     # ── Segment planning & per-segment extraction (incremental) ──
@@ -329,6 +405,7 @@ class FeatureExtractionPipeline:
                         cleaned.append({
                             "index": i,
                             "title": (seg.get("title") or f"第 {sc}–{ec} 章").strip(),
+                            "volume_no": (seg.get("volume_no") or "").strip() or f"第 {i + 1} 卷",
                             "start_chapter": sc,
                             "end_chapter": ec,
                             "chapter_count": ec - sc + 1,
@@ -370,6 +447,134 @@ class FeatureExtractionPipeline:
         plan["is_custom"] = False
         plan["total_chapters"] = len(chapters)
         return plan
+
+    def render_volume_detect_prompt(self, ref_id: str) -> dict[str, Any]:
+        """Return the exact prompt that ``ai_suggest_volume_plan`` would
+        send. Surfaced via API so the user can copy it into a web LLM
+        (ChatGPT / Claude.ai) when the configured model is unable to
+        produce parseable output. Also returns chapter count for context."""
+        from rag.reference_db import ReferenceDB
+        from analysis.feature_extraction.volume_detector import build_volume_prompt
+
+        rdb = ReferenceDB(self.db_path)
+        work = rdb.get_work(ref_id)
+        if not work:
+            raise ValueError(f"reference work not found: {ref_id}")
+        text = self._load_text(work)
+        chapters = self._split_chapters(text) if text else []
+        if not chapters:
+            raise ValueError("作品尚未上传正文或未识别出章节")
+        prompt = build_volume_prompt(work, chapters)
+        return {
+            "ref_id": ref_id,
+            "title": work.get("title") or "",
+            "total_chapters": len(chapters),
+            "prompt": prompt,
+            "prompt_key": "reference.volume_detect",
+        }
+
+    async def ai_suggest_volume_plan(self, ref_id: str) -> dict[str, Any]:
+        """Detect volumes for a work using the best available source.
+
+        Priority chain:
+          1. Web-search-capable LLM (highest accuracy on indexed works)
+          2. Local LLM without web search
+          3. Rule-based scan of titles + chapter heads (offline)
+          4. Existing parser-tag detection (the old behavior)
+
+        Returns ``{type: "volumes", segments: [...], used_method: "...",
+        prompt_used: "...", total_chapters: N, is_custom: False}``.
+        ``used_method`` is one of ``ai_web_search`` / ``ai_local`` /
+        ``text_scan`` / ``parser_tags`` / ``none``.
+        """
+        from rag.reference_db import ReferenceDB
+        from analysis.feature_extraction.volume_detector import (
+            ai_detect_volumes, text_detect_volumes, build_volume_prompt,
+        )
+
+        rdb = ReferenceDB(self.db_path)
+        work = rdb.get_work(ref_id)
+        if not work:
+            raise ValueError(f"reference work not found: {ref_id}")
+        text = self._load_text(work)
+        chapters = self._split_chapters(text) if text else []
+        if not chapters:
+            return {
+                "type": "volumes", "segments": [], "total_chapters": 0,
+                "used_method": "none", "is_custom": False,
+                "prompt_used": "",
+                "warning": "作品尚未上传正文或未识别出章节",
+            }
+
+        prompt_used = build_volume_prompt(work, chapters)
+        used_method = "none"
+        volumes: list[dict] | None = None
+
+        # ── Try AI first when a router is available ──
+        try:
+            from models.router import ModelRouter
+            router = ModelRouter()
+        except Exception as e:
+            logger.info("[volume_detect] router unavailable, skipping AI: %s", e)
+            router = None
+
+        if router is not None:
+            try:
+                volumes, used_method = await ai_detect_volumes(
+                    work, chapters, router, prefer_web_search=True,
+                )
+            except Exception as e:
+                logger.warning("[volume_detect] AI layer crashed: %s", e)
+                volumes, used_method = None, "ai_error"
+
+        # ── Text-based fallback ──
+        if not volumes:
+            text_vols = text_detect_volumes(chapters)
+            if text_vols:
+                volumes = text_vols
+                used_method = "text_scan"
+
+        # ── Last resort: legacy parser-tag detector ──
+        if not volumes:
+            parser_vols = self._detect_volumes(chapters)
+            if parser_vols:
+                volumes = parser_vols
+                used_method = "parser_tags"
+
+        if not volumes:
+            return {
+                "type": "volumes", "segments": [], "total_chapters": len(chapters),
+                "used_method": used_method, "is_custom": False,
+                "prompt_used": prompt_used,
+                "warning": (
+                    "未能识别到分卷结构。请使用「复制 prompt」按钮把提示发到任意"
+                    "网页版 LLM（如 ChatGPT / Claude.ai），再把回复粘回章节范围。"
+                ),
+            }
+
+        # Enrich with chapter_count / char_count for the UI
+        segments: list[dict] = []
+        for i, v in enumerate(volumes):
+            sc, ec = v["start_chapter"], v["end_chapter"]
+            segments.append({
+                "index": i,
+                "title": v["title"],
+                "start_chapter": sc,
+                "end_chapter": ec,
+                "chapter_count": ec - sc + 1,
+                "char_count": sum(
+                    len(chapters[j - 1].get("content") or "")
+                    for j in range(sc, ec + 1)
+                ),
+            })
+        return {
+            "type": "volumes",
+            "segments": segments,
+            "total_chapters": len(chapters),
+            "used_method": used_method,
+            "is_custom": False,
+            "prompt_used": prompt_used,
+        }
 
     def rename_segment_title(self, ref_id: str, index: int, title: str) -> dict[str, Any]:
         """Rename a single segment's title in-place without resetting any
@@ -434,9 +639,13 @@ class FeatureExtractionPipeline:
             else:
                 ec = max(ec, sc)
             title = str(seg.get("title") or f"第 {sc}–{ec} 章").strip()
+            # 卷号 (第N卷) is stored separately from the volume name so
+            # the UI can show them as two tags. Defaults to 第(i+1)卷.
+            volume_no = str(seg.get("volume_no") or "").strip() or f"第 {i + 1} 卷"
             cleaned.append({
                 "index": i,
                 "title": title,
+                "volume_no": volume_no,
                 "start_chapter": sc,
                 "end_chapter": ec,
             })
@@ -447,13 +656,31 @@ class FeatureExtractionPipeline:
             seg["index"] = i
 
         # Editing the plan invalidates prior per-segment results.
-        new_state = {
+        #
+        # CRITICAL: preserve top-level keys this function doesn't own —
+        # `uploads` (the file-tracking ledger maintained by the upload
+        # endpoint), `preprocess` (cached chapter-parser output), and
+        # anything else a future feature may store here. Rebuilding the
+        # dict from scratch was silently nuking the uploads ledger,
+        # which is why the Files tab showed "未跟踪" after restart and
+        # the chunk count looked wrong.
+        try:
+            existing = json.loads(work.get("segments_json") or "{}")
+        except Exception:
+            existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+        # Whitelist of keys this function explicitly owns. Everything
+        # else (uploads, preprocess, etc.) carries over untouched.
+        OWNED = {"type", "plan", "custom_plan", "results", "completed"}
+        new_state = {k: v for k, v in existing.items() if k not in OWNED}
+        new_state.update({
             "type": plan_type,
             "plan": cleaned,
             "custom_plan": cleaned,
             "results": {},
             "completed": [],
-        }
+        })
         rdb.update_work(
             ref_id,
             segments_json=json.dumps(new_state, ensure_ascii=False),
@@ -526,13 +753,15 @@ class FeatureExtractionPipeline:
         """Extract features for one segment but DO NOT persist anything.
 
         Style fingerprint uses NLP (rule-based, fast, deterministic).
-        Characters / settings / narrative / rhythm use AI via ModelRouter
-        when use_ai is True, falling back to NLP rules on failure.
-        Plot outline (chronicle skeleton) uses NLP rules and is then
-        enriched by the AI characters/settings results.
+        Characters / settings / rhythm use AI via ModelRouter. If the AI
+        call fails (model unavailable, JSON parse error, etc.), the
+        failure is surfaced as an error — there is **no** NLP fallback,
+        because rule-based extraction was producing materially worse
+        results and silently masking model misconfiguration.
+        Plot outline (chronicle skeleton) uses NLP rules built off the
+        AI rhythm result; if AI rhythm failed, plot will be empty too.
         """
         from rag.reference_db import ReferenceDB
-        import asyncio
 
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
@@ -559,22 +788,26 @@ class FeatureExtractionPipeline:
         errors: list[str] = []
         warnings: list[str] = []
 
-        from analysis.feature_extraction.nlp_stats import (
-            compute_style_fingerprint, extract_characters,
-        )
-        from analysis.feature_extraction.narrative_extractor import (
-            extract_narrative, extract_rhythm, extract_rhythm_v2,
-            extract_plot_outline,
-        )
+        # Build the per-volume context that the prompts reference. This
+        # gets threaded into every AI extractor call so the model sees
+        # the same book metadata (title/author/platform/volume name) on
+        # every shot — improves disambiguation and gives the user the
+        # exact prompt they need when copying to a web LLM.
+        work_ctx = build_work_ctx(work, seg, segment_index)
 
-        # Style: ALWAYS NLP (per spec)
+        from analysis.feature_extraction.nlp_stats import compute_style_fingerprint
+        from analysis.feature_extraction.narrative_extractor import extract_plot_outline
+
+        # Style: ALWAYS NLP (per spec — deterministic statistics, not LLM)
         fp: dict = {}
         try:
             fp = compute_style_fingerprint(seg_chapters)
         except Exception as e:
             errors.append(f"style: {e}")
 
-        # Get an AI router (lazy import; may fail if no LLM configured)
+        # Get an AI router (lazy import; may fail if no LLM configured).
+        # When AI is unavailable, the whole segment extraction fails fast —
+        # no silent NLP fallback. The user must configure a working model.
         router = None
         if use_ai:
             try:
@@ -583,113 +816,168 @@ class FeatureExtractionPipeline:
             except Exception as e:
                 detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
                 hint = _diagnose_ai_error(e)
-                msg = f"AI 不可用，所有项回退 NLP · {detail}"
+                msg = f"AI 路由初始化失败 · {detail}"
                 if hint:
                     msg += f" · 提示：{hint}"
-                warnings.append(msg)
+                errors.append(msg)
+        else:
+            errors.append("use_ai=False — 已禁用 AI，且未启用 NLP 回退；本段提取被跳过")
 
         ai_methods_used: list[str] = []
-        ai_methods_fallback: list[str] = []
+        ai_methods_fallback: list[str] = []  # kept for response-shape compat (always [])
 
-        async def _ai_or_nlp(name: str, ai_fn, nlp_fn, *, prompt_key: str | None = None):
-            """Try AI; on failure, fall back to NLP and record a warning.
-            When prompt_key is set, the per-call override (if any) is
-            passed through to the AI extractor as `prompt_override`.
-            When the segment-level use_web_search flag is set, the call
-            is routed through the reference_web_search role."""
+        async def _ai_only(name: str, ai_fn, *, prompt_key: str | None = None):
+            """Invoke an AI extractor; on failure, surface a structured
+            error and return an empty result. There is no NLP fallback —
+            extraction failures should NOT silently degrade to rule-based
+            output. Callers handle the empty result downstream."""
             if router is None:
-                ai_methods_fallback.append(name)
-                return nlp_fn()
+                return None
             try:
                 override = (prompt_overrides or {}).get(prompt_key) if prompt_key else None
-                kw: dict[str, Any] = {"use_web_search": use_web_search}
+                kw: dict[str, Any] = {
+                    "use_web_search": use_web_search,
+                    "work_ctx": work_ctx,
+                }
                 if override is not None:
                     kw["prompt_override"] = override
                 result = await ai_fn(seg_chapters, router, **kw)
                 ai_methods_used.append(name)
                 return result
             except Exception as e:
-                logger.warning("[ai_extractor] %s failed (%s); falling back to NLP", name, e)
+                logger.warning("[ai_extractor] %s failed: %s", name, e)
                 detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
                 hint = _diagnose_ai_error(e)
-                msg = f"{name}: AI 失败 → 回退 NLP · {detail}"
+                msg = f"{name}: AI 提取失败 · {detail}"
                 if hint:
                     msg += f" · 提示：{hint}"
-                warnings.append(msg)
-                ai_methods_fallback.append(name)
-                return nlp_fn()
+                errors.append(msg)
+                return None
 
         from analysis.feature_extraction import ai_extractor
 
-        # Characters (AI preferred). After AI, intersect with chapter texts
-        # to compute appearance_chapters / appearance_word_count deterministically.
+        # Characters — AI only, no NLP fallback.
         chars: list = []
-        try:
-            chars = await _ai_or_nlp(
-                "characters",
-                ai_extractor.ai_extract_characters,
-                lambda: extract_characters(seg_chapters),
-                prompt_key="reference.characters",
-            )
-            chars = _enrich_characters_with_appearance(chars, seg_chapters)
-        except Exception as e:
-            errors.append(f"characters: {e}")
+        ai_chars = await _ai_only(
+            "characters",
+            ai_extractor.ai_extract_characters,
+            prompt_key="reference.characters",
+        )
+        if ai_chars:
+            try:
+                chars = _enrich_characters_with_appearance(ai_chars, seg_chapters)
+            except Exception as e:
+                errors.append(f"characters enrichment: {e}")
 
-        # Settings (AI preferred). No NLP fallback — return empty if AI fails.
+        # Settings — AI only, no fallback.
         settings_items: list = []
+        ai_settings = await _ai_only(
+            "settings",
+            ai_extractor.ai_extract_settings,
+            prompt_key="reference.settings",
+        )
+        if ai_settings:
+            try:
+                settings_items = _enrich_settings_with_timestamp(
+                    ai_settings, seg_chapters, seg.get("start_chapter") or 1,
+                )
+            except Exception as e:
+                errors.append(f"settings enrichment: {e}")
+
+        # Rhythm v2 — AI only, no fallback.
+        rhythm: dict = {}
+        ai_rhythm = await _ai_only(
+            "rhythm",
+            ai_extractor.ai_extract_rhythm_v2,
+            prompt_key="reference.rhythm",
+        )
+        if ai_rhythm:
+            rhythm = ai_rhythm
+
+        # Plot outline — chunked extraction. The extraction step
+        # produces "chronicle in chapter order" (events grouped by
+        # first_chapter, not yet reordered by story-time). The
+        # story-time summary is a separate user-driven action from the
+        # chronicle display section.
+        #
+        # Iterate per-chunk so even very long volumes finish without
+        # tripping the 32k prompt cap. Failures on individual chunks
+        # surface as separate errors but don't poison the whole volume.
+        plot: dict = {}
+        ai_outline_override = (prompt_overrides or {}).get("reference.outline")
         try:
-            if router is not None:
+            chunks = ai_extractor.build_segment_text_chunks(
+                seg_chapters,
+                segment_start_chapter=seg.get("start_chapter") or 1,
+            )
+        except Exception as e:
+            chunks = []
+            errors.append(f"outline chunking: {e}")
+
+        chunk_total = len(chunks)
+        all_events: list[dict] = []
+        outline_chunks_used = 0
+        if router is not None and chunk_total > 0:
+            # `seg_chapters` is the volume's full chapter list with the
+            # `index` field set relative to the volume start. We slice
+            # it per chunk by absolute chapter number so each AI call
+            # sees only the chunk's chapters.
+            for ci, chunk in enumerate(chunks):
+                lo = chunk["start_chapter"]
+                hi = chunk["end_chapter"]
+                chunk_chapters = [
+                    c for c in seg_chapters
+                    if (c.get("index") or 0) + (seg.get("start_chapter") or 1) >= lo
+                    and (c.get("index") or 0) + (seg.get("start_chapter") or 1) <= hi
+                ]
+                if not chunk_chapters:
+                    continue
                 try:
-                    settings_override = (prompt_overrides or {}).get("reference.settings")
-                    kw: dict[str, Any] = {"use_web_search": use_web_search}
-                    if settings_override is not None:
-                        kw["prompt_override"] = settings_override
-                    settings_items = await ai_extractor.ai_extract_settings(
-                        seg_chapters, router, **kw,
+                    events = await ai_extractor.ai_extract_outline_events(
+                        chunk_chapters, router,
+                        prompt_override=ai_outline_override,
+                        use_web_search=use_web_search,
+                        work_ctx=work_ctx,
                     )
-                    ai_methods_used.append("settings")
                 except Exception as e:
-                    logger.warning("[ai_extractor] settings failed: %s", e)
+                    logger.warning(
+                        "[ai_extractor] outline chunk %d/%d failed: %s",
+                        ci + 1, chunk_total, e,
+                    )
                     detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
                     hint = _diagnose_ai_error(e)
-                    msg = f"settings: AI 失败，返回空 · {detail}"
+                    msg = f"outline chunk {ci + 1}/{chunk_total}: {detail}"
                     if hint:
                         msg += f" · 提示：{hint}"
-                    warnings.append(msg)
-                    ai_methods_fallback.append("settings")
-            else:
-                ai_methods_fallback.append("settings")
-            settings_items = _enrich_settings_with_timestamp(
-                settings_items, seg_chapters, seg.get("start_chapter") or 1,
-            )
-        except Exception as e:
-            errors.append(f"settings: {e}")
+                    errors.append(msg)
+                    continue
+                if events:
+                    all_events.extend(events)
+                    outline_chunks_used += 1
+            if outline_chunks_used > 0:
+                ai_methods_used.append(f"outline ({outline_chunks_used}/{chunk_total} 段)")
 
-        # Rhythm v2 (AI preferred, merges narrative + rhythm + per-chapter features)
-        rhythm: dict = {}
-        try:
-            rhythm = await _ai_or_nlp(
-                "rhythm",
-                ai_extractor.ai_extract_rhythm_v2,
-                lambda: extract_rhythm_v2(seg_chapters),
-                prompt_key="reference.rhythm",
+        if all_events:
+            # Group events into chronicle shape: one epoch per volume,
+            # one period per first_chapter, events in textual order.
+            plot = _events_to_chapter_order_chronicle(
+                all_events,
+                volume_title=(work_ctx or {}).get("volume_title")
+                            or seg.get("title") or "本卷",
             )
-        except Exception as e:
-            errors.append(f"rhythm: {e}")
-
-        # Plot outline (chronicle skeleton — always NLP)
-        # extract_plot_outline expects the legacy narrative shape; derive
-        # it from the unified rhythm so the chronicle skeleton stays correct.
-        plot: dict = {}
-        try:
-            narr_compat = {
-                "opening_pattern": rhythm.get("opening_pattern", "character_intro"),
-                "climax_positions": rhythm.get("climax_positions", []),
-                "shuangdian": rhythm.get("shuangdian", []),
-            }
-            plot = extract_plot_outline(seg_chapters, narrative=narr_compat)
-        except Exception as e:
-            errors.append(f"plot_outline: {e}")
+        else:
+            # No AI events. Build a minimal NLP skeleton so the editor
+            # isn't empty (rhythm climaxes / shuangdian give the user
+            # SOMETHING to start with).
+            try:
+                narr_compat = {
+                    "opening_pattern": rhythm.get("opening_pattern", "character_intro"),
+                    "climax_positions": rhythm.get("climax_positions", []),
+                    "shuangdian": rhythm.get("shuangdian", []),
+                }
+                plot = extract_plot_outline(seg_chapters, narrative=narr_compat)
+            except Exception as e:
+                errors.append(f"plot_outline: {e}")
 
         return {
             "index": segment_index,
@@ -709,8 +997,16 @@ class FeatureExtractionPipeline:
             "settings": settings_items,
         }
 
-    def persist_segment(self, ref_id: str, result: dict) -> dict[str, Any]:
-        """Persist a previously-computed segment result into segments_json."""
+    def persist_segment(self, ref_id: str, result: dict,
+                          merge_after: bool = False) -> dict[str, Any]:
+        """Persist a previously-computed segment result into segments_json.
+
+        When ``merge_after`` is True, also runs ``finalize_segments``
+        immediately so the top-level ``plot_outline_json`` / characters /
+        settings reflect this commit. The UI uses ``merge_after=True``
+        on the "确认并入库" button so users don't need a second click
+        to see the full chronicle update after each segment.
+        """
         from rag.reference_db import ReferenceDB
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
@@ -737,7 +1033,12 @@ class FeatureExtractionPipeline:
             results = {}
         results[str(seg_index)] = result
 
-        new_state = {
+        # Same data-integrity guard as save_custom_plan: keep top-level
+        # keys this function doesn't own (uploads, preprocess, …)
+        # untouched so they survive a per-segment commit.
+        OWNED = {"type", "plan", "results", "completed"}
+        new_state = {k: v for k, v in existing.items() if k not in OWNED}
+        new_state.update({
             "type": plan["type"],
             "plan": [
                 {k: v for k, v in s.items() if k in (
@@ -746,12 +1047,13 @@ class FeatureExtractionPipeline:
                 )}
                 for s in segs
             ],
-            # Preserve the user's saved custom plan across commits so it
-            # keeps overriding auto-detection on subsequent extractions.
-            **({"custom_plan": existing["custom_plan"]} if existing.get("custom_plan") else {}),
             "results": results,
             "completed": sorted(int(k) for k in results.keys()),
-        }
+        })
+        # Preserve the user's saved custom plan across commits so it
+        # keeps overriding auto-detection on subsequent extractions.
+        if existing.get("custom_plan"):
+            new_state["custom_plan"] = existing["custom_plan"]
         new_status = "done" if len(results) >= len(segs) else "processing"
         rdb.update_work(
             ref_id,
@@ -777,13 +1079,20 @@ class FeatureExtractionPipeline:
         except Exception as e:
             logger.debug("[work_index] auto-index hook skipped: %s", e)
 
-        return {
+        info: dict[str, Any] = {
             "ref_id": ref_id,
             "segment_index": seg_index,
             "total_segments": len(segs),
             "completed_count": len(results),
             "all_done": new_status == "done",
         }
+        if merge_after:
+            try:
+                info["merge"] = self.finalize_segments(ref_id)
+            except Exception as e:
+                logger.warning("[persist_segment] auto-merge failed: %s", e)
+                info["merge_error"] = str(e)
+        return info
 
     async def run_segment(self, ref_id: str, segment_index: int,
                             segment_chars: int | None = None,
@@ -954,13 +1263,23 @@ class FeatureExtractionPipeline:
         }
 
         # ── plot outline: each segment becomes its own epoch ──
+        # Events keep their own `time_marker` (story-time) and
+        # `first_chapter` (real-text reference) so the editor can show
+        # both as tags. Logline picks the first segment's logline as a
+        # representative summary (multi-volume works rarely have one
+        # global logline; the per-volume ones at least anchor the view).
         agg_plot_epochs: list[dict] = []
+        agg_logline = ""
         for it in items:
             po = it.get("plot_outline") or {}
+            if not agg_logline:
+                lg = (po.get("logline") or "").strip()
+                if lg:
+                    agg_logline = lg
             for ep in (po.get("epochs") or []):
                 title = ep.get("title") or it.get("title") or ""
                 agg_plot_epochs.append({"title": title, "periods": ep.get("periods") or []})
-        agg_plot = {"logline": "", "epochs": agg_plot_epochs}
+        agg_plot = {"logline": agg_logline, "epochs": agg_plot_epochs}
 
         # ── settings: dedupe by (category, title); longest content wins ──
         settings_map: dict[tuple[str, str], dict] = {}
@@ -973,19 +1292,20 @@ class FeatureExtractionPipeline:
                     continue
                 cur = settings_map.get(key)
                 fi = (s.get("first_introduced_at") or "").strip()
+                fc = (s.get("first_chapter") or "").strip()
                 if cur is None or len((s.get("content") or "")) > len(cur.get("content") or ""):
                     settings_map[key] = {
                         "category": key[0],
                         "title": key[1],
                         "content": (s.get("content") or "").strip(),
-                        "hidden": (s.get("hidden") or "").strip(),
                         "first_introduced_at": fi or (cur.get("first_introduced_at") if cur else ""),
+                        "first_chapter": fc or (cur.get("first_chapter") if cur else ""),
                     }
                 else:
-                    if s.get("hidden") and not cur.get("hidden"):
-                        cur["hidden"] = (s.get("hidden") or "").strip()
                     if fi and not cur.get("first_introduced_at"):
                         cur["first_introduced_at"] = fi
+                    if fc and not cur.get("first_chapter"):
+                        cur["first_chapter"] = fc
         agg_settings = list(settings_map.values())
 
         rdb.update_work(

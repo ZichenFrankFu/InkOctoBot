@@ -1,14 +1,11 @@
 ---
 name: narrative_extract
-display_name: 叙事要素提取
 description: 从文本中提取叙事要素，包括情节点、叙事弧线、张力曲线、冲突结构等。
-version: 1.0.0
-model_role: analyzer
-tags: [analysis, narrative, extraction]
-permissions: [read_narrative]
 ---
 
-## Description
+# 叙事要素提取
+
+## 说明
 
 从输入的小说或故事文本中，识别并提取核心叙事要素。包括但不限于：
 - 情节点（plot points）：关键事件、转折点
@@ -20,13 +17,13 @@ permissions: [read_narrative]
 
 使用 LLM 对文本进行深度叙事学分析。
 
-## Input
+## 输入
 
 | 字段   | 类型   | 必填 | 说明           |
 | ------ | ------ | ---- | -------------- |
 | text   | string | 是   | 待分析的文本内容 |
 
-## Output
+## 输出
 
 返回 JSON 对象，包含以下字段：
 

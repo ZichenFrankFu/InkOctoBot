@@ -908,7 +908,6 @@ InkOctoBot/
         │   │   │   ├── ModelCompare.tsx      # 多模型输出并排对比
         │   │   │   ├── TextEditor.tsx        # 中栏: TipTap 富文本编辑器
         │   │   │   └── VersionHistory.tsx    # 版本历史列表 + diff 对比
-        │   │   ├── LogViewer.tsx             # 增量日志查看器
         │   │   ├── memory/
         │   │   │   └── EpisodicTimeline.tsx  # Layer 4 事件时间线可视化
         │   │   ├── reference/

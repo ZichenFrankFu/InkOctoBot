@@ -155,16 +155,9 @@ class Evaluator(BaseAgent):
         self, text: str, chapter_num: int,
         scene_plan: dict | None, constraints: str,
     ) -> str:
-        parts = [
-            f"请对第{chapter_num}章的生成文本进行全面评估。\n",
-            "评估维度:",
-            "1. 约束满足度: 是否违反世界观规则或情节约束",
-            "2. 一致性: 角色行为是否符合设定",
-            "3. 知识隔离: 角色是否泄露了不该知道的信息",
-            "4. 重复度: 是否有过度重复的表达",
-            "5. AI味检测: 是否有明显的AI生成痕迹",
-            "6. 伏笔回溯: 相关伏笔是否得到恰当处理",
-        ]
+        from analysis.feature_extraction.prompts import render
+
+        checklist = ""
         if scene_plan:
             musts = []
             for scene in scene_plan.get("scenes", []):
@@ -172,25 +165,9 @@ class Evaluator(BaseAgent):
                     musts.extend(instr.get("must", []))
                     musts.extend([f"不得{x}" for x in instr.get("must_not", [])])
             if musts:
-                parts.append(f"\n导演指令检查清单: {'; '.join(musts)}")
+                checklist = f"\n导演指令检查清单: {'; '.join(musts)}\n"
 
-        parts.append(f"\n## 待评估文本\n{text}")
-        parts.append("""
-请以JSON格式输出评估结果：
-```json
-{
-  "passed": true/false,
-  "score": 0-100,
-  "issues": [
-    {
-      "type": "constraint/consistency/knowledge_isolation/repetition/ai_flavor/foreshadowing",
-      "severity": "high/medium/low",
-      "description": "问题描述",
-      "suggestion": "修改建议"
-    }
-  ],
-  "strengths": ["优点1", "优点2"],
-  "summary": "总体评价（自然语言摘要）"
-}
-```""")
-        return "\n".join(parts)
+        return render(
+            "generation.evaluate",
+            chapter_num=chapter_num, checklist=checklist, text=text,
+        )

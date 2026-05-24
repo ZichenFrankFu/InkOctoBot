@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../api/client";
 import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
 import type { ReferenceWork } from "../api/types";
+import InspirationLibrary from "../components/InspirationLibrary";
+import CompareWorksPanel from "../components/CompareWorksPanel";
 
 interface SearchHit {
   id: string;
@@ -55,9 +58,10 @@ interface Props { onNavigate?: (tab: string) => void; }
 
 export default function ReferenceSearchPage({ onNavigate }: Props) {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [progressByRef, setProgressByRef] = useState<Record<string, IndexProgressRow[]>>({});
-  const [activeTab, setActiveTab] = useState<"search" | "index">("search");
+  const [activeTab, setActiveTab] = useState<"search" | "library" | "index" | "compare">("search");
 
   // Search state
   const [q, setQ] = useState("");
@@ -107,15 +111,16 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
 
   // ── Search actions ──
 
-  const runSearch = useCallback(async () => {
-    if (!q.trim()) return;
+  const runSearch = useCallback(async (queryText?: string) => {
+    const query = (queryText ?? q).trim();
+    if (!query) return;
     setLoading(true);
     setHits([]);
     setDrillingRefId(null);
     setDrillHits([]);
     try {
       const params = new URLSearchParams({
-        q: q.trim(), k: String(k), levels: "L1,L2",
+        q: query, k: String(k), levels: "L1,L2",
       });
       const r = await apiGet<SearchResponse>(`/api/references/search?${params}`);
       setHits(r.hits || []);
@@ -169,7 +174,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
   };
 
   const buildAllIndexes = async () => {
-    if (!confirm(`确认为全部 ${works.length} 部作品建立 L1+L2 索引？L3（正文片段）不会包含；如需逐部勾选 L3。`)) return;
+    if (!(await confirm({ message: `确认为全部 ${works.length} 部作品建立 L1+L2 索引？L3（正文片段）不会包含；如需逐部勾选 L3。` }))) return;
     for (const w of works) {
       // Sequential to avoid hammering local embedding backend with parallel requests.
       // eslint-disable-next-line no-await-in-loop
@@ -178,7 +183,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
   };
 
   const clearIndex = async (refId: string) => {
-    if (!confirm("确认删除本作品的全部向量索引？")) return;
+    if (!(await confirm({ message: "确认删除本作品的全部向量索引？", destructive: true }))) return;
     try {
       await fetch(`/api/references/works/${refId}/index`, { method: "DELETE" });
       toast("已清除", "success");
@@ -238,8 +243,10 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
       {/* Tabs */}
       <div className="flex" style={{ marginBottom: 12, gap: 4, borderBottom: "1px solid var(--border)" }}>
         {([
-          { key: "search" as const, label: "灵感搜索" },
-          { key: "index"  as const, label: `索引管理 · ${works.length} 部作品` },
+          { key: "search"  as const, label: "灵感搜索" },
+          { key: "library" as const, label: "灵感库" },
+          { key: "compare" as const, label: "作品对比" },
+          { key: "index"   as const, label: `索引管理 · ${works.length} 部作品` },
         ]).map(t => (
           <button
             key={t.key}
@@ -279,7 +286,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
                     className="input" style={{ width: 60 }}
                   />
                 </label>
-                <button className="btn-primary" onClick={runSearch} disabled={loading || !q.trim()}>
+                <button className="btn-primary" onClick={() => runSearch()} disabled={loading || !q.trim()}>
                   {loading ? "搜索中..." : "搜索"}
                 </button>
               </div>
@@ -345,6 +352,17 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
         </>
       )}
 
+      {activeTab === "library" && (
+        <InspirationLibrary onSearchWorks={(text) => {
+          // Cap the query — embedding models truncate long input anyway
+          // and an over-long URL query param is best avoided.
+          const query = text.trim().slice(0, 600);
+          setQ(query);
+          setActiveTab("search");
+          runSearch(query);
+        }} />
+      )}
+
       {activeTab === "index" && (
         <>
           <div className="card" style={{ marginBottom: 14 }}>
@@ -406,6 +424,8 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
           </div>
         </>
       )}
+
+      {activeTab === "compare" && <CompareWorksPanel />}
     </div>
   );
 }
@@ -478,49 +498,63 @@ function IndexRow({ w, rows, indexing, onBuild, onClear, onOpen, topBorder }: {
 function ResultsList({ rows }: { rows: SearchHit[] }) {
   return (
     <div className="flex flex-col gap-8">
-      {rows.map(h => {
-        const src = (h.metadata.source_type as string) || "chapter_chunk";
-        const tm = (h.metadata.time_marker as string)
-                || (h.metadata.first_seen_at as string)
-                || (h.metadata.first_introduced_at as string)
-                || (typeof h.metadata.chapter === "number" ? `第 ${h.metadata.chapter} 章` : "");
-        const color = SOURCE_COLOR[src] || "var(--text-tertiary)";
-        return (
-          <div key={h.id} style={{
-            padding: "8px 12px",
-            background: "var(--bg-surface)",
-            borderRadius: 4,
-            borderLeft: `3px solid ${color}`,
-          }}>
-            <div className="flex items-center gap-6" style={{ marginBottom: 4, flexWrap: "wrap" }}>
-              <span className="tag" style={{
-                fontSize: 10, padding: "1px 6px",
-                color, background: "var(--bg-surface-2)",
-                border: `1px solid ${color}`,
-              }}>{SOURCE_LABEL[src] || src}</span>
-              {tm && (
-                <span className="tag" style={{
-                  fontSize: 10, padding: "1px 6px",
-                  color: "var(--accent)", background: "var(--accent-subtle)",
-                  border: "1px solid var(--accent)",
-                }}>{tm}</span>
-              )}
-              <span className="text-xs text-muted" style={{ marginLeft: "auto", fontFamily: "var(--font-mono)" }}>
-                距离 {h.distance.toFixed(3)}
-              </span>
-            </div>
-            <div style={{
-              fontSize: 12, lineHeight: 1.6,
-              color: "var(--text-secondary)",
-              whiteSpace: "pre-wrap",
-              display: "-webkit-box",
-              WebkitBoxOrient: "vertical",
-              WebkitLineClamp: 5,
-              overflow: "hidden",
-            }}>{h.text}</div>
-          </div>
-        );
-      })}
+      {rows.map(h => <ResultRow key={h.id} h={h} />)}
+    </div>
+  );
+}
+
+/** One search hit. The matched passage collapses to 5 lines by default;
+ *  long passages get a 展开 / 收起 toggle. */
+function ResultRow({ h }: { h: SearchHit }) {
+  const [expanded, setExpanded] = useState(false);
+  const src = (h.metadata.source_type as string) || "chapter_chunk";
+  const tm = (h.metadata.time_marker as string)
+          || (h.metadata.first_seen_at as string)
+          || (h.metadata.first_introduced_at as string)
+          || (typeof h.metadata.chapter === "number" ? `第 ${h.metadata.chapter} 章` : "");
+  const color = SOURCE_COLOR[src] || "var(--text-tertiary)";
+  const longText = (h.text || "").length > 120;
+  return (
+    <div style={{
+      padding: "8px 12px",
+      background: "var(--bg-surface)",
+      borderRadius: 4,
+      borderLeft: `3px solid ${color}`,
+    }}>
+      <div className="flex items-center gap-6" style={{ marginBottom: 4, flexWrap: "wrap" }}>
+        <span className="tag" style={{
+          fontSize: 10, padding: "1px 6px",
+          color, background: "var(--bg-surface-2)",
+          border: `1px solid ${color}`,
+        }}>{SOURCE_LABEL[src] || src}</span>
+        {tm && (
+          <span className="tag" style={{
+            fontSize: 10, padding: "1px 6px",
+            color: "var(--accent)", background: "var(--accent-subtle)",
+            border: "1px solid var(--accent)",
+          }}>{tm}</span>
+        )}
+        <span className="text-xs text-muted" style={{ marginLeft: "auto", fontFamily: "var(--font-mono)" }}>
+          距离 {h.distance.toFixed(3)}
+        </span>
+      </div>
+      <div style={{
+        fontSize: 12, lineHeight: 1.6,
+        color: "var(--text-secondary)",
+        whiteSpace: "pre-wrap",
+        ...(expanded ? {} : {
+          display: "-webkit-box",
+          WebkitBoxOrient: "vertical" as const,
+          WebkitLineClamp: 5,
+          overflow: "hidden",
+        }),
+      }}>{h.text}</div>
+      {longText && (
+        <button className="btn-ghost" onClick={() => setExpanded(e => !e)}
+          style={{ fontSize: 11, padding: "3px 0 0", color: "var(--accent)" }}>
+          {expanded ? "收起 ▲" : "展开 ▼"}
+        </button>
+      )}
     </div>
   );
 }

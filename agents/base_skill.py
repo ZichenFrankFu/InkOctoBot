@@ -21,7 +21,12 @@ logger = logging.getLogger("inkoctobot.agents.base_skill")
 
 @dataclass
 class SkillMeta:
-    """Skill metadata, corresponding to SKILL.md frontmatter."""
+    """Skill execution metadata (declared by skill.py).
+
+    The Claude-format ``SKILL.md`` manifest is the source of truth for the
+    skill's ``name`` and ``description``; this dataclass carries the runtime
+    parameters and JSON schemas that drive ``execute()`` and the UI display.
+    """
     name: str                                     # unique id, e.g. "consistency_check"
     display_name: str                             # display name, e.g. "一致性检查"
     description: str                              # functional description
@@ -36,16 +41,79 @@ class SkillMeta:
     permissions: list[str] = field(default_factory=list)
 
 
+@dataclass
+class SkillManifest:
+    """A parsed Claude Agent Skill ``SKILL.md`` manifest.
+
+    Claude-format skills declare only ``name`` + ``description`` in the YAML
+    frontmatter; everything below the frontmatter is a markdown body. The
+    registry parses each skill's SKILL.md into this object at load time.
+    """
+    name: str
+    description: str
+    body: str = ""
+    path: str = ""
+
+
+def parse_skill_md(path: Any) -> SkillManifest:
+    """Parse a Claude Agent Skill ``SKILL.md`` file.
+
+    The file is expected to start with a YAML frontmatter block delimited by
+    ``---`` lines, carrying ``name`` and ``description``, followed by a
+    markdown body. Falls back to a minimal line parser if YAML is unavailable
+    or the frontmatter is malformed.
+    """
+    from pathlib import Path
+
+    p = Path(path)
+    text = p.read_text("utf-8")
+    frontmatter: dict[str, Any] = {}
+    body = text
+
+    if text.lstrip().startswith("---"):
+        stripped = text.lstrip()
+        end = stripped.find("\n---", 3)
+        if end != -1:
+            fm_raw = stripped[3:end]
+            rest = stripped[end + 4:]
+            body = rest.lstrip("-").lstrip("\n")
+            try:
+                import yaml
+                loaded = yaml.safe_load(fm_raw)
+                if isinstance(loaded, dict):
+                    frontmatter = loaded
+            except Exception:
+                frontmatter = {}
+            if not frontmatter:
+                # Minimal fallback parser for `key: value` scalar lines.
+                for line in fm_raw.splitlines():
+                    if ":" in line and not line.lstrip().startswith("#"):
+                        k, _, v = line.partition(":")
+                        frontmatter[k.strip()] = v.strip().strip("'\"")
+
+    return SkillManifest(
+        name=str(frontmatter.get("name", "") or "").strip(),
+        description=str(frontmatter.get("description", "") or "").strip(),
+        body=body.strip(),
+        path=str(p),
+    )
+
+
 class BaseSkill(ABC):
     """
     Abstract base for all Skills.
 
-    Every skill.py must export a ``Skill`` class inheriting from this.
+    Every skill is a directory holding a Claude-format ``SKILL.md`` manifest
+    and a ``skill.py`` that exports a ``Skill`` class inheriting from this.
+    The registry parses the SKILL.md and injects it as ``self.manifest``.
     """
+
+    # Parsed Claude-format SKILL.md manifest, injected by the SkillRegistry.
+    manifest: "SkillManifest | None" = None
 
     @abstractmethod
     def meta(self) -> SkillMeta:
-        """Return skill metadata."""
+        """Return skill execution metadata."""
         ...
 
     @abstractmethod

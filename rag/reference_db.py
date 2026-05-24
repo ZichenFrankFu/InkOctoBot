@@ -105,6 +105,42 @@ class ReferenceDB:
                 f"SELECT COUNT(*) FROM reference_works {where}", params
             ).fetchone()[0]
 
+    def stats(self) -> dict:
+        """Aggregate counts for the dashboard overview — avoids shipping
+        every work's large JSON columns just to tally totals."""
+        with _conn(self.db_path) as c:
+            row = c.execute(
+                """
+                SELECT
+                  COUNT(*)                         AS total,
+                  COALESCE(SUM(has_full_text), 0)   AS with_full_text,
+                  COALESCE(SUM(preprocessing_status = 'done'), 0) AS done,
+                  COALESCE(SUM(plot_outline_json IS NOT NULL
+                               AND plot_outline_json NOT IN ('', '{}', '[]')), 0) AS with_plot,
+                  COALESCE(SUM(extracted_characters_json IS NOT NULL
+                               AND extracted_characters_json NOT IN ('', '[]')), 0) AS with_characters,
+                  AVG(user_rating)                 AS avg_rating,
+                  COUNT(user_rating)               AS rated_count
+                FROM reference_works
+                """
+            ).fetchone()
+            genres = [
+                r[0] for r in c.execute(
+                    "SELECT genre FROM reference_works "
+                    "WHERE genre IS NOT NULL AND genre != ''"
+                ).fetchall()
+            ]
+        return {
+            "total": row["total"] or 0,
+            "with_full_text": row["with_full_text"] or 0,
+            "done": row["done"] or 0,
+            "with_plot": row["with_plot"] or 0,
+            "with_characters": row["with_characters"] or 0,
+            "avg_rating": row["avg_rating"],
+            "rated_count": row["rated_count"] or 0,
+            "genres": genres,
+        }
+
     def update_work(self, ref_id: str, **fields: Any) -> dict | None:
         allowed = {
             "title", "creator", "media_type", "genre", "tags_json",
@@ -114,6 +150,7 @@ class ReferenceDB:
             "narrative_structure_json", "extracted_characters_json",
             "rhythm_template_json", "plot_outline_json", "segments_json",
             "settings_json", "serial_status", "rhythm_json", "file_path",
+            "chapter_comments_json",
         }
         sets = ["updated_at=CURRENT_TIMESTAMP"]
         params: list[Any] = []
@@ -267,3 +304,55 @@ class ReferenceDB:
 
     def get_pending(self, limit: int = 50) -> list[dict]:
         return self.list_works(preprocessing_status="pending", limit=limit)
+
+    # ── inspirations ──────────────────────────────────────
+
+    def create_inspiration(self, category: str, title: str,
+                           content: str) -> dict:
+        iid = _gid("insp")
+        with _conn(self.db_path) as c:
+            c.execute(
+                "INSERT INTO inspirations (id,category,title,content) "
+                "VALUES (?,?,?,?)",
+                (iid, category or "other", title or "", content or ""),
+            )
+            c.commit()
+        return self.get_inspiration(iid)  # type: ignore
+
+    def get_inspiration(self, insp_id: str) -> dict | None:
+        with _conn(self.db_path) as c:
+            r = c.execute("SELECT * FROM inspirations WHERE id=?",
+                          (insp_id,)).fetchone()
+        return dict(r) if r else None
+
+    def list_inspirations(self) -> list[dict]:
+        with _conn(self.db_path) as c:
+            rows = c.execute(
+                "SELECT * FROM inspirations ORDER BY updated_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_inspiration(self, insp_id: str, **fields: Any) -> dict | None:
+        allowed = {"category", "title", "content"}
+        sets = ["updated_at=CURRENT_TIMESTAMP"]
+        params: list[Any] = []
+        for k, v in fields.items():
+            if k in allowed and v is not None:
+                sets.append(f"{k}=?")
+                params.append(v)
+        if len(sets) == 1:
+            return self.get_inspiration(insp_id)
+        params.append(insp_id)
+        with _conn(self.db_path) as c:
+            c.execute(
+                f"UPDATE inspirations SET {', '.join(sets)} WHERE id=?",
+                params,
+            )
+            c.commit()
+        return self.get_inspiration(insp_id)
+
+    def delete_inspiration(self, insp_id: str) -> bool:
+        with _conn(self.db_path) as c:
+            cur = c.execute("DELETE FROM inspirations WHERE id=?", (insp_id,))
+            c.commit()
+        return cur.rowcount > 0

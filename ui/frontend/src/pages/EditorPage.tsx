@@ -2,12 +2,15 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import { useResizable } from "../hooks/useResizable";
+import { useDialog } from "../components/shared/Dialog";
+import useDebounce from "../hooks/useDebounce";
 import { computeDiff, groupIntoHunks, assembleFromHunks } from "../utils/simpleDiff";
 import type { DiffHunk } from "../utils/simpleDiff";
 import type { Volume, ChapterOutline, PipelineStatus, EvalResult, FollowUpQuestion, TextVersion } from "../api/types";
 import EvalReport from "../components/editor/EvalReport";
 import type { EvalReportData } from "../components/editor/EvalReport";
 import FollowUpQuestions from "../components/shared/FollowUpQuestions";
+import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 
 const vuid = () => `v_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -109,6 +112,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Last successfully-persisted snapshot per chapter — lets the
+  // auto-save skip no-op writes (e.g. right after a chapter switch).
+  const persistedRef = useRef<{ chId: string; content: string; title: string }>({ chId: "", content: "", title: "" });
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
@@ -128,7 +134,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     try { const raw = sessionStorage.getItem(`inkocto_editor_chat_${projectId}`); return raw ? JSON.parse(raw) : null; } catch { return null; }
   })();
   const [chatLoaded, setChatLoaded] = useState(false);
-  const [aiTab, setAiTab] = useState<"outline" | "inspire" | "rewrite" | "eval" | "prompt">(_savedEditorState?.aiTab === "ab" ? "outline" : (_savedEditorState?.aiTab || "outline"));
+  const [aiTab, setAiTab] = useState<"outline" | "single" | "cluster" | "rewrite" | "eval">(
+    () => normalizeAiTab(_savedEditorState?.aiTab));
   const [selection, setSelection] = useState<{ start: number; end: number; text: string } | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [rewriteModel, setRewriteModel] = useState("default");
@@ -141,9 +148,11 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [waitingForConfirm, setWaitingForConfirm] = useState(false);
   const [mergePreview, setMergePreview] = useState<{ original: string; generated: string } | null>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
-  const leftPanel = useResizable({ direction: "horizontal", initialSize: 220, minSize: 160, maxSize: 350 });
-  const rightPanel = useResizable({ direction: "horizontal", initialSize: 300, minSize: 200, maxSize: 500, invert: true });
+  const leftPanel = useResizable({ direction: "horizontal", initialSize: 240, minSize: 160, maxSize: 400 });
+  const rightPanel = useResizable({ direction: "horizontal", initialSize: 400, minSize: 260, maxSize: 680, invert: true });
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
+  const { confirm } = useDialog();
 
   // Persist editor chat state to sessionStorage + backend (per chapter)
   const EDITOR_CHAT_KEY = `inkocto_editor_chat_${projectId}_${activeChId}`;
@@ -176,7 +185,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         const saved = JSON.parse(raw);
         if (saved?.chatMessages?.length > 0) {
           setChatMessages(saved.chatMessages);
-          if (saved.aiTab) setAiTab(saved.aiTab);
+          if (saved.aiTab) setAiTab(normalizeAiTab(saved.aiTab));
           setChatLoaded(true);
           return;
         }
@@ -192,10 +201,10 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       .catch(() => setChatLoaded(true));
   }, [projectId, activeChId]);
 
-  // Auto-switch to inspire tab when pipeline is running (including on mount/return)
+  // Auto-switch to the active generation tab when a run is in progress.
   useEffect(() => {
-    if (generating && aiTab !== "inspire") {
-      setAiTab("inspire");
+    if (generating && aiTab !== "single" && aiTab !== "cluster") {
+      setAiTab(genModeRef.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [generating]);
@@ -235,7 +244,11 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const activeVol = useMemo(() => volumes.find(v => v.chapters.some(c => c.id === activeChId)) || null, [volumes, activeChId]);
 
   useEffect(() => {
-    if (activeCh && loaded) { setContent(activeCh.content || ""); setTitleVal(activeCh.title); }
+    if (activeCh && loaded) {
+      setContent(activeCh.content || "");
+      setTitleVal(activeCh.title);
+      persistedRef.current = { chId: activeChId, content: activeCh.content || "", title: activeCh.title };
+    }
     setEditingTitle(false); setSelection(null);
   }, [activeChId, loaded]);
 
@@ -248,14 +261,25 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   useEffect(() => {
     if (!loaded) return;
+    // Skip the auto-save entirely when nothing actually changed — e.g.
+    // a chapter switch just loaded identical content. Saving here would
+    // be a no-op network write + a spurious version bump.
+    const p = persistedRef.current;
+    if (p.chId === activeChId && p.content === content && p.title === titleVal) {
+      return;
+    }
     setSaveStatus("unsaved");
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    const chId = activeChId;
     saveTimer.current = setTimeout(async () => {
       setSaveStatus("saving");
-      const updatedVolumes = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
+      const updatedVolumes = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === chId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
       setVolumes(updatedVolumes);
-      try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: updatedVolumes }); setSaveStatus("saved"); }
-      catch (e: any) { setSaveStatus("unsaved"); console.warn("自动保存失败:", e.message); }
+      try {
+        await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: updatedVolumes });
+        persistedRef.current = { chId, content, title: titleVal };
+        setSaveStatus("saved");
+      } catch (e: any) { setSaveStatus("unsaved"); console.warn("自动保存失败:", e.message); }
     }, 1500);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [content, titleVal]);
@@ -344,17 +368,56 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const commitRename = () => { if (!renamingId || !renameVal.trim()) { setRenamingId(null); return; } setVolumes(volumes.map(v => { if (v.id === renamingId) return { ...v, title: renameVal.trim() }; return { ...v, chapters: v.chapters.map(c => c.id === renamingId ? { ...c, title: renameVal.trim() } : c) }; })); setRenamingId(null); };
   const updateSynopsis = (val: string) => { setVolumes(volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, synopsis: val } : c) }))); };
 
+  // Debounce the search term used for filtering: typing fires character
+  // events but the filter pass scans every chapter's full text (can be
+  // 100k+ chars/chapter), so unthrottled filtering blocks the input.
+  const debouncedSearch = useDebounce(searchTerm, 200);
+  const searchLower = useMemo(
+    () => debouncedSearch.trim().toLowerCase(),
+    [debouncedSearch],
+  );
   const filteredVolumes = useMemo(() => {
-    if (!searchTerm.trim()) return volumes;
-    const term = searchTerm.trim().toLowerCase();
-    return volumes.map(v => ({ ...v, chapters: v.chapters.filter(c => c.title.toLowerCase().includes(term) || (c.content || "").toLowerCase().includes(term) || (c.synopsis || "").toLowerCase().includes(term)) })).filter(v => v.chapters.length > 0 || v.title.toLowerCase().includes(term));
-  }, [volumes, searchTerm]);
+    if (!searchLower) return volumes;
+    return volumes
+      .map(v => ({
+        ...v,
+        chapters: v.chapters.filter(c =>
+          c.title.toLowerCase().includes(searchLower)
+          || (c.content || "").toLowerCase().includes(searchLower)
+          || (c.synopsis || "").toLowerCase().includes(searchLower)
+        ),
+      }))
+      .filter(v => v.chapters.length > 0 || v.title.toLowerCase().includes(searchLower));
+  }, [volumes, searchLower]);
 
-  const handleExport = () => {
-    const lines: string[] = [];
-    for (const v of volumes) { lines.push(`===== ${v.title} =====\n`); for (const c of v.chapters) { lines.push(`--- ${c.title} ---\n`); lines.push((c.content || "") + "\n\n"); } }
-    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `export_${Date.now()}.txt`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  // Save text via the browser save-as dialog (lets the user pick the path);
+  // falls back to a plain download for browsers without showSaveFilePicker.
+  const saveTextFile = async (text: string, suggestedName: string): Promise<boolean> => {
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const picker = (window as any).showSaveFilePicker;
+    if (typeof picker === "function") {
+      let handle: any;
+      try {
+        handle = await picker.call(window, {
+          suggestedName,
+          types: [{ description: "文本文件", accept: { "text/plain": [".txt"] } }],
+        });
+      } catch (e: any) {
+        if (e?.name === "AbortError") return false;  // user cancelled the dialog
+        throw e;
+      }
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return true;
+    }
+    // Fallback for browsers without the save-picker API.
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = suggestedName;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return true;
   };
 
   const handleBundleExport = async () => {
@@ -407,7 +470,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       } else {
         const categoryNames: Record<string, string> = {
           power_system: "力量体系", factions: "势力", geography: "地理",
-          social_rules: "社会规则", history: "历史", hard_rules: "硬规则", other: "其他",
+          social_rules: "社会规则", history: "历史", hard_rules: "世界观规则", other: "其他",
         };
         // Group by category
         const grouped: Record<string, any[]> = {};
@@ -442,46 +505,62 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       }
 
       const text = lines.join("\n");
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = `bundle_export_${Date.now()}.txt`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-      toast("已导出角色+世界书+章节大纲", "success");
+      const ok = await saveTextFile(text, `导出_${Date.now()}.txt`);
+      if (ok) toast("已导出角色+世界书+章节大纲", "success");
     } catch (e: any) {
       toast(e.message || "导出失败", "error");
     }
   };
 
-  // A1: Batch generation state
-  const [batchStatus, setBatchStatus] = useState<{ running: boolean; sessionId?: string; current?: number; completed: number[]; total: number; errors: Record<number, string> } | null>(null);
+  // Batch multi-select mode: clicking "批量" enters a chapter-picking mode in
+  // the tree, then the action bar bulk-deletes or bulk-exports the selection.
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedChIds, setSelectedChIds] = useState<Set<string>>(new Set());
 
-  const startBatchGeneration = async () => {
-    const allChapters = volumes.flatMap(v => v.chapters);
-    if (allChapters.length < 2) { alert("至少需要2个章节才能批量生成"); return; }
-    const start = parseInt(prompt("起始章节号：", "1") || "0");
-    const end = parseInt(prompt("结束章节号：", String(Math.min(allChapters.length, start + 4))) || "0");
-    if (!start || !end || start > end) return;
+  const toggleChSelected = (chId: string) => {
+    setSelectedChIds(prev => {
+      const next = new Set(prev);
+      if (next.has(chId)) next.delete(chId); else next.add(chId);
+      return next;
+    });
+  };
+
+  const exitBatchMode = () => { setBatchMode(false); setSelectedChIds(new Set()); };
+
+  const selectAllChapters = () => {
+    setSelectedChIds(new Set(volumes.flatMap(v => v.chapters).map(c => c.id)));
+  };
+
+  const deleteSelectedChapters = async () => {
+    if (selectedChIds.size === 0) return;
+    const allChs = volumes.flatMap(v => v.chapters);
+    const remaining = allChs.filter(c => !selectedChIds.has(c.id));
+    if (remaining.length === 0) { toast("至少需保留一个章节", "error"); return; }
+    if (!(await confirm({ message: `确认删除选中的 ${selectedChIds.size} 个章节？此操作不可撤销。`, destructive: true }))) return;
+    setVolumes(volumes.map(v => ({ ...v, chapters: v.chapters.filter(c => !selectedChIds.has(c.id)) })));
+    if (activeChId && selectedChIds.has(activeChId)) setActiveChId(remaining[0].id);
+    exitBatchMode();
+    toast("已删除选中章节", "success");
+  };
+
+  const exportSelectedChapters = async () => {
+    if (selectedChIds.size === 0) { toast("请先选择章节", "error"); return; }
+    const lines: string[] = [];
+    for (const v of volumes) {
+      const picked = v.chapters.filter(c => selectedChIds.has(c.id));
+      if (picked.length === 0) continue;
+      lines.push(`===== ${v.title} =====\n`);
+      for (const c of picked) {
+        lines.push(`--- ${c.title} ---\n`);
+        lines.push((c.content || "") + "\n\n");
+      }
+    }
     try {
-      const resp = await apiPost<{ session_id: string; chapter_count: number }>("/api/generation/batch/start", {
-        project_id: projectId || "default",
-        chapter_range: [start, end],
-        volume_outline: volumes.map(v => v.chapters.map(c => c.synopsis || "").join("\n")).join("\n"),
-        style_notes: "",
-        world_rules: "",
-      });
-      setBatchStatus({ running: true, sessionId: resp.session_id, current: start, completed: [], total: resp.chapter_count, errors: {} });
-      // Poll for status
-      const pollBatch = setInterval(async () => {
-        try {
-          const s = await apiGet<any>(`/api/generation/batch/status/${resp.session_id}`);
-          setBatchStatus(prev => prev ? { ...prev, current: s.current_chapter, completed: s.completed || [], errors: s.errors || {} } : prev);
-          if (s.status !== "running") {
-            clearInterval(pollBatch);
-            setBatchStatus(prev => prev ? { ...prev, running: false } : prev);
-          }
-        } catch { clearInterval(pollBatch); setBatchStatus(prev => prev ? { ...prev, running: false } : prev); }
-      }, 3000);
-    } catch (e: any) { alert("批量生成启动失败: " + (e?.message || e)); }
+      const ok = await saveTextFile(lines.join("\n"), `章节导出_${Date.now()}.txt`);
+      if (ok) toast(`已导出 ${selectedChIds.size} 个章节`, "success");
+    } catch (e: any) {
+      toast(e?.message || "导出失败", "error");
+    }
   };
 
   const generatedTextRef = useRef<string>("");
@@ -489,6 +568,12 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const eventCursorRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
+  const genModeRef = useRef<"single" | "cluster">("single");
+  const [manualPrompt, setManualPrompt] = useState<{ step: string; prompt: string } | null>(null);
+  const [manifest, setManifest] = useState<ContextManifest | null>(null);
+  const [skillSelection, setSkillSelection] = useState<Record<string, boolean>>({});
+  const [ragExcludes, setRagExcludes] = useState<Set<string>>(new Set());
+  const [manifestNonce, setManifestNonce] = useState(0);
   const modelSnapshotRef = useRef<{ provider: string; model: string } | null>(null);
   const [modelChanged, setModelChanged] = useState(false);
 
@@ -526,6 +611,15 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       : s === "evaluator" ? "Evaluator" : "System";
 
     switch (data.type) {
+      case "manual_prompt":
+        setManualPrompt({ step: data.step || "", prompt: data.prompt || "" });
+        break;
+      case "skills_used":
+        setChatMessages(prev => [...prev, {
+          agent: "System", content: formatSkillsUsed(data.skills),
+          status: "done", timestamp: Date.now(),
+        }]);
+        break;
       case "pipeline_start":
         setChatMessages(prev => {
           if (prev.some(m => m.content.includes("Pipeline") && m.content.includes("开始"))) return prev;
@@ -793,8 +887,85 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }, 500);
   }, [handleEvent, SESS_KEY]);
 
+  /** Global 1-based chapter number for the active chapter. */
+  const chapterNum = useMemo(() => {
+    const all = volumes.flatMap(v => v.chapters);
+    const idx = all.findIndex(c => c.id === activeChId);
+    return idx >= 0 ? idx + 1 : 1;
+  }, [volumes, activeChId]);
+
+  /** Assemble the structured chapter-generation payload. The backend
+   *  (/quick-generate) assembles the RAG context — character cards /
+   *  worldbook / platform / references / writing-knowledge — from these
+   *  fields, so the editor only sends chapter-local inputs. */
+  // Creation context manifest — RAG / default skills / learned skills /
+  // writing knowledge for the creation tab's transparency panel.
+  useEffect(() => {
+    if (!activeChId) { setManifest(null); return; }
+    const mode = aiTab === "cluster" ? "cluster" : aiTab === "eval" ? "eval" : "single";
+    apiGet<ContextManifest>(`/api/generation/context-manifest?project_id=${encodeURIComponent(projectId || "default")}&chapter_id=${encodeURIComponent(activeChId)}&chapter_num=${chapterNum}&mode=${mode}`)
+      .then(m => {
+        setManifest(m);
+        setSkillSelection(prev => {
+          const next = { ...prev };
+          for (const s of (m.learned_skills || [])) {
+            if (!(s.name in next)) next[s.name] = true;
+          }
+          return next;
+        });
+      })
+      .catch(() => setManifest(null));
+  }, [projectId, activeChId, chapterNum, aiTab, manifestNonce]);
+
+  const refreshManifest = useCallback(() => setManifestNonce(n => n + 1), []);
+
+  const selectedSkillNames = useMemo(
+    () => (manifest?.learned_skills || [])
+      .filter(s => skillSelection[s.name] !== false).map(s => s.name),
+    [manifest, skillSelection],
+  );
+
+  const toggleSkill = useCallback((name: string) => {
+    setSkillSelection(prev => ({ ...prev, [name]: prev[name] === false }));
+  }, []);
+
+  const toggleRagItem = useCallback((key: string) => {
+    setRagExcludes(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const buildGenPayload = useCallback((): Record<string, any> => ({
+    project_id: projectId || "default",
+    chapter_id: activeChId,
+    synopsis: activeCh?.synopsis || "",
+    time_setting: activeCh?.time || "",
+    location: activeCh?.location || "",
+    characters: activeCh?.characters || [],
+    character_aliases: activeCh?.character_aliases || {},
+    existing_content: content || "",
+    chapter_num: chapterNum,
+    references: activeCh?.references || [],
+    referenced_events: (activeCh?.referenced_events || []).filter((e: any) =>
+      !ragExcludes.has(`referenced_materials::event:${e.id || e.name || e.description || ""}`)),
+    referenced_inspirations: (activeCh?.referenced_inspirations || []).filter((x: any) =>
+      !ragExcludes.has(`referenced_materials::insp:${x.id || x.title || x.content || ""}`)),
+    skills: selectedSkillNames,
+    rag_excludes: Array.from(ragExcludes),
+  }), [activeCh, projectId, activeChId, content, chapterNum, selectedSkillNames, ragExcludes]);
+
+  const fetchGenPrompt = useCallback(async (): Promise<string> => {
+    const r = await apiPost<{ prompt: string }>("/api/generation/quick-generate", {
+      ...buildGenPayload(), prompt_only: true,
+    });
+    return r.prompt || "";
+  }, [buildGenPayload]);
+
   const runQuickGenerate = useCallback(async () => {
     if (!activeCh) return;
+    setGenerating(true);
     setPipelineSteps(prev => prev.map((s, i) =>
       i === 0 ? { ...s, status: "running" as const } : s
     ));
@@ -804,10 +975,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }]);
 
     try {
-      const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
-        project_id: projectId,
-        chapter_id: activeChId,
-        synopsis: activeCh.synopsis || "",
+      const resp = await apiPost<{ text: string; model: string; tokens?: any; skills_used?: string[] }>("/api/generation/quick-generate", {
+        ...buildGenPayload(),
       });
 
       generatedTextRef.current = resp.text;
@@ -815,7 +984,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       setChatMessages(prev => {
         const filtered = prev.filter(m => m.status !== "thinking");
         return [...filtered,
-          { agent: "Actor Agents", content: `生成完成！共 ${resp.text.length} 字。使用模型: ${resp.model}`, status: "done" as const, timestamp: Date.now() },
+          { agent: "Actor Agents", content: `生成完成！共 ${resp.text.length} 字。使用模型: ${resp.model}\n${formatSkillsUsed(resp.skills_used)}`, status: "done" as const, timestamp: Date.now() },
           { agent: "System", content: "快速生成完成！点击「写入编辑器」将内容插入。", status: "done" as const, timestamp: Date.now() },
         ];
       });
@@ -831,70 +1000,31 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }
     setGenerating(false);
     setCurrentAgent(null);
-  }, [activeCh, projectId, activeChId]);
+  }, [activeCh, buildGenPayload]);
 
   const runPlainAgent = useCallback(async () => {
     if (!activeCh) return;
+    genModeRef.current = "single";
+    setAiTab("single");
     setGenerating(true);
     setPipelineSteps([{ step: "Plain Agent", status: "running", detail: "单Agent直接生成中..." }]);
     setChatMessages([{
       agent: "System",
-      content: `单Agent模式启动（跳过Pipeline）。基于大纲「${(activeCh.synopsis || "").slice(0, 50)}...」直接生成全文。`,
+      content: `单Agent模式启动。基于大纲「${(activeCh.synopsis || "").slice(0, 50)}...」直接生成全文。`,
       status: "done", timestamp: Date.now(),
     }]);
     generatedTextRef.current = "";
-
     try {
-      // Gather context
-      const synopsis = activeCh.synopsis || "";
-      const chars = activeCh.characters || [];
-      const parts = [`## 章节大纲\n${synopsis}`];
-      if (activeCh.time) parts.push(`## 时间\n${activeCh.time}`);
-      if (activeCh.location) parts.push(`## 地点\n${activeCh.location}`);
-      if (chars.length > 0) parts.push(`## 出场角色\n${chars.join("、")}`);
-
-      // Fetch character details for richer context
-      try {
-        const charResp = await apiGet<{ items: any[] }>(`/api/data/characters?project_id=${projectId || "default"}`);
-        const relevantChars = (charResp.items || []).filter((c: any) => chars.includes(c.name));
-        if (relevantChars.length > 0) {
-          parts.push("## 角色设定\n" + relevantChars.map((c: any) =>
-            `【${c.name}】${c.personality ? `性格：${c.personality}` : ""}${c.speech_style ? ` 说话风格：${c.speech_style}` : ""}`
-          ).join("\n"));
-        }
-      } catch { /* ignore */ }
-
-      // Fetch calibration style params
-      try {
-        const calResp = await apiGet<any>(`/api/data/calibration/${projectId || "default"}`);
-        if (calResp?.style_params) {
-          const sp = calResp.style_params;
-          const toneDesc = sp.tone < 30 ? "轻松幽默" : sp.tone > 70 ? "严肃深沉" : "均衡";
-          const pacingDesc = sp.pacing < 30 ? "快节奏" : sp.pacing > 70 ? "慢热" : "中等";
-          parts.push(`## 风格\n文风：${toneDesc}，节奏：${pacingDesc}`);
-        }
-      } catch { /* ignore */ }
-
-      if (content && content.length > 10) {
-        parts.push(`## 已有内容（续写）\n${content.slice(-500)}`);
-        parts.push("\n请续写以上内容，保持风格一致，输出800-1500字的完整章节正文。");
-      } else {
-        parts.push("\n请根据以上信息，写出完整的章节内容（800-1500字）。直接输出小说正文，不要输出标题或格式标记。");
-      }
-
-      const resp = await apiPost<{ text: string; model: string; tokens?: any }>("/api/generation/quick-generate", {
-        project_id: projectId,
-        chapter_id: activeChId,
-        synopsis: parts.join("\n\n"),
+      const resp = await apiPost<{ text: string; model: string; tokens?: any; skills_used?: string[] }>("/api/generation/quick-generate", {
+        ...buildGenPayload(),
       });
-
       generatedTextRef.current = resp.text;
       setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "已完成", progress: 100 }]);
       setChatMessages(prev => {
         const filtered = prev.filter(m => m.status !== "thinking");
         return [...filtered,
           { agent: "Editor-Writer", content: resp.text, status: "done" as const, timestamp: Date.now() },
-          { agent: "System", content: `生成完成！共 ${resp.text.length} 字。模型: ${resp.model}${resp.tokens ? ` (${resp.tokens.input}+${resp.tokens.output} tokens)` : ""}`, status: "done" as const, timestamp: Date.now() },
+          { agent: "System", content: `生成完成！共 ${resp.text.length} 字。模型: ${resp.model}${resp.tokens ? ` (${resp.tokens.input}+${resp.tokens.output} tokens)` : ""}\n${formatSkillsUsed(resp.skills_used)}`, status: "done" as const, timestamp: Date.now() },
         ];
       });
     } catch (e: any) {
@@ -906,10 +1036,25 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }
     setGenerating(false);
     setCurrentAgent(null);
-  }, [activeCh, projectId, activeChId, content]);
+  }, [activeCh, projectId, activeChId, buildGenPayload]);
 
-  const startGeneration = useCallback(async () => {
+  /** Apply a web-LLM-generated chapter the user pasted back. */
+  const applyPlainPaste = useCallback((text: string) => {
+    const t = (text || "").trim();
+    if (!t) return;
+    generatedTextRef.current = t;
+    setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "已解析网页结果", progress: 100 }]);
+    setChatMessages([
+      { agent: "System", content: "已解析网页 LLM 返回的正文，可点「写入编辑器」。", status: "done", timestamp: Date.now() },
+      { agent: "Editor-Writer", content: t, status: "done", timestamp: Date.now() },
+    ]);
+    setGenerating(false);
+  }, []);
+
+  const startGeneration = useCallback(async (manual = false) => {
     if (!activeCh) return;
+    genModeRef.current = "cluster";
+    setAiTab("cluster");
     setGenerating(true);
     setModelChanged(false);
     setPipelineSteps(PIPELINE_STEPS.map(s => ({ ...s, status: "pending" })));
@@ -927,9 +1072,13 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     const synopsis = activeCh.synopsis || "";
     const chapterCharacters = activeCh.characters || [];
     const chapterReferences = activeCh.references || [];
+    const chapterRefEvents = (activeCh.referenced_events || []).filter((e: any) =>
+      !ragExcludes.has(`referenced_materials::event:${e.id || e.name || e.description || ""}`));
+    const chapterRefInsps = (activeCh.referenced_inspirations || []).filter((x: any) =>
+      !ragExcludes.has(`referenced_materials::insp:${x.id || x.title || x.content || ""}`));
     setChatMessages([{
       agent: "System",
-      content: `Pipeline 启动！基于大纲「${synopsis.slice(0, 50)}${synopsis.length > 50 ? "..." : ""}」开始生成。${chapterCharacters.length > 0 ? `\n关联角色：${chapterCharacters.join("、")}` : ""}${chapterReferences.length > 0 ? `\n参考作品：${chapterReferences.length}部` : ""}`,
+      content: `Pipeline 启动！基于大纲「${synopsis.slice(0, 50)}${synopsis.length > 50 ? "..." : ""}」开始生成。${chapterCharacters.length > 0 ? `\n关联角色：${chapterCharacters.join("、")}` : ""}${chapterReferences.length > 0 ? `\n参考作品：${chapterReferences.length}部` : ""}${chapterRefEvents.length > 0 ? `\n关联事件：${chapterRefEvents.length}个` : ""}${chapterRefInsps.length > 0 ? `\n关联灵感：${chapterRefInsps.length}条` : ""}`,
       status: "done", timestamp: Date.now(),
     }]);
 
@@ -940,10 +1089,15 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         synopsis,
         characters: chapterCharacters,
         references: chapterReferences,
+        referenced_events: chapterRefEvents,
+        referenced_inspirations: chapterRefInsps,
         time_setting: activeCh.time || "",
         location: activeCh.location || "",
         existing_content: content || "",
         character_aliases: activeCh.character_aliases || {},
+        manual,
+        skills: selectedSkillNames,
+        rag_excludes: Array.from(ragExcludes),
       });
       sessionIdRef.current = resp.session_id;
       // Persist session so it survives page navigation
@@ -952,7 +1106,18 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     } catch {
       runQuickGenerate();
     }
-  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY]);
+  }, [activeCh, projectId, activeChId, startPolling, runQuickGenerate, SESS_KEY, selectedSkillNames, ragExcludes]);
+
+  const submitManualResult = useCallback(async (text: string) => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    try {
+      await apiPost(`/api/generation/manual-result/${sid}`, { result: text });
+      setManualPrompt(null);
+    } catch (e: any) {
+      toast(e?.message || "提交失败", "error");
+    }
+  }, [toast]);
 
   const handleConfirmContinue = () => {
     setWaitingForConfirm(false);
@@ -1095,38 +1260,35 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     <div className="page-full">
       <div className="editor-layout">
         {/* LEFT PANEL */}
+        {leftPanelOpen ? (
         <div className="panel" style={{ width: leftPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)" }}>
-          <div className="panel-header"><div className="flex gap-4"></div></div>
-          <div style={{ padding: "8px 10px 4px" }}>
+          <div className="panel-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3>章节</h3>
+            <button onClick={() => setLeftPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起章节列表">&#9664;</button>
+          </div>
+          <div style={{ padding: "8px 14px 4px" }}>
             <input className="input" type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="搜索章节..." style={{ fontSize: 12, padding: "5px 10px", width: "100%", boxSizing: "border-box" }} />
           </div>
-          <div style={{ padding: "4px 10px 6px", display: "flex", gap: 6 }}>
+          <div style={{ padding: "4px 14px 6px", display: "flex", gap: 6 }}>
             <button className="btn-icon" onClick={addVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+卷</button>
             <button className="btn-icon" onClick={addChapterToFirstVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+章</button>
-            <button className="btn-icon" onClick={handleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }} title="导出正文">导出</button>
-            <button className="btn-icon" onClick={handleBundleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} title="打包导出：角色+世界书+章节大纲">打包</button>
-            <button className="btn-icon" onClick={startBatchGeneration} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--jade)", borderRadius: "var(--radius-sm)", color: "var(--jade)" }} disabled={batchStatus?.running}>批量</button>
+            <button className="btn-icon" onClick={handleBundleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} title="导出角色+世界书+章节大纲，可自选保存位置">导出</button>
+            <button className="btn-icon" onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--jade)", borderRadius: "var(--radius-sm)", color: batchMode ? "#fff" : "var(--jade)", background: batchMode ? "var(--jade)" : undefined }} title="批量选择章节后删除 / 导出">批量</button>
           </div>
-          {batchStatus && (
-            <div style={{ padding: "6px 10px", background: batchStatus.running ? "var(--jade-subtle)" : "var(--bg-surface-2)", borderBottom: "1px solid var(--border)", fontSize: 11 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span>{batchStatus.running ? `批量生成中: 第${batchStatus.current}章` : `批量完成 (${batchStatus.completed.length}/${batchStatus.total})`}</span>
-                {batchStatus.running && batchStatus.sessionId && (
-                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px", color: "var(--error)" }}
-                    onClick={() => { apiPost(`/api/generation/batch/stop/${batchStatus.sessionId}`, {}).catch((e) => toast(e.message || "操作失败", "error")); setBatchStatus(prev => prev ? { ...prev, running: false } : prev); }}>停止</button>
-                )}
-                {!batchStatus.running && <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={() => setBatchStatus(null)}>关闭</button>}
+          {batchMode && (
+            <div style={{ padding: "6px 10px", background: "var(--jade-subtle)", borderBottom: "1px solid var(--border)", fontSize: 11 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span>已选 {selectedChIds.size} 章</span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={selectAllChapters}>全选</button>
+                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={() => setSelectedChIds(new Set())}>清空</button>
+                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={exitBatchMode}>退出</button>
+                </div>
               </div>
-              {batchStatus.completed.length > 0 && (
-                <div style={{ marginTop: 4, color: "var(--jade)", fontSize: 10 }}>
-                  已完成: {batchStatus.completed.join(", ")}章
-                </div>
-              )}
-              {Object.keys(batchStatus.errors).length > 0 && (
-                <div style={{ marginTop: 4, color: "var(--error)", fontSize: 10 }}>
-                  失败: {Object.keys(batchStatus.errors).join(", ")}章
-                </div>
-              )}
+              <div style={{ display: "flex", gap: 4 }}>
+                <button className="btn-icon" style={{ fontSize: 11, flex: 1, padding: "3px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} disabled={selectedChIds.size === 0} onClick={exportSelectedChapters}>导出选中</button>
+                <button className="btn-icon" style={{ fontSize: 11, flex: 1, padding: "3px 0", border: "1px solid var(--error)", borderRadius: "var(--radius-sm)", color: "var(--error)" }} disabled={selectedChIds.size === 0} onClick={deleteSelectedChapters}>删除选中</button>
+              </div>
             </div>
           )}
           <div className="panel-body" style={{ padding: "8px 6px" }}>
@@ -1139,11 +1301,13 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                   <button className="btn-icon" style={{ width: 22, height: 22, fontSize: 13 }} onClick={() => addChapter(v.id)}>+</button>
                 </div>
                 {!v.collapsed && v.chapters.map(c => (
-                  <div key={c.id} className={`chapter-tree-item indent ${c.id === activeChId ? "active" : ""}`} onClick={() => setActiveChId(c.id)}
-                    style={searchTerm.trim() && (c.content || "").toLowerCase().includes(searchTerm.trim().toLowerCase()) ? { background: "var(--accent-subtle, rgba(255,200,0,0.15))" } : undefined}>
+                  <div key={c.id} className={`chapter-tree-item indent ${(batchMode ? selectedChIds.has(c.id) : c.id === activeChId) ? "active" : ""}`}
+                    onClick={() => (batchMode ? toggleChSelected(c.id) : setActiveChId(c.id))}
+                    style={searchLower && (c.content || "").toLowerCase().includes(searchLower) ? { background: "var(--accent-subtle, rgba(255,200,0,0.15))" } : undefined}>
+                    {batchMode && <input type="checkbox" checked={selectedChIds.has(c.id)} onChange={() => toggleChSelected(c.id)} onClick={e => e.stopPropagation()} style={{ flexShrink: 0, margin: 0, cursor: "pointer" }} />}
                     {renamingId === c.id ? <input className="input" value={renameVal} onChange={e => setRenameVal(e.target.value)} onBlur={commitRename} onKeyDown={e => e.key === "Enter" && commitRename()} autoFocus style={{ padding: "2px 6px", fontSize: 12, flex: 1 }} onClick={e => e.stopPropagation()} />
                       : <><span className="truncate" style={{ flex: 1 }} onDoubleClick={() => startRename(c.id, c.title)}>{c.title}</span><span className="font-mono text-xs text-muted">{wc(c.content || "")}字</span></>}
-                    {totalCh > 1 && <button className="btn-icon" style={{ width: 18, height: 18, fontSize: 11 }} onClick={e => { e.stopPropagation(); deleteChapter(c.id); }}>&times;</button>}
+                    {!batchMode && totalCh > 1 && <button className="btn-icon" style={{ width: 18, height: 18, fontSize: 11 }} onClick={e => { e.stopPropagation(); deleteChapter(c.id); }}>&times;</button>}
                   </div>
                 ))}
               </div>
@@ -1179,8 +1343,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                   onMouseEnter={e => e.currentTarget.style.background = "var(--bg-surface-hover)"}
                   onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                 >
-                  <span style={{ cursor: "pointer", flex: 1 }} onClick={() => {
-                    if (confirm(`回滚到版本 ${v.version}？当前内容将被替换。`)) {
+                  <span style={{ cursor: "pointer", flex: 1 }} onClick={async () => {
+                    if (await confirm(`回滚到版本 ${v.version}？当前内容将被替换。`)) {
                       setContent(v.text);
                       if (v.synopsis) {
                         setVolumes(prev => prev.map(vol => ({ ...vol, chapters: vol.chapters.map(c => c.id === activeChId ? { ...c, synopsis: v.synopsis || c.synopsis } : c) })));
@@ -1191,9 +1355,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                   </span>
                   <span style={{ fontSize: 9, flexShrink: 0 }}>{new Date(v.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" })}</span>
                   <button
-                    onClick={(e) => {
+                    onClick={async (e) => {
                       e.stopPropagation();
-                      if (confirm(`删除版本 v${v.version}？此操作不可撤销。`)) {
+                      if (await confirm({ message: `删除版本 v${v.version}？此操作不可撤销。`, destructive: true })) {
                         setVersionHistory(prev => prev.filter(x => x.version_id !== v.version_id));
                         apiDelete(`/api/data/versions/${v.version_id}?project_id=${projectId || "default"}`).catch((e) => toast(e.message || "操作失败", "error"));
                       }
@@ -1216,7 +1380,14 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
           </div>
           <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)", fontSize: 11, color: "var(--text-tertiary)", flexShrink: 0 }}>{totalCh} 章 &middot; {totalW.toLocaleString()} 字</div>
         </div>
-        <div className="panel-resize-h" {...leftPanel.handleProps} />
+        ) : (
+        <div style={{ width: 36, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 12 }}>
+          <button onClick={() => setLeftPanelOpen(true)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "4px", writingMode: "vertical-rl", letterSpacing: 2 }} title="展开章节列表">
+            章节 &#9654;
+          </button>
+        </div>
+        )}
+        {leftPanelOpen && <div className="panel-resize-h" {...leftPanel.handleProps} />}
 
         {/* CENTER PANEL */}
         <div className="panel flex-1" style={{ background: "var(--bg-app)" }}>
@@ -1256,23 +1427,31 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 面板">&#9654;</button>
           </div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
-            {([["outline", "大纲"], ["inspire", "灵感"], ["rewrite", "重写"], ["eval", "评估"], ["prompt", "Prompt"]] as const).map(([key, label]) => (
+            {([["outline", "大纲"], ["single", "单智能体创作"], ["cluster", "集群式智能体创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
             ))}
           </div>
           <div className="panel-body" style={{ padding: "14px 16px" }}>
             {aiTab === "outline" && <OutlineTab synopsis={activeCh?.synopsis || ""} onChange={updateSynopsis} onSave={handleSaveOutline}
-              onStartGeneration={() => { setAiTab("inspire"); setTimeout(() => { if (!generating) startGeneration(); }, 300); }} projectId={projectId}
-              chapter={activeCh} onUpdateChapter={(field, value) => {
+              onStartGeneration={() => { setAiTab("single"); setTimeout(() => { if (!generating) runPlainAgent(); }, 300); }} projectId={projectId}
+              chapter={activeCh}
+              allChapters={volumes.flatMap(v => (v.chapters || []).map(c => ({ id: c.id, title: c.title })))}
+              onUpdateChapter={(field, value) => {
                 setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
               }} />}
-            {aiTab === "inspire" && <InspireTab steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
+            {(aiTab === "single" || aiTab === "cluster") && <InspireTab mode={aiTab} steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
+              onFetchPrompt={fetchGenPrompt}
+              onApplyPaste={applyPlainPaste}
+              manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
+              manifest={manifest} skillSelection={skillSelection} onToggleSkill={toggleSkill}
+              ragExcludes={ragExcludes} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
-            {aiTab === "eval" && <EvalTab result={evalResult} />}
-            {aiTab === "prompt" && <PromptTab projectId={projectId} chapter={activeCh} />}
+            {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId}
+              chapterId={activeChId} manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
+              onToggleSkill={toggleSkill} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest} />}
           </div>
         </div>
         ) : (
@@ -1287,9 +1466,101 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   );
 }
 
-function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, onUpdateChapter }: {
+/** Flatten a reference work's plot_outline_json into a flat event list. */
+function workEvents(plotJson: any): { name: string; description: string; chapter: string }[] {
+  let p: any = plotJson;
+  if (typeof plotJson === "string") {
+    try { p = JSON.parse(plotJson); } catch { return []; }
+  }
+  const out: { name: string; description: string; chapter: string }[] = [];
+  for (const ep of (p?.epochs || [])) {
+    for (const per of (ep?.periods || [])) {
+      const perMark = String(per?.time_marker || per?.title || "");
+      for (const ev of (per?.events || [])) {
+        if (ev?.name) out.push({
+          name: String(ev.name),
+          description: String(ev.description || ""),
+          chapter: String(ev.time_marker || perMark || ""),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** A selectable chronicle-event row: 章节 tag + 事件名, with click-to-expand
+ *  details — keeps each row compact in the narrow AI 助手 column. */
+function EventRow({ ev, on, onToggle }: {
+  ev: { name: string; description: string; chapter: string };
+  on: boolean; onToggle: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--gold)", fontWeight: 700 }}>{on ? "✓" : ""}</span>
+        {ev.chapter && (
+          <span style={{
+            fontSize: 9, padding: "0 5px", flexShrink: 0, borderRadius: 3,
+            color: "var(--gold)", border: "1px solid var(--gold)", fontFamily: "var(--font-mono)",
+          }}>{ev.chapter}</span>
+        )}
+        <span onClick={onToggle} style={{
+          flex: 1, minWidth: 0, cursor: "pointer",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          fontWeight: on ? 600 : 400, color: on ? "var(--gold)" : "var(--text-secondary)",
+        }}>{ev.name}</span>
+        {ev.description && (
+          <span onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
+            {expanded ? "收起 ▲" : "详情 ▼"}
+          </span>
+        )}
+      </div>
+      {expanded && ev.description && (
+        <div style={{ padding: "0 8px 5px 25px", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          {ev.description}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Toggle-chip style shared by the chapter linker. */
+function chipStyle(on: boolean, color: string, bg: string): React.CSSProperties {
+  return {
+    fontSize: 11, padding: "3px 10px", borderRadius: 14, border: "1px solid",
+    borderColor: on ? color : "var(--border)",
+    background: on ? bg : "transparent",
+    color: on ? color : "var(--text-secondary)",
+    cursor: "pointer",
+  };
+}
+
+/** A selectable row in a searchable pick-list (works / events / inspirations). */
+function PickRow({ label, sub, on, color, onClick }: {
+  label: string; sub?: string; on: boolean; color: string; onClick: () => void;
+}) {
+  return (
+    <div onClick={onClick} title={label} style={{
+      display: "flex", alignItems: "center", gap: 6,
+      padding: "4px 8px", cursor: "pointer", fontSize: 11,
+      borderBottom: "1px solid var(--border)",
+      background: on ? "var(--bg-surface)" : "transparent",
+    }}>
+      <span style={{ width: 11, flexShrink: 0, color, fontWeight: 700 }}>{on ? "✓" : ""}</span>
+      <span style={{
+        flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+        fontWeight: on ? 600 : 400, color: on ? color : "var(--text-secondary)",
+      }}>{label}</span>
+      {sub && <span className="text-xs text-muted" style={{ flexShrink: 0 }}>{sub}</span>}
+    </div>
+  );
+}
+
+function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, onUpdateChapter, allChapters }: {
   synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; projectId: string;
   chapter?: ChapterOutline | null; onUpdateChapter?: (field: string, value: any) => void;
+  allChapters?: { id: string; title: string }[];
 }) {
   const { toast } = useToast();
   const [time, setTime] = useState(chapter?.time || "");
@@ -1302,8 +1573,49 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   }, [chapter?.id]);
 
   const [characters, setCharacters] = useState<{ id: string; name: string; selected: boolean }[]>([]);
-  const [references, setReferences] = useState<{ id: string; title: string; selected: boolean }[]>([]);
-  const [showLinker, setShowLinker] = useState(false);
+  const [references, setReferences] = useState<{ id: string; title: string; selected: boolean; events: { name: string; description: string; chapter: string }[] }[]>([]);
+  const [inspirations, setInspirations] = useState<{ id: string; category: string; title: string; content: string }[]>([]);
+  const [showCharLink, setShowCharLink] = useState(false);
+  const [showRefLink, setShowRefLink] = useState(false);
+  const [showInspLink, setShowInspLink] = useState(false);
+  const [showForeshadow, setShowForeshadow] = useState(false);
+  const [foreshadow, setForeshadow] = useState<{ id: string; title: string; content: string; chapter_ids: string[] }[]>([]);
+  const fsLoadedRef = useRef(false);
+
+  useEffect(() => {
+    fsLoadedRef.current = false;
+    apiGet<{ items: any[] }>(`/api/data/foreshadowing/${projectId}`)
+      .then(r => setForeshadow(Array.isArray(r.items) ? r.items : []))
+      .catch(() => setForeshadow([]))
+      .finally(() => { fsLoadedRef.current = true; });
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!fsLoadedRef.current) return;
+    const t = setTimeout(() => {
+      apiPut(`/api/data/foreshadowing/${projectId}`, { items: foreshadow }).catch(() => {});
+    }, 700);
+    return () => clearTimeout(t);
+  }, [foreshadow, projectId]);
+
+  const addForeshadow = () => setForeshadow(prev => [
+    { id: `fs_${Date.now()}`, title: "新伏笔", content: "",
+      chapter_ids: chapter?.id ? [chapter.id] : [] },
+    ...prev,
+  ]);
+  const updateForeshadow = (id: string, patch: Partial<{ title: string; content: string }>) =>
+    setForeshadow(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
+  const deleteForeshadow = (id: string) =>
+    setForeshadow(prev => prev.filter(f => f.id !== id));
+  const toggleFsChapter = (id: string, chId: string) =>
+    setForeshadow(prev => prev.map(f => {
+      if (f.id !== id) return f;
+      const has = f.chapter_ids.includes(chId);
+      return { ...f, chapter_ids: has ? f.chapter_ids.filter(x => x !== chId) : [...f.chapter_ids, chId] };
+    }));
+  const [refSearch, setRefSearch] = useState("");
+  const [eventSearch, setEventSearch] = useState("");
+  const [inspSearch, setInspSearch] = useState("");
 
   // Outline chat state (overlay dialog)
   const [showOutlineChat, setShowOutlineChat] = useState(false);
@@ -1311,6 +1623,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   const [outlineChatInput, setOutlineChatInput] = useState("");
   const [outlineChatLoading, setOutlineChatLoading] = useState(false);
   const [pendingOutline, setPendingOutline] = useState<string | null>(null);
+  // Web-LLM workflow: copy the prompt out / paste the reply back.
   const outlineChatEndRef = useRef<HTMLDivElement>(null);
 
   // Load outline chat from backend
@@ -1351,6 +1664,48 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
     setPendingOutline(content);
   };
 
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+  };
+
+  /** Build the full outline-chat prompt for running in a web LLM. */
+  const fetchOutlinePrompt = async (): Promise<string> => {
+    const pending = outlineChatInput.trim();
+    const msgs = pending
+      ? [...outlineChatMsgs, { role: "user" as const, content: pending, ts: Date.now() }]
+      : outlineChatMsgs;
+    const res = await apiPost<{ prompt: string }>("/api/generation/outline-chat", {
+      project_id: projectId,
+      messages: msgs.map(m => ({ role: m.role, content: m.content })),
+      context: synopsis || "",
+      prompt_only: true,
+    });
+    return res.prompt || "";
+  };
+
+  /** Apply a web-LLM reply pasted by the user as the assistant turn. */
+  const applyPastedReply = (raw: string) => {
+    const text = (raw || "").trim();
+    if (!text) return;
+    let msgs = outlineChatMsgs;
+    const pending = outlineChatInput.trim();
+    if (pending) {
+      msgs = [...msgs, { role: "user" as const, content: pending, ts: Date.now() }];
+      setOutlineChatInput("");
+    }
+    const finalMsgs = [...msgs, { role: "assistant" as const, content: text, ts: Date.now() }];
+    setOutlineChatMsgs(finalMsgs);
+    apiPut("/api/data/chat_history", { project_id: projectId, scope: `outline_chat_${chapter?.id || ""}`, messages: finalMsgs.slice(-200) }).catch(() => {});
+  };
+
   const confirmOutline = () => {
     if (pendingOutline) {
       onChange(pendingOutline);
@@ -1366,8 +1721,19 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       .catch(() => {});
     const chapterRefs = chapter?.references || [];
     apiGet<{ items: any[] }>("/api/references/works")
-      .then(r => setReferences((r.items || []).map((w: any) => ({ id: w.ref_id || w.id, title: w.title || w.name || "未命名", selected: chapterRefs.includes(w.ref_id || w.id) }))))
+      .then(r => setReferences((r.items || []).map((w: any) => ({
+        id: w.ref_id || w.id,
+        title: w.title || w.name || "未命名",
+        selected: chapterRefs.includes(w.ref_id || w.id),
+        events: workEvents(w.plot_outline_json),
+      }))))
       .catch(() => setReferences([]));
+    apiGet<{ items: any[] }>("/api/references/inspirations")
+      .then(r => setInspirations((r.items || []).map((it: any) => ({
+        id: it.id, category: it.category || "other",
+        title: it.title || "", content: it.content || "",
+      }))))
+      .catch(() => setInspirations([]));
   }, [projectId, chapter?.id]);
 
   const toggleChar = (id: string) => {
@@ -1378,16 +1744,42 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       return next;
     });
   };
+  const refEvents = chapter?.referenced_events || [];
+  const refInsps = chapter?.referenced_inspirations || [];
+  const isEventLinked = (refId: string, name: string) =>
+    refEvents.some(e => e.ref_id === refId && e.name === name);
+
   const toggleRef = (id: string) => {
     setReferences(prev => {
       const next = prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r);
       const selectedIds = next.filter(r => r.selected).map(r => r.id);
       onUpdateChapter?.("references", selectedIds);
+      // Unlinking a work drops the chronicle events linked from it.
+      const stillSel = new Set(selectedIds);
+      const pruned = refEvents.filter(e => stillSel.has(e.ref_id));
+      if (pruned.length !== refEvents.length) onUpdateChapter?.("referenced_events", pruned);
       return next;
     });
   };
+  const toggleEvent = (refId: string, workTitle: string, ev: { name: string; description: string; chapter: string }) => {
+    const next = isEventLinked(refId, ev.name)
+      ? refEvents.filter(e => !(e.ref_id === refId && e.name === ev.name))
+      : [...refEvents, { ref_id: refId, work_title: workTitle, name: ev.name, description: ev.description, chapter: ev.chapter }];
+    onUpdateChapter?.("referenced_events", next);
+  };
+  const toggleInspiration = (it: { id: string; category: string; title: string; content: string }) => {
+    const next = refInsps.some(i => i.id === it.id)
+      ? refInsps.filter(i => i.id !== it.id)
+      : [...refInsps, it];
+    onUpdateChapter?.("referenced_inspirations", next);
+  };
   const selectedChars = characters.filter(c => c.selected);
   const selectedRefs = references.filter(r => r.selected);
+  const refQ = refSearch.trim().toLowerCase();
+  const filteredRefs = references.filter(r => !refQ || r.title.toLowerCase().includes(refQ));
+  const inspQ = inspSearch.trim().toLowerCase();
+  const filteredInsps = inspirations.filter(
+    it => !inspQ || `${it.title} ${it.content}`.toLowerCase().includes(inspQ));
 
   return (
     <div>
@@ -1457,29 +1849,51 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           )}
           <div ref={outlineChatEndRef} />
         </div>
-        <div style={{ padding: "6px 10px", borderTop: "1px solid var(--border)", display: "flex", gap: 6 }}>
-          <textarea className="input" value={outlineChatInput} onChange={e => setOutlineChatInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendOutlineChat(); } }}
-            placeholder="描述你想要的大纲..." rows={1} style={{ flex: 1, fontSize: 11, padding: "4px 8px", minHeight: 28, maxHeight: 80, resize: "none" }} />
-          <button className="btn-primary" onClick={() => sendOutlineChat()} disabled={!outlineChatInput.trim() || outlineChatLoading}
-            style={{ fontSize: 11, padding: "4px 10px" }}>{outlineChatLoading ? "..." : "发送"}</button>
-        </div>
-        {/* Quick prompts for outline chat */}
-        {outlineChatMsgs.length === 0 && (
-          <div style={{ padding: "4px 10px 8px", display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {[
-              { label: "生成大纲", prompt: "根据这一章的定位，帮我生成详细的章节大纲" },
-              { label: "冲突设计", prompt: "帮我设计这一章的核心冲突和转折点" },
-              { label: "节奏优化", prompt: "分析并优化这章大纲的叙事节奏" },
-              { label: "悬念设置", prompt: "帮我在大纲中设计章末悬念和伏笔" },
-            ].map(t => (
-              <button key={t.label} className="btn" style={{ fontSize: 10, padding: "2px 8px", borderRadius: 12 }}
-                onClick={() => sendOutlineChat(t.prompt)}>
-                {t.label}
-              </button>
-            ))}
+        {/* 快捷指令 — a bubble floating just above the input box */}
+        <div style={{ padding: "6px 10px 0" }}>
+          <div style={{
+            background: "var(--bg-surface-2)", border: "1px solid var(--border)",
+            borderRadius: 10, padding: "5px 8px",
+          }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: "var(--text-tertiary)", marginBottom: 3, letterSpacing: 0.5 }}>
+              快捷指令 · 点击直接发给本地 AI
+            </div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {[
+                { label: "生成大纲", prompt: "根据这一章的定位，帮我生成详细的章节大纲" },
+                { label: "冲突设计", prompt: "帮我设计这一章的核心冲突和转折点" },
+                { label: "节奏优化", prompt: "分析并优化这章大纲的叙事节奏" },
+                { label: "悬念设置", prompt: "帮我在大纲中设计章末悬念和伏笔" },
+              ].map(t => (
+                <button key={t.label} className="btn" style={{ fontSize: 10, padding: "2px 8px", borderRadius: 12 }}
+                  onClick={() => sendOutlineChat(t.prompt)}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
           </div>
-        )}
+          {/* downward pointer — makes the bubble read as hovering over the box */}
+          <div style={{
+            width: 0, height: 0, marginLeft: 22,
+            borderLeft: "6px solid transparent", borderRight: "6px solid transparent",
+            borderTop: "6px solid var(--bg-surface-2)",
+          }} />
+        </div>
+        {/* Input box + 网页 LLM actions below it */}
+        <div style={{ padding: "0 10px 6px" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <textarea className="input" value={outlineChatInput} onChange={e => setOutlineChatInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendOutlineChat(); } }}
+              placeholder="描述你想要的大纲..." rows={1} style={{ flex: 1, fontSize: 11, padding: "4px 8px", minHeight: 28, maxHeight: 80, resize: "none" }} />
+            <button className="btn-primary" onClick={() => sendOutlineChat()} disabled={!outlineChatInput.trim() || outlineChatLoading}
+              style={{ fontSize: 11, padding: "4px 10px" }}>{outlineChatLoading ? "..." : "发送"}</button>
+          </div>
+          {/* Web-LLM workflow */}
+          <div style={{ marginTop: 6 }}>
+            <WebLLMPromptPanel fetchPrompt={fetchOutlinePrompt} onApplyResult={applyPastedReply}
+              applyLabel="解析并加入对话" resultPlaceholder="把网页 LLM 返回的回复粘贴到这里" />
+          </div>
+        </div>
         {outlineChatMsgs.length > 0 && outlineChatMsgs[outlineChatMsgs.length - 1].role === "assistant" && !pendingOutline && (
           <div style={{ padding: "4px 10px 8px", display: "flex", gap: 4 }}>
             <button className="btn" style={{ fontSize: 10, padding: "2px 10px", borderColor: "var(--jade)", color: "var(--jade)" }}
@@ -1495,101 +1909,212 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       </div>
       )}
 
-      {/* Character & Reference Linker */}
-      <div style={{ marginTop: 10 }}>
-        <button className="btn" style={{ fontSize: 11, padding: "4px 12px", width: "100%" }} onClick={() => setShowLinker(!showLinker)}>
-          {showLinker ? "收起" : "关联角色 & 参考作品"} {selectedChars.length + selectedRefs.length > 0 ? `(已选 ${selectedChars.length + selectedRefs.length})` : ""}
+      {/* 关联角色 — cohesive collapsible section (header attached to panel) */}
+      <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+        <button className="btn-ghost" onClick={() => setShowCharLink(v => !v)}
+          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
+            background: showCharLink ? "var(--bg-surface-2)" : "transparent" }}>
+          {showCharLink ? "▾ " : "▸ "}关联角色{selectedChars.length > 0 ? ` · 已选 ${selectedChars.length}` : ""}
         </button>
-        {showLinker && (
-          <div style={{ marginTop: 8, padding: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
-            {characters.length > 0 && (
-              <div style={{ marginBottom: 10 }}>
-                <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--purple)" }}>出场角色</div>
+        {showCharLink && (
+          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
+            {characters.length > 0 ? (
+              <>
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                   {characters.map(c => (
                     <button key={c.id} onClick={() => toggleChar(c.id)}
-                      style={{
-                        fontSize: 11, padding: "3px 10px", borderRadius: 14, border: "1px solid",
-                        borderColor: c.selected ? "var(--purple)" : "var(--border)",
-                        background: c.selected ? "var(--purple-subtle)" : "transparent",
-                        color: c.selected ? "var(--purple)" : "var(--text-secondary)",
-                        cursor: "pointer",
-                      }}>
+                      style={chipStyle(c.selected, "var(--purple)", "var(--purple-subtle)")}>
                       {c.name}
                     </button>
                   ))}
                 </div>
-              </div>
-            )}
-            {characters.length === 0 && (
-              <div className="text-xs text-muted" style={{ marginBottom: 8 }}>暂无角色，请在「角色管理」中创建</div>
-            )}
-            {references.length > 0 && (
-              <div>
-                <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--jade)" }}>参考作品</div>
-                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                  {references.map(r => (
-                    <button key={r.id} onClick={() => toggleRef(r.id)}
-                      style={{
-                        fontSize: 11, padding: "3px 10px", borderRadius: 14, border: "1px solid",
-                        borderColor: r.selected ? "var(--jade)" : "var(--border)",
-                        background: r.selected ? "var(--jade-subtle)" : "transparent",
-                        color: r.selected ? "var(--jade)" : "var(--text-secondary)",
-                        cursor: "pointer",
-                      }}>
-                      {r.title}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-            {references.length === 0 && (
-              <div className="text-xs text-muted">暂无参考作品，请在「参考文库」中导入</div>
+                {selectedChars.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--purple)" }}>隐藏身份（可选）</div>
+                    {selectedChars.map(c => {
+                      const alias = (chapter?.character_aliases || {})[c.name] || "";
+                      return (
+                        <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                          <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--purple-subtle)", color: "var(--purple)", whiteSpace: "nowrap" }}>{c.name}</span>
+                          <input className="input" value={alias}
+                            onChange={e => {
+                              const next = { ...(chapter?.character_aliases || {}) };
+                              if (e.target.value.trim()) next[c.name] = e.target.value;
+                              else delete next[c.name];
+                              onUpdateChapter?.("character_aliases", next);
+                            }}
+                            placeholder="隐藏身份（如：神秘女人）"
+                            style={{ flex: 1, fontSize: 10, padding: "2px 8px", height: 22 }} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-xs text-muted">暂无角色，请在「角色管理」中创建</div>
             )}
           </div>
         )}
       </div>
 
-      {/* Selected items display + hidden identity aliases */}
-      {(selectedChars.length > 0 || selectedRefs.length > 0) && (
-        <div style={{ marginTop: 8 }}>
-          {selectedChars.map(c => {
-            const aliases = chapter?.character_aliases || {};
-            const alias = aliases[c.name] || "";
-            return (
-              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--purple-subtle)", color: "var(--purple)", whiteSpace: "nowrap" }}>
-                  {c.name}
-                </span>
-                <input
-                  className="input"
-                  value={alias}
-                  onChange={e => {
-                    const newAliases = { ...(chapter?.character_aliases || {}) };
-                    if (e.target.value.trim()) {
-                      newAliases[c.name] = e.target.value;
-                    } else {
-                      delete newAliases[c.name];
-                    }
-                    onUpdateChapter?.("character_aliases", newAliases);
-                  }}
-                  placeholder="隐藏身份（如：神秘女人）"
-                  style={{ flex: 1, fontSize: 10, padding: "2px 8px", height: 22 }}
-                />
+      {/* 关联参考作品 — collapsible; count shown on the collapsed title */}
+      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+        <button className="btn-ghost" onClick={() => setShowRefLink(v => !v)}
+          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
+            background: showRefLink ? "var(--bg-surface-2)" : "transparent" }}>
+          {showRefLink ? "▾ " : "▸ "}关联参考作品{references.length > 0 ? ` · 已选 ${selectedRefs.length}/${references.length}` : ""}
+        </button>
+        {showRefLink && (
+          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
+            {references.length > 0 ? (
+              <>
+                <input className="input" value={refSearch} onChange={e => setRefSearch(e.target.value)}
+                  placeholder="搜索参考作品标题..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
+                <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+                  {filteredRefs.map(r => (
+                    <PickRow key={r.id} label={r.title}
+                      sub={r.events.length > 0 ? `${r.events.length} 事件` : "无事件"}
+                      on={r.selected} color="var(--jade)" onClick={() => toggleRef(r.id)} />
+                  ))}
+                  {filteredRefs.length === 0 && (
+                    <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配作品</div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="text-xs text-muted">暂无参考作品，请在「参考作品详情」中导入</div>
+            )}
+
+            {/* 编年史事件 — per selected work; each row = 章节 tag + 事件名,
+                click「详情」to expand details (the column is narrow). */}
+            {selectedRefs.map(r => {
+              const eq = eventSearch.trim().toLowerCase();
+              const evs = r.events.filter(ev => !eq
+                || ev.name.toLowerCase().includes(eq)
+                || ev.description.toLowerCase().includes(eq)
+                || ev.chapter.toLowerCase().includes(eq));
+              const linkedN = refEvents.filter(e => e.ref_id === r.id).length;
+              return (
+                <div key={r.id} style={{ marginTop: 10 }}>
+                  <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--gold)" }}>
+                    「{r.title}」编年史事件{linkedN > 0 ? ` · 已选 ${linkedN}` : ""}
+                  </div>
+                  {r.events.length > 0 ? (
+                    <>
+                      <input className="input" value={eventSearch} onChange={e => setEventSearch(e.target.value)}
+                        placeholder="搜索章节 / 事件名..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
+                      <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+                        {evs.map((ev, i) => (
+                          <EventRow key={i} ev={ev}
+                            on={isEventLinked(r.id, ev.name)}
+                            onToggle={() => toggleEvent(r.id, r.title, ev)} />
+                        ))}
+                        {evs.length === 0 && (
+                          <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配事件</div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-xs text-muted">该作品暂无编年史事件，请先在参考作品详情中提取剧情大纲</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 关联灵感 — collapsible; count shown on the collapsed title */}
+      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+        <button className="btn-ghost" onClick={() => setShowInspLink(v => !v)}
+          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
+            background: showInspLink ? "var(--bg-surface-2)" : "transparent" }}>
+          {showInspLink ? "▾ " : "▸ "}关联灵感{inspirations.length > 0 ? ` · 已选 ${refInsps.length}/${inspirations.length}` : ""}
+        </button>
+        {showInspLink && (
+          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
+            {inspirations.length > 0 ? (
+              <>
+                <input className="input" value={inspSearch} onChange={e => setInspSearch(e.target.value)}
+                  placeholder="搜索灵感..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
+                <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+                  {filteredInsps.map(it => (
+                    <PickRow key={it.id}
+                      label={it.title || it.content.slice(0, 16) || "未命名灵感"}
+                      sub={it.title ? it.content.slice(0, 14) : undefined}
+                      on={refInsps.some(i => i.id === it.id)} color="var(--accent)"
+                      onClick={() => toggleInspiration(it)} />
+                  ))}
+                  {filteredInsps.length === 0 && (
+                    <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配灵感</div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="text-xs text-muted">灵感库为空，请在「灵感搜索 → 灵感库」中添加</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 伏笔 — collapsible CRUD section; each 伏笔 links chapters bidirectionally */}
+      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+        <button className="btn-ghost" onClick={() => setShowForeshadow(v => !v)}
+          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
+            background: showForeshadow ? "var(--bg-surface-2)" : "transparent" }}>
+          {showForeshadow ? "▾ " : "▸ "}伏笔{foreshadow.length > 0 ? ` · ${foreshadow.length}` : ""}
+        </button>
+        {showForeshadow && (
+          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 12px", marginBottom: 8 }} onClick={addForeshadow}>
+              + 新建伏笔
+            </button>
+            {foreshadow.length === 0 ? (
+              <div className="text-xs text-muted">暂无伏笔。新建后可关联多个章节——任一关联章节生成时都会带上该伏笔。</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {foreshadow.map(f => (
+                  <div key={f.id} style={{ border: "1px solid var(--border)", borderRadius: 4, padding: 8 }}>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+                      <input className="input" value={f.title}
+                        onChange={e => updateForeshadow(f.id, { title: e.target.value })}
+                        placeholder="伏笔标题" style={{ flex: 1, fontSize: 12, padding: "3px 8px" }} />
+                      <button onClick={() => deleteForeshadow(f.id)}
+                        style={{ background: "none", border: "none", color: "var(--text-disabled)", cursor: "pointer", fontSize: 15 }}
+                        title="删除伏笔">&times;</button>
+                    </div>
+                    <textarea className="input" value={f.content}
+                      onChange={e => updateForeshadow(f.id, { content: e.target.value })}
+                      placeholder="伏笔内容（埋设了什么、计划如何回收）" rows={2}
+                      style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", marginBottom: 4, boxSizing: "border-box" }} />
+                    <div className="text-xs text-muted" style={{ marginBottom: 3 }}>关联章节（点击切换；关联为双向）：</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                      {(allChapters || []).map(ch => {
+                        const on = f.chapter_ids.includes(ch.id);
+                        return (
+                          <span key={ch.id} onClick={() => toggleFsChapter(f.id, ch.id)}
+                            style={{
+                              fontSize: 10, padding: "2px 8px", borderRadius: 10, cursor: "pointer", userSelect: "none",
+                              background: on ? "var(--accent-subtle)" : "transparent",
+                              color: on ? "var(--accent)" : "var(--text-tertiary)",
+                              border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                            }}>
+                            {ch.title || "未命名"}
+                          </span>
+                        );
+                      })}
+                      {(allChapters || []).length === 0 && (
+                        <span className="text-xs text-muted">暂无章节</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
-            );
-          })}
-          {selectedRefs.length > 0 && (
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
-              {selectedRefs.map(r => (
-                <span key={r.id} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--jade-subtle)", color: "var(--jade)" }}>
-                  {r.title}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        )}
+      </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <div className="field" style={{ flex: 1 }}>
@@ -1606,18 +2131,178 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         <button className="btn-primary" style={{ flex: 1, background: "var(--jade, #34a853)", border: "none" }} onClick={onStartGeneration}>开始生成</button>
       </div>
       <p className="text-xs text-muted mt-12" style={{ lineHeight: 1.6 }}>
-        用上方 AI 大纲助手与 AI 讨论大纲，满意后点击「写入大纲」。关联角色和参考作品后，Pipeline 生成时 AI 将参考相关信息。
+        用上方 AI 大纲助手与 AI 讨论大纲，满意后点击「写入大纲」。关联角色、参考作品的编年史事件与灵感库后，Pipeline 生成时 AI 将参考相关信息。
       </p>
     </div>
   );
 }
 
-function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onDeleteMessage }: {
-  steps: PipelineStatus[]; generating: boolean; onStart: () => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
-  onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
-  modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void; onDeleteMessage?: (index: number) => void;
+type RagItem = { id: string; label: string };
+type ContextManifest = {
+  rag: { key: string; label: string; present: boolean; items: RagItem[] }[];
+  default_skills: { name: string; domain: string; step?: string }[];
+  learned_skills: { name: string; description?: string; skill_md?: string }[];
+  writing_knowledge: { id: string; title: string }[];
+};
+
+/** Normalize a persisted aiTab value (migrates the old "inspire" tab). */
+function normalizeAiTab(v: any): "outline" | "single" | "cluster" | "rewrite" | "eval" {
+  if (v === "inspire" || v === "single") return "single";
+  if (v === "cluster" || v === "rewrite" || v === "eval") return v;
+  return "outline";
+}
+
+/** One-line summary of which learned skills an AI step used. */
+function formatSkillsUsed(skills?: string[]): string {
+  return skills && skills.length
+    ? `本次创作启用技能：${skills.join("、")}`
+    : "本次创作未启用自定义技能";
+}
+
+/** Transparency panel: skills used + per-item RAG context (de-selectable).
+ *  Shared by the creation tabs and the 评估 tab. */
+function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefresh }: {
+  manifest: ContextManifest | null;
+  skillSelection: Record<string, boolean>;
+  ragExcludes: Set<string>;
+  onToggleSkill: (name: string) => void;
+  onToggleRagItem: (key: string) => void;
+  onRefresh?: () => void;
 }) {
+  const [skillOpen, setSkillOpen] = useState(false);
+  const [ragOpen, setRagOpen] = useState(false);
+  if (!manifest) return null;
+
+  const sectionHeader = (open: boolean, toggle: () => void, text: string,
+                         rightEl?: React.ReactNode) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <button onClick={toggle} style={{
+        flex: 1, textAlign: "left", background: "none", border: "none", padding: "2px 0",
+        cursor: "pointer", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)",
+        display: "flex", alignItems: "center", gap: 5,
+      }}>
+        <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>{open ? "▾" : "▸"}</span>{text}
+      </button>
+      {rightEl}
+    </div>
+  );
+
+  const chip = (key: string, label: string, on: boolean,
+                onClick?: () => void, tagText?: string) => (
+    <span key={key} onClick={onClick} title={onClick ? "点击启用 / 停用" : "系统自动调用"}
+      style={{
+        fontSize: 11, padding: "3px 9px", borderRadius: 12, userSelect: "none",
+        cursor: onClick ? "pointer" : "default",
+        display: "inline-flex", alignItems: "center", gap: 5,
+        background: on ? "var(--accent-subtle)" : "transparent",
+        color: on ? "var(--accent)" : "var(--text-tertiary)",
+        border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+        opacity: on ? 1 : 0.65,
+        transition: "background 0.12s, border-color 0.12s, opacity 0.12s",
+      }}>
+      {tagText && (
+        <span style={{
+          fontSize: 8, padding: "0 4px", borderRadius: 6, lineHeight: "13px",
+          background: "var(--bg-app)", color: "var(--text-tertiary)",
+          border: "1px solid var(--border)",
+        }}>{tagText}</span>
+      )}
+      {label}
+    </span>
+  );
+
+  const allKeys = manifest.rag.flatMap(r => r.items.map(it => `${r.key}::${it.id}`));
+  const selCount = allKeys.filter(k => !ragExcludes.has(k)).length;
+  const skillCount = manifest.default_skills.length + manifest.learned_skills.length
+    + manifest.writing_knowledge.length;
+
+  const downloadSkills = () => {
+    const sel = manifest.learned_skills.filter(s => skillSelection[s.name] !== false);
+    if (sel.length === 0) return;
+    const md = sel.map(s => `# ${s.name}\n\n${s.skill_md || s.description || ""}`)
+      .join("\n\n---\n\n");
+    const url = URL.createObjectURL(new Blob([md], { type: "text/markdown;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = "创作技能.SKILL.md";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  return (
+    <div style={{
+      marginBottom: 6, padding: "8px 10px", background: "var(--bg-surface)",
+      borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
+    }}>
+      {sectionHeader(skillOpen, () => setSkillOpen(o => !o), `调用的 skill（${skillCount}）`,
+        manifest.learned_skills.length > 0 ? (
+          <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+            onClick={downloadSkills}
+            title="下载已勾选的自学习技能 SKILL.md（连同复制的 prompt 一起用于网页版大模型）">
+            下载 SKILL.md
+          </button>
+        ) : undefined)}
+      {skillOpen && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0 8px" }}>
+          {manifest.default_skills.map(s => chip("d:" + s.name, s.name, true, undefined, s.step || "默认"))}
+          {manifest.learned_skills.map(s => chip(
+            "l:" + s.name, s.name, skillSelection[s.name] !== false,
+            () => onToggleSkill(s.name), "自学习"))}
+          {manifest.writing_knowledge.map(k => chip(
+            "k:" + k.id, k.title || "（无题）",
+            !ragExcludes.has(`writing_knowledge::${k.id}`),
+            () => onToggleRagItem(`writing_knowledge::${k.id}`), "写作知识"))}
+          {skillCount === 0 && <span className="text-xs text-muted">本次无可调用 skill</span>}
+        </div>
+      )}
+      {sectionHeader(ragOpen, () => setRagOpen(o => !o),
+        `引用的 RAG 上下文（已启用 ${selCount}/${allKeys.length} 项）`,
+        onRefresh ? (
+          <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+            onClick={onRefresh}
+            title="重新加载 RAG —— 在角色管理 / 世界书 / 大纲等处更新数据后点此同步">
+            ↻ 刷新
+          </button>
+        ) : undefined)}
+      {ragOpen && (
+        <div style={{ marginTop: 2 }}>
+          {manifest.rag.map(cat => {
+            const sel = cat.items.filter(it => !ragExcludes.has(`${cat.key}::${it.id}`)).length;
+            return (
+              <div key={cat.key} style={{ marginTop: 7 }}>
+                <div className="text-xs" style={{ color: "var(--text-tertiary)", marginBottom: 3 }}>
+                  {cat.label}{cat.items.length > 0 ? ` ·已选 ${sel}/${cat.items.length}` : ""}
+                </div>
+                {cat.items.length > 0 ? (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {cat.items.map(it => chip(
+                      `${cat.key}::${it.id}`, it.label,
+                      !ragExcludes.has(`${cat.key}::${it.id}`),
+                      () => onToggleRagItem(`${cat.key}::${it.id}`)))}
+                  </div>
+                ) : <span className="text-xs text-muted">无</span>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
+  mode: "single" | "cluster";
+  steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
+  onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
+  modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
+  onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
+  manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
+  manifest?: ContextManifest | null;
+  skillSelection?: Record<string, boolean>; onToggleSkill?: (name: string) => void;
+  ragExcludes?: Set<string>; onToggleRagItem?: (key: string) => void; onRefreshManifest?: () => void;
+}) {
+  const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const pipelineMode = mode === "cluster";
   const [expandedPromptIdx, setExpandedPromptIdx] = useState<number | null>(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, waitingForConfirm]);
 
@@ -1643,7 +2328,23 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div className="label mb-8">Creative Writing Pipeline · 群聊生成</div>
+      {manualPrompt && generating && (
+        <div style={{ marginBottom: 10 }}>
+          <div className="label mb-8" style={{ color: "var(--accent)" }}>
+            手动模式 · 当前 agent：{manualPrompt.step || "—"}
+          </div>
+          <WebLLMPromptPanel
+            key={`${manualPrompt.step}:${manualPrompt.prompt.length}`}
+            title={`Pipeline agent prompt · ${manualPrompt.step}`}
+            fetchPrompt={async () => manualPrompt.prompt}
+            onApplyResult={(t) => onSubmitManual?.(t)}
+            applyLabel="提交结果，继续 Pipeline"
+            resultPlaceholder="把网页 LLM 针对该 agent 的返回结果粘贴到这里"
+          />
+        </div>
+      )}
+      {pipelineMode && <>
+      <div className="label mb-8">集群式智能体创作 · 多 Agent 群聊（导演 → 角色 → 编辑 → 评估）</div>
       {/* Progress bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 10, padding: "6px 0" }}>
         {steps.map((s, i) => (
@@ -1671,6 +2372,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
           </div>
         ))}
       </div>
+      </>}
       {/* Model change detection banner */}
       {modelChanged && generating && (
         <div style={{ padding: "8px 12px", marginBottom: 8, borderRadius: 6, background: "var(--accent-subtle)", border: "1px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -1685,9 +2387,7 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
       <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
           <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
-            <div style={{ fontSize: 14, marginBottom: 8, letterSpacing: 4, color: "var(--text-tertiary)" }}>SD / AC / EW / EV</div>
-            <div>Scene Director → 角色扮演（旁白+角色名） → Editor-Writer → Evaluator</div>
-            <div style={{ marginTop: 6, fontSize: 11 }}>在「大纲」标签中点击「开始生成」启动 Pipeline</div>
+            {mode === "cluster" ? "集群式智能体创作" : "单智能体创作"}
           </div>
         )}
         {chatMessages.map((msg, i) => {
@@ -1741,9 +2441,9 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
                         <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                           {msg.warningOptions.map((opt, oi) => (
                             <button key={oi} className="btn" style={{ fontSize: 11, padding: "4px 12px", borderRadius: 14 }}
-                              onClick={() => {
+                              onClick={async () => {
                                 if (opt.includes("故意")) {
-                                  const reason = window.prompt("请说明原因：", "");
+                                  const reason = await prompt({ title: "请说明原因", placeholder: "请输入原因" });
                                   if (reason !== null) {
                                     onChatInputChange(`${opt}：${reason}`);
                                     onSendMessage();
@@ -1905,31 +2605,50 @@ function InspireTab({ steps, generating, onStart, onStartPlain, chatMessages, ch
           placeholder={waitingForConfirm ? "输入修改意见，或点击确认继续..." : "输入消息与 Agent 对话..."} rows={1} style={{ flex: 1, fontSize: 12, padding: "6px 10px", minHeight: 32, maxHeight: 100, resize: "none" }} />
         <button className="btn-primary" onClick={onSendMessage} disabled={!chatInput.trim()} style={{ fontSize: 12, padding: "6px 12px", flexShrink: 0 }}>发送</button>
       </div>
-      {!generating && chatMessages.length === 0 && (
-        <div style={{ display: "flex", gap: 6 }}>
-          <button className="btn-primary" style={{ flex: 1 }} onClick={onStart}>Pipeline 生成</button>
-          {onStartPlain && (
-            <button className="btn" style={{ flex: 1, borderColor: "var(--jade)", color: "var(--jade)" }} onClick={onStartPlain}
-              title="跳过Pipeline多步骤流程，单Agent直接生成全文">
-              单Agent生成
-            </button>
+      {/* Generation controls */}
+      {!generating && !waitingForConfirm && (
+        <div style={{ marginBottom: 6 }}>
+          <ContextPanel
+            manifest={manifest || null}
+            skillSelection={skillSelection || {}}
+            ragExcludes={ragExcludes || new Set()}
+            onToggleSkill={(n) => onToggleSkill?.(n)}
+            onToggleRagItem={(k) => onToggleRagItem?.(k)}
+            onRefresh={onRefreshManifest}
+          />
+          {mode === "single" ? (
+            <>
+              {onStartPlain && (
+                <button className="btn-primary" style={{ width: "100%" }} onClick={() => onStartPlain()}>
+                  {chatMessages.length > 0 ? "单智能体重新创作" : "单智能体创作"}
+                </button>
+              )}
+              {onFetchPrompt && (
+                <div style={{ marginTop: 6 }}>
+                  <WebLLMPromptPanel fetchPrompt={onFetchPrompt}
+                    title="AI大模型网页版"
+                    onApplyResult={onApplyPaste} applyLabel="解析并写入编辑器"
+                    resultPlaceholder="把网页 LLM 生成的章节正文粘贴到这里" />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <button className="btn-primary" style={{ width: "100%" }} onClick={() => onStart(false)}
+                title="多 Agent 协作 Pipeline（导演 → 角色 → 编辑 → 评估），调用 AI 大模型 API">
+                {chatMessages.length > 0 ? "重新集群创作" : "集群式智能体创作"}
+              </button>
+              <div style={{ marginTop: 6 }}>
+                <button className="btn" style={{ width: "100%" }}
+                  onClick={() => onStart(true)}
+                  title="逐 agent 暂停：复制该步 prompt 到 AI大模型网页版、粘贴返回结果再继续">
+                  AI大模型网页版（逐 agent 复制 prompt / 粘贴结果）
+                </button>
+              </div>
+            </>
           )}
         </div>
       )}
-      {!generating && chatMessages.length > 0 && !waitingForConfirm && (
-        <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-          <button className="btn" style={{ flex: 1 }} onClick={onStart}>重启 Pipeline</button>
-          {onStartPlain && (
-            <button className="btn" style={{ flex: 1, borderColor: "var(--jade)", color: "var(--jade)" }} onClick={onStartPlain}>
-              单Agent生成
-            </button>
-          )}
-        </div>
-      )}
-      <p className="text-xs text-muted mt-8" style={{ lineHeight: 1.6 }}>
-        <strong>Pipeline</strong>：4步Agent协作（导演→角色→编辑→评估），质量高但耗时长。<br />
-        <strong>单Agent</strong>：跳过Pipeline，直接生成全文，速度快。
-      </p>
     </div>
   );
 }
@@ -1978,6 +2697,19 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange }:
             </button>
           </div>
         </>)}
+        <div style={{ marginTop: 10 }}>
+          <WebLLMPromptPanel
+            fetchPrompt={async () => {
+              const r = await apiPost<{ prompt: string }>("/api/generation/rewrite", {
+                text: selection.text, instruction: prompt || "润色并提升文学质量", prompt_only: true,
+              });
+              return r.prompt || "";
+            }}
+            onApplyResult={(t) => setRewriteResult(t.trim())}
+            applyLabel="应用为重写结果"
+            resultPlaceholder="把网页 LLM 返回的重写文本粘贴到这里"
+          />
+        </div>
       </>) : (<div className="empty-state" style={{ padding: "32px 16px" }}><h4>选中文本以重写</h4><p>在编辑器中选中文本，将出现「AI重写」按钮</p></div>)}
     </div>
   );
@@ -2171,16 +2903,89 @@ function ScoreDots({ score, max }: { score: number; max: number }) {
   );
 }
 
-function EvalTab({ result }: { result: EvalResult | null }) {
-  const [expandedCat, setExpandedCat] = useState<string | null>(null);
-  const displayResult = result;
+/** 评估 tab — evaluate the current chapter text on demand (no need to
+ *  generate first), or show the result from a pipeline run. */
+function EvalTab({ result, chapterContent, projectId, chapterId, manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefreshManifest }: {
+  result: EvalResult | null; chapterContent: string; projectId: string; chapterId: string;
+  manifest: ContextManifest | null; skillSelection: Record<string, boolean>; ragExcludes: Set<string>;
+  onToggleSkill: (name: string) => void; onToggleRagItem: (key: string) => void;
+  onRefreshManifest?: () => void;
+}) {
+  const { toast } = useToast();
+  const [localResult, setLocalResult] = useState<EvalResult | null>(null);
+  const [evaluating, setEvaluating] = useState(false);
+  const displayResult = localResult || result;
+  const evalBody = () => ({
+    project_id: projectId, chapter_id: chapterId, rag_excludes: Array.from(ragExcludes),
+  });
 
-  if (!displayResult) return (
-    <div className="empty-state" style={{ padding: "32px 16px" }}>
-      <h4>暂无评估结果</h4>
-      <p>在「灵感」面板完成一次生成后，评估结果将显示在这里</p>
+  const runEval = async () => {
+    const text = (chapterContent || "").trim();
+    if (!text) { toast("当前章节没有正文可评估", "error"); return; }
+    setEvaluating(true);
+    try {
+      const resp = await apiPost<{ evaluation: EvalResult }>("/api/generation/evaluate", { text, ...evalBody() });
+      if (resp.evaluation) setLocalResult(resp.evaluation);
+      else toast("评估未返回结果", "error");
+    } catch (e: any) {
+      toast(e?.message || "评估失败，请检查模型连接", "error");
+    } finally { setEvaluating(false); }
+  };
+
+  const applyPastedEval = (raw: string) => {
+    let s = (raw || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+    const a = s.indexOf("{"), b = s.lastIndexOf("}");
+    if (a >= 0 && b > a) s = s.slice(a, b + 1);
+    try {
+      setLocalResult(JSON.parse(s) as EvalResult);
+      toast("已应用网页 LLM 的评估结果", "success");
+    } catch {
+      toast("无法解析评估 JSON，请检查粘贴的内容", "error");
+    }
+  };
+
+  return (
+    <div>
+      <ContextPanel
+        manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
+        onToggleSkill={onToggleSkill} onToggleRagItem={onToggleRagItem}
+        onRefresh={onRefreshManifest}
+      />
+      <div style={{ marginBottom: 12 }}>
+        <button className="btn-primary" style={{ width: "100%" }} onClick={runEval} disabled={evaluating}>
+          {evaluating ? "评估中..." : "评估当前正文"}
+        </button>
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <WebLLMPromptPanel
+          title="AI大模型网页版"
+          fetchPrompt={async () => {
+            const text = (chapterContent || "").trim();
+            if (!text) throw new Error("当前章节没有正文可评估");
+            const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true, ...evalBody() });
+            return r.prompt || "";
+          }}
+          onApplyResult={applyPastedEval}
+          applyLabel="应用评估结果"
+          resultPlaceholder="把网页 LLM 返回的评估 JSON 粘贴到这里"
+        />
+      </div>
+      {displayResult
+        ? <EvalResultView result={displayResult} />
+        : (
+          <div className="empty-state" style={{ padding: "24px 16px" }}>
+            <h4>暂无评估结果</h4>
+            <p>点击「评估当前正文」评估编辑器中的章节。</p>
+          </div>
+        )}
     </div>
   );
+}
+
+/** Renders one evaluation result — dimension scores / categories / issues. */
+function EvalResultView({ result }: { result: EvalResult }) {
+  const [expandedCat, setExpandedCat] = useState<string | null>(null);
+  const displayResult = result;
 
   // Use EvalReport component when dimension_scores are available
   const hasDimensionScores = displayResult.dimension_scores && Object.keys(displayResult.dimension_scores).length > 0;
@@ -2401,246 +3206,3 @@ function EvalTab({ result }: { result: EvalResult | null }) {
     </div>
   );
 }
-
-function PromptTab({ projectId, chapter }: { projectId: string; chapter?: ChapterOutline | null }) {
-  const { toast } = useToast();
-  const [sections, setSections] = useState<{ label: string; content: string; shared?: boolean }[]>([]);
-  const [compactPrompt, setCompactPrompt] = useState("");
-  const [fullPrompt, setFullPrompt] = useState("");
-  const [sharedContext, setSharedContext] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [tokenEstimate, setTokenEstimate] = useState(0);
-  const [agentRole, setAgentRole] = useState("scene_director");
-  const [viewMode, setViewMode] = useState<"sections" | "compact" | "full">("compact");
-  const [copied, setCopied] = useState(false);
-  const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set());
-
-  const loadPrompt = async () => {
-    if (!chapter) return;
-    setLoading(true);
-    try {
-      const resp = await apiPost<{
-        sections: { label: string; content: string; shared?: boolean }[];
-        full_prompt: string;
-        compact_prompt: string;
-        shared_context: string;
-        token_estimate: number;
-      }>("/api/generation/prompt-preview", {
-        project_id: projectId || "default",
-        chapter_id: chapter.id,
-        synopsis: chapter.synopsis || "",
-        characters: chapter.characters || [],
-        references: chapter.references || [],
-        time_setting: chapter.time || "",
-        location: chapter.location || "",
-        existing_content: chapter.content || "",
-        chapter_num: 1,
-        character_aliases: chapter.character_aliases || {},
-        agent_role: agentRole,
-      });
-      setSections(resp.sections);
-      setCompactPrompt(resp.compact_prompt);
-      setFullPrompt(resp.full_prompt);
-      setSharedContext(resp.shared_context || "");
-      setTokenEstimate(resp.token_estimate);
-    } catch (e: any) {
-      toast(e?.message || "加载 Prompt 失败", "error");
-    }
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    if (chapter) loadPrompt();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chapter?.id, agentRole]);
-
-  const handleCopy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      toast("已复制到剪贴板", "success");
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback for non-HTTPS environments
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textarea);
-      setCopied(true);
-      toast("已复制到剪贴板", "success");
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  const toggleSection = (idx: number) => {
-    setExpandedSections(prev => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx); else next.add(idx);
-      return next;
-    });
-  };
-
-  if (!chapter) return (
-    <div className="empty-state" style={{ padding: "32px 16px" }}>
-      <h4>请选择章节</h4>
-      <p>选择一个章节后可预览完整 Prompt</p>
-    </div>
-  );
-
-  const currentText = viewMode === "compact" ? compactPrompt : viewMode === "full" ? fullPrompt : "";
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* Header */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div className="text-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-          预览发送给 LLM 的完整 Prompt（含 Memory + RAG）。◈ 标记的「通用上下文」部分所有 Agent 通用，可单独复制用于单Agent生成。
-        </div>
-
-        {/* Agent role selector */}
-        <div className="flex items-center gap-8">
-          <span className="text-xs" style={{ color: "var(--text-secondary)", whiteSpace: "nowrap" }}>Agent:</span>
-          <select
-            value={agentRole}
-            onChange={e => setAgentRole(e.target.value)}
-            style={{
-              flex: 1, fontSize: 12, padding: "4px 8px", borderRadius: 6,
-              border: "1px solid var(--border)", background: "var(--bg-primary)",
-              color: "var(--text-primary)", outline: "none",
-            }}
-          >
-            <option value="scene_director">Scene Director (场景导演)</option>
-            <option value="editor_writer">Editor-Writer (编辑作家)</option>
-            <option value="actor_agent">Actor Agent (角色演员)</option>
-            <option value="evaluator">Evaluator (评估器)</option>
-          </select>
-        </div>
-      </div>
-
-      {/* View mode + token count + action buttons */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-        {(["sections", "compact", "full"] as const).map(mode => (
-          <button key={mode} onClick={() => setViewMode(mode)} style={{
-            fontSize: 11, padding: "3px 10px", borderRadius: 12,
-            border: viewMode === mode ? "1px solid var(--accent)" : "1px solid var(--border)",
-            background: viewMode === mode ? "var(--accent-subtle)" : "transparent",
-            color: viewMode === mode ? "var(--accent)" : "var(--text-secondary)",
-            cursor: "pointer",
-          }}>
-            {mode === "sections" ? "分段" : mode === "compact" ? "紧凑" : "完整"}
-          </button>
-        ))}
-        <span className="text-xs" style={{ color: "var(--text-tertiary)", marginLeft: "auto" }}>
-          ~{tokenEstimate.toLocaleString()} tokens
-        </span>
-      </div>
-
-      {/* Action buttons */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div className="flex gap-6">
-          <button
-            className="btn-primary"
-            onClick={() => handleCopy(viewMode === "sections" ? fullPrompt : currentText)}
-            disabled={loading || (!compactPrompt && sections.length === 0)}
-            style={{ flex: 1, fontSize: 12, padding: "7px 14px" }}
-          >
-            {copied ? "已复制" : "复制完整 Prompt"}
-          </button>
-          <button
-            className="btn"
-            onClick={loadPrompt}
-            disabled={loading}
-            style={{ fontSize: 12, padding: "7px 14px", border: "1px solid var(--border)" }}
-          >
-            {loading ? "加载中..." : "刷新"}
-          </button>
-        </div>
-        {sharedContext && (
-          <button
-            className="btn"
-            onClick={() => handleCopy(sharedContext)}
-            disabled={loading}
-            style={{ fontSize: 11, padding: "5px 14px", border: "1px solid var(--indigo, var(--border))", color: "var(--indigo, var(--text-secondary))" }}
-          >
-            复制通用上下文（适用于单Agent模式）
-          </button>
-        )}
-      </div>
-
-      {/* Content display */}
-      {loading ? (
-        <div style={{ textAlign: "center", padding: 24, color: "var(--text-tertiary)" }}>
-          正在组装 Prompt...
-        </div>
-      ) : viewMode === "sections" ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {sections.map((sec, i) => {
-            const isShared = sec.shared === true;
-            return (
-            <div key={i} style={{
-              border: isShared ? "1px solid var(--indigo, var(--border))" : "1px solid var(--border)", borderRadius: 8,
-              background: "var(--bg-surface-2)", overflow: "hidden",
-            }}>
-              <div
-                onClick={() => toggleSection(i)}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  padding: "8px 12px", cursor: "pointer",
-                  background: expandedSections.has(i) ? "var(--bg-surface)" : isShared ? "rgba(99,102,241,0.05)" : "transparent",
-                }}
-              >
-                <span style={{ fontSize: 12, fontWeight: 600, color: isShared ? "var(--indigo, var(--text-primary))" : "var(--text-primary)" }}>
-                  {isShared && "\u25C8 "}{sec.label}
-                </span>
-                <div className="flex items-center gap-6">
-                  <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
-                    {sec.content.length} 字
-                  </span>
-                  <button
-                    onClick={e => { e.stopPropagation(); handleCopy(sec.content); }}
-                    style={{
-                      fontSize: 10, padding: "2px 8px", borderRadius: 4,
-                      border: "1px solid var(--border)", background: "transparent",
-                      color: "var(--text-secondary)", cursor: "pointer",
-                    }}
-                  >
-                    复制
-                  </button>
-                  <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-                    {expandedSections.has(i) ? "\u25B2" : "\u25BC"}
-                  </span>
-                </div>
-              </div>
-              {expandedSections.has(i) && (
-                <pre style={{
-                  padding: "10px 12px", margin: 0, fontSize: 11, lineHeight: 1.6,
-                  color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-                  maxHeight: 300, overflowY: "auto", borderTop: "1px solid var(--border)",
-                  fontFamily: "var(--font-mono)",
-                }}>
-                  {sec.content}
-                </pre>
-              )}
-            </div>
-            );
-          })}
-        </div>
-      ) : (
-        <pre style={{
-          padding: "12px 14px", margin: 0, fontSize: 11, lineHeight: 1.6,
-          color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-          background: "var(--bg-surface-2)", borderRadius: 8,
-          border: "1px solid var(--border)", maxHeight: 500, overflowY: "auto",
-          fontFamily: "var(--font-mono)",
-        }}>
-          {currentText || "（暂无内容，请先在大纲栏输入章节信息）"}
-        </pre>
-      )}
-    </div>
-  );
-}
-

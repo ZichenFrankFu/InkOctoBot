@@ -2,8 +2,11 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from "react"
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
 import type { WorldBookEntry, WorldBookCategory } from "../api/types";
 import TagAutocomplete from "../components/shared/TagAutocomplete";
+import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
+import { renderPrompt } from "../utils/promptTemplate";
 
 interface Props {
   projectId: string;
@@ -16,7 +19,7 @@ const BUILTIN_CATEGORIES: { key: string; label: string; icon: string }[] = [
   { key: "geography", label: "地理", icon: "\u2295" },
   { key: "social_rules", label: "社会规则/习俗", icon: "\u2261" },
   { key: "history", label: "历史", icon: "\u229E" },
-  { key: "hard_rules", label: "硬规则", icon: "\u2500" },
+  { key: "hard_rules", label: "世界观规则", icon: "\u2500" },
   { key: "other", label: "其他", icon: "\u25CB" },
 ];
 
@@ -44,6 +47,7 @@ interface AIChatMsg {
 
 export default function WorldBookPage({ projectId, projects }: Props) {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [items, setItems] = useState<WorldBookEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterCat, setFilterCat] = useState<string>("");
@@ -156,11 +160,12 @@ export default function WorldBookPage({ projectId, projects }: Props) {
       setDirty(false);
       setItems(prev => prev.map(item => item.id === editing.id ? { ...editing, ...updated } : item));
       setEditing({ ...editing, ...updated });
+      toast("已保存", "success");
     } catch (e: any) { toast(e?.message || "操作失败", "error"); }
   };
 
   const remove = async (id: string) => {
-    if (!confirm("确定删除该条目？")) return;
+    if (!(await confirm({ message: "确定删除该条目？", destructive: true }))) return;
     try {
       await apiDelete(`/api/data/worldbook/${id}`);
       if (editing?.id === id) setEditing(null);
@@ -211,6 +216,41 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   // AI Chat for worldbook
   useEffect(() => { aiChatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [aiChatMessages]);
 
+  const buildAIChatSystemHint = useCallback(async (): Promise<string> => {
+    if (!editing) return "";
+    return renderPrompt(
+      "assistant.worldbook",
+      {
+        entry_title: editing.title,
+        category: catLabel(editing.category, customCategories),
+        content: editing.content || "（空）",
+      },
+      `你是AI设定助手。当前正在编辑世界书条目「${editing.title}」（分类：${catLabel(editing.category, customCategories)}）。
+已有内容：${editing.content || "（空）"}
+
+帮助用户完善设定，回答设定相关问题。如果用户确认了某些内容，可以提供快速补全建议。
+回答后主动追加一个追问来帮助用户进一步完善设定。
+追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
+用自然语言回答，不要使用JSON格式。`,
+    );
+  }, [editing, customCategories]);
+
+  const fetchAIChatPrompt = useCallback(async (): Promise<string> => {
+    const systemHint = await buildAIChatSystemHint();
+    const resp = await apiPost<{ status?: string; prompt?: string }>("/api/generation/quick-generate", {
+      project_id: projectId || "default",
+      chapter_id: "wb_chat",
+      synopsis: aiChatInput,
+      system_hint: systemHint,
+      prompt_only: true,
+    });
+    return resp.prompt || "";
+  }, [buildAIChatSystemHint, projectId, aiChatInput]);
+
+  const applyAIChatResult = useCallback((text: string) => {
+    setAiChatMessages(prev => [...prev, { role: "assistant", content: text, timestamp: Date.now() }]);
+  }, []);
+
   const sendAIChat = async () => {
     const msg = aiChatInput.trim();
     if (!msg || aiChatLoading || !editing) return;
@@ -222,6 +262,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
     aiAbortRef.current = controller;
 
     try {
+      const systemHint = await buildAIChatSystemHint();
       const resp = await fetch("/api/generation/quick-generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -229,13 +270,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
           project_id: projectId || "default",
           chapter_id: "wb_chat",
           synopsis: msg,
-          system_hint: `你是AI设定助手。当前正在编辑世界书条目「${editing.title}」（分类：${catLabel(editing.category, customCategories)}）。
-已有内容：${editing.content || "（空）"}
-
-帮助用户完善设定，回答设定相关问题。如果用户确认了某些内容，可以提供快速补全建议。
-回答后主动追加一个追问来帮助用户进一步完善设定。
-追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
-用自然语言回答，不要使用JSON格式。`,
+          system_hint: systemHint,
         }),
         signal: controller.signal,
       });
@@ -294,7 +329,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                 </button>
                 <button className="btn" style={{ fontSize: 11, flex: 1, color: "var(--error)" }}
                   onClick={async () => {
-                    if (!confirm(`确定删除 ${selectedIds.size} 个条目？`)) return;
+                    if (!(await confirm({ message: `确定删除 ${selectedIds.size} 个条目？`, destructive: true }))) return;
                     for (const id of selectedIds) {
                       await apiDelete(`/api/data/worldbook/${id}`).catch((e) => toast(e.message || "操作失败", "error"));
                     }
@@ -348,7 +383,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
               自定义分类：
               {customCategories.map(c => (
                 <span key={c.key} style={{ marginLeft: 4, padding: "1px 6px", background: "var(--bg-surface-2)", borderRadius: 8, cursor: "pointer" }}
-                  onClick={() => { if (confirm(`删除自定义分类「${c.label}」？`)) removeCustomCategory(c.key); }}>
+                  onClick={async () => { if (await confirm({ message: `删除自定义分类「${c.label}」？`, destructive: true })) removeCustomCategory(c.key); }}>
                   {c.label} &times;
                 </span>
               ))}
@@ -570,6 +605,12 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                         style={{ fontSize: 12, padding: "6px 14px" }}>
                         {aiChatLoading ? "..." : "发送"}
                       </button>
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <WebLLMPromptPanel
+                        fetchPrompt={fetchAIChatPrompt}
+                        onApplyResult={applyAIChatResult}
+                      />
                     </div>
                   </div>
                 </div>

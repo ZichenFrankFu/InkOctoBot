@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { apiGet, apiPut, apiPost } from "../../api/client";
 import { useToast } from "../shared/Toast";
+import { useDialog } from "../shared/Dialog";
 
 interface PromptInfo {
   key: string;
@@ -39,6 +40,10 @@ interface Props {
   /** Required for segment-scoped prompts (reference.characters/settings/rhythm). */
   refId?: string;
   segmentIndex?: number;
+  /** For generation.single_agent — assembles the chapter RAG context. */
+  projectId?: string;
+  chapterId?: string;
+  chapterNum?: number;
   /** Initial edit value (overrides the registry default). Optional. */
   initialEdit?: string;
   /** Called when the user clicks 「仅本次使用此 prompt」. */
@@ -49,9 +54,11 @@ interface Props {
 }
 
 export default function PromptPreview({
-  promptKey, refId, segmentIndex, initialEdit, onApplyOnce, onSaved, onClose,
+  promptKey, refId, segmentIndex, projectId, chapterId, chapterNum,
+  initialEdit, onApplyOnce, onSaved, onClose,
 }: Props) {
   const { toast } = useToast();
+  const { confirm } = useDialog();
   const [info, setInfo] = useState<PromptInfo | null>(null);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [edit, setEdit] = useState<string>(initialEdit || "");
@@ -80,7 +87,20 @@ export default function PromptPreview({
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [promptKey, refId, segmentIndex]);
+  }, [promptKey, refId, segmentIndex, projectId, chapterId, chapterNum]);
+
+  const copyRendered = async () => {
+    const text = preview?.rendered || "";
+    if (!text) return;
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select(); document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    toast("已复制渲染后的 prompt，可粘贴到网页 LLM", "success");
+  };
 
   const fetchPreview = async (currentText: string) => {
     setPreviewing(true);
@@ -88,6 +108,9 @@ export default function PromptPreview({
       const params = new URLSearchParams();
       if (refId) params.set("ref_id", refId);
       if (segmentIndex !== undefined) params.set("segment_index", String(segmentIndex));
+      if (projectId) params.set("project_id", projectId);
+      if (chapterId) params.set("chapter_id", chapterId);
+      if (chapterNum !== undefined) params.set("chapter_num", String(chapterNum));
       const r = await apiGet<PreviewResponse>(
         `/api/references/prompts/${promptKey}/preview?${params}`,
       );
@@ -122,7 +145,7 @@ export default function PromptPreview({
   };
 
   const resetToFactory = async () => {
-    if (!confirm("确定重置为出厂默认？当前的覆盖会被删除。")) return;
+    if (!(await confirm({ message: "确定重置为出厂默认？当前的覆盖会被删除。", destructive: true }))) return;
     setSaving(true);
     try {
       const r = await apiPut<PromptInfo>(`/api/references/prompts/${promptKey}`, { template: null });
@@ -189,9 +212,14 @@ export default function PromptPreview({
             <div style={{ marginBottom: 8 }}>
               <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
                 <span className="text-xs text-muted">渲染预览（变量已代入）</span>
-                <button className="btn" style={{ fontSize: 11, padding: "2px 8px" }} onClick={refreshPreview} disabled={previewing}>
-                  {previewing ? "渲染中..." : "刷新预览"}
-                </button>
+                <div className="flex gap-6">
+                  <button className="btn" style={{ fontSize: 11, padding: "2px 8px" }} onClick={copyRendered} disabled={!preview?.rendered}>
+                    复制
+                  </button>
+                  <button className="btn" style={{ fontSize: 11, padding: "2px 8px" }} onClick={refreshPreview} disabled={previewing}>
+                    {previewing ? "渲染中..." : "刷新预览"}
+                  </button>
+                </div>
               </div>
               <pre className="font-mono" style={{
                 margin: 0, padding: 10, fontSize: 11, lineHeight: 1.55,

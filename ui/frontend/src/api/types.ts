@@ -109,6 +109,8 @@ export interface ReferenceWork {
   segments_json?: string;
   settings_json?: string;
   rhythm_json?: string;
+  /** JSON array of {chapter, text} — per-chapter reader notes. */
+  chapter_comments_json?: string;
   serial_status?: "ongoing" | "completed" | "hiatus" | "unknown" | null;
   created_at?: string;
   updated_at?: string;
@@ -192,6 +194,38 @@ export interface WorldBookEntry {
   updated_at?: string;
 }
 
+// ── Reference Injection (per reference-work × feature-type selection) ──
+export interface ReferenceFeatureSelection {
+  characters?: boolean;   // 角色原型
+  settings?: boolean;     // 世界设定
+  plot?: boolean;         // 剧情结构
+  rhythm?: boolean;       // 叙事节奏
+}
+
+export interface ReferenceInjectionSelection {
+  project_id: string;
+  selections: Record<string, ReferenceFeatureSelection>;  // keyed by ref_id
+  updated_at?: number;
+}
+
+// ── Writing Knowledge (global professional-knowledge library) ──
+export interface WritingKnowledgeEntry {
+  id: string;
+  title: string;
+  domain: string;         // 科学/历史/地理/军事/法律/民俗/其他
+  content: string;
+  tags?: string[];
+  source?: string;
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface KnowledgeInjectionSelection {
+  project_id: string;
+  knowledge_ids: string[];
+  updated_at?: number;
+}
+
 // ── Editor / Chapters ──
 export interface Volume {
   id: string;
@@ -214,6 +248,10 @@ export interface ChapterOutline {
   location?: string;
   characters?: string[];
   references?: string[];
+  /** Chronicle events linked from reference works (denormalized text). */
+  referenced_events?: { ref_id: string; work_title: string; name: string; description: string; chapter?: string }[];
+  /** Inspirations linked from the 灵感库 (denormalized text). */
+  referenced_inspirations?: { id: string; category: string; title: string; content: string }[];
   /** Map of real character name -> alias for hidden identity (e.g. "李悦" -> "神秘女人") */
   character_aliases?: Record<string, string>;
 }
@@ -464,6 +502,7 @@ export interface SkillInfo {
   permissions: string[];
   learnable: boolean;
   is_learned: boolean;
+  is_basic?: boolean;
   active: boolean;
   agent_domain: string;
   input_schema: Record<string, unknown>;

@@ -1,14 +1,11 @@
 ---
 name: quality_score
-display_name: 质量评分
 description: 基于规则的复合质量评分聚合器，将多维度评分加权汇总为最终分数，无需LLM调用。
-version: 1.0.0
-model_role: none
-tags: [evaluation, quality, scoring, rule-based]
-permissions: []
 ---
 
-## Description
+# 质量评分
+
+## 说明
 
 Rule-based composite quality scoring aggregation. Accepts individual
 dimension scores and computes a weighted overall score using predefined
@@ -24,13 +21,13 @@ Dimension weights:
 - pacing: 0.10
 - slop_free: 0.05
 
-## Input
+## 输入
 
 | Field            | Type   | Required | Description                                 |
 |------------------|--------|----------|---------------------------------------------|
 | dimension_scores | object | yes      | Mapping of dimension name to score (0-100)  |
 
-## Output
+## 输出
 
 ```json
 {
@@ -41,22 +38,4 @@ Dimension weights:
   },
   "passed": true
 }
-```
-
-## Usage
-
-```python
-from agents.evaluation.skills.quality_score.skill import Skill
-
-skill = Skill()
-result = await skill.execute(
-    {
-        "dimension_scores": {
-            "constraint_satisfaction": 85,
-            "consistency": 90,
-            "repetition": 70,
-        }
-    },
-    model_router=None,
-)
 ```

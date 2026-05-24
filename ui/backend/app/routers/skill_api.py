@@ -73,21 +73,62 @@ def _skill_domain(skill) -> str:
     return "unknown"
 
 
+def _skill_public_dict(skill, deactivated: set[str]) -> dict[str, Any]:
+    """Build a skill's public dict: execution meta + Claude SKILL.md manifest.
+
+    The Claude-format ``SKILL.md`` manifest, when present, is authoritative
+    for the skill's ``description``; its markdown body is exposed as
+    ``skill_md``. ``is_basic`` marks built-in skills as read-only (only
+    learned skills may be edited or deleted).
+    """
+    meta = skill.meta()
+    info = _meta_to_dict(meta)
+    info["agent_domain"] = _skill_domain(skill)
+    is_learned = "learned_skills" in (
+        getattr(type(skill), "__module__", "") or ""
+    )
+    info["is_learned"] = is_learned
+    info["is_basic"] = not is_learned
+    info["active"] = meta.name not in deactivated
+    manifest = getattr(skill, "manifest", None)
+    if manifest is not None:
+        if manifest.description:
+            info["description"] = manifest.description
+        info["skill_md"] = manifest.body
+    else:
+        info["skill_md"] = ""
+    return info
+
+
+def _render_claude_skill_md(name: str, display: str, desc: str) -> str:
+    """Render a Claude Agent Skill SKILL.md (minimal name+description frontmatter)."""
+    import yaml
+    fm = yaml.safe_dump(
+        {"name": name, "description": desc},
+        allow_unicode=True, default_flow_style=False, sort_keys=False,
+    )
+    return (
+        f"---\n{fm}---\n\n"
+        f"# {display}\n\n"
+        f"## 说明\n\n{desc}\n\n"
+        f"## 输入\n\n"
+        f"- `text`（string，必填）：技能的输入文本\n\n"
+        f"## 输出\n\n"
+        f"```json\n"
+        f'{{ "result": "技能生成的文本结果" }}\n'
+        f"```\n"
+    )
+
+
 @router.get("")
 def list_skills():
     """List all registered skills with metadata."""
     registry = _get_registry()
     deactivated = _get_deactivated()
-    skills = []
-    for skill in registry._skills.values():
-        meta = skill.meta()
-        info = _meta_to_dict(meta)
-        info["agent_domain"] = _skill_domain(skill)
-        info["is_learned"] = "learned_skills" in (
-            getattr(type(skill), "__module__", "") or ""
-        )
-        info["active"] = meta.name not in deactivated
-        skills.append(info)
+    skills = [
+        _skill_public_dict(skill, deactivated)
+        for skill in registry._skills.values()
+    ]
     return {"skills": skills, "total": len(skills)}
 
 
@@ -101,152 +142,51 @@ def list_tags():
     return {"tags": sorted(tags)}
 
 
+# Section layout for the 智能体 & skills tab. 特征提取 is a curated set
+# spanning multiple skill directories; the other sections map to a domain.
+_FEATURE_EXTRACTION_SKILLS = [
+    "chronicle_outline_extract", "character_profile", "narrative_extract",
+    "style_extract", "hook_extract", "info_density_judge",
+    "opening_pattern_judge", "payoff_judge",
+]
+_SKILL_SECTIONS = [
+    ("feature_extraction", "特征提取",
+     "编年史、角色、叙事、风格、钩子、信息密度、开篇模式、爽点等特征抽取技能"),
+    ("planner", "规划", "故事规划与架构设计"),
+    ("evaluation", "评估", "质量评估与一致性检查"),
+    ("production", "生产", "内容创作与场景执行"),
+]
+
+
 @router.get("/agents")
 def list_agents():
-    """List all agents with their associated skills, grouped by domain."""
-    agents_dir = Path(__file__).resolve().parents[4] / "agents"
+    """List skill sections for the 智能体 & skills tab.
+
+    Four curated sections: 特征提取 (an explicit cross-directory skill set),
+    规划 / 评估 / 生产 (each backed by its skill domain).
+    """
     registry = _get_registry()
-    deactivated = _get_deactivated()
 
-    AGENT_DOMAINS = {
-        "planner": {"label": "规划", "description": "故事规划与架构设计"},
-        "production": {"label": "生产", "description": "内容创作与场景执行"},
-        "evaluation": {"label": "评估", "description": "质量评估与一致性检查"},
-        "analysis": {"label": "分析", "description": "风格分析与特征提取"},
-        "constraints": {"label": "约束", "description": "约束消歧与规则执行"},
-        "learned_skills": {"label": "自学习", "description": "通过使用自动习得的技能"},
-    }
+    by_name: set[str] = set()
+    by_domain: dict[str, list[str]] = {}
+    for skill in registry._skills.values():
+        name = skill.meta().name
+        by_name.add(name)
+        by_domain.setdefault(_skill_domain(skill), []).append(name)
 
-    # Map skill name -> skill directory parent name for agent matching
-    def _skill_info(meta):
-        return {
-            "name": meta.name,
-            "display_name": meta.display_name,
-            "active": meta.name not in deactivated,
-            "is_learned": False,
-        }
-
-    result = []
-    for domain, info in AGENT_DOMAINS.items():
-        domain_dir = agents_dir / domain
-        if not domain_dir.is_dir():
-            continue
-
-        # Collect all domain skills with their file paths
-        domain_skills_map: dict[str, dict] = {}
-        for skill in registry._skills.values():
-            if _skill_domain(skill) == domain:
-                meta = skill.meta()
-                si = _skill_info(meta)
-                si["is_learned"] = domain == "learned_skills"
-                # Determine which subdirectory this skill lives in
-                try:
-                    import inspect
-                    src = Path(inspect.getfile(type(skill)))
-                    # e.g. agents/evaluation/skills/quality_score/skill.py
-                    # parent = quality_score, parent.parent = skills
-                    skill_subdir = src.parent.name  # e.g. "quality_score"
-                    si["_subdir"] = skill_subdir
-                except Exception:
-                    si["_subdir"] = ""
-                domain_skills_map[meta.name] = si
-
-        # Find agents and map skills to each agent
-        agents_list = []
-        # Scan for agent classes (BaseAgent subclasses + other agent-like classes)
-        for py in sorted(domain_dir.glob("*.py")):
-            if py.name.startswith("__"):
-                continue
-            try:
-                text = py.read_text("utf-8", errors="ignore")
-            except Exception:
-                continue
-            # Extract agent_name or class name
-            agent_name = ""
-            class_name = ""
-            agent_desc = ""
-            for line in text.splitlines():
-                if "agent_name" in line and "=" in line and not line.strip().startswith("#"):
-                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if val and val != "base":
-                        agent_name = val
-                if line.strip().startswith("class ") and ":" in line:
-                    class_name = line.strip().split("class ", 1)[1].split("(")[0].split(":")[0].strip()
-                if '"""' in line and not agent_desc:
-                    agent_desc = line.strip().strip('"').strip()
-            if not agent_name:
-                # Use snake_case of filename for non-BaseAgent classes
-                if class_name:
-                    agent_name = py.stem
-                else:
-                    continue
-
-            agents_list.append({
-                "name": agent_name,
-                "class_name": class_name,
-                "skills": [],
-            })
-
-        # Map skills to agents by naming convention
-        assigned_skills: set[str] = set()
-        for agent_info in agents_list:
-            aname = agent_info["name"]
-            for sname, sinfo in domain_skills_map.items():
-                if sname in assigned_skills:
-                    continue  # Already assigned to another agent
-                subdir = sinfo.get("_subdir", "")
-                skill_name_lower = sname.lower()
-                # Match by: skill subdir contains agent name fragment, or vice versa
-                # e.g. actor_agent ↔ actor_perform, editor_writer ↔ editor_write
-                abase = aname.replace("_agent", "").replace("agent_", "")
-                sbase = subdir.replace("_", "")
-                abase_clean = abase.replace("_", "")
-                # Also try matching against the skill's registered name
-                sname_clean = skill_name_lower.replace("_", "")
-                if (abase_clean and (
-                    (sbase and (
-                        abase_clean in sbase or sbase in abase_clean
-                        or abase.split("_")[0] == subdir.split("_")[0]
-                    ))
-                    or abase_clean in sname_clean or sname_clean in abase_clean
-                    or (abase.split("_")[0] and abase.split("_")[0] in skill_name_lower.split("_"))
-                )):
-                    skill_copy = {k: v for k, v in sinfo.items() if not k.startswith("_")}
-                    agent_info["skills"].append(skill_copy)
-                    assigned_skills.add(sname)
-
-        # Unassigned skills go as domain-level
-        unassigned = []
-        for sname, sinfo in domain_skills_map.items():
-            if sname not in assigned_skills:
-                unassigned.append({k: v for k, v in sinfo.items() if not k.startswith("_")})
-
-        # If domain has skills but no agents, create a synthetic domain-level agent
-        # so the skills remain visible in the UI
-        if not agents_list and domain_skills_map:
-            agents_list.append({
-                "name": domain,
-                "class_name": f"{domain.title()}Domain",
-                "skills": [
-                    {k: v for k, v in sinfo.items() if not k.startswith("_")}
-                    for sinfo in domain_skills_map.values()
-                ],
-            })
-            # All skills are now assigned to the synthetic agent
-            unassigned = []
-
-        result.append({
+    sections = []
+    for domain, label, description in _SKILL_SECTIONS:
+        if domain == "feature_extraction":
+            names = [n for n in _FEATURE_EXTRACTION_SKILLS if n in by_name]
+        else:
+            names = sorted(by_domain.get(domain, []))
+        sections.append({
             "domain": domain,
-            "label": info["label"],
-            "description": info["description"],
-            "agents": [
-                {"name": a["name"], "class_name": a["class_name"], "skills": a["skills"]}
-                for a in agents_list
-            ],
-            "unassigned_skills": unassigned,
+            "label": label,
+            "description": description,
+            "skills": names,
         })
-
-    return {"agents": result}
+    return {"sections": sections}
 
 
 @router.get("/learning-log")
@@ -295,45 +235,23 @@ def add_learning_log_entry(body: dict = Body(...)):
 def list_learned_skills():
     """List skills from the learned_skills directory."""
     registry = _get_registry()
-    learned = []
-    for skill in registry._skills.values():
-        domain = _skill_domain(skill)
-        if domain == "learned_skills":
-            meta = skill.meta()
-            info = _meta_to_dict(meta)
-            info["agent_domain"] = domain
-            info["is_learned"] = True
-            learned.append(info)
+    deactivated = _get_deactivated()
+    learned = [
+        _skill_public_dict(skill, deactivated)
+        for skill in registry._skills.values()
+        if _skill_domain(skill) == "learned_skills"
+    ]
     return {"skills": learned, "total": len(learned)}
 
 
 @router.get("/{name}")
 def get_skill(name: str):
-    """Get detailed info for a single skill, including SKILL.md content."""
+    """Get detailed info for a single skill, including its SKILL.md body."""
     registry = _get_registry()
     if not registry.has(name):
         raise HTTPException(404, f"Skill '{name}' not found")
     skill = registry.get(name)
-    meta = skill.meta()
-    info = _meta_to_dict(meta)
-    info["agent_domain"] = _skill_domain(skill)
-    info["is_learned"] = "learned_skills" in (
-        getattr(type(skill), "__module__", "") or ""
-    )
-
-    # Read SKILL.md if available
-    skill_md_content = ""
-    try:
-        import inspect
-        src = inspect.getfile(type(skill))
-        skill_md = Path(src).parent / "SKILL.md"
-        if skill_md.exists():
-            skill_md_content = skill_md.read_text("utf-8")
-    except Exception:
-        pass
-
-    info["skill_md"] = skill_md_content
-    return info
+    return _skill_public_dict(skill, _get_deactivated())
 
 
 class SkillCreateRequest(BaseModel):
@@ -357,36 +275,12 @@ def create_skill(req: SkillCreateRequest):
     skill_dir.mkdir(parents=True, exist_ok=True)
     display = req.display_name or req.name.replace("_", " ").title()
     desc = req.description or f"Custom skill: {display}"
-    tags_str = ", ".join(req.tags) if req.tags else "custom"
     prompt = req.prompt_template or "请根据以下输入生成内容：\\n\\n{text}"
 
-    # Write SKILL.md
-    skill_md = f"""---
-name: {req.name}
-display_name: {display}
-version: "1.0"
-model_role: {req.model_role}
-tags: [{tags_str}]
-temperature: 0.7
-max_tokens: 2000
-permissions: []
----
-
-# {display}
-
-{desc}
-
-## Input
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| text  | str  | yes      | Input text  |
-
-## Output
-| Field  | Type | Description    |
-|--------|------|----------------|
-| result | str  | Generated text |
-"""
-    (skill_dir / "SKILL.md").write_text(skill_md, "utf-8")
+    # Write SKILL.md (Claude Agent Skill format — name + description only)
+    (skill_dir / "SKILL.md").write_text(
+        _render_claude_skill_md(req.name, display, desc), "utf-8"
+    )
 
     # Write skill.py
     skill_py = f'''"""Auto-generated learned skill: {display}"""
@@ -461,7 +355,7 @@ def update_skill(name: str, req: SkillUpdateRequest):
     except Exception:
         raise HTTPException(500, "Cannot locate skill source")
 
-    # Update SKILL.md
+    # Update SKILL.md (Claude Agent Skill format — name + description only)
     skill_md_path = skill_dir / "SKILL.md"
     meta = skill.meta()
     display = req.display_name or meta.display_name
@@ -470,24 +364,10 @@ def update_skill(name: str, req: SkillUpdateRequest):
     model_role = req.model_role or meta.model_role
     temperature = req.temperature if req.temperature is not None else meta.temperature
     max_tokens = req.max_tokens if req.max_tokens is not None else meta.max_tokens
-    tags_str = ", ".join(tags)
 
-    skill_md_content = f"""---
-name: {name}
-display_name: {display}
-version: "{meta.version}"
-model_role: {model_role}
-tags: [{tags_str}]
-temperature: {temperature}
-max_tokens: {max_tokens}
-permissions: []
----
-
-# {display}
-
-{desc}
-"""
-    skill_md_path.write_text(skill_md_content, "utf-8")
+    skill_md_path.write_text(
+        _render_claude_skill_md(name, display, desc), "utf-8"
+    )
 
     # Update skill.py
     prompt = req.prompt_template or "请根据以下输入生成内容：\\n\\n{text}"
@@ -710,7 +590,7 @@ class CompareWorksRequest(BaseModel):
     prompt_override: Optional[str] = None  # per-call ephemeral override
 
 
-_COMPARE_PROMPT_DEFAULT = """你是创作技巧分析师。下面是 {n} 部参考作品的提取数据。
+_COMPARE_PROMPT_DEFAULT = """你是创作技巧分析师。下面是 {n} 部参考作品的提取特征（剧情结构、角色原型、世界设定、叙事节奏 —— 已结构化提炼，非原文逐字数据）。
 请对比它们的 **{focus}** 特征，找出**共同模式**和**显著差异**，并提炼出一条可作为创作技巧 (Skill) 的洞察。
 
 要求：
@@ -728,19 +608,22 @@ _COMPARE_PROMPT_DEFAULT = """你是创作技巧分析师。下面是 {n} 部参�
   "tags": ["对比", "学习", ...]
 }}
 
-作品数据：
+作品特征数据：
 {bundle}
 """
 
 
-@router.post("/compare_works")
-async def compare_works(body: CompareWorksRequest):
-    """Pull each work's extracted features, ask the AI to find common
-    patterns + differences, return a draft Skill object that the client
-    can review and then save via the existing /api/skills/create."""
+def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
+    """Fetch the selected works and build the cross-work comparison prompt.
+
+    Shared by the built-in-AI path and the copy-prompt (web-LLM) path.
+    """
     from rag.reference_db import ReferenceDB
     from ui.backend.app.settings import settings as _app_settings
-    from models.router import ModelRouter
+    from ui.backend.app.routers._rag_context import (
+        _condense_ref_characters, _condense_ref_settings,
+        _condense_ref_plot, _condense_ref_rhythm,
+    )
 
     if not body.ref_ids:
         raise HTTPException(400, "请至少选择一部作品")
@@ -765,45 +648,33 @@ async def compare_works(body: CompareWorksRequest):
             raise HTTPException(404, f"参考作品不存在: {rid}")
         works.append(w)
 
-    def _pj(s: Optional[str]) -> Any:
-        if not s:
-            return None
-        try:
-            return json.loads(s)
-        except Exception:
-            return None
-
-    def _focused(w: dict) -> dict:
-        """Build a compact JSON bundle for one work, scoped to focus."""
-        out: dict[str, Any] = {
-            "title": w.get("title"),
-            "creator": w.get("creator"),
-            "genre": w.get("genre"),
-            "media_type": w.get("media_type"),
-        }
+    def _focused(w: dict) -> str:
+        """Condense one work into a readable feature digest (剧情/角色/
+        设定/节奏), scoped to the chosen focus — not raw extraction JSON
+        (which is dominated by low-level word/style statistics)."""
+        head = f"《{w.get('title') or '未命名'}》"
+        meta = "，".join(
+            str(x) for x in (w.get("creator"), w.get("genre"), w.get("media_type"))
+            if x
+        )
+        if meta:
+            head += f"（{meta}）"
+        segs: list[str] = []
         if body.focus in ("plot", "all"):
-            out["plot"] = _pj(w.get("plot_outline_json"))
+            segs.append(_condense_ref_plot(w.get("plot_outline_json")))
         if body.focus in ("characters", "all"):
-            out["characters"] = (_pj(w.get("extracted_characters_json")) or [])[:15]
+            segs.append(_condense_ref_characters(w.get("extracted_characters_json")))
         if body.focus in ("settings", "all"):
-            out["settings"] = (_pj(w.get("settings_json")) or [])[:15]
-        if body.focus in ("rhythm", "all"):
-            rh = _pj(w.get("rhythm_json")) or {}
-            out["rhythm"] = {
-                "coverage": rh.get("coverage"),
-                "opening_pattern": rh.get("opening_pattern"),
-                "climax_positions": rh.get("climax_positions"),
-                "shuangdian": rh.get("shuangdian"),
-                "pacing_segments": rh.get("pacing_segments"),
-                # chapter_features can be huge; sample evenly
-                "chapter_features_sample": (rh.get("chapter_features") or [])[::5],
-            }
-        if body.focus in ("style", "all"):
-            out["style_fingerprint"] = _pj(w.get("style_fingerprint_json"))
-        return out
+            segs.append(_condense_ref_settings(w.get("settings_json")))
+        if body.focus in ("rhythm", "style", "all"):
+            segs.append(_condense_ref_rhythm(
+                w.get("rhythm_json"), w.get("style_fingerprint_json")))
+        segs = [s.strip() for s in segs if s and s.strip()]
+        if not segs:
+            segs = ["（该作品尚未提取特征，请先在参考库完成特征提取）"]
+        return head + "\n" + "\n\n".join(segs)
 
-    bundle = [{"ref_id": w["ref_id"], **_focused(w)} for w in works]
-    bundle_str = json.dumps(bundle, ensure_ascii=False, indent=2)
+    bundle_str = "\n\n———\n\n".join(_focused(w) for w in works)
     # Cap bundle size to keep prompt tractable
     if len(bundle_str) > 60_000:
         bundle_str = bundle_str[:60_000] + "\n[...截断]"
@@ -824,6 +695,30 @@ async def compare_works(body: CompareWorksRequest):
         instruction_block=instruction_block,
         bundle=bundle_str,
     )
+    return prompt, works
+
+
+@router.post("/compare_works/prompt")
+def compare_works_prompt(body: CompareWorksRequest):
+    """Build the cross-work comparison prompt for the user to copy into a
+    web LLM (the manual alternative to the built-in /compare_works AI call)."""
+    prompt, works = _build_compare_prompt(body)
+    return {
+        "prompt": prompt,
+        "source_works": [
+            {"ref_id": w["ref_id"], "title": w.get("title")} for w in works
+        ],
+    }
+
+
+@router.post("/compare_works")
+async def compare_works(body: CompareWorksRequest):
+    """Pull each work's extracted features, ask the AI to find common
+    patterns + differences, return a draft Skill object that the client
+    can review and then save via the existing /api/skills/create."""
+    from models.router import ModelRouter
+
+    prompt, works = _build_compare_prompt(body)
 
     try:
         router_inst = ModelRouter()
