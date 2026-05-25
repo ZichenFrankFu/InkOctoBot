@@ -146,15 +146,17 @@ WN_TEST_MODE=1 pytest tests/integration/
 
 ### 2.1 日志写在哪？
 
-**跨平台**：
-- **Linux**：`~/.local/state/InkOctoBot/launcher.log` （或 `$XDG_STATE_HOME`）
-- **macOS**：`~/Library/Logs/InkOctoBot/launcher.log`
-- **Windows**：`%LOCALAPPDATA%\InkOctoBot\launcher.log`
+**源码运行**（`python launcher.py` / `python launcher.py --test`）：
+- `outputs/logs/inkoctobot_<时间戳>.log` — 仓库目录下，每次启动产生独立文件
+  （旧文件不会被覆盖，方便事后对比）
+- 该目录已被 `.gitignore` 排除
 
-**应用运行日志**（FastAPI / agents / pipeline 全部）：
-- `outputs/logs/inkoctobot_<时间戳>.log` （仓库目录下）
+**PyInstaller 打包后运行**（exe 不能往 bundle 内写）：
+- **Linux**：`~/.local/state/InkOctoBot/logs/inkoctobot_*.log` （或 `$XDG_STATE_HOME`）
+- **macOS**：`~/Library/Logs/InkOctoBot/logs/inkoctobot_*.log`
+- **Windows**：`%LOCALAPPDATA%\InkOctoBot\logs\inkoctobot_*.log`
 
-每次启动会创建新文件，文件名含时间戳。
+每次启动会创建一份新文件，文件名形如 `inkoctobot_20260525_173142.log`。
 
 ### 2.2 日志格式
 

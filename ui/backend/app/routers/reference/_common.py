@@ -64,26 +64,25 @@ def _data_dir():
 def reference_db_path() -> str:
     """Resolve ``data/reference.db`` (or test-mode equivalent).
 
-    During the rename transition this falls back to ``novels.db`` when
-    a legacy ``reference.db`` doesn't exist yet — so existing installs
-    keep working until they migrate.
+    Always returns the new dedicated path. ``ReferenceDB(path)`` will
+    lazily create the file + schema on first use via
+    ``ensure_reference_tables`` — so a fresh install gets reference.db
+    auto-created the moment any /api/references/* endpoint is hit.
+
+    Users with legacy data inside ``novels.db`` should run the
+    migration script ``scripts/migrate_split_dbs.py`` once, or rely on
+    the auto-migration in ``launcher.py`` startup.
     """
-    d = _data_dir()
-    new = d / "reference.db"
-    legacy = d / "novels.db"
-    return str(new if new.exists() or not legacy.exists() else legacy)
+    return str(_data_dir() / "reference.db")
 
 
 def idea_db_path() -> str:
     """Resolve ``data/idea.db`` (or test-mode equivalent).
 
-    During the rename transition this falls back to ``novels.db`` when
-    a legacy ``idea.db`` doesn't exist yet.
+    Same lazy-creation contract as ``reference_db_path``: IdeaDB
+    constructor calls ``ensure_idea_tables`` which creates the file.
     """
-    d = _data_dir()
-    new = d / "idea.db"
-    legacy = d / "novels.db"
-    return str(new if new.exists() or not legacy.exists() else legacy)
+    return str(_data_dir() / "idea.db")
 
 
 def db() -> ReferenceDB:
