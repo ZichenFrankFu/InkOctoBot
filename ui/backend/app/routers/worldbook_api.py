@@ -24,7 +24,7 @@ class ConsistencyRequest(BaseModel):
 
 
 def _build_router(provider: str = "", model: str = ""):
-    from ui.backend.app.routers.generation_api import _build_router as build
+    from ui.backend.app.services import build_router as build
     return build(provider, model)
 
 

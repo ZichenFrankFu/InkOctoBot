@@ -507,7 +507,7 @@ async def execute_skill(req: SkillExecuteRequest):
     t0 = time.time()
     try:
         # Build router for LLM-based skills
-        from ui.backend.app.routers.generation_api import _build_router
+        from ui.backend.app.services import build_router as _build_router
         router_inst = _build_router(req.provider, req.model)
 
         result = await skill.execute(req.inputs, model_router=router_inst)

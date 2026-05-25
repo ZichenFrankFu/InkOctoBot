@@ -6,7 +6,7 @@ Uses the DeepSeek-R1-Distill-Qwen-32B model via Ollama.
 Setup:
   1. Install Ollama: https://ollama.ai
   2. Import the model:
-     cd models/DeepSeek_R1_Qwen_32B
+     cd scripts/ollama_modelfiles/DeepSeek_R1_Qwen_32B
      ollama create deepseek-r1-qwen-32b -f Modelfile
   3. Run tests:
      python -m pytest tests/test_agents_integration.py -v

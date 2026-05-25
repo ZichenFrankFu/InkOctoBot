@@ -494,7 +494,7 @@ def _load_foreshadowing(project_id: str, chapter_id: str = "") -> str:
 
 def _load_user_preferences(project_id: str, db_path: str) -> str:
     try:
-        from ui.backend.app.routers.generation_api import _load_user_style_preferences
+        from ui.backend.app.services import load_user_style_preferences as _load_user_style_preferences
 
         txt = _load_user_style_preferences(project_id, db_path)
         if not txt:
@@ -542,7 +542,7 @@ def build_generation_context(
     characters = characters or []
     if db_path is None:
         try:
-            from ui.backend.app.routers.generation_api import _get_db_path
+            from ui.backend.app.services import get_db_path as _get_db_path
 
             db_path = _get_db_path()
         except Exception:
@@ -999,7 +999,7 @@ def creation_context_manifest(
     ref_items: list[dict] = []
     try:
         from knowledge.reference_db import ReferenceDB
-        from ui.backend.app.routers.generation_api import _get_db_path
+        from ui.backend.app.services import get_db_path as _get_db_path
 
         rdb = ReferenceDB(_get_db_path())
         seen: set[str] = set()
@@ -1084,7 +1084,7 @@ def single_agent_vars(
     characters = characters or []
     if db_path is None:
         try:
-            from ui.backend.app.routers.generation_api import _get_db_path
+            from ui.backend.app.services import get_db_path as _get_db_path
 
             db_path = _get_db_path()
         except Exception:

@@ -22,151 +22,36 @@ logger = logging.getLogger("inkoctobot.ui.backend.generation_api")
 _active_sessions: dict[str, dict[str, Any]] = {}
 
 
-# ═══ Usage Tracking (persisted to data/usage.json) ═══
+# ═══ Usage Tracking — moved to ui.backend.app.services.usage_tracker ═══
+# (with debounced writes; this file just exposes the HTTP endpoints).
 
-from pathlib import Path as _Path
-
-def _usage_file() -> _Path:
-    from ui.backend.app.settings import settings as _s
-    d = _s.data_dir if _s.data_dir else _s.repo_root / "data"
-    return d / "usage.json"
-
-def _empty_usage() -> dict[str, Any]:
-    return {
-        "total_input_tokens": 0,
-        "total_output_tokens": 0,
-        "total_calls": 0,
-        "by_provider": {},
-        "by_model": {},
-        "by_role": {},
-        "recent": [],
-    }
-
-def _load_usage() -> dict[str, Any]:
-    p = _usage_file()
-    if p.exists():
-        try:
-            data = json.loads(p.read_text("utf-8"))
-            # ensure all expected keys exist (forward-compat)
-            empty = _empty_usage()
-            for k, v in empty.items():
-                data.setdefault(k, v)
-            return data
-        except Exception:
-            pass
-    return _empty_usage()
-
-def _save_usage() -> None:
-    try:
-        p = _usage_file()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(_usage_data, ensure_ascii=False, indent=2), "utf-8")
-    except Exception:
-        logger.debug("Failed to persist usage data", exc_info=True)
-
-_usage_data: dict[str, Any] = _load_usage()
-_usage_lock = asyncio.Lock()
-
-
-def _record_usage(agent_role: str, provider: str, model: str, input_tokens: int, output_tokens: int):
-    """Record token usage from an LLM call (thread-safe for sync context)."""
-    _usage_data["total_input_tokens"] += input_tokens
-    _usage_data["total_output_tokens"] += output_tokens
-    _usage_data["total_calls"] += 1
-
-    if provider not in _usage_data["by_provider"]:
-        _usage_data["by_provider"][provider] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
-    _usage_data["by_provider"][provider]["input_tokens"] += input_tokens
-    _usage_data["by_provider"][provider]["output_tokens"] += output_tokens
-    _usage_data["by_provider"][provider]["calls"] += 1
-
-    model_key = f"{provider}/{model}" if provider else model
-    if model_key not in _usage_data["by_model"]:
-        _usage_data["by_model"][model_key] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
-    _usage_data["by_model"][model_key]["input_tokens"] += input_tokens
-    _usage_data["by_model"][model_key]["output_tokens"] += output_tokens
-    _usage_data["by_model"][model_key]["calls"] += 1
-
-    if agent_role not in _usage_data["by_role"]:
-        _usage_data["by_role"][agent_role] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
-    _usage_data["by_role"][agent_role]["input_tokens"] += input_tokens
-    _usage_data["by_role"][agent_role]["output_tokens"] += output_tokens
-    _usage_data["by_role"][agent_role]["calls"] += 1
-
-    _usage_data["recent"].append({
-        "ts": time.time(),
-        "role": agent_role,
-        "provider": provider,
-        "model": model,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    })
-    # Keep only last 100 entries
-    if len(_usage_data["recent"]) > 100:
-        _usage_data["recent"] = _usage_data["recent"][-100:]
-
-    _save_usage()
+from ui.backend.app.services import usage_tracker as _usage_tracker
+# Backward-compat aliases for in-file references.
+_record_usage = _usage_tracker.record_usage
 
 
 @router.get("/usage")
 def get_usage():
     """Return accumulated API usage stats (persisted across restarts)."""
-    return _usage_data
+    return _usage_tracker.snapshot()
 
 
 @router.post("/usage/reset")
 def reset_usage():
     """Reset usage counters and persist the empty state."""
-    for k, v in _empty_usage().items():
-        _usage_data[k] = v
-    _save_usage()
+    _usage_tracker.reset()
     return {"status": "ok"}
 
 
 # ═══ Intelligence Integration Helpers ═══
 # These connect the existing-but-disconnected modules together.
 
-def _get_db_path() -> str:
-    """Resolve the project database path."""
-    try:
-        from ui.backend.app.settings import settings as app_settings
-        from ui.backend.app.utils import load_repo_config, get_db_path
-        repo_cfg = load_repo_config(app_settings.repo_root)
-        return get_db_path(repo_cfg, app_settings.repo_root)
-    except Exception:
-        from ui.backend.app.settings import settings as app_settings
-        return str(app_settings.repo_root / "data" / "novels.db")
-
-
-def _load_user_style_preferences(project_id: str, db_path: str) -> str:
-    """Load accumulated user style preferences from EditAnalyzer (A4: feedback loop)."""
-    try:
-        import sqlite3
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """SELECT preference_type, description, confidence
-                   FROM user_style_preferences
-                   WHERE project_id=? AND confidence>=0.3
-                   ORDER BY confidence DESC LIMIT 20""",
-                (project_id,),
-            ).fetchall()
-        if not rows:
-            return ""
-        parts = ["[用户写作偏好（从历史修改中学习）]"]
-        by_type: dict[str, list[str]] = {}
-        for r in rows:
-            by_type.setdefault(r["preference_type"], []).append(
-                f"- {r['description']} (置信度: {r['confidence']:.0%})"
-            )
-        type_labels = {"style": "风格偏好", "content": "内容偏好", "pacing": "节奏偏好"}
-        for ptype, items in by_type.items():
-            parts.append(f"\n### {type_labels.get(ptype, ptype)}")
-            parts.extend(items[:8])
-        return "\n".join(parts)
-    except Exception as e:
-        logger.debug("Load user preferences skipped: %s", e)
-        return ""
+# Helpers moved to ui.backend.app.services. These names are kept as
+# thin re-exports so any in-file references keep working until phase 3
+# splits this router into its own package; new code should import from
+# the services package directly.
+from ui.backend.app.services import get_db_path as _get_db_path
+from ui.backend.app.services import load_user_style_preferences as _load_user_style_preferences
 
 
 def _load_reference_style(project_id: str, db_path: str) -> str:
@@ -389,207 +274,17 @@ class EvalRequest(BaseModel):
     rag_excludes: list[str] = []
 
 
-def _get_user_settings() -> dict:
-    """Load user settings with full defaults for missing keys."""
-    import json as _json
-    from ui.backend.app.settings import settings as app_settings
-    from ui.backend.app.routers.json_storage_api import _default_settings
-    p = app_settings.get_data_path("settings.json")
-    if p.exists():
-        data = _json.loads(p.read_text("utf-8"))
-    else:
-        data = {}
-    # Deep-merge defaults so new providers/pipeline roles always appear
-    defaults = _default_settings()
-    for k, v in defaults.items():
-        if k not in data:
-            data[k] = v
-    # Ensure all default providers exist
-    for pname, pdef in defaults.get("providers", {}).items():
-        if pname not in data.get("providers", {}):
-            data.setdefault("providers", {})[pname] = pdef
-    # Ensure all default pipeline roles exist
-    for rname, rdef in defaults.get("pipeline", {}).items():
-        if rname not in data.get("pipeline", {}):
-            data.setdefault("pipeline", {})[rname] = rdef
-    return data
+# Moved to ui.backend.app.services.model_router_factory.
+from ui.backend.app.services import get_user_settings as _get_user_settings
 
 
-class _SimpleRouter:
-    """Router that resolves provider+model per agent role from user settings."""
+# Moved to ui.backend.app.services.model_router_factory.
+from ui.backend.app.services import (
+    SimpleRouter as _SimpleRouter,
+    build_router as _build_router,
+    make_provider_instance as _make_provider_instance,
+)
 
-    def __init__(self, user_settings: dict, fallback_provider: str = "", fallback_model: str = ""):
-        self._settings = user_settings
-        self._providers_cfg = user_settings.get("providers", {})
-        self._pipeline = user_settings.get("pipeline", {})
-        self._fallback_provider = fallback_provider
-        self._fallback_model = fallback_model
-        self._provider_cache: dict[str, Any] = {}  # keyed by "provider:model"
-
-    # Map agent_name used by BaseAgent to the pipeline config key in settings
-    _ROLE_ALIASES: dict[str, str] = {
-        "editor_writer": "editor_stylist",
-        "editor": "editor_stylist",
-        "scene_planner": "scene_director",
-        "actor": "actor_default",
-        "actors": "actor_default",
-        "actor_agent": "actor_default",
-        "narrator_agent": "actor_default",
-    }
-
-    def _resolve(self, agent_role: str) -> tuple[str, str, dict]:
-        """Return (provider, model, prov_cfg) for the given agent role."""
-        # In test mode, always use mock provider to avoid connection errors
-        import os
-        if os.environ.get("WN_TEST_MODE") == "1":
-            return "mock", "mock-test-v1", {}
-
-        role_cfg = self._pipeline.get(agent_role, {})
-        # If no config for this role, try alias mapping
-        if not role_cfg.get("provider") and not role_cfg.get("model"):
-            alias = self._ROLE_ALIASES.get(agent_role, "")
-            if alias:
-                role_cfg = self._pipeline.get(alias, {})
-        provider = role_cfg.get("provider", "") or self._fallback_provider
-        model = role_cfg.get("model", "") or self._fallback_model
-        prov_cfg = self._providers_cfg.get(provider, {})
-        # If model still empty, try the provider's model list
-        if provider and not model:
-            models = prov_cfg.get("models", [])
-            if models:
-                model = models[0]
-        return provider, model, prov_cfg
-
-    def _get_provider(self, provider: str, model: str, prov_cfg: dict):
-        cache_key = f"{provider}:{model}"
-        if cache_key in self._provider_cache:
-            return self._provider_cache[cache_key]
-        from llm.base import ProviderConfig
-        cfg = ProviderConfig(
-            provider_type=provider,
-            model_name=model,
-            base_url=prov_cfg.get("base_url") or None,
-            api_key=prov_cfg.get("api_key") or None,
-        )
-        inst = _make_provider_instance(cfg)
-        self._provider_cache[cache_key] = inst
-        return inst
-
-    async def generate(self, *, agent_role: str, messages, temperature=None, max_tokens=None, **kw):
-        provider, model, prov_cfg = self._resolve(agent_role)
-        if not model:
-            raise ValueError(f"角色 '{agent_role}' 未配置模型。请在「设置→Pipeline 配置」中分配。")
-        inst = self._get_provider(provider, model, prov_cfg)
-        resp = await inst.generate(messages, temperature=temperature, max_tokens=max_tokens, **kw)
-        _record_usage(agent_role, provider, model, resp.input_tokens, resp.output_tokens)
-        return resp
-
-    async def invoke(self, *, role: str, prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
-        """Simple prompt-in, text-out API used by BaseSkill.execute()."""
-        from llm.base import LLMMessage
-        messages = [LLMMessage(role="user", content=prompt)]
-        resp = await self.generate(agent_role=role, messages=messages, temperature=temperature, max_tokens=max_tokens)
-        return resp.content
-
-    async def generate_stream(self, *, agent_role: str, messages, temperature=None, max_tokens=None, **kw):
-        provider, model, prov_cfg = self._resolve(agent_role)
-        if not model:
-            raise ValueError(f"角色 '{agent_role}' 未配置模型。请在「设置→Pipeline 配置」中分配。")
-        inst = self._get_provider(provider, model, prov_cfg)
-        async for token in inst.generate_stream(messages, temperature=temperature, max_tokens=max_tokens, **kw):
-            yield token
-
-
-def _make_provider_instance(cfg):
-    """Instantiate a provider from a ProviderConfig."""
-    ptype = cfg.provider_type
-    if ptype == "ollama":
-        from llm.ollama_provider import OllamaProvider
-        return OllamaProvider(cfg)
-    elif ptype == "deepseek":
-        from llm.deepseek_provider import DeepSeekProvider
-        return DeepSeekProvider(cfg)
-    elif ptype == "openai":
-        from llm.openai_provider import OpenAIProvider
-        return OpenAIProvider(cfg)
-    elif ptype == "anthropic":
-        from llm.anthropic_provider import AnthropicProvider
-        return AnthropicProvider(cfg)
-    elif ptype == "gemini":
-        from llm.gemini_provider import GeminiProvider
-        return GeminiProvider(cfg)
-    elif ptype == "vllm":
-        from llm.vllm_provider import VLLMProvider
-        return VLLMProvider(cfg)
-    elif ptype == "mock":
-        from llm.mock_provider import MockProvider
-        return MockProvider(cfg)
-    else:
-        from llm.ollama_provider import OllamaProvider
-        return OllamaProvider(cfg)
-
-
-def _build_router(provider: str = "", model: str = ""):
-    """Build a router from user settings.
-
-    If explicit provider+model given, uses that as fallback.
-    Otherwise resolves a fallback from the first configured enabled provider.
-    Each agent_role call will look up its own pipeline assignment first.
-    """
-    user_settings = _get_user_settings()
-    providers_cfg = user_settings.get("providers", {})
-    pipeline = user_settings.get("pipeline", {})
-
-    # Find a fallback provider+model (used only when a role has no assignment)
-    fb_provider = provider
-    fb_model = model
-
-    if not fb_provider or not fb_model:
-        # Try pipeline config
-        for role_key in ("scene_director", "editor_stylist", "editor_writer", "actor_default", "evaluator"):
-            role_cfg = pipeline.get(role_key, {})
-            p = role_cfg.get("provider", "")
-            m = role_cfg.get("model", "")
-            if p and m:
-                fb_provider = fb_provider or p
-                fb_model = fb_model or m
-                break
-
-    if not fb_provider or not fb_model:
-        # Scan enabled providers
-        for pname, pcfg in providers_cfg.items():
-            if pcfg.get("enabled") and pcfg.get("models"):
-                fb_provider = fb_provider or pname
-                fb_model = fb_model or pcfg["models"][0]
-                break
-
-    if not fb_provider or not fb_model:
-        # Auto-detect Ollama as last resort
-        ollama_cfg = providers_cfg.get("ollama", {})
-        try:
-            import httpx
-            base = ollama_cfg.get("base_url", "http://localhost:11434")
-            resp = httpx.get(f"{base}/api/tags", timeout=5)
-            if resp.status_code == 200:
-                ollama_models = [m["name"] for m in resp.json().get("models", [])]
-                if ollama_models:
-                    fb_provider = "ollama"
-                    fb_model = ollama_models[0]
-        except Exception:
-            pass
-
-    if not fb_model:
-        # In test mode, automatically fall back to mock provider
-        import os
-        if os.environ.get("WN_TEST_MODE") == "1":
-            fb_provider = "mock"
-            fb_model = "mock-test-v1"
-        else:
-            raise ValueError(
-                "未找到可用的 AI 模型。请在「设置」页面中启用一个模型供应商并配置模型。"
-            )
-
-    return _SimpleRouter(user_settings, fb_provider, fb_model)
 
 
 @router.get("/health")
