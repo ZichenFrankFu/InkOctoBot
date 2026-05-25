@@ -6,7 +6,9 @@ testable. The package aggregates them all into a single ``router``
 which the parent reference_api.py mounts so the original public URL
 namespace (``/api/references/*``) is preserved without touching main.py.
 
-Currently extracted (7 sub-routers):
+Currently extracted (8 sub-routers):
+  - works          /works CRUD, /upload, /files
+                                          (parent entity for everything)
   - inspirations   /inspirations         (idea snippets)
   - entries        /entries              (per-work content slices)
   - links          /links                (project ⇄ reference-work)
@@ -17,11 +19,10 @@ Currently extracted (7 sub-routers):
                    /garbled_patterns     (user-tunable regex)
 
 Pending (still in reference_api.py until next split pass):
-  - works CRUD + upload + files
-  - preprocess + chapter editing
-  - segments + chunks extract
-  - analysis writer + prompts
-  - web_search + ai_complete
+  - preprocess + chapter editing  (largest remaining: ~1800 lines)
+  - segments + chunks extract     (~870 lines)
+  - analysis writer + prompts     (~820 lines)
+  - web_search + ai_complete      (~150 lines)
 """
 from fastapi import APIRouter
 
@@ -32,10 +33,12 @@ from .links import router as _links_router
 from .lora import router as _lora_router
 from .patterns import router as _patterns_router
 from .stats import router as _stats_router
+from .works import router as _works_router
 
 # All sub-routers share the same /references prefix, applied by
 # reference_api.py when it mounts this aggregator.
 router = APIRouter()
+router.include_router(_works_router)
 router.include_router(_inspirations_router)
 router.include_router(_entries_router)
 router.include_router(_links_router)
