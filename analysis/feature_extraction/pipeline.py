@@ -180,7 +180,7 @@ class FeatureExtractionPipeline:
         self.db_path = str(db_path)
 
     def run(self, ref_id: str) -> dict[str, Any]:
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
 
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
@@ -261,7 +261,7 @@ class FeatureExtractionPipeline:
         }
 
     def run_all_pending(self) -> list[dict]:
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
 
         rdb = ReferenceDB(self.db_path)
         results: list[dict] = []
@@ -382,7 +382,7 @@ class FeatureExtractionPipeline:
         """Return the user's saved custom plan if present in segments_json,
         else fall back to the auto-detected plan. Use this from any code
         path that needs to honor user-edited volume titles / ranges."""
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         try:
             work = ReferenceDB(self.db_path).get_work(ref_id)
             if work and work.get("segments_json"):
@@ -436,7 +436,7 @@ class FeatureExtractionPipeline:
         """Compute the auto-detected plan (第X卷 markers OR ~100k-char chunks)
         without persisting it. The UI uses this for the "auto-suggest"
         button so users can adopt the suggestion as a starting point."""
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
         if not work:
@@ -453,7 +453,7 @@ class FeatureExtractionPipeline:
         send. Surfaced via API so the user can copy it into a web LLM
         (ChatGPT / Claude.ai) when the configured model is unable to
         produce parseable output. Also returns chapter count for context."""
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         from analysis.feature_extraction.volume_detector import build_volume_prompt
 
         rdb = ReferenceDB(self.db_path)
@@ -487,7 +487,7 @@ class FeatureExtractionPipeline:
         ``used_method`` is one of ``ai_web_search`` / ``ai_local`` /
         ``text_scan`` / ``parser_tags`` / ``none``.
         """
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         from analysis.feature_extraction.volume_detector import (
             ai_detect_volumes, text_detect_volumes, build_volume_prompt,
         )
@@ -512,7 +512,7 @@ class FeatureExtractionPipeline:
 
         # ── Try AI first when a router is available ──
         try:
-            from models.router import ModelRouter
+            from llm.router import ModelRouter
             router = ModelRouter()
         except Exception as e:
             logger.info("[volume_detect] router unavailable, skipping AI: %s", e)
@@ -580,7 +580,7 @@ class FeatureExtractionPipeline:
         """Rename a single segment's title in-place without resetting any
         already-completed extraction results. Used by inline title edit in
         the timeline so renaming "第 1–8 章" → "1954 年" is non-destructive."""
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
         if not work:
@@ -614,7 +614,7 @@ class FeatureExtractionPipeline:
         """Persist a user-edited plan (volume titles + chapter ranges)
         into segments_json["custom_plan"]. Clears any per-segment
         extraction results because the segmentation has changed."""
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
         if not work:
@@ -761,7 +761,7 @@ class FeatureExtractionPipeline:
         Plot outline (chronicle skeleton) uses NLP rules built off the
         AI rhythm result; if AI rhythm failed, plot will be empty too.
         """
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
 
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
@@ -811,7 +811,7 @@ class FeatureExtractionPipeline:
         router = None
         if use_ai:
             try:
-                from models.router import ModelRouter
+                from llm.router import ModelRouter
                 router = ModelRouter()
             except Exception as e:
                 detail = str(e).strip().replace("\n", " ")[:200] or type(e).__name__
@@ -1007,7 +1007,7 @@ class FeatureExtractionPipeline:
         on the "确认并入库" button so users don't need a second click
         to see the full chronicle update after each segment.
         """
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
         if not work:
@@ -1068,7 +1068,7 @@ class FeatureExtractionPipeline:
             import asyncio
             async def _bg_index_l1():
                 try:
-                    from rag.work_index import make_indexer
+                    from knowledge.work_index import make_indexer
                     indexer = make_indexer(self.db_path)
                     await indexer.index_l1(ref_id)
                 except Exception as e:
@@ -1117,7 +1117,7 @@ class FeatureExtractionPipeline:
             - rhythm: concat tension_curve, concat pacing_segments
             - plot_outline: concat epochs/periods
         """
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
         if not work:

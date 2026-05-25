@@ -1,4 +1,4 @@
-"""rag.truth — Truth File system (state authority, modeled on InkOS).
+"""knowledge.truth — Truth File system (state authority, modeled on InkOS).
 
 See `docs/truth_file_system.md` for the architecture overview,
 end-to-end data flow, validation rules and verification guide.
@@ -11,7 +11,7 @@ SQLite is canonical; Markdown is an on-demand export view.
 """
 from __future__ import annotations
 
-from rag.truth.schemas import (
+from knowledge.truth.schemas import (
     # enums
     TruthFileKind, HookStatus, HookImportance, SubplotStatus,
     # deltas

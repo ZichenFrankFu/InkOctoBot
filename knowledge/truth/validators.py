@@ -15,15 +15,15 @@ import logging
 import sqlite3
 from typing import TYPE_CHECKING, Iterable
 
-from rag.truth.schemas import (
+from knowledge.truth.schemas import (
     HookDelta, HookStatus, NumericalReconciliation, TruthDeltas,
     ValidationIssue, ValidationReport,
 )
 
 if TYPE_CHECKING:
-    from rag.truth.store import TruthFileStore
+    from knowledge.truth.store import TruthFileStore
 
-logger = logging.getLogger("inkoctobot.rag.truth.validators")
+logger = logging.getLogger("inkoctobot.knowledge.truth.validators")
 
 
 # ──────────────────────────────────────────────────────────────

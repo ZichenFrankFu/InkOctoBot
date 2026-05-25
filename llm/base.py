@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
-logger = logging.getLogger("inkoctobot.models.base")
+logger = logging.getLogger("inkoctobot.llm.base")
 
 
 def _safe_model_dump(obj: Any) -> dict[str, Any]:

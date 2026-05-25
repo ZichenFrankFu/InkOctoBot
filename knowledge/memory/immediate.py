@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-logger = logging.getLogger("inkoctobot.rag.memory.immediate")
+logger = logging.getLogger("inkoctobot.knowledge.memory.immediate")
 
 
 @dataclass

@@ -18,9 +18,9 @@ import sqlite3
 import uuid
 from typing import Any
 
-from models.base import LLMMessage
+from llm.base import LLMMessage
 
-logger = logging.getLogger("inkoctobot.rag.memory.consolidator")
+logger = logging.getLogger("inkoctobot.knowledge.memory.consolidator")
 
 _CONSOLIDATION_PROMPT = """\
 你是一个小说记忆压缩引擎。给定一个章节摘要，提取以下三类永久信息：

@@ -8,14 +8,14 @@ from pathlib import Path
 import pytest
 
 from storage.creation_schema import ensure_creation_tables
-from rag.truth import migrate as M
-from rag.truth.markdown_renderer import render_pending_hooks
-from rag.truth.schemas import (
+from knowledge.truth import migrate as M
+from knowledge.truth.markdown_renderer import render_pending_hooks
+from knowledge.truth.schemas import (
     ChapterSummaryDelta, EmotionArcEntry, HookDelta, HookImportance,
     NumericalReconciliation, RelationUpdate, StatePatch, TruthDeltas,
     TruthFileKind,
 )
-from rag.truth.store import TruthFileStore
+from knowledge.truth.store import TruthFileStore
 
 
 @pytest.fixture
@@ -174,7 +174,7 @@ def test_full_lifecycle(
 
 def test_validate_state_after_lifecycle(fresh_db: str, monkeypatch):
     """validate_state should pass on a clean migrated project."""
-    from rag.truth.validators import validate_state
+    from knowledge.truth.validators import validate_state
     store = TruthFileStore("demo", db_path=fresh_db)
     monkeypatch.setattr(M, "_character_rows", lambda _: [
         {"name": "张远", "current_location": "青云山"},

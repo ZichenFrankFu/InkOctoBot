@@ -25,7 +25,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from models.base import LLMMessage, ProviderConfig
+from llm.base import LLMMessage, ProviderConfig
 
 # Model name — set by Modelfile
 OLLAMA_MODEL = os.environ.get("INKOCTOBOT_TEST_MODEL", "deepseek-r1-qwen-32b")
@@ -74,7 +74,7 @@ class TestOllamaProvider(unittest.TestCase):
     """Direct Ollama provider test."""
 
     def test_generate(self):
-        from models.ollama_provider import OllamaProvider
+        from llm.ollama_provider import OllamaProvider
         provider = OllamaProvider(ProviderConfig(
             provider_type="ollama",
             model_name=OLLAMA_MODEL,
@@ -90,7 +90,7 @@ class TestOllamaProvider(unittest.TestCase):
         print(f"\n[OllamaProvider] Response ({resp.output_tokens} tokens): {resp.content[:200]}")
 
     def test_health_check(self):
-        from models.ollama_provider import OllamaProvider
+        from llm.ollama_provider import OllamaProvider
         provider = OllamaProvider(ProviderConfig(
             provider_type="ollama",
             model_name=OLLAMA_MODEL,
@@ -105,7 +105,7 @@ class TestSceneDirectorIntegration(unittest.TestCase):
     """Scene Director generates scene plans."""
 
     def test_plan_scene(self):
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         from agents.production.scene_director import SceneDirector
 
         router = ModelRouter()
@@ -136,7 +136,7 @@ class TestActorAgentIntegration(unittest.TestCase):
     """Actor Agent generates character performance."""
 
     def test_perform(self):
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         from agents.production.actor_agent import ActorAgent
 
         router = ModelRouter()
@@ -168,7 +168,7 @@ class TestEditorWriterIntegration(unittest.TestCase):
     """Editor-Writer transforms performance records into chapter text."""
 
     def test_assemble(self):
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         from agents.production.editor_writer import EditorWriter
 
         router = ModelRouter()
@@ -202,7 +202,7 @@ class TestEvaluatorIntegration(unittest.TestCase):
     """Evaluator assesses chapter quality."""
 
     def test_evaluate(self):
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         from agents.evaluation.evaluator import Evaluator
 
         router = ModelRouter()
@@ -228,7 +228,7 @@ class TestStoryArchitectIntegration(unittest.TestCase):
     """Story Architect disambiguates and refines settings."""
 
     def test_refine(self):
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         from agents.planner.story_architect import StoryArchitect
 
         router = ModelRouter()
@@ -248,7 +248,7 @@ class TestNarratorAgentIntegration(unittest.TestCase):
     """Narrator Agent generates atmosphere/environment."""
 
     def test_narrate(self):
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         from agents.production.narrator_agent import NarratorAgent
 
         router = ModelRouter()
@@ -274,7 +274,7 @@ class TestFullPipelineIntegration(unittest.TestCase):
     """End-to-end: Scene Director → Actor → Narrator → Editor → Evaluator."""
 
     def test_mini_pipeline(self):
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         from agents.production.scene_director import SceneDirector
         from agents.production.actor_agent import ActorAgent
         from agents.production.narrator_agent import NarratorAgent

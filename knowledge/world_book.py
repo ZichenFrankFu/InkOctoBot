@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-logger = logging.getLogger("inkoctobot.rag.world_book")
+logger = logging.getLogger("inkoctobot.knowledge.world_book")
 
 
 class WorldBookManager:

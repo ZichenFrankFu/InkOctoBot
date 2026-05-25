@@ -4,7 +4,7 @@ Self-learning Skill system — sandboxed skill generation.
 Inspired by OpenClaw's skill auto-discovery, but with strict permission
 boundaries:
 - Only writes to agents/learned_skills/
-- Only reads from data/, config/prompts/, rag/
+- Only reads from data/, config/prompts/, knowledge/
 - Forbidden: os.system, subprocess, socket, requests, urllib
 - AST-level static analysis before installation
 """
@@ -37,7 +37,7 @@ class SkillLearner:
     """
 
     ALLOWED_WRITE_PATHS = ["agents/learned_skills/"]
-    ALLOWED_READ_PATHS = ["data/", "config/prompts/", "rag/"]
+    ALLOWED_READ_PATHS = ["data/", "config/prompts/", "knowledge/"]
 
     def __init__(self, model_router: Any = None):
         self._router = model_router
@@ -162,7 +162,7 @@ Output format:
 (skill.py content)
 ```"""
 
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         messages = [LLMMessage(role="user", content=prompt)]
         resp = await self._router.generate(
             agent_role="default",

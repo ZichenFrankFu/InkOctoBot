@@ -527,7 +527,7 @@ def persist_result_to_segments(ref_id: str, db_path: str,
     """Stash detection results into segments_json["preprocess"] so the
     PreprocessPanel UI can pick them up on the next status poll without
     re-running the job."""
-    from rag.reference_db import ReferenceDB
+    from knowledge.reference_db import ReferenceDB
     from analysis.feature_extraction.chapter_parser import visible_char_count
     rdb = ReferenceDB(db_path)
     work = rdb.get_work(ref_id)

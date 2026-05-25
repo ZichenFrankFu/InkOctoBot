@@ -346,7 +346,7 @@ def _load_reference_blocks(project_id: str, db_path: str, exclude: set | None = 
     if not selection:
         return ""
     try:
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
 
         ref_db = ReferenceDB(db_path)
         links = ref_db.get_project_links(project_id)
@@ -602,7 +602,7 @@ def build_referenced_materials_block(
     rdb = None
     if db_path and by_work:
         try:
-            from rag.reference_db import ReferenceDB
+            from knowledge.reference_db import ReferenceDB
 
             rdb = ReferenceDB(db_path)
         except Exception:
@@ -998,7 +998,7 @@ def creation_context_manifest(
 
     ref_items: list[dict] = []
     try:
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         from ui.backend.app.routers.generation_api import _get_db_path
 
         rdb = ReferenceDB(_get_db_path())

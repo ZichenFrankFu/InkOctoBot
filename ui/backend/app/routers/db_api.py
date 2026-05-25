@@ -293,7 +293,7 @@ async def opening_ai_summary(body: dict = Body(...)):
     if prompt_only:
         return {"prompt": prompt, "sample_count": len(rows)}
     try:
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
 
         summary = await ModelRouter().invoke(
             role="reference_extractor", prompt=prompt,

@@ -107,7 +107,7 @@ def skill_test(
             inputs = json.load(f)
         typer.echo(f"\nRunning with inputs from {input_file}...")
 
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         router = ModelRouter()
 
         result = asyncio.run(skill.execute_with_messages(inputs, router))
@@ -236,7 +236,7 @@ def extract_run(
 ) -> None:
     """Run extraction pipeline (运行提取流程)."""
     from reference_ingest.skill_extraction.orchestrator import SkillExtractionOrchestrator
-    from models.router import ModelRouter
+    from llm.router import ModelRouter
 
     orchestrator = SkillExtractionOrchestrator(
         db_path=db,
@@ -336,7 +336,7 @@ app.add_typer(model_app, name="model")
 @model_app.command("list")
 def model_list() -> None:
     """List configured models."""
-    from models.router import ModelRouter
+    from llm.router import ModelRouter
     try:
         router = ModelRouter()
         for key, desc in router.list_providers().items():

@@ -11,9 +11,9 @@ import logging
 import uuid
 from typing import Any
 
-from rag.vector_store import VectorStore
+from knowledge.vector_store import VectorStore
 
-logger = logging.getLogger("inkoctobot.rag.memory.semantic_store")
+logger = logging.getLogger("inkoctobot.knowledge.memory.semantic_store")
 
 
 class SemanticMemory:

@@ -618,7 +618,7 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
 
     Shared by the built-in-AI path and the copy-prompt (web-LLM) path.
     """
-    from rag.reference_db import ReferenceDB
+    from knowledge.reference_db import ReferenceDB
     from ui.backend.app.settings import settings as _app_settings
     from ui.backend.app.routers._rag_context import (
         _condense_ref_characters, _condense_ref_settings,
@@ -716,7 +716,7 @@ async def compare_works(body: CompareWorksRequest):
     """Pull each work's extracted features, ask the AI to find common
     patterns + differences, return a draft Skill object that the client
     can review and then save via the existing /api/skills/create."""
-    from models.router import ModelRouter
+    from llm.router import ModelRouter
 
     prompt, works = _build_compare_prompt(body)
 

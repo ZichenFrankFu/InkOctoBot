@@ -1,4 +1,4 @@
-"""Tests for rag.truth.migrate (C5)."""
+"""Tests for knowledge.truth.migrate (C5)."""
 from __future__ import annotations
 
 import json
@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from storage.creation_schema import ensure_creation_tables
-from rag.truth import migrate as M
-from rag.truth.store import TruthFileStore
+from knowledge.truth import migrate as M
+from knowledge.truth.store import TruthFileStore
 
 
 @pytest.fixture

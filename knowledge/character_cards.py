@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-logger = logging.getLogger("inkoctobot.rag.character_cards")
+logger = logging.getLogger("inkoctobot.knowledge.character_cards")
 
 
 class CharacterCardManager:

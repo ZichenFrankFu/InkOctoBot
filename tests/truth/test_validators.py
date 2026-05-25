@@ -1,4 +1,4 @@
-"""Tests for rag.truth.validators (C3): 12 cross-file rules + state audit."""
+"""Tests for knowledge.truth.validators (C3): 12 cross-file rules + state audit."""
 from __future__ import annotations
 
 import sqlite3
@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 
 from storage.creation_schema import ensure_creation_tables
-from rag.truth.schemas import (
+from knowledge.truth.schemas import (
     ChapterSummaryDelta, EmotionArcEntry, HookDelta, HookImportance,
     NumericalReconciliation, RelationUpdate, StatePatch, SubplotStatus,
     SubplotUpdate, TruthDeltas,
 )
-from rag.truth.store import TruthFileStore
-from rag.truth.validators import validate_deltas, validate_state
+from knowledge.truth.store import TruthFileStore
+from knowledge.truth.validators import validate_deltas, validate_state
 
 
 # ─────── fixtures ───────

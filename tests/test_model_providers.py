@@ -12,7 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from models.base import (
+from llm.base import (
     ProviderConfig, LLMMessage, LLMResponse,
 )
 
@@ -62,13 +62,13 @@ class TestLLMResponse(unittest.TestCase):
 class TestModelRouterConfig(unittest.TestCase):
 
     def test_load_config(self):
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         router = ModelRouter()
         # Should have loaded config/models.yaml
         self.assertIsNotNone(router._config)
 
     def test_estimate_cost_local(self):
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         router = ModelRouter()
         # Local models should have zero cost
         cost = router.estimate_cost("actor_agent", 1000, 500)
@@ -78,15 +78,15 @@ class TestModelRouterConfig(unittest.TestCase):
 class TestCostEstimator(unittest.TestCase):
 
     def test_estimate_step(self):
-        from models.router import ModelRouter
-        from models.cost_estimator import CostEstimator, SessionCostTracker
+        from llm.router import ModelRouter
+        from llm.cost_estimator import CostEstimator, SessionCostTracker
         router = ModelRouter()
         estimator = CostEstimator(router)
         est = estimator.estimate_step("scene_director")
         self.assertGreater(est.estimated_input_tokens, 0)
 
     def test_session_tracker(self):
-        from models.cost_estimator import SessionCostTracker
+        from llm.cost_estimator import SessionCostTracker
         tracker = SessionCostTracker(budget_usd=2.0)
         tracker.record_actual("test", 100, 50, 0.01)
         self.assertAlmostEqual(tracker.total_actual, 0.01)

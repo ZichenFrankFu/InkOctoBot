@@ -10,14 +10,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from rag.memory.immediate import ImmediateContext, SceneContext
-from rag.memory.chapter_buffer import ChapterBuffer
-from rag.memory.semantic_store import SemanticMemory
-from rag.memory.episodic_timeline import EpisodicTimeline
-from rag.memory.consolidator import MemoryConsolidator
-from rag.memory.knowledge_isolation import KnowledgeIsolationEngine, FilteredWorldView
+from knowledge.memory.immediate import ImmediateContext, SceneContext
+from knowledge.memory.chapter_buffer import ChapterBuffer
+from knowledge.memory.semantic_store import SemanticMemory
+from knowledge.memory.episodic_timeline import EpisodicTimeline
+from knowledge.memory.consolidator import MemoryConsolidator
+from knowledge.memory.knowledge_isolation import KnowledgeIsolationEngine, FilteredWorldView
 
-logger = logging.getLogger("inkoctobot.rag.memory.manager")
+logger = logging.getLogger("inkoctobot.knowledge.memory.manager")
 
 
 class MemoryManager:

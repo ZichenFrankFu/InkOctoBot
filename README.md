@@ -830,7 +830,7 @@ InkOctoBot/
 │   ├── rhythm_analyzer.py               # 节奏/张力曲线分析
 │   └── style_extractor.py               # PROSE 迭代风格收敛提取
 │
-├── rag/                                 # RAG 知识库层
+├── knowledge/                           # RAG 知识库层
 │   ├── character_cards.py               # 角色卡 Layer A (自然语言描述) 管理
 │   ├── constraint_store.py              # 约束规则存储与检索
 │   ├── decision_engine.py               # 角色卡 Layer B (量化决策引擎)

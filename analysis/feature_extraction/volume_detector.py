@@ -95,7 +95,7 @@ async def ai_detect_volumes(
     use_web = False
     if prefer_web_search:
         try:
-            from models.web_search_capabilities import supports_web_search
+            from llm.web_search_capabilities import supports_web_search
             provider, model = router.resolve_role("reference_web_search")
             use_web = supports_web_search(provider, model)
         except Exception as e:

@@ -16,7 +16,7 @@ router = APIRouter(prefix="/references", tags=["references"])
 
 
 def _db():
-    from rag.reference_db import ReferenceDB
+    from knowledge.reference_db import ReferenceDB
     # Test mode: use reference DB from data_dir
     if settings.test_mode and settings.data_dir:
         db_path = str(settings.data_dir / "novels.db")
@@ -2633,7 +2633,7 @@ async def extract_chunk(ref_id: str, segment_index: int, chunk_index: int,
         from analysis.feature_extraction.ai_extractor import (
             build_segment_text_chunks, ai_extract_outline_events,
         )
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
 
         pipe = FeatureExtractionPipeline(db.db_path)
         text = pipe._load_text(w)
@@ -2795,7 +2795,7 @@ async def extract_chunk_characters(
         raise HTTPException(404, "参考作品不存在")
     try:
         from analysis.feature_extraction.ai_extractor import ai_extract_characters
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
         )
@@ -2860,7 +2860,7 @@ async def extract_chunk_settings(
         raise HTTPException(404, "参考作品不存在")
     try:
         from analysis.feature_extraction.ai_extractor import ai_extract_settings
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
         )
@@ -2936,7 +2936,7 @@ async def extract_chunk_all(
     try:
         from analysis.feature_extraction.nlp_stats import compute_nlp_style
         from analysis.feature_extraction.ai_extractor import ai_extract_all
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
         )
@@ -3021,7 +3021,7 @@ async def extract_chunk_style(
         errors: list[str] = []
         if body.use_ai:
             from analysis.feature_extraction.ai_extractor import ai_extract_style
-            from models.router import ModelRouter
+            from llm.router import ModelRouter
             try:
                 router_inst = ModelRouter()
             except Exception as e:
@@ -3248,8 +3248,8 @@ async def chat_segment(ref_id: str, body: SegmentChatRequest):
         raise HTTPException(400, "对话内容为空")
 
     try:
-        from models.router import ModelRouter
-        from models.base import LLMMessage
+        from llm.router import ModelRouter
+        from llm.base import LLMMessage
         router_inst = ModelRouter()
     except Exception as e:
         raise HTTPException(500, f"模型路由初始化失败：{e}")
@@ -3963,7 +3963,7 @@ async def summarize_chronicle(ref_id: str):
         )
 
         try:
-            from models.router import ModelRouter
+            from llm.router import ModelRouter
             router_inst = ModelRouter()
         except Exception as e:
             return {
@@ -4062,8 +4062,8 @@ async def summarize_plot_outline(ref_id: str, body: OutlineGranularityRequest):
     if body.prompt_only:
         return {"ok": True, "prompt": prompt}
     try:
-        from models.router import ModelRouter
-        from models.base import LLMMessage
+        from llm.router import ModelRouter
+        from llm.base import LLMMessage
         router_inst = ModelRouter()
         provider = router_inst._get_provider("reference_extractor")
         resp = await provider.generate(
@@ -4154,8 +4154,8 @@ def web_search_capability():
     """Return whether the configured ``reference_web_search`` role's
     provider+model is in the known web-search-capable set."""
     try:
-        from models.router import ModelRouter
-        from models.web_search_capabilities import supports_web_search, describe
+        from llm.router import ModelRouter
+        from llm.web_search_capabilities import supports_web_search, describe
         router_inst = ModelRouter()
         provider, model = router_inst.resolve_role("reference_web_search")
         enabled = supports_web_search(provider, model)
@@ -4199,8 +4199,8 @@ async def ai_complete_work(ref_id: str, body: AiCompleteRequest | None = None):
         raise HTTPException(404, "参考作品不存在")
 
     try:
-        from models.router import ModelRouter
-        from models.web_search_capabilities import supports_web_search, describe
+        from llm.router import ModelRouter
+        from llm.web_search_capabilities import supports_web_search, describe
         router_inst = ModelRouter()
         provider, model = router_inst.resolve_role("reference_web_search")
     except Exception as e:
@@ -4295,7 +4295,7 @@ def _indexer():
     """Lazily build a WorkIndexer using the configured embedding backend.
     Raises HTTPException(503) with a clear message if any dep is missing."""
     try:
-        from rag.work_index import make_indexer
+        from knowledge.work_index import make_indexer
         db = _db()
         return make_indexer(db.db_path)
     except ImportError as e:

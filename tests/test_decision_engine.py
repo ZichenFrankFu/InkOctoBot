@@ -11,7 +11,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from rag.decision_engine import (
+from knowledge.decision_engine import (
     DecisionModel, ValueWeights, ProspectParams,
     StochasticParams, BayesianTrust,
 )

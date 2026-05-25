@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-logger = logging.getLogger("inkoctobot.rag.work_index")
+logger = logging.getLogger("inkoctobot.knowledge.work_index")
 
 
 def _short_hash(text: str, n: int = 12) -> str:
@@ -129,7 +129,7 @@ class WorkIndexer:
     async def index_l1(self, ref_id: str) -> dict:
         """L1: chronicle events + characters + settings (cheap, always run).
         Reads the work's currently-stored analysis JSON and (re-)embeds it."""
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
         if not work:
@@ -212,7 +212,7 @@ class WorkIndexer:
 
     async def index_l2(self, ref_id: str) -> dict:
         """L2: per-chapter summary (title + head/tail snippets)."""
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
         if not work:
@@ -268,8 +268,8 @@ class WorkIndexer:
         the collection (via VectorStore.get_many) so killing + restarting
         the indexer doesn't re-embed previously persisted batches.
         """
-        from rag.reference_db import ReferenceDB
-        from rag.chunk_stream import chunk_text_streaming
+        from knowledge.reference_db import ReferenceDB
+        from knowledge.chunk_stream import chunk_text_streaming
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
         if not work:
@@ -464,8 +464,8 @@ def make_indexer(db_path: str, *, backend: str | None = None) -> WorkIndexer:
     """One-call constructor: pulls the embedding backend from settings
     (or the explicit override) and wires up a ``reference_works`` ChromaDB
     collection keyed by backend name."""
-    from models.embedding_provider import get_embedding_provider, collection_name_for
-    from rag.vector_store import VectorStore
+    from llm.embedding_provider import get_embedding_provider, collection_name_for
+    from knowledge.vector_store import VectorStore
     provider = get_embedding_provider(backend)
     vs = VectorStore(collection_name=collection_name_for(provider.name))
     return WorkIndexer(db_path, vs, provider)

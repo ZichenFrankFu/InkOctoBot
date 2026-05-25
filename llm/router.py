@@ -17,11 +17,11 @@ from typing import Any, AsyncIterator
 
 import yaml
 
-from models.base import (
+from llm.base import (
     BaseLLMProvider, LLMMessage, LLMResponse, ProviderConfig,
 )
 
-logger = logging.getLogger("inkoctobot.models.router")
+logger = logging.getLogger("inkoctobot.llm.router")
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 

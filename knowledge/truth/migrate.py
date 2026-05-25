@@ -21,13 +21,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
-from rag.truth.schemas import (
+from knowledge.truth.schemas import (
     ApplyResult, ChapterSummaryDelta, EmotionArcEntry, HookDelta,
     HookImportance, RelationUpdate, StatePatch, TruthDeltas,
 )
-from rag.truth.store import TruthFileStore
+from knowledge.truth.store import TruthFileStore
 
-logger = logging.getLogger("inkoctobot.rag.truth.migrate")
+logger = logging.getLogger("inkoctobot.knowledge.truth.migrate")
 
 
 MigrationSource = Literal[

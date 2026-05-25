@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.rag.memory.knowledge_isolation")
+logger = logging.getLogger("inkoctobot.knowledge.memory.knowledge_isolation")
 
 
 @dataclass

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from rag.vector_store import VectorStore
+from knowledge.vector_store import VectorStore
 
 logger = logging.getLogger("inkoctobot.agents.guardrails.violation_detector")
 

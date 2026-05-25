@@ -183,7 +183,7 @@ async def check_consistency(req: ConsistencyCheckRequest):
     """Check text against world rules and character constraints."""
     try:
         from agents.evaluation.consistency_checker import ConsistencyChecker
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         router_inst = ModelRouter()
         checker = ConsistencyChecker(router_inst, project_id=req.project_id)
         # For now, do a basic rule-based check

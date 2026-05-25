@@ -21,7 +21,7 @@ from typing import Any, TYPE_CHECKING
 
 import yaml
 
-from models.base import LLMMessage, LLMResponse
+from llm.base import LLMMessage, LLMResponse
 
 if TYPE_CHECKING:
     from framework.skill_registry import SkillRegistry

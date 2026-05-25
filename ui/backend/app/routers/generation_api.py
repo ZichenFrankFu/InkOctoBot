@@ -172,7 +172,7 @@ def _load_user_style_preferences(project_id: str, db_path: str) -> str:
 def _load_reference_style(project_id: str, db_path: str) -> str:
     """Load style info from linked reference works (B1: reference style injection)."""
     try:
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         ref_db = ReferenceDB(db_path)
         links = ref_db.get_project_links(project_id)
         if not links:
@@ -210,7 +210,7 @@ def _load_reference_style(project_id: str, db_path: str) -> str:
 def _load_unresolved_foreshadowing(project_id: str, db_path: str, chapter_num: int) -> str:
     """Load unresolved foreshadowing for context injection (B2: foreshadowing tracking)."""
     try:
-        from rag.memory.episodic_timeline import EpisodicTimeline
+        from knowledge.memory.episodic_timeline import EpisodicTimeline
         timeline = EpisodicTimeline(db_path)
         unresolved = timeline.get_unresolved_foreshadowing(project_id)
         if not unresolved:
@@ -275,7 +275,7 @@ async def _run_chapter_complete_hook(
     """Post-generation hook: update memory system (A2: memory integration)."""
     try:
         # Generate chapter summary using LLM
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         summary_resp = await router_inst.generate(
             agent_role="evaluator",
             messages=[
@@ -464,7 +464,7 @@ class _SimpleRouter:
         cache_key = f"{provider}:{model}"
         if cache_key in self._provider_cache:
             return self._provider_cache[cache_key]
-        from models.base import ProviderConfig
+        from llm.base import ProviderConfig
         cfg = ProviderConfig(
             provider_type=provider,
             model_name=model,
@@ -486,7 +486,7 @@ class _SimpleRouter:
 
     async def invoke(self, *, role: str, prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
         """Simple prompt-in, text-out API used by BaseSkill.execute()."""
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         messages = [LLMMessage(role="user", content=prompt)]
         resp = await self.generate(agent_role=role, messages=messages, temperature=temperature, max_tokens=max_tokens)
         return resp.content
@@ -504,28 +504,28 @@ def _make_provider_instance(cfg):
     """Instantiate a provider from a ProviderConfig."""
     ptype = cfg.provider_type
     if ptype == "ollama":
-        from models.ollama_provider import OllamaProvider
+        from llm.ollama_provider import OllamaProvider
         return OllamaProvider(cfg)
     elif ptype == "deepseek":
-        from models.deepseek_provider import DeepSeekProvider
+        from llm.deepseek_provider import DeepSeekProvider
         return DeepSeekProvider(cfg)
     elif ptype == "openai":
-        from models.openai_provider import OpenAIProvider
+        from llm.openai_provider import OpenAIProvider
         return OpenAIProvider(cfg)
     elif ptype == "anthropic":
-        from models.anthropic_provider import AnthropicProvider
+        from llm.anthropic_provider import AnthropicProvider
         return AnthropicProvider(cfg)
     elif ptype == "gemini":
-        from models.gemini_provider import GeminiProvider
+        from llm.gemini_provider import GeminiProvider
         return GeminiProvider(cfg)
     elif ptype == "vllm":
-        from models.vllm_provider import VLLMProvider
+        from llm.vllm_provider import VLLMProvider
         return VLLMProvider(cfg)
     elif ptype == "mock":
-        from models.mock_provider import MockProvider
+        from llm.mock_provider import MockProvider
         return MockProvider(cfg)
     else:
-        from models.ollama_provider import OllamaProvider
+        from llm.ollama_provider import OllamaProvider
         return OllamaProvider(cfg)
 
 
@@ -765,7 +765,7 @@ async def rewrite_text(req: RewriteRequest):
         )
         if req.prompt_only:
             return {"status": "ok", "prompt": user_content}
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         router_inst = _build_router(req.provider, req.model)
         from agents.production.editor_writer import EditorWriter
         editor = EditorWriter(router_inst, project_id="rewrite")
@@ -833,7 +833,7 @@ async def evaluate_text(req: EvalRequest):
 async def quick_generate(req: GenerateRequest):
     """Single-step generation: synopsis -> full chapter text."""
     try:
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         from analysis.feature_extraction.prompts import render as _render_prompt
         router_inst = _build_router(req.provider, req.model)
         skills_used: list[str] = []
@@ -946,7 +946,7 @@ class OutlineChatRequest(BaseModel):
 async def outline_chat(req: OutlineChatRequest):
     """Interactive outline brainstorming: multi-turn conversation with AI."""
     try:
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         from analysis.feature_extraction.prompts import get_template
         router_inst = _build_router(req.provider, req.model)
 
@@ -1120,7 +1120,7 @@ class _ManualRouter:
         return getattr(self._real, name)
 
     async def generate(self, agent_role: str = "", messages=None, **kwargs):
-        from models.base import LLMResponse
+        from llm.base import LLMResponse
         messages = messages or []
         prompt = "\n\n".join(
             f"【{getattr(m, 'role', '')}】\n{getattr(m, 'content', '')}"
@@ -1299,7 +1299,7 @@ async def _run_pipeline_background(session_id: str):
             try:
                 _db_path = _get_db_path()
                 _proj_id = req_data.get("project_id", "")
-                from rag.memory.manager import MemoryManager as _MM
+                from knowledge.memory.manager import MemoryManager as _MM
                 _mem = _MM(db_path=_db_path)
                 _mem.set_project(_proj_id)
                 _mem_text = _mem.get_context_for_scene_director(_chapter_num)
@@ -1471,7 +1471,7 @@ async def _run_pipeline_background(session_id: str):
         all_scene_results: list[dict] = []  # Results from each scene
         try:
             from agents.production.scene_simulator import SceneSimulator
-            from rag.memory.manager import MemoryManager
+            from knowledge.memory.manager import MemoryManager
             from ui.backend.app.settings import settings as app_settings
 
             # Resolve DB path
@@ -1508,7 +1508,7 @@ async def _run_pipeline_background(session_id: str):
                         )
                         if _fallback_text:
                             # Inject as immediate context so agents can see it
-                            from rag.memory.immediate import SceneContext as _SC
+                            from knowledge.memory.immediate import SceneContext as _SC
                             memory.start_scene(_SC(
                                 scene_index=0,
                                 characters=characters,
@@ -1903,7 +1903,7 @@ async def _run_pipeline_background(session_id: str):
                 _eval_db_path = _get_db_path()
                 _eval_proj_id = req_data.get("project_id", "")
                 _eval_chapter_num = req_data.get("chapter_num", 1)
-                from rag.memory.episodic_timeline import EpisodicTimeline
+                from knowledge.memory.episodic_timeline import EpisodicTimeline
                 _eval_timeline = EpisodicTimeline(_eval_db_path)
                 _unresolved = _eval_timeline.get_unresolved_foreshadowing(_eval_proj_id)
                 if _unresolved:
@@ -2116,7 +2116,7 @@ async def ab_compare(req: ABCompareRequest):
         label = f"{provider}/{model}"
         try:
             r = _build_router(provider, model)
-            from models.base import LLMMessage as Msg
+            from llm.base import LLMMessage as Msg
             msgs = []
             if req.system_prompt:
                 msgs.append(Msg(role="system", content=req.system_prompt))
@@ -2222,7 +2222,7 @@ async def auto_outline(req: AutoOutlineRequest):
         character_states = ""
         unresolved_threads = ""
         try:
-            from rag.memory.manager import MemoryManager
+            from knowledge.memory.manager import MemoryManager
             mem = MemoryManager(db_path=db_path)
             mem.set_project(req.project_id)
 
@@ -2243,7 +2243,7 @@ async def auto_outline(req: AutoOutlineRequest):
 
         # Get character states from most recent chapter
         try:
-            from rag.memory.chapter_buffer import ChapterBuffer
+            from knowledge.memory.chapter_buffer import ChapterBuffer
             cb = ChapterBuffer(db_path)
             summaries = cb.get_active_summaries(req.project_id)
             if summaries:
@@ -2349,7 +2349,7 @@ async def _run_batch_pipeline(session_id: str):
         db_path = _get_db_path()
         project_id = req_data.get("project_id", "")
 
-        from rag.memory.manager import MemoryManager
+        from knowledge.memory.manager import MemoryManager
         memory = MemoryManager(db_path=db_path, router=router_inst)
         memory.set_project(project_id)
 
@@ -2625,7 +2625,7 @@ async def prompt_preview(req: PromptPreviewRequest):
 
         try:
             _db_path = _get_db_path()
-            from rag.memory.manager import MemoryManager as _MM
+            from knowledge.memory.manager import MemoryManager as _MM
             _mem = _MM(db_path=_db_path)
             _mem.set_project(req.project_id)
 

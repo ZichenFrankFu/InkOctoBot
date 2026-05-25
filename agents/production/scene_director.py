@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from agents.base_agent import BaseAgent
-from models.base import LLMResponse
+from llm.base import LLMResponse
 
 logger = logging.getLogger("inkoctobot.agents.production.scene_director")
 

@@ -14,7 +14,7 @@ import threading
 import uuid
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.rag.memory.chapter_buffer")
+logger = logging.getLogger("inkoctobot.knowledge.memory.chapter_buffer")
 
 
 class ChapterBuffer:

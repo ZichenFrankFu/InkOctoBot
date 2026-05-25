@@ -215,7 +215,7 @@ async def _run_pipeline_bg(req: PipelineRunRequest):
     global _pipeline_status
     try:
         from reference_ingest.skill_extraction.orchestrator import SkillExtractionOrchestrator
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
 
         db_path = _get_db_path()
         corpus = _corpus_dir()

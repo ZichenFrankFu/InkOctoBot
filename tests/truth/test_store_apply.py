@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 
 from storage.creation_schema import ensure_creation_tables
-from rag.truth.schemas import (
+from knowledge.truth.schemas import (
     ChapterSummaryDelta, EmotionArcEntry, HookDelta, HookImportance,
     HookStatus, NumericalReconciliation, RelationUpdate, StatePatch,
     SubplotStatus, SubplotUpdate, TruthDeltas,
 )
-from rag.truth.store import TruthFileStore, _hash_deltas
+from knowledge.truth.store import TruthFileStore, _hash_deltas
 
 
 # ───────── fixtures ─────────
@@ -196,7 +196,7 @@ def test_apply_rolls_back_on_db_error(monkeypatch, store: TruthFileStore, db_pat
     # Patch the relation insert to also blow up at the hook step, by
     # injecting a HookDelta that references a non-existent hook AFTER
     # successful writes.
-    from rag.truth import store as _store_mod
+    from knowledge.truth import store as _store_mod
     original = _store_mod.TruthFileStore._apply_hook_deltas
 
     def boom(self, conn, deltas):

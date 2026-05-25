@@ -13,7 +13,7 @@ from typing import Any
 
 from agents.guardrails.violation_detector import ViolationDetector
 
-logger = logging.getLogger("inkoctobot.rag.constraint_store")
+logger = logging.getLogger("inkoctobot.knowledge.constraint_store")
 
 
 class ConstraintStore:

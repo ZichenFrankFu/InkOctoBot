@@ -15,7 +15,7 @@ import threading
 import uuid
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.rag.memory.episodic_timeline")
+logger = logging.getLogger("inkoctobot.knowledge.memory.episodic_timeline")
 
 
 class EpisodicTimeline:

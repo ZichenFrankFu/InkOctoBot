@@ -9,7 +9,7 @@ import json, logging, sqlite3, uuid
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.rag.reference_db")
+logger = logging.getLogger("inkoctobot.knowledge.reference_db")
 
 def _gid(prefix: str = "ref") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"

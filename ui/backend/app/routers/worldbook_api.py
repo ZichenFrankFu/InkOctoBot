@@ -46,7 +46,7 @@ async def consistency_check(req: ConsistencyRequest):
         return {"status": "ok", "issues": [], "result": "没有条目需要检查"}
 
     try:
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         router_inst = _build_router(req.provider, req.model)
 
         messages = [

@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from models.base import LLMMessage, LLMResponse
+from llm.base import LLMMessage, LLMResponse
 
 logger = logging.getLogger("inkoctobot.agents.ab_compare")
 

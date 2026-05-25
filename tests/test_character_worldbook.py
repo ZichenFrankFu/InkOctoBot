@@ -10,8 +10,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from rag.character_cards import CharacterCardManager
-from rag.world_book import WorldBookManager
+from knowledge.character_cards import CharacterCardManager
+from knowledge.world_book import WorldBookManager
 
 
 class TestCharacterCardManager(unittest.TestCase):

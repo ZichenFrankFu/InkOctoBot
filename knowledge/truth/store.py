@@ -21,12 +21,12 @@ from typing import Any
 
 import yaml
 
-from rag.truth import sql as Q
-from rag.truth.schemas import (
+from knowledge.truth import sql as Q
+from knowledge.truth.schemas import (
     ApplyResult, HookDelta, HookStatus, TruthDeltas, ValidationIssue,
 )
 
-logger = logging.getLogger("inkoctobot.rag.truth.store")
+logger = logging.getLogger("inkoctobot.knowledge.truth.store")
 
 
 def _new_id() -> str:
@@ -103,7 +103,7 @@ class TruthFileStore:
         Idempotent: a (project_id, deltas_hash) collision returns the
         cached ApplyResult without re-writing.
 
-        When ``validate=True`` runs ``rag.truth.validators.validate_deltas``;
+        When ``validate=True`` runs ``knowledge.truth.validators.validate_deltas``;
         any error-severity issue aborts the apply. ``known_characters`` is
         passed through; ``allow_backfill=True`` lets the chapter_monotonic
         rule pass for migration tooling.
@@ -130,7 +130,7 @@ class TruthFileStore:
         cross_ref_issues: list[ValidationIssue] = []
         if validate:
             try:
-                from rag.truth.validators import validate_deltas as _vd
+                from knowledge.truth.validators import validate_deltas as _vd
                 cross_ref_issues = _vd(
                     self, deltas,
                     known_characters=known_characters,
@@ -699,7 +699,7 @@ class TruthFileStore:
         ``budget_tokens`` is converted to char budget at 2× ratio
         (roughly accurate for Chinese; chars under-counted for English).
         """
-        from rag.truth.markdown_renderer import render as _md_render
+        from knowledge.truth.markdown_renderer import render as _md_render
         budget_chars = max(budget_tokens * 2, 200)
         rows = self._rows_for_kind(kind, chapter_num=chapter_num,
                                     characters=characters)
@@ -715,7 +715,7 @@ class TruthFileStore:
         budgets: dict | None = None,
     ) -> dict:
         """Render multiple truth files in one call."""
-        from rag.truth.schemas import TruthFileKind as _Kind
+        from knowledge.truth.schemas import TruthFileKind as _Kind
         kinds = kinds if kinds is not None else list(_Kind)
         budgets = budgets or {}
         out: dict = {}
@@ -738,7 +738,7 @@ class TruthFileStore:
         Returns {kind: Path}.
         """
         from pathlib import Path as _Path
-        from rag.truth.schemas import TruthFileKind as _Kind
+        from knowledge.truth.schemas import TruthFileKind as _Kind
         kinds = kinds if kinds is not None else list(_Kind)
         if output_dir is None:
             try:
@@ -774,7 +774,7 @@ class TruthFileStore:
         self, kind, *, chapter_num: int,
         characters: list[str] | None,
     ) -> list[dict[str, Any]]:
-        from rag.truth.schemas import TruthFileKind as _Kind
+        from knowledge.truth.schemas import TruthFileKind as _Kind
         if kind == _Kind.current_state:
             rows = self.query_current_state()
             if characters:

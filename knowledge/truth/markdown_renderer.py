@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from rag.truth.schemas import TruthFileKind
+from knowledge.truth.schemas import TruthFileKind
 
 
 SCHEMA_VERSION = 1

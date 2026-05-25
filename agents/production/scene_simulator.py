@@ -73,7 +73,7 @@ class SceneSimulator:
             # B3: Integrate DecisionEngine for quantitative behavior guidance
             decision_guidance = ""
             try:
-                from rag.decision_engine import DecisionModel
+                from knowledge.decision_engine import DecisionModel
                 char_instructions = scene_plan.get("character_instructions", {}).get(char_name, {})
                 decision_options = char_instructions.get("decision_options", [])
                 if decision_options:
@@ -202,7 +202,7 @@ class SceneSimulator:
         """Simulate all scenes in a chapter sequentially."""
         results = []
         for i, scene_plan in enumerate(scene_plans):
-            from rag.memory.immediate import SceneContext
+            from knowledge.memory.immediate import SceneContext
             self.memory.start_scene(SceneContext(
                 scene_index=i,
                 characters=scene_plan.get("characters", []),

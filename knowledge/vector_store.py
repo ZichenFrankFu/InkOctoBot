@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.rag.vector_store")
+logger = logging.getLogger("inkoctobot.knowledge.vector_store")
 
 _DEFAULT_DIR = Path(__file__).resolve().parent.parent / "data" / "chromadb"
 

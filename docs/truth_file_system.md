@@ -68,7 +68,7 @@ layer (12 cross-file rules), and one read API (`TruthFileStore.query_*`
 | 6 | `emotional_arcs` | Per-character emotion transitions per chapter | `emotion_arcs` | `chapter_summaries.character_states_json` deltas |
 | 7 | `character_matrix` | Pairwise relationships (A's view of B) with sentiment & trust scores | `character_relations` | `character_cards.relationships` |
 
-All seven are exposed through one `TruthFileKind` enum (`rag/truth/schemas.py`).
+All seven are exposed through one `TruthFileKind` enum (`knowledge/truth/schemas.py`).
 
 The `chapter_summaries` table is **re-used**, not duplicated. The
 truth file system just adapts the existing L2 buffer.
@@ -96,7 +96,7 @@ Four layers, each a single Python file:
             v                              |
 +--------------------------------------------------------------+
 | Layer 4 - Presentation                                        |
-|   rag/truth/markdown_renderer.py                              |
+|   knowledge/truth/markdown_renderer.py                              |
 |     render_current_state, render_pending_hooks, ...           |
 |     7 renderers + YAML frontmatter + char-budget truncation   |
 +--------------------------------------------------------------+
@@ -104,7 +104,7 @@ Four layers, each a single Python file:
             v                              |
 +--------------------------------------------------------------+
 | Layer 3 - Validation                                          |
-|   rag/truth/validators.py                                     |
+|   knowledge/truth/validators.py                                     |
 |     validate_deltas(): 12 cross-file rules                    |
 |     validate_state(): 2 state-audit rules + table stats       |
 |     Layer 1: within-delta    (no DB)                          |
@@ -115,12 +115,12 @@ Four layers, each a single Python file:
             v                              |
 +--------------------------------------------------------------+
 | Layer 2 - Service                                             |
-|   rag/truth/store.py                                          |
+|   knowledge/truth/store.py                                          |
 |     TruthFileStore.apply_deltas (atomic transaction)          |
 |     TruthFileStore.query_*       (8 query methods)            |
 |     TruthFileStore.render_*      (3 render methods)           |
 |     _recompute_pressure          (post-apply pressure scan)   |
-|   rag/truth/sql.py                                            |
+|   knowledge/truth/sql.py                                            |
 |     Parameterized SQL string constants                        |
 +--------------------------------------------------------------+
             |                              ^
@@ -128,7 +128,7 @@ Four layers, each a single Python file:
 +--------------------------------------------------------------+
 | Layer 1 - Storage                                             |
 |   database/truth_schema.py     (8 tables + DDL)               |
-|   rag/truth/schemas.py         (Pydantic v2 frozen models)    |
+|   knowledge/truth/schemas.py         (Pydantic v2 frozen models)    |
 |   config/truth_files.yaml      (thresholds + enum mappings)   |
 +--------------------------------------------------------------+
                        |
@@ -144,7 +144,7 @@ Four layers, each a single Python file:
 ### Migration tooling
 
 ```
-rag/truth/migrate.py         - 4 source-specific migrators + orchestrator
+knowledge/truth/migrate.py         - 4 source-specific migrators + orchestrator
 scripts/migrate_to_truth_files.py - CLI entry point
 ```
 
@@ -313,7 +313,7 @@ md = store.render_for_prompt(
 
 Use when you want one truth file as a Markdown string for prompt
 injection. Each kind has its own renderer in
-`rag/truth/markdown_renderer.py` with hand-tuned formatting.
+`knowledge/truth/markdown_renderer.py` with hand-tuned formatting.
 
 The `characters` filter narrows the output for relevance — e.g. for
 `emotional_arcs` it returns only the listed characters.
@@ -371,7 +371,7 @@ authority.
 
 ## 7. Validation rules
 
-All in `rag/truth/validators.py`. Three layers, executed in cheap-to-expensive order:
+All in `knowledge/truth/validators.py`. Three layers, executed in cheap-to-expensive order:
 
 ### Layer 1 — within-delta (no DB access)
 
@@ -540,7 +540,7 @@ print("gate OK:", rules)
 
 ```bash
 grep -nP '[\x{1F300}-\x{1FFFF}\x{2600}-\x{27BF}\x{2300}-\x{23FF}]' \
-    rag/truth/*.py \
+    knowledge/truth/*.py \
     scripts/migrate_to_truth_files.py \
     tests/truth/*.py \
     tests/truth/integration/*.py
@@ -565,7 +565,7 @@ internals. The plug points are:
 
 The contracts above are stable. Writer's internal structure
 (`PromptComposer`, `Phase2Settlement`, `PostWriteValidator`, `AuditGate`)
-can change freely without touching `rag/truth/`.
+can change freely without touching `knowledge/truth/`.
 
 ---
 
@@ -573,13 +573,13 @@ can change freely without touching `rag/truth/`.
 
 | File | Role |
 |---|---|
-| `rag/truth/__init__.py` | Public exports |
-| `rag/truth/schemas.py` | Pydantic v2 frozen models for all deltas and results |
-| `rag/truth/store.py` | `TruthFileStore` — single entry point |
-| `rag/truth/sql.py` | Parameterized SQL strings |
-| `rag/truth/validators.py` | 12 cross-file rules + 2 audit rules |
-| `rag/truth/markdown_renderer.py` | 7 renderers + frontmatter helper |
-| `rag/truth/migrate.py` | 4 source-specific migrators + orchestrator |
+| `knowledge/truth/__init__.py` | Public exports |
+| `knowledge/truth/schemas.py` | Pydantic v2 frozen models for all deltas and results |
+| `knowledge/truth/store.py` | `TruthFileStore` — single entry point |
+| `knowledge/truth/sql.py` | Parameterized SQL strings |
+| `knowledge/truth/validators.py` | 12 cross-file rules + 2 audit rules |
+| `knowledge/truth/markdown_renderer.py` | 7 renderers + frontmatter helper |
+| `knowledge/truth/migrate.py` | 4 source-specific migrators + orchestrator |
 | `database/truth_schema.py` | 8-table DDL + `ensure_truth_tables` |
 | `config/truth_files.yaml` | Thresholds + enum mappings + render budgets |
 | `scripts/migrate_to_truth_files.py` | CLI: `python -m scripts.migrate_to_truth_files <pid>` |

@@ -63,7 +63,7 @@ InkOctoBot/
 │   ├── analysis/           # Analysis agents + skills
 │   └── learned_skills/     # Self-learning generated skills (sandbox)
 │
-├── rag/                    # Retrieval & Memory
+├── knowledge/              # Retrieval & Memory
 ├── constraints/            # Constraint system (non-LLM)
 ├── analysis/               # Market data analysis (non-LLM)
 ├── preprocessing/          # Data preprocessing

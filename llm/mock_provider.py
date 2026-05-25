@@ -17,7 +17,7 @@ import json
 import random
 from typing import Any, AsyncIterator
 
-from models.base import BaseLLMProvider, LLMMessage, LLMResponse, ProviderConfig
+from llm.base import BaseLLMProvider, LLMMessage, LLMResponse, ProviderConfig
 
 
 # ═══ Response templates by feature ═══

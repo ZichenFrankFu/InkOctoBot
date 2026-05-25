@@ -7,18 +7,18 @@ from pathlib import Path
 import pytest
 
 from storage.creation_schema import ensure_creation_tables
-from rag.truth.markdown_renderer import (
+from knowledge.truth.markdown_renderer import (
     render, render_current_state, render_particle_ledger,
     render_pending_hooks, render_chapter_summaries,
     render_subplot_board, render_emotional_arcs,
     render_character_matrix,
 )
-from rag.truth.schemas import (
+from knowledge.truth.schemas import (
     ChapterSummaryDelta, EmotionArcEntry, HookDelta, HookImportance,
     NumericalReconciliation, RelationUpdate, StatePatch, SubplotStatus,
     SubplotUpdate, TruthDeltas, TruthFileKind,
 )
-from rag.truth.store import TruthFileStore
+from knowledge.truth.store import TruthFileStore
 
 
 # ─────── fixtures ───────
