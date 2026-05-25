@@ -62,7 +62,7 @@ def build_volume_prompt(work: dict, chapters: list[dict]) -> str:
     """Render the volume-detect prompt for this work. Exposed so the UI
     can show the user the exact prompt that would be sent — they can
     copy it into a web-based LLM if our model fails."""
-    from analysis.feature_extraction.prompts import render
+    from reference_pipeline.prompts import render
     return render(
         "reference.volume_detect",
         title=work.get("title") or "(未命名)",
@@ -89,7 +89,7 @@ async def ai_detect_volumes(
     No NLP fallback inside this layer — the caller decides whether to
     drop to ``text_detect_volumes`` on None.
     """
-    from analysis.feature_extraction import ai_extractor
+    from reference_pipeline import ai_extractor
 
     prompt = build_volume_prompt(work, chapters)
     use_web = False

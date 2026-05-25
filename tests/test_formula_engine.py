@@ -9,9 +9,9 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from analysis.formula_engine.presets import get_preset, list_presets, all_presets, GenrePreset
-from analysis.formula_engine.aggregator import aggregate_features
-from analysis.formula_engine.constraint_converter import convert_to_constraints
+from market_analysis.formula_engine.presets import get_preset, list_presets, all_presets, GenrePreset
+from market_analysis.formula_engine.aggregator import aggregate_features
+from market_analysis.formula_engine.constraint_converter import convert_to_constraints
 
 
 class TestPresets(unittest.TestCase):

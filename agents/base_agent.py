@@ -83,7 +83,7 @@ class BaseAgent:
         reg_key = _AGENT_PROMPT_KEYS.get(self.agent_name)
         if reg_key:
             try:
-                from analysis.feature_extraction.prompts import get_template
+                from reference_pipeline.prompts import get_template
                 base = get_template(reg_key) or base
             except Exception:
                 pass

@@ -757,7 +757,7 @@ async def generate_scene_plan(req: GenerateRequest):
 @router.post("/rewrite")
 async def rewrite_text(req: RewriteRequest):
     try:
-        from analysis.feature_extraction.prompts import render
+        from reference_pipeline.prompts import render
         user_content = render(
             "generation.rewrite",
             instruction=req.instruction or "润色并提升文学质量",
@@ -809,7 +809,7 @@ async def evaluate_text(req: EvalRequest):
             rag_excludes=req.rag_excludes,
         ) if req.project_id else ""
         if req.prompt_only:
-            from analysis.feature_extraction.prompts import render
+            from reference_pipeline.prompts import render
             prompt = render(
                 "generation.evaluate",
                 chapter_num=req.chapter_num, checklist="", text=req.text,
@@ -834,7 +834,7 @@ async def quick_generate(req: GenerateRequest):
     """Single-step generation: synopsis -> full chapter text."""
     try:
         from llm.base import LLMMessage
-        from analysis.feature_extraction.prompts import render as _render_prompt
+        from reference_pipeline.prompts import render as _render_prompt
         router_inst = _build_router(req.provider, req.model)
         skills_used: list[str] = []
 
@@ -947,7 +947,7 @@ async def outline_chat(req: OutlineChatRequest):
     """Interactive outline brainstorming: multi-turn conversation with AI."""
     try:
         from llm.base import LLMMessage
-        from analysis.feature_extraction.prompts import get_template
+        from reference_pipeline.prompts import get_template
         router_inst = _build_router(req.provider, req.model)
 
         system = get_template("assistant.outline")

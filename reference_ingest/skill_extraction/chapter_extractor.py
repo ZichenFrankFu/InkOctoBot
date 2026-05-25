@@ -14,13 +14,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from analysis.feature_extraction.narrative_extractor import (
+from reference_pipeline.narrative_extractor import (
     _tension,
     _HOOK_PATS,
     _SHUANGDIAN,
     _OPENING,
 )
-from analysis.feature_extraction.rhetoric_classifier import (
+from reference_pipeline.rhetoric_classifier import (
     classify_rhetoric,
     rhetoric_summary,
 )

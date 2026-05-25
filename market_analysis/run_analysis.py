@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from analysis.trend_analyzer import TrendAnalyzer, AnalyzerArgs
+from market_analysis.trend_analyzer import TrendAnalyzer, AnalyzerArgs
 import logging
 logger = logging.getLogger("inkoctobot.analysis.run_analysis")
 

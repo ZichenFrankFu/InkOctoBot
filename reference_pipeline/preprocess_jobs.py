@@ -197,7 +197,7 @@ async def _run_guess(job: GuessJob, text: str, extra_patterns: list[dict] | None
     as 'matches=1 even though there are many'. Each pattern's
     finditer runs in a worker thread, so the event loop stays
     responsive between patterns."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         _PATTERNS as BUILTIN, _compile_extra, _score_pattern,
     )
     try:
@@ -312,7 +312,7 @@ async def _run_detection(job: PreprocessJob, text: str,
     """Body of the preprocess job. Runs in its own task. Honors job._cancel
     and job._resume between chapters so the UI's pause/resume controls
     take effect at chapter boundaries (per user's chosen granularity)."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, flag_author_notes, flag_length_outliers,
         flag_garbled_chapters, make_preview, visible_char_count,
     )
@@ -528,7 +528,7 @@ def persist_result_to_segments(ref_id: str, db_path: str,
     PreprocessPanel UI can pick them up on the next status poll without
     re-running the job."""
     from knowledge.reference_db import ReferenceDB
-    from analysis.feature_extraction.chapter_parser import visible_char_count
+    from reference_pipeline.chapter_parser import visible_char_count
     rdb = ReferenceDB(db_path)
     work = rdb.get_work(ref_id)
     if not work:
@@ -554,7 +554,7 @@ def persist_result_to_segments(ref_id: str, db_path: str,
         )} | {"char_count": visible_char_count(c.get("content") or "")}
         for c in chapters
     ]
-    from analysis.feature_extraction.chapter_parser import find_chapter_gaps
+    from reference_pipeline.chapter_parser import find_chapter_gaps
     state["preprocess"] = {
         "chapters": light,
         "total_chapters": len(light),

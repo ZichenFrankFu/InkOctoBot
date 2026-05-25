@@ -221,7 +221,7 @@ class WorkIndexer:
             self._set_progress(ref_id, "L2", done=0, total=0, status="done")
             return {"level": "L2", "embedded": 0, "skipped": "no full text"}
 
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(self.db_path)
         text = pipe._load_text(work)
         if not text:
@@ -282,7 +282,7 @@ class WorkIndexer:
         self._set_progress(ref_id, "L3", status="running")
 
         # Map char_offset → chapter number lazily for metadata
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(self.db_path)
         full_text = pipe._load_text(work) or ""
         chapters = pipe._split_chapters(full_text)

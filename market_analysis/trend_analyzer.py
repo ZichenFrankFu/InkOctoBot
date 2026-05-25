@@ -6,9 +6,9 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from analysis.data_access import connect_sqlite, load_rank_long_df
-from analysis.heat import HeatConfig, add_heat
-from analysis.metrics import (
+from market_analysis.data_access import connect_sqlite, load_rank_long_df
+from market_analysis.heat import HeatConfig, add_heat
+from market_analysis.metrics import (
     MetricConfig,
     add_unified_columns,
     compute_weekly_tag_panel,
@@ -20,8 +20,8 @@ from analysis.metrics import (
     compute_cooccurrence_pairs,
     compute_cooccurrence_triples,
 )
-from analysis.report import ReportConfig, build_final_report
-from analysis.visualization import save_bar_topk, save_line_top_tags
+from market_analysis.report import ReportConfig, build_final_report
+from market_analysis.visualization import save_bar_topk, save_line_top_tags
 import logging
 logger = logging.getLogger("inkoctobot.analysis.trend_analyzer")
 

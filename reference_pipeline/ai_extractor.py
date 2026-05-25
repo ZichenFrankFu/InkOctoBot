@@ -467,7 +467,7 @@ async def ai_extract_style(chapters: list[dict], router: Any,
     a style fingerprint (dialogue ratio, rhetoric, description density,
     payoff/info/hook density, pacing). The deterministic half
     (sentence length, vocab, punctuation) comes from compute_nlp_style."""
-    from analysis.feature_extraction.prompts import render
+    from reference_pipeline.prompts import render
     text, nchars = _build_segment_text(chapters)
     prompt = render(
         "reference.style", override=prompt_override,
@@ -635,7 +635,7 @@ async def ai_extract_all(chapters: list[dict], router: Any,
     matches the shape of its single-purpose extractor (ai_extract_outline_events
     / ai_extract_characters / ai_extract_settings) plus the unified
     style block (with per-chapter chapter_signals)."""
-    from analysis.feature_extraction.prompts import render
+    from reference_pipeline.prompts import render
     text, nchars = _build_segment_text(chapters)
     prompt = render(
         "reference.unified", override=prompt_override,
@@ -725,7 +725,7 @@ async def ai_extract_characters(chapters: list[dict], router: Any,
 
     The new prompt returns ``{"characters": [...]}`` instead of a bare
     list — the parser accepts either via ``_parse_listish``."""
-    from analysis.feature_extraction.prompts import render
+    from reference_pipeline.prompts import render
     text, nchars = _build_segment_text(chapters)
     prompt = render(
         "reference.characters", override=prompt_override,
@@ -768,7 +768,7 @@ async def ai_extract_settings(chapters: list[dict], router: Any,
 
     Legacy `content` is preserved (used by older display code) by
     concatenating the updates if the LLM didn't supply one explicitly."""
-    from analysis.feature_extraction.prompts import render
+    from reference_pipeline.prompts import render
     text, nchars = _build_segment_text(chapters)
     prompt = render(
         "reference.settings", override=prompt_override,
@@ -850,7 +850,7 @@ async def ai_extract_outline_events(
 
     No epochs/periods grouping yet — that's step 2 (outline_summary).
     """
-    from analysis.feature_extraction.prompts import render
+    from reference_pipeline.prompts import render
     text, nchars = _build_segment_text(chapters)
     ctx = _ctx(work_ctx)
     prompt = render(
@@ -898,7 +898,7 @@ async def ai_summarize_outline(
     Returns the final chronicle dict ``{"logline", "epochs": [...]}``.
     Events are kept verbatim — the LLM only re-orders and re-groups.
     """
-    from analysis.feature_extraction.prompts import render
+    from reference_pipeline.prompts import render
     if not events:
         return {"logline": "", "epochs": []}
     ctx = _ctx(work_ctx)
@@ -1031,7 +1031,7 @@ async def ai_extract_rhythm_v2(chapters: list[dict], router: Any,
                                   work_ctx: dict | None = None) -> dict:
     """Single AI call that produces the consolidated rhythm_json shape
     (replaces ai_extract_narrative + ai_extract_rhythm)."""
-    from analysis.feature_extraction.prompts import render
+    from reference_pipeline.prompts import render
     text, _ = _build_segment_text(chapters)
     prompt = render(
         "reference.rhythm", override=prompt_override,

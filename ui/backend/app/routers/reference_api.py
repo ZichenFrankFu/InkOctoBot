@@ -222,7 +222,7 @@ async def upload_text_for_work(
     state.pop("plan", None)
     state["results"] = {}
     state["completed"] = []
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     preprocess_jobs.clear(ref_id)
 
     update_kwargs: dict = dict(
@@ -452,7 +452,7 @@ async def delete_work_file(ref_id: str, index: int):
     state.pop("plan", None)
     state["results"] = {}
     state["completed"] = []
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     preprocess_jobs.clear(ref_id)
     db.update_work(
         ref_id,
@@ -487,7 +487,7 @@ async def delete_all_work_files(ref_id: str):
     state.pop("plan", None)
     state["results"] = {}
     state["completed"] = []
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     preprocess_jobs.clear(ref_id)
     db.update_work(
         ref_id,
@@ -615,7 +615,7 @@ def trigger_preprocess(ref_id: str):
         # Ensure text is available: if work has file_path but source isn't file_upload, fix it
         if work.get("file_path") and work.get("source") not in ("file_upload", "platform_crawl"):
             db.update_work(ref_id, preprocessing_status="pending")
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         result = FeatureExtractionPipeline(db.db_path).run(ref_id)
         if result.get("error"):
             raise HTTPException(400, f"特征提取失败: {result['error']}")
@@ -629,7 +629,7 @@ def trigger_preprocess(ref_id: str):
 @router.post("/preprocess/batch")
 def trigger_batch():
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         try:
             repo_cfg = load_repo_config(settings.repo_root)
             db_path = get_db_path(repo_cfg, settings.repo_root)
@@ -682,7 +682,7 @@ def list_chapters(ref_id: str, preview_chars: int = Query(120, ge=0, le=2000)):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         text = pipe._load_text(w)
         if not text:
@@ -700,7 +700,7 @@ def list_chapters(ref_id: str, preview_chars: int = Query(120, ge=0, le=2000)):
             if preview_chars > 0:
                 head = content[:preview_chars].replace("\n", " ").strip()
                 preview = head + ("…" if len(content) > preview_chars else "")
-            from analysis.feature_extraction.chapter_parser import visible_char_count
+            from reference_pipeline.chapter_parser import visible_char_count
             out.append({
                 "number": i + 1,
                 "title": (c.get("title") or "").strip() or f"第 {i + 1} 章",
@@ -730,7 +730,7 @@ def get_segment_plan(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         text = pipe._load_text(w)
         if not text:
@@ -768,7 +768,7 @@ def save_segment_plan(ref_id: str, body: SegmentPlanSaveRequest):
     if not body.segments:
         raise HTTPException(400, "请至少保留一个分段")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         plan = pipe.save_custom_plan(
             ref_id, body.segments, plan_type=body.plan_type or "custom",
@@ -809,8 +809,8 @@ async def preprocess_guess_start(ref_id: str):
     """Kick off the async format-matching job. Returns immediately —
     the file read happens in the worker so the endpoint never blocks
     on multi-MB I/O. Frontend then polls /guess_status for progress."""
-    from analysis.feature_extraction import preprocess_jobs
-    from analysis.feature_extraction.pipeline import _load_chapter_patterns
+    from reference_pipeline import preprocess_jobs
+    from reference_pipeline.pipeline import _load_chapter_patterns
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -833,7 +833,7 @@ def preprocess_guess_status(ref_id: str):
     """Return the live status of the format-matching job: progress
     (current_pattern / total_patterns), the candidate list once done,
     and the suggested winner."""
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     job = preprocess_jobs.get_guess_job(ref_id)
     if not job:
         return {"state": "idle", "current_pattern": 0, "total_patterns": 0,
@@ -856,8 +856,8 @@ async def preprocess_start(ref_id: str,
       - ``force_pattern``: single pattern (legacy). Auto-merges secondaries.
       - Neither: full auto-detect with auto-merge.
     """
-    from analysis.feature_extraction import preprocess_jobs
-    from analysis.feature_extraction.pipeline import _load_chapter_patterns
+    from reference_pipeline import preprocess_jobs
+    from reference_pipeline.pipeline import _load_chapter_patterns
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -893,10 +893,10 @@ def get_chapter_content(ref_id: str, chapter_id: str):
     Fast path: cached ``content_start`` / ``content_end`` offsets from
     segments_json["preprocess"] — slice the file directly.
     Slow path: re-detect, match by chapter_id."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, visible_char_count,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
     db = _db()
@@ -1025,7 +1025,7 @@ async def preprocess_add_chapter(ref_id: str, body: NewChapterBody):
     at start). The user supplies the heading line in whatever format
     the rest of the work uses — detection re-runs on the rebuilt file
     so the new chapter gets a sequential ordinal."""
-    from analysis.feature_extraction.chapter_parser import insert_chapter
+    from reference_pipeline.chapter_parser import insert_chapter
     return await _modify_and_redetect(
         ref_id,
         modifier=lambda txt, chs: insert_chapter(
@@ -1062,7 +1062,7 @@ def _resolve_chapter_number(chapters: list[dict], chapter_id: str) -> int:
 async def preprocess_rename_chapter(ref_id: str, chapter_id: str, body: RenameChapterBody):
     """Replace the heading line of a chapter — body is preserved.
     Detection re-runs to pick up the new title."""
-    from analysis.feature_extraction.chapter_parser import rename_chapter
+    from reference_pipeline.chapter_parser import rename_chapter
     return await _modify_and_redetect(
         ref_id,
         modifier=lambda txt, chs: rename_chapter(
@@ -1076,7 +1076,7 @@ async def preprocess_rename_chapter(ref_id: str, chapter_id: str, body: RenameCh
 async def preprocess_delete_chapter(ref_id: str, chapter_id: str):
     """Delete a single chapter from the file. Same backing logic as
     清理章节, just exposed as a per-row action."""
-    from analysis.feature_extraction.chapter_parser import apply_exclusions
+    from reference_pipeline.chapter_parser import apply_exclusions
     return await _modify_and_redetect(
         ref_id,
         modifier=lambda txt, chs: apply_exclusions(
@@ -1102,15 +1102,15 @@ async def _modify_and_redetect(ref_id: str, modifier, op_label: str,
          作者说章节) so a freshly-edited short body doesn't trigger a
          phantom chapter.
     """
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, flag_author_notes, flag_length_outliers, flag_garbled_chapters,
         make_preview, visible_char_count, find_chapter_gaps,
         _PATTERNS as _BUILTIN_PATTERNS, _UNNUMBERED_PATTERNS as _UNN,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -1266,13 +1266,13 @@ def patch_chapter_content(ref_id: str, chapter_id: str, body: ChapterContentEdit
     ``{path}.bak`` first (overwriting any earlier backup) so the user
     can undo via the existing undo_exclusions endpoint. Other chapters
     are left untouched."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, replace_chapter_content, visible_char_count,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -1310,7 +1310,7 @@ def patch_chapter_content(ref_id: str, chapter_id: str, body: ChapterContentEdit
         state = {}
     if not isinstance(state, dict):
         state = {}
-    from analysis.feature_extraction.chapter_parser import make_preview
+    from reference_pipeline.chapter_parser import make_preview
     pre = state.get("preprocess") if isinstance(state.get("preprocess"), dict) else None
     chapters_list = pre.get("chapters") if pre and isinstance(pre.get("chapters"), list) else None
     if chapters_list:
@@ -1329,7 +1329,7 @@ def patch_chapter_content(ref_id: str, chapter_id: str, body: ChapterContentEdit
     else:
         # No prior preprocess — re-detect on the new text so the UI
         # still has a chapter list to render.
-        from analysis.feature_extraction.chapter_parser import (
+        from reference_pipeline.chapter_parser import (
             detect_chapters as _dc, flag_author_notes as _fan,
             flag_length_outliers as _fol,
         )
@@ -1431,7 +1431,7 @@ def put_chapter_patterns(body: ChapterPatternsBody):
     ``format`` (user-friendly template, preferred) or ``regex`` (advanced).
     Validates regex compilation before saving."""
     import re as _re
-    from analysis.feature_extraction.chapter_parser import format_to_regex
+    from reference_pipeline.chapter_parser import format_to_regex
     cleaned: list[dict] = []
     for i, p in enumerate(body.patterns or []):
         if not isinstance(p, dict):
@@ -1474,7 +1474,7 @@ def get_author_note_keywords():
     """Return both the user-customized keyword list (if any) AND the
     built-in defaults so the UI can show the active set and let the
     user reset to defaults at will."""
-    from analysis.feature_extraction.chapter_parser import _AUTHOR_KEYWORDS
+    from reference_pipeline.chapter_parser import _AUTHOR_KEYWORDS
     user = _load_author_keywords()
     return {
         "user": user,
@@ -1505,7 +1505,7 @@ def put_author_note_keywords(body: AuthorKeywordsBody):
     else:
         data.pop("author_note_keywords", None)
     _write_settings_dict(data)
-    from analysis.feature_extraction.chapter_parser import _AUTHOR_KEYWORDS
+    from reference_pipeline.chapter_parser import _AUTHOR_KEYWORDS
     return {
         "user": ordered,
         "defaults": list(_AUTHOR_KEYWORDS),
@@ -1518,7 +1518,7 @@ def get_garbled_patterns():
     """Return BOTH the built-in garbled regex set and the user's
     custom additions so the UI can show the full picture + offer
     inline disable / delete."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         _BUILTIN_GARBLED_PATTERNS, _load_user_garbled_patterns,
     )
     return {
@@ -1599,10 +1599,10 @@ def test_chapter_pattern(body: ChapterPatternTestBody):
       - ``regex``: raw regex (advanced).
     Capped at 2 MB scanned text for speed."""
     import re as _re
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         format_to_regex, _PATTERNS as BUILTIN, _compile_extra,
     )
-    from analysis.feature_extraction.pipeline import _load_chapter_patterns
+    from reference_pipeline.pipeline import _load_chapter_patterns
     regex = (body.regex or "").strip()
     fmt = (body.format or "").strip()
     pname = (body.pattern_name or "").strip()
@@ -1673,7 +1673,7 @@ def test_chapter_pattern(body: ChapterPatternTestBody):
 
 @router.post("/works/{ref_id}/preprocess/pause")
 async def preprocess_pause(ref_id: str):
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     ok = preprocess_jobs.pause_job(ref_id)
     if not ok:
         raise HTTPException(400, "当前无运行中的预处理任务")
@@ -1682,7 +1682,7 @@ async def preprocess_pause(ref_id: str):
 
 @router.post("/works/{ref_id}/preprocess/resume")
 async def preprocess_resume(ref_id: str):
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     ok = preprocess_jobs.resume_job(ref_id)
     if not ok:
         raise HTTPException(400, "当前无暂停的预处理任务")
@@ -1691,7 +1691,7 @@ async def preprocess_resume(ref_id: str):
 
 @router.post("/works/{ref_id}/preprocess/cancel")
 async def preprocess_cancel(ref_id: str):
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     ok = preprocess_jobs.cancel_job(ref_id)
     if not ok:
         raise HTTPException(400, "无任务可取消")
@@ -1704,10 +1704,10 @@ def preprocess_diagnostics(ref_id: str):
     counts + sample first 8 matches, the detected winner, and the first
     400 chars of the text. Use this when the chapter list looks wrong —
     it tells you which pattern won and what it matched."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, _PATTERNS as BUILTIN, _compile_extra,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
     db = _db()
@@ -1755,7 +1755,7 @@ def preprocess_status(ref_id: str):
     Also includes the persisted detection result from segments_json
     when no in-process job is running — so the UI can render the last
     completed run after a server restart."""
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -1773,7 +1773,7 @@ def preprocess_status(ref_id: str):
                 pass
         out = job.to_status()
         if job.state in ("done", "cancelled", "error"):
-            from analysis.feature_extraction.chapter_parser import (
+            from reference_pipeline.chapter_parser import (
                 visible_char_count, find_chapter_gaps,
             )
             out["chapters"] = [
@@ -1832,7 +1832,7 @@ def preprocess_status(ref_id: str):
                 "last_removed_chapters": last_removed,
             }
         try:
-            from analysis.feature_extraction.chapter_parser import make_preview as _mp
+            from reference_pipeline.chapter_parser import make_preview as _mp
             file_path = w.get("file_path")
             raw_path = Path(str(file_path) + ".raw.txt") if file_path else None
             read_path = (raw_path if raw_path and raw_path.exists() else
@@ -1892,7 +1892,7 @@ def preprocess_status(ref_id: str):
                         pv = _mp(body)
                         c["preview_head"] = pv["head"]
                         c["preview_tail"] = pv["tail"]
-                        from analysis.feature_extraction.chapter_parser import (
+                        from reference_pipeline.chapter_parser import (
                             visible_char_count as _vcc,
                         )
                         c["char_count"] = _vcc(body)
@@ -1949,7 +1949,7 @@ async def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest)
     endpoints use — uses the persisted chapter list (no extra detect
     pass at the start), runs the heavy I/O + regex in a thread, and
     re-detects with only numbered patterns."""
-    from analysis.feature_extraction.chapter_parser import apply_exclusions
+    from reference_pipeline.chapter_parser import apply_exclusions
     raw_keys = [k for k in (body.excluded_chapters or []) if k != ""]
     if not raw_keys:
         raise HTTPException(400, "未选择任何章节")
@@ -2012,7 +2012,7 @@ async def preprocess_repair_garbled(ref_id: str):
          UI surfaces 「无法修复」 only for chapters where no automatic
          fix was possible.
     """
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         strip_deletable_garbled, repair_encoding, detect_encoding_mojibake,
         flag_garbled_chapters as _fg,
     )
@@ -2067,10 +2067,10 @@ def preprocess_aside_paragraphs(ref_id: str):
     user wants stripped from chapter bodies WITHOUT removing the whole
     chapter). Whole-chapter author entries (作者说章节 pattern) are not
     returned here — they have their own bulk-clean modal."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, detect_aside_paragraphs,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
     db = _db()
@@ -2099,13 +2099,13 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
     """Remove the specified paragraphs from their chapters and rewrite
     the file. Snapshots the original to .bak (same undo path as
     apply_exclusions). Other paragraphs in those chapters are kept."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, apply_aside_paragraph_cleanup,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -2139,7 +2139,7 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
     # Re-detect from the new text so the persisted chapter list stays
     # accurate after the cleanup. WITHOUT this the UI loses the
     # chapter list and falls back to the "匹配章节格式" empty state.
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         flag_author_notes, flag_length_outliers, make_preview, visible_char_count,
         find_chapter_gaps,
     )
@@ -2222,8 +2222,8 @@ async def preprocess_save_all(ref_id: str):
     table. Async so the full-file read (for offset-based content
     recovery) doesn't block the FastAPI event loop and freeze the
     UI on multi-MB works."""
-    from analysis.feature_extraction import preprocess_jobs
-    from analysis.feature_extraction.chapter_parser import visible_char_count
+    from reference_pipeline import preprocess_jobs
+    from reference_pipeline.chapter_parser import visible_char_count
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -2407,7 +2407,7 @@ def preprocess_undo_exclusions(ref_id: str):
     """Restore the pre-apply text from the most recent .bak snapshot.
     Single-level undo — the next /apply_exclusions overwrites the backup,
     so undo only reaches back one step."""
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -2464,7 +2464,7 @@ def rename_segment_title(ref_id: str, index: int, body: SegmentTitleUpdate):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return pipe.rename_segment_title(ref_id, index, body.title)
     except ValueError as e:
@@ -2484,7 +2484,7 @@ def auto_suggest_plan(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return pipe.suggest_auto_plan(ref_id)
     except ValueError as e:
@@ -2513,7 +2513,7 @@ async def ai_detect_plan(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return await pipe.ai_suggest_volume_plan(ref_id)
     except ValueError as e:
@@ -2532,7 +2532,7 @@ def ai_detect_plan_prompt(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return pipe.render_volume_detect_prompt(ref_id)
     except ValueError as e:
@@ -2574,7 +2574,7 @@ async def preview_segment(ref_id: str, body: SegmentRunRequest):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         result = await pipe.compute_segment(
             ref_id, body.segment_index,
@@ -2627,10 +2627,10 @@ async def extract_chunk(ref_id: str, segment_index: int, chunk_index: int,
         raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
 
     try:
-        from analysis.feature_extraction.pipeline import (
+        from reference_pipeline.pipeline import (
             FeatureExtractionPipeline, build_work_ctx,
         )
-        from analysis.feature_extraction.ai_extractor import (
+        from reference_pipeline.ai_extractor import (
             build_segment_text_chunks, ai_extract_outline_events,
         )
         from llm.router import ModelRouter
@@ -2736,10 +2736,10 @@ async def _resolve_chunk(
     """Shared lookup for per-chunk extractors: returns
     (chunk_chapters, chunk_meta, total_chunks, work_ctx). Raises
     HTTPException on missing data."""
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, build_work_ctx,
     )
-    from analysis.feature_extraction.ai_extractor import build_segment_text_chunks
+    from reference_pipeline.ai_extractor import build_segment_text_chunks
 
     if max_chars < 4_000 or max_chars > 200_000:
         raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
@@ -2794,7 +2794,7 @@ async def extract_chunk_characters(
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.ai_extractor import ai_extract_characters
+        from reference_pipeline.ai_extractor import ai_extract_characters
         from llm.router import ModelRouter
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
@@ -2859,7 +2859,7 @@ async def extract_chunk_settings(
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.ai_extractor import ai_extract_settings
+        from reference_pipeline.ai_extractor import ai_extract_settings
         from llm.router import ModelRouter
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
@@ -2934,8 +2934,8 @@ async def extract_chunk_all(
     import time as _time
     t0 = _time.perf_counter()
     try:
-        from analysis.feature_extraction.nlp_stats import compute_nlp_style
-        from analysis.feature_extraction.ai_extractor import ai_extract_all
+        from reference_pipeline.nlp_stats import compute_nlp_style
+        from reference_pipeline.ai_extractor import ai_extract_all
         from llm.router import ModelRouter
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
@@ -3012,7 +3012,7 @@ async def extract_chunk_style(
     import time as _time
     t0 = _time.perf_counter()
     try:
-        from analysis.feature_extraction.nlp_stats import compute_nlp_style
+        from reference_pipeline.nlp_stats import compute_nlp_style
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
         )
@@ -3020,7 +3020,7 @@ async def extract_chunk_style(
         ai: dict = {}
         errors: list[str] = []
         if body.use_ai:
-            from analysis.feature_extraction.ai_extractor import ai_extract_style
+            from reference_pipeline.ai_extractor import ai_extract_style
             from llm.router import ModelRouter
             try:
                 router_inst = ModelRouter()
@@ -3074,8 +3074,8 @@ def list_segment_chunks(ref_id: str, segment_index: int, max_chars: int = 32_000
     if max_chars < 4_000 or max_chars > 200_000:
         raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
-        from analysis.feature_extraction.ai_extractor import build_segment_text_chunks
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.ai_extractor import build_segment_text_chunks
 
         pipe = FeatureExtractionPipeline(db.db_path)
         text = pipe._load_text(w)
@@ -3124,7 +3124,7 @@ def commit_segment(ref_id: str, body: SegmentCommitRequest):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return pipe.persist_segment(ref_id, body.result, merge_after=body.merge_after)
     except ValueError as e:
@@ -3141,7 +3141,7 @@ async def run_segment(ref_id: str, body: SegmentRunRequest):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return await pipe.run_segment(
             ref_id, body.segment_index,
@@ -3164,7 +3164,7 @@ def finalize_segments(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         out = pipe.finalize_segments(ref_id)
         updated = db.get_work(ref_id)
@@ -3267,7 +3267,7 @@ async def chat_segment(ref_id: str, body: SegmentChatRequest):
     )
 
     try:
-        from analysis.feature_extraction.prompts import render as _render_prompt
+        from reference_pipeline.prompts import render as _render_prompt
         system_prompt = _render_prompt(
             "reference.chat_system",
             override=body.system_prompt_override,
@@ -3334,8 +3334,8 @@ def extract_plot_outline_only(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
-        from analysis.feature_extraction.narrative_extractor import (
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.narrative_extractor import (
             extract_narrative, extract_plot_outline,
         )
         pipe = FeatureExtractionPipeline(db.db_path)
@@ -3533,14 +3533,14 @@ class PromptUpdateRequest(BaseModel):
 @router.get("/prompts")
 def list_prompts():
     """List every registered prompt key with description + has_override flag."""
-    from analysis.feature_extraction.prompts import list_keys
+    from reference_pipeline.prompts import list_keys
     return {"items": list_keys()}
 
 
 @router.get("/prompts/{key}")
 def get_prompt(key: str):
     """Return the factory default + the current (possibly overridden) text."""
-    from analysis.feature_extraction.prompts import (
+    from reference_pipeline.prompts import (
         DEFAULT_PROMPTS, get_default, get_template,
     )
     if key not in DEFAULT_PROMPTS:
@@ -3561,7 +3561,7 @@ def get_prompt(key: str):
 @router.put("/prompts/{key}")
 def update_prompt(key: str, body: PromptUpdateRequest):
     """Persist a new override (template != null) or reset to factory (null)."""
-    from analysis.feature_extraction.prompts import (
+    from reference_pipeline.prompts import (
         DEFAULT_PROMPTS, set_template, reset,
     )
     if key not in DEFAULT_PROMPTS:
@@ -3583,7 +3583,7 @@ def render_prompt(key: str, body: PromptPreviewRequest):
     """Render the prompt with explicit vars (used by the preview UI). The
     `override` field, if set, takes precedence over the persisted override
     for THIS call only — nothing is saved."""
-    from analysis.feature_extraction.prompts import DEFAULT_PROMPTS, render
+    from reference_pipeline.prompts import DEFAULT_PROMPTS, render
     if key not in DEFAULT_PROMPTS:
         raise HTTPException(404, f"unknown prompt key: {key}")
     try:
@@ -3610,7 +3610,7 @@ def preview_prompt(
     `generation.single_agent`, when `project_id` is given, the full RAG
     context is assembled so the preview matches what generation will use.
     """
-    from analysis.feature_extraction.prompts import DEFAULT_PROMPTS, render, get_template
+    from reference_pipeline.prompts import DEFAULT_PROMPTS, render, get_template
     if key not in DEFAULT_PROMPTS:
         raise HTTPException(404, f"unknown prompt key: {key}")
 
@@ -3631,7 +3631,7 @@ def preview_prompt(
         if not w:
             raise HTTPException(404, "参考作品不存在")
         try:
-            from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+            from reference_pipeline.pipeline import FeatureExtractionPipeline
             pipe = FeatureExtractionPipeline(db.db_path)
             data = pipe.render_volume_detect_prompt(ref_id)
             return {
@@ -3657,7 +3657,7 @@ def preview_prompt(
         if not w:
             raise HTTPException(404, "参考作品不存在")
         try:
-            from analysis.feature_extraction.pipeline import (
+            from reference_pipeline.pipeline import (
                 FeatureExtractionPipeline, build_work_ctx,
             )
             pipe = FeatureExtractionPipeline(db.db_path)
@@ -3680,7 +3680,7 @@ def preview_prompt(
                 all_chapters[j - 1]
                 for j in range(seg["start_chapter"], seg["end_chapter"] + 1)
             ]
-            from analysis.feature_extraction.ai_extractor import _build_segment_text
+            from reference_pipeline.ai_extractor import _build_segment_text
             seg_text, nchars = _build_segment_text(seg_chapters)
             ctx = build_work_ctx(w, seg, segment_index)
             vars_: dict[str, Any] = {
@@ -3779,7 +3779,7 @@ def preview_prompt_chunks(
     (characters / settings ideally see the full text). For other keys
     this returns a single-chunk list, equivalent to the regular preview.
     """
-    from analysis.feature_extraction.prompts import (
+    from reference_pipeline.prompts import (
         DEFAULT_PROMPTS, render, get_template,
     )
     if key not in DEFAULT_PROMPTS:
@@ -3792,10 +3792,10 @@ def preview_prompt_chunks(
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import (
+        from reference_pipeline.pipeline import (
             FeatureExtractionPipeline, build_work_ctx,
         )
-        from analysis.feature_extraction.ai_extractor import (
+        from reference_pipeline.ai_extractor import (
             build_segment_text_chunks,
         )
         pipe = FeatureExtractionPipeline(db.db_path)
@@ -3920,11 +3920,11 @@ async def summarize_chronicle(ref_id: str):
         raise HTTPException(400, "编年史为空，没有事件可总结")
 
     try:
-        from analysis.feature_extraction.pipeline import (
+        from reference_pipeline.pipeline import (
             FeatureExtractionPipeline, build_work_ctx,
         )
-        from analysis.feature_extraction.prompts import render
-        from analysis.feature_extraction.ai_extractor import (
+        from reference_pipeline.prompts import render
+        from reference_pipeline.ai_extractor import (
             _normalize_event, ai_summarize_outline,
         )
         pipe = FeatureExtractionPipeline(db.db_path)
@@ -4093,11 +4093,11 @@ def render_outline_summary_prompt(body: OutlineSummaryPromptRequest):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import (
+        from reference_pipeline.pipeline import (
             FeatureExtractionPipeline, build_work_ctx,
         )
-        from analysis.feature_extraction.prompts import render
-        from analysis.feature_extraction.ai_extractor import _normalize_event
+        from reference_pipeline.prompts import render
+        from reference_pipeline.ai_extractor import _normalize_event
 
         pipe = FeatureExtractionPipeline(db.db_path)
         text = pipe._load_text(w)
@@ -4213,7 +4213,7 @@ async def ai_complete_work(ref_id: str, body: AiCompleteRequest | None = None):
         f"已知作者：{w['creator']}（可用作辅助检索；如有更准确的全名请覆盖）"
         if w.get("creator") else "作者未知，请通过标题检索"
     )
-    from analysis.feature_extraction.prompts import render as _render_prompt
+    from reference_pipeline.prompts import render as _render_prompt
     prompt = _render_prompt(
         "reference.ai_complete",
         override=(body.prompt_override if body else None),

@@ -19,7 +19,7 @@ def health():
 @router.get("/presets")
 def list_presets():
     """List all available genre presets."""
-    from analysis.formula_engine.presets import list_presets as _list, get_preset
+    from market_analysis.formula_engine.presets import list_presets as _list, get_preset
     names = _list()
     return {
         "presets": [
@@ -32,7 +32,7 @@ def list_presets():
 @router.get("/presets/{genre}")
 def get_preset_by_genre(genre: str):
     """Get a specific genre preset."""
-    from analysis.formula_engine.presets import get_preset as _get
+    from market_analysis.formula_engine.presets import get_preset as _get
     p = _get(genre)
     if p is None:
         raise HTTPException(404, f"preset not found: {genre}")
@@ -53,8 +53,8 @@ class AggregateRequest(BaseModel):
 @router.post("/aggregate")
 def aggregate(req: AggregateRequest):
     """Aggregate multi-dimensional features into a scored summary."""
-    from analysis.formula_engine.aggregator import aggregate_features
-    from analysis.formula_engine.presets import get_preset as _get
+    from market_analysis.formula_engine.aggregator import aggregate_features
+    from market_analysis.formula_engine.presets import get_preset as _get
 
     preset = _get(req.genre) if req.genre else None
     result = aggregate_features(
@@ -78,8 +78,8 @@ class ConvertRequest(BaseModel):
 @router.post("/convert")
 def convert(req: ConvertRequest):
     """Convert aggregated features to prompt constraints."""
-    from analysis.formula_engine.constraint_converter import convert_to_constraints
-    from analysis.formula_engine.presets import get_preset as _get
+    from market_analysis.formula_engine.constraint_converter import convert_to_constraints
+    from market_analysis.formula_engine.presets import get_preset as _get
 
     preset = _get(req.genre) if req.genre else None
     rules = convert_to_constraints(req.aggregated, preset=preset)

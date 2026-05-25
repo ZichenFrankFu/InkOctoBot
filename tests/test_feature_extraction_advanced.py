@@ -10,11 +10,11 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from analysis.feature_extraction.rhetoric_classifier import (
+from reference_pipeline.rhetoric_classifier import (
     classify_rhetoric,
     rhetoric_summary,
 )
-from analysis.feature_extraction.shuangdian_templates import (
+from reference_pipeline.shuangdian_templates import (
     extract_shuangdian,
     shuangdian_density,
 )
@@ -144,7 +144,7 @@ class TestEmbeddingCluster(unittest.TestCase):
     """Test embedding_cluster with TF-IDF backend (no GPU dependency)."""
 
     def test_cluster_basic(self):
-        from analysis.feature_extraction.embedding_cluster import cluster_fragments
+        from reference_pipeline.embedding_cluster import cluster_fragments
         texts = [
             "他拔出剑冲了上去",
             "她挥舞长枪杀向敌人",
@@ -160,19 +160,19 @@ class TestEmbeddingCluster(unittest.TestCase):
         self.assertEqual(total_members, len(texts))
 
     def test_embed_texts(self):
-        from analysis.feature_extraction.embedding_cluster import embed_texts
+        from reference_pipeline.embedding_cluster import embed_texts
         texts = ["你好世界", "测试文本"]
         vecs = embed_texts(texts, backend="tfidf")
         self.assertEqual(vecs.shape[0], 2)
         self.assertGreater(vecs.shape[1], 0)
 
     def test_empty(self):
-        from analysis.feature_extraction.embedding_cluster import cluster_fragments
+        from reference_pipeline.embedding_cluster import cluster_fragments
         result = cluster_fragments([], n_clusters=3)
         self.assertEqual(result["n_clusters"], 0)
 
     def test_single_text(self):
-        from analysis.feature_extraction.embedding_cluster import cluster_fragments
+        from reference_pipeline.embedding_cluster import cluster_fragments
         result = cluster_fragments(["只有一段文本"], n_clusters=1, backend="tfidf")
         self.assertEqual(result["n_clusters"], 1)
 

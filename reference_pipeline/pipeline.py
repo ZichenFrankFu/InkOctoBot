@@ -51,7 +51,7 @@ def _enrich_characters_with_appearance(chars: list[dict], chapters: list[dict]) 
     date regex in its opening 200 chars; if found, use that; else "第 N 章".
     """
     try:
-        from analysis.feature_extraction.narrative_extractor import _DATE_HINT_PAT
+        from reference_pipeline.narrative_extractor import _DATE_HINT_PAT
     except ImportError:
         _DATE_HINT_PAT = None  # type: ignore
 
@@ -202,7 +202,7 @@ class FeatureExtractionPipeline:
         # style fingerprint
         fp: dict = {}
         try:
-            from analysis.feature_extraction.nlp_stats import compute_style_fingerprint
+            from reference_pipeline.nlp_stats import compute_style_fingerprint
             fp = compute_style_fingerprint(chapters)
         except Exception as e:
             errors.append(f"style: {e}")
@@ -210,7 +210,7 @@ class FeatureExtractionPipeline:
         # narrative structure
         narr: dict = {}
         try:
-            from analysis.feature_extraction.narrative_extractor import extract_narrative
+            from reference_pipeline.narrative_extractor import extract_narrative
             narr = extract_narrative(chapters)
         except Exception as e:
             errors.append(f"narrative: {e}")
@@ -218,7 +218,7 @@ class FeatureExtractionPipeline:
         # characters
         chars: list = []
         try:
-            from analysis.feature_extraction.nlp_stats import extract_characters
+            from reference_pipeline.nlp_stats import extract_characters
             chars = extract_characters(chapters)
         except Exception as e:
             errors.append(f"characters: {e}")
@@ -226,7 +226,7 @@ class FeatureExtractionPipeline:
         # rhythm
         rhythm: dict = {}
         try:
-            from analysis.feature_extraction.narrative_extractor import extract_rhythm
+            from reference_pipeline.narrative_extractor import extract_rhythm
             rhythm = extract_rhythm(chapters)
         except Exception as e:
             errors.append(f"rhythm: {e}")
@@ -234,7 +234,7 @@ class FeatureExtractionPipeline:
         # plot outline (depends on narrative analysis)
         plot: dict = {}
         try:
-            from analysis.feature_extraction.narrative_extractor import extract_plot_outline
+            from reference_pipeline.narrative_extractor import extract_plot_outline
             plot = extract_plot_outline(chapters, narrative=narr)
         except Exception as e:
             errors.append(f"plot_outline: {e}")
@@ -319,7 +319,7 @@ class FeatureExtractionPipeline:
         Result is memoized on a hash of (text, patterns) — repeated
         calls for the same novel (the /segments/plan load/save path) are
         served from cache instead of re-running detection."""
-        from analysis.feature_extraction.chapter_parser import detect_chapters
+        from reference_pipeline.chapter_parser import detect_chapters
         import hashlib
         extras = _load_chapter_patterns()
         key = hashlib.md5(
@@ -454,7 +454,7 @@ class FeatureExtractionPipeline:
         (ChatGPT / Claude.ai) when the configured model is unable to
         produce parseable output. Also returns chapter count for context."""
         from knowledge.reference_db import ReferenceDB
-        from analysis.feature_extraction.volume_detector import build_volume_prompt
+        from reference_pipeline.volume_detector import build_volume_prompt
 
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
@@ -488,7 +488,7 @@ class FeatureExtractionPipeline:
         ``text_scan`` / ``parser_tags`` / ``none``.
         """
         from knowledge.reference_db import ReferenceDB
-        from analysis.feature_extraction.volume_detector import (
+        from reference_pipeline.volume_detector import (
             ai_detect_volumes, text_detect_volumes, build_volume_prompt,
         )
 
@@ -795,8 +795,8 @@ class FeatureExtractionPipeline:
         # exact prompt they need when copying to a web LLM.
         work_ctx = build_work_ctx(work, seg, segment_index)
 
-        from analysis.feature_extraction.nlp_stats import compute_style_fingerprint
-        from analysis.feature_extraction.narrative_extractor import extract_plot_outline
+        from reference_pipeline.nlp_stats import compute_style_fingerprint
+        from reference_pipeline.narrative_extractor import extract_plot_outline
 
         # Style: ALWAYS NLP (per spec — deterministic statistics, not LLM)
         fp: dict = {}
@@ -854,7 +854,7 @@ class FeatureExtractionPipeline:
                 errors.append(msg)
                 return None
 
-        from analysis.feature_extraction import ai_extractor
+        from reference_pipeline import ai_extractor
 
         # Characters — AI only, no NLP fallback.
         chars: list = []

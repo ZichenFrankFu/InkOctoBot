@@ -16,7 +16,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from analysis.feature_extraction.narrative_extractor import (
+from reference_pipeline.narrative_extractor import (
     extract_narrative,
     extract_rhythm,
 )

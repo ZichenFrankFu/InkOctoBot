@@ -75,9 +75,9 @@ def run_analysis(
                 "new_entry": [], "pairs": [], "triples": [], "cross_platform": []}
 
     try:
-        from analysis.data_access import connect_sqlite, load_rank_long_df
-        from analysis.heat import HeatConfig, add_heat
-        from analysis.metrics import (
+        from market_analysis.data_access import connect_sqlite, load_rank_long_df
+        from market_analysis.heat import HeatConfig, add_heat
+        from market_analysis.metrics import (
             MetricConfig, add_unified_columns,
             compute_weekly_tag_panel, compute_timewindow_rollup,
             compute_weekly_category_panel,
@@ -114,7 +114,7 @@ def run_analysis(
         cross_platform = []
         if platform == "both" and roll_cat is not None and not roll_cat.empty:
             try:
-                from analysis.report import build_cross_platform_diff_by_category
+                from market_analysis.report import build_cross_platform_diff_by_category
                 cp_df = build_cross_platform_diff_by_category(roll_cat)
                 if cp_df is not None and not cp_df.empty:
                     cp_df = cp_df.rename(columns={"cat_u": "category"})

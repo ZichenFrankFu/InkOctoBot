@@ -202,7 +202,7 @@ def extract_characters(chapters: list[dict], min_mentions: int = 2,
     # Format first_seen marker: prefer date hint in the first chapter's
     # opening 200 chars; else "第 N 章"; else "约 M 万字处".
     try:
-        from analysis.feature_extraction.narrative_extractor import _DATE_HINT_PAT
+        from reference_pipeline.narrative_extractor import _DATE_HINT_PAT
     except ImportError:
         _DATE_HINT_PAT = None  # type: ignore
 

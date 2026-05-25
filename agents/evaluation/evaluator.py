@@ -155,7 +155,7 @@ class Evaluator(BaseAgent):
         self, text: str, chapter_num: int,
         scene_plan: dict | None, constraints: str,
     ) -> str:
-        from analysis.feature_extraction.prompts import render
+        from reference_pipeline.prompts import render
 
         checklist = ""
         if scene_plan:
