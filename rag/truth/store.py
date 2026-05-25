@@ -469,3 +469,342 @@ class TruthFileStore:
                 )
                 transitions += 1
         return transitions
+
+    # ═══════════ C4 — read API ═══════════
+
+    def _rows_as_dicts(
+        self, cursor: sqlite3.Cursor,
+    ) -> list[dict[str, Any]]:
+        cols = [c[0] for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    def query_current_state(
+        self, *, subject: str | None = None, predicate: str | None = None,
+        chapter_num: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return SPO triples for this project. If chapter_num given,
+        only triples whose validity window covers that chapter."""
+        sql = (
+            "SELECT triple_id, subject, predicate, object, "
+            "valid_from_chapter, valid_to_chapter, superseded_by, confidence "
+            "FROM truth_current_state WHERE project_id = ?"
+        )
+        params: list[Any] = [self.project_id]
+        if subject is not None:
+            sql += " AND subject = ?"; params.append(subject)
+        if predicate is not None:
+            sql += " AND predicate = ?"; params.append(predicate)
+        if chapter_num is not None:
+            sql += (
+                " AND valid_from_chapter <= ? AND "
+                "(valid_to_chapter IS NULL OR valid_to_chapter >= ?)"
+            )
+            params.extend([chapter_num, chapter_num])
+        sql += " ORDER BY subject, predicate, valid_from_chapter"
+        with self._connect() as conn:
+            cur = conn.execute(sql, params)
+            return self._rows_as_dicts(cur)
+
+    def query_ledger(
+        self, character: str, key: str | None = None,
+        as_of_chapter: int | None = None,
+    ) -> int | None:
+        """Latest new_value for (character, key) at or before as_of_chapter.
+        None if no entry. ``key`` is required when caller wants a single
+        scalar; without it returns None.
+        """
+        if key is None:
+            return None
+        sql = (
+            "SELECT new_value FROM character_ledger "
+            "WHERE project_id = ? AND character_name = ? AND key = ?"
+        )
+        params: list[Any] = [self.project_id, character, key]
+        if as_of_chapter is not None:
+            sql += " AND chapter_num <= ?"
+            params.append(as_of_chapter)
+        sql += " ORDER BY chapter_num DESC, created_at DESC LIMIT 1"
+        with self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return row[0] if row else None
+
+    def list_ledger_entries(
+        self, character: str | None = None, key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT ledger_id, character_name, chapter_num, category, key, "
+            "operation, delta, new_value, reason, in_text_evidence, "
+            "created_at FROM character_ledger WHERE project_id = ?"
+        )
+        params: list[Any] = [self.project_id]
+        if character is not None:
+            sql += " AND character_name = ?"; params.append(character)
+        if key is not None:
+            sql += " AND key = ?"; params.append(key)
+        sql += " ORDER BY chapter_num, created_at"
+        with self._connect() as conn:
+            cur = conn.execute(sql, params)
+            return self._rows_as_dicts(cur)
+
+    def query_pending_hooks(
+        self, *, status: str | None = None, importance: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT hook_id, description, status, importance, "
+            "origin_chapter, expected_payoff_chapter, last_mention_chapter, "
+            "last_advance_chapter, pressure_threshold, created_at, updated_at "
+            "FROM pending_hooks WHERE project_id = ?"
+        )
+        params: list[Any] = [self.project_id]
+        if status is not None:
+            sql += " AND status = ?"; params.append(status)
+        if importance is not None:
+            sql += " AND importance = ?"; params.append(importance)
+        sql += " ORDER BY "\
+               "  CASE status "\
+               "    WHEN 'pressured' THEN 0 "\
+               "    WHEN 'near_payoff' THEN 1 "\
+               "    WHEN 'progressing' THEN 2 "\
+               "    WHEN 'open' THEN 3 "\
+               "    WHEN 'resolved' THEN 4 "\
+               "    WHEN 'abandoned' THEN 5 "\
+               "  END, origin_chapter"
+        with self._connect() as conn:
+            cur = conn.execute(sql, params)
+            return self._rows_as_dicts(cur)
+
+    def list_pressured_hooks(
+        self, current_chapter: int,
+    ) -> list[dict[str, Any]]:
+        """Return hooks that are persistently 'pressured' OR would be
+        pressured given current_chapter (open/progressing past threshold)."""
+        out: list[dict[str, Any]] = []
+        all_hooks = self.query_pending_hooks()
+        for h in all_hooks:
+            status = h["status"]
+            if status == "pressured":
+                out.append(h)
+                continue
+            if status not in ("open", "progressing"):
+                continue
+            threshold = h.get("pressure_threshold") or \
+                self._pressure_threshold(h.get("importance", "B"))
+            last = h.get("last_advance_chapter")
+            if last is None:
+                last = h.get("origin_chapter", 0)
+            if current_chapter - last >= threshold:
+                out.append(h)
+        return out
+
+    def query_chapter_summary(
+        self, chapter_num: int,
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT summary_id, chapter_num, summary_text, "
+                "key_events_json, character_states_json, is_active, created_at "
+                "FROM chapter_summaries WHERE project_id = ? AND chapter_num = ?",
+                (self.project_id, chapter_num),
+            )
+            rows = self._rows_as_dicts(cur)
+        return rows[0] if rows else None
+
+    def list_chapter_summaries(
+        self, *, limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT summary_id, chapter_num, summary_text, key_events_json, "
+            "character_states_json, is_active, created_at "
+            "FROM chapter_summaries WHERE project_id = ? AND is_active = 1 "
+            "ORDER BY chapter_num DESC"
+        )
+        params: list[Any] = [self.project_id]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        with self._connect() as conn:
+            cur = conn.execute(sql, params)
+            rows = self._rows_as_dicts(cur)
+        # Normalize to renderer-friendly keys
+        for r in rows:
+            r["key_events"] = r.pop("key_events_json", "[]")
+        return rows
+
+    def query_subplot_threads(
+        self, *, status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT thread_id, name, description, status, start_chapter, "
+            "last_advanced_chapter, related_hook_ids_json, "
+            "related_character_ids_json, created_at, updated_at "
+            "FROM subplot_threads WHERE project_id = ?"
+        )
+        params: list[Any] = [self.project_id]
+        if status is not None:
+            sql += " AND status = ?"; params.append(status)
+        sql += " ORDER BY start_chapter"
+        with self._connect() as conn:
+            cur = conn.execute(sql, params)
+            rows = self._rows_as_dicts(cur)
+        for r in rows:
+            r["related_hook_ids"] = r.pop("related_hook_ids_json", "[]")
+        return rows
+
+    def query_emotion_arc(
+        self, character: str | None = None, *,
+        since_chapter: int | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT arc_id, character_name, chapter_num, from_state, "
+            "to_state, trigger, created_at FROM emotion_arcs "
+            "WHERE project_id = ?"
+        )
+        params: list[Any] = [self.project_id]
+        if character is not None:
+            sql += " AND character_name = ?"; params.append(character)
+        if since_chapter is not None:
+            sql += " AND chapter_num >= ?"; params.append(since_chapter)
+        sql += " ORDER BY character_name, chapter_num"
+        with self._connect() as conn:
+            cur = conn.execute(sql, params)
+            return self._rows_as_dicts(cur)
+
+    def query_character_matrix(
+        self, *, character: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT rel_id, character_a, character_b, relation_type, "
+            "sentiment_score, trust_level, last_interaction_chapter, note, "
+            "created_at, updated_at FROM character_relations "
+            "WHERE project_id = ?"
+        )
+        params: list[Any] = [self.project_id]
+        if character is not None:
+            sql += " AND (character_a = ? OR character_b = ?)"
+            params.extend([character, character])
+        sql += " ORDER BY character_a, character_b"
+        with self._connect() as conn:
+            cur = conn.execute(sql, params)
+            return self._rows_as_dicts(cur)
+
+    # ═══════════ C4 — Markdown rendering ═══════════
+
+    def render_for_prompt(
+        self, kind, *, chapter_num: int,
+        characters: list[str] | None = None,
+        budget_tokens: int = 2000,
+    ) -> str:
+        """Render one truth file as Markdown for LLM context.
+
+        ``budget_tokens`` is converted to char budget at 2× ratio
+        (roughly accurate for Chinese; chars under-counted for English).
+        """
+        from rag.truth.markdown_renderer import render as _md_render
+        budget_chars = max(budget_tokens * 2, 200)
+        rows = self._rows_for_kind(kind, chapter_num=chapter_num,
+                                    characters=characters)
+        return _md_render(
+            kind, rows, project_id=self.project_id,
+            chapter_pointer=chapter_num, budget_chars=budget_chars,
+        )
+
+    def render_bundle_for_prompt(
+        self, *, chapter_num: int,
+        characters: list[str] | None = None,
+        kinds: list | None = None,
+        budgets: dict | None = None,
+    ) -> dict:
+        """Render multiple truth files in one call."""
+        from rag.truth.schemas import TruthFileKind as _Kind
+        kinds = kinds if kinds is not None else list(_Kind)
+        budgets = budgets or {}
+        out: dict = {}
+        for k in kinds:
+            budget = budgets.get(k) or self._default_budget_tokens(k)
+            out[k] = self.render_for_prompt(
+                k, chapter_num=chapter_num,
+                characters=characters, budget_tokens=budget,
+            )
+        return out
+
+    def export_markdown(
+        self, output_dir: str | None = None, *,
+        kinds: list | None = None,
+        chapter_pointer: int | None = None,
+    ) -> dict:
+        """Export each truth file as a .md file under ``output_dir``.
+
+        Default output_dir = data/truth_files/{project_id}/.
+        Returns {kind: Path}.
+        """
+        from pathlib import Path as _Path
+        from rag.truth.schemas import TruthFileKind as _Kind
+        kinds = kinds if kinds is not None else list(_Kind)
+        if output_dir is None:
+            try:
+                import config as _cfg
+                root = _Path(_cfg.BASE_DIR) / "data" / "truth_files"
+            except Exception:
+                root = _Path("data") / "truth_files"
+            output_dir = root / self.project_id
+        out_path = _Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        if chapter_pointer is None:
+            with self._connect() as conn:
+                row = conn.execute(
+                    Q.LATEST_APPLIED_CHAPTER, (self.project_id,),
+                ).fetchone()
+            chapter_pointer = (row[0] if row and row[0] is not None else 0)
+
+        results: dict = {}
+        for k in kinds:
+            md = self.render_for_prompt(
+                k, chapter_num=chapter_pointer,
+                budget_tokens=10_000,  # generous for file export
+            )
+            path = out_path / f"{k.value}.md"
+            path.write_text(md, encoding="utf-8")
+            results[k] = path
+        return results
+
+    # ───── internals ─────
+
+    def _rows_for_kind(
+        self, kind, *, chapter_num: int,
+        characters: list[str] | None,
+    ) -> list[dict[str, Any]]:
+        from rag.truth.schemas import TruthFileKind as _Kind
+        if kind == _Kind.current_state:
+            rows = self.query_current_state()
+            if characters:
+                rows = [r for r in rows if r["subject"] in characters]
+            return rows
+        if kind == _Kind.particle_ledger:
+            rows = self.list_ledger_entries()
+            if characters:
+                rows = [r for r in rows if r["character_name"] in characters]
+            return rows
+        if kind == _Kind.pending_hooks:
+            return self.query_pending_hooks()
+        if kind == _Kind.chapter_summaries:
+            return self.list_chapter_summaries(limit=10)
+        if kind == _Kind.subplot_board:
+            return self.query_subplot_threads()
+        if kind == _Kind.emotional_arcs:
+            rows = self.query_emotion_arc()
+            if characters:
+                rows = [r for r in rows if r["character_name"] in characters]
+            return rows
+        if kind == _Kind.character_matrix:
+            rows = self.query_character_matrix()
+            if characters:
+                cs = set(characters)
+                rows = [r for r in rows
+                        if r["character_a"] in cs or r["character_b"] in cs]
+            return rows
+        return []
+
+    def _default_budget_tokens(self, kind) -> int:
+        budgets = (self._config.get("render_budgets") or {})
+        return int(budgets.get(kind.value, 2000))
