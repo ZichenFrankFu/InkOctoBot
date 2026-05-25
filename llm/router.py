@@ -26,14 +26,14 @@ logger = logging.getLogger("inkoctobot.llm.router")
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 _PROVIDER_CLS: dict[str, str] = {
-    "openai":    "models.openai_provider.OpenAIProvider",
-    "anthropic": "models.anthropic_provider.AnthropicProvider",
-    "deepseek":  "models.deepseek_provider.DeepSeekProvider",
-    "gemini":    "models.gemini_provider.GeminiProvider",
-    "ollama":    "models.ollama_provider.OllamaProvider",
-    "vllm":      "models.vllm_provider.VLLMProvider",
-    "lora":      "models.lora_provider.LoRAProvider",
-    "mock":      "models.mock_provider.MockProvider",
+    "openai":    "llm.openai_provider.OpenAIProvider",
+    "anthropic": "llm.anthropic_provider.AnthropicProvider",
+    "deepseek":  "llm.deepseek_provider.DeepSeekProvider",
+    "gemini":    "llm.gemini_provider.GeminiProvider",
+    "ollama":    "llm.ollama_provider.OllamaProvider",
+    "vllm":      "llm.vllm_provider.VLLMProvider",
+    "lora":      "llm.lora_provider.LoRAProvider",
+    "mock":      "llm.mock_provider.MockProvider",
 }
 
 
