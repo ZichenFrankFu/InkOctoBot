@@ -185,14 +185,34 @@ class DatabaseHandler:
                 raise
 
     def _run_with_retry(self, fn, *, max_retries: int = 5, base_sleep: float = 0.15):
+        """Run a SQLite operation with backoff on `database is locked` errors.
+
+        Closes GAP 6 in the observability audit — previously the retry
+        loop was completely silent so lock contention looked like
+        random slow ops. Now each retry logs at WARN with attempt
+        count + wait; final failure logs at ERROR with exc_info.
+        """
+        op_name = getattr(fn, "__qualname__", getattr(fn, "__name__", "?"))
         for attempt in range(max_retries):
             try:
                 return fn()
             except sqlite3.OperationalError as e:
                 msg = str(e).lower()
                 if ("locked" in msg or "busy" in msg) and attempt < max_retries - 1:
-                    time.sleep(base_sleep * (2 ** attempt))
+                    wait = base_sleep * (2 ** attempt)
+                    self.logger.warning(
+                        "db_retry op=%s attempt=%d/%d wait=%.2fs reason=%s",
+                        op_name, attempt + 1, max_retries, wait, e,
+                    )
+                    time.sleep(wait)
                     continue
+                self.logger.error(
+                    "db_op_failed op=%s attempts=%d error=%s",
+                    op_name, attempt + 1, e, exc_info=True,
+                )
+                raise
+            except Exception:
+                self.logger.exception("db_op_failed op=%s", op_name)
                 raise
 
     def _init_db(self) -> None:
