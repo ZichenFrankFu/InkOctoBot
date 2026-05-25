@@ -54,17 +54,49 @@ def strip_json_blob(raw: str) -> str:
     return s
 
 
+def _data_dir():
+    """Resolve the active data directory (honors test mode override)."""
+    if settings.test_mode and settings.data_dir:
+        return settings.data_dir
+    return settings.repo_root / "data"
+
+
+def reference_db_path() -> str:
+    """Resolve ``data/reference.db`` (or test-mode equivalent).
+
+    During the rename transition this falls back to ``novels.db`` when
+    a legacy ``reference.db`` doesn't exist yet — so existing installs
+    keep working until they migrate.
+    """
+    d = _data_dir()
+    new = d / "reference.db"
+    legacy = d / "novels.db"
+    return str(new if new.exists() or not legacy.exists() else legacy)
+
+
+def idea_db_path() -> str:
+    """Resolve ``data/idea.db`` (or test-mode equivalent).
+
+    During the rename transition this falls back to ``novels.db`` when
+    a legacy ``idea.db`` doesn't exist yet.
+    """
+    d = _data_dir()
+    new = d / "idea.db"
+    legacy = d / "novels.db"
+    return str(new if new.exists() or not legacy.exists() else legacy)
+
+
 def db() -> ReferenceDB:
-    """Open the reference DB respecting test mode / config overrides.
+    """Open the reference DB (``data/reference.db``).
 
     Replaces the old private ``_db()`` in reference_api.py. Test mode
-    points at ``data_test/novels.db``; otherwise we honor the repo's
-    paths.yaml; otherwise default to ``data/novels.db``.
+    points at ``data_test/reference.db``; otherwise we honor the
+    repo's paths.yaml; otherwise default to ``data/reference.db``.
     """
-    if settings.test_mode and settings.data_dir:
-        return ReferenceDB(str(settings.data_dir / "novels.db"))
-    try:
-        repo_cfg = load_repo_config(settings.repo_root)
-        return ReferenceDB(get_db_path(repo_cfg, settings.repo_root))
-    except FileNotFoundError:
-        return ReferenceDB(str(settings.repo_root / "data" / "novels.db"))
+    return ReferenceDB(reference_db_path())
+
+
+def idea_db():
+    """Open the IdeaDB for the inspirations / 灵感库."""
+    from knowledge.idea_db import IdeaDB
+    return IdeaDB(idea_db_path())

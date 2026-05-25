@@ -82,18 +82,8 @@ CREATE TABLE IF NOT EXISTS reference_chapters (
     FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
 );"""
 
-# User-authored inspiration library — free-text idea snippets (scenes,
-# plot devices, character designs, …) that the 灵感搜索 page can store and
-# similarity-search. Independent of any single reference work.
-_INSPIRATIONS = """
-CREATE TABLE IF NOT EXISTS inspirations (
-    id TEXT PRIMARY KEY,
-    category TEXT NOT NULL DEFAULT 'other',
-    title TEXT,
-    content TEXT NOT NULL DEFAULT '',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);"""
+# NOTE: the inspirations table was moved to storage/idea_schema.py
+# (idea.db) so reference works + ideas don't share a file.
 
 # Secondary indexes on foreign-key columns — list/link lookups filter by
 # these, and without indexes SQLite full-scans the tables.
@@ -103,7 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_project_reference_links_project ON project_refere
 CREATE INDEX IF NOT EXISTS idx_project_reference_links_ref ON project_reference_links (ref_id);
 """
 
-ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS, _REFERENCE_CHAPTERS, _INSPIRATIONS, _INDEXES]
+ALL_DDL = [_REFERENCE_WORKS, _REFERENCE_ENTRIES, _PROJECT_REFERENCE_LINKS, _WORK_INDEX_PROGRESS, _REFERENCE_CHAPTERS, _INDEXES]
 
 # Schema setup is process-global and idempotent; once a DB file has been
 # ensured we skip the (non-trivial) DDL + migration work on later calls.

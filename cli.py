@@ -186,7 +186,7 @@ extract_app = typer.Typer(help="Novel skill extraction pipeline (小说技巧提
 app.add_typer(extract_app, name="extract")
 
 _DEFAULT_CORPUS_DIR = "data/novel_corpus"
-_DEFAULT_DB = "data/references.db"
+_DEFAULT_DB = "data/reference.db"
 
 
 @extract_app.command("ingest")

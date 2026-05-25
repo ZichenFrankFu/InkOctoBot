@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ._common import db
+from ._common import idea_db
 
 router = APIRouter()
 
@@ -31,7 +31,7 @@ class InspirationUpdate(BaseModel):
 @router.get("/inspirations")
 def list_inspirations():
     """All inspirations, newest-updated first."""
-    return {"items": db().list_inspirations()}
+    return {"items": idea_db().list_inspirations()}
 
 
 @router.post("/inspirations")
@@ -39,7 +39,7 @@ def create_inspiration(body: InspirationCreate):
     content = (body.content or "").strip()
     if not content:
         raise HTTPException(400, "灵感内容不能为空")
-    return db().create_inspiration(
+    return idea_db().create_inspiration(
         (body.category or "other").strip() or "other",
         (body.title or "").strip(),
         content,
@@ -48,7 +48,7 @@ def create_inspiration(body: InspirationCreate):
 
 @router.put("/inspirations/{insp_id}")
 def update_inspiration(insp_id: str, body: InspirationUpdate):
-    if not db().get_inspiration(insp_id):
+    if not idea_db().get_inspiration(insp_id):
         raise HTTPException(404, "灵感不存在")
     fields: dict = {}
     if body.category is not None:
@@ -60,11 +60,11 @@ def update_inspiration(insp_id: str, body: InspirationUpdate):
         if not content:
             raise HTTPException(400, "灵感内容不能为空")
         fields["content"] = content
-    return db().update_inspiration(insp_id, **fields)
+    return idea_db().update_inspiration(insp_id, **fields)
 
 
 @router.delete("/inspirations/{insp_id}")
 def delete_inspiration(insp_id: str):
-    if not db().delete_inspiration(insp_id):
+    if not idea_db().delete_inspiration(insp_id):
         raise HTTPException(404, "灵感不存在")
     return {"ok": True}

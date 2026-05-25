@@ -306,53 +306,7 @@ class ReferenceDB:
         return self.list_works(preprocessing_status="pending", limit=limit)
 
     # ── inspirations ──────────────────────────────────────
-
-    def create_inspiration(self, category: str, title: str,
-                           content: str) -> dict:
-        iid = _gid("insp")
-        with _conn(self.db_path) as c:
-            c.execute(
-                "INSERT INTO inspirations (id,category,title,content) "
-                "VALUES (?,?,?,?)",
-                (iid, category or "other", title or "", content or ""),
-            )
-            c.commit()
-        return self.get_inspiration(iid)  # type: ignore
-
-    def get_inspiration(self, insp_id: str) -> dict | None:
-        with _conn(self.db_path) as c:
-            r = c.execute("SELECT * FROM inspirations WHERE id=?",
-                          (insp_id,)).fetchone()
-        return dict(r) if r else None
-
-    def list_inspirations(self) -> list[dict]:
-        with _conn(self.db_path) as c:
-            rows = c.execute(
-                "SELECT * FROM inspirations ORDER BY updated_at DESC"
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def update_inspiration(self, insp_id: str, **fields: Any) -> dict | None:
-        allowed = {"category", "title", "content"}
-        sets = ["updated_at=CURRENT_TIMESTAMP"]
-        params: list[Any] = []
-        for k, v in fields.items():
-            if k in allowed and v is not None:
-                sets.append(f"{k}=?")
-                params.append(v)
-        if len(sets) == 1:
-            return self.get_inspiration(insp_id)
-        params.append(insp_id)
-        with _conn(self.db_path) as c:
-            c.execute(
-                f"UPDATE inspirations SET {', '.join(sets)} WHERE id=?",
-                params,
-            )
-            c.commit()
-        return self.get_inspiration(insp_id)
-
-    def delete_inspiration(self, insp_id: str) -> bool:
-        with _conn(self.db_path) as c:
-            cur = c.execute("DELETE FROM inspirations WHERE id=?", (insp_id,))
-            c.commit()
-        return cur.rowcount > 0
+    # Moved to knowledge.idea_db.IdeaDB (data/idea.db) so the 灵感库
+    # surface is decoupled from the reference-works DB. ReferenceDB no
+    # longer holds inspirations methods; callers should use IdeaDB
+    # directly. See `ui/backend/app/routers/reference/inspirations.py`.

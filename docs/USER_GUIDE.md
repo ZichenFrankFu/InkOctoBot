@@ -217,9 +217,17 @@ InkOctoBot 还能**自己生成 skill**：当 EditAnalyzer 检测到你反复修
 
 ## 6. 数据存哪？
 
-- `data/novels.db` — 主 SQLite（项目、章节、记忆、Truth Files）
-- `data/InkOctoBot_Crawler.db` — 市场数据，只读，由独立爬虫仓库同步
-- `data/references.db` — 参考作品库
+四个 SQLite 物理文件分职责：
+
+- `data/novels.db` — **创作主库**（项目、章节、记忆、Truth Files）
+- `data/reference.db` — **参考作品库**（reference_works / entries /
+  links / chapters / index 进度）
+- `data/idea.db` — **灵感库**（inspirations / 灵感搜索的素材）
+- `data/InkOctoBot_Crawler.db` — **市场数据**（只读；由独立爬虫仓库
+  通过用户在「设置」里配的「市场数据 address」同步过来）
+
+再加 ChromaDB 与若干 JSON：
+
 - `data/chromadb/` — ChromaDB 向量库（语义记忆 + 约束检索）
 - `data/projects/`, `data/characters/`, `data/worldbook/`, `data/editor/`,
   `data/storyline/` — 各 collection 的 JSON 文件

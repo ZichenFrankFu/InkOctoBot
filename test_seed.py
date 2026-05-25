@@ -239,10 +239,41 @@ def seed(target: Path) -> None:
     # ── Crawler DB (simulated InkOctoBot_Crawler.db) ──
     _seed_crawler_db(target / "InkOctoBot_Crawler.db")
 
-    # ── Reference DB (novels.db with reference tables) ──
-    _seed_reference_db(target / "novels.db")
+    # ── Reference DB — 参考作品库 (data/reference.db) ──
+    _seed_reference_db(target / "reference.db")
+
+    # ── Idea DB — 灵感库 (data/idea.db) ──
+    _seed_idea_db(target / "idea.db")
 
     print(f"Test data seeded into: {target}")
+
+
+def _seed_idea_db(db_path: Path) -> None:
+    """Seed data/idea.db with a few sample 灵感 entries."""
+    if db_path.exists():
+        db_path.unlink()
+    from storage.idea_schema import ensure_idea_tables
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA foreign_keys=ON")
+        ensure_idea_tables(con)
+        for iid, cat, title, content in [
+            ("insp_test_001", "scene",
+             "深夜独白", "主角在深夜书房，对着窗外月光自言自语，回忆童年。"),
+            ("insp_test_002", "plot_device",
+             "被掉包的信物", "传家玉佩在主角不知情时被反派替换为赝品。"),
+            ("insp_test_003", "character",
+             "笑面虎师叔", "永远笑眯眯但每次出现都带来更深一层危险的角色。"),
+        ]:
+            con.execute(
+                "INSERT INTO inspirations (id, category, title, content) "
+                "VALUES (?, ?, ?, ?)",
+                (iid, cat, title, content),
+            )
+        con.commit()
+    finally:
+        con.close()
 
 
 def _seed_crawler_db(db_path: Path) -> None:
@@ -412,6 +443,12 @@ def _seed_crawler_db(db_path: Path) -> None:
 
 def _seed_reference_db(db_path: Path) -> None:
     """Create a mock reference DB (novels.db) with sample reference works and entries."""
+    # ``target`` is the data dir (parent of the .db file); used below to
+    # create sibling JSON folders (preferences/, skill_learning_log/).
+    # ``pid`` matches the project_id seeded in seed() so the prefs +
+    # skill-learning log line up with the example project.
+    target = db_path.parent
+    pid = "test_project_001"
     if db_path.exists():
         db_path.unlink()
     con = sqlite3.connect(str(db_path))

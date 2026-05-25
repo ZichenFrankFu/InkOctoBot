@@ -141,7 +141,12 @@ def diagnostics() -> dict[str, Any]:
     }
 
     base = _s.data_dir if _s.data_dir else _s.repo_root / "data"
-    for name in ("novels.db", "InkOctoBot_Crawler.db", "references.db"):
+    # Production layout after the DB rename:
+    #   novels.db                  — project / chapters / memory / truth
+    #   reference.db               — reference works (was inside novels.db)
+    #   idea.db                    — inspirations / 灵感库 (was inside novels.db)
+    #   InkOctoBot_Crawler.db      — market data, READ-ONLY from external crawler
+    for name in ("novels.db", "reference.db", "idea.db", "InkOctoBot_Crawler.db"):
         p = Path(base) / name
         out["databases"][name] = {
             "exists": p.exists(),

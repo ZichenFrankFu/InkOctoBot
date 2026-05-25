@@ -27,13 +27,13 @@ _pipeline_lock = threading.Lock()
 
 
 def _get_db_path() -> str:
-    if settings.test_mode and settings.data_dir:
-        return str(settings.data_dir / "novels.db")
-    try:
-        repo_cfg = load_repo_config(settings.repo_root)
-        return get_db_path(repo_cfg, settings.repo_root)
-    except FileNotFoundError:
-        return str(settings.repo_root / "data" / "novels.db")
+    """Path to the reference DB used by NovelIngester + skill extraction.
+
+    Post-rename this is ``data/reference.db`` (not ``novels.db``);
+    falls back to ``novels.db`` if a legacy install hasn't migrated.
+    """
+    from ui.backend.app.routers.reference._common import reference_db_path
+    return reference_db_path()
 
 
 def _corpus_dir() -> Path:

@@ -832,9 +832,10 @@ InkOctoBot/
 │   └── truth_files.yaml                 # Truth File 系统调参
 │
 ├── data/                                # 运行时数据（gitignore）
-│   ├── novels.db                        # 主 SQLite（项目/章节/记忆/truth）
-│   ├── InkOctoBot_Crawler.db            # 市场数据（只读，由独立爬虫仓库同步）
-│   ├── references.db                    # 参考作品库
+│   ├── novels.db                        # 创作主库（项目/章节/记忆/truth）
+│   ├── reference.db                     # 参考作品库（reference_works/entries/links/chapters/index）
+│   ├── idea.db                          # 灵感库（inspirations）
+│   ├── InkOctoBot_Crawler.db            # 市场数据（只读，由设置中外部 address 同步）
 │   ├── chromadb/                        # ChromaDB 向量库
 │   ├── projects/ / characters/ / worldbook/ / editor/ / storyline/
 │   ├── settings.json                    # UI 可写配置（pipeline/providers/...）

@@ -197,6 +197,7 @@ tail -f outputs/logs/inkoctobot_*.log | jq 'select(.trace_id == "a3f9c2d8e1b4")'
 | `inkoctobot.knowledge.memory.semantic_store` | RAG 查询 (DEBUG) |
 | `inkoctobot.knowledge.memory.knowledge_isolation` | 角色视角过滤 |
 | `inkoctobot.knowledge.truth.store` | Truth File apply_deltas |
+| `inkoctobot.knowledge.idea_db` | 灵感库 (idea.db) CRUD |
 | `inkoctobot.storage.connection` | 统一 DB 网关 (open/commit/rollback/retry) |
 | `inkoctobot.storage.market_db` | 市场 DB 操作（含 retry 日志） |
 | `inkoctobot.ui.backend.*` | FastAPI 路由 |
