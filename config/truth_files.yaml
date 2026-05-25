@@ -1,0 +1,59 @@
+# Truth File system configuration.
+#
+# Tunables for hook pressure, relation mapping, markdown rendering budgets.
+
+hooks:
+  # When chapter_num - last_advance_chapter >= threshold and hook is still
+  # open/progressing, it becomes "pressured" (must address next chapter).
+  pressure_threshold_default: 5
+  pressure_threshold_importance_a: 3
+
+  # Capacity ceiling — Writer should warn / Planner block if active hooks
+  # (open + progressing + pressured + near_payoff) exceed this.
+  capacity_ceiling: 12
+
+  # When backfilling from foreshadowing.json: if a hook has been open for
+  # >= overdue_pressured_chapters chapters it migrates as 'pressured'.
+  overdue_pressured_chapters: 10
+
+# Character_relations: enum-to-score mapping used by migration tooling
+# when importing character_cards.relationships fields.
+relation_enum_to_score:
+  盟友:     { sentiment: 70, trust: 70 }
+  挚友:     { sentiment: 85, trust: 85 }
+  情侣:     { sentiment: 90, trust: 80 }
+  师徒:     { sentiment: 60, trust: 75 }
+  兄弟:     { sentiment: 70, trust: 70 }
+  姐妹:     { sentiment: 70, trust: 70 }
+  亲人:     { sentiment: 60, trust: 65 }
+  普通:     { sentiment: 0,  trust: 30 }
+  陌生:     { sentiment: 0,  trust: 0  }
+  竞争:     { sentiment: -20, trust: 20 }
+  敌对:     { sentiment: -60, trust: 5  }
+  仇敌:     { sentiment: -90, trust: 0  }
+
+# Symmetric sentiment drift threshold for the (A,B)/(B,A) divergence warning.
+relation_symmetric_drift_warn: 40
+
+# Default per-truth-file token budgets used by render_bundle_for_prompt
+# when callers don't override. Numbers are approximate (chars / 2 ~ tokens
+# for Chinese; not strict).
+render_budgets:
+  current_state:     2000
+  particle_ledger:   1500
+  pending_hooks:     2000
+  chapter_summaries: 2500
+  subplot_board:     1200
+  emotional_arcs:    1000
+  character_matrix:  1500
+
+# Default export directory (relative to project root).
+markdown_export_dir: data/truth_files
+
+# Validation toggles — coarse switches; individual rule IDs can be
+# disabled per-project via project-level config in the future.
+validation:
+  enforce_chapter_monotonic: true
+  enforce_ledger_match_current: true
+  enforce_hook_transitions: true
+  enforce_closed_equations: true
