@@ -1,5 +1,8 @@
 """rag.truth — Truth File system (state authority, modeled on InkOS).
 
+See `docs/truth_file_system.md` for the architecture overview,
+end-to-end data flow, validation rules and verification guide.
+
 Seven canonical truth files unified under TruthFileStore:
   current_state / particle_ledger / pending_hooks / chapter_summaries /
   subplot_board / emotional_arcs / character_matrix

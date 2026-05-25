@@ -95,7 +95,7 @@ def main() -> int:
     print(f"Project: {args.project_id}   dry_run={args.dry_run}")
     print("=" * 64)
     for src, rep in reports.items():
-        status = "✓" if rep.success else "✗"
+        status = "[OK]" if rep.success else "[FAIL]"
         print(f"  {status} {src}")
         if rep.skipped_reason:
             print(f"      skipped: {rep.skipped_reason}")

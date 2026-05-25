@@ -35,7 +35,7 @@ def _frontmatter(
         f"generator: {GENERATOR}\n"
         "---\n"
         "\n"
-        "<!-- ⚠️ This file is a view of the canonical state held in SQLite. "
+        "<!-- Note: this file is a view of the canonical state held in SQLite. "
         "Hand edits are NOT read back. -->\n"
         "\n"
     )
@@ -132,12 +132,12 @@ def render_particle_ledger(
 # ──────────────────────────────────────────────────────────────
 
 _STATUS_HEADER = {
-    "pressured":   "🚨 Pressured",
-    "near_payoff": "🎯 Near Payoff",
-    "progressing": "🔄 Progressing",
-    "open":        "🌱 Open",
-    "resolved":    "✅ Resolved",
-    "abandoned":   "🗑️ Abandoned",
+    "pressured":   "[Pressured]",
+    "near_payoff": "[Near Payoff]",
+    "progressing": "[Progressing]",
+    "open":        "[Open]",
+    "resolved":    "[Resolved]",
+    "abandoned":   "[Abandoned]",
 }
 
 _STATUS_ORDER = [

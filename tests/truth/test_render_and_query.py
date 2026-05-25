@@ -272,10 +272,10 @@ class TestRenderers:
         out = render_pending_hooks(
             hooks, project_id="p1", chapter_pointer=8, budget_chars=3000,
         )
-        assert "🚨 Pressured" in out
-        assert "🌱 Open" in out
+        assert "[Pressured]" in out
+        assert "[Open]" in out
         # pressured comes before open in output
-        assert out.index("🚨 Pressured") < out.index("🌱 Open")
+        assert out.index("[Pressured]") < out.index("[Open]")
 
     def test_chapter_summaries_handles_json_string(self):
         summaries = [
