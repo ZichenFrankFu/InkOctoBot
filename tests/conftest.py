@@ -72,7 +72,7 @@ def mock_event_bus():
 @pytest.fixture
 def skill_registry(tmp_path):
     """A SkillRegistry scanning a temporary directory."""
-    from core.skill_registry import SkillRegistry
+    from framework.skill_registry import SkillRegistry
     registry = SkillRegistry()
     return registry
 
@@ -80,7 +80,7 @@ def skill_registry(tmp_path):
 @pytest.fixture
 def populated_skill_registry():
     """A SkillRegistry pre-loaded with all built-in skills."""
-    from core.skill_registry import SkillRegistry
+    from framework.skill_registry import SkillRegistry
     registry = SkillRegistry()
     agents_dir = PROJECT_ROOT / "agents"
     registry.scan_all(agents_dir)

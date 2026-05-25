@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import re as _re_module
-from preprocessing.chapter_splitter import split_chapters
+from reference_ingest.chapter_splitter import split_chapters
 
 # Additional patterns to split on: author-note headings that aren't standard chapter titles
 _AUTHOR_NOTE_HEADING_PATTERNS = [
@@ -43,7 +43,7 @@ _EXTRA_CHAPTER_PATTERNS = [
     _re_module.compile(r"^后记\s*.*$", _re_module.MULTILINE),   # 后记
 ]
 
-logger = logging.getLogger("inkoctobot.preprocessing.novel_ingester")
+logger = logging.getLogger("inkoctobot.reference_ingest.novel_ingester")
 
 
 # ── Data classes ──────────────────────────────────────────────────
@@ -323,8 +323,8 @@ class NovelIngester:
         self._ensure_tables()
 
     def _ensure_tables(self) -> None:
-        from database.extraction_schema import ensure_extraction_tables
-        from database.reference_schema import ensure_reference_tables
+        from storage.extraction_schema import ensure_extraction_tables
+        from storage.reference_schema import ensure_reference_tables
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -403,7 +403,7 @@ class NovelIngester:
         # Use low min_chapter_length to avoid merging author-notes into story chapters
         # Include author-note heading patterns as additional split points
         body = text[metadata.metadata_end_pos:] if metadata.metadata_end_pos > 0 else text
-        from preprocessing.chapter_splitter import _CHAPTER_PATTERNS
+        from reference_ingest.chapter_splitter import _CHAPTER_PATTERNS
         all_patterns = _CHAPTER_PATTERNS + _EXTRA_CHAPTER_PATTERNS
         raw_chapters = split_chapters(
             body,

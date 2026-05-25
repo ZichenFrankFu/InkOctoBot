@@ -10,8 +10,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
 
-from core.event_types import Event, AgentSuggestion
-from core.event_bus import EventBus
+from framework.event_types import Event, AgentSuggestion
+from framework.event_bus import EventBus
 
 logger = logging.getLogger("inkoctobot.core.triggers")
 

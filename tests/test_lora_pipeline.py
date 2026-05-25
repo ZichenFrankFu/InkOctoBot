@@ -14,11 +14,11 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from preprocessing.lora.data_constructor import (
+from reference_ingest.lora.data_constructor import (
     construct_sft_data,
     save_dataset,
 )
-from preprocessing.lora.trainer import LoRATrainConfig
+from reference_ingest.lora.trainer import LoRATrainConfig
 
 
 class TestDataConstructor(unittest.TestCase):
@@ -114,7 +114,7 @@ class TestDataConstructor(unittest.TestCase):
 class TestQualityFilter(unittest.TestCase):
 
     def test_length_filter(self):
-        from preprocessing.lora.quality_filter import filter_samples
+        from reference_ingest.lora.quality_filter import filter_samples
         samples = [
             {"text": "太短"},
             {"text": "这是一段足够长的小说文本，包含了一些角色对话和场景描写。张远走在路上，心中思绪万千。"},
@@ -125,7 +125,7 @@ class TestQualityFilter(unittest.TestCase):
         self.assertEqual(result.stats["reject_reasons"].get("too_short", 0), 1)
 
     def test_all_pass(self):
-        from preprocessing.lora.quality_filter import filter_samples
+        from reference_ingest.lora.quality_filter import filter_samples
         samples = [
             {"text": "张远缓缓走出山门，目光扫过远方连绵的群山。天色微亮，晨雾弥漫在山谷之间。"},
             {"text": "客栈里人声鼎沸。张远找了个角落坐下，点了一壶茶。突然一声怒吼响起。"},
@@ -135,7 +135,7 @@ class TestQualityFilter(unittest.TestCase):
         self.assertEqual(result.stats["pass_rate"], 1.0)
 
     def test_empty_input(self):
-        from preprocessing.lora.quality_filter import filter_samples
+        from reference_ingest.lora.quality_filter import filter_samples
         result = filter_samples([])
         self.assertEqual(len(result.passed), 0)
         self.assertEqual(result.stats["total"], 0)

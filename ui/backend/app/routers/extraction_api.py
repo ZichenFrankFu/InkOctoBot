@@ -46,7 +46,7 @@ def _corpus_dir() -> Path:
 def ingest_corpus():
     """Ingest all novels from corpus directory (批量导入小说)."""
     try:
-        from preprocessing.novel_ingester import NovelIngester
+        from reference_ingest.novel_ingester import NovelIngester
 
         db_path = _get_db_path()
         corpus = _corpus_dir()
@@ -92,7 +92,7 @@ async def upload_novel(file: UploadFile = File(...)):
         dest.write_bytes(content)
 
         # Ingest the single file
-        from preprocessing.novel_ingester import NovelIngester
+        from reference_ingest.novel_ingester import NovelIngester
 
         db_path = _get_db_path()
         ingester = NovelIngester(db_path, corpus)
@@ -214,7 +214,7 @@ async def run_pipeline(req: PipelineRunRequest):
 async def _run_pipeline_bg(req: PipelineRunRequest):
     global _pipeline_status
     try:
-        from preprocessing.skill_extraction.orchestrator import SkillExtractionOrchestrator
+        from reference_ingest.skill_extraction.orchestrator import SkillExtractionOrchestrator
         from models.router import ModelRouter
 
         db_path = _get_db_path()
@@ -368,7 +368,7 @@ def list_patterns(
 def emit_skills(category: Optional[str] = None):
     """Generate skill files from mined patterns."""
     try:
-        from preprocessing.skill_extraction.skill_emitter import SkillEmitter
+        from reference_ingest.skill_extraction.skill_emitter import SkillEmitter
 
         db_path = _get_db_path()
         emitter = SkillEmitter(db_path)

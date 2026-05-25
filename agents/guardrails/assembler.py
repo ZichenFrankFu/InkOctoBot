@@ -12,7 +12,7 @@ import logging
 import sqlite3
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.agents.constraints.assembler")
+logger = logging.getLogger("inkoctobot.agents.guardrails.assembler")
 
 PRIORITY_ORDER = {
     "world_rule": 1,

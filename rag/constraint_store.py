@@ -11,7 +11,7 @@ import sqlite3
 import uuid
 from typing import Any
 
-from agents.constraints.violation_detector import ViolationDetector
+from agents.guardrails.violation_detector import ViolationDetector
 
 logger = logging.getLogger("inkoctobot.rag.constraint_store")
 

@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from core.log_setup import setup_logging
+from framework.log_setup import setup_logging
 import uvicorn
 import webview
 

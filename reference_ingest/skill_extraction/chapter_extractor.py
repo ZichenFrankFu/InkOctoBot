@@ -25,7 +25,7 @@ from analysis.feature_extraction.rhetoric_classifier import (
     rhetoric_summary,
 )
 
-logger = logging.getLogger("inkoctobot.preprocessing.skill_extraction.chapter_extractor")
+logger = logging.getLogger("inkoctobot.reference_ingest.skill_extraction.chapter_extractor")
 
 # ── LLM prompt templates ─────────────────────────────────────────
 

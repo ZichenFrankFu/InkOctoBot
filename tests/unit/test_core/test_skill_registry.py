@@ -2,7 +2,7 @@
 import pytest
 from pathlib import Path
 
-from core.skill_registry import SkillRegistry
+from framework.skill_registry import SkillRegistry
 from agents.base_skill import BaseSkill, SkillMeta
 
 

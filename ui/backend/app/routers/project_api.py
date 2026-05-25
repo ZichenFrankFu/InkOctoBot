@@ -76,7 +76,7 @@ def list_projects(
 def create_project(req: ProjectCreate):
     pid = f"proj_{uuid.uuid4().hex[:12]}"
     try:
-        from database.creation_schema import ensure_creation_tables
+        from storage.creation_schema import ensure_creation_tables
         with _conn() as c:
             ensure_creation_tables(c)
             c.execute(

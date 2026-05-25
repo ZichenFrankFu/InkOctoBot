@@ -96,7 +96,7 @@ def init_db(db_path: str, *, is_test: bool = True):
     """
     Initialize DatabaseHandler. Compatible with both old/new signatures.
     """
-    from database.db_handler import DatabaseHandler
+    from storage.db_handler import DatabaseHandler
 
     try:
         return DatabaseHandler(db_path, is_test=is_test)

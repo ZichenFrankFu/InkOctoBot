@@ -59,7 +59,7 @@ def _run(coro):
 
 def _setup_test_env():
     """Create temp DB + project for integration tests."""
-    from database.creation_schema import ensure_creation_tables
+    from storage.creation_schema import ensure_creation_tables
     db_path = os.path.join(tempfile.mkdtemp(), "test.db")
     conn = sqlite3.connect(db_path)
     ensure_creation_tables(conn)

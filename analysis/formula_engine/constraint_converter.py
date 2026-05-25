@@ -2,7 +2,7 @@
 Convert aggregated features into prompt constraints.
 
 Produces constraint rules compatible with
-``agents.constraints.assembler.ConstraintAssembler``.
+``agents.guardrails.assembler.ConstraintAssembler``.
 
 Priority levels (matching assembler.py):
     1 – 世界观硬规则

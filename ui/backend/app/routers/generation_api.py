@@ -1485,7 +1485,7 @@ async def _run_pipeline_background(session_id: str):
             # Ensure creation tables (information_events etc.) exist in this DB
             try:
                 import sqlite3 as _sql
-                from database.creation_schema import ensure_creation_tables
+                from storage.creation_schema import ensure_creation_tables
                 with _sql.connect(db_path) as _tc:
                     ensure_creation_tables(_tc)
             except Exception as _te:
@@ -2356,7 +2356,7 @@ async def _run_batch_pipeline(session_id: str):
         # Ensure tables exist
         try:
             import sqlite3 as _sql
-            from database.creation_schema import ensure_creation_tables
+            from storage.creation_schema import ensure_creation_tables
             with _sql.connect(db_path) as _tc:
                 ensure_creation_tables(_tc)
         except Exception:

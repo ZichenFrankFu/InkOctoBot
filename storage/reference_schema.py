@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS work_index_progress (
 );"""
 
 # Persisted chapter list — populated when the user clicks 「保存全部章节」
-# after preprocessing. Holds the canonical chapter breakdown so
+# after reference_ingest. Holds the canonical chapter breakdown so
 # downstream features (segment plan, feature extraction, vector index)
 # can rely on stable boundaries instead of re-running detection.
 _REFERENCE_CHAPTERS = """

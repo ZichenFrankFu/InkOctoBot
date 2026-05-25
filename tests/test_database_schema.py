@@ -12,7 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from database.creation_schema import ensure_creation_tables, CREATION_DDL
+from storage.creation_schema import ensure_creation_tables, CREATION_DDL
 
 
 class TestCreationSchema(unittest.TestCase):

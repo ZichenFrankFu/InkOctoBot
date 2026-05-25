@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from database.creation_schema import ensure_creation_tables
+from storage.creation_schema import ensure_creation_tables
 from rag.truth.schemas import (
     ChapterSummaryDelta, EmotionArcEntry, HookDelta, HookImportance,
     NumericalReconciliation, RelationUpdate, StatePatch, SubplotStatus,

@@ -35,7 +35,7 @@ def _get_registry():
     with _registry_lock:
         if _registry is not None:
             return _registry
-        from core.skill_registry import SkillRegistry
+        from framework.skill_registry import SkillRegistry
         reg = SkillRegistry()
         reg.scan_all()
         # Start watching learned skills

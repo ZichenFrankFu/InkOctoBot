@@ -1,6 +1,6 @@
 """Tests for core.config."""
 from pathlib import Path
-from core.config import AppConfig
+from framework.config import AppConfig
 
 
 class TestAppConfig:

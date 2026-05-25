@@ -175,8 +175,8 @@ def level2_imports():
     # 2.1 项目核心模块
     project_modules = [
         ("config",                              "config.py"),
-        ("database.db_schema",                  "database/db_schema.py"),
-        ("database.db_handler",                 "database/db_handler.py"),
+        ("storage.db_schema",                  "database/db_schema.py"),
+        ("storage.db_handler",                 "database/db_handler.py"),
         ("ui.backend.app.main",                 "ui/backend/app/main.py"),
         ("ui.backend.app.settings",             "ui/backend/app/settings.py"),
         ("ui.backend.app.runner",               "ui/backend/app/runner.py"),
@@ -472,7 +472,7 @@ def level6_database():
     _section("Level 6: 数据库 schema 初始化（内存 DB）")
 
     try:
-        from database.db_schema import create_all
+        from storage.db_schema import create_all
 
         conn = sqlite3.connect(":memory:")
         create_all(conn)

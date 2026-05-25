@@ -27,7 +27,7 @@ class ReferenceDB:
 
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
-        from database.reference_schema import ensure_reference_tables
+        from storage.reference_schema import ensure_reference_tables
         with _conn(self.db_path) as conn:
             ensure_reference_tables(conn)
 

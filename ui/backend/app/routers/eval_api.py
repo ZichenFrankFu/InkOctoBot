@@ -91,7 +91,7 @@ async def analyze_text(req: EvalTextRequest):
 
     # 5. Skill-based evaluation (supplementary — uses SkillRegistry)
     try:
-        from core.skill_registry import SkillRegistry
+        from framework.skill_registry import SkillRegistry
         registry = SkillRegistry()
         registry.scan_all()
         eval_skills = registry.find_by_tags(["evaluation"])

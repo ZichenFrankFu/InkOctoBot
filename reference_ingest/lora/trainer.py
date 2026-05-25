@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.preprocessing.lora.trainer")
+logger = logging.getLogger("inkoctobot.reference_ingest.lora.trainer")
 
 
 @dataclass

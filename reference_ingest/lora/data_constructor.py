@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.preprocessing.lora.data_constructor")
+logger = logging.getLogger("inkoctobot.reference_ingest.lora.data_constructor")
 
 # ── Task-type templates ──
 

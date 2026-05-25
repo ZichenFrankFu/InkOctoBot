@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from database.creation_schema import ensure_creation_tables
+from storage.creation_schema import ensure_creation_tables
 from rag.truth import migrate as M
 from rag.truth.markdown_renderer import render_pending_hooks
 from rag.truth.schemas import (

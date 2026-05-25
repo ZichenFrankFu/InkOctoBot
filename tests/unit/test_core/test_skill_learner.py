@@ -1,6 +1,6 @@
 """Tests for core.skill_learner."""
 import pytest
-from core.skill_learner import SkillLearner
+from framework.skill_learner import SkillLearner
 
 
 class TestSkillLearnerValidation:
@@ -59,7 +59,7 @@ class Skill(BaseSkill):
     def test_install_skill(self, tmp_path):
         learner = SkillLearner()
         # Override the default path
-        import core.skill_learner as sl
+        import framework.skill_learner as sl
         original = sl._LEARNED_SKILLS_DIR
         sl._LEARNED_SKILLS_DIR = tmp_path
 

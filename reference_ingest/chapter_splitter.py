@@ -10,7 +10,7 @@ import logging
 import re
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.preprocessing.chapter_splitter")
+logger = logging.getLogger("inkoctobot.reference_ingest.chapter_splitter")
 
 # Common Chinese chapter heading patterns
 _CHAPTER_PATTERNS = [

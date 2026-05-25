@@ -1,7 +1,7 @@
 """Tests for core.event_bus and core.event_types."""
 import pytest
-from core.event_types import Event, EventType, AgentSuggestion
-from core.event_bus import EventBus
+from framework.event_types import Event, EventType, AgentSuggestion
+from framework.event_bus import EventBus
 
 
 class TestEvent:

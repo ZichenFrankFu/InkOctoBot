@@ -59,7 +59,7 @@ def skill_list(
     tag: Optional[str] = typer.Option(None, help="Filter by tag"),
 ) -> None:
     """List all registered skills."""
-    from core.skill_registry import SkillRegistry
+    from framework.skill_registry import SkillRegistry
 
     registry = SkillRegistry()
     agents_dir = Path(__file__).resolve().parent / "agents"
@@ -84,7 +84,7 @@ def skill_test(
     input_file: Optional[str] = typer.Option(None, "--input", "-i", help="Input JSON file"),
 ) -> None:
     """Test a single skill with JSON input."""
-    from core.skill_registry import SkillRegistry
+    from framework.skill_registry import SkillRegistry
 
     registry = SkillRegistry()
     agents_dir = Path(__file__).resolve().parent / "agents"
@@ -196,7 +196,7 @@ def extract_ingest(
     db: str = typer.Option(_DEFAULT_DB, "--db", help="Database path"),
 ) -> None:
     """Ingest and clean novel txt files (扫描、清洗、注册小说)."""
-    from preprocessing.novel_ingester import NovelIngester
+    from reference_ingest.novel_ingester import NovelIngester
 
     ingester = NovelIngester(db, dir)
 
@@ -235,7 +235,7 @@ def extract_run(
     corpus_dir: str = typer.Option(_DEFAULT_CORPUS_DIR, "--dir", help="Corpus directory"),
 ) -> None:
     """Run extraction pipeline (运行提取流程)."""
-    from preprocessing.skill_extraction.orchestrator import SkillExtractionOrchestrator
+    from reference_ingest.skill_extraction.orchestrator import SkillExtractionOrchestrator
     from models.router import ModelRouter
 
     orchestrator = SkillExtractionOrchestrator(
@@ -265,7 +265,7 @@ def extract_emit(
     db: str = typer.Option(_DEFAULT_DB, "--db", help="Database path"),
 ) -> None:
     """Generate skill files from mined patterns (生成技巧skill)."""
-    from preprocessing.skill_extraction.skill_emitter import SkillEmitter
+    from reference_ingest.skill_extraction.skill_emitter import SkillEmitter
 
     emitter = SkillEmitter(db)
 
@@ -283,7 +283,7 @@ def extract_status(
     db: str = typer.Option(_DEFAULT_DB, "--db", help="Database path"),
 ) -> None:
     """Show extraction pipeline status (查看提取进度)."""
-    from preprocessing.skill_extraction.orchestrator import SkillExtractionOrchestrator
+    from reference_ingest.skill_extraction.orchestrator import SkillExtractionOrchestrator
 
     orchestrator = SkillExtractionOrchestrator(db_path=db)
     status = orchestrator.get_status()
@@ -312,7 +312,7 @@ def extract_clean_status(
     db: str = typer.Option(_DEFAULT_DB, "--db", help="Database path"),
 ) -> None:
     """Show data cleaning status (查看清洗报告)."""
-    from preprocessing.novel_ingester import NovelIngester
+    from reference_ingest.novel_ingester import NovelIngester
 
     ingester = NovelIngester(db)
     status = ingester.get_clean_status()
@@ -355,7 +355,7 @@ app.add_typer(config_app, name="config")
 @config_app.command("show")
 def config_show() -> None:
     """Show current configuration."""
-    from core.config import get_config
+    from framework.config import get_config
     cfg = get_config()
     typer.echo(f"Config dir: {cfg.config_dir}")
     typer.echo(f"App DB:     {cfg.app_db_path}")
@@ -365,7 +365,7 @@ def config_show() -> None:
 @config_app.command("validate")
 def config_validate() -> None:
     """Validate configuration files."""
-    from core.config import get_config
+    from framework.config import get_config
     try:
         cfg = get_config()
         cfg.reload()
@@ -385,7 +385,7 @@ app.add_typer(db_app, name="db")
 @db_app.command("info")
 def db_info() -> None:
     """Show database info."""
-    from core.config import get_config
+    from framework.config import get_config
     cfg = get_config()
     for label, path in [("App DB", cfg.app_db_path), ("Crawler DB", cfg.crawler_db_path)]:
         exists = path.exists()

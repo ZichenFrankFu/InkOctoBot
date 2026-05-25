@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from database.creation_schema import ensure_creation_tables
+from storage.creation_schema import ensure_creation_tables
 from rag.memory.immediate import ImmediateContext, SceneContext
 from rag.memory.chapter_buffer import ChapterBuffer
 from rag.memory.episodic_timeline import EpisodicTimeline

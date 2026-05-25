@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.preprocessing.lora.quality_filter")
+logger = logging.getLogger("inkoctobot.reference_ingest.lora.quality_filter")
 
 
 @dataclass
@@ -48,7 +48,7 @@ def filter_samples(
         Maximum number of style dimensions that deviate > 30 % from *target_style*.
     """
     from agents.evaluation.slop_detector import SlopDetector
-    from preprocessing.style_extractor import StyleExtractor
+    from reference_ingest.style_extractor import StyleExtractor
 
     slop = SlopDetector()
     styler = StyleExtractor()

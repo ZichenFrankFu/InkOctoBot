@@ -11,7 +11,7 @@ from typing import Any
 
 from agents.base_agent import BaseAgent
 
-logger = logging.getLogger("inkoctobot.agents.constraints.disambiguator")
+logger = logging.getLogger("inkoctobot.agents.guardrails.disambiguator")
 
 
 class Disambiguator(BaseAgent):

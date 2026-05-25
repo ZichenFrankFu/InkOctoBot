@@ -24,7 +24,7 @@ import yaml
 from models.base import LLMMessage, LLMResponse
 
 if TYPE_CHECKING:
-    from core.skill_registry import SkillRegistry
+    from framework.skill_registry import SkillRegistry
 
 logger = logging.getLogger("inkoctobot.agents.base_agent")
 
@@ -195,7 +195,7 @@ class BaseAgent:
         """Publish an event if an event bus is configured."""
         if self.event_bus is None:
             return
-        from core.event_types import Event
+        from framework.event_types import Event
         self.event_bus.publish(Event(
             event_type=event_type,
             source=self.agent_name,

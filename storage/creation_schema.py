@@ -200,5 +200,5 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
         cur.execute(ddl)
     conn.commit()
 
-    from database.truth_schema import ensure_truth_tables
+    from storage.truth_schema import ensure_truth_tables
     ensure_truth_tables(conn)

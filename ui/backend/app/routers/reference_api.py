@@ -2291,7 +2291,7 @@ async def preprocess_save_all(ref_id: str):
     # a thread too.
     def _write_rows():
         with sqlite3.connect(db.db_path) as conn:
-            from database.reference_schema import ensure_reference_tables
+            from storage.reference_schema import ensure_reference_tables
             ensure_reference_tables(conn)
             conn.execute("DELETE FROM reference_chapters WHERE ref_id = ?", (ref_id,))
             conn.executemany(
@@ -2320,7 +2320,7 @@ def preprocess_saved_summary(ref_id: str):
     import sqlite3
     db = _db()
     with sqlite3.connect(db.db_path) as conn:
-        from database.reference_schema import ensure_reference_tables
+        from storage.reference_schema import ensure_reference_tables
         ensure_reference_tables(conn)
         row = conn.execute(
             "SELECT COUNT(*), MAX(saved_at) FROM reference_chapters WHERE ref_id = ?",
@@ -2344,7 +2344,7 @@ def preprocess_export_text(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     with sqlite3.connect(db.db_path) as conn:
-        from database.reference_schema import ensure_reference_tables
+        from storage.reference_schema import ensure_reference_tables
         ensure_reference_tables(conn)
         rows = conn.execute(
             "SELECT number, raw_marker, title, content FROM reference_chapters "
@@ -2381,7 +2381,7 @@ def preprocess_saved_chapters(ref_id: str):
     import sqlite3
     db = _db()
     with sqlite3.connect(db.db_path) as conn:
-        from database.reference_schema import ensure_reference_tables
+        from storage.reference_schema import ensure_reference_tables
         ensure_reference_tables(conn)
         rows = conn.execute(
             "SELECT number, title, volume, char_count, is_author_note "
@@ -3415,9 +3415,9 @@ async def _run_lora_training(body: LoRATrainRequest):
     global _lora_status
     try:
         import tempfile
-        from preprocessing.lora.data_constructor import construct_sft_data, save_dataset
-        from preprocessing.lora.quality_filter import filter_samples
-        from preprocessing.lora.trainer import train_lora, LoRATrainConfig
+        from reference_ingest.lora.data_constructor import construct_sft_data, save_dataset
+        from reference_ingest.lora.quality_filter import filter_samples
+        from reference_ingest.lora.trainer import train_lora, LoRATrainConfig
 
         db = _db()
         all_samples = []
@@ -4006,7 +4006,7 @@ async def summarize_chronicle(ref_id: str):
 
 
 # ── Plot-outline granularity ────────────────────────────────────────
-# The chapter-level outline from preprocessing + feature extraction is
+# The chapter-level outline from reference_ingest + feature extraction is
 # the finest grain. This lets the user condense it to a more macro view.
 
 _OUTLINE_LEVELS = {

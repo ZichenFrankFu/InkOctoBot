@@ -16,7 +16,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.preprocessing.skill_extraction.pattern_miner")
+logger = logging.getLogger("inkoctobot.reference_ingest.skill_extraction.pattern_miner")
 
 _PATTERN_MINING_PROMPT = """\
 你是一位网文研究专家。以下是从{novel_count}本小说中提取的{category_cn}数据汇总。

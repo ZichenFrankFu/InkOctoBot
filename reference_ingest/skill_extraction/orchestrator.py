@@ -21,7 +21,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.preprocessing.skill_extraction.orchestrator")
+logger = logging.getLogger("inkoctobot.reference_ingest.skill_extraction.orchestrator")
 
 
 class SkillExtractionOrchestrator:
@@ -108,7 +108,7 @@ class SkillExtractionOrchestrator:
 
     def _run_ingest(self) -> dict[str, Any]:
         """Phase 0: Ingest and clean novels."""
-        from preprocessing.novel_ingester import NovelIngester
+        from reference_ingest.novel_ingester import NovelIngester
 
         ingester = NovelIngester(self.db_path, self.corpus_dir)
         ingest_results = ingester.ingest_all()
@@ -127,7 +127,7 @@ class SkillExtractionOrchestrator:
         self, novel_refs: list[dict], *, resume: bool = True,
     ) -> dict[str, Any]:
         """Phase 1: Extract from each chapter of each novel."""
-        from preprocessing.skill_extraction.chapter_extractor import ChapterExtractor
+        from reference_ingest.skill_extraction.chapter_extractor import ChapterExtractor
 
         extractor = ChapterExtractor(self.db_path, self.model_router)
 
@@ -159,7 +159,7 @@ class SkillExtractionOrchestrator:
         self, novel_refs: list[dict], *, resume: bool = True,
     ) -> dict[str, Any]:
         """Phase 2: Aggregate chapter results into novel-level analysis."""
-        from preprocessing.skill_extraction.novel_aggregator import NovelAggregator
+        from reference_ingest.skill_extraction.novel_aggregator import NovelAggregator
 
         aggregator = NovelAggregator(self.db_path, self.model_router)
         aggregated = 0
@@ -198,7 +198,7 @@ class SkillExtractionOrchestrator:
 
     async def _run_pattern_mining(self) -> dict[str, Any]:
         """Phase 3: Mine patterns across all novels."""
-        from preprocessing.skill_extraction.pattern_miner import PatternMiner
+        from reference_ingest.skill_extraction.pattern_miner import PatternMiner
 
         miner = PatternMiner(self.db_path, self.model_router)
         patterns = await miner.mine_all()
@@ -210,7 +210,7 @@ class SkillExtractionOrchestrator:
 
     def _run_skill_emission(self) -> dict[str, Any]:
         """Phase 4: Generate skill files and populate vector store."""
-        from preprocessing.skill_extraction.skill_emitter import SkillEmitter
+        from reference_ingest.skill_extraction.skill_emitter import SkillEmitter
 
         emitter = SkillEmitter(
             self.db_path,

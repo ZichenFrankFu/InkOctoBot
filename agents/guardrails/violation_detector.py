@@ -12,7 +12,7 @@ from typing import Any
 
 from rag.vector_store import VectorStore
 
-logger = logging.getLogger("inkoctobot.agents.constraints.violation_detector")
+logger = logging.getLogger("inkoctobot.agents.guardrails.violation_detector")
 
 
 class ViolationDetector:

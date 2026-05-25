@@ -10,7 +10,7 @@ import logging
 from collections import defaultdict, deque
 from typing import Any, Callable, Coroutine
 
-from core.event_types import Event, AgentSuggestion
+from framework.event_types import Event, AgentSuggestion
 
 logger = logging.getLogger("inkoctobot.core.event_bus")
 

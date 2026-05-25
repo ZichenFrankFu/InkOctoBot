@@ -411,11 +411,11 @@ agents/<domain>/skills/<skill_name>/
 | **评估** | `repetition_detect` | `agents/evaluation/skills/repetition_detect/` | 重复表达检测 |
 | **评估** | `slop_detect` | `agents/evaluation/skills/slop_detect/` | AI味/套路表达检测 |
 | **评估** | `style_drift_detect` | `agents/evaluation/skills/style_drift_detect/` | 风格漂移检测 |
-| **分析** | `character_profile` | `agents/analysis/skills/character_profile/` | 从文本提取角色画像 |
-| **分析** | `narrative_extract` | `agents/analysis/skills/narrative_extract/` | 叙事结构提取 |
-| **分析** | `rhetoric_classify` | `agents/analysis/skills/rhetoric_classify/` | 修辞手法分类 |
-| **分析** | `shuangdian_extract` | `agents/analysis/skills/shuangdian_extract/` | 爽点/嗨点提取 |
-| **分析** | `style_extract` | `agents/analysis/skills/style_extract/` | 写作风格指纹提取 |
+| **分析** | `character_profile` | `agents/reference_extractors/skills/character_profile/` | 从文本提取角色画像 |
+| **分析** | `narrative_extract` | `agents/reference_extractors/skills/narrative_extract/` | 叙事结构提取 |
+| **分析** | `rhetoric_classify` | `agents/reference_extractors/skills/rhetoric_classify/` | 修辞手法分类 |
+| **分析** | `shuangdian_extract` | `agents/reference_extractors/skills/shuangdian_extract/` | 爽点/嗨点提取 |
+| **分析** | `style_extract` | `agents/reference_extractors/skills/style_extract/` | 写作风格指纹提取 |
 | **规划** | `calibration` | `agents/planner/skills/calibration/` | 参考作品风格校准 |
 | **规划** | `constraint_disambiguate` | `agents/planner/skills/constraint_disambiguate/` | 约束冲突消歧 |
 | **规划** | `marketing_advice` | `agents/planner/skills/marketing_advice/` | 市场定位建议 |

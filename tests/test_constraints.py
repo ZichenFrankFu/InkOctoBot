@@ -13,8 +13,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from database.creation_schema import ensure_creation_tables
-from agents.constraints.assembler import ConstraintAssembler
+from storage.creation_schema import ensure_creation_tables
+from agents.guardrails.assembler import ConstraintAssembler
 
 
 def _setup_db() -> str:

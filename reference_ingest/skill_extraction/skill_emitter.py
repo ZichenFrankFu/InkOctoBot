@@ -15,7 +15,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.preprocessing.skill_extraction.skill_emitter")
+logger = logging.getLogger("inkoctobot.reference_ingest.skill_extraction.skill_emitter")
 
 
 # ── Skill code templates ─────────────────────────────────────────

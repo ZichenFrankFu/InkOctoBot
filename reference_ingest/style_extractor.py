@@ -10,7 +10,7 @@ import logging
 import re
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.preprocessing.style_extractor")
+logger = logging.getLogger("inkoctobot.reference_ingest.style_extractor")
 
 
 class StyleExtractor:

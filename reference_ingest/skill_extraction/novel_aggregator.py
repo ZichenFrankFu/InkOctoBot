@@ -21,7 +21,7 @@ from analysis.feature_extraction.narrative_extractor import (
     extract_rhythm,
 )
 
-logger = logging.getLogger("inkoctobot.preprocessing.skill_extraction.novel_aggregator")
+logger = logging.getLogger("inkoctobot.reference_ingest.skill_extraction.novel_aggregator")
 
 _STORY_ARC_PROMPT = """\
 你是一位资深小说编辑和叙事学专家。以下是一本小说所有章节的摘要。
