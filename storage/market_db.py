@@ -15,7 +15,7 @@ from datetime import datetime, date
 from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from .db_schema import create_all
+from .market_schema import create_all
 
 
 # --------------------------

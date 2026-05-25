@@ -123,7 +123,7 @@ def _load_platform_directive(project_id: str, exclude: set | None = None) -> str
     if exclude and "platform" in exclude:
         return ""
     try:
-        from ui.backend.app.routers.data_api import _col, _safe_id
+        from ui.backend.app.routers.json_storage_api import _col, _safe_id
 
         p = _col("projects") / f"{_safe_id(project_id)}.json"
         if not p.exists():
@@ -159,7 +159,7 @@ def _load_character_cards(project_id: str, names: list[str], exclude: set | None
     if not names:
         return ""
     try:
-        from ui.backend.app.routers.data_api import _list
+        from ui.backend.app.routers.json_storage_api import _list
 
         rows = _list("characters", filter_key="project_id", filter_value=project_id)
         by_name = {r.get("name", ""): r for r in rows}
@@ -201,7 +201,7 @@ def _load_character_cards(project_id: str, names: list[str], exclude: set | None
 def _load_worldbook(project_id: str, exclude: set | None = None) -> str:
     """Collect the project's worldbook entries."""
     try:
-        from ui.backend.app.routers.data_api import _list
+        from ui.backend.app.routers.json_storage_api import _list
 
         rows = _list("worldbook", filter_key="project_id", filter_value=project_id)
         if not rows:
@@ -229,7 +229,7 @@ def _load_worldbook(project_id: str, exclude: set | None = None) -> str:
 def _ref_selection(project_id: str) -> dict:
     """Load the per-project reference-work × feature-type selection map."""
     try:
-        from ui.backend.app.routers.data_api import _col, _safe_id
+        from ui.backend.app.routers.json_storage_api import _col, _safe_id
 
         p = _col("reference_injection") / f"{_safe_id(project_id)}.json"
         if not p.exists():
@@ -398,7 +398,7 @@ def _load_reference_blocks(project_id: str, db_path: str, exclude: set | None = 
 def _load_writing_knowledge(project_id: str, exclude: set | None = None) -> str:
     """Inject the writing-knowledge entries selected for this project."""
     try:
-        from ui.backend.app.routers.data_api import _col, _safe_id, _list
+        from ui.backend.app.routers.json_storage_api import _col, _safe_id, _list
 
         p = _col("knowledge_injection") / f"{_safe_id(project_id)}.json"
         if not p.exists():
@@ -436,7 +436,7 @@ def _load_writing_knowledge(project_id: str, exclude: set | None = None) -> str:
 def _load_style_calibration(project_id: str) -> str:
     """Build a style note from the project's风格校准 settings."""
     try:
-        from ui.backend.app.routers.data_api import _col, _safe_id
+        from ui.backend.app.routers.json_storage_api import _col, _safe_id
 
         p = _col("calibration") / f"{_safe_id(project_id)}.json"
         if not p.exists():
@@ -468,7 +468,7 @@ def _load_foreshadowing(project_id: str, chapter_id: str = "") -> str:
     if not chapter_id:
         return ""
     try:
-        from ui.backend.app.routers.data_api import _col, _safe_id
+        from ui.backend.app.routers.json_storage_api import _col, _safe_id
 
         p = _col("foreshadowing") / f"{_safe_id(project_id)}.json"
         if not p.exists():
@@ -780,7 +780,7 @@ def _load_project_memory(project_id: str, exclude: set | None = None) -> str:
     """Inject the project's shared memory — confirmed facts / decisions
     that persist across every AI conversation in the project."""
     try:
-        from ui.backend.app.routers.data_api import _col, _safe_id
+        from ui.backend.app.routers.json_storage_api import _col, _safe_id
 
         p = _col("project_memory") / f"{_safe_id(project_id)}.json"
         if not p.exists():
@@ -818,7 +818,7 @@ def _load_adjacent_context(
         return ""
     exclude = exclude or set()
     try:
-        from ui.backend.app.routers.data_api import _col, _safe_id
+        from ui.backend.app.routers.json_storage_api import _col, _safe_id
 
         p = _col("editor") / f"{_safe_id(project_id)}.json"
         if not p.exists():
@@ -873,7 +873,7 @@ def load_chapter_fields(project_id: str, chapter_id: str) -> dict:
     if not chapter_id:
         return fields
     try:
-        from ui.backend.app.routers.data_api import _col, _safe_id
+        from ui.backend.app.routers.json_storage_api import _col, _safe_id
 
         p = _col("editor") / f"{_safe_id(project_id)}.json"
         if not p.exists():
@@ -942,7 +942,7 @@ def _creation_default_skills(mode: str = "cluster") -> list[dict]:
 def _project_writing_knowledge(project_id: str) -> list[dict]:
     """Writing-knowledge entries injected for the project."""
     try:
-        from ui.backend.app.routers.data_api import _col, _safe_id, _list
+        from ui.backend.app.routers.json_storage_api import _col, _safe_id, _list
 
         p = _col("knowledge_injection") / f"{_safe_id(project_id)}.json"
         if not p.exists():
@@ -966,7 +966,7 @@ def creation_context_manifest(
     """Summarize the skills + RAG a chapter generation will use, with the
     concrete items behind each RAG category so the creation tab can show
     them and let the user de-select individual items."""
-    from ui.backend.app.routers.data_api import _col, _safe_id, _list
+    from ui.backend.app.routers.json_storage_api import _col, _safe_id, _list
 
     fields = load_chapter_fields(project_id, chapter_id)
     characters = fields.get("characters") or []

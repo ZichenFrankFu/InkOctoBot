@@ -76,7 +76,7 @@ def list_projects(
 def create_project(req: ProjectCreate):
     pid = f"proj_{uuid.uuid4().hex[:12]}"
     try:
-        from storage.creation_schema import ensure_creation_tables
+        from storage.project_schema import ensure_creation_tables
         with _conn() as c:
             ensure_creation_tables(c)
             c.execute(
@@ -86,7 +86,7 @@ def create_project(req: ProjectCreate):
             )
             c.commit()
         # Create project directory
-        from security.data_isolation import DataIsolation
+        from security.test_mode_isolation import DataIsolation
         iso = DataIsolation(str(settings.repo_root / "data" / "projects"))
         iso.create_project_dir(pid)
         return {"status": "ok", "project_id": pid}
@@ -129,7 +129,7 @@ def delete_project(project_id: str):
         c.commit()
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="Project not found")
-    from security.data_isolation import DataIsolation
+    from security.test_mode_isolation import DataIsolation
     iso = DataIsolation(str(settings.repo_root / "data" / "projects"))
     iso.cleanup_project(project_id, keep_exports=False)
     return {"status": "ok", "deleted": project_id}
@@ -137,7 +137,7 @@ def delete_project(project_id: str):
 
 @router.post("/{project_id}/export")
 def export_project(project_id: str):
-    from security.data_isolation import DataIsolation
+    from security.test_mode_isolation import DataIsolation
     iso = DataIsolation(str(settings.repo_root / "data" / "projects"))
     try:
         output = settings.repo_root / "data" / "projects" / project_id / "exports" / f"{project_id}_export"

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from storage.creation_schema import ensure_creation_tables
+from storage.project_schema import ensure_creation_tables
 from knowledge.truth.schemas import (
     ChapterSummaryDelta, EmotionArcEntry, HookDelta, HookImportance,
     HookStatus, NumericalReconciliation, RelationUpdate, StatePatch,

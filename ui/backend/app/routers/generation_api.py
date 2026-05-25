@@ -393,7 +393,7 @@ def _get_user_settings() -> dict:
     """Load user settings with full defaults for missing keys."""
     import json as _json
     from ui.backend.app.settings import settings as app_settings
-    from ui.backend.app.routers.data_api import _default_settings
+    from ui.backend.app.routers.json_storage_api import _default_settings
     p = app_settings.get_data_path("settings.json")
     if p.exists():
         data = _json.loads(p.read_text("utf-8"))
@@ -1163,7 +1163,7 @@ async def _run_pipeline_background(session_id: str):
         if not req_data.get("style_notes"):
             try:
                 _cal_pid = req_data.get("project_id", "default")
-                from ui.backend.app.routers.data_api import _col
+                from ui.backend.app.routers.json_storage_api import _col
                 _cal_path = _col("calibration") / f"{_cal_pid}.json"
                 if _cal_path.exists():
                     _cal_data = json.loads(_cal_path.read_text("utf-8"))
@@ -1225,7 +1225,7 @@ async def _run_pipeline_background(session_id: str):
             _aliases = req_data.get("character_aliases", {})
             _char_card_parts = []
             try:
-                from ui.backend.app.routers.data_api import _list as _list_data
+                from ui.backend.app.routers.json_storage_api import _list as _list_data
                 _all_chars = _list_data("characters")
                 _pid = req_data.get("project_id", "")
                 for _cn in _chars:
@@ -1485,7 +1485,7 @@ async def _run_pipeline_background(session_id: str):
             # Ensure creation tables (information_events etc.) exist in this DB
             try:
                 import sqlite3 as _sql
-                from storage.creation_schema import ensure_creation_tables
+                from storage.project_schema import ensure_creation_tables
                 with _sql.connect(db_path) as _tc:
                     ensure_creation_tables(_tc)
             except Exception as _te:
@@ -1498,7 +1498,7 @@ async def _run_pipeline_background(session_id: str):
             # Fallback: if memory layers are empty, seed from editor content
             if not memory.has_memory_content():
                 try:
-                    from ui.backend.app.routers.data_api import _col as _data_col, _safe_id as _sid
+                    from ui.backend.app.routers.json_storage_api import _col as _data_col, _safe_id as _sid
                     _editor_path = _data_col("editor") / f"{_sid(_proj_id)}.json"
                     if _editor_path.exists():
                         _editor_data = json.loads(_editor_path.read_text("utf-8"))
@@ -1550,7 +1550,7 @@ async def _run_pipeline_background(session_id: str):
             _aliases = req_data.get("character_aliases", {})
             character_cards: dict[str, str] = {}
             try:
-                from ui.backend.app.routers.data_api import _list
+                from ui.backend.app.routers.json_storage_api import _list
                 all_chars = _list("characters")
                 pid = req_data.get("project_id", "")
                 for c_name in characters:
@@ -2356,7 +2356,7 @@ async def _run_batch_pipeline(session_id: str):
         # Ensure tables exist
         try:
             import sqlite3 as _sql
-            from storage.creation_schema import ensure_creation_tables
+            from storage.project_schema import ensure_creation_tables
             with _sql.connect(db_path) as _tc:
                 ensure_creation_tables(_tc)
         except Exception:
@@ -2565,7 +2565,7 @@ async def prompt_preview(req: PromptPreviewRequest):
         _style_notes = req.style_notes
         if not _style_notes:
             try:
-                from ui.backend.app.routers.data_api import _col, _safe_id
+                from ui.backend.app.routers.json_storage_api import _col, _safe_id
                 _cal_path = _col("calibration") / f"{_safe_id(req.project_id)}.json"
                 if _cal_path.exists():
                     _cal_data = json.loads(_cal_path.read_text("utf-8"))
@@ -2657,7 +2657,7 @@ async def prompt_preview(req: PromptPreviewRequest):
             # Fallback: if memory is empty, build context from editor content
             if not _memory_has_content and not shared_memory_parts and not agent_memory_parts:
                 try:
-                    from ui.backend.app.routers.data_api import _col as _data_col, _safe_id as _sid
+                    from ui.backend.app.routers.json_storage_api import _col as _data_col, _safe_id as _sid
                     _editor_path = _data_col("editor") / f"{_sid(req.project_id)}.json"
                     if _editor_path.exists():
                         _editor_data = json.loads(_editor_path.read_text("utf-8"))
@@ -2716,7 +2716,7 @@ async def prompt_preview(req: PromptPreviewRequest):
         if req.characters:
             char_card_parts = []
             try:
-                from ui.backend.app.routers.data_api import _list
+                from ui.backend.app.routers.json_storage_api import _list
                 all_chars = _list("characters")
                 for c_name in req.characters:
                     display_name = _aliases.get(c_name, c_name)

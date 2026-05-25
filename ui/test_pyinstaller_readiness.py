@@ -119,8 +119,8 @@ def level1_paths():
         "ui/backend/app/runner.py":     PROJECT_ROOT / "ui" / "backend" / "app" / "runner.py",
         "ui/backend/app/store.py":      PROJECT_ROOT / "ui" / "backend" / "app" / "store.py",
         "ui/backend/app/utils.py":      PROJECT_ROOT / "ui" / "backend" / "app" / "utils.py",
-        "database/db_handler.py":       PROJECT_ROOT / "database" / "db_handler.py",
-        "database/db_schema.py":        PROJECT_ROOT / "database" / "db_schema.py",
+        "storage/market_db.py":         PROJECT_ROOT / "storage" / "market_db.py",
+        "storage/market_schema.py":     PROJECT_ROOT / "storage" / "market_schema.py",
     }
 
     for label, p in critical_files.items():
@@ -148,7 +148,7 @@ def level1_paths():
         R.warn("前端 assets/ 目录为空或不存在", str(assets_dir))
 
     # 1.4 Python 包目录有 __init__.py
-    packages = ["database", "tasks", "analysis",
+    packages = ["storage", "market_analysis", "reference_pipeline", "reference_ingest",
                  "ui", "ui/backend", "ui/backend/app", "ui/backend/app/routers"]
     for pkg in packages:
         init_file = PROJECT_ROOT / pkg.replace("/", os.sep) / "__init__.py"
@@ -175,17 +175,16 @@ def level2_imports():
     # 2.1 项目核心模块
     project_modules = [
         ("config",                              "config.py"),
-        ("storage.db_schema",                  "database/db_schema.py"),
-        ("storage.db_handler",                 "database/db_handler.py"),
+        ("storage.market_schema",              "storage/market_schema.py"),
+        ("storage.market_db",                  "storage/market_db.py"),
         ("ui.backend.app.main",                 "ui/backend/app/main.py"),
         ("ui.backend.app.settings",             "ui/backend/app/settings.py"),
         ("ui.backend.app.runner",               "ui/backend/app/runner.py"),
         ("ui.backend.app.store",                "ui/backend/app/store.py"),
         ("ui.backend.app.utils",                "ui/backend/app/utils.py"),
-        ("ui.backend.app.routers.config_api",   "ui/backend/app/routers/config_api.py"),
-        ("ui.backend.app.routers.tasks_api",    "ui/backend/app/routers/tasks_api.py"),
         ("ui.backend.app.routers.reports_api",  "ui/backend/app/routers/reports_api.py"),
-        ("ui.backend.app.routers.db_api",       "ui/backend/app/routers/db_api.py"),
+        ("ui.backend.app.routers.market_db_api", "ui/backend/app/routers/market_db_api.py"),
+        ("ui.backend.app.routers.json_storage_api", "ui/backend/app/routers/json_storage_api.py"),
     ]
 
     for mod_name, file_hint in project_modules:
@@ -472,7 +471,7 @@ def level6_database():
     _section("Level 6: 数据库 schema 初始化（内存 DB）")
 
     try:
-        from storage.db_schema import create_all
+        from storage.market_schema import create_all
 
         conn = sqlite3.connect(":memory:")
         create_all(conn)

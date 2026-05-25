@@ -58,7 +58,7 @@ class MigrationReport:
 def _foreshadowing_json_path(project_id: str) -> Path | None:
     """Returns path to ``data/foreshadowing/<safe_id>.json`` or None."""
     try:
-        from ui.backend.app.routers.data_api import _col, _safe_id
+        from ui.backend.app.routers.json_storage_api import _col, _safe_id
         return _col("foreshadowing") / f"{_safe_id(project_id)}.json"
     except Exception:
         try:
@@ -73,7 +73,7 @@ def _foreshadowing_json_path(project_id: str) -> Path | None:
 def _character_rows(project_id: str) -> list[dict[str, Any]]:
     """Best-effort lookup of character cards via data_api."""
     try:
-        from ui.backend.app.routers.data_api import _list
+        from ui.backend.app.routers.json_storage_api import _list
         return _list("characters", filter_key="project_id",
                      filter_value=project_id)
     except Exception as exc:

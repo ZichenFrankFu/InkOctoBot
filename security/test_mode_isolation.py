@@ -11,7 +11,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("inkoctobot.security.data_isolation")
+logger = logging.getLogger("inkoctobot.security.test_mode_isolation")
 
 
 class DataIsolation:

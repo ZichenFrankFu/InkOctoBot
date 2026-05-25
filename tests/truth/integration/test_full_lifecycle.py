@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from storage.creation_schema import ensure_creation_tables
+from storage.project_schema import ensure_creation_tables
 from knowledge.truth import migrate as M
 from knowledge.truth.markdown_renderer import render_pending_hooks
 from knowledge.truth.schemas import (

@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from storage.creation_schema import ensure_creation_tables
+from storage.project_schema import ensure_creation_tables
 from knowledge.memory.immediate import ImmediateContext, SceneContext
 from knowledge.memory.chapter_buffer import ChapterBuffer
 from knowledge.memory.episodic_timeline import EpisodicTimeline

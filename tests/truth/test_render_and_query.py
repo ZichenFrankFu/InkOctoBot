@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from storage.creation_schema import ensure_creation_tables
+from storage.project_schema import ensure_creation_tables
 from knowledge.truth.markdown_renderer import (
     render, render_current_state, render_particle_ledger,
     render_pending_hooks, render_chapter_summaries,

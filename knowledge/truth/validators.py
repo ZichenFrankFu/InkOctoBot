@@ -116,7 +116,7 @@ def _resolve_known_characters(store: "TruthFileStore") -> set[str] | None:
     character-existence rules a no-op.
     """
     try:
-        from ui.backend.app.routers.data_api import _list  # type: ignore
+        from ui.backend.app.routers.json_storage_api import _list  # type: ignore
         rows = _list("characters", filter_key="project_id",
                      filter_value=store.project_id)
         names: set[str] = set()

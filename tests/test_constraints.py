@@ -13,7 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from storage.creation_schema import ensure_creation_tables
+from storage.project_schema import ensure_creation_tables
 from agents.guardrails.assembler import ConstraintAssembler
 
 

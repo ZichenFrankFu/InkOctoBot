@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from storage.creation_schema import ensure_creation_tables
+from storage.project_schema import ensure_creation_tables
 from storage.truth_schema import ensure_truth_tables, TRUTH_DDL
 
 

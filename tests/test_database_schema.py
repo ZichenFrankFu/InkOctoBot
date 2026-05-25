@@ -12,7 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from storage.creation_schema import ensure_creation_tables, CREATION_DDL
+from storage.project_schema import ensure_creation_tables, CREATION_DDL
 
 
 class TestCreationSchema(unittest.TestCase):
@@ -123,7 +123,7 @@ class TestCreationSchema(unittest.TestCase):
 class TestSecurityModules(unittest.TestCase):
 
     def test_data_isolation(self):
-        from security.data_isolation import DataIsolation
+        from security.test_mode_isolation import DataIsolation
         tmpdir = tempfile.mkdtemp()
         iso = DataIsolation(tmpdir)
         proj_dir = iso.create_project_dir("test_proj")
