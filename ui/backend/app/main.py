@@ -37,6 +37,10 @@ from .routers.dev_actions_api import router as dev_router
 from .routers.debug_api import router as debug_router
 
 app = FastAPI(title="InkOctoBot — AI 小说智能体工作台", version="2.1.0")
+# Bind a trace_id per HTTP request so every log line emitted while
+# handling the request is correlatable; echoed back via X-Request-ID.
+from framework.observability.request_middleware import TraceIDMiddleware
+app.add_middleware(TraceIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"],

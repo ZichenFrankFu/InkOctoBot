@@ -207,10 +207,23 @@ class ModelRouter:
         **kwargs: Any,
     ) -> LLMResponse:
         provider = self._get_provider(agent_role)
-        logger.debug("Routing %s -> %s", agent_role, provider)
-        return await provider.generate(
-            messages, temperature=temperature, max_tokens=max_tokens, **kwargs,
-        )
+        # Log the actual provider+model dispatched so failures are never
+        # opaque (was GAP 5 in the architecture review). Provider-side
+        # errors get exc_info so the stack trace lands in the log buffer.
+        model_name = getattr(provider, "model_name", "?")
+        prov_name = type(provider).__name__
+        logger.info("route role=%s provider=%s model=%s",
+                    agent_role, prov_name, model_name)
+        try:
+            return await provider.generate(
+                messages, temperature=temperature, max_tokens=max_tokens, **kwargs,
+            )
+        except Exception:
+            logger.exception(
+                "provider FAILED role=%s provider=%s model=%s",
+                agent_role, prov_name, model_name,
+            )
+            raise
 
     async def generate_stream(
         self,
@@ -222,6 +235,10 @@ class ModelRouter:
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         provider = self._get_provider(agent_role)
+        model_name = getattr(provider, "model_name", "?")
+        prov_name = type(provider).__name__
+        logger.info("stream role=%s provider=%s model=%s",
+                    agent_role, prov_name, model_name)
         async for token in provider.generate_stream(
             messages, temperature=temperature, max_tokens=max_tokens, **kwargs,
         ):

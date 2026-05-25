@@ -848,6 +848,18 @@ async def _run_pipeline_background(session_id: str):
         return
     req_data = session["request"]
 
+    # Bind trace_id + session_id so every log line emitted inside this
+    # pipeline run carries them (closes GAP 10 in the observability
+    # audit — cross-module correlation). The trace_id is also surfaced
+    # on the session dict so the UI can show it.
+    from framework.observability import trace_scope, new_trace_id
+    trace_id = new_trace_id()
+    session["trace_id"] = trace_id
+    with trace_scope(trace_id=trace_id, session_id=session_id):
+        await _run_pipeline_inner(session_id, session, req_data)
+
+
+async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) -> None:
     try:
         router_inst = _build_router(req_data.get("provider", ""), req_data.get("model", ""))
         if req_data.get("manual"):
