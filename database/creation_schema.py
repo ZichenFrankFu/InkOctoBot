@@ -193,9 +193,12 @@ CREATION_DDL = [
 
 
 def ensure_creation_tables(conn: sqlite3.Connection) -> None:
-    """Create all creation + memory tables."""
+    """Create all creation + memory tables, plus the Truth File system tables."""
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_keys = ON;")
     for ddl in CREATION_DDL:
         cur.execute(ddl)
     conn.commit()
+
+    from database.truth_schema import ensure_truth_tables
+    ensure_truth_tables(conn)
