@@ -30,6 +30,11 @@ from .reference._common import (
     SERIAL_STATUS_VALUES as _SERIAL_STATUS_VALUES,
     db as _db,
 )
+# _load_author_keywords was moved into reference/patterns.py with the
+# patterns split — re-import it here so the not-yet-extracted endpoints
+# in this file (preprocess_aside_paragraphs, preprocess_start, etc.)
+# still resolve the name.
+from .reference.patterns import _load_author_keywords
 
 router = APIRouter(prefix="/references", tags=["references"])
 
