@@ -60,10 +60,7 @@ class AppConfig:
         self._load_all()
 
     def _load_all(self) -> None:
-        for name in [
-            "app_config", "models", "paths", "analysis",
-            "websites", "crawler", "selenium", "antiblock", "scheduler",
-        ]:
+        for name in ["app_config", "models", "paths", "websites"]:
             self._raw[name] = self._load(f"{name}.yaml")
 
     def _load(self, filename: str) -> dict[str, Any]:
@@ -86,10 +83,6 @@ class AppConfig:
     @property
     def paths(self) -> dict[str, Any]:
         return self._raw.get("paths", {})
-
-    @property
-    def analysis(self) -> dict[str, Any]:
-        return self._raw.get("analysis", {})
 
     @property
     def project_defaults(self) -> dict[str, Any]:

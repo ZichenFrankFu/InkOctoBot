@@ -112,7 +112,6 @@ def level1_paths():
     # 1.2 关键文件检查
     critical_files = {
         "config.py":                    PROJECT_ROOT / "config.py",
-        "main.py":                      PROJECT_ROOT / "main.py",
         "launcher.py":                  PROJECT_ROOT / "launcher.py",
         "requirements.txt":             PROJECT_ROOT / "requirements.txt",
         "ui/backend/app/main.py":       PROJECT_ROOT / "ui" / "backend" / "app" / "main.py",
