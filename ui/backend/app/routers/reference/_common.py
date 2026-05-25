@@ -15,6 +15,13 @@ from ...utils import load_repo_config, get_db_path
 # Allowed enum values for ReferenceWork.serial_status (used by works.py).
 SERIAL_STATUS_VALUES = frozenset({"ongoing", "completed", "hiatus", "unknown"})
 
+# Localized media type labels — used by prompts (web_search, chronicle,
+# plot_outline) so the LLM sees the genre in Chinese.
+MEDIA_TYPE_ZH = {
+    "web_novel": "网文小说", "literature": "文学作品", "poetry": "诗歌作品",
+    "film": "电影", "anime": "动漫", "tv_series": "电视剧", "other": "作品",
+}
+
 
 def db() -> ReferenceDB:
     """Open the reference DB respecting test mode / config overrides.
