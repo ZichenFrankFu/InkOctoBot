@@ -57,10 +57,18 @@ class SkillLearner:
 
         Returns: {"name": ..., "installed": True/False, "reason": ...}
         """
+        # Closes GAP 7 in the observability audit: every proposal — accepted,
+        # rejected, or short-circuited — emits an INFO line so the operator
+        # can see what the LLM actually generated and why it was blocked.
         if self._router is None:
+            logger.info("skill_proposal short-circuit reason='no model router'")
             return {"name": "", "installed": False, "reason": "No model router"}
 
         examples = examples or []
+        logger.info(
+            "skill_proposal start need=%r examples=%d",
+            (need_description or "")[:200], len(examples),
+        )
 
         # Step 1: LLM generates skill code
         skill_md, skill_py = await self._generate_skill(need_description, examples)
@@ -68,16 +76,27 @@ class SkillLearner:
         # Step 2: Extract name from generated code
         name = self._extract_skill_name(skill_py)
         if not name:
+            logger.warning(
+                "skill_proposal rejected reason='no extractable name' code_head=%r",
+                (skill_py or "")[:500],
+            )
             return {"name": "", "installed": False, "reason": "Could not extract skill name"}
 
         # Step 3: Safety validation
         is_safe, reason = self._validate_skill_code(skill_py)
         if not is_safe:
-            logger.warning("Skill '%s' rejected: %s", name, reason)
+            logger.warning(
+                "skill_proposal rejected name=%s reason=%s code_head=%r",
+                name, reason, (skill_py or "")[:500],
+            )
             return {"name": name, "installed": False, "reason": reason}
 
         # Step 4: Install
         self.install_skill(name, skill_md, skill_py)
+        logger.info(
+            "skill_proposal installed name=%s code_chars=%d md_chars=%d",
+            name, len(skill_py or ""), len(skill_md or ""),
+        )
         return {"name": name, "installed": True, "reason": "OK"}
 
     def _validate_skill_code(self, code: str) -> tuple[bool, str]:

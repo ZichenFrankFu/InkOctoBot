@@ -116,6 +116,26 @@ class KnowledgeIsolationEngine:
                 if restriction not in view.explicitly_unknown:
                     view.explicitly_unknown.append(restriction)
 
+        # Closes GAP 8 in the observability audit: surface what was
+        # filtered so an operator can debug "why did this character
+        # hallucinate / forget X?". DEBUG logs the full counts; a
+        # WARNING fires when the filter strips an aggressive number of
+        # facts, which often indicates a misconfigured boundary.
+        n_known = len(view.known_true)
+        n_false = len(view.known_false)
+        n_unknown = len(view.explicitly_unknown)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "knowledge_filter project=%s char=%s ch=%d known=%d false=%d unknown=%d",
+                project_id, character_name, chapter_num,
+                n_known, n_false, n_unknown,
+            )
+        if n_unknown >= 8:
+            logger.warning(
+                "knowledge_filter aggressive project=%s char=%s ch=%d unknown=%d (>=8)",
+                project_id, character_name, chapter_num, n_unknown,
+            )
+
         return view
 
     def _get_character_info(self, project_id: str, character_name: str) -> dict[str, dict]:

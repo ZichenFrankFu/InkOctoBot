@@ -60,11 +60,31 @@ class Evaluator(BaseAgent):
         # Enhance with explainable output
         parsed = self._enrich_evaluation(parsed)
 
+        # Closes GAP 3 in the observability audit: persist the full
+        # evaluation JSON so when a chapter is rejected the operator
+        # can see WHICH dimension failed without re-running. INFO line
+        # for the summary numbers; DEBUG line for the full payload.
+        passed = bool(parsed.get("passed", True))
+        score = parsed.get("score", 0)
+        issues = parsed.get("issues", []) or []
+        logger.info(
+            "evaluation chapter=%d passed=%s score=%s issues=%d",
+            chapter_num, passed, score, len(issues),
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "evaluation chapter=%d full=%s",
+                chapter_num, json.dumps(parsed, ensure_ascii=False)[:6000],
+            )
+
         self.emit_event("EVALUATION_COMPLETED", {
             "chapter_num": chapter_num,
-            "passed": parsed.get("passed", True),
-            "score": parsed.get("score", 0),
-            "issue_count": len(parsed.get("issues", [])),
+            "passed": passed,
+            "score": score,
+            "issue_count": len(issues),
+            # Carry the full result on the event too so the WebSocket
+            # can surface the dimension breakdown without a refetch.
+            "result": parsed,
         })
         return parsed
 

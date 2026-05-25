@@ -59,11 +59,26 @@ class SemanticMemory:
         n_results: int = 5,
         memory_type: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Semantic search within a project's memory."""
+        """Semantic search within a project's memory.
+
+        Logged for transparency (closes GAP 9 in the observability audit):
+        DEBUG-level records the query text head + hit count + top-k
+        similarity distances so an operator can answer "why did the
+        agent get this bad context?" without instrumenting at call sites.
+        """
         where: dict[str, Any] = {"project_id": project_id}
         if memory_type:
             where["memory_type"] = memory_type
-        return self._store.query(query_text, n_results=n_results, where=where)
+        results = self._store.query(query_text, n_results=n_results, where=where)
+        if logger.isEnabledFor(logging.DEBUG):
+            distances = [r.get("distance") for r in results[:5]
+                         if r.get("distance") is not None]
+            logger.debug(
+                "rag_query project=%s mem_type=%s q=%r hits=%d top_dist=%s",
+                project_id, memory_type or "*",
+                (query_text or "")[:120], len(results), distances,
+            )
+        return results
 
     def query_for_character(
         self,
@@ -73,7 +88,6 @@ class SemanticMemory:
         n_results: int = 5,
     ) -> list[dict[str, Any]]:
         """Search memory filtered by character involvement."""
-        # Try to use ChromaDB $contains filter for character name first
         results = self._store.query(
             query_text, n_results=n_results * 2,
             where={"project_id": project_id},
@@ -81,7 +95,6 @@ class SemanticMemory:
         filtered = []
         for r in results:
             chars_raw = r.get("metadata", {}).get("characters", "[]")
-            # Fast string check before full JSON parse
             if chars_raw == "[]" or character_name in chars_raw:
                 if chars_raw == "[]":
                     filtered.append(r)
@@ -91,6 +104,12 @@ class SemanticMemory:
                         filtered.append(r)
                 if len(filtered) >= n_results:
                     break
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "rag_query_char project=%s char=%s q=%r scanned=%d kept=%d",
+                project_id, character_name,
+                (query_text or "")[:120], len(results), len(filtered),
+            )
         return filtered
 
     def store_permanent_fact(self, project_id: str, content: str,

@@ -86,12 +86,34 @@ class MemoryConsolidator:
 
         parsed = self._parse_response(resp.content)
         if not parsed:
+            # The LLM returned unparseable JSON. Log the raw response head
+            # so the operator can diagnose what shape the model produced
+            # (closes GAP 4 in the observability audit — was a silent fallback).
+            logger.warning(
+                "consolidator chapter=%d JSON parse failed; falling back to raw summary store. raw_head=%r",
+                chapter_num, (resp.content or "")[:300],
+            )
             self.semantic.store(project_id, summary_text,
                                 memory_type="chapter_summary",
                                 chapter_num=chapter_num, source="consolidator")
             return
 
         facts = parsed.get("permanent_facts", [])
+        foreshadows = parsed.get("active_foreshadowing", [])
+        state_changes = parsed.get("character_state_changes", [])
+        # GAP 4: surface what was extracted so the memory system isn't a
+        # black box. INFO for counts (always useful); DEBUG for full JSON
+        # (forensic level).
+        logger.info(
+            "consolidator chapter=%d facts=%d foreshadowing=%d state_changes=%d",
+            chapter_num, len(facts), len(foreshadows), len(state_changes),
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "consolidator chapter=%d extracted=%s",
+                chapter_num, json.dumps(parsed, ensure_ascii=False)[:4000],
+            )
+
         for fact in facts:
             self.semantic.store_permanent_fact(project_id, fact, chapter_num)
         if facts:
@@ -107,7 +129,7 @@ class MemoryConsolidator:
                 )
                 conn.commit()
 
-        for fs in parsed.get("active_foreshadowing", []):
+        for fs in foreshadows:
             self.timeline.add_event(
                 project_id, chapter_num, "foreshadowing", fs,
                 foreshadow_status="planted", importance=4,
@@ -115,7 +137,7 @@ class MemoryConsolidator:
             self.semantic.store(project_id, fs, memory_type="foreshadowing",
                                 chapter_num=chapter_num, source="consolidator")
 
-        for cs in parsed.get("character_state_changes", []):
+        for cs in state_changes:
             char = cs.get("character", "")
             change = cs.get("change", "")
             if char and change:
