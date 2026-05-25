@@ -96,14 +96,17 @@ class TruthFileStore:
     def apply_deltas(
         self, deltas: TruthDeltas, *, validate: bool = False,
         allow_backfill: bool = False,
+        known_characters: set[str] | None = None,
     ) -> ApplyResult:
         """Atomically apply a TruthDeltas bundle.
 
         Idempotent: a (project_id, deltas_hash) collision returns the
         cached ApplyResult without re-writing.
 
-        C2 ignores ``validate`` (no validator wired yet). C3 will run
-        ``rag.truth.validators.validate_deltas()`` when true.
+        When ``validate=True`` runs ``rag.truth.validators.validate_deltas``;
+        any error-severity issue aborts the apply. ``known_characters`` is
+        passed through; ``allow_backfill=True`` lets the chapter_monotonic
+        rule pass for migration tooling.
         """
         deltas_hash = _hash_deltas(deltas)
 
@@ -123,14 +126,18 @@ class TruthFileStore:
                     idempotent_hit=True,
                 )
 
-        # ── Step 2: optional pre-validation (C3 will fill) ──
+        # ── Step 2: optional pre-validation ──
         cross_ref_issues: list[ValidationIssue] = []
         if validate:
             try:
-                from rag.truth.validators import validate_deltas
-                cross_ref_issues = validate_deltas(self, deltas)
+                from rag.truth.validators import validate_deltas as _vd
+                cross_ref_issues = _vd(
+                    self, deltas,
+                    known_characters=known_characters,
+                    allow_backfill=allow_backfill,
+                )
             except ImportError:
-                pass  # C3 not yet landed
+                pass  # validators module not present
             # If any error-severity issue, abort before touching DB.
             if any(i.severity == "error" for i in cross_ref_issues):
                 return ApplyResult(
