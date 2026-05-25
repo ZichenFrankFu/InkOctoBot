@@ -167,19 +167,53 @@ async def detect_ollama_models():
 
 @router.post("/crawler-db-path")
 def set_crawler_db_path(body: dict):
-    """Set custom crawler DB path in settings."""
-    path_str = body.get("path", "")
+    """Set custom crawler DB path in settings.
+
+    Empty string CLEARS the override (falls back to test_mode / default).
+    Echoes the post-set effective path + source so the UI can confirm
+    the override actually took effect for all 3 routers
+    (market_db / analysis / marketing).
+    """
+    path_str = (body.get("path") or "").strip()
+    data = _load()
+
     if not path_str:
-        return {"status": "error", "message": "路径不能为空"}
+        # Clear override
+        if "crawler_db_path" in data:
+            del data["crawler_db_path"]
+            _save(data)
+        from ..utils import resolve_crawler_db_path
+        effective = resolve_crawler_db_path()
+        return {
+            "status": "ok", "path": "",
+            "message": "已清除用户设置，恢复默认/test mode 路径",
+            "effective_path": effective,
+            "effective_available": Path(effective).exists() if effective else False,
+        }
+
     p = Path(path_str)
     if not p.exists():
         return {"status": "error", "message": f"文件不存在: {path_str}"}
-    if not p.suffix == ".db":
+    if p.suffix != ".db":
         return {"status": "error", "message": "请选择 .db 文件"}
-    data = _load()
-    data["crawler_db_path"] = str(p.resolve())
+
+    resolved = str(p.resolve())
+    data["crawler_db_path"] = resolved
     _save(data)
-    return {"status": "ok", "path": str(p.resolve()), "message": f"已设置爬虫数据库路径: {p.name}"}
+
+    # Verify the resolver now returns the new path (catches silent failures).
+    from ..utils import resolve_crawler_db_path
+    effective = resolve_crawler_db_path()
+    took_effect = Path(effective).resolve() == p.resolve() if effective else False
+
+    return {
+        "status": "ok",
+        "path": resolved,
+        "message": f"已设置爬虫数据库路径: {p.name}",
+        "effective_path": effective,
+        "effective_available": Path(effective).exists() if effective else False,
+        "took_effect": took_effect,
+    }
 
 
 @router.post("/detect-gguf")

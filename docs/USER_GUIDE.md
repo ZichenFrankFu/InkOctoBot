@@ -205,13 +205,34 @@ InkOctoBot 还能**自己生成 skill**：当 EditAnalyzer 检测到你反复修
 通过才生效，自带 idempotency 日志，可一键导出为 Markdown 视图给 LLM。
 完整架构见 `docs/truth_file_system.md`。
 
-### 5.3 市场分析
+### 5.3 市场分析（外部数据库）
 
-「市场数据库」页：展示从独立爬虫仓库同步过来的起点 / 番茄榜单数据。
-「分析面板」按平台 / 题材 / 时间窗口算热度、机会标签、爽点排行。
+InkOctoBot **自己不爬数据**。市场数据由独立的爬虫仓库维护，导出成一个
+SQLite 文件（默认叫 `InkOctoBot_Crawler.db`）。你只需在「设置」里指定
+这个文件的本地路径：
 
-这些数据自动注入到 `MarketingAgent` 的选题建议 prompt 里——你创建
-新项目时，AI 会基于真实市场数据给「选题 + 书名 + 简介」建议。
+- **设置 → 市场数据库路径** → 选择本地 `.db` 文件
+- 保存后会返回 `effective_path` + `took_effect: true` 表示设置真正生效
+- 留空 → 清除 user override，回退到 test mode / `paths.yaml` 默认
+
+设置生效后，**3 处会同时用你设的路径**：
+1. 「市场数据库」页（榜单浏览）
+2. 「分析面板」（热度 / 机会 / 趋势分析）
+3. `MarketingAgent`（新项目选题/书名/简介建议的数据来源）
+
+> 之前 user-set path 只对「市场数据库」页生效，「分析」+「Marketing」
+> 仍用默认路径——这是已修的 bug。
+
+查当前生效路径：
+```powershell
+curl http://127.0.0.1:8713/api/db/info | jq
+# {
+#   "db_path": "/path/the/user/set",
+#   "available": true,
+#   "source": "user_override",     # ← user_override / test_mode / default
+#   "user_set_path": "/path/the/user/set"
+# }
+```
 
 ---
 
@@ -235,6 +256,66 @@ InkOctoBot 还能**自己生成 skill**：当 EditAnalyzer 检测到你反复修
 - `data/usage.json` — LLM token 使用统计（自动防抖写盘）
 
 详细路径表见 `DOCUMENT.md`。
+
+---
+
+## 6.5 测试模式预置的 RAG 样本（人工校准用）
+
+`python launcher.py --test` 启动后，你立刻有一个完整可校准的项目：
+
+| 资产 | 内容 |
+|---|---|
+| 项目 | `test_project_001`「测试项目：星辰大海」（科幻悬疑） |
+| 章节 | 3 章，全部有正文 + 大纲：第1章意外发现 / 第2章不速之客 / 第3章被迫同行 |
+| 角色 | **3 个**：李星河（主角）/ 苏晚（女主）/ 格里芬（反派，远古守门人） |
+| 世界书 | **3 条**：银河联邦 / 星门 / 黑石商会 |
+| L2 记忆 | 3 章的章节摘要（已写入 `chapter_summaries`） |
+| L4 事件 | 5 个 key event（含 2 个未回收伏笔：星门坐标、苏晚旧伤疤） |
+| Truth Files | 4 条 current_state、2 个 pending_hooks、2 个 character_relations、2 个 emotion_arcs |
+| 知识隔离 | 1 条 information_event（李星河相信格里芬是历史学家，实际是反派） |
+| 项目记忆 | 3 条用户确认事实（能力代价、时间线、星门坐标的秘密） |
+
+### 3 个调试 endpoint 直接看人工校准结果
+
+**RAG 拼装结果**（看最终注入 LLM 的 prompt）：
+```powershell
+curl "http://127.0.0.1:8713/api/debug/rag-preview?project_id=test_project_001&chapter_id=ch_test_002&chapter_num=2&characters=李星河,苏晚" | jq
+```
+返回字段：
+- `block_sizes` — 每个 RAG 块字符数（看是否被注入）
+- `token_estimate` — 总 token 估算
+- `blocks` — 每个块的完整内容（character_cards / worldbook / adjacent_context / foreshadowing / writing_skills / ...）
+- `assembled_context` — 拼接后准备塞给 LLM 的完整文本
+- `single_agent_vars` — 单智能体模式的全部模板变量
+
+**Truth Files 全量**：
+```powershell
+curl "http://127.0.0.1:8713/api/debug/truth-files?project_id=test_project_001" | jq
+```
+返回 7 张 truth 表的原始行 + on-demand markdown 视图。
+
+**4 层记忆**：
+```powershell
+# 全部 4 层一次拉
+curl "http://127.0.0.1:8713/api/debug/memory?project_id=test_project_001" | jq
+
+# 只看 L3 语义搜索
+curl "http://127.0.0.1:8713/api/debug/memory?project_id=test_project_001&layer=L3&query=苏晚的旧伤" | jq
+```
+返回：
+- `L2_chapter_buffer` — 3 章摘要 + key_events
+- `L3_semantic_memory` — ChromaDB 集合统计 + 查询结果
+- `L4_episodic_timeline` — 5 个事件 + 2 个未回收伏笔
+- `knowledge_isolation` — 1 条角色视角过滤规则
+- `project_memory` — 3 条用户确认事实
+
+### 校准流程示范
+
+1. 启动 `python launcher.py --test`
+2. 用上面 3 个 curl 拿当前 baseline
+3. 在 UI 改一个角色卡 / 加一条世界书条目 / 写一条项目记忆
+4. 重跑 curl，diff 输出——看你的改动**实际进了哪个 RAG 块**
+5. 在 UI「编辑器」点「单智能体」→「预览 Prompt」二次确认
 
 ---
 

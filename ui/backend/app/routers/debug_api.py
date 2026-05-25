@@ -174,3 +174,316 @@ def diagnostics() -> dict[str, Any]:
         out["active_generation_sessions"] = -1
 
     return out
+
+
+# ════════════════════════════════════════════════════════════════════
+# RAG / Truth / Memory inspection — for manual calibration
+# ════════════════════════════════════════════════════════════════════
+
+
+@router.get("/rag-preview")
+def rag_preview(
+    project_id: str,
+    chapter_id: str = "",
+    chapter_num: int = 1,
+    characters: str = "",
+    web_mode: bool = False,
+) -> dict[str, Any]:
+    """Dump the full RAG context that WOULD be sent to the LLM.
+
+    Returns each block separately (so you see what platform_market /
+    character_cards / worldbook / reference_summary / writing_knowledge
+    / writing_skills / adjacent_context / foreshadowing /
+    user_preferences contributed), plus the concatenated single_agent
+    prompt variable bundle, plus a token estimate.
+
+    Use this for manual calibration: change a setting → call this
+    endpoint → compare the diff to see what changed.
+
+    Example:
+        curl 'http://127.0.0.1:8713/api/debug/rag-preview?project_id=test_project_001&chapter_id=ch_test_002&chapter_num=2&characters=李星河,苏晚'
+    """
+    _require_debug()
+    char_list = [c.strip() for c in characters.split(",") if c.strip()]
+
+    from ui.backend.app.services.prompt_context import (
+        build_generation_context,
+        single_agent_vars,
+        load_chapter_fields,
+    )
+
+    try:
+        ctx = build_generation_context(
+            project_id=project_id,
+            chapter_num=chapter_num,
+            characters=char_list,
+            chapter_id=chapter_id,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"build_generation_context failed: {e}")
+
+    # Per-block size breakdown for token-budget tuning.
+    block_sizes = {
+        name: len(body or "")
+        for name, body in ctx.get("blocks", {}).items()
+    }
+
+    # Full single_agent prompt vars (what /quick-generate actually uses)
+    fields = load_chapter_fields(project_id, chapter_id) if chapter_id else {}
+    try:
+        sa_vars = single_agent_vars(
+            project_id=project_id,
+            chapter_num=chapter_num,
+            synopsis=fields.get("synopsis", ""),
+            time_setting=fields.get("time_setting", ""),
+            location=fields.get("location", ""),
+            characters=char_list or fields.get("characters", []),
+            existing_content=fields.get("existing_content", ""),
+            chapter_id=chapter_id,
+            referenced_events=fields.get("referenced_events", []),
+            referenced_inspirations=fields.get("referenced_inspirations", []),
+            web_mode=web_mode,
+        )
+    except Exception as e:
+        sa_vars = {"_error": f"single_agent_vars failed: {e}"}
+
+    # Concatenated body — what the LLM ultimately sees as the assembled
+    # context block. Empty blocks vanish cleanly per the section() contract.
+    assembled = "".join(
+        v for v in ctx.get("blocks", {}).values() if (v or "").strip()
+    )
+
+    return {
+        "project_id": project_id,
+        "chapter_id": chapter_id,
+        "chapter_num": chapter_num,
+        "characters": char_list,
+        "block_sizes": block_sizes,
+        "token_estimate": ctx.get("token_estimate", 0),
+        "blocks": ctx.get("blocks", {}),
+        "sections": ctx.get("sections", []),
+        "assembled_context": assembled,
+        "single_agent_vars": sa_vars,
+        "chapter_fields": fields,
+    }
+
+
+@router.get("/truth-files")
+def truth_files_dump(project_id: str) -> dict[str, Any]:
+    """Dump all 7 Truth Files for one project (raw rows + markdown view).
+
+    For manual calibration: after each chapter generation, call this to
+    verify the Writer's truth-deltas actually applied the right way.
+
+    Returns:
+      - tables: per-table row dumps (current_state / particle_ledger /
+                pending_hooks + hook_events / chapter_summaries /
+                subplot_threads / emotion_arcs / character_relations)
+      - markdown: on-demand 7-file markdown view (the same one that
+                  gets injected into prompts)
+      - apply_log: idempotency log entries
+
+    Example:
+        curl 'http://127.0.0.1:8713/api/debug/truth-files?project_id=test_project_001'
+    """
+    _require_debug()
+    from ui.backend.app.services import get_db_path
+    import sqlite3
+
+    db_path = get_db_path()
+    tables: dict[str, Any] = {}
+
+    truth_tables = [
+        "truth_current_state",
+        "character_ledger",
+        "pending_hooks",
+        "hook_events",
+        "chapter_summaries",
+        "subplot_threads",
+        "emotion_arcs",
+        "character_relations",
+        "truth_apply_log",
+    ]
+
+    with sqlite3.connect(db_path) as c:
+        c.row_factory = sqlite3.Row
+        for t in truth_tables:
+            try:
+                rows = c.execute(
+                    f"SELECT * FROM {t} WHERE project_id=? LIMIT 200",
+                    (project_id,),
+                ).fetchall()
+                tables[t] = [dict(r) for r in rows]
+            except sqlite3.OperationalError:
+                # Table doesn't exist (older schema or not yet migrated)
+                tables[t] = {"_error": "table missing"}
+
+    # Try to also render the canonical markdown view
+    markdown: dict[str, str] = {}
+    try:
+        from knowledge.truth.store import TruthFileStore
+        from knowledge.truth.markdown_renderer import (
+            render_current_state, render_pending_hooks,
+            render_chapter_summaries, render_subplot_board,
+            render_emotional_arcs, render_character_matrix,
+            render_particle_ledger,
+        )
+        store = TruthFileStore(project_id=project_id, db_path=db_path)
+        markdown["current_state"] = render_current_state(store)
+        markdown["pending_hooks"] = render_pending_hooks(store)
+        markdown["chapter_summaries"] = render_chapter_summaries(store)
+        markdown["subplot_board"] = render_subplot_board(store)
+        markdown["emotional_arcs"] = render_emotional_arcs(store)
+        markdown["character_matrix"] = render_character_matrix(store)
+        markdown["particle_ledger"] = render_particle_ledger(store)
+    except Exception as e:
+        markdown["_render_error"] = str(e)
+
+    return {
+        "project_id": project_id,
+        "db_path": db_path,
+        "tables": tables,
+        "markdown": markdown,
+    }
+
+
+@router.get("/memory")
+def memory_dump(
+    project_id: str,
+    layer: str = "all",
+    query: str = "",
+    chapter_num: int = 0,
+) -> dict[str, Any]:
+    """Dump the 4-layer memory state for one project.
+
+    ``layer`` ∈ {L1, L2, L3, L4, all}. Defaults to all.
+
+    - L1 (Immediate): scene-level in-memory buffer (only populated
+                      mid-generation; usually empty when polled)
+    - L2 (ChapterBuffer): recent chapter summaries from
+                          ``chapter_summaries`` table
+    - L3 (SemanticMemory): ChromaDB query results. Pass ``query=...``
+                           to run a search; otherwise reports collection
+                           stats only.
+    - L4 (EpisodicTimeline): event graph + foreshadow status from
+                              ``episodic_events`` + unresolved
+                              foreshadowing list.
+
+    Plus ``project_memory`` (the user-confirmed shared memory file).
+    Plus knowledge isolation: ``information_events`` rows that filter
+    each character's view.
+
+    Example:
+        # All layers
+        curl 'http://127.0.0.1:8713/api/debug/memory?project_id=test_project_001'
+        # L3 semantic search
+        curl 'http://127.0.0.1:8713/api/debug/memory?project_id=test_project_001&layer=L3&query=苏晚的旧伤'
+    """
+    _require_debug()
+    from ui.backend.app.services import get_db_path
+    import sqlite3
+    import json
+
+    db_path = get_db_path()
+    out: dict[str, Any] = {
+        "project_id": project_id,
+        "db_path": db_path,
+        "layer": layer,
+    }
+
+    want_all = layer == "all"
+
+    # L2 — chapter_summaries
+    if want_all or layer == "L2":
+        with sqlite3.connect(db_path) as c:
+            c.row_factory = sqlite3.Row
+            try:
+                rows = c.execute(
+                    "SELECT summary_id, chapter_num, summary_text, "
+                    "key_events_json, character_states_json, is_active, created_at "
+                    "FROM chapter_summaries WHERE project_id=? "
+                    "ORDER BY chapter_num", (project_id,),
+                ).fetchall()
+                out["L2_chapter_buffer"] = [dict(r) for r in rows]
+            except sqlite3.OperationalError as e:
+                out["L2_chapter_buffer"] = {"_error": str(e)}
+
+    # L3 — semantic memory
+    if want_all or layer == "L3":
+        try:
+            from ui.backend.app.settings import settings as _s
+            chromadb_dir = (_s.data_dir or _s.repo_root / "data") / "chromadb"
+            from knowledge.memory.semantic_store import SemanticMemory
+            sm = SemanticMemory(str(chromadb_dir))
+            l3: dict[str, Any] = {
+                "collection_count": sm.count(),
+                "chromadb_dir": str(chromadb_dir),
+            }
+            if query:
+                hits = sm.query(query, project_id, n_results=10)
+                l3["query"] = query
+                l3["hits"] = hits
+            out["L3_semantic_memory"] = l3
+        except Exception as e:
+            out["L3_semantic_memory"] = {"_error": str(e)}
+
+    # L4 — episodic timeline + unresolved foreshadowing
+    if want_all or layer == "L4":
+        with sqlite3.connect(db_path) as c:
+            c.row_factory = sqlite3.Row
+            try:
+                rows = c.execute(
+                    "SELECT event_id, chapter_num, scene_index, event_type, "
+                    "description, characters_json, foreshadow_status, "
+                    "foreshadow_target_chapter, importance "
+                    "FROM episodic_events WHERE project_id=? "
+                    "ORDER BY chapter_num, scene_index", (project_id,),
+                ).fetchall()
+                events = [dict(r) for r in rows]
+
+                unresolved = c.execute(
+                    "SELECT event_id, chapter_num, description, "
+                    "foreshadow_target_chapter, importance "
+                    "FROM episodic_events "
+                    "WHERE project_id=? AND foreshadow_status='planted' "
+                    "ORDER BY chapter_num", (project_id,),
+                ).fetchall()
+                out["L4_episodic_timeline"] = {
+                    "events": events,
+                    "unresolved_foreshadowing": [dict(r) for r in unresolved],
+                    "event_count": len(events),
+                }
+            except sqlite3.OperationalError as e:
+                out["L4_episodic_timeline"] = {"_error": str(e)}
+
+    # Knowledge isolation — information_events
+    if want_all:
+        with sqlite3.connect(db_path) as c:
+            c.row_factory = sqlite3.Row
+            try:
+                rows = c.execute(
+                    "SELECT character_name, fact_key, knowledge_state, "
+                    "believed_value, true_value, source_chapter, "
+                    "source_description "
+                    "FROM information_events WHERE project_id=? "
+                    "ORDER BY character_name, source_chapter",
+                    (project_id,),
+                ).fetchall()
+                out["knowledge_isolation"] = [dict(r) for r in rows]
+            except sqlite3.OperationalError as e:
+                out["knowledge_isolation"] = {"_error": str(e)}
+
+    # Project memory (confirmed facts, the user-curated shared store)
+    if want_all:
+        try:
+            from ui.backend.app.settings import settings as _s
+            base = _s.data_dir if _s.data_dir else _s.repo_root / "data"
+            pm_file = base / "project_memory" / f"{project_id}.json"
+            if pm_file.exists():
+                out["project_memory"] = json.loads(pm_file.read_text("utf-8"))
+            else:
+                out["project_memory"] = {"_note": "no project_memory file"}
+        except Exception as e:
+            out["project_memory"] = {"_error": str(e)}
+
+    return out

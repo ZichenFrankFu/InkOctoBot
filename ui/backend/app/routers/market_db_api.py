@@ -10,35 +10,21 @@ router = APIRouter(prefix="/db", tags=["db"])
 logger = logging.getLogger("inkoctobot.ui.backend.db_api")
 
 def _get_con() -> sqlite3.Connection | None:
-    """Return a DB connection, or *None* when the crawler DB is unavailable."""
-    # Test mode: use crawler DB from data_dir
-    if settings.test_mode and settings.data_dir:
-        test_db = settings.data_dir / "InkOctoBot_Crawler.db"
-        if test_db.exists():
-            con = sqlite3.connect(str(test_db)); con.row_factory = sqlite3.Row; return con
-    # Check if user has set a custom crawler DB path in settings
-    try:
-        import json
-        settings_file = settings.get_data_path("settings.json")
-        if settings_file.exists():
-            user_settings = json.loads(settings_file.read_text("utf-8"))
-            custom_path = user_settings.get("crawler_db_path", "")
-            if custom_path:
-                p = Path(custom_path)
-                if p.exists():
-                    con = sqlite3.connect(str(p)); con.row_factory = sqlite3.Row; return con
-    except Exception:
-        pass
-    try:
-        repo_cfg = load_repo_config(settings.repo_root)
-        db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
-    except Exception:
-        logger.warning("Could not resolve crawler DB path — returning empty data")
+    """Return a DB connection, or *None* when the crawler DB is unavailable.
+
+    Uses the project-wide ``resolve_crawler_db_path()`` so the same
+    user-configured path (Settings page → 市场数据库 path) takes effect
+    here and in ``analysis_api`` and ``marketing_api``.
+    """
+    from ..utils import resolve_crawler_db_path
+
+    db_path = resolve_crawler_db_path()
+    if not db_path or not Path(db_path).exists():
+        logger.info("Crawler DB not found at %s — returning empty data", db_path)
         return None
-    if not Path(db_path).exists():
-        logger.info("Crawler DB file not found at %s — returning empty data", db_path)
-        return None
-    con = sqlite3.connect(db_path); con.row_factory = sqlite3.Row; return con
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    return con
 
 def _table_exists(con: sqlite3.Connection, name: str) -> bool:
     return con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()[0] > 0
@@ -306,15 +292,40 @@ async def opening_ai_summary(body: dict = Body(...)):
 
 @router.get("/info")
 def db_info():
-    if settings.test_mode and settings.data_dir:
-        test_db = settings.data_dir / "InkOctoBot_Crawler.db"
-        return {"db_path": str(test_db), "available": test_db.exists(), "test_mode": True}
+    """Where the market DB actually resolves to + which precedence layer
+    won (user override / test mode / paths.yaml default). Surfaced in the
+    Settings page so the user can see whether their custom path took
+    effect.
+    """
+    import json
+    from ..utils import resolve_crawler_db_path
+
+    db_path = resolve_crawler_db_path()
+    available = bool(db_path) and Path(db_path).exists()
+
+    # Diagnose which source won so the UI can show "user override active"
+    # vs "fell back to default".
+    source = "default"
+    user_set = ""
     try:
-        repo_cfg = load_repo_config(settings.repo_root)
-        db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
+        sp = settings.get_data_path("settings.json")
+        if sp.exists():
+            user_set = (json.loads(sp.read_text("utf-8")).get("crawler_db_path") or "").strip()
+            if user_set and Path(user_set).exists() and Path(user_set).resolve() == Path(db_path).resolve():
+                source = "user_override"
+            elif user_set:
+                source = "user_override_invalid"
     except Exception:
-        db_path = None
-    return {"db_path": db_path, "available": db_path is not None and Path(db_path).exists()}
+        pass
+    if source == "default" and settings.test_mode:
+        source = "test_mode"
+    return {
+        "db_path": db_path,
+        "available": available,
+        "test_mode": settings.test_mode,
+        "source": source,
+        "user_set_path": user_set,
+    }
 
 @router.get("/tables")
 def list_tables():

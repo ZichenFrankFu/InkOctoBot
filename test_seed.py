@@ -62,6 +62,7 @@ def seed(target: Path) -> None:
         "personality": "冷静、果断、外冷内热",
         "background": "特工世家出身，从小接受精英训练。在一次任务中失去了搭档，心中留下阴影。",
         "appearance": "银色短发，灰蓝色眼睛，身材高挑，常穿黑色战术服",
+        "speech_style": "言简意赅，多用陈述句，几乎不用感叹号",
         "tags": ["女主角", "特工", "格斗"],
         "relationships": [
             {
@@ -71,6 +72,33 @@ def seed(target: Path) -> None:
                 "priority": 3,
                 "chapter": "第3章",
                 "notes": "被迫合作的搭档，逐渐建立信任",
+            },
+        ],
+        "created_at": time.time(),
+    })
+    # ── 3rd character (反派) — gives the RAG sample a clear antagonist
+    # so prompt-context tests can exercise the knowledge-isolation filter
+    # ("李星河不知道格里芬是黑石商会的内线").
+    char_id3 = _nid()
+    _write(chars_dir / f"{char_id3}.json", {
+        "id": char_id3,
+        "project_id": pid,
+        "name": "格里芬",
+        "role": "反派",
+        "description": "黑石商会的高级顾问，表面身份是星际历史学家。真实身份是远古文明残党，活了三百年。",
+        "personality": "儒雅、深谋远虑、为达目的不择手段",
+        "background": "三百年前最后一批接触过星门的古代守门人之一。亲眼目睹古代文明因星门误用而毁灭。",
+        "appearance": "中年男性外貌，银白短发，金丝眼镜，常穿剪裁考究的西装",
+        "speech_style": "用词典雅，引用古代谚语，从不直接拒绝任何人",
+        "tags": ["反派", "黑石商会", "远古文明"],
+        "relationships": [
+            {
+                "target_id": char_id,
+                "target_name": "李星河",
+                "affinity": -10,
+                "priority": 2,
+                "chapter": "第3章",
+                "notes": "暗中观察李星河的能力，伺机利用",
             },
         ],
         "created_at": time.time(),
@@ -94,50 +122,98 @@ def seed(target: Path) -> None:
     # ── Editor (volumes + chapters) ──
     editor_dir = target / "editor"
     editor_dir.mkdir(exist_ok=True)
+    # Fixed chapter IDs so debug endpoints / curl commands can address
+    # them by stable name across re-seeds. Same convention for volume.
+    vol_id = "vol_test_001"
+    ch1_id = "ch_test_001"
+    ch2_id = "ch_test_002"
+    ch3_id = "ch_test_003"
+
+    # ── Chapter content ── 3 chapters, all with real text so RAG /
+    # memory / 续接上下文 have something to operate on. Each is short
+    # (~600 字) to keep token budgets low for testing.
+    ch1_text = (
+        "矿星 K-7 的地表覆盖着一层细密的灰色沙尘，在微弱的恒星光下泛着暗淡的金属光泽。"
+        "李星河蹲在一处裸露的岩层前，手持便携式光谱分析仪对着岩石表面缓慢扫描。\n\n"
+        "「读数偏差超出 12%。」他对着耳机里的同事低声说道，「这一带不像是天然矿脉。」\n\n"
+        "回应他的只有沙沙的静电——通讯卫星上一次过顶已经是六小时前。在银河边缘的废弃矿区，"
+        "这是常态。\n\n"
+        "他伸手拨开覆盖在岩层裂缝上的沙尘，露出一块拳头大小的青色晶体。当指尖触到晶体表面的瞬间，"
+        "李星河的脑海里突然涌入大量陌生的影像：宏伟的银白色拱门、漂浮在虚空中的几何符号、"
+        "以及一段陌生的语言低声重复着同一个坐标——「天蝎座 ζ-79，第三行星」。\n\n"
+        "他猛地缩回手，呼吸急促。这不是普通的考古发现。\n\n"
+        "「这是一段……记忆。」李星河小声说，「来自一个早已灭亡的文明。」"
+    )
+    ch2_text = (
+        "三天后，李星河刚把水晶样本封装好准备运回学院，矿星上空就出现了三艘没有标识的灰色飞船。\n\n"
+        "「这里是联邦安全局，请保持原地不动。」一个冷静的女声从扩音器里传出。\n\n"
+        "舱门打开，一位银发女子率先跳下，黑色战术服紧贴她精瘦的身躯。"
+        "她从腰间抽出 ID 卡，简短地亮了一下：\n\n"
+        "「苏晚，少校。我们收到了来自这颗星球的远古信号。」她目光落在李星河手中的密封盒，"
+        "「你发现了什么？」\n\n"
+        "李星河犹豫了一瞬。按照学院的规定，所有考古发现必须先经过学术委员会审议；但眼前这位"
+        "少校的眼神告诉他，今天的事情不会按学院的规定走。\n\n"
+        "「一块晶体。」他选择了不说全部，「可能是远古文明的存储介质。」\n\n"
+        "苏晚没有立刻接话。她从口袋里摸出一支烟，但又放了回去——这是她在思考时的小动作。"
+        "李星河注意到她的左手无名指上有一道浅浅的旧伤疤。"
+    )
+    ch3_text = (
+        "「考古许可被联邦安全局征用了。」第二天清晨，苏晚把一份冰冷的电子文件推到李星河面前。\n\n"
+        "「你接下来三个月归我管。报酬按少校副官标准发放。」\n\n"
+        "李星河抬眼盯着她：「我可以拒绝吗？」\n\n"
+        "「可以。」苏晚回得干脆，「然后你的研究经费会在 24 小时内被冻结。」\n\n"
+        "李星河没再说话。他知道这种规模的征用文件，背后多半是更高层的人在推动。\n\n"
+        "三天后，他们一起下到矿星地下三百米处的远古遗迹。在第一道防御机制启动时，"
+        "苏晚反应迅捷地把李星河压到墙边，一道激光从两人之间不到十厘米的位置擦过。\n\n"
+        "「你欠我一次。」苏晚低声说，没有看他。\n\n"
+        "李星河深吸一口气：「……谢谢。」\n\n"
+        "这是他们第一次没有用职位称呼对方。"
+    )
+
     _write(editor_dir / f"{pid}.json", {
         "project_id": pid,
         "volumes": [
             {
-                "id": _nid(),
+                "id": vol_id,
                 "project_id": pid,
                 "title": "第一卷：遗迹之谜",
                 "order": 0,
                 "chapters": [
                     {
-                        "id": _nid(),
-                        "volume_id": "v1",
+                        "id": ch1_id,
+                        "volume_id": vol_id,
                         "title": "第一章：意外发现",
                         "order": 0,
                         "synopsis": "李星河在银河边缘的废弃矿星上进行例行考古调查时，触碰到一块异常的水晶，感知到了远古文明的最后记忆——一段关于「星门」位置的信息。",
-                        "content": "测试章节内容...\n\n矿星的地表覆盖着一层细密的灰色沙尘，在微弱的恒星光下泛着暗淡的金属光泽。李星河蹲在一处裸露的岩层前，手持便携式光谱分析仪对着岩石表面缓慢扫描。",
-                        "word_count": 1200,
-                        "status": "draft",
+                        "content": ch1_text,
+                        "word_count": len(ch1_text),
+                        "status": "done",
                         "time": "银河历2847年·秋",
                         "location": "废弃矿星K-7",
                         "characters": ["李星河"],
                     },
                     {
-                        "id": _nid(),
-                        "volume_id": "v1",
+                        "id": ch2_id,
+                        "volume_id": vol_id,
                         "title": "第二章：不速之客",
                         "order": 1,
                         "synopsis": "李星河正准备将发现上报学院时，苏晚带领特工小队突然出现在矿星上。她奉命调查最近频繁出现的远古信号源，而信号恰好来自李星河发现的水晶。",
-                        "content": "",
-                        "word_count": 0,
-                        "status": "draft",
+                        "content": ch2_text,
+                        "word_count": len(ch2_text),
+                        "status": "done",
                         "time": "银河历2847年·秋",
                         "location": "废弃矿星K-7",
                         "characters": ["李星河", "苏晚"],
                     },
                     {
-                        "id": _nid(),
-                        "volume_id": "v1",
+                        "id": ch3_id,
+                        "volume_id": vol_id,
                         "title": "第三章：被迫同行",
                         "order": 2,
                         "synopsis": "联邦安全局征用了李星河的考古许可，强制他加入苏晚的调查小队担任顾问。两人性格冲突不断，但在共同面对矿星深处的古代防御机制时，开始建立信任。",
-                        "content": "",
-                        "word_count": 0,
-                        "status": "draft",
+                        "content": ch3_text,
+                        "word_count": len(ch3_text),
+                        "status": "done",
                         "time": "银河历2847年·秋",
                         "location": "废弃矿星K-7·地下遗迹",
                         "characters": ["李星河", "苏晚"],
@@ -147,6 +223,15 @@ def seed(target: Path) -> None:
         ],
         "saved_at": time.time(),
     })
+
+    # Save chapter texts to the chapter_summaries / project DB so the
+    # memory + RAG layers have real data to operate on (see
+    # _seed_rag_calibration_data below for L2/L4/Truth seeding).
+    _RAG_SEED_CHAPTERS = [
+        (1, "第一章：意外发现", ch1_text),
+        (2, "第二章：不速之客", ch2_text),
+        (3, "第三章：被迫同行", ch3_text),
+    ]
 
     # ── Worldbook ──
     wb_dir = target / "worldbook"
@@ -169,6 +254,16 @@ def seed(target: Path) -> None:
         "category": "hard_rules",
         "content": "远古文明留下的空间传送装置，可在瞬间连接两个遥远的星系。目前已知的星门均处于休眠状态，联邦科学家尚未成功激活任何一座。",
         "tags": ["设定", "科技", "核心"],
+        "created_at": time.time(),
+    })
+    wb_id3 = _nid()
+    _write(wb_dir / f"{wb_id3}.json", {
+        "id": wb_id3,
+        "project_id": pid,
+        "title": "黑石商会",
+        "category": "factions",
+        "content": "横跨多个星系的商业巨头，表面经营星际能源贸易，暗中收购远古文明遗物。在联邦境内有数十家空壳子公司作掩护。会长身份至今不明，相传与远古文明有血脉关联。",
+        "tags": ["设定", "组织", "反派"],
         "created_at": time.time(),
     })
 
@@ -239,6 +334,12 @@ def seed(target: Path) -> None:
     # ── Crawler DB (simulated InkOctoBot_Crawler.db) ──
     _seed_crawler_db(target / "InkOctoBot_Crawler.db")
 
+    # ── RAG calibration data — fills L2 ChapterBuffer, L4 EpisodicTimeline,
+    # Truth Files, and project memory for the 3 seeded chapters so the
+    # user can immediately inspect them via /api/debug/rag-preview ,
+    # /api/debug/truth-files, /api/debug/memory.
+    _seed_rag_calibration_data(target / "novels.db", pid, _RAG_SEED_CHAPTERS)
+
     # ── Reference DB — 参考作品库 (data/reference.db) ──
     _seed_reference_db(target / "reference.db")
 
@@ -246,6 +347,271 @@ def seed(target: Path) -> None:
     _seed_idea_db(target / "idea.db")
 
     print(f"Test data seeded into: {target}")
+
+
+def _seed_rag_calibration_data(novels_db_path: Path, pid: str,
+                                chapters: list) -> None:
+    """Populate L2 ChapterBuffer + L4 EpisodicTimeline + Truth Files +
+    project memory so the test-mode user can immediately inspect RAG
+    state for manual calibration.
+
+    ``chapters`` is a list of ``(chapter_num, title, full_text)`` tuples.
+    For each one we synthesize:
+      - L2 summary (3-4 sentence per-chapter recap)
+      - L4 key_events (1-3 events flagged with foreshadow_status)
+      - Truth-File deltas (current_state, hooks, character_matrix)
+      - 2-3 project_memory entries the user confirmed
+    """
+    # Ensure the project schema exists (creates the file if missing).
+    from storage.project_schema import ensure_creation_tables
+    con = sqlite3.connect(str(novels_db_path))
+    try:
+        ensure_creation_tables(con)
+        # Insert the project row so memory FKs resolve.
+        # status CHECK constraint: planning/writing/paused/completed
+        con.execute(
+            "INSERT OR IGNORE INTO projects (project_id, title, genre, status) "
+            "VALUES (?, ?, ?, ?)",
+            (pid, "测试项目：星辰大海", "科幻悬疑", "writing"),
+        )
+        con.commit()
+        # Per-chapter pre-canned summaries + key events. Each row is what
+        # the Consolidator WOULD have produced; user can compare against
+        # raw text via /api/debug/memory?project_id=...&layer=L2.
+        chapter_seeds = [
+            {
+                "chapter_num": 1,
+                "summary": (
+                    "李星河在矿星 K-7 的考古调查中触碰到一块青色水晶，"
+                    "通过他的感知能力获得了关于「天蝎座 ζ-79」星门坐标的远古记忆。"
+                    "他意识到这远超普通考古发现的级别。"
+                ),
+                "key_events": [
+                    {"type": "revelation",
+                     "description": "李星河发现远古水晶并感知到星门坐标",
+                     "characters": ["李星河"],
+                     "foreshadow_status": "planted",
+                     "importance": 5},
+                ],
+            },
+            {
+                "chapter_num": 2,
+                "summary": (
+                    "联邦安全局少校苏晚率队抵达 K-7，自称在追踪远古信号源。"
+                    "李星河选择隐瞒水晶内容的全部细节，只承认发现了存储介质。"
+                    "苏晚的旧伤暗示她过去经历过一场任务失败。"
+                ),
+                "key_events": [
+                    {"type": "character_change",
+                     "description": "苏晚率特工小队抵达 K-7",
+                     "characters": ["苏晚"], "importance": 4},
+                    {"type": "foreshadowing",
+                     "description": "李星河对苏晚隐瞒了星门坐标的具体内容",
+                     "characters": ["李星河", "苏晚"],
+                     "foreshadow_status": "planted",
+                     "importance": 3},
+                ],
+            },
+            {
+                "chapter_num": 3,
+                "summary": (
+                    "联邦征用了李星河的考古许可，强制他加入苏晚的小队。"
+                    "在矿星地下三百米的远古遗迹中，苏晚救了李星河一命，"
+                    "两人之间的关系第一次出现裂缝——开始信任。"
+                ),
+                "key_events": [
+                    {"type": "relationship_change",
+                     "description": "苏晚在防御机制启动时救了李星河",
+                     "characters": ["李星河", "苏晚"], "importance": 4},
+                    {"type": "relationship_change",
+                     "description": "李星河首次不用职位称呼苏晚",
+                     "characters": ["李星河", "苏晚"], "importance": 3},
+                ],
+            },
+        ]
+        # L2: chapter_summaries rows (active = 1 → live in buffer)
+        for s in chapter_seeds:
+            con.execute(
+                """INSERT INTO chapter_summaries
+                   (summary_id, project_id, chapter_num, summary_text,
+                    key_events_json, character_states_json,
+                    is_active, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)""",
+                (f"sum_test_{s['chapter_num']:03d}", pid, s["chapter_num"],
+                 s["summary"],
+                 json.dumps(s["key_events"], ensure_ascii=False),
+                 json.dumps({}, ensure_ascii=False)),
+            )
+        # L4: episodic_events
+        evt_id = 0
+        for s in chapter_seeds:
+            for ev in s["key_events"]:
+                evt_id += 1
+                con.execute(
+                    """INSERT INTO episodic_events
+                       (event_id, project_id, chapter_num, scene_index,
+                        event_type, description, characters_json,
+                        importance, foreshadow_status, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                    (f"evt_test_{evt_id:03d}", pid, s["chapter_num"], 0,
+                     ev["type"], ev["description"],
+                     json.dumps(ev.get("characters", []), ensure_ascii=False),
+                     ev.get("importance", 3),
+                     ev.get("foreshadow_status", "")),
+                )
+        # information_events: knowledge isolation — 李星河不知道格里芬的真实身份
+        con.execute(
+            """INSERT INTO information_events
+               (info_id, project_id, character_name, fact_key,
+                knowledge_state, believed_value, true_value,
+                source_chapter, source_description)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("info_test_001", pid, "李星河",
+             "格里芬的真实身份",
+             "known_false",
+             "格里芬是中年的星际历史学家",
+             "格里芬是活了300年的远古守门人，是黑石商会内线",
+             3,
+             "李星河此时还没有任何线索能拆穿格里芬"),
+        )
+        con.commit()
+
+        # ── Truth Files ── Use the canonical apply_deltas path so
+        # validators run and the apply_log is populated. This gives
+        # /api/debug/truth-files real rows to display.
+        from knowledge.truth.store import TruthFileStore
+        from knowledge.truth.schemas import (
+            TruthDeltas, StatePatch, HookDelta, HookImportance,
+            RelationUpdate, EmotionArcEntry, ChapterSummaryDelta,
+        )
+        store = TruthFileStore(project_id=pid, db_path=str(novels_db_path))
+
+        # Chapter 1 — 李星河 first encounter with crystal
+        store.apply_deltas(TruthDeltas(
+            chapter_num=1,
+            current_state_patches=[
+                StatePatch(subject="李星河", predicate="位置",
+                           object="废弃矿星K-7", valid_from_chapter=1),
+                StatePatch(subject="李星河", predicate="状态",
+                           object="持有远古水晶", valid_from_chapter=1),
+            ],
+            hook_deltas=[
+                HookDelta(
+                    hook_id="h_starport_zeta79",
+                    action="new",
+                    description="李星河获知「天蝎座 ζ-79」星门坐标，但还未告知任何人",
+                    importance=HookImportance.A,
+                ),
+            ],
+            chapter_summary=ChapterSummaryDelta(
+                summary=chapter_seeds[0]["summary"],
+                key_events=[e["description"] for e in chapter_seeds[0]["key_events"]],
+                pov_character="李星河",
+                mood="紧张+震撼",
+            ),
+            emotion_arc_entries=[
+                EmotionArcEntry(
+                    character="李星河",
+                    from_state="平静",
+                    to_state="震撼",
+                    trigger="首次感知到远古文明的完整记忆",
+                ),
+            ],
+        ))
+
+        # Chapter 2 — Su Wan enters
+        store.apply_deltas(TruthDeltas(
+            chapter_num=2,
+            current_state_patches=[
+                StatePatch(subject="苏晚", predicate="位置",
+                           object="废弃矿星K-7", valid_from_chapter=2),
+            ],
+            hook_deltas=[
+                HookDelta(
+                    hook_id="h_su_old_wound",
+                    action="new",
+                    description="苏晚左手无名指有道旧伤疤，背后另有故事",
+                    importance=HookImportance.B,
+                ),
+            ],
+            chapter_summary=ChapterSummaryDelta(
+                summary=chapter_seeds[1]["summary"],
+                key_events=[e["description"] for e in chapter_seeds[1]["key_events"]],
+                pov_character="李星河",
+                mood="警惕+试探",
+            ),
+            character_relation_updates=[
+                RelationUpdate(
+                    character_a="李星河", character_b="苏晚",
+                    relation_type="警惕的同行者",
+                    sentiment_score=-10, trust_level=5,
+                ),
+                RelationUpdate(
+                    character_a="苏晚", character_b="李星河",
+                    relation_type="可利用的资源",
+                    sentiment_score=0, trust_level=15,
+                ),
+            ],
+        ))
+
+        # Chapter 3 — first trust beat
+        store.apply_deltas(TruthDeltas(
+            chapter_num=3,
+            current_state_patches=[
+                StatePatch(subject="李星河", predicate="身份",
+                           object="联邦少校副官", valid_from_chapter=3),
+            ],
+            character_relation_updates=[
+                RelationUpdate(
+                    character_a="李星河", character_b="苏晚",
+                    relation_type="信任的开端",
+                    sentiment_score=15, trust_level=25,
+                ),
+                RelationUpdate(
+                    character_a="苏晚", character_b="李星河",
+                    relation_type="值得保护的同伴",
+                    sentiment_score=10, trust_level=30,
+                ),
+            ],
+            chapter_summary=ChapterSummaryDelta(
+                summary=chapter_seeds[2]["summary"],
+                key_events=[e["description"] for e in chapter_seeds[2]["key_events"]],
+                pov_character="李星河",
+                mood="对抗→缓和",
+            ),
+            emotion_arc_entries=[
+                EmotionArcEntry(
+                    character="李星河",
+                    from_state="抗拒",
+                    to_state="动摇",
+                    trigger="第一次承认欠苏晚一份人情",
+                ),
+            ],
+        ))
+    finally:
+        con.close()
+
+    # ── Project memory ── persistent facts the user has confirmed
+    pm_dir = novels_db_path.parent / "project_memory"
+    pm_dir.mkdir(exist_ok=True)
+    _write(pm_dir / f"{pid}.json", {
+        "project_id": pid,
+        "memories": [
+            {"id": "mem_001",
+             "content": "李星河的感知能力每次使用后会让他短暂失去三十分钟内的自身情感记忆，这是后续重要伏笔",
+             "category": "rule",
+             "ts": time.time()},
+            {"id": "mem_002",
+             "content": "故事时间线设定在银河历 2847 年秋季，全卷只覆盖这一个季节",
+             "category": "setting",
+             "ts": time.time()},
+            {"id": "mem_003",
+             "content": "苏晚不知道李星河获得了星门坐标——这个秘密要保留到第二卷揭晓",
+             "category": "secret",
+             "ts": time.time()},
+        ],
+        "saved_at": time.time(),
+    })
 
 
 def _seed_idea_db(db_path: Path) -> None:
