@@ -6,7 +6,7 @@ testable. The package aggregates them all into a single ``router``
 which the parent reference_api.py mounts so the original public URL
 namespace (``/api/references/*``) is preserved without touching main.py.
 
-Currently extracted (9 sub-routers):
+Currently extracted (11 sub-routers):
   - works          /works CRUD, /upload, /files
                                           (parent entity for everything)
   - inspirations   /inspirations         (idea snippets)
@@ -17,21 +17,28 @@ Currently extracted (9 sub-routers):
   - index          /search, /works/{id}/index/* (vector index + search)
   - patterns       /chapter_patterns, /author_note_keywords,
                    /garbled_patterns     (user-tunable regex)
+  - prompts        /prompts/* CRUD + preview + preview_chunks
+                                          (prompt template registry)
+  - analysis_writer  /plot_outline/extract, /analysis update,
+                     /chronicle/summarize, /plot_outline/summarize,
+                     /prompts/reference.outline_summary/render
+                                          (writes analysis JSON fields)
   - web_search     /web_search/capability + /works/{id}/ai_complete
 
 Pending (still in reference_api.py until next split pass):
   - preprocess + chapter editing  (largest remaining: ~1800 lines)
   - segments + chunks extract     (~870 lines)
-  - analysis writer + prompts     (~820 lines)
 """
 from fastapi import APIRouter
 
+from .analysis_writer import router as _analysis_writer_router
 from .entries import router as _entries_router
 from .index import router as _index_router
 from .inspirations import router as _inspirations_router
 from .links import router as _links_router
 from .lora import router as _lora_router
 from .patterns import router as _patterns_router
+from .prompts import router as _prompts_router
 from .stats import router as _stats_router
 from .web_search import router as _web_search_router
 from .works import router as _works_router
@@ -47,4 +54,6 @@ router.include_router(_stats_router)
 router.include_router(_lora_router)
 router.include_router(_index_router)
 router.include_router(_patterns_router)
+router.include_router(_prompts_router)
+router.include_router(_analysis_writer_router)
 router.include_router(_web_search_router)

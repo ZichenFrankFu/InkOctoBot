@@ -14,13 +14,12 @@ Two endpoints:
 from __future__ import annotations
 
 import json
-import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ._common import MEDIA_TYPE_ZH, SERIAL_STATUS_VALUES, db
+from ._common import MEDIA_TYPE_ZH, SERIAL_STATUS_VALUES, db, strip_json_blob
 
 router = APIRouter()
 
@@ -45,19 +44,6 @@ def web_search_capability():
             "enabled": False, "provider": "", "model": "",
             "reason": f"加载模型路由失败：{e}",
         }
-
-
-def _strip_json_blob(raw: str) -> str:
-    """Pull a JSON object out of a string that may contain markdown fences."""
-    s = (raw or "").strip()
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", s, re.DOTALL)
-    if fence:
-        s = fence.group(1).strip()
-    a = s.find("{")
-    b = s.rfind("}")
-    if 0 <= a < b:
-        s = s[a:b + 1]
-    return s
 
 
 class AiCompleteRequest(BaseModel):
@@ -111,7 +97,7 @@ async def ai_complete_work(ref_id: str, body: AiCompleteRequest | None = None):
         raise HTTPException(502, f"联网调用失败：{e}")
 
     try:
-        result = json.loads(_strip_json_blob(raw))
+        result = json.loads(strip_json_blob(raw))
         if not isinstance(result, dict):
             raise ValueError("response is not a JSON object")
     except Exception as e:
