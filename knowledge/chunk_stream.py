@@ -6,9 +6,9 @@ chunking eagerly into a list is wasteful. This module exposes a
 generator-style API that yields chunks incrementally so RAM stays
 bounded regardless of file size.
 
-The chunk shape and boundary heuristics match
-``preprocessing/lora/data_constructor._chunk_text`` (size + overlap,
-break at 。！？\\n) so vectors from the two pipelines remain consistent.
+The chunk shape and boundary heuristics (size + overlap, break at
+。！？\\n) keep vectors from the streaming and in-memory paths
+consistent.
 """
 from __future__ import annotations
 

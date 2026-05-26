@@ -111,7 +111,7 @@ EditAnalyzer 分析用户修改，总结修改类型，并记录以优化后续�
 - 目标：将Actor Agents生成的表演记录剪辑成章节正文，并进行文学风格化处理
 - 输入：表演记录，叙事指令（POV/节拍展开压缩/情绪弧线），风格要求，约束
 - 输出：章节正文
-- 技术实现：基于表演记录的结构化内容，结合叙事指令和风格要求生成章节文本，可使用基于参考作品数据库训练成的LoRA模型来模仿特定风格
+- 技术实现：基于表演记录的结构化内容，结合叙事指令和风格要求生成章节文本
 
 #### 2.2.6 Evaluator
 - 目标：检测生成文本的约束满足度、一致性、知识隔离执行情况、重复度、**四重记忆系统**回溯、伏笔回收等，确保文本质量
@@ -587,18 +587,6 @@ LLM 对每处修改进行分类标注：
 - **条目类型**：场景 / 角色 / 世界观 / 对话 / 技巧 / 氛围 / 情节结构 / 情感节拍 / 钩子 / 风格样本 / 其他
 - **可调整参数**：类型、标题、位置标注（如"第3章"）、内容（原文摘录或描述）、个人笔记
 
-#### 4.6.4 LoRA 训练面板
-- **是否使用 AI**：是（本地模型训练）
-- **位置**：详情页底部可折叠区域
-- **功能**：基于已预处理的参考作品训练 LoRA 风格模型
-- **可调整参数**：
-  - 基础模型选择：Qwen2-1.5B / Qwen2-7B / Llama-3-8B
-  - Rank：4-128
-  - Alpha：4-256
-  - Learning Rate（默认 0.0002）
-  - Epochs：1-20（默认 3）
-- **训练状态**：2s 轮询进度，显示完成状态 / 错误信息 / 使用样本数
-
 ---
 
 ### 4.7 设置界面（SettingsPage）
@@ -764,7 +752,7 @@ InkOctoBot/
 │   │                                    #              带 provider/model INFO 日志）
 │   ├── ab_compare.py / cost_estimator.py / embedding_provider.py
 │   ├── web_search_capabilities.py
-│   └── {openai,anthropic,deepseek,gemini,ollama,vllm,lora,mock}_provider.py
+│   └── {openai,anthropic,deepseek,gemini,ollama,vllm,mock}_provider.py
 │
 ├── knowledge/                           # 检索 + 记忆 + 真相（原 rag/）
 │   ├── character_cards.py / world_book.py
@@ -815,8 +803,6 @@ InkOctoBot/
 │   ├── skill_extraction/                # 跨小说 skill 挖掘 pipeline
 │   │   ├── orchestrator.py / chapter_extractor.py
 │   │   ├── novel_aggregator.py / pattern_miner.py / skill_emitter.py
-│   └── lora/                            # LoRA 训练
-│       ├── data_constructor.py / quality_filter.py / trainer.py
 │
 ├── security/                            # 安全与隔离
 │   ├── api_key_manager.py               # Fernet 加密 keystore（待接入 router）
@@ -839,8 +825,7 @@ InkOctoBot/
 │   ├── chromadb/                        # ChromaDB 向量库
 │   ├── projects/ / characters/ / worldbook/ / editor/ / storyline/
 │   ├── settings.json                    # UI 可写配置（pipeline/providers/...）
-│   ├── usage.json                       # LLM token 使用统计（防抖写盘）
-│   └── lora_output/
+│   └── usage.json                       # LLM token 使用统计（防抖写盘）
 │
 ├── data_test/                           # `python launcher.py --test` 隔离数据
 │
@@ -871,7 +856,6 @@ InkOctoBot/
 │   │   └── test_{character_worldbook,decision_engine}.py
 │   ├── llm/test_base.py
 │   ├── market_analysis/test_formula_engine.py
-│   ├── reference_ingest/test_lora_pipeline.py
 │   ├── reference_pipeline/test_advanced.py
 │   ├── storage/test_project_schema.py
 │   └── integration/test_agents_pipeline.py
@@ -892,10 +876,10 @@ InkOctoBot/
     │   │   │       ├── references.py / skills_block.py
     │   │   │       └── loaders/         # 10 个 per-block loader
     │   │   ├── routers/                 # API 路由
-    │   │   │   ├── reference/           # ★ 11 个 sub-router (原 reference_api.py 4425 行)
+    │   │   │   ├── reference/           # ★ 10 个 sub-router (原 reference_api.py 4425 行)
     │   │   │   │   ├── _common.py       # db() / 共享常量 / strip_json_blob
     │   │   │   │   ├── works.py / entries.py / links.py / stats.py
-    │   │   │   │   ├── inspirations.py / lora.py / index.py / patterns.py
+    │   │   │   │   ├── inspirations.py / index.py / patterns.py
     │   │   │   │   ├── web_search.py / prompts.py / analysis_writer.py
     │   │   │   ├── reference_api.py     # 残余 ~2465 行（preprocess + segments 待拆）
     │   │   │   ├── generation_api.py    # 创作流水线（已抽 services，剩 2503 行）
@@ -1183,7 +1167,6 @@ Source: https://www.qidian.com/help/index/6
 |------|---------|------|----------|--------------|
 | PROSE | Aligning LLMs by Predicting Preferences from User Writing Samples | Aroca-Ouellette et al. | arXiv:2505.23815, 2025 | 迭代式风格偏好推断，指导 EditAnalyzer 的偏好收敛机制 |
 | ZeroStylus | Implementing Long Text Style Transfer with LLMs through Dual-Layered Sentence and Paragraph Structure Extraction and Mapping | — | arXiv:2505.07888, 2025 | 句级 + 段级双层模板提取，用于参考作品风格片段库构建 |
-| Weaver | Weaver: Foundation Models for Creative Writing | Wang, Tiannan et al. | arXiv:2401.17268, 2024 | Constitutional DPO 对齐方法，指导 LoRA 风格微调训练策略 |
 | CoSER | CoSER: Coordinating LLM-Based Persona Simulation of Established Roles | Wang, Xintao et al. | ICML 2025, arXiv:2502.09082 | Given-Circumstance Acting 方法论，指导 Actor Agent 的角色扮演设计 |
 | StoryWriter | StoryWriter: A Multi-Agent Framework for Long Story Generation | — | arXiv:2506.16445, 2025 | Non-Linear Narration (NLN) + ReIO 输入输出重写，指导 Editor-Writer 的章节组装策略 |
 | Agents' Room | Agents' Room: Narrative Generation through Multi-step Collaboration | Huot, Fantine et al. (Google DeepMind) | ICLR 2025, arXiv:2410.02603 | 多 Agent 分工协作叙事框架 (Planning Agents + Writing Agents + Scratchpad)，指导整体 pipeline 架构 |
@@ -1200,7 +1183,7 @@ Source: https://www.qidian.com/help/index/6
 后端:  FastAPI + WebSocket (生成流式输出)
 存储:  SQLite + ChromaDB + YAML/JSON
 AI:    Ollama/vLLM (本地) + OpenAI/Anthropic/DeepSeek API (可选)
-ML:    PEFT + bitsandbytes (LoRA) + text2vec-large-chinese (embedding)
+ML:    text2vec-large-chinese (embedding)
 NLP:   jieba + SnowNLP
 安全:  keyring / Fernet (API key 加密)
 ```

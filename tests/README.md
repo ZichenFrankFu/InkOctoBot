@@ -49,9 +49,6 @@ tests/
   market_analysis/           mirrors market_analysis/
     test_formula_engine.py
 
-  reference_ingest/          mirrors reference_ingest/
-    test_lora_pipeline.py
-
   reference_pipeline/        mirrors reference_pipeline/
     test_advanced.py         rhetoric / shuangdian features
 

@@ -23,7 +23,7 @@ class DataIsolation:
     def create_project_dir(self, project_id: str) -> Path:
         """Create isolated project directory structure."""
         proj_dir = self.data_dir / project_id
-        subdirs = ["chapters", "characters", "volumes", "exports", "lora"]
+        subdirs = ["chapters", "characters", "volumes", "exports"]
         for sub in subdirs:
             (proj_dir / sub).mkdir(parents=True, exist_ok=True)
         logger.info("Created project directory: %s", proj_dir)

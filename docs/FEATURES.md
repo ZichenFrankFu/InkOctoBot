@@ -41,7 +41,7 @@ InkOctoBot 是一个 **AI 驱动的网文（Web Novel）创作系统**，采用"
 | 后端 | FastAPI + Uvicorn + WebSocket |
 | 桌面 | PyWebView (跨平台) |
 | 存储 | SQLite (应用 + 市场数据) + ChromaDB (向量) + YAML/JSON |
-| LLM | OpenAI, Anthropic, DeepSeek, Gemini, Ollama, vLLM, LoRA |
+| LLM | OpenAI, Anthropic, DeepSeek, Gemini, Ollama, vLLM |
 | NLP | jieba, SnowNLP, text2vec-large-chinese |
 | 分析 | Pandas, NumPy, scikit-learn, Matplotlib |
 | CLI | Typer |
@@ -575,7 +575,6 @@ ModelRouter.generate(role, messages, temperature, max_tokens)
 | Gemini | `llm/gemini_provider.py` | Gemini Pro, Gemini Ultra | Google AI API |
 | Ollama | `llm/ollama_provider.py` | 本地任意模型 | REST API, 自动检测 |
 | vLLM | `llm/vllm_provider.py` | 自部署模型 | OpenAI 兼容 API |
-| LoRA | `llm/lora_provider.py` | 微调模型 | LoRA adapter 加载 |
 
 #### BaseLLMProvider（Provider 基类）
 
@@ -765,11 +764,7 @@ preprocessing/
 ├── character_profiler.py     → 角色画像提取
 ├── fragment_selector.py      → 优质片段选择
 ├── rhythm_analyzer.py        → 节奏分析（句长/段落分布）
-├── style_extractor.py        → 风格指纹提取
-└── lora/
-    ├── data_constructor.py   → LoRA 训练数据构建
-    ├── quality_filter.py     → 训练数据质量过滤
-    └── trainer.py            → LoRA 微调训练器
+└── style_extractor.py        → 风格指纹提取
 ```
 
 | 文件 | 输入 | 输出 | 说明 |
@@ -780,9 +775,6 @@ preprocessing/
 | `fragment_selector.py` | 章节列表 + 质量标准 | 优质片段列表 | 选择高质量训练片段 |
 | `rhythm_analyzer.py` | 文本 | 节奏特征向量 | 分析句长/段落节奏 |
 | `style_extractor.py` | 文本 | 风格指纹字典 | 提取风格维度特征 |
-| `lora/data_constructor.py` | 优质片段 + 指令 | JSONL 训练数据 | 构建 SFT 训练集 |
-| `lora/quality_filter.py` | 训练数据 | 过滤后数据 | 质量过滤 |
-| `lora/trainer.py` | 训练数据 + 基座模型 | LoRA adapter | 微调训练 |
 
 ---
 

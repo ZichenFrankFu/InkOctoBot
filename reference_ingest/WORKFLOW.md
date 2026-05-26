@@ -16,8 +16,7 @@ needs to be:
 5. Registered in the DB with metadata (title, creator, total_chars)
 
 This module also hosts the **skill_mining** pipeline (extract reusable
-writing patterns across many novels) and **lora_training** dataset
-prep (build SFT data from corrected chapters).
+writing patterns across many novels).
 
 ## 2. Who triggers it
 
@@ -39,7 +38,6 @@ prep (build SFT data from corrected chapters).
 | `NovelIngester.ingest_all()` | corpus dir | list of IngestResult |
 | `chapter_splitter.split_chapters(text)` | raw text | `[(num, title, content)]` |
 | `skill_mining.orchestrator.run(...)` | corpus + ingest_dir | mining stats |
-| `lora.data_constructor.construct_sft_data(chapters, ...)` | chapter list | SFT sample list |
 
 ## 4. Sequence (single-file ingest)
 
@@ -96,15 +94,14 @@ sequenceDiagram
   proceeds with one giant "chapter 1" plus a `needs_review` flag and
   a hint in the log: "no chapter pattern matched; consider adding a
   custom pattern at /chapter_patterns".
-- The mining and LoRA paths return structured error dicts rather than
-  raising, so the UI can show the failure inline without crashing.
+- The mining paths return structured error dicts rather than raising,
+  so the UI can show the failure inline without crashing.
 
 ## 7. Related code + tests
 
 - Source: `reference_ingest/{novel_ingester,chapter_splitter,style_extractor}.py`
-- Sub-packages: `reference_ingest/{skill_mining,lora}/`
+- Sub-packages: `reference_ingest/skill_extraction/`
 - Routers: `ui/backend/app/routers/extraction_api.py`,
   `ui/backend/app/routers/reference/works.py` (upload)
-- Tests: `tests/reference_ingest/test_lora_pipeline.py`
 - Sister workflow: `reference_pipeline/WORKFLOW.md` (the feature
   extraction stage that runs AFTER ingestion)

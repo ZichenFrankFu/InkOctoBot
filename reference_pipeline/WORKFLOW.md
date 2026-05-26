@@ -123,9 +123,7 @@ sequenceDiagram
   preprocess_jobs,prompts,nlp_stats,embedding_cluster,platform_profiles}.py`
 - Routers: `ui/backend/app/routers/reference/{prompts,analysis_writer}.py`
   (the user-facing endpoints that drive the pipeline)
-- Tests: `tests/reference_pipeline/test_advanced.py`,
-  `tests/reference_ingest/test_lora_pipeline.py` (which depends on
-  extracted features)
+- Tests: `tests/reference_pipeline/test_advanced.py`
 - Configuration: `config/app_config.yaml: reference_pipeline.*`,
   `config/slop_patterns.json`
 - Sister workflow: `reference_ingest/WORKFLOW.md` (how the raw .txt

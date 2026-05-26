@@ -6,14 +6,13 @@ testable. The package aggregates them all into a single ``router``
 which the parent reference_api.py mounts so the original public URL
 namespace (``/api/references/*``) is preserved without touching main.py.
 
-Currently extracted (11 sub-routers):
+Currently extracted (10 sub-routers):
   - works          /works CRUD, /upload, /files
                                           (parent entity for everything)
   - inspirations   /inspirations         (idea snippets)
   - entries        /entries              (per-work content slices)
   - links          /links                (project ⇄ reference-work)
   - stats          /stats, /stats/genres (aggregates)
-  - lora           /lora/{train,status}  (fine-tuning trigger)
   - index          /search, /works/{id}/index/* (vector index + search)
   - patterns       /chapter_patterns, /author_note_keywords,
                    /garbled_patterns     (user-tunable regex)
@@ -36,7 +35,6 @@ from .entries import router as _entries_router
 from .index import router as _index_router
 from .inspirations import router as _inspirations_router
 from .links import router as _links_router
-from .lora import router as _lora_router
 from .patterns import router as _patterns_router
 from .prompts import router as _prompts_router
 from .stats import router as _stats_router
@@ -51,7 +49,6 @@ router.include_router(_inspirations_router)
 router.include_router(_entries_router)
 router.include_router(_links_router)
 router.include_router(_stats_router)
-router.include_router(_lora_router)
 router.include_router(_index_router)
 router.include_router(_patterns_router)
 router.include_router(_prompts_router)
