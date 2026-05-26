@@ -26,7 +26,7 @@ class GenerateProfileRequest(BaseModel):
 
 
 def _build_router(provider: str = "", model: str = ""):
-    from ui.backend.app.routers.generation_api import _build_router as build
+    from ui.backend.app.services import build_router as build
     return build(provider, model)
 
 
@@ -39,7 +39,7 @@ def characters_status():
 async def generate_profile(req: GenerateProfileRequest):
     """Use AI to generate a character profile from a name and role."""
     try:
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         router_inst = _build_router(req.provider, req.model)
 
         existing = f"\n已有人设信息：{req.existing_personality}" if req.existing_personality else ""

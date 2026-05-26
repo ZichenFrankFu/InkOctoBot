@@ -23,12 +23,14 @@ import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
-// DevToolsPage removed
+import DevConsolePage from "./pages/DevConsolePage";
+import LoraTrainingPage from "./pages/LoraTrainingPage";
+import MarketSearchPage from "./pages/MarketSearchPage";
 
 type Tab =
   | "dashboard" | "rankings" | "references" | "references-overview" | "references-search" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
-  | "skills" | "settings";
+  | "skills" | "settings" | "dev-console" | "lora" | "market-search";
 
 interface Project { id: string; name: string; genre?: string; word_count?: number; chapter_count?: number; }
 
@@ -40,18 +42,20 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     ],
   },
   {
-    section: "市场信息",
+    section: "市场数据库",
     items: [
-      { key: "rankings", icon: "≡", label: "市场数据库" },
+      { key: "rankings", icon: "≡", label: "市场总览" },
       { key: "analysis", icon: "↗", label: "分析面板" },
+      { key: "market-search", icon: "⌕", label: "作品搜索" },
     ],
   },
   {
-    section: "参考作品数据库",
+    section: "参考数据库",
     items: [
       { key: "references-overview", icon: "▦", label: "数据库概览" },
       { key: "references-search", icon: "⌕", label: "灵感搜索" },
       { key: "references", icon: "⊞", label: "参考作品详情" },
+      { key: "lora", icon: "⚝", label: "LoRA 训练" },
     ],
   },
   {
@@ -69,6 +73,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     items: [
       { key: "skills", icon: "⚙", label: "智能体" },
       { key: "settings", icon: "☸", label: "设置" },
+      { key: "dev-console", icon: "⚉", label: "开发者控制台" },
     ],
   },
 ];
@@ -222,6 +227,9 @@ function AppInner() {
         {tab === "storyline" && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
         {tab === "skills" && <ErrorBoundary key="skills"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
         {tab === "settings" && <ErrorBoundary key="settings"><SettingsPage /></ErrorBoundary>}
+        {tab === "lora" && <ErrorBoundary key="lora"><LoraTrainingPage /></ErrorBoundary>}
+        {tab === "market-search" && <ErrorBoundary key="market-search"><MarketSearchPage /></ErrorBoundary>}
+        {tab === "dev-console" && <ErrorBoundary key="dev-console"><DevConsolePage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
       </main>
 
       <GlobalSearch

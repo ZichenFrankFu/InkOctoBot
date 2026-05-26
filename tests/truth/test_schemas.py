@@ -1,10 +1,10 @@
-"""Unit tests for rag.truth.schemas — Pydantic model behavior."""
+"""Unit tests for knowledge.truth.schemas — Pydantic model behavior."""
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from rag.truth.schemas import (
+from knowledge.truth.schemas import (
     SPOTriple, StatePatch, NumericalReconciliation,
     HookDelta, HookStatus, HookImportance,
     ChapterSummaryDelta, SubplotUpdate, SubplotStatus,

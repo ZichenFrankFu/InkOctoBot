@@ -27,13 +27,13 @@ _pipeline_lock = threading.Lock()
 
 
 def _get_db_path() -> str:
-    if settings.test_mode and settings.data_dir:
-        return str(settings.data_dir / "novels.db")
-    try:
-        repo_cfg = load_repo_config(settings.repo_root)
-        return get_db_path(repo_cfg, settings.repo_root)
-    except FileNotFoundError:
-        return str(settings.repo_root / "data" / "novels.db")
+    """Path to the reference DB used by NovelIngester + skill extraction.
+
+    Post-rename this is ``data/reference.db`` (not ``novels.db``);
+    falls back to ``novels.db`` if a legacy install hasn't migrated.
+    """
+    from ui.backend.app.routers.reference._common import reference_db_path
+    return reference_db_path()
 
 
 def _corpus_dir() -> Path:
@@ -46,7 +46,7 @@ def _corpus_dir() -> Path:
 def ingest_corpus():
     """Ingest all novels from corpus directory (批量导入小说)."""
     try:
-        from preprocessing.novel_ingester import NovelIngester
+        from reference_ingest.novel_ingester import NovelIngester
 
         db_path = _get_db_path()
         corpus = _corpus_dir()
@@ -92,7 +92,7 @@ async def upload_novel(file: UploadFile = File(...)):
         dest.write_bytes(content)
 
         # Ingest the single file
-        from preprocessing.novel_ingester import NovelIngester
+        from reference_ingest.novel_ingester import NovelIngester
 
         db_path = _get_db_path()
         ingester = NovelIngester(db_path, corpus)
@@ -214,8 +214,8 @@ async def run_pipeline(req: PipelineRunRequest):
 async def _run_pipeline_bg(req: PipelineRunRequest):
     global _pipeline_status
     try:
-        from preprocessing.skill_extraction.orchestrator import SkillExtractionOrchestrator
-        from models.router import ModelRouter
+        from reference_ingest.skill_extraction.orchestrator import SkillExtractionOrchestrator
+        from llm.router import ModelRouter
 
         db_path = _get_db_path()
         corpus = _corpus_dir()
@@ -368,7 +368,7 @@ def list_patterns(
 def emit_skills(category: Optional[str] = None):
     """Generate skill files from mined patterns."""
     try:
-        from preprocessing.skill_extraction.skill_emitter import SkillEmitter
+        from reference_ingest.skill_extraction.skill_emitter import SkillEmitter
 
         db_path = _get_db_path()
         emitter = SkillEmitter(db_path)

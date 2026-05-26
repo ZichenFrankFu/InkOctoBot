@@ -43,6 +43,12 @@ def get_pending_suggestions():
 
 @router.websocket("/ws")
 async def websocket_event_stream(websocket: WebSocket):
+    """Long-lived WS feed of EventBus suggestions.
+
+    Loops indefinitely: pulls suggestions from the bus, falls back to
+    a heartbeat every 30 s of idleness so proxies / browsers don't
+    close the connection. Exits cleanly on client disconnect.
+    """
     await websocket.accept()
     if _event_bus is None:
         await websocket.send_json({"error": "Event bus not initialized"})
@@ -50,13 +56,20 @@ async def websocket_event_stream(websocket: WebSocket):
         return
     try:
         while True:
-            suggestion = await asyncio.wait_for(
-                _event_bus.get_suggestion(), timeout=30.0,
-            )
+            try:
+                suggestion = await asyncio.wait_for(
+                    _event_bus.get_suggestion(), timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                # Keepalive only — keep looping, don't exit.
+                await websocket.send_json({"type": "heartbeat"})
+                continue
             await websocket.send_json(suggestion.to_dict())
-    except asyncio.TimeoutError:
-        await websocket.send_json({"type": "heartbeat"})
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
     except Exception as e:
-        logger.error("WebSocket error: %s", e)
+        logger.error("WebSocket error: %s", e, exc_info=True)
+        try:
+            await websocket.close()
+        except Exception:
+            pass  # already closed

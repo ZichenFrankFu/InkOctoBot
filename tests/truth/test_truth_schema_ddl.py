@@ -1,12 +1,12 @@
-"""Smoke tests for database.truth_schema DDL creation."""
+"""Smoke tests for storage.truth_schema DDL creation."""
 from __future__ import annotations
 
 import sqlite3
 
 import pytest
 
-from database.creation_schema import ensure_creation_tables
-from database.truth_schema import ensure_truth_tables, TRUTH_DDL
+from storage.project_schema import ensure_creation_tables
+from storage.truth_schema import ensure_truth_tables, TRUTH_DDL
 
 
 # All tables created by truth_schema (used to verify presence)

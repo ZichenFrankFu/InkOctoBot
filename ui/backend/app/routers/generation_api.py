@@ -2,7 +2,7 @@
 /api/generation — Creative Writing Pipeline execution via real agent pipeline.
 
 Provides both synchronous and streaming (WebSocket) generation endpoints
-that connect to the actual SceneDirector -> ActorAgents -> EditorWriter -> Evaluator pipeline.
+that connect to the actual SceneDirector -> ActorAgents -> Writer -> Evaluator pipeline.
 """
 from __future__ import annotations
 
@@ -22,157 +22,42 @@ logger = logging.getLogger("inkoctobot.ui.backend.generation_api")
 _active_sessions: dict[str, dict[str, Any]] = {}
 
 
-# ═══ Usage Tracking (persisted to data/usage.json) ═══
+# ═══ Usage Tracking — moved to ui.backend.app.services.usage_tracker ═══
+# (with debounced writes; this file just exposes the HTTP endpoints).
 
-from pathlib import Path as _Path
-
-def _usage_file() -> _Path:
-    from ui.backend.app.settings import settings as _s
-    d = _s.data_dir if _s.data_dir else _s.repo_root / "data"
-    return d / "usage.json"
-
-def _empty_usage() -> dict[str, Any]:
-    return {
-        "total_input_tokens": 0,
-        "total_output_tokens": 0,
-        "total_calls": 0,
-        "by_provider": {},
-        "by_model": {},
-        "by_role": {},
-        "recent": [],
-    }
-
-def _load_usage() -> dict[str, Any]:
-    p = _usage_file()
-    if p.exists():
-        try:
-            data = json.loads(p.read_text("utf-8"))
-            # ensure all expected keys exist (forward-compat)
-            empty = _empty_usage()
-            for k, v in empty.items():
-                data.setdefault(k, v)
-            return data
-        except Exception:
-            pass
-    return _empty_usage()
-
-def _save_usage() -> None:
-    try:
-        p = _usage_file()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(_usage_data, ensure_ascii=False, indent=2), "utf-8")
-    except Exception:
-        logger.debug("Failed to persist usage data", exc_info=True)
-
-_usage_data: dict[str, Any] = _load_usage()
-_usage_lock = asyncio.Lock()
-
-
-def _record_usage(agent_role: str, provider: str, model: str, input_tokens: int, output_tokens: int):
-    """Record token usage from an LLM call (thread-safe for sync context)."""
-    _usage_data["total_input_tokens"] += input_tokens
-    _usage_data["total_output_tokens"] += output_tokens
-    _usage_data["total_calls"] += 1
-
-    if provider not in _usage_data["by_provider"]:
-        _usage_data["by_provider"][provider] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
-    _usage_data["by_provider"][provider]["input_tokens"] += input_tokens
-    _usage_data["by_provider"][provider]["output_tokens"] += output_tokens
-    _usage_data["by_provider"][provider]["calls"] += 1
-
-    model_key = f"{provider}/{model}" if provider else model
-    if model_key not in _usage_data["by_model"]:
-        _usage_data["by_model"][model_key] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
-    _usage_data["by_model"][model_key]["input_tokens"] += input_tokens
-    _usage_data["by_model"][model_key]["output_tokens"] += output_tokens
-    _usage_data["by_model"][model_key]["calls"] += 1
-
-    if agent_role not in _usage_data["by_role"]:
-        _usage_data["by_role"][agent_role] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
-    _usage_data["by_role"][agent_role]["input_tokens"] += input_tokens
-    _usage_data["by_role"][agent_role]["output_tokens"] += output_tokens
-    _usage_data["by_role"][agent_role]["calls"] += 1
-
-    _usage_data["recent"].append({
-        "ts": time.time(),
-        "role": agent_role,
-        "provider": provider,
-        "model": model,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    })
-    # Keep only last 100 entries
-    if len(_usage_data["recent"]) > 100:
-        _usage_data["recent"] = _usage_data["recent"][-100:]
-
-    _save_usage()
+from ui.backend.app.services import usage_tracker as _usage_tracker
+# Backward-compat aliases for in-file references.
+_record_usage = _usage_tracker.record_usage
 
 
 @router.get("/usage")
 def get_usage():
     """Return accumulated API usage stats (persisted across restarts)."""
-    return _usage_data
+    return _usage_tracker.snapshot()
 
 
 @router.post("/usage/reset")
 def reset_usage():
     """Reset usage counters and persist the empty state."""
-    for k, v in _empty_usage().items():
-        _usage_data[k] = v
-    _save_usage()
+    _usage_tracker.reset()
     return {"status": "ok"}
 
 
 # ═══ Intelligence Integration Helpers ═══
 # These connect the existing-but-disconnected modules together.
 
-def _get_db_path() -> str:
-    """Resolve the project database path."""
-    try:
-        from ui.backend.app.settings import settings as app_settings
-        from ui.backend.app.utils import load_repo_config, get_db_path
-        repo_cfg = load_repo_config(app_settings.repo_root)
-        return get_db_path(repo_cfg, app_settings.repo_root)
-    except Exception:
-        from ui.backend.app.settings import settings as app_settings
-        return str(app_settings.repo_root / "data" / "novels.db")
-
-
-def _load_user_style_preferences(project_id: str, db_path: str) -> str:
-    """Load accumulated user style preferences from EditAnalyzer (A4: feedback loop)."""
-    try:
-        import sqlite3
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """SELECT preference_type, description, confidence
-                   FROM user_style_preferences
-                   WHERE project_id=? AND confidence>=0.3
-                   ORDER BY confidence DESC LIMIT 20""",
-                (project_id,),
-            ).fetchall()
-        if not rows:
-            return ""
-        parts = ["[用户写作偏好（从历史修改中学习）]"]
-        by_type: dict[str, list[str]] = {}
-        for r in rows:
-            by_type.setdefault(r["preference_type"], []).append(
-                f"- {r['description']} (置信度: {r['confidence']:.0%})"
-            )
-        type_labels = {"style": "风格偏好", "content": "内容偏好", "pacing": "节奏偏好"}
-        for ptype, items in by_type.items():
-            parts.append(f"\n### {type_labels.get(ptype, ptype)}")
-            parts.extend(items[:8])
-        return "\n".join(parts)
-    except Exception as e:
-        logger.debug("Load user preferences skipped: %s", e)
-        return ""
+# Helpers moved to ui.backend.app.services. These names are kept as
+# thin re-exports so any in-file references keep working until phase 3
+# splits this router into its own package; new code should import from
+# the services package directly.
+from ui.backend.app.services import get_db_path as _get_db_path
+from ui.backend.app.services import load_user_style_preferences as _load_user_style_preferences
 
 
 def _load_reference_style(project_id: str, db_path: str) -> str:
     """Load style info from linked reference works (B1: reference style injection)."""
     try:
-        from rag.reference_db import ReferenceDB
+        from knowledge.reference_db import ReferenceDB
         ref_db = ReferenceDB(db_path)
         links = ref_db.get_project_links(project_id)
         if not links:
@@ -208,11 +93,17 @@ def _load_reference_style(project_id: str, db_path: str) -> str:
 
 
 def _load_unresolved_foreshadowing(project_id: str, db_path: str, chapter_num: int) -> str:
-    """Load unresolved foreshadowing for context injection (B2: foreshadowing tracking)."""
+    """Load unresolved foreshadowing for context injection (B2: foreshadowing tracking).
+
+    Reads from pending_hooks (Truth Files canonical store) via MemoryManager;
+    EpisodicTimeline.get_unresolved_foreshadowing was removed in v2.1 — the
+    foreshadow state machine moved to pending_hooks. See docs/SCHEMA_REDESIGN.md.
+    """
     try:
-        from rag.memory.episodic_timeline import EpisodicTimeline
-        timeline = EpisodicTimeline(db_path)
-        unresolved = timeline.get_unresolved_foreshadowing(project_id)
+        from knowledge.memory.manager import MemoryManager
+        mgr = MemoryManager(db_path=db_path)
+        mgr.set_project(project_id)
+        unresolved = mgr.get_unresolved_foreshadowing()
         if not unresolved:
             return ""
         parts = ["[未回收伏笔提醒]"]
@@ -275,7 +166,7 @@ async def _run_chapter_complete_hook(
     """Post-generation hook: update memory system (A2: memory integration)."""
     try:
         # Generate chapter summary using LLM
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         summary_resp = await router_inst.generate(
             agent_role="evaluator",
             messages=[
@@ -307,16 +198,13 @@ async def _run_chapter_complete_hook(
         key_events = summary_data.get("key_events", [])
         char_states = summary_data.get("character_states", {})
 
-        # Build timeline events from foreshadowing data
+        # Build timeline events from key_events only — foreshadowing
+        # now flows through Truth Files (TruthFileStore.apply_deltas
+        # with HookDelta entries) rather than the episodic_events
+        # timeline. See docs/SCHEMA_REDESIGN.md.
         events: list[dict] = []
-        for fs in summary_data.get("foreshadowing", []):
-            events.append({
-                "event_type": "foreshadowing",
-                "description": fs.get("description", ""),
-                "foreshadow_status": "planted" if fs.get("type") == "planted" else "resolved",
-            })
         for ke in key_events:
-            events.append({"event_type": "plot_event", "description": ke})
+            events.append({"event_type": "plot", "description": ke})
 
         # Update all memory layers
         await memory_manager.on_chapter_complete(
@@ -389,207 +277,17 @@ class EvalRequest(BaseModel):
     rag_excludes: list[str] = []
 
 
-def _get_user_settings() -> dict:
-    """Load user settings with full defaults for missing keys."""
-    import json as _json
-    from ui.backend.app.settings import settings as app_settings
-    from ui.backend.app.routers.data_api import _default_settings
-    p = app_settings.get_data_path("settings.json")
-    if p.exists():
-        data = _json.loads(p.read_text("utf-8"))
-    else:
-        data = {}
-    # Deep-merge defaults so new providers/pipeline roles always appear
-    defaults = _default_settings()
-    for k, v in defaults.items():
-        if k not in data:
-            data[k] = v
-    # Ensure all default providers exist
-    for pname, pdef in defaults.get("providers", {}).items():
-        if pname not in data.get("providers", {}):
-            data.setdefault("providers", {})[pname] = pdef
-    # Ensure all default pipeline roles exist
-    for rname, rdef in defaults.get("pipeline", {}).items():
-        if rname not in data.get("pipeline", {}):
-            data.setdefault("pipeline", {})[rname] = rdef
-    return data
+# Moved to ui.backend.app.services.model_router_factory.
+from ui.backend.app.services import get_user_settings as _get_user_settings
 
 
-class _SimpleRouter:
-    """Router that resolves provider+model per agent role from user settings."""
+# Moved to ui.backend.app.services.model_router_factory.
+from ui.backend.app.services import (
+    SimpleRouter as _SimpleRouter,
+    build_router as _build_router,
+    make_provider_instance as _make_provider_instance,
+)
 
-    def __init__(self, user_settings: dict, fallback_provider: str = "", fallback_model: str = ""):
-        self._settings = user_settings
-        self._providers_cfg = user_settings.get("providers", {})
-        self._pipeline = user_settings.get("pipeline", {})
-        self._fallback_provider = fallback_provider
-        self._fallback_model = fallback_model
-        self._provider_cache: dict[str, Any] = {}  # keyed by "provider:model"
-
-    # Map agent_name used by BaseAgent to the pipeline config key in settings
-    _ROLE_ALIASES: dict[str, str] = {
-        "editor_writer": "editor_stylist",
-        "editor": "editor_stylist",
-        "scene_planner": "scene_director",
-        "actor": "actor_default",
-        "actors": "actor_default",
-        "actor_agent": "actor_default",
-        "narrator_agent": "actor_default",
-    }
-
-    def _resolve(self, agent_role: str) -> tuple[str, str, dict]:
-        """Return (provider, model, prov_cfg) for the given agent role."""
-        # In test mode, always use mock provider to avoid connection errors
-        import os
-        if os.environ.get("WN_TEST_MODE") == "1":
-            return "mock", "mock-test-v1", {}
-
-        role_cfg = self._pipeline.get(agent_role, {})
-        # If no config for this role, try alias mapping
-        if not role_cfg.get("provider") and not role_cfg.get("model"):
-            alias = self._ROLE_ALIASES.get(agent_role, "")
-            if alias:
-                role_cfg = self._pipeline.get(alias, {})
-        provider = role_cfg.get("provider", "") or self._fallback_provider
-        model = role_cfg.get("model", "") or self._fallback_model
-        prov_cfg = self._providers_cfg.get(provider, {})
-        # If model still empty, try the provider's model list
-        if provider and not model:
-            models = prov_cfg.get("models", [])
-            if models:
-                model = models[0]
-        return provider, model, prov_cfg
-
-    def _get_provider(self, provider: str, model: str, prov_cfg: dict):
-        cache_key = f"{provider}:{model}"
-        if cache_key in self._provider_cache:
-            return self._provider_cache[cache_key]
-        from models.base import ProviderConfig
-        cfg = ProviderConfig(
-            provider_type=provider,
-            model_name=model,
-            base_url=prov_cfg.get("base_url") or None,
-            api_key=prov_cfg.get("api_key") or None,
-        )
-        inst = _make_provider_instance(cfg)
-        self._provider_cache[cache_key] = inst
-        return inst
-
-    async def generate(self, *, agent_role: str, messages, temperature=None, max_tokens=None, **kw):
-        provider, model, prov_cfg = self._resolve(agent_role)
-        if not model:
-            raise ValueError(f"角色 '{agent_role}' 未配置模型。请在「设置→Pipeline 配置」中分配。")
-        inst = self._get_provider(provider, model, prov_cfg)
-        resp = await inst.generate(messages, temperature=temperature, max_tokens=max_tokens, **kw)
-        _record_usage(agent_role, provider, model, resp.input_tokens, resp.output_tokens)
-        return resp
-
-    async def invoke(self, *, role: str, prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
-        """Simple prompt-in, text-out API used by BaseSkill.execute()."""
-        from models.base import LLMMessage
-        messages = [LLMMessage(role="user", content=prompt)]
-        resp = await self.generate(agent_role=role, messages=messages, temperature=temperature, max_tokens=max_tokens)
-        return resp.content
-
-    async def generate_stream(self, *, agent_role: str, messages, temperature=None, max_tokens=None, **kw):
-        provider, model, prov_cfg = self._resolve(agent_role)
-        if not model:
-            raise ValueError(f"角色 '{agent_role}' 未配置模型。请在「设置→Pipeline 配置」中分配。")
-        inst = self._get_provider(provider, model, prov_cfg)
-        async for token in inst.generate_stream(messages, temperature=temperature, max_tokens=max_tokens, **kw):
-            yield token
-
-
-def _make_provider_instance(cfg):
-    """Instantiate a provider from a ProviderConfig."""
-    ptype = cfg.provider_type
-    if ptype == "ollama":
-        from models.ollama_provider import OllamaProvider
-        return OllamaProvider(cfg)
-    elif ptype == "deepseek":
-        from models.deepseek_provider import DeepSeekProvider
-        return DeepSeekProvider(cfg)
-    elif ptype == "openai":
-        from models.openai_provider import OpenAIProvider
-        return OpenAIProvider(cfg)
-    elif ptype == "anthropic":
-        from models.anthropic_provider import AnthropicProvider
-        return AnthropicProvider(cfg)
-    elif ptype == "gemini":
-        from models.gemini_provider import GeminiProvider
-        return GeminiProvider(cfg)
-    elif ptype == "vllm":
-        from models.vllm_provider import VLLMProvider
-        return VLLMProvider(cfg)
-    elif ptype == "mock":
-        from models.mock_provider import MockProvider
-        return MockProvider(cfg)
-    else:
-        from models.ollama_provider import OllamaProvider
-        return OllamaProvider(cfg)
-
-
-def _build_router(provider: str = "", model: str = ""):
-    """Build a router from user settings.
-
-    If explicit provider+model given, uses that as fallback.
-    Otherwise resolves a fallback from the first configured enabled provider.
-    Each agent_role call will look up its own pipeline assignment first.
-    """
-    user_settings = _get_user_settings()
-    providers_cfg = user_settings.get("providers", {})
-    pipeline = user_settings.get("pipeline", {})
-
-    # Find a fallback provider+model (used only when a role has no assignment)
-    fb_provider = provider
-    fb_model = model
-
-    if not fb_provider or not fb_model:
-        # Try pipeline config
-        for role_key in ("scene_director", "editor_stylist", "editor_writer", "actor_default", "evaluator"):
-            role_cfg = pipeline.get(role_key, {})
-            p = role_cfg.get("provider", "")
-            m = role_cfg.get("model", "")
-            if p and m:
-                fb_provider = fb_provider or p
-                fb_model = fb_model or m
-                break
-
-    if not fb_provider or not fb_model:
-        # Scan enabled providers
-        for pname, pcfg in providers_cfg.items():
-            if pcfg.get("enabled") and pcfg.get("models"):
-                fb_provider = fb_provider or pname
-                fb_model = fb_model or pcfg["models"][0]
-                break
-
-    if not fb_provider or not fb_model:
-        # Auto-detect Ollama as last resort
-        ollama_cfg = providers_cfg.get("ollama", {})
-        try:
-            import httpx
-            base = ollama_cfg.get("base_url", "http://localhost:11434")
-            resp = httpx.get(f"{base}/api/tags", timeout=5)
-            if resp.status_code == 200:
-                ollama_models = [m["name"] for m in resp.json().get("models", [])]
-                if ollama_models:
-                    fb_provider = "ollama"
-                    fb_model = ollama_models[0]
-        except Exception:
-            pass
-
-    if not fb_model:
-        # In test mode, automatically fall back to mock provider
-        import os
-        if os.environ.get("WN_TEST_MODE") == "1":
-            fb_provider = "mock"
-            fb_model = "mock-test-v1"
-        else:
-            raise ValueError(
-                "未找到可用的 AI 模型。请在「设置」页面中启用一个模型供应商并配置模型。"
-            )
-
-    return _SimpleRouter(user_settings, fb_provider, fb_model)
 
 
 @router.get("/health")
@@ -757,7 +455,7 @@ async def generate_scene_plan(req: GenerateRequest):
 @router.post("/rewrite")
 async def rewrite_text(req: RewriteRequest):
     try:
-        from analysis.feature_extraction.prompts import render
+        from reference_pipeline.prompts import render
         user_content = render(
             "generation.rewrite",
             instruction=req.instruction or "润色并提升文学质量",
@@ -765,10 +463,10 @@ async def rewrite_text(req: RewriteRequest):
         )
         if req.prompt_only:
             return {"status": "ok", "prompt": user_content}
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         router_inst = _build_router(req.provider, req.model)
-        from agents.production.editor_writer import EditorWriter
-        editor = EditorWriter(router_inst, project_id="rewrite")
+        from agents.production.writer import Writer
+        editor = Writer(router_inst, project_id="rewrite")
         messages = [
             LLMMessage(role="system", content=editor.system_prompt),
             LLMMessage(role="user", content=user_content),
@@ -809,7 +507,7 @@ async def evaluate_text(req: EvalRequest):
             rag_excludes=req.rag_excludes,
         ) if req.project_id else ""
         if req.prompt_only:
-            from analysis.feature_extraction.prompts import render
+            from reference_pipeline.prompts import render
             prompt = render(
                 "generation.evaluate",
                 chapter_num=req.chapter_num, checklist="", text=req.text,
@@ -833,8 +531,8 @@ async def evaluate_text(req: EvalRequest):
 async def quick_generate(req: GenerateRequest):
     """Single-step generation: synopsis -> full chapter text."""
     try:
-        from models.base import LLMMessage
-        from analysis.feature_extraction.prompts import render as _render_prompt
+        from llm.base import LLMMessage
+        from reference_pipeline.prompts import render as _render_prompt
         router_inst = _build_router(req.provider, req.model)
         skills_used: list[str] = []
 
@@ -929,7 +627,245 @@ async def quick_generate(req: GenerateRequest):
         raise HTTPException(500, detail=detail)
 
 
+# ═══ Single Writer mode — skip the multi-agent pipeline ═══
+
+class SingleWriterRequest(BaseModel):
+    """One-shot chapter generation that bypasses SceneDirector / Actor /
+    Narrator and goes straight to the Writer.
+
+    Faster and cheaper than ``/start`` (the full pipeline); quality
+    ceiling is lower but acceptable when the outline is already
+    detailed.
+
+    Fields parallel ``GenerateRequest`` so the frontend can reuse the
+    same form, with one extra knob (``target_word_count``).
+    """
+    project_id: str = ""
+    chapter_id: str = ""
+    chapter_num: int = 1
+    chapter_title: str = ""
+    outline: str = ""
+    synopsis: str = ""
+    time_label: str = ""
+    location: str = ""
+    characters: list[str] = []
+    pov_character: str = ""
+    narrative_instructions: str = ""
+    target_word_count: int = 2000
+    provider: str = ""
+    model: str = ""
+    # Truth Files integration knobs (v2.2 per docs/truth_file_system.md §9)
+    truth_inject: bool = True           # Phase 1: inject 7-file bundle into context
+    truth_pressure_inject: bool = True  # Inject pressured-hooks reminder
+    truth_settle: bool = True           # Phase 2: extract + apply TruthDeltas after writing
+    # Same RAG knobs as quick-generate
+    skills: list[str] | None = None
+    rag_excludes: list[str] = []
+    # Per-item override of the prompt
+    prompt_override: str = ""
+    prompt_only: bool = False
+
+
+@router.post("/single-writer")
+async def single_writer(req: SingleWriterRequest):
+    """Generate a chapter with only the Writer agent.
+
+    Integrates with the Truth Files system per docs/truth_file_system.md §9:
+      - Phase 1: 7-file truth bundle injected as additional memory context
+      - Pressured-hooks reminder folded into narrative_instructions
+      - Phase 2: post-write settlement → TruthDeltas → apply (audit gate)
+    """
+    try:
+        from agents.production.writer import Writer
+        from agents.production import truth_integration as truth_ext
+        from ._rag_context import single_agent_vars
+
+        router_inst = _build_router(req.provider, req.model)
+        db_path = _get_db_path()
+
+        # Reuse the single-agent RAG bundle so we get the same blocks
+        # as /quick-generate (character cards, world, memory, refs).
+        vars_ = single_agent_vars(
+            req.project_id, req.chapter_num, req.outline or req.synopsis,
+            req.time_label, req.location, req.characters,
+            existing_content="",
+            character_aliases={},
+            skills=req.skills,
+            rag_excludes=req.rag_excludes,
+            web_mode=req.prompt_only,
+        )
+
+        # === Truth Files integration — Phase 1 ===
+        truth_bundle = ""
+        pressured_text = ""
+        if req.truth_inject:
+            # A1: single-writer mode runs in omniscient view, so we don't
+            # pass pov_character (no spoiler filter). The Actor Agent path
+            # in the full multi-agent pipeline will pass pov_character so
+            # actor prompts only see hooks revealed to that character.
+            truth_bundle = truth_ext.build_truth_context(
+                req.project_id, db_path,
+                req.chapter_num, req.characters,
+                pov_character=None,
+            )
+        if req.truth_pressure_inject:
+            pressured_text = truth_ext.list_pressured_hooks_text(
+                req.project_id, db_path, req.chapter_num,
+            )
+
+        # Merge truth bundle into memory_context and pressured hooks
+        # into narrative_instructions. Empty strings are inert.
+        memory_context = vars_.get("memory", "") or vars_.get("project_memory", "")
+        if truth_bundle:
+            memory_context = "\n\n".join(
+                filter(None, [memory_context, "[Truth Files 状态权威]", truth_bundle])
+            )
+        narrative_instructions = req.narrative_instructions
+        if pressured_text:
+            narrative_instructions = "\n\n".join(
+                filter(None, [narrative_instructions, pressured_text])
+            )
+
+        writer = Writer(router_inst, project_id=req.project_id)
+
+        if req.prompt_only:
+            prompt = writer._build_single_writer_prompt(
+                outline=req.outline,
+                chapter_num=req.chapter_num,
+                chapter_title=req.chapter_title,
+                synopsis=req.synopsis,
+                time_label=req.time_label,
+                location=req.location,
+                characters=req.characters,
+                pov_character=req.pov_character,
+                narrative_instructions=narrative_instructions,
+                target_word_count=req.target_word_count,
+            )
+            return {
+                "status": "ok", "prompt": prompt, "rag_vars": vars_,
+                "truth_bundle_chars": len(truth_bundle),
+                "pressured_hooks": pressured_text or None,
+            }
+
+        text = await writer.write_chapter(
+            outline=req.outline or req.synopsis,
+            chapter_num=req.chapter_num,
+            chapter_title=req.chapter_title,
+            synopsis=req.synopsis,
+            time_label=req.time_label,
+            location=req.location,
+            characters=req.characters,
+            pov_character=req.pov_character,
+            character_cards=vars_.get("character_cards", ""),
+            world_rules=vars_.get("worldbook", ""),
+            narrative_instructions=narrative_instructions,
+            style_profile=vars_.get("style_calibration", ""),
+            user_preferences=vars_.get("user_preferences", ""),
+            memory_context=memory_context,
+            adjacent_context=vars_.get("adjacent_context", ""),
+            constraints="",
+            target_word_count=req.target_word_count,
+        )
+
+        # === Truth Files integration — Phase 2 (settlement + audit gate) ===
+        settle_result = None
+        if req.truth_settle and text.strip():
+            from ui.backend.app.services import project_store as _ps
+            try:
+                rows = _ps.list_characters(db_path, req.project_id)
+                known = {r["name"] for r in rows if r.get("name")}
+            except Exception:
+                known = None
+
+            # A2: pre-read ledger anchors so the settlement LLM can be told
+            # "the old_value for 李星河·灵石 is currently 80" — making
+            # the ledger.matches_current validator meaningful instead of
+            # vacuously true.
+            anchors = truth_ext.build_ledger_anchors(
+                req.project_id, db_path, req.chapter_num,
+                characters=req.characters,
+            )
+
+            settle_result = await truth_ext.extract_and_apply_truth_deltas(
+                router_inst, text,
+                project_id=req.project_id, db_path=db_path,
+                chapter_num=req.chapter_num,
+                chapter_title=req.chapter_title,
+                pov_character=req.pov_character,
+                known_characters=known,
+                ledger_anchors=anchors,
+            )
+
+            # B2 hard audit gate: persist audit_status to chapters table
+            # so any subsequent finalize attempt sees the failure flag.
+            try:
+                _ps.update_chapter_audit(
+                    db_path, req.project_id, req.chapter_num,
+                    audit_status=settle_result.get("audit_status", "audit_pending"),
+                    audit_issues=settle_result.get("issues") or [],
+                )
+            except Exception as _e:
+                logger.warning("audit_status persist failed: %s", _e)
+
+        return {
+            "status": "ok",
+            "text": text,
+            "mode": "single_writer",
+            "agent": "Writer",
+            "truth_bundle_chars": len(truth_bundle),
+            "pressured_hooks": pressured_text or None,
+            "settlement": settle_result,
+        }
+    except Exception as e:
+        logger.error("Single-writer generation failed: %s", e, exc_info=True)
+        raise HTTPException(500, detail=str(e))
+
+
 # ═══ Outline Chat — interactive outline brainstorming ═══
+
+# ═══ B2: Audit gate — chapter audit status + override ═══
+
+@router.get("/audit/{chapter_num}")
+def get_chapter_audit(chapter_num: int, project_id: str):
+    """Return the chapter's current audit_status + concise CoT-style issues.
+
+    Frontend EditorPage / DevConsole panel use this to render the
+    "事实库审计" indicator. Polled after each single-writer call so the
+    panel updates as new chapters land.
+    """
+    from ui.backend.app.services import project_store
+    return project_store.get_chapter_audit(_get_db_path(), project_id, chapter_num)
+
+
+@router.post("/audit/{chapter_num}/override")
+def override_chapter_audit(chapter_num: int, project_id: str):
+    """User explicitly overrides an audit_failed chapter.
+
+    Use when you've manually fixed the truth file underneath, or
+    decided the failed rule isn't applicable to this case. Moves
+    audit_failed → audit_overridden so finalize is unblocked.
+    """
+    from ui.backend.app.services import project_store
+    project_store.override_chapter_audit(_get_db_path(), project_id, chapter_num)
+    info = project_store.get_chapter_audit(_get_db_path(), project_id, chapter_num)
+    return {"status": "ok", **info}
+
+
+@router.get("/audit/{chapter_num}/can-finalize")
+def can_finalize_chapter(chapter_num: int, project_id: str):
+    """Hard gate query: returns {allowed, reason}.
+
+    Frontend EditorPage's Finalize button calls this before allowing
+    a chapter to be marked status='finalized'. Backend mirror of
+    project_store.can_finalize_chapter — the actual finalize path
+    must also call this server-side (defense in depth).
+    """
+    from ui.backend.app.services import project_store
+    allowed, reason = project_store.can_finalize_chapter(
+        _get_db_path(), project_id, chapter_num,
+    )
+    return {"allowed": allowed, "reason": reason}
+
 
 class OutlineChatRequest(BaseModel):
     project_id: str = "default"
@@ -946,8 +882,8 @@ class OutlineChatRequest(BaseModel):
 async def outline_chat(req: OutlineChatRequest):
     """Interactive outline brainstorming: multi-turn conversation with AI."""
     try:
-        from models.base import LLMMessage
-        from analysis.feature_extraction.prompts import get_template
+        from llm.base import LLMMessage
+        from reference_pipeline.prompts import get_template
         router_inst = _build_router(req.provider, req.model)
 
         system = get_template("assistant.outline")
@@ -1120,7 +1056,7 @@ class _ManualRouter:
         return getattr(self._real, name)
 
     async def generate(self, agent_role: str = "", messages=None, **kwargs):
-        from models.base import LLMResponse
+        from llm.base import LLMResponse
         messages = messages or []
         prompt = "\n\n".join(
             f"【{getattr(m, 'role', '')}】\n{getattr(m, 'content', '')}"
@@ -1153,6 +1089,18 @@ async def _run_pipeline_background(session_id: str):
         return
     req_data = session["request"]
 
+    # Bind trace_id + session_id so every log line emitted inside this
+    # pipeline run carries them (closes GAP 10 in the observability
+    # audit — cross-module correlation). The trace_id is also surfaced
+    # on the session dict so the UI can show it.
+    from framework.observability import trace_scope, new_trace_id
+    trace_id = new_trace_id()
+    session["trace_id"] = trace_id
+    with trace_scope(trace_id=trace_id, session_id=session_id):
+        await _run_pipeline_inner(session_id, session, req_data)
+
+
+async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) -> None:
     try:
         router_inst = _build_router(req_data.get("provider", ""), req_data.get("model", ""))
         if req_data.get("manual"):
@@ -1163,7 +1111,7 @@ async def _run_pipeline_background(session_id: str):
         if not req_data.get("style_notes"):
             try:
                 _cal_pid = req_data.get("project_id", "default")
-                from ui.backend.app.routers.data_api import _col
+                from ui.backend.app.routers.json_storage_api import _col
                 _cal_path = _col("calibration") / f"{_cal_pid}.json"
                 if _cal_path.exists():
                     _cal_data = json.loads(_cal_path.read_text("utf-8"))
@@ -1225,7 +1173,7 @@ async def _run_pipeline_background(session_id: str):
             _aliases = req_data.get("character_aliases", {})
             _char_card_parts = []
             try:
-                from ui.backend.app.routers.data_api import _list as _list_data
+                from ui.backend.app.routers.json_storage_api import _list as _list_data
                 _all_chars = _list_data("characters")
                 _pid = req_data.get("project_id", "")
                 for _cn in _chars:
@@ -1299,7 +1247,7 @@ async def _run_pipeline_background(session_id: str):
             try:
                 _db_path = _get_db_path()
                 _proj_id = req_data.get("project_id", "")
-                from rag.memory.manager import MemoryManager as _MM
+                from knowledge.memory.manager import MemoryManager as _MM
                 _mem = _MM(db_path=_db_path)
                 _mem.set_project(_proj_id)
                 _mem_text = _mem.get_context_for_scene_director(_chapter_num)
@@ -1471,7 +1419,7 @@ async def _run_pipeline_background(session_id: str):
         all_scene_results: list[dict] = []  # Results from each scene
         try:
             from agents.production.scene_simulator import SceneSimulator
-            from rag.memory.manager import MemoryManager
+            from knowledge.memory.manager import MemoryManager
             from ui.backend.app.settings import settings as app_settings
 
             # Resolve DB path
@@ -1485,7 +1433,7 @@ async def _run_pipeline_background(session_id: str):
             # Ensure creation tables (information_events etc.) exist in this DB
             try:
                 import sqlite3 as _sql
-                from database.creation_schema import ensure_creation_tables
+                from storage.project_schema import ensure_creation_tables
                 with _sql.connect(db_path) as _tc:
                     ensure_creation_tables(_tc)
             except Exception as _te:
@@ -1498,17 +1446,16 @@ async def _run_pipeline_background(session_id: str):
             # Fallback: if memory layers are empty, seed from editor content
             if not memory.has_memory_content():
                 try:
-                    from ui.backend.app.routers.data_api import _col as _data_col, _safe_id as _sid
-                    _editor_path = _data_col("editor") / f"{_sid(_proj_id)}.json"
-                    if _editor_path.exists():
-                        _editor_data = json.loads(_editor_path.read_text("utf-8"))
+                    from ui.backend.app.services import project_store as _ps
+                    _editor_data = _ps.get_editor_doc(db_path, _proj_id)
+                    if _editor_data.get("volumes"):
                         _fallback_text = memory.build_fallback_from_editor(
                             _editor_data.get("volumes", []),
                             current_chapter_id=req_data.get("chapter_id", ""),
                         )
                         if _fallback_text:
                             # Inject as immediate context so agents can see it
-                            from rag.memory.immediate import SceneContext as _SC
+                            from knowledge.memory.immediate import SceneContext as _SC
                             memory.start_scene(_SC(
                                 scene_index=0,
                                 characters=characters,
@@ -1550,7 +1497,7 @@ async def _run_pipeline_background(session_id: str):
             _aliases = req_data.get("character_aliases", {})
             character_cards: dict[str, str] = {}
             try:
-                from ui.backend.app.routers.data_api import _list
+                from ui.backend.app.routers.json_storage_api import _list
                 all_chars = _list("characters")
                 pid = req_data.get("project_id", "")
                 for c_name in characters:
@@ -1722,8 +1669,8 @@ async def _run_pipeline_background(session_id: str):
         edited_text = full_text
         editor_prompt_sent = ""
         try:
-            from agents.production.editor_writer import EditorWriter
-            editor = EditorWriter(router_inst, project_id=req_data.get("project_id", ""))
+            from agents.production.writer import Writer
+            editor = Writer(router_inst, project_id=req_data.get("project_id", ""))
 
             # Build per-scene performance records for the editor
             perf_list: list[str] = []
@@ -1784,7 +1731,7 @@ async def _run_pipeline_background(session_id: str):
                 pass
 
             editor_prompt_sent = json.dumps({
-                "method": "EditorWriter.assemble_chapter",
+                "method": "Writer.assemble_chapter",
                 "performance_count": len(perf_list),
                 "scene_count": len(all_scene_results),
                 "narrator_length": len(narrator_text),
@@ -1814,7 +1761,7 @@ async def _run_pipeline_background(session_id: str):
                 "result": {"text": edited_text, "error": str(e)[:200]},
             })
 
-        # A2: Run chapter-complete memory hook after EditorWriter finishes
+        # A2: Run chapter-complete memory hook after Writer finishes
         try:
             _chapter_num_for_hook = req_data.get("chapter_num", 1)
             _proj_id_for_hook = req_data.get("project_id", "")
@@ -1903,9 +1850,13 @@ async def _run_pipeline_background(session_id: str):
                 _eval_db_path = _get_db_path()
                 _eval_proj_id = req_data.get("project_id", "")
                 _eval_chapter_num = req_data.get("chapter_num", 1)
-                from rag.memory.episodic_timeline import EpisodicTimeline
-                _eval_timeline = EpisodicTimeline(_eval_db_path)
-                _unresolved = _eval_timeline.get_unresolved_foreshadowing(_eval_proj_id)
+                # v2.1: foreshadow state moved to pending_hooks — read via
+                # MemoryManager (EpisodicTimeline.get_unresolved_foreshadowing
+                # was removed in commit 10337fc).
+                from knowledge.memory.manager import MemoryManager
+                _eval_mgr = MemoryManager(db_path=_eval_db_path)
+                _eval_mgr.set_project(_eval_proj_id)
+                _unresolved = _eval_mgr.get_unresolved_foreshadowing()
                 if _unresolved:
                     process_log.append({"detector": "CrossChapterChecker", "status": "running", "detail": "检查伏笔回收与角色一致性..."})
                     from agents.evaluation.cross_chapter_checker import CrossChapterChecker
@@ -2116,7 +2067,7 @@ async def ab_compare(req: ABCompareRequest):
         label = f"{provider}/{model}"
         try:
             r = _build_router(provider, model)
-            from models.base import LLMMessage as Msg
+            from llm.base import LLMMessage as Msg
             msgs = []
             if req.system_prompt:
                 msgs.append(Msg(role="system", content=req.system_prompt))
@@ -2222,7 +2173,7 @@ async def auto_outline(req: AutoOutlineRequest):
         character_states = ""
         unresolved_threads = ""
         try:
-            from rag.memory.manager import MemoryManager
+            from knowledge.memory.manager import MemoryManager
             mem = MemoryManager(db_path=db_path)
             mem.set_project(req.project_id)
 
@@ -2243,7 +2194,7 @@ async def auto_outline(req: AutoOutlineRequest):
 
         # Get character states from most recent chapter
         try:
-            from rag.memory.chapter_buffer import ChapterBuffer
+            from knowledge.memory.chapter_buffer import ChapterBuffer
             cb = ChapterBuffer(db_path)
             summaries = cb.get_active_summaries(req.project_id)
             if summaries:
@@ -2349,14 +2300,14 @@ async def _run_batch_pipeline(session_id: str):
         db_path = _get_db_path()
         project_id = req_data.get("project_id", "")
 
-        from rag.memory.manager import MemoryManager
+        from knowledge.memory.manager import MemoryManager
         memory = MemoryManager(db_path=db_path, router=router_inst)
         memory.set_project(project_id)
 
         # Ensure tables exist
         try:
             import sqlite3 as _sql
-            from database.creation_schema import ensure_creation_tables
+            from storage.project_schema import ensure_creation_tables
             with _sql.connect(db_path) as _tc:
                 ensure_creation_tables(_tc)
         except Exception:
@@ -2469,9 +2420,9 @@ async def _run_batch_pipeline(session_id: str):
                         perf_list.append("\n\n".join(scene_parts))
                     narrator_text += sr.get("narrator", "")
 
-                # Step 4: EditorWriter
-                from agents.production.editor_writer import EditorWriter
-                editor = EditorWriter(router_inst, project_id=project_id)
+                # Step 4: Writer
+                from agents.production.writer import Writer
+                editor = Writer(router_inst, project_id=project_id)
                 user_prefs = _load_user_style_preferences(project_id, db_path)
                 ref_style = _load_reference_style(project_id, db_path)
                 style_profile = req_data.get("style_notes", "")
@@ -2565,7 +2516,7 @@ async def prompt_preview(req: PromptPreviewRequest):
         _style_notes = req.style_notes
         if not _style_notes:
             try:
-                from ui.backend.app.routers.data_api import _col, _safe_id
+                from ui.backend.app.routers.json_storage_api import _col, _safe_id
                 _cal_path = _col("calibration") / f"{_safe_id(req.project_id)}.json"
                 if _cal_path.exists():
                     _cal_data = json.loads(_cal_path.read_text("utf-8"))
@@ -2625,7 +2576,7 @@ async def prompt_preview(req: PromptPreviewRequest):
 
         try:
             _db_path = _get_db_path()
-            from rag.memory.manager import MemoryManager as _MM
+            from knowledge.memory.manager import MemoryManager as _MM
             _mem = _MM(db_path=_db_path)
             _mem.set_project(req.project_id)
 
@@ -2657,10 +2608,9 @@ async def prompt_preview(req: PromptPreviewRequest):
             # Fallback: if memory is empty, build context from editor content
             if not _memory_has_content and not shared_memory_parts and not agent_memory_parts:
                 try:
-                    from ui.backend.app.routers.data_api import _col as _data_col, _safe_id as _sid
-                    _editor_path = _data_col("editor") / f"{_sid(req.project_id)}.json"
-                    if _editor_path.exists():
-                        _editor_data = json.loads(_editor_path.read_text("utf-8"))
+                    from ui.backend.app.services import project_store as _ps
+                    _editor_data = _ps.get_editor_doc(_get_db_path(), req.project_id)
+                    if _editor_data.get("volumes"):
                         _fallback = _mem.build_fallback_from_editor(
                             _editor_data.get("volumes", []),
                             current_chapter_id=req.chapter_id,
@@ -2716,7 +2666,7 @@ async def prompt_preview(req: PromptPreviewRequest):
         if req.characters:
             char_card_parts = []
             try:
-                from ui.backend.app.routers.data_api import _list
+                from ui.backend.app.routers.json_storage_api import _list
                 all_chars = _list("characters")
                 for c_name in req.characters:
                     display_name = _aliases.get(c_name, c_name)

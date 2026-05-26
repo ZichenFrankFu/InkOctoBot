@@ -24,7 +24,7 @@ class ConsistencyRequest(BaseModel):
 
 
 def _build_router(provider: str = "", model: str = ""):
-    from ui.backend.app.routers.generation_api import _build_router as build
+    from ui.backend.app.services import build_router as build
     return build(provider, model)
 
 
@@ -46,7 +46,7 @@ async def consistency_check(req: ConsistencyRequest):
         return {"status": "ok", "issues": [], "result": "没有条目需要检查"}
 
     try:
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         router_inst = _build_router(req.provider, req.model)
 
         messages = [

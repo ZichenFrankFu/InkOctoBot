@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np, pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 from ..settings import settings
-from ..utils import load_repo_config, get_crawler_db_path
+from ..utils import resolve_crawler_db_path
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
@@ -51,8 +51,7 @@ def _compute_window(db_path, lookback):
 
 @router.get("/date_range")
 def analysis_date_range():
-    repo_cfg = load_repo_config(settings.repo_root)
-    db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
+    db_path = resolve_crawler_db_path()
     mn, mx = _db_date_range(db_path)
     return {"min_date": mn, "max_date": mx}
 
@@ -66,8 +65,7 @@ def run_analysis(
     root = str(settings.repo_root)
     if root not in sys.path: sys.path.insert(0, root)
 
-    repo_cfg = load_repo_config(settings.repo_root)
-    db_path = get_crawler_db_path(repo_cfg, settings.repo_root)
+    db_path = resolve_crawler_db_path()
     start_date, end_date = _compute_window(db_path, lookback)
     if not start_date:
         return {"empty": True, "error": "no_data", "message": "数据库中暂无快照数据",
@@ -75,9 +73,9 @@ def run_analysis(
                 "new_entry": [], "pairs": [], "triples": [], "cross_platform": []}
 
     try:
-        from analysis.data_access import connect_sqlite, load_rank_long_df
-        from analysis.heat import HeatConfig, add_heat
-        from analysis.metrics import (
+        from market_analysis.data_access import connect_sqlite, load_rank_long_df
+        from market_analysis.heat import HeatConfig, add_heat
+        from market_analysis.metrics import (
             MetricConfig, add_unified_columns,
             compute_weekly_tag_panel, compute_timewindow_rollup,
             compute_weekly_category_panel,
@@ -114,7 +112,7 @@ def run_analysis(
         cross_platform = []
         if platform == "both" and roll_cat is not None and not roll_cat.empty:
             try:
-                from analysis.report import build_cross_platform_diff_by_category
+                from market_analysis.report import build_cross_platform_diff_by_category
                 cp_df = build_cross_platform_diff_by_category(roll_cat)
                 if cp_df is not None and not cp_df.empty:
                     cp_df = cp_df.rename(columns={"cat_u": "category"})

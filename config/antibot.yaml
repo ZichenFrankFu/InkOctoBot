@@ -1,4 +1,0 @@
-﻿antibot:
-  enabled: true
-  retry_limit: 5
-  cooldown_seconds: 3

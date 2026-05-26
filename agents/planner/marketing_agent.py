@@ -152,7 +152,7 @@ class MarketingAgent:
         }
 
     def advise_post_chapter(self, genre: str, chapter_text: str) -> dict:
-        from analysis.feature_extraction.nlp_stats import compute_style_fingerprint
+        from reference_pipeline.nlp_stats import compute_style_fingerprint
 
         fp = compute_style_fingerprint([{"content": chapter_text}])
         advices: list[dict] = [

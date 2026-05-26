@@ -1,6 +1,12 @@
-# InkOctoBot - AI小说创作工作流 v2.1
+# InkOctoBot - AI小说创作工作流 v3.0
 （非商业用途，仅供学习以及个人使用）
-> 最后更新: 2026-03-07
+> 最后更新: 2026-05-25
+>
+> v3 refactor (in progress, branch `claude/repo-architecture-review-8L8E2`):
+> 9 顶层包重命名 + reference_api 4425→2465 行 + `_rag_context.py` 1140→44 行 +
+> services/ 抽取 + observability 包 + Truth File 系统 + per-module 测试布局
+> (167→311 tests visible)。详见 `/root/.claude/plans/review-repo-app-quiet-orbit.md`
+> 与各模块的 `WORKFLOW.md`。
 
 ---
 ## 1. 系统愿景
@@ -688,260 +694,243 @@ LLM 对每处修改进行分类标注：
 
 ## 5. Project 技术细节
 ### 5.1 项目结构
+
+> Reflects the current refactor (commits f4620e6..5fe7dd8). Compared
+> to v2: `models/` → `llm/`, `rag/` → `knowledge/`, `core/` → `framework/`,
+> `database/` → `storage/`, `preprocessing/` → `reference_ingest/`,
+> `analysis/` 拆 → `market_analysis/` + `reference_pipeline/`,
+> `agents/constraints/` → `agents/guardrails/`, `agents/analysis/` +
+> `agents/feature_extraction/` 合并 → `agents/reference_extractors/`.
+> 9 顶层包名都直接表达职责，不再用泛词。
+
 ```text
 InkOctoBot/
 │
-├── config.py                            # 配置薄读取层 (读取 config/ 目录)
+├── config.py                            # 薄 YAML 加载层（向后兼容 v2 入口）
 ├── InkOctoBot.spec                      # PyInstaller 打包配置
-├── launcher.py                          # GUI 桌面入口
-├── log_setup.py                         # 全局日志配置
-├── main.py                              # CLI 主入口（crawler 数据接入信息）
-├── QUICKSTART.md                        # 快速启动指南
-├── README.md                            # 项目说明
-├── requirements.txt                     # Python 依赖
+├── launcher.py                          # GUI 桌面入口（PyWebView + Uvicorn）
+├── cli.py                               # Typer CLI: ink agent/skill/extract/model/config/db
+├── QUICKSTART.md / DOCUMENT.md          # 快速启动与数据存储路径文档
+├── README.md / LICENSE                  # 项目说明 / 许可
+├── requirements.txt
 │
 ├── agents/                              # 多 Agent 创作层
-│   ├── ab_compare.py                    # 多模型 A/B 对比引擎
-│   ├── base_agent.py                    # Agent 基类 (prompt 模板 + 输出解析)
-│   ├── constraints/                     # 约束系统
-│   │   ├── assembler.py                 # 约束优先级组装 (5级)
-│   │   ├── disambiguator.py             # 交互式 Prompt 消歧
-│   │   └── violation_detector.py        # ChromaDB 语义违规检测
-│   ├── cost_estimator.py                # 商业 API 成本预估 + 确认流程
-│   ├── evaluation/                      # 评估与反馈层
-│   │   ├── consistency_checker.py       # 设定一致性校验
-│   │   ├── cross_chapter_checker.py     # 跨章连续性检测 (伏笔审计/角色漂移)
-│   │   ├── edit_analyzer.py             # User 编辑偏好分析
-│   │   ├── evaluator.py                 # 综合评估 (约束/一致性/隔离/重复/slop)
-│   │   ├── quality_scorer.py            # 质量评分
-│   │   ├── repetition_detector.py       # 重复检测
-│   │   ├── slop_detector.py             # AI 味检测
-│   │   └── style_drift_detector.py      # 风格漂移检测
-│   ├── events/                          # 事件驱动主动介入系统
-│   │   ├── event_bus.py                 # 内存级事件发布/订阅总线
-│   │   ├── event_types.py               # 事件类型枚举 + Event 数据类
-│   │   └── triggers.py                  # AgentTrigger 注册 + 条件判断 + 冷却机制
-│   ├── model_providers/                 # LLM 提供商适配层
-│   │   ├── anthropic_provider.py        # Anthropic API
-│   │   ├── base.py                      # Provider 抽象接口
-│   │   ├── deepseek_provider.py         # DeepSeek API
-│   │   ├── lora_provider.py             # LoRA 模型加载
-│   │   ├── ollama_provider.py           # Ollama 本地模型
-│   │   ├── openai_provider.py           # OpenAI API
-│   │   └── vllm_provider.py             # vLLM 本地推理
-│   ├── model_router.py                  # 统一模型路由 (按 agent role 分发)
+│   ├── base_agent.py                    # Agent 基类 (prompt + invoke + 失败日志带 exc_info)
+│   ├── base_skill.py                    # Skill 基类 (SKILL.md + skill.py 双文件)
 │   ├── planner/                         # 规划层 Agent
-│   │   ├── calibration.py               # 风格校准 (短样本试笔)
-│   │   ├── chapter_planner.py           # 章节细纲规划
-│   │   ├── marketing_agent.py           # 市场顾问 (选题/书名/简介建议)
-│   │   ├── story_architect.py           # 故事架构师 (细化世界书/人物卡/大纲)
-│   │   └── volume_planner.py            # 分卷规划
-│   └── production/                      # Film Pipeline 执行层
-│       ├── actor_agent.py               # 角色扮演 (单角色 instance)
-│       ├── editor_writer.py             # 剪辑 + 文学转化
-│       ├── narrator_agent.py            # 旁白 (环境描写/氛围渲染)
-│       ├── scene_director.py            # 导演 (分镜 + 导演指令生成)
-│       └── scene_simulator.py           # 多角色交互编排 (turn-based / parallel)
+│   │   ├── calibration.py / chapter_planner.py / marketing_agent.py
+│   │   ├── story_architect.py / volume_planner.py
+│   │   └── skills/                      # 该层下的 SKILL.md+skill.py
+│   ├── production/                      # ★ Film Pipeline 执行层（有 WORKFLOW.md）
+│   │   ├── scene_director.py / actor_agent.py / narrator_agent.py
+│   │   ├── editor_writer.py / scene_simulator.py
+│   │   └── skills/
+│   ├── evaluation/                      # ★ 评估层（有 WORKFLOW.md）
+│   │   ├── evaluator.py                 # 综合评估（带完整 JSON 日志，关闭 GAP 3）
+│   │   ├── consistency_checker.py / cross_chapter_checker.py
+│   │   ├── repetition_detector.py / slop_detector.py
+│   │   ├── style_drift_detector.py / quality_scorer.py
+│   │   ├── edit_analyzer.py
+│   │   └── skills/
+│   ├── reference_extractors/            # 参考作品特征 Skill 集合（原 agents/analysis/ + agents/feature_extraction/ 合并）
+│   │   └── skills/                      # character_profile / narrative_extract /
+│   │                                    # rhetoric_classify / shuangdian_extract /
+│   │                                    # style_extract / chronicle_outline_extract /
+│   │                                    # hook_extract / payoff_judge /
+│   │                                    # opening_pattern_judge / info_density_judge /
+│   │                                    # chronicle_event_extract
+│   ├── guardrails/                      # 约束系统（原 agents/constraints/）
+│   │   ├── assembler.py / disambiguator.py / violation_detector.py
+│   └── learned_skills/                  # SkillLearner 热加载目录（watchdog 监控）
 │
-├── analysis/                            # 市场数据分析
-│   ├── ANALYSIS.md                      # 分析模块文档
-│   ├── data_access.py                   # SQL / DataFrame 数据读取
-│   ├── feature_extraction/              # 作品特征提取
-│   │   ├── embedding_cluster.py         # text2vec + KMeans 聚类
-│   │   ├── narrative_extractor.py       # 叙事结构标注
-│   │   ├── nlp_stats.py                 # jieba + SnowNLP 文本统计
-│   │   ├── pipeline.py                  # 特征提取主编排
-│   │   ├── rhetoric_classifier.py       # 修辞手法分类
-│   │   └── shuangdian_templates.py      # 爽点模板提取
-│   ├── formula_engine/                  # 公式化特征聚合
-│   │   ├── aggregator.py                # 多维特征聚合
-│   │   ├── constraint_converter.py      # 特征→约束转换
-│   │   └── presets.py                   # 题材预设公式
-│   ├── heat.py                          # 热度指标计算
-│   ├── metrics.py                       # 综合指标计算
-│   ├── report.py                        # Markdown 报告生成
-│   ├── run_analysis.py                  # 分析 CLI 入口
-│   ├── trend_analyzer.py                # 分析主编排器
-│   └── visualization.py                 # 可视化图表生成
+├── framework/                           # 基础设施层（原 core/）
+│   ├── config.py / config_loader.py     # 配置加载
+│   ├── log_setup.py                     # 跨平台日志 + JSON 模式 + buffer 集成
+│   ├── event_bus.py / event_types.py    # 内存级事件 pub/sub
+│   ├── skill_registry.py                # SKILL.md 发现 + watchdog 热重载
+│   ├── skill_learner.py                 # ★ LLM 生成新 skill + AST 沙箱（带完整日志）
+│   ├── triggers.py                      # TriggerRegistry
+│   ├── observability/                   # ★ 透明化层（有 WORKFLOW.md）
+│   │   ├── trace_context.py             # trace_id/session_id contextvars
+│   │   ├── log_buffer.py                # 内存环形 buffer (500 条)
+│   │   ├── decorators.py                # @traced 自动 log 入参/出参/耗时
+│   │   ├── json_formatter.py            # INKOCTO_LOG_JSON=1 时启用
+│   │   └── request_middleware.py        # FastAPI X-Request-ID middleware
+│   └── skills/WORKFLOW.md               # skill 发现/热重载/learner 工作流文档
 │
-├── config/                              # 配置文件目录
-│   ├── analysis.yaml                    # 分析模块配置
-│   ├── antibot.yaml                     # 反爬策略配置
-│   ├── app_config.yaml                  # 全局应用配置
-│   ├── character_templates/             # 角色卡模板
-│   ├── constraint_presets/              # 约束预设模板
-│   ├── crawler.yaml                     # 爬虫通用配置
-│   ├── model_presets/                   # 模型预设方案
-│   │   ├── balanced.json                # 混合方案
-│   │   ├── cost_optimal.json            # 全本地方案
-│   │   └── quality_first.json           # 商业 API 优先方案
-│   ├── model_providers.json             # LLM 提供商注册 + 定价表
-│   ├── models.yaml                      # 模型路由 + 预设方案
-│   ├── paths.yaml                       # 路径配置
-│   ├── prompts/                         # Agent prompt 模板
-│   │   ├── actor_agent.yaml
-│   │   ├── edit_analyzer.yaml
-│   │   ├── editor_writer.yaml
-│   │   ├── evaluator.yaml
-│   │   ├── marketing_agent.yaml
-│   │   ├── narrator_agent.yaml          # 旁白 Actor 专用
-│   │   ├── scene_director.yaml
-│   │   └── story_architect.yaml
-│   ├── scheduler.yaml                   # 定时任务配置
-│   ├── selenium.yaml                    # Selenium 驱动配置
-│   ├── slop_patterns.json               # AI 味检测模式库
-│   ├── style_profiles/                  # 风格配置档案
-│   └── websites.yaml                    # 平台站点配置 (起点/番茄 URL + 选择器)
+├── llm/                                 # LLM 抽象层（原 models/）
+│   ├── base.py                          # BaseLLMProvider 接口
+│   ├── router.py                        # ModelRouter（按 agent_role 分发，
+│   │                                    #              带 provider/model INFO 日志）
+│   ├── ab_compare.py / cost_estimator.py / embedding_provider.py
+│   ├── web_search_capabilities.py
+│   └── {openai,anthropic,deepseek,gemini,ollama,vllm,lora,mock}_provider.py
 │
-├── data/                                # 数据存储根目录
-│   ├── chromadb/                        # ChromaDB 向量数据库
-│   ├── projects/                        # 项目数据 (每项目独立目录)
-│   │   └── {project_id}/
-│   │       ├── chapters/                # 章节细纲 + 生成内容
-│   │       ├── characters/              # 角色卡 YAML 文件
-│   │       ├── exports/                 # 导出文件 (TXT/DOCX/EPUB)
-│   │       ├── lora/                    # 项目专属 LoRA 权重
-│   │       ├── volumes/                 # 分卷大纲
-│   │       └── world_book.yaml          # 世界书
-│   ├── references/                      # 参考作品上传文件
-│   └── webnovel.db                      # SQLite 主库 (市场 + 创作 + 记忆)
+├── knowledge/                           # 检索 + 记忆 + 真相（原 rag/）
+│   ├── character_cards.py / world_book.py
+│   ├── reference_db.py / work_index.py
+│   ├── vector_store.py / constraint_store.py
+│   ├── decision_engine.py               # 角色卡 Layer B 量化决策
+│   ├── memory/                          # ★ 4 层记忆（有 WORKFLOW.md）
+│   │   ├── manager.py                   # 4 层协调器
+│   │   ├── immediate.py                 # L1 即时（in-memory）
+│   │   ├── chapter_buffer.py            # L2 章节缓冲（SQLite）
+│   │   ├── semantic_store.py            # L3 ChromaDB（带 query 日志，关 GAP 9）
+│   │   ├── episodic_timeline.py         # L4 情节图（SQLite）
+│   │   ├── consolidator.py              # L2→L3+L4（带萃取日志，关 GAP 4）
+│   │   └── knowledge_isolation.py       # 角色视角过滤（带日志，关 GAP 8）
+│   └── truth/                           # ★ Truth File 系统（state authority；
+│       │                                #    docs/truth_file_system.md 完整架构）
+│       ├── schemas.py                   # 7 truth files + TruthDeltas pydantic
+│       ├── sql.py / store.py            # DDL + 原子 apply_deltas
+│       ├── validators.py                # 12 跨文件校验规则
+│       ├── markdown_renderer.py         # SQLite → on-demand Markdown 视图
+│       └── migrate.py                   # 旧存储面 → truth 表迁移
 │
-├── database/                            # 数据库核心
-│   ├── DATABASE.md                      # 数据库文档
-│   ├── db_handler.py                    # 数据库 CRUD 操作封装
-│   └── db_schema.py                     # DDL 定义 (市场表 + 创作表 + 记忆表)
+├── storage/                             # 持久化层（原 database/）
+│   ├── DATABASE.md
+│   ├── market_db.py                     # 市场数据 handler（原 db_handler.py）
+│   ├── market_schema.py                 # 市场 DDL（原 db_schema.py）
+│   ├── project_schema.py                # 创作系 DDL（原 creation_schema.py）
+│   ├── extraction_schema.py / reference_schema.py
+│   └── truth_schema.py                  # Truth File DDL
 │
-├── outputs/                             # 运行时输出
-│   ├── config_runs/                     # 配置运行快照
-│   ├── data/                            # 中间数据
-│   ├── logs/                            # 运行日志
-│   ├── reports/                         # 分析报告 (Markdown + 图表)
-│   └── ui_tasks/                        # UI 任务记录
+├── market_analysis/                     # 市场分析（原 analysis/）
+│   ├── ANALYSIS.md / data_access.py / heat.py / metrics.py
+│   ├── trend_analyzer.py / visualization.py / report.py / run_analysis.py
+│   └── formula_engine/                  # 题材公式聚合
 │
-├── preprocessing/                       # 参考作品预处理 Pipeline
-│   ├── chapter_splitter.py              # 章节分割
-│   ├── character_profiler.py            # 角色画像自动提取
-│   ├── fragment_selector.py             # ZeroStylus 句级/段级模板选取
-│   ├── lora/                            # LoRA 风格微调
-│   │   ├── data_constructor.py          # 训练数据构造
-│   │   ├── quality_filter.py            # 训练样本质量过滤
-│   │   └── trainer.py                   # SFT + Constitutional DPO 训练
-│   ├── pipeline.py                      # 5步预处理主入口
-│   ├── rhythm_analyzer.py               # 节奏/张力曲线分析
-│   └── style_extractor.py               # PROSE 迭代风格收敛提取
+├── reference_pipeline/                  # ★ 参考作品特征提取（有 WORKFLOW.md，
+│   │                                    #    原 analysis/feature_extraction/）
+│   ├── pipeline.py / chapter_parser.py / ai_extractor.py
+│   ├── narrative_extractor.py / rhetoric_classifier.py
+│   ├── shuangdian_templates.py / volume_detector.py
+│   ├── preprocess_jobs.py / prompts.py
+│   ├── nlp_stats.py / embedding_cluster.py / platform_profiles.py
 │
-├── rag/                                 # RAG 知识库层
-│   ├── character_cards.py               # 角色卡 Layer A (自然语言描述) 管理
-│   ├── constraint_store.py              # 约束规则存储与检索
-│   ├── decision_engine.py               # 角色卡 Layer B (量化决策引擎)
-│   ├── memory/                          # 四层记忆系统
-│   │   ├── chapter_buffer.py            # Layer 2: Chapter Buffer
-│   │   ├── consolidator.py              # Layer 2 → Layer 3/4 压缩降级
-│   │   ├── episodic_timeline.py         # Layer 4: Episodic Timeline (SQLite)
-│   │   ├── immediate.py                 # Layer 1: Immediate Context
-│   │   ├── knowledge_isolation.py       # KnowledgeIsolationEngine
-│   │   ├── manager.py                   # 记忆总控 (协调四层读写)
-│   │   └── semantic_store.py            # Layer 3: Semantic Memory (ChromaDB)
-│   ├── reference_db.py                  # 参考作品数据库管理
-│   ├── vector_store.py                  # ChromaDB 统一封装
-│   └── world_book.py                    # 世界书管理 + 一致性检查
+├── reference_ingest/                    # ★ 参考作品摄入（有 WORKFLOW.md，
+│   │                                    #    原 preprocessing/）
+│   ├── novel_ingester.py                # 单文件 + 批量 ingest
+│   ├── chapter_splitter.py / style_extractor.py
+│   ├── skill_extraction/                # 跨小说 skill 挖掘 pipeline
+│   │   ├── orchestrator.py / chapter_extractor.py
+│   │   ├── novel_aggregator.py / pattern_miner.py / skill_emitter.py
+│   └── lora/                            # LoRA 训练
+│       ├── data_constructor.py / quality_filter.py / trainer.py
 │
-├── security/                            # 安全与隐私
-│   ├── api_key_manager.py               # API key 加密存储 (OS keyring + Fernet)
-│   └── data_isolation.py                # 项目级数据隔离 + 一键清理
+├── security/                            # 安全与隔离
+│   ├── api_key_manager.py               # Fernet 加密 keystore（待接入 router）
+│   └── test_mode_isolation.py           # 原 data_isolation.py
 │
-├── tasks/                               # 任务与后台作业
-│   └── __init__.py
+├── config/                              # 配置文件
+│   ├── app_config.yaml                  # 全局配置
+│   ├── models.yaml / model_providers.json / model_presets/
+│   ├── paths.yaml / websites.yaml
+│   ├── character_templates/ / constraint_presets/ / style_profiles/
+│   ├── prompts/                         # Agent prompt 模板（actor/editor/eval/...）
+│   ├── skill_permissions.yaml / slop_patterns.json
+│   └── truth_files.yaml                 # Truth File 系统调参
 │
-├── tests/                               # 测试套件
-│   ├── base_test.py                     # 测试基类 + 通用工具
-│   └── TEST.md                          # 测试文档
+├── data/                                # 运行时数据（gitignore）
+│   ├── novels.db                        # 创作主库（项目/章节/记忆/truth）
+│   ├── reference.db                     # 参考作品库（reference_works/entries/links/chapters/index）
+│   ├── idea.db                          # 灵感库（inspirations）
+│   ├── InkOctoBot_Crawler.db            # 市场数据（只读，由设置中外部 address 同步）
+│   ├── chromadb/                        # ChromaDB 向量库
+│   ├── projects/ / characters/ / worldbook/ / editor/ / storyline/
+│   ├── settings.json                    # UI 可写配置（pipeline/providers/...）
+│   ├── usage.json                       # LLM token 使用统计（防抖写盘）
+│   └── lora_output/
+│
+├── data_test/                           # `python launcher.py --test` 隔离数据
+│
+├── docs/                                # 架构文档
+│   ├── truth_file_system.md             # Truth File 系统完整架构 (586 行)
+│   ├── ARCHITECTURE.md / AGENT_LEARNING.md
+│   ├── CLI_REFERENCE.md / FEATURES.md / SKILL_AUTHORING.md
+│
+├── scripts/                             # 运维脚本
+│   ├── check_project_health.py
+│   ├── migrate_to_truth_files.py        # 旧存储面 → truth 表
+│   └── ollama_modelfiles/DeepSeek_R1_Qwen_32B/Modelfile
+│
+├── outputs/                             # 运行时输出（logs/reports/visualizations）
+│
+├── tests/                               # ★ Per-module 测试（镜像源码包）
+│   ├── conftest.py / pytest.ini / README.md
+│   ├── agents/                          # mirrors agents/
+│   │   ├── guardrails/test_assembler.py
+│   │   └── evaluation/test_*.py
+│   ├── framework/                       # mirrors framework/
+│   │   ├── test_observability.py        # 单元
+│   │   ├── test_observability_integration.py  # 端到端
+│   │   └── test_{config,event_bus,event_system,skill_*}.py
+│   ├── knowledge/                       # mirrors knowledge/
+│   │   ├── memory/test_memory_system.py
+│   │   ├── truth/                       # 6 个 truth 测试文件 + integration
+│   │   └── test_{character_worldbook,decision_engine}.py
+│   ├── llm/test_base.py
+│   ├── market_analysis/test_formula_engine.py
+│   ├── reference_ingest/test_lora_pipeline.py
+│   ├── reference_pipeline/test_advanced.py
+│   ├── storage/test_project_schema.py
+│   └── integration/test_agents_pipeline.py
 │
 └── ui/                                  # 用户界面
     ├── backend/                         # FastAPI 后端
     │   ├── app/
-    │   │   ├── __init__.py
-    │   │   ├── main.py                  # FastAPI 入口 + CORS + WebSocket
-    │   │   ├── routers/
-    │   │   │   ├── analysis_api.py      # /api/analysis (特征提取 + 趋势分析)
-    │   │   │   ├── characters_api.py    # /api/characters (角色卡 + 决策模型)
-    │   │   │   ├── config_api.py        # /api/config (爬虫配置 schema + 保存)
-    │   │   │   ├── db_api.py            # /api/db (市场数据库只读查询 + 诊断)
-    │   │   │   ├── editor_api.py        # /api/editor (Editor-Writer 接口)
-    │   │   │   ├── eval_api.py          # /api/eval (评估 + EditAnalyzer)
-    │   │   │   ├── events_api.py        # /api/events (Agent事件流 WebSocket)
-    │   │   │   ├── formula_api.py       # /api/formula (公式引擎查询)
-    │   │   │   ├── generation_api.py    # /api/generation (Film Pipeline 执行)
-    │   │   │   ├── model_api.py         # /api/model (模型管理 + 成本追踪)
-    │   │   │   ├── planner_api.py       # /api/planner (大纲 + 分卷 + 章节规划)
-    │   │   │   ├── project_api.py       # /api/project (项目 CRUD + 导出)
-    │   │   │   ├── prompt_api.py        # /api/prompt (交互式消歧接口)
-    │   │   │   ├── reference_api.py     # /api/reference (参考作品库管理)
-    │   │   │   ├── reports_api.py       # /api/reports (分析报告索引 + 预览)
-    │   │   │   ├── security_api.py      # /api/security (API key 加密管理)
-    │   │   │   ├── tasks_api.py         # /api/tasks (启动爬虫任务 + 读日志)
-    │   │   │   ├── version_api.py       # /api/version (版本管理 + diff)
-    │   │   │   └── worldbook_api.py     # /api/worldbook (世界书管理)
-    │   │   ├── runner.py                # subprocess 启动爬虫 + 写日志
-    │   │   ├── settings.py              # 路径 / 环境配置
-    │   │   ├── store.py                 # UI TaskStore (jsonl 持久化)
-    │   │   └── utils.py                 # 读取 repo config / paths / rank_keys
-    │   └── requirements.txt             # 后端依赖
+    │   │   ├── main.py                  # FastAPI 入口 + CORS + TraceIDMiddleware
+    │   │   ├── settings.py / utils.py
+    │   │   ├── services/                # ★ 领域服务层
+    │   │   │   ├── project_paths.py     # get_db_path()
+    │   │   │   ├── style_preferences.py # 用户偏好加载
+    │   │   │   ├── model_router_factory.py  # build_router + SimpleRouter
+    │   │   │   ├── usage_tracker.py     # LLM token 防抖写盘
+    │   │   │   └── prompt_context/      # ★ 拆自 _rag_context.py（1140→44 行 shim）
+    │   │   │       ├── builder.py       # build_generation_context 等 4 入口
+    │   │   │       ├── budgets.py / utils.py / chapter_fields.py
+    │   │   │       ├── references.py / skills_block.py
+    │   │   │       └── loaders/         # 10 个 per-block loader
+    │   │   ├── routers/                 # API 路由
+    │   │   │   ├── reference/           # ★ 11 个 sub-router (原 reference_api.py 4425 行)
+    │   │   │   │   ├── _common.py       # db() / 共享常量 / strip_json_blob
+    │   │   │   │   ├── works.py / entries.py / links.py / stats.py
+    │   │   │   │   ├── inspirations.py / lora.py / index.py / patterns.py
+    │   │   │   │   ├── web_search.py / prompts.py / analysis_writer.py
+    │   │   │   ├── reference_api.py     # 残余 ~2465 行（preprocess + segments 待拆）
+    │   │   │   ├── generation_api.py    # 创作流水线（已抽 services，剩 2503 行）
+    │   │   │   ├── _rag_context.py      # 44 行 backward-compat shim
+    │   │   │   ├── json_storage_api.py  # 原 data_api（data/<col>/*.json CRUD）
+    │   │   │   ├── market_db_api.py     # 原 db_api（爬虫 DB 只读查询）
+    │   │   │   ├── evaluation_api.py / debug_api.py / dev_actions_api.py
+    │   │   │   └── *_api.py             # planner/eval/editor/version/model/settings/
+    │   │   │                            #    characters/worldbook/security/project/
+    │   │   │                            #    skill/marketing/reports/extraction/
+    │   │   │                            #    analysis/events/prompt/formula
+    │   │   └── store.py                 # TaskStore (jsonl 持久化)
+    │   └── requirements.txt
     │
-    └── frontend/                        # React 前端
-        ├── package.json
-        ├── src/
-        │   ├── App.tsx                  # 全局 Layout + 路由 + 暗色主题
-        │   ├── components/
-        │   │   ├── analysis/
-        │   │   │   ├── ShuangdianRank.tsx    # 爽点排行可视化
-        │   │   │   └── TrendChart.tsx        # 市场趋势图表
-        │   │   ├── characters/
-        │   │   │   ├── CharacterCard.tsx     # 角色卡展示/编辑
-        │   │   │   ├── DecisionModelPanel.tsx# 量化决策模型参数面板
-        │   │   │   └── RelationshipGraph.tsx # 角色关系网络图
-        │   │   ├── editor/
-        │   │   │   ├── AgentChat.tsx         # 群聊风格 Agent 建议面板
-        │   │   │   ├── AIPanel.tsx           # 右栏: AI 生成控制 + pipeline 状态
-        │   │   │   ├── ChapterTree.tsx       # 左栏: 分卷/章节目录树
-        │   │   │   ├── EditorAdvice.tsx      # Marketing Agent 建议卡片
-        │   │   │   ├── ModelCompare.tsx      # 多模型输出并排对比
-        │   │   │   ├── TextEditor.tsx        # 中栏: TipTap 富文本编辑器
-        │   │   │   └── VersionHistory.tsx    # 版本历史列表 + diff 对比
-        │   │   ├── memory/
-        │   │   │   └── EpisodicTimeline.tsx  # Layer 4 事件时间线可视化
-        │   │   ├── reference/
-        │   │   │   ├── EntryEditor.tsx       # 参考条目编辑器
-        │   │   │   ├── NarrativeTimeline.tsx # 叙事结构时间线图
-        │   │   │   ├── ReferenceCard.tsx     # 参考作品卡片
-        │   │   │   └── StyleRadar.tsx        # 风格雷达图
-        │   │   └── shared/
-        │   │       ├── CostConfirmDialog.tsx # 商业 API 成本确认弹窗
-        │   │       ├── DisambiguationCard.tsx# 消歧选择卡片
-        │   │       ├── ModelSelector.tsx     # 模型选择器 (单选/多选)
-        │   │       └── StyleSliders.tsx      # 风格参数滑块
-        │   ├── lib/
-        │   │   ├── api.ts               # API client 封装
-        │   │   ├── theme.ts             # 暗色/亮色主题配置
-        │   │   └── types.ts             # TypeScript 类型定义
-        │   ├── main.tsx                 # React 入口
-        │   └── pages/
-        │       ├── AnalysisDashboard.tsx# 市场分析可视化面板
-        │       ├── CharacterManager.tsx # 人物卡管理 (含决策模型面板)
-        │       ├── ConfigPage.tsx       # 爬虫配置生成 / 保存
-        │       ├── DatabasePage.tsx     # 市场数据库浏览 / 诊断
-        │       ├── EditorPage.tsx       # 三栏编辑器 (目录树 / TipTap / AI面板)
-        │       ├── ProjectListPage.tsx  # 项目列表 + 创建 / 删除
-        │       ├── ProjectSetupPage.tsx # 项目设置 (世界书/人物卡/大纲/约束)
-        │       ├── ReferenceLibrary.tsx # 参考作品库 (多媒体类型)
-        │       ├── ReportsPage.tsx      # 分析报告预览
-        │       ├── RunnerPage.tsx       # 爬虫任务启动 / 日志查看
-        │       ├── SettingsPage.tsx     # 设置 (模型配置/约束管理/系统)
-        │       └── WorldBook.tsx        # 世界书编辑 + 一致性检查
-        ├── tsconfig.json
-        └── vite.config.ts
+    └── frontend/                        # React + Vite + TanStack Query
+        ├── package.json / vite.config.ts / tsconfig.json
+        ├── public/
+        └── src/
+            ├── App.tsx / main.tsx / global.css / theme.ts
+            ├── api/                     # API client 封装
+            ├── components/              # 业务组件（reference/editor/characters/...）
+            ├── hooks/ / utils/
+            └── pages/                   # 14 个页面（其中 4 个 god 组件待拆）
+                ├── DashboardPage / RankingsPage
+                ├── AnalysisDashboardPage / ReferenceLibraryPage / ReferenceOverviewPage
+                ├── ReferenceSearchPage / ProjectListPage / ProjectSetupPage
+                ├── EditorPage / CharacterManagerPage / WorldBookPage
+                ├── StorylinePage / SettingsPage / SkillsPage
 ```
 
+**关于 god files**: 本次重构已把多个 god file 拆到单一职责小文件
+（`_rag_context.py` 1140→44, `reference_api.py` 4425→2465）。剩余
+god file（`generation_api.py` 2503, `chapter_parser.py` 1741,
+`reference_pipeline/pipeline.py` 1324, `ai_extractor.py` 1109,
+`storage/market_db.py` 999）按 plan v3 增量拆分中。
 ### 5.2 数据库ER Diagram
 #### 5.2.1 市场数据库
 ```mermaid
@@ -1100,22 +1089,64 @@ erDiagram
     reference_entries ||--|| chromadb_reference_entries : "生成 embedding 存入向量库"
 ```
 
-### 5.3 Logger命名规范
+### 5.3 Logger 命名规范 + Observability
+
+所有 logger 走根 `inkoctobot.*` 命名空间，按包路径分层：
+
 ```text
-inkoctobot                    # root
-inkoctobot.main               # CLI 入口
-inkoctobot.launcher           # GUI 入口
-inkoctobot.spider.起点中文网    # 起点爬虫（用 site name）
-inkoctobot.spider.番茄小说     # 番茄爬虫
-inkoctobot.db                 # DatabaseHandler
-inkoctobot.tasks.run_once     # 单次爬取任务
-inkoctobot.scheduler          # 定时调度
-inkoctobot.analysis.metrics   # 分析模块
-inkoctobot.analysis.heat
-inkoctobot.analysis.report
-inkoctobot.antibot            # 反爬检测
-inkoctobot.ui.backend         # FastAPI 后端
+inkoctobot                              # root
+inkoctobot.launcher                     # 桌面入口 (PyWebView + Uvicorn)
+
+inkoctobot.framework.*                  # 基础设施
+inkoctobot.framework.skill_registry
+inkoctobot.framework.skill_learner      # propose/install 完整日志
+inkoctobot.framework.observability.*    # trace_context / log_buffer / decorators
+
+inkoctobot.llm.router                   # 路由每次调用 INFO 记 provider/model
+inkoctobot.llm.{openai,anthropic,...}_provider
+
+inkoctobot.agents.{planner,production,evaluation,guardrails}.*
+inkoctobot.agents.evaluation.evaluator   # 评估完整 JSON 日志
+
+inkoctobot.knowledge.memory.consolidator    # L2→L3+L4 萃取 INFO
+inkoctobot.knowledge.memory.semantic_store  # RAG 查询 DEBUG
+inkoctobot.knowledge.memory.knowledge_isolation  # 过滤计数 + 激进警告
+inkoctobot.knowledge.truth.store         # apply_deltas 事务
+
+inkoctobot.storage.market_db
+inkoctobot.market_analysis.*
+inkoctobot.reference_pipeline.*
+inkoctobot.reference_ingest.*
+
+inkoctobot.ui.backend.*                  # FastAPI 路由
+inkoctobot.services.*                    # ui/backend/app/services 领域服务
 ```
+
+**结构化日志**：默认人类可读；环境变量 `INKOCTO_LOG_JSON=1` 切换为 JSON
+line 格式（machine parseable）。
+
+**Trace ID**：每个 HTTP 请求由 `TraceIDMiddleware` 绑定一个 12 字符
+trace_id，回写 `X-Request-ID` 响应头；生成流水线背景任务由
+`trace_scope(...)` 同时绑定 session_id。两者通过 contextvars 自动传播到
+所有子模块的 logger 调用——开发者可以用
+`/api/debug/trace/{trace_id}` 拉到整条调用链的日志。
+
+**In-memory log buffer**：最近 500 条 log records 常驻内存，供
+`/api/debug/recent-logs` 实时查询，无需 tail 文件。
+
+**Debug 端点**（仅 `WN_TEST_MODE=1` 或 `INKOCTO_DEBUG=1` 启用）：
+
+| Endpoint | 用途 |
+|---|---|
+| `/api/debug/status` | 探活 + flag |
+| `/api/debug/recent-logs` | 按 level / logger_prefix / trace_id / session_id 查最近日志 |
+| `/api/debug/trace/{id}` | 一条 trace 的全部日志 |
+| `/api/debug/session/{id}` | 一个生成 session 的全部日志 |
+| `/api/debug/event-bus` | EventBus 历史 |
+| `/api/debug/usage` | usage tracker 快照 |
+| `/api/debug/diagnostics` | DB 大小 + ChromaDB 集合 + active sessions |
+
+详见 `framework/observability/WORKFLOW.md`。
 ---
 
 ## 6. 额外信息

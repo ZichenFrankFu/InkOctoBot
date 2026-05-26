@@ -8,14 +8,13 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 from ..settings import settings
-from ..utils import load_repo_config, get_crawler_db_path
+from ..utils import resolve_crawler_db_path
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
 
 def _agent():
     from agents.planner.marketing_agent import MarketingAgent
-    repo_cfg = load_repo_config(settings.repo_root)
-    return MarketingAgent(get_crawler_db_path(repo_cfg, settings.repo_root))
+    return MarketingAgent(resolve_crawler_db_path())
 
 @router.get("/genre-heat/{genre}")
 def genre_heat(genre: str):

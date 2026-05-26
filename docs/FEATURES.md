@@ -190,8 +190,8 @@ SceneDirector → SceneSimulator → EditorWriter → Evaluator
 
 **处理逻辑**:
 1. 为每个场景中的每个角色创建 `ActorAgent` 实例
-2. 通过 **Knowledge Isolation Engine** (`rag/memory/knowledge_isolation.py`) 过滤每个角色的知识视图
-3. 通过 **Decision Engine** (`rag/decision_engine.py`) 获取角色行为的量化指导
+2. 通过 **Knowledge Isolation Engine** (`knowledge/memory/knowledge_isolation.py`) 过滤每个角色的知识视图
+3. 通过 **Decision Engine** (`knowledge/decision_engine.py`) 获取角色行为的量化指导
 4. 模式选择：`parallel`（所有演员同时演出）或 `turn_based`（轮流演出）
 5. 调用每个 `ActorAgent.perform()`
 6. 调用 `NarratorAgent.narrate()` 生成旁白
@@ -411,11 +411,11 @@ agents/<domain>/skills/<skill_name>/
 | **评估** | `repetition_detect` | `agents/evaluation/skills/repetition_detect/` | 重复表达检测 |
 | **评估** | `slop_detect` | `agents/evaluation/skills/slop_detect/` | AI味/套路表达检测 |
 | **评估** | `style_drift_detect` | `agents/evaluation/skills/style_drift_detect/` | 风格漂移检测 |
-| **分析** | `character_profile` | `agents/analysis/skills/character_profile/` | 从文本提取角色画像 |
-| **分析** | `narrative_extract` | `agents/analysis/skills/narrative_extract/` | 叙事结构提取 |
-| **分析** | `rhetoric_classify` | `agents/analysis/skills/rhetoric_classify/` | 修辞手法分类 |
-| **分析** | `shuangdian_extract` | `agents/analysis/skills/shuangdian_extract/` | 爽点/嗨点提取 |
-| **分析** | `style_extract` | `agents/analysis/skills/style_extract/` | 写作风格指纹提取 |
+| **分析** | `character_profile` | `agents/reference_extractors/skills/character_profile/` | 从文本提取角色画像 |
+| **分析** | `narrative_extract` | `agents/reference_extractors/skills/narrative_extract/` | 叙事结构提取 |
+| **分析** | `rhetoric_classify` | `agents/reference_extractors/skills/rhetoric_classify/` | 修辞手法分类 |
+| **分析** | `shuangdian_extract` | `agents/reference_extractors/skills/shuangdian_extract/` | 爽点/嗨点提取 |
+| **分析** | `style_extract` | `agents/reference_extractors/skills/style_extract/` | 写作风格指纹提取 |
 | **规划** | `calibration` | `agents/planner/skills/calibration/` | 参考作品风格校准 |
 | **规划** | `constraint_disambiguate` | `agents/planner/skills/constraint_disambiguate/` | 约束冲突消歧 |
 | **规划** | `marketing_advice` | `agents/planner/skills/marketing_advice/` | 市场定位建议 |
@@ -424,30 +424,30 @@ agents/<domain>/skills/<skill_name>/
 
 ### 功能 3：四层记忆系统（RAG Memory）
 
-**文件目录**: `rag/memory/`
+**文件目录**: `knowledge/memory/`
 
 ```
 ┌───────────────────────────────────────────────────────────┐
 │ L1: Immediate Context (4-8K tokens)                       │
-│ 文件: rag/memory/immediate.py                             │
+│ 文件: knowledge/memory/immediate.py                             │
 │ 存储: LLM 上下文窗口                                       │
 │ 内容: 当前场景 + 上一场景的完整文本                           │
 │ 用途: 直接工作素材，确保场景间连贯性                          │
 ├───────────────────────────────────────────────────────────┤
 │ L2: Chapter Buffer (2-4K tokens)                          │
-│ 文件: rag/memory/chapter_buffer.py                        │
+│ 文件: knowledge/memory/chapter_buffer.py                        │
 │ 存储: LLM 上下文窗口                                       │
 │ 内容: 最近 5-10 章的压缩摘要                                │
 │ 用途: 中期连续性，角色弧线跟踪                               │
 ├───────────────────────────────────────────────────────────┤
 │ L3: Semantic Memory (无限)                                 │
-│ 文件: rag/memory/semantic_store.py                         │
+│ 文件: knowledge/memory/semantic_store.py                         │
 │ 存储: ChromaDB 向量数据库                                   │
 │ 内容: 全部设定、角色状态、事件、世界书条目                     │
 │ 用途: 语义相似度检索（余弦相似度）                            │
 ├───────────────────────────────────────────────────────────┤
 │ L4: Episodic Timeline (无限)                               │
-│ 文件: rag/memory/episodic_timeline.py                      │
+│ 文件: knowledge/memory/episodic_timeline.py                      │
 │ 存储: SQLite 结构化数据库                                   │
 │ 内容: 关键事件、因果链、时间轴、伏笔状态                      │
 │ 用途: 精确结构化查询（时间/因果/角色维度）                     │
@@ -456,7 +456,7 @@ agents/<domain>/skills/<skill_name>/
 
 #### Memory Manager（记忆管理器）
 
-- **文件**: `rag/memory/manager.py`
+- **文件**: `knowledge/memory/manager.py`
 
 | 方法 | 输入 | 输出 | 说明 |
 |------|------|------|------|
@@ -466,18 +466,18 @@ agents/<domain>/skills/<skill_name>/
 
 **自动压缩逻辑**:
 - L2 token 预算超出时 → 最旧的摘要压缩并转存到 L3（向量化）和 L4（事件提取）
-- 由 `rag/memory/consolidator.py` 执行
+- 由 `knowledge/memory/consolidator.py` 执行
 
 #### Memory Consolidator（记忆压缩器）
 
-- **文件**: `rag/memory/consolidator.py`
+- **文件**: `knowledge/memory/consolidator.py`
 - **输入**: 超出预算的 L2 摘要
 - **处理**: 调用 LLM 提取关键信息 → 向量化存入 ChromaDB + 事件存入 SQLite
 - **输出**: 压缩后的精简摘要
 
 #### Knowledge Isolation Engine（知识隔离引擎）
 
-- **文件**: `rag/memory/knowledge_isolation.py`
+- **文件**: `knowledge/memory/knowledge_isolation.py`
 - **功能**: 确保 ActorAgent 只知道角色应该知道的信息
 
 **数据模型**:
@@ -529,7 +529,7 @@ agents/<domain>/skills/<skill_name>/
 | `constraints/assembler.py` | 约束组装 | 约束列表 + 优先级 | 格式化的 prompt 片段 |
 | `constraints/store.py` | 约束持久化 | 项目ID | 约束 CRUD 操作 |
 | `constraints/violation_detector.py` | 违规检测 | 文本 + 约束列表 | 违规报告 |
-| `rag/constraint_store.py` | 约束语义索引 | 约束文本 | ChromaDB 存储/检索 |
+| `knowledge/constraint_store.py` | 约束语义索引 | 约束文本 | ChromaDB 存储/检索 |
 
 ---
 
@@ -537,7 +537,7 @@ agents/<domain>/skills/<skill_name>/
 
 #### ModelRouter（模型路由器）
 
-- **文件**: `models/router.py`（核心实现）、`agents/model_router.py`（Agent 层封装）
+- **文件**: `llm/router.py`（核心实现）、`agents/model_router.py`（Agent 层封装）
 
 **路由逻辑**:
 
@@ -569,17 +569,17 @@ ModelRouter.generate(role, messages, temperature, max_tokens)
 
 | Provider | 文件 | 支持模型 | 特点 |
 |----------|------|---------|------|
-| OpenAI | `models/openai_provider.py` | GPT-4o, GPT-4, GPT-3.5 | 标准 OpenAI API |
-| Anthropic | `models/anthropic_provider.py` | Claude 4.6, Claude 4.5, Haiku | Messages API |
-| DeepSeek | `models/deepseek_provider.py` | DeepSeek-V3, DeepSeek-R1 | OpenAI 兼容 API |
-| Gemini | `models/gemini_provider.py` | Gemini Pro, Gemini Ultra | Google AI API |
-| Ollama | `models/ollama_provider.py` | 本地任意模型 | REST API, 自动检测 |
-| vLLM | `models/vllm_provider.py` | 自部署模型 | OpenAI 兼容 API |
-| LoRA | `models/lora_provider.py` | 微调模型 | LoRA adapter 加载 |
+| OpenAI | `llm/openai_provider.py` | GPT-4o, GPT-4, GPT-3.5 | 标准 OpenAI API |
+| Anthropic | `llm/anthropic_provider.py` | Claude 4.6, Claude 4.5, Haiku | Messages API |
+| DeepSeek | `llm/deepseek_provider.py` | DeepSeek-V3, DeepSeek-R1 | OpenAI 兼容 API |
+| Gemini | `llm/gemini_provider.py` | Gemini Pro, Gemini Ultra | Google AI API |
+| Ollama | `llm/ollama_provider.py` | 本地任意模型 | REST API, 自动检测 |
+| vLLM | `llm/vllm_provider.py` | 自部署模型 | OpenAI 兼容 API |
+| LoRA | `llm/lora_provider.py` | 微调模型 | LoRA adapter 加载 |
 
 #### BaseLLMProvider（Provider 基类）
 
-- **文件**: `models/base.py`
+- **文件**: `llm/base.py`
 
 | 方法 | 输入 | 输出 | 说明 |
 |------|------|------|------|
@@ -592,7 +592,7 @@ ModelRouter.generate(role, messages, temperature, max_tokens)
 
 #### Cost Estimator（成本估算器）
 
-- **文件**: `models/cost_estimator.py`（核心）、`agents/cost_estimator.py`（Agent 层）
+- **文件**: `llm/cost_estimator.py`（核心）、`agents/cost_estimator.py`（Agent 层）
 - **价格表**: `config/model_providers.json`
 - **输入**: 消息列表 (messages) + 模型名称
 - **输出**: `{ "input_tokens": 1234, "output_tokens": 567, "estimated_cost_usd": 0.05 }`
@@ -600,7 +600,7 @@ ModelRouter.generate(role, messages, temperature, max_tokens)
 
 #### A/B Compare（模型对比）
 
-- **文件**: `models/ab_compare.py`（核心）、`agents/ab_compare.py`（Agent 层）
+- **文件**: `llm/ab_compare.py`（核心）、`agents/ab_compare.py`（Agent 层）
 - **输入**: 同一组 messages + 两个不同模型配置
 - **输出**: 两个模型的并行生成结果 + 质量评分对比
 - **前端组件**: `ui/frontend/src/components/editor/ModelCompare.tsx`
@@ -627,7 +627,7 @@ ModelRouter.generate(role, messages, temperature, max_tokens)
 │  用途: 参考作品存储、风格指纹提取                  │
 ├─────────────────────────────────────────────────┤
 │  Vector DB: ChromaDB                            │
-│  Handler: rag/vector_store.py                   │
+│  Handler: knowledge/vector_store.py                   │
 │  用途: 语义记忆（L3层）                           │
 └─────────────────────────────────────────────────┘
 ```
@@ -1241,12 +1241,12 @@ EditAnalyzer 计算 diff（before/after）
 
 | 文件 | 功能 | 输入 | 输出 |
 |------|------|------|------|
-| `rag/character_cards.py` | 角色卡片管理 | project_id | 角色卡 CRUD |
-| `rag/world_book.py` | 世界书管理 | project_id | 世界书条目 CRUD |
-| `rag/decision_engine.py` | 角色决策引擎 | 角色卡B层 + 场景 | 行为量化指导 |
-| `rag/vector_store.py` | ChromaDB 向量存储封装 | 文本 + 元数据 | 向量化存储/检索 |
-| `rag/constraint_store.py` | 约束语义索引 | 约束文本 | 语义检索 |
-| `rag/reference_db.py` | 参考作品数据库操作 | 作品数据 | CRUD |
+| `knowledge/character_cards.py` | 角色卡片管理 | project_id | 角色卡 CRUD |
+| `knowledge/world_book.py` | 世界书管理 | project_id | 世界书条目 CRUD |
+| `knowledge/decision_engine.py` | 角色决策引擎 | 角色卡B层 + 场景 | 行为量化指导 |
+| `knowledge/vector_store.py` | ChromaDB 向量存储封装 | 文本 + 元数据 | 向量化存储/检索 |
+| `knowledge/constraint_store.py` | 约束语义索引 | 约束文本 | 语义检索 |
+| `knowledge/reference_db.py` | 参考作品数据库操作 | 作品数据 | CRUD |
 
 ### 核心基础设施
 

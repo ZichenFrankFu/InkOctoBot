@@ -1,0 +1,388 @@
+"""LoRA fine-tuning trigger + status + hardware detection.
+
+Owns module-level state ``_status`` since training is a single-tenant
+background job. The endpoints:
+  GET  /references/lora/hardware  — detect CUDA/MPS/CPU + recommend defaults
+  POST /references/lora/train     — start a training job
+  GET  /references/lora/status    — poll job status
+  POST /references/lora/cancel    — request cancellation
+
+Heavy lifting lives in ``reference_ingest.lora``.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import tempfile
+import time
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from ...settings import settings
+from ._common import db
+
+router = APIRouter()
+
+_logger = logging.getLogger("inkoctobot.ui.backend.lora_training")
+_status: dict = {"status": "idle"}
+_cancel_flag = {"cancel": False}
+
+
+class LoRATrainRequest(BaseModel):
+    work_ids: list[str]
+    base_model: str = "Qwen/Qwen2-1.5B"
+    rank: int = 16
+    alpha: int = 32
+    epochs: int = 3
+    learning_rate: float = 2e-4
+    use_4bit: bool = True
+    # Device routing — 'auto' resolves via detect_hardware().
+    # Frontend overrides these if user picks a specific device.
+    device: str = "auto"            # cuda / mps / cpu / auto
+    dtype: str = "auto"             # bf16 / fp16 / fp32 / auto
+    batch_size: int = 0             # 0 = use recommendation
+    gradient_accumulation_steps: int = 0
+
+
+class LoRADPORequest(BaseModel):
+    """Constitutional DPO training (InkOS B3).
+
+    Sources preference pairs from a project's text_versions where
+    user_edit revisions exist for AI-generated drafts. Optional
+    sft_adapter_path to start from an existing SFT adapter.
+    """
+    project_id: str
+    base_model: str = "Qwen/Qwen2-1.5B"
+    sft_adapter_path: str = ""      # optional — continue from SFT checkpoint
+    rank: int = 16
+    alpha: int = 32
+    epochs: int = 1
+    learning_rate: float = 5e-5
+    beta: float = 0.1
+    use_4bit: bool = True
+    device: str = "auto"
+    dtype: str = "auto"
+    batch_size: int = 0
+    gradient_accumulation_steps: int = 0
+    min_diff_chars: int = 50         # filter trivial edits
+
+
+@router.get("/lora/hardware")
+def lora_hardware():
+    """Detect available compute + recommend training config.
+
+    Returns the HardwareReport as a dict — frontend uses this to:
+      - show GPU name + VRAM in the training-config form
+      - prefill device / dtype / batch_size / grad_accum fields
+      - warn about CPU-only training being slow
+    """
+    from reference_ingest.lora.hardware import detect_hardware
+    rep = detect_hardware()
+    return rep.to_dict()
+
+
+@router.post("/lora/cancel")
+def cancel_lora_training():
+    """Best-effort cancellation request. The trainer polls the flag
+    between steps; cancellation takes effect at the next checkpoint."""
+    global _cancel_flag, _status
+    if _status.get("status") != "running":
+        return {"status": _status.get("status", "idle"), "cancelled": False}
+    _cancel_flag["cancel"] = True
+    _status["progress"] = "取消请求已发送，等待下一个检查点..."
+    return {"status": "cancelling", "cancelled": True}
+
+
+@router.post("/lora/train")
+async def start_lora_training(body: LoRATrainRequest):
+    global _status, _cancel_flag
+    if _status.get("status") == "running":
+        raise HTTPException(409, "训练任务已在进行中")
+    if not body.work_ids:
+        raise HTTPException(400, "请至少选择一个参考作品")
+
+    # Pre-flight: surface hardware report so the user sees what'll be
+    # used. Status updates in real time as training progresses.
+    try:
+        from reference_ingest.lora.hardware import detect_hardware
+        hw = detect_hardware()
+    except Exception as e:
+        _logger.warning("hardware detect failed pre-flight: %s", e)
+        hw = None
+
+    _cancel_flag["cancel"] = False
+    _status = {
+        "status": "running",
+        "work_ids": body.work_ids,
+        "progress": "初始化...",
+        "error": None,
+        "hardware": hw.to_dict() if hw else None,
+        "started_at": time.time(),
+    }
+    asyncio.create_task(_run_lora_training(body))
+    return {
+        "status": "started", "work_ids": body.work_ids,
+        "hardware": hw.to_dict() if hw else None,
+    }
+
+
+async def _run_lora_training(body: LoRATrainRequest):
+    global _status
+    try:
+        from reference_ingest.lora.data_constructor import construct_sft_data, save_dataset
+        from reference_ingest.lora.quality_filter import filter_samples
+        from reference_ingest.lora.trainer import train_lora, LoRATrainConfig
+
+        rdb = db()
+        all_samples = []
+        _status["progress"] = f"正在为 {len(body.work_ids)} 个作品构造训练数据..."
+
+        for ref_id in body.work_ids:
+            work = rdb.get_work(ref_id)
+            if not work:
+                continue
+            file_path = work.get("file_path", "")
+            if not file_path or not Path(file_path).exists():
+                continue
+            text = Path(file_path).read_text("utf-8", errors="replace")
+            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+            chapters = [{"content": p, "title": f"段落{i+1}", "index": i}
+                        for i, p in enumerate(paragraphs) if len(p) > 100]
+
+            style_fp = None
+            if work.get("style_fingerprint_json"):
+                try:
+                    style_fp = json.loads(work["style_fingerprint_json"])
+                except Exception:
+                    pass
+
+            samples = construct_sft_data(
+                chapters, task_type="style_transfer",
+                style_fingerprint=style_fp,
+                metadata={"ref_id": ref_id, "title": work.get("title", "")},
+            )
+            all_samples.extend(samples)
+
+        if not all_samples:
+            _status = {"status": "error",
+                       "error": "没有可用的训练数据。请确保参考作品有上传全文。"}
+            return
+
+        _status["progress"] = f"质量过滤 {len(all_samples)} 个样本..."
+        filtered = filter_samples(all_samples)
+        passed = filtered.passed if hasattr(filtered, "passed") else all_samples
+
+        if not passed:
+            _status = {"status": "error", "error": "所有样本都被过滤掉了"}
+            return
+
+        _status["progress"] = f"保存 {len(passed)} 个样本到数据集..."
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w") as f:
+            dataset_path = f.name
+        save_dataset(passed, dataset_path)
+
+        output_dir = str(settings.repo_root / "data" / "lora_output")
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Build config — apply hardware recommendations for any 'auto' / 0
+        # field the caller left blank, then override with whatever the
+        # caller explicitly specified.
+        from reference_ingest.lora.hardware import detect_hardware
+        hw = detect_hardware()
+        config = LoRATrainConfig(
+            base_model=body.base_model,
+            rank=body.rank,
+            alpha=body.alpha,
+            epochs=body.epochs,
+            learning_rate=body.learning_rate,
+            use_4bit=body.use_4bit if hw.recommended_device == "cuda" else False,
+            device=body.device if body.device != "auto" else hw.recommended_device,
+            dtype=body.dtype if body.dtype != "auto" else hw.recommended_dtype,
+            batch_size=body.batch_size or hw.recommended_batch_size,
+            gradient_accumulation_steps=(
+                body.gradient_accumulation_steps or hw.recommended_grad_accum
+            ),
+        )
+        _status["resolved_config"] = config.to_dict()
+        _logger.info(
+            "LoRA training resolved: device=%s dtype=%s 4bit=%s batch=%d grad_accum=%d",
+            config.device, config.dtype, config.use_4bit,
+            config.batch_size, config.gradient_accumulation_steps,
+        )
+
+        _status["progress"] = (
+            f"开始 LoRA 训练 (device={config.device}, dtype={config.dtype}, "
+            f"4bit={config.use_4bit})..."
+        )
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, train_lora, config, dataset_path, output_dir)
+
+        _status = {
+            "status": "done",
+            "result": result,
+            "progress": "训练完成！",
+            "samples_used": len(passed),
+            "resolved_config": config.to_dict(),
+            "hardware": hw.to_dict(),
+        }
+
+    except Exception as e:
+        _logger.error("LoRA training error: %s", e, exc_info=True)
+        _status = {"status": "error", "error": str(e)[:500]}
+
+
+@router.post("/lora/dpo/train")
+async def start_lora_dpo_training(body: LoRADPORequest):
+    """Start Constitutional DPO training (InkOS B3).
+
+    Mines (rejected, chosen) preference pairs from the project's
+    text_versions where user_edit replaced an AI draft. Runs LoRA DPO
+    fine-tuning to make the writer prefer user-edited shapes.
+    """
+    global _status, _cancel_flag
+    if _status.get("status") == "running":
+        raise HTTPException(409, "训练任务已在进行中")
+    if not body.project_id:
+        raise HTTPException(400, "请指定 project_id（用于挖掘 user_edit 版本作为偏好对）")
+
+    try:
+        from reference_ingest.lora.hardware import detect_hardware
+        hw = detect_hardware()
+    except Exception:
+        hw = None
+
+    _cancel_flag["cancel"] = False
+    _status = {
+        "status": "running", "mode": "dpo",
+        "project_id": body.project_id,
+        "progress": "挖掘 user_edit 偏好对...",
+        "error": None,
+        "hardware": hw.to_dict() if hw else None,
+        "started_at": time.time(),
+    }
+    asyncio.create_task(_run_dpo_training(body))
+    return {
+        "status": "started", "mode": "dpo",
+        "project_id": body.project_id,
+        "hardware": hw.to_dict() if hw else None,
+    }
+
+
+async def _run_dpo_training(body: LoRADPORequest):
+    global _status
+    try:
+        from reference_ingest.lora.data_constructor import (
+            construct_dpo_data, collect_dpo_pairs_from_db, save_dataset,
+        )
+        from reference_ingest.lora.trainer import train_dpo, LoRADPOConfig
+        from ui.backend.app.services.project_paths import get_db_path
+
+        db_path = get_db_path()
+
+        # 1. Mine preference triples from this project's text_versions
+        _status["progress"] = f"扫描项目 {body.project_id} 的 user_edit 版本..."
+        triples = collect_dpo_pairs_from_db(
+            db_path, project_id=body.project_id,
+            min_diff_chars=body.min_diff_chars,
+        )
+        if not triples:
+            _status = {
+                "status": "error",
+                "error": (
+                    "未找到偏好对 — 该项目还没有 user_edit 版本。"
+                    "DPO 需要至少一对 (AI 生成的章节, 用户手改版本)；"
+                    "请先用 SFT 训练或先在编辑器里改几个章节再试。"
+                ),
+            }
+            return
+
+        # 2. Convert to TRL DPO schema
+        _status["progress"] = f"构造 {len(triples)} 个 DPO 样本..."
+        samples = construct_dpo_data(triples)
+
+        # 3. Save dataset
+        import tempfile as _t
+        with _t.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w") as f:
+            ds_path = f.name
+        save_dataset(samples, ds_path)
+
+        # 4. Resolve config from hardware report
+        from reference_ingest.lora.hardware import detect_hardware
+        hw = detect_hardware()
+        config = LoRADPOConfig(
+            base_model=body.base_model,
+            sft_adapter_path=body.sft_adapter_path or None,
+            rank=body.rank, alpha=body.alpha,
+            epochs=body.epochs,
+            learning_rate=body.learning_rate,
+            beta=body.beta,
+            use_4bit=body.use_4bit if hw.recommended_device == "cuda" else False,
+            device=body.device if body.device != "auto" else hw.recommended_device,
+            dtype=body.dtype if body.dtype != "auto" else hw.recommended_dtype,
+            batch_size=body.batch_size or hw.recommended_batch_size,
+            gradient_accumulation_steps=(
+                body.gradient_accumulation_steps or hw.recommended_grad_accum
+            ),
+        )
+        _status["resolved_config"] = config.to_dict()
+        _status["sample_count"] = len(samples)
+        _status["progress"] = (
+            f"开始 DPO 训练 (device={config.device}, beta={config.beta}, "
+            f"{len(samples)} 对偏好)..."
+        )
+
+        # 5. Train
+        from pathlib import Path as _P
+        output_dir = str(settings.repo_root / "data" / "lora_output" / "dpo")
+        _P(output_dir).mkdir(parents=True, exist_ok=True)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, train_dpo, config, ds_path, output_dir)
+
+        _status = {
+            "status": "done", "mode": "dpo",
+            "result": result,
+            "progress": "DPO 训练完成！",
+            "samples_used": len(samples),
+            "resolved_config": config.to_dict(),
+            "hardware": hw.to_dict(),
+        }
+
+    except Exception as e:
+        _logger.error("DPO training error: %s", e, exc_info=True)
+        _status = {"status": "error", "mode": "dpo", "error": str(e)[:500]}
+
+
+@router.get("/lora/dpo/preview")
+def preview_dpo_pairs(project_id: str, min_diff_chars: int = 50, limit: int = 5):
+    """Show how many preference pairs would be available for DPO training,
+    and the first ``limit`` pairs as a preview (so the user can verify the
+    data quality before starting a real run).
+    """
+    try:
+        from reference_ingest.lora.data_constructor import collect_dpo_pairs_from_db
+        from ui.backend.app.services.project_paths import get_db_path
+        triples = collect_dpo_pairs_from_db(
+            get_db_path(), project_id=project_id,
+            min_diff_chars=min_diff_chars,
+        )
+        # Return preview (heavily truncated content so this isn't a giant payload)
+        preview = []
+        for t in triples[:limit]:
+            preview.append({
+                "source_chapter_id": t.get("source_chapter_id"),
+                "prompt_head": (t.get("prompt") or "")[:200],
+                "rejected_head": (t.get("rejected") or "")[:200],
+                "chosen_head": (t.get("chosen") or "")[:200],
+                "violation_categories": t.get("violation_categories", []),
+            })
+        return {"total": len(triples), "preview": preview}
+    except Exception as e:
+        raise HTTPException(500, f"DPO preview failed: {e}")
+
+
+@router.get("/lora/status")
+def lora_training_status():
+    return _status

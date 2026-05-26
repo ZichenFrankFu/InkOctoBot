@@ -48,11 +48,6 @@ def _load_yaml(filename: str) -> Dict[str, Any]:
 # ------------------------------------------------------------------
 _paths = _load_yaml("paths.yaml")
 _websites = _load_yaml("websites.yaml")
-_crawler = _load_yaml("crawler.yaml")
-_selenium = _load_yaml("selenium.yaml")
-_antiblock = _load_yaml("antiblock.yaml")
-_scheduler = _load_yaml("scheduler.yaml")
-_analysis = _load_yaml("analysis.yaml")
 
 
 # ------------------------------------------------------------------
@@ -106,17 +101,3 @@ for _p in OUTPUT_PATHS.values():
 os.makedirs(os.path.dirname(DATABASE["path"]), exist_ok=True)
 os.makedirs(os.path.dirname(CRAWLER_DATABASE["path"]), exist_ok=True)
 
-# --- SELENIUM_CONFIG ---
-SELENIUM_CONFIG: Dict[str, Any] = _selenium
-
-# --- CRAWLER_CONFIG ---
-CRAWLER_CONFIG: Dict[str, Any] = _crawler
-
-# --- ANTI_BLOCK_CONFIG ---
-ANTI_BLOCK_CONFIG: Dict[str, Any] = _antiblock
-
-# --- SCHEDULER ---
-SCHEDULER: Dict[str, Any] = _scheduler
-
-# --- ANALYSIS_CONFIG ---
-ANALYSIS_CONFIG: Dict[str, Any] = _analysis

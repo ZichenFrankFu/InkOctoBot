@@ -38,7 +38,7 @@ def health():
 async def plan_volumes(req: VolumePlanRequest):
     try:
         from agents.planner.volume_planner import VolumePlanner
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         router_inst = ModelRouter()
         planner = VolumePlanner(router=router_inst, project_id=req.project_id)
         result = await planner.plan_volumes(
@@ -57,7 +57,7 @@ async def plan_volumes(req: VolumePlanRequest):
 async def plan_chapter(req: ChapterPlanRequest):
     try:
         from agents.planner.chapter_planner import ChapterPlanner
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
         router_inst = ModelRouter()
         planner = ChapterPlanner(router=router_inst, project_id=req.project_id)
         result = await planner.plan_chapter(

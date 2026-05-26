@@ -29,8 +29,8 @@ def health():
 @router.post("/disambiguate")
 async def disambiguate(req: DisambiguateRequest):
     try:
-        from agents.constraints.disambiguator import Disambiguator
-        from models.router import ModelRouter
+        from agents.guardrails.disambiguator import Disambiguator
+        from llm.router import ModelRouter
         router_inst = ModelRouter()
         disam = Disambiguator(router=router_inst)
         result = await disam.disambiguate(req.text, context=req.context)
@@ -43,8 +43,8 @@ async def disambiguate(req: DisambiguateRequest):
 @router.post("/resolve")
 async def resolve(req: ResolveRequest):
     try:
-        from agents.constraints.disambiguator import Disambiguator
-        from models.router import ModelRouter
+        from agents.guardrails.disambiguator import Disambiguator
+        from llm.router import ModelRouter
         router_inst = ModelRouter()
         disam = Disambiguator(router=router_inst)
         resolved = await disam.resolve(req.original_text, req.user_choices)

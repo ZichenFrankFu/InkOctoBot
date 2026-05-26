@@ -35,7 +35,7 @@ def _get_registry():
     with _registry_lock:
         if _registry is not None:
             return _registry
-        from core.skill_registry import SkillRegistry
+        from framework.skill_registry import SkillRegistry
         reg = SkillRegistry()
         reg.scan_all()
         # Start watching learned skills
@@ -507,7 +507,7 @@ async def execute_skill(req: SkillExecuteRequest):
     t0 = time.time()
     try:
         # Build router for LLM-based skills
-        from ui.backend.app.routers.generation_api import _build_router
+        from ui.backend.app.services import build_router as _build_router
         router_inst = _build_router(req.provider, req.model)
 
         result = await skill.execute(req.inputs, model_router=router_inst)
@@ -618,7 +618,7 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
 
     Shared by the built-in-AI path and the copy-prompt (web-LLM) path.
     """
-    from rag.reference_db import ReferenceDB
+    from knowledge.reference_db import ReferenceDB
     from ui.backend.app.settings import settings as _app_settings
     from ui.backend.app.routers._rag_context import (
         _condense_ref_characters, _condense_ref_settings,
@@ -716,7 +716,7 @@ async def compare_works(body: CompareWorksRequest):
     """Pull each work's extracted features, ask the AI to find common
     patterns + differences, return a draft Skill object that the client
     can review and then save via the existing /api/skills/create."""
-    from models.router import ModelRouter
+    from llm.router import ModelRouter
 
     prompt, works = _build_compare_prompt(body)
 

@@ -21,10 +21,10 @@ from typing import Any, TYPE_CHECKING
 
 import yaml
 
-from models.base import LLMMessage, LLMResponse
+from llm.base import LLMMessage, LLMResponse
 
 if TYPE_CHECKING:
-    from core.skill_registry import SkillRegistry
+    from framework.skill_registry import SkillRegistry
 
 logger = logging.getLogger("inkoctobot.agents.base_agent")
 
@@ -83,10 +83,12 @@ class BaseAgent:
         reg_key = _AGENT_PROMPT_KEYS.get(self.agent_name)
         if reg_key:
             try:
-                from analysis.feature_extraction.prompts import get_template
+                from reference_pipeline.prompts import get_template
                 base = get_template(reg_key) or base
-            except Exception:
-                pass
+            except Exception as e:
+                self._logger.debug(
+                    "prompt template override skipped for %s: %s", reg_key, e,
+                )
         if self._extra_system:
             base += "\n\n" + self._extra_system
         return base.strip()
@@ -123,23 +125,56 @@ class BaseAgent:
         max_tokens: int | None = None,
         parse_json: bool = False,
     ) -> LLMResponse:
-        """Call the LLM through the router."""
+        """Call the LLM through the router.
+
+        Logs the prompt envelope at INFO (message count + total chars) so
+        a developer can see "what got sent" without dumping the full
+        prompt; DEBUG-level logs the full message bodies for forensic
+        analysis. LLM errors propagate with a logged exc_info so failures
+        are never silent (was GAP 2 in the architecture review).
+        """
         msgs = self.build_messages(
             user_content, context=context, constraints=constraints, history=history,
         )
-        t0 = time.monotonic()
-        resp = await self.router.generate(
-            agent_role=self.agent_name, messages=msgs,
-            temperature=temperature, max_tokens=max_tokens,
+        total_chars = sum(len(m.content) for m in msgs)
+        self._logger.info(
+            "invoke prep msgs=%d chars=%d temp=%s max_tokens=%s",
+            len(msgs), total_chars, temperature, max_tokens,
         )
+        if self._logger.isEnabledFor(logging.DEBUG):
+            self._logger.debug(
+                "invoke messages=%s",
+                json.dumps(
+                    [{"role": m.role, "content": m.content} for m in msgs],
+                    ensure_ascii=False,
+                )[:8000],
+            )
+        t0 = time.monotonic()
+        try:
+            resp = await self.router.generate(
+                agent_role=self.agent_name, messages=msgs,
+                temperature=temperature, max_tokens=max_tokens,
+            )
+        except Exception:
+            elapsed = time.monotonic() - t0
+            self._logger.exception(
+                "invoke FAILED after %.1fs (msgs=%d chars=%d)",
+                elapsed, len(msgs), total_chars,
+            )
+            raise
         elapsed = time.monotonic() - t0
         self._total_input_tokens += resp.input_tokens
         self._total_output_tokens += resp.output_tokens
         self._call_count += 1
         self._logger.info(
-            "call #%d  in=%d  out=%d  %.1fs",
+            "invoke done #%d in=%d out=%d %.1fs",
             self._call_count, resp.input_tokens, resp.output_tokens, elapsed,
         )
+        if self._logger.isEnabledFor(logging.DEBUG):
+            self._logger.debug(
+                "invoke response=%s",
+                (resp.content or "")[:4000],
+            )
         if parse_json:
             resp.raw["parsed"] = self.extract_json(resp.content)
         return resp
@@ -195,7 +230,7 @@ class BaseAgent:
         """Publish an event if an event bus is configured."""
         if self.event_bus is None:
             return
-        from core.event_types import Event
+        from framework.event_types import Event
         self.event_bus.publish(Event(
             event_type=event_type,
             source=self.agent_name,

@@ -147,7 +147,7 @@ class BaseSkill(ABC):
         model_router: Any,
     ) -> dict[str, Any]:
         """Execute using the full ModelRouter.generate() message-based API."""
-        from models.base import LLMMessage
+        from llm.base import LLMMessage
         prompt = await self.build_prompt(inputs)
         meta = self.meta()
         messages = [

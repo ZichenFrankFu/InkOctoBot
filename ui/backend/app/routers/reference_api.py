@@ -1,5 +1,15 @@
 """
 /api/references — 参考作品库 CRUD + 预处理触发 + 条目管理
+
+This module is mid-refactor. The first 7 sub-routers (inspirations,
+entries, links, stats, lora, index, patterns) have been extracted to
+``ui.backend.app.routers.reference.<name>`` and re-mounted below. The
+remaining endpoints (works CRUD/upload/files, preprocess, chapter
+editing, segments, analysis writer, prompts, web_search) still live
+in this file pending the next extraction pass.
+
+All endpoints stay reachable at the same URLs (``/api/references/*``)
+so the frontend and external callers are unaffected.
 """
 from __future__ import annotations
 import asyncio
@@ -12,595 +22,28 @@ from typing import Any, Optional
 from ..settings import settings
 from ..utils import load_repo_config, get_db_path
 
+# The new package's _common.db() is the canonical implementation. Local
+# code below still uses _db() for now to minimize churn until phase 3
+# finishes extracting the remaining sections.
+from .reference._common import (
+    MEDIA_TYPE_ZH as _MEDIA_ZH,
+    SERIAL_STATUS_VALUES as _SERIAL_STATUS_VALUES,
+    db as _db,
+)
+# _load_author_keywords was moved into reference/patterns.py with the
+# patterns split — re-import it here so the not-yet-extracted endpoints
+# in this file (preprocess_aside_paragraphs, preprocess_start, etc.)
+# still resolve the name.
+from .reference.patterns import _load_author_keywords
+
 router = APIRouter(prefix="/references", tags=["references"])
 
-
-def _db():
-    from rag.reference_db import ReferenceDB
-    # Test mode: use reference DB from data_dir
-    if settings.test_mode and settings.data_dir:
-        db_path = str(settings.data_dir / "novels.db")
-        return ReferenceDB(db_path)
-    try:
-        repo_cfg = load_repo_config(settings.repo_root)
-        db_path = get_db_path(repo_cfg, settings.repo_root)
-    except FileNotFoundError:
-        db_path = str(settings.repo_root / "data" / "novels.db")
-    return ReferenceDB(db_path)
+# Mount the already-extracted sub-routers under /api/references/*
+from .reference import router as _extracted_router
+router.include_router(_extracted_router)
 
 
-# ═══ Works ═══════════════════════════════════════════════
 
-_SERIAL_STATUS_VALUES = frozenset({"ongoing", "completed", "hiatus", "unknown"})
-
-
-class WorkCreate(BaseModel):
-    title: str
-    media_type: str = "web_novel"
-    source: str = "manual"
-    creator: str = ""
-    genre: str = ""
-    tags: list[str] = []
-    user_rating: Optional[int] = None
-    user_summary: Optional[str] = None
-    user_why_i_like: Optional[str] = None
-    learning_dimensions: list[str] = []
-    has_full_text: bool = False
-    serial_status: Optional[str] = None
-
-
-class WorkUpdate(BaseModel):
-    title: Optional[str] = None
-    creator: Optional[str] = None
-    genre: Optional[str] = None
-    media_type: Optional[str] = None
-    user_rating: Optional[int] = None
-    user_summary: Optional[str] = None
-    user_why_i_like: Optional[str] = None
-    learning_dimensions: Optional[list[str]] = None
-    tags: Optional[list[str]] = None
-    serial_status: Optional[str] = None
-    # Per-chapter reader notes — list of {chapter, text}.
-    chapter_comments: Optional[list[Any]] = None
-
-
-@router.get("/works")
-def list_works(
-    media_type: Optional[str] = None,
-    source: Optional[str] = None,
-    genre: Optional[str] = None,
-    search: Optional[str] = None,
-    preprocessing_status: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-):
-    db = _db()
-    return {
-        "items": db.list_works(
-            media_type=media_type, source=source, genre=genre,
-            search=search, preprocessing_status=preprocessing_status,
-            limit=limit, offset=offset,
-        ),
-        "total": db.count_works(
-            media_type=media_type,
-            preprocessing_status=preprocessing_status,
-        ),
-    }
-
-
-@router.get("/stats")
-def reference_stats():
-    """Lightweight aggregate summary for the dashboard overview — counts
-    only, with no per-work JSON payloads."""
-    return _db().stats()
-
-
-@router.get("/works/{ref_id}")
-def get_work(ref_id: str):
-    w = _db().get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "not found")
-    return w
-
-
-@router.post("/works")
-def create_work(body: WorkCreate):
-    if body.serial_status is not None and body.serial_status not in _SERIAL_STATUS_VALUES:
-        raise HTTPException(400, f"无效的 serial_status: {body.serial_status}")
-    return _db().create_work(
-        title=body.title, media_type=body.media_type, source=body.source,
-        creator=body.creator, genre=body.genre, tags=body.tags,
-        user_rating=body.user_rating, user_summary=body.user_summary,
-        user_why_i_like=body.user_why_i_like,
-        learning_dimensions=body.learning_dimensions,
-        has_full_text=body.has_full_text,
-        serial_status=body.serial_status,
-    )
-
-
-@router.post("/works/upload")
-async def upload_work(
-    file: UploadFile = File(...),
-    title: str = Form(...),
-    creator: str = Form(""),
-    genre: str = Form(""),
-    media_type: str = Form("web_novel"),
-    user_why_i_like: str = Form(""),
-):
-    refs_dir = settings.repo_root / "data" / "references"
-    refs_dir.mkdir(parents=True, exist_ok=True)
-    dest = refs_dir / (file.filename or "upload.txt")
-    dest.write_bytes(await file.read())
-    return _db().create_work(
-        title=title, media_type=media_type, source="file_upload",
-        creator=creator, genre=genre, file_path=str(dest),
-        user_why_i_like=user_why_i_like or None, has_full_text=True,
-    )
-
-
-@router.post("/works/{ref_id}/upload")
-async def upload_text_for_work(
-    ref_id: str,
-    file: UploadFile = File(...),
-    append: bool = Form(False),
-    separator: str = Form("\n\n"),
-):
-    """Upload a .txt file for the work. By default REPLACES the existing
-    file. When ``append=true`` the new content is appended to the existing
-    on-disk text (separated by ``separator``) — useful for serialized works
-    that arrive in multiple .txt files (e.g. one per volume).
-
-    Only .txt is accepted."""
-    w = _db().get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "not found")
-    fname = file.filename or "upload.txt"
-    if not fname.lower().endswith(".txt"):
-        raise HTTPException(400, "仅支持 .txt 文件")
-
-    raw = await file.read()
-    try:
-        new_text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        # Common fallback for legacy Chinese encodings.
-        try:
-            new_text = raw.decode("gb18030")
-        except UnicodeDecodeError:
-            raise HTTPException(400, "无法解析文件编码（请使用 UTF-8 或 GB18030）")
-
-    refs_dir = settings.repo_root / "data" / "references"
-    refs_dir.mkdir(parents=True, exist_ok=True)
-
-    # Track the upload in segments_json["uploads"] so the Files tab can
-    # list each upload separately and delete individual ones later.
-    try:
-        state = json.loads(w.get("segments_json") or "{}")
-    except Exception:
-        state = {}
-    if not isinstance(state, dict):
-        state = {}
-    uploads: list[dict] = state.get("uploads") if isinstance(state.get("uploads"), list) else []
-    import time as _time
-    if append and w.get("file_path") and Path(w["file_path"]).exists():
-        dest = Path(w["file_path"])
-        try:
-            existing = dest.read_text(encoding="utf-8")
-        except Exception:
-            existing = ""
-        prefix = (existing.rstrip() + (separator or "\n\n")) if existing else ""
-        combined = (prefix + new_text.lstrip()).strip()
-        dest.write_text(combined, encoding="utf-8")
-        char_start = len(prefix)
-        char_end = len(combined)
-    else:
-        dest = refs_dir / f"{ref_id}_{fname}"
-        dest.write_text(new_text, encoding="utf-8")
-        # Replacement wipes the uploads ledger.
-        uploads = []
-        char_start = 0
-        char_end = len(new_text)
-
-    # Immutable raw companion — used by preprocess_start / re-detect so
-    # detection ALWAYS runs against the pristine upload, never the
-    # working file (which gets mutated by 清理章节 / rename / etc.).
-    # On append, we re-snapshot the combined working text as raw so the
-    # new appended bytes are also discoverable on re-detect.
-    raw_text = dest.read_text(encoding="utf-8")
-    raw_path = Path(str(dest) + ".raw.txt")
-    raw_path.write_text(raw_text, encoding="utf-8")
-    uploads.append({
-        "filename": fname,
-        "char_start": char_start,
-        "char_end": char_end,
-        "uploaded_at": _time.strftime("%Y-%m-%d %H:%M:%S"),
-    })
-    state["uploads"] = uploads
-
-    # Wipe any prior preprocess / segment state — the underlying text changed.
-    state.pop("preprocess", None)
-    state.pop("custom_plan", None)
-    state.pop("plan", None)
-    state["results"] = {}
-    state["completed"] = []
-    from analysis.feature_extraction import preprocess_jobs
-    preprocess_jobs.clear(ref_id)
-
-    update_kwargs: dict = dict(
-        file_path=str(dest),
-        has_full_text=True,
-        preprocessing_status="pending",
-        segments_json=json.dumps(state, ensure_ascii=False),
-    )
-    if not append:
-        # Replacing the novel text invalidates EVERY extracted result —
-        # chronicle / characters / settings / style / rhythm — plus the
-        # committed chapter list. Wipe them all so nothing stale leaks
-        # into the new work.
-        update_kwargs.update(
-            plot_outline_json="",
-            extracted_characters_json="",
-            settings_json="",
-            style_fingerprint_json="",
-            rhythm_json="",
-            narrative_structure_json="",
-            rhythm_template_json="",
-        )
-    w = _db().update_work(ref_id, **update_kwargs)
-    if not append:
-        import sqlite3
-        try:
-            with sqlite3.connect(_db().db_path) as conn:
-                conn.execute(
-                    "DELETE FROM reference_chapters WHERE ref_id = ?", (ref_id,),
-                )
-                conn.commit()
-        except Exception:
-            pass
-    return w
-
-
-@router.get("/works/{ref_id}/files")
-async def list_work_files(ref_id: str):
-    """Lightweight file listing — METADATA ONLY (filename, size, range,
-    timestamp). Does NOT read the file content. Tab switches stay
-    instant even on multi-MB works.
-
-    Per-file content is fetched lazily via ``/files/{index}/content``
-    when the user opens the viewer."""
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    file_path = w.get("file_path")
-    total_chars = 0
-    if file_path and Path(file_path).exists():
-        # Use char count from the uploads ledger when possible —
-        # avoids reading the full file. Fall back to a quick stat
-        # if no ledger entries exist.
-        pass
-    try:
-        state = json.loads(w.get("segments_json") or "{}")
-    except Exception:
-        state = {}
-    uploads = state.get("uploads") if isinstance(state, dict) else None
-    out: list[dict] = []
-    if isinstance(uploads, list) and uploads:
-        for i, u in enumerate(uploads):
-            cs = int(u.get("char_start") or 0)
-            ce = int(u.get("char_end") or 0)
-            out.append({
-                "index": i,
-                "filename": u.get("filename") or f"file_{i}.txt",
-                "char_start": cs,
-                "char_end": ce,
-                "char_count": max(0, ce - cs),
-                "uploaded_at": u.get("uploaded_at"),
-                "legacy": bool(u.get("legacy")),
-            })
-            total_chars = max(total_chars, ce)
-    elif file_path and Path(file_path).exists():
-        # Legacy fallback — happens when the work was uploaded by an
-        # older build that didn't write the uploads ledger. Recover by
-        # re-reading the file to get an accurate **char count** (not
-        # bytes — CJK text is 3 bytes per char in UTF-8, so st_size was
-        # showing 3× the real character count, which the user reported
-        # as "字数翻倍" after restart). One quick read is acceptable
-        # since this is the rescue path, not the normal one.
-        try:
-            text = Path(file_path).read_text(encoding="utf-8", errors="replace")
-            char_count = len(text)
-        except Exception:
-            try:
-                char_count = Path(file_path).stat().st_size
-            except Exception:
-                char_count = 0
-        # Self-heal: write a synthetic uploads entry back to segments_json
-        # so subsequent loads use the fast ledger path (and the "未跟踪"
-        # banner disappears). On any DB error we silently fall through —
-        # the read path still works.
-        from os.path import basename as _bn
-        synthetic_entry = {
-            "filename": _bn(file_path),
-            "char_start": 0,
-            "char_end": char_count,
-            "uploaded_at": None,
-        }
-        try:
-            if not isinstance(state, dict):
-                state = {}
-            state["uploads"] = [synthetic_entry]
-            db.update_work(ref_id, segments_json=json.dumps(state, ensure_ascii=False))
-        except Exception:
-            pass
-        out.append({
-            "index": 0,
-            "filename": _bn(file_path),
-            "char_start": 0,
-            "char_end": char_count,
-            "char_count": char_count,
-            "uploaded_at": None,
-            # Even though we now have a ledger entry, the file's history
-            # is still unknown (we have no upload timestamp etc.) — show
-            # "已修复" instead of the bare "未跟踪" so the user knows the
-            # state is now stable.
-            "legacy": True,
-        })
-        total_chars = char_count
-    return {
-        "files": out,
-        "total_chars": total_chars,
-        "has_full_text": bool(w.get("has_full_text")),
-        "file_path": file_path,
-    }
-
-
-@router.get("/works/{ref_id}/files/{index}/content")
-async def get_work_file_content(ref_id: str, index: int):
-    """Lazy-load the content of one uploaded file. Returns the
-    full text slice for the upload's char range. Reads the file once
-    in a worker thread."""
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    file_path = w.get("file_path")
-    if not file_path or not Path(file_path).exists():
-        raise HTTPException(400, "尚未上传正文")
-    try:
-        state = json.loads(w.get("segments_json") or "{}")
-    except Exception:
-        state = {}
-    uploads = state.get("uploads") if isinstance(state, dict) else []
-    full_text = await asyncio.to_thread(Path(file_path).read_text, encoding="utf-8")
-    if isinstance(uploads, list) and uploads:
-        if not (0 <= index < len(uploads)):
-            raise HTTPException(404, f"未找到第 {index} 个文件")
-        u = uploads[index]
-        cs = int(u.get("char_start") or 0)
-        ce = int(u.get("char_end") or len(full_text))
-        content = full_text[cs:ce] if 0 <= cs <= ce <= len(full_text) else ""
-        return {
-            "index": index,
-            "filename": u.get("filename") or f"file_{index}.txt",
-            "content": content,
-            "char_count": len(content),
-        }
-    # Legacy single-file
-    if index != 0:
-        raise HTTPException(404, "未找到该文件")
-    from os.path import basename as _bn
-    return {
-        "index": 0,
-        "filename": _bn(file_path),
-        "content": full_text,
-        "char_count": len(full_text),
-    }
-
-
-@router.delete("/works/{ref_id}/files/{index}")
-async def delete_work_file(ref_id: str, index: int):
-    """Remove ONE uploaded file's char range from the combined text and
-    rebuild. Subsequent uploads' ranges are shifted left. Any
-    preprocess state is cleared since the text changed."""
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    file_path = w.get("file_path")
-    if not file_path or not Path(file_path).exists():
-        raise HTTPException(400, "尚未上传正文")
-    try:
-        state = json.loads(w.get("segments_json") or "{}")
-    except Exception:
-        state = {}
-    if not isinstance(state, dict):
-        state = {}
-    uploads = state.get("uploads") if isinstance(state.get("uploads"), list) else []
-    if not (0 <= index < len(uploads)):
-        raise HTTPException(404, f"未找到第 {index} 个文件")
-    target = uploads[index]
-    cs = int(target.get("char_start") or 0)
-    ce = int(target.get("char_end") or 0)
-    full_text = await asyncio.to_thread(Path(file_path).read_text, encoding="utf-8")
-    if not (0 <= cs <= ce <= len(full_text)):
-        raise HTTPException(400, "文件范围与正文不符；请重新上传")
-    removed_len = ce - cs
-    new_text = (full_text[:cs] + full_text[ce:]).strip()
-    # Update uploads ledger
-    updated_uploads: list[dict] = []
-    for i, u in enumerate(uploads):
-        if i == index:
-            continue
-        ucs = int(u.get("char_start") or 0)
-        uce = int(u.get("char_end") or 0)
-        if uce <= cs:
-            # Before removed range — unchanged
-            updated_uploads.append({**u})
-        elif ucs >= ce:
-            # After removed range — shift left
-            updated_uploads.append({
-                **u,
-                "char_start": ucs - removed_len,
-                "char_end": uce - removed_len,
-            })
-        # Else: overlapping range (shouldn't happen) — drop
-    state["uploads"] = updated_uploads
-    await asyncio.to_thread(Path(file_path).write_text, new_text, encoding="utf-8")
-    # Invalidate preprocess
-    state.pop("preprocess", None)
-    state.pop("custom_plan", None)
-    state.pop("plan", None)
-    state["results"] = {}
-    state["completed"] = []
-    from analysis.feature_extraction import preprocess_jobs
-    preprocess_jobs.clear(ref_id)
-    db.update_work(
-        ref_id,
-        segments_json=json.dumps(state, ensure_ascii=False),
-        preprocessing_status="pending",
-        has_full_text=bool(new_text),
-    )
-    return {"ok": True, "remaining_files": len(updated_uploads), "new_total_chars": len(new_text)}
-
-
-@router.delete("/works/{ref_id}/files")
-async def delete_all_work_files(ref_id: str):
-    """Wipe ALL uploaded content and the uploads ledger. The on-disk
-    file is truncated to empty (kept around so the file_path remains
-    valid). Preprocess state cleared."""
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    file_path = w.get("file_path")
-    if file_path and Path(file_path).exists():
-        await asyncio.to_thread(Path(file_path).write_text, "", encoding="utf-8")
-    try:
-        state = json.loads(w.get("segments_json") or "{}")
-    except Exception:
-        state = {}
-    if not isinstance(state, dict):
-        state = {}
-    state["uploads"] = []
-    state.pop("preprocess", None)
-    state.pop("custom_plan", None)
-    state.pop("plan", None)
-    state["results"] = {}
-    state["completed"] = []
-    from analysis.feature_extraction import preprocess_jobs
-    preprocess_jobs.clear(ref_id)
-    db.update_work(
-        ref_id,
-        segments_json=json.dumps(state, ensure_ascii=False),
-        preprocessing_status="pending",
-        has_full_text=False,
-    )
-    return {"ok": True}
-
-
-@router.put("/works/{ref_id}")
-def update_work(ref_id: str, body: WorkUpdate):
-    if body.serial_status is not None and body.serial_status not in _SERIAL_STATUS_VALUES:
-        raise HTTPException(400, f"无效的 serial_status: {body.serial_status}")
-    fields: dict = {}
-    for k in ("title", "creator", "genre", "media_type",
-              "user_rating", "user_summary", "user_why_i_like",
-              "serial_status"):
-        v = getattr(body, k, None)
-        if v is not None:
-            fields[k] = v
-    if body.learning_dimensions is not None:
-        fields["learning_dimensions_json"] = json.dumps(
-            body.learning_dimensions, ensure_ascii=False)
-    if body.tags is not None:
-        fields["tags_json"] = json.dumps(body.tags, ensure_ascii=False)
-    if body.chapter_comments is not None:
-        fields["chapter_comments_json"] = json.dumps(
-            body.chapter_comments, ensure_ascii=False)
-    w = _db().update_work(ref_id, **fields)
-    if not w:
-        raise HTTPException(404, "not found")
-    return w
-
-
-@router.delete("/works/{ref_id}")
-def delete_work(ref_id: str):
-    if not _db().delete_work(ref_id):
-        raise HTTPException(404, "not found")
-    return {"ok": True}
-
-
-# ═══ Entries ═════════════════════════════════════════════
-
-class EntryCreate(BaseModel):
-    ref_id: str
-    entry_type: str = "other"
-    title: str = ""
-    content: str = ""
-    content_source: str = "user_written"
-    position_label: str = ""
-    user_notes: str = ""
-    learning_dimensions: list[str] = []
-    user_rating: Optional[int] = None
-    tags: list[str] = []
-
-
-@router.get("/entries/{ref_id}")
-def list_entries(ref_id: str, entry_type: Optional[str] = None):
-    return {"items": _db().list_entries(ref_id, entry_type)}
-
-
-@router.post("/entries")
-def create_entry(body: EntryCreate):
-    return _db().add_entry(
-        ref_id=body.ref_id, entry_type=body.entry_type,
-        content=body.content, title=body.title,
-        content_source=body.content_source,
-        position_label=body.position_label,
-        user_notes=body.user_notes,
-        learning_dimensions=body.learning_dimensions,
-        user_rating=body.user_rating, tags=body.tags,
-    )
-
-
-@router.delete("/entries/{entry_id}")
-def delete_entry(entry_id: str):
-    if not _db().delete_entry(entry_id):
-        raise HTTPException(404, "not found")
-    return {"ok": True}
-
-
-# ═══ Project links ═══════════════════════════════════════
-
-class LinkCreate(BaseModel):
-    project_id: str
-    ref_id: str
-    dimension: str
-    entry_ids: list[str] = []
-    reference_character_name: Optional[str] = None
-    notes: Optional[str] = None
-
-
-@router.post("/links")
-def create_link(body: LinkCreate):
-    return _db().link_to_project(
-        body.project_id, body.ref_id, body.dimension,
-        entry_ids=body.entry_ids,
-        reference_character_name=body.reference_character_name,
-        notes=body.notes,
-    )
-
-
-@router.get("/links/{project_id}")
-def get_links(project_id: str):
-    return {"items": _db().get_project_links(project_id)}
-
-
-# ═══ Stats ═══════════════════════════════════════════════
-
-@router.get("/stats/genres")
-def genres():
-    return {"genres": _db().genre_distribution()}
 
 
 # ═══ Preprocessing ═══════════════════════════════════════
@@ -615,7 +58,7 @@ def trigger_preprocess(ref_id: str):
         # Ensure text is available: if work has file_path but source isn't file_upload, fix it
         if work.get("file_path") and work.get("source") not in ("file_upload", "platform_crawl"):
             db.update_work(ref_id, preprocessing_status="pending")
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         result = FeatureExtractionPipeline(db.db_path).run(ref_id)
         if result.get("error"):
             raise HTTPException(400, f"特征提取失败: {result['error']}")
@@ -629,7 +72,7 @@ def trigger_preprocess(ref_id: str):
 @router.post("/preprocess/batch")
 def trigger_batch():
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         try:
             repo_cfg = load_repo_config(settings.repo_root)
             db_path = get_db_path(repo_cfg, settings.repo_root)
@@ -652,25 +95,6 @@ def preprocess_status():
     }
 
 
-# ═══ Analysis (editable feature extraction results) ═════
-
-_ANALYSIS_FIELDS = frozenset({
-    "style_fingerprint_json",
-    "narrative_structure_json",
-    "extracted_characters_json",
-    "rhythm_template_json",
-    "plot_outline_json",
-    "settings_json",
-    "rhythm_json",
-})
-
-
-class AnalysisUpdate(BaseModel):
-    field: str
-    # Accept dicts or lists (characters is a list)
-    data: Any
-
-
 @router.get("/works/{ref_id}/chapters")
 def list_chapters(ref_id: str, preview_chars: int = Query(120, ge=0, le=2000)):
     """Return the parsed chapter structure for the work — what the preprocessor
@@ -682,7 +106,7 @@ def list_chapters(ref_id: str, preview_chars: int = Query(120, ge=0, le=2000)):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         text = pipe._load_text(w)
         if not text:
@@ -700,7 +124,7 @@ def list_chapters(ref_id: str, preview_chars: int = Query(120, ge=0, le=2000)):
             if preview_chars > 0:
                 head = content[:preview_chars].replace("\n", " ").strip()
                 preview = head + ("…" if len(content) > preview_chars else "")
-            from analysis.feature_extraction.chapter_parser import visible_char_count
+            from reference_pipeline.chapter_parser import visible_char_count
             out.append({
                 "number": i + 1,
                 "title": (c.get("title") or "").strip() or f"第 {i + 1} 章",
@@ -730,7 +154,7 @@ def get_segment_plan(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         text = pipe._load_text(w)
         if not text:
@@ -768,7 +192,7 @@ def save_segment_plan(ref_id: str, body: SegmentPlanSaveRequest):
     if not body.segments:
         raise HTTPException(400, "请至少保留一个分段")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         plan = pipe.save_custom_plan(
             ref_id, body.segments, plan_type=body.plan_type or "custom",
@@ -809,8 +233,8 @@ async def preprocess_guess_start(ref_id: str):
     """Kick off the async format-matching job. Returns immediately —
     the file read happens in the worker so the endpoint never blocks
     on multi-MB I/O. Frontend then polls /guess_status for progress."""
-    from analysis.feature_extraction import preprocess_jobs
-    from analysis.feature_extraction.pipeline import _load_chapter_patterns
+    from reference_pipeline import preprocess_jobs
+    from reference_pipeline.pipeline import _load_chapter_patterns
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -833,7 +257,7 @@ def preprocess_guess_status(ref_id: str):
     """Return the live status of the format-matching job: progress
     (current_pattern / total_patterns), the candidate list once done,
     and the suggested winner."""
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     job = preprocess_jobs.get_guess_job(ref_id)
     if not job:
         return {"state": "idle", "current_pattern": 0, "total_patterns": 0,
@@ -856,8 +280,8 @@ async def preprocess_start(ref_id: str,
       - ``force_pattern``: single pattern (legacy). Auto-merges secondaries.
       - Neither: full auto-detect with auto-merge.
     """
-    from analysis.feature_extraction import preprocess_jobs
-    from analysis.feature_extraction.pipeline import _load_chapter_patterns
+    from reference_pipeline import preprocess_jobs
+    from reference_pipeline.pipeline import _load_chapter_patterns
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -893,10 +317,10 @@ def get_chapter_content(ref_id: str, chapter_id: str):
     Fast path: cached ``content_start`` / ``content_end`` offsets from
     segments_json["preprocess"] — slice the file directly.
     Slow path: re-detect, match by chapter_id."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, visible_char_count,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
     db = _db()
@@ -1025,7 +449,7 @@ async def preprocess_add_chapter(ref_id: str, body: NewChapterBody):
     at start). The user supplies the heading line in whatever format
     the rest of the work uses — detection re-runs on the rebuilt file
     so the new chapter gets a sequential ordinal."""
-    from analysis.feature_extraction.chapter_parser import insert_chapter
+    from reference_pipeline.chapter_parser import insert_chapter
     return await _modify_and_redetect(
         ref_id,
         modifier=lambda txt, chs: insert_chapter(
@@ -1062,7 +486,7 @@ def _resolve_chapter_number(chapters: list[dict], chapter_id: str) -> int:
 async def preprocess_rename_chapter(ref_id: str, chapter_id: str, body: RenameChapterBody):
     """Replace the heading line of a chapter — body is preserved.
     Detection re-runs to pick up the new title."""
-    from analysis.feature_extraction.chapter_parser import rename_chapter
+    from reference_pipeline.chapter_parser import rename_chapter
     return await _modify_and_redetect(
         ref_id,
         modifier=lambda txt, chs: rename_chapter(
@@ -1076,7 +500,7 @@ async def preprocess_rename_chapter(ref_id: str, chapter_id: str, body: RenameCh
 async def preprocess_delete_chapter(ref_id: str, chapter_id: str):
     """Delete a single chapter from the file. Same backing logic as
     清理章节, just exposed as a per-row action."""
-    from analysis.feature_extraction.chapter_parser import apply_exclusions
+    from reference_pipeline.chapter_parser import apply_exclusions
     return await _modify_and_redetect(
         ref_id,
         modifier=lambda txt, chs: apply_exclusions(
@@ -1102,15 +526,15 @@ async def _modify_and_redetect(ref_id: str, modifier, op_label: str,
          作者说章节) so a freshly-edited short body doesn't trigger a
          phantom chapter.
     """
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, flag_author_notes, flag_length_outliers, flag_garbled_chapters,
         make_preview, visible_char_count, find_chapter_gaps,
         _PATTERNS as _BUILTIN_PATTERNS, _UNNUMBERED_PATTERNS as _UNN,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -1266,13 +690,13 @@ def patch_chapter_content(ref_id: str, chapter_id: str, body: ChapterContentEdit
     ``{path}.bak`` first (overwriting any earlier backup) so the user
     can undo via the existing undo_exclusions endpoint. Other chapters
     are left untouched."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, replace_chapter_content, visible_char_count,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -1310,7 +734,7 @@ def patch_chapter_content(ref_id: str, chapter_id: str, body: ChapterContentEdit
         state = {}
     if not isinstance(state, dict):
         state = {}
-    from analysis.feature_extraction.chapter_parser import make_preview
+    from reference_pipeline.chapter_parser import make_preview
     pre = state.get("preprocess") if isinstance(state.get("preprocess"), dict) else None
     chapters_list = pre.get("chapters") if pre and isinstance(pre.get("chapters"), list) else None
     if chapters_list:
@@ -1329,7 +753,7 @@ def patch_chapter_content(ref_id: str, chapter_id: str, body: ChapterContentEdit
     else:
         # No prior preprocess — re-detect on the new text so the UI
         # still has a chapter list to render.
-        from analysis.feature_extraction.chapter_parser import (
+        from reference_pipeline.chapter_parser import (
             detect_chapters as _dc, flag_author_notes as _fan,
             flag_length_outliers as _fol,
         )
@@ -1390,290 +814,10 @@ def patch_chapter_content(ref_id: str, chapter_id: str, body: ChapterContentEdit
 
 # ── User-defined chapter patterns (stored in settings.json) ──
 
-def _chapter_patterns_path():
-    from pathlib import Path
-    return Path(__file__).resolve().parents[4] / "data" / "settings.json"
-
-
-def _read_settings_dict() -> dict:
-    p = _chapter_patterns_path()
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
-
-
-def _write_settings_dict(d: dict) -> None:
-    p = _chapter_patterns_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-@router.get("/chapter_patterns")
-def get_chapter_patterns():
-    """Return the user's custom chapter patterns. Each entry:
-    ``{name: str, regex: str, enabled: bool}``. The regex should capture
-    two groups: (number, title). Title group may be omitted."""
-    data = _read_settings_dict()
-    raw = data.get("chapter_patterns")
-    return {"patterns": raw if isinstance(raw, list) else []}
-
-
-class ChapterPatternsBody(BaseModel):
-    patterns: list[dict]
-
-
-@router.put("/chapter_patterns")
-def put_chapter_patterns(body: ChapterPatternsBody):
-    """Replace the entire custom-pattern list. Each entry uses either
-    ``format`` (user-friendly template, preferred) or ``regex`` (advanced).
-    Validates regex compilation before saving."""
-    import re as _re
-    from analysis.feature_extraction.chapter_parser import format_to_regex
-    cleaned: list[dict] = []
-    for i, p in enumerate(body.patterns or []):
-        if not isinstance(p, dict):
-            raise HTTPException(400, f"第 {i + 1} 项格式错误")
-        fmt = (p.get("format") or "").strip()
-        regex = (p.get("regex") or "").strip()
-        if not fmt and not regex:
-            continue
-        # Per user request: when no explicit name, use the format text
-        # itself as the name (the format IS the identifier).
-        name = (p.get("name") or "").strip() or fmt or f"自定义 {i + 1}"
-        # Validate by compiling the effective regex
-        effective = regex or format_to_regex(fmt)
-        try:
-            _re.compile(effective)
-        except _re.error as e:
-            raise HTTPException(400, f"「{name}」格式无效：{e}")
-        entry: dict = {"name": name, "enabled": bool(p.get("enabled", True))}
-        if fmt:
-            entry["format"] = fmt
-        if regex:
-            entry["regex"] = regex
-        cleaned.append(entry)
-    data = _read_settings_dict()
-    data["chapter_patterns"] = cleaned
-    _write_settings_dict(data)
-    return {"patterns": cleaned}
-
-
-def _load_author_keywords() -> list[str]:
-    """Return user-managed author-note keywords from settings.json, or
-    an empty list when none configured (caller falls back to defaults)."""
-    data = _read_settings_dict()
-    raw = data.get("author_note_keywords")
-    return [str(k).strip() for k in raw if k and str(k).strip()] if isinstance(raw, list) else []
-
-
-@router.get("/author_note_keywords")
-def get_author_note_keywords():
-    """Return both the user-customized keyword list (if any) AND the
-    built-in defaults so the UI can show the active set and let the
-    user reset to defaults at will."""
-    from analysis.feature_extraction.chapter_parser import _AUTHOR_KEYWORDS
-    user = _load_author_keywords()
-    return {
-        "user": user,
-        "defaults": list(_AUTHOR_KEYWORDS),
-        "active": user if user else list(_AUTHOR_KEYWORDS),
-    }
-
-
-class AuthorKeywordsBody(BaseModel):
-    keywords: list[str]
-
-
-@router.put("/author_note_keywords")
-def put_author_note_keywords(body: AuthorKeywordsBody):
-    """Replace the user's keyword list. An empty list resets to defaults."""
-    cleaned = [k.strip() for k in (body.keywords or []) if k and k.strip()]
-    # Deduplicate but preserve insertion order so the UI list stays stable
-    seen = set()
-    ordered: list[str] = []
-    for k in cleaned:
-        if k in seen:
-            continue
-        seen.add(k)
-        ordered.append(k)
-    data = _read_settings_dict()
-    if ordered:
-        data["author_note_keywords"] = ordered
-    else:
-        data.pop("author_note_keywords", None)
-    _write_settings_dict(data)
-    from analysis.feature_extraction.chapter_parser import _AUTHOR_KEYWORDS
-    return {
-        "user": ordered,
-        "defaults": list(_AUTHOR_KEYWORDS),
-        "active": ordered if ordered else list(_AUTHOR_KEYWORDS),
-    }
-
-
-@router.get("/garbled_patterns")
-def get_garbled_patterns():
-    """Return BOTH the built-in garbled regex set and the user's
-    custom additions so the UI can show the full picture + offer
-    inline disable / delete."""
-    from analysis.feature_extraction.chapter_parser import (
-        _BUILTIN_GARBLED_PATTERNS, _load_user_garbled_patterns,
-    )
-    return {
-        "builtin": [{"name": n, "regex": p} for n, p in _BUILTIN_GARBLED_PATTERNS],
-        "user": _load_user_garbled_patterns(),
-    }
-
-
-class GarbledPatternsBody(BaseModel):
-    patterns: list[dict]  # [{name, regex, enabled}]
-
-
-@router.put("/garbled_patterns")
-def put_garbled_patterns(body: GarbledPatternsBody):
-    """Replace the user's custom garbled patterns. Each entry is
-    validated by attempting to compile its regex. Empty list resets
-    to defaults only (built-ins remain)."""
-    import re as _re
-    cleaned: list[dict] = []
-    for i, p in enumerate(body.patterns or []):
-        if not isinstance(p, dict):
-            raise HTTPException(400, f"第 {i + 1} 项格式错误")
-        regex = (p.get("regex") or "").strip()
-        if not regex:
-            continue
-        name = (p.get("name") or "").strip() or regex[:40]
-        try:
-            _re.compile(regex, _re.DOTALL | _re.IGNORECASE)
-        except _re.error as e:
-            raise HTTPException(400, f"「{name}」正则无效：{e}")
-        cleaned.append({
-            "name": name,
-            "regex": regex,
-            "enabled": bool(p.get("enabled", True)),
-        })
-    data = _read_settings_dict()
-    if cleaned:
-        data["garbled_patterns"] = cleaned
-    else:
-        data.pop("garbled_patterns", None)
-    _write_settings_dict(data)
-    return {"user": cleaned}
-
-
-@router.delete("/chapter_patterns/{name}")
-def delete_chapter_pattern(name: str):
-    """Delete a custom chapter pattern by its saved name (URL-encoded).
-    Built-in patterns can't be deleted via this endpoint."""
-    data = _read_settings_dict()
-    raw = data.get("chapter_patterns")
-    if not isinstance(raw, list):
-        raise HTTPException(404, f"未找到格式「{name}」")
-    before = len(raw)
-    cleaned = [p for p in raw if isinstance(p, dict) and (p.get("name") or "").strip() != name]
-    if len(cleaned) == before:
-        raise HTTPException(404, f"未找到格式「{name}」（内置格式不可删除）")
-    data["chapter_patterns"] = cleaned
-    _write_settings_dict(data)
-    return {"patterns": cleaned, "deleted": name}
-
-
-class ChapterPatternTestBody(BaseModel):
-    regex: str | None = None
-    format: str | None = None  # user-friendly template ("第N章", "N、", etc.)
-    pattern_name: str | None = None  # look up by name (built-in or custom)
-    ref_id: str | None = None
-    sample_text: str | None = None
-
-
-@router.post("/chapter_patterns/test")
-def test_chapter_pattern(body: ChapterPatternTestBody):
-    """Compile + run a candidate pattern against either the given
-    sample text or the (capped) full text of a specific work. Accepts
-    either:
-      - ``pattern_name``: looks up a built-in or custom pattern by name
-        (used by the format-confirm panel's per-row 测试 button).
-      - ``format``: user-friendly template (e.g. "第N章").
-      - ``regex``: raw regex (advanced).
-    Capped at 2 MB scanned text for speed."""
-    import re as _re
-    from analysis.feature_extraction.chapter_parser import (
-        format_to_regex, _PATTERNS as BUILTIN, _compile_extra,
-    )
-    from analysis.feature_extraction.pipeline import _load_chapter_patterns
-    regex = (body.regex or "").strip()
-    fmt = (body.format or "").strip()
-    pname = (body.pattern_name or "").strip()
-    pat = None
-    if pname:
-        # Built-in first
-        for n, p in BUILTIN:
-            if n == pname:
-                pat = p
-                break
-        # Then custom
-        if pat is None:
-            for n, p in _compile_extra(_load_chapter_patterns()):
-                if n == pname:
-                    pat = p
-                    break
-        if pat is None:
-            raise HTTPException(404, f"未找到格式「{pname}」")
-    else:
-        if fmt and not regex:
-            regex = format_to_regex(fmt)
-        if not regex:
-            raise HTTPException(400, "请提供 pattern_name / format / regex")
-        try:
-            pat = _re.compile(regex, _re.MULTILINE | _re.IGNORECASE)
-        except _re.error as e:
-            raise HTTPException(400, f"正则编译失败：{e}")
-    if body.sample_text:
-        scan_text = body.sample_text
-        truncated = False
-    elif body.ref_id:
-        db = _db()
-        w = db.get_work(body.ref_id)
-        if not w:
-            raise HTTPException(404, "参考作品不存在")
-        file_path = w.get("file_path")
-        if not file_path:
-            raise HTTPException(400, "尚未上传正文")
-        # Full-file scan now (was a 2.5 MB sample): the candidate-list
-        # preview is the only place users verify how many chapters a
-        # pattern actually catches, and showing "1 match" because the
-        # sample missed everything past ~mid-file made the count
-        # untrustworthy. Falls back to the raw companion when present
-        # so sampling reflects pristine upload rather than mutated.
-        from pathlib import Path as _P
-        raw_path = _P(str(file_path) + ".raw.txt")
-        scan_path = raw_path if raw_path.exists() else _P(file_path)
-        try:
-            scan_text = scan_path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            scan_text = ""
-        truncated = False
-    else:
-        raise HTTPException(400, "请提供 ref_id 或 sample_text")
-    ms = list(pat.finditer(scan_text))
-    preview = []
-    for m in ms[:200]:
-        preview.append({
-            "match": m.group(0)[:60],
-            "groups": [g for g in m.groups()[:2]],
-            "pos": m.start(),
-        })
-    return {
-        "count": len(ms), "preview": preview,
-        "scanned_chars": len(scan_text), "truncated": truncated,
-    }
-
 
 @router.post("/works/{ref_id}/preprocess/pause")
 async def preprocess_pause(ref_id: str):
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     ok = preprocess_jobs.pause_job(ref_id)
     if not ok:
         raise HTTPException(400, "当前无运行中的预处理任务")
@@ -1682,7 +826,7 @@ async def preprocess_pause(ref_id: str):
 
 @router.post("/works/{ref_id}/preprocess/resume")
 async def preprocess_resume(ref_id: str):
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     ok = preprocess_jobs.resume_job(ref_id)
     if not ok:
         raise HTTPException(400, "当前无暂停的预处理任务")
@@ -1691,7 +835,7 @@ async def preprocess_resume(ref_id: str):
 
 @router.post("/works/{ref_id}/preprocess/cancel")
 async def preprocess_cancel(ref_id: str):
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     ok = preprocess_jobs.cancel_job(ref_id)
     if not ok:
         raise HTTPException(400, "无任务可取消")
@@ -1704,10 +848,10 @@ def preprocess_diagnostics(ref_id: str):
     counts + sample first 8 matches, the detected winner, and the first
     400 chars of the text. Use this when the chapter list looks wrong —
     it tells you which pattern won and what it matched."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, _PATTERNS as BUILTIN, _compile_extra,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
     db = _db()
@@ -1755,7 +899,7 @@ def preprocess_status(ref_id: str):
     Also includes the persisted detection result from segments_json
     when no in-process job is running — so the UI can render the last
     completed run after a server restart."""
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -1773,7 +917,7 @@ def preprocess_status(ref_id: str):
                 pass
         out = job.to_status()
         if job.state in ("done", "cancelled", "error"):
-            from analysis.feature_extraction.chapter_parser import (
+            from reference_pipeline.chapter_parser import (
                 visible_char_count, find_chapter_gaps,
             )
             out["chapters"] = [
@@ -1832,7 +976,7 @@ def preprocess_status(ref_id: str):
                 "last_removed_chapters": last_removed,
             }
         try:
-            from analysis.feature_extraction.chapter_parser import make_preview as _mp
+            from reference_pipeline.chapter_parser import make_preview as _mp
             file_path = w.get("file_path")
             raw_path = Path(str(file_path) + ".raw.txt") if file_path else None
             read_path = (raw_path if raw_path and raw_path.exists() else
@@ -1892,7 +1036,7 @@ def preprocess_status(ref_id: str):
                         pv = _mp(body)
                         c["preview_head"] = pv["head"]
                         c["preview_tail"] = pv["tail"]
-                        from analysis.feature_extraction.chapter_parser import (
+                        from reference_pipeline.chapter_parser import (
                             visible_char_count as _vcc,
                         )
                         c["char_count"] = _vcc(body)
@@ -1949,7 +1093,7 @@ async def preprocess_apply_exclusions(ref_id: str, body: ApplyExclusionsRequest)
     endpoints use — uses the persisted chapter list (no extra detect
     pass at the start), runs the heavy I/O + regex in a thread, and
     re-detects with only numbered patterns."""
-    from analysis.feature_extraction.chapter_parser import apply_exclusions
+    from reference_pipeline.chapter_parser import apply_exclusions
     raw_keys = [k for k in (body.excluded_chapters or []) if k != ""]
     if not raw_keys:
         raise HTTPException(400, "未选择任何章节")
@@ -2012,7 +1156,7 @@ async def preprocess_repair_garbled(ref_id: str):
          UI surfaces 「无法修复」 only for chapters where no automatic
          fix was possible.
     """
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         strip_deletable_garbled, repair_encoding, detect_encoding_mojibake,
         flag_garbled_chapters as _fg,
     )
@@ -2067,10 +1211,10 @@ def preprocess_aside_paragraphs(ref_id: str):
     user wants stripped from chapter bodies WITHOUT removing the whole
     chapter). Whole-chapter author entries (作者说章节 pattern) are not
     returned here — they have their own bulk-clean modal."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, detect_aside_paragraphs,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
     db = _db()
@@ -2099,13 +1243,13 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
     """Remove the specified paragraphs from their chapters and rewrite
     the file. Snapshots the original to .bak (same undo path as
     apply_exclusions). Other paragraphs in those chapters are kept."""
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         detect_chapters, apply_aside_paragraph_cleanup,
     )
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, _load_chapter_patterns,
     )
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -2139,7 +1283,7 @@ def preprocess_clean_aside_paragraphs(ref_id: str, body: CleanAsideParagraphsBod
     # Re-detect from the new text so the persisted chapter list stays
     # accurate after the cleanup. WITHOUT this the UI loses the
     # chapter list and falls back to the "匹配章节格式" empty state.
-    from analysis.feature_extraction.chapter_parser import (
+    from reference_pipeline.chapter_parser import (
         flag_author_notes, flag_length_outliers, make_preview, visible_char_count,
         find_chapter_gaps,
     )
@@ -2222,8 +1366,8 @@ async def preprocess_save_all(ref_id: str):
     table. Async so the full-file read (for offset-based content
     recovery) doesn't block the FastAPI event loop and freeze the
     UI on multi-MB works."""
-    from analysis.feature_extraction import preprocess_jobs
-    from analysis.feature_extraction.chapter_parser import visible_char_count
+    from reference_pipeline import preprocess_jobs
+    from reference_pipeline.chapter_parser import visible_char_count
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -2291,7 +1435,7 @@ async def preprocess_save_all(ref_id: str):
     # a thread too.
     def _write_rows():
         with sqlite3.connect(db.db_path) as conn:
-            from database.reference_schema import ensure_reference_tables
+            from storage.reference_schema import ensure_reference_tables
             ensure_reference_tables(conn)
             conn.execute("DELETE FROM reference_chapters WHERE ref_id = ?", (ref_id,))
             conn.executemany(
@@ -2320,7 +1464,7 @@ def preprocess_saved_summary(ref_id: str):
     import sqlite3
     db = _db()
     with sqlite3.connect(db.db_path) as conn:
-        from database.reference_schema import ensure_reference_tables
+        from storage.reference_schema import ensure_reference_tables
         ensure_reference_tables(conn)
         row = conn.execute(
             "SELECT COUNT(*), MAX(saved_at) FROM reference_chapters WHERE ref_id = ?",
@@ -2344,7 +1488,7 @@ def preprocess_export_text(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     with sqlite3.connect(db.db_path) as conn:
-        from database.reference_schema import ensure_reference_tables
+        from storage.reference_schema import ensure_reference_tables
         ensure_reference_tables(conn)
         rows = conn.execute(
             "SELECT number, raw_marker, title, content FROM reference_chapters "
@@ -2381,7 +1525,7 @@ def preprocess_saved_chapters(ref_id: str):
     import sqlite3
     db = _db()
     with sqlite3.connect(db.db_path) as conn:
-        from database.reference_schema import ensure_reference_tables
+        from storage.reference_schema import ensure_reference_tables
         ensure_reference_tables(conn)
         rows = conn.execute(
             "SELECT number, title, volume, char_count, is_author_note "
@@ -2407,7 +1551,7 @@ def preprocess_undo_exclusions(ref_id: str):
     """Restore the pre-apply text from the most recent .bak snapshot.
     Single-level undo — the next /apply_exclusions overwrites the backup,
     so undo only reaches back one step."""
-    from analysis.feature_extraction import preprocess_jobs
+    from reference_pipeline import preprocess_jobs
     db = _db()
     w = db.get_work(ref_id)
     if not w:
@@ -2464,7 +1608,7 @@ def rename_segment_title(ref_id: str, index: int, body: SegmentTitleUpdate):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return pipe.rename_segment_title(ref_id, index, body.title)
     except ValueError as e:
@@ -2484,7 +1628,7 @@ def auto_suggest_plan(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return pipe.suggest_auto_plan(ref_id)
     except ValueError as e:
@@ -2513,7 +1657,7 @@ async def ai_detect_plan(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return await pipe.ai_suggest_volume_plan(ref_id)
     except ValueError as e:
@@ -2532,7 +1676,7 @@ def ai_detect_plan_prompt(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return pipe.render_volume_detect_prompt(ref_id)
     except ValueError as e:
@@ -2574,7 +1718,7 @@ async def preview_segment(ref_id: str, body: SegmentRunRequest):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         result = await pipe.compute_segment(
             ref_id, body.segment_index,
@@ -2627,13 +1771,13 @@ async def extract_chunk(ref_id: str, segment_index: int, chunk_index: int,
         raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
 
     try:
-        from analysis.feature_extraction.pipeline import (
+        from reference_pipeline.pipeline import (
             FeatureExtractionPipeline, build_work_ctx,
         )
-        from analysis.feature_extraction.ai_extractor import (
+        from reference_pipeline.ai_extractor import (
             build_segment_text_chunks, ai_extract_outline_events,
         )
-        from models.router import ModelRouter
+        from llm.router import ModelRouter
 
         pipe = FeatureExtractionPipeline(db.db_path)
         text = pipe._load_text(w)
@@ -2736,10 +1880,10 @@ async def _resolve_chunk(
     """Shared lookup for per-chunk extractors: returns
     (chunk_chapters, chunk_meta, total_chunks, work_ctx). Raises
     HTTPException on missing data."""
-    from analysis.feature_extraction.pipeline import (
+    from reference_pipeline.pipeline import (
         FeatureExtractionPipeline, build_work_ctx,
     )
-    from analysis.feature_extraction.ai_extractor import build_segment_text_chunks
+    from reference_pipeline.ai_extractor import build_segment_text_chunks
 
     if max_chars < 4_000 or max_chars > 200_000:
         raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
@@ -2794,8 +1938,8 @@ async def extract_chunk_characters(
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.ai_extractor import ai_extract_characters
-        from models.router import ModelRouter
+        from reference_pipeline.ai_extractor import ai_extract_characters
+        from llm.router import ModelRouter
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
         )
@@ -2859,8 +2003,8 @@ async def extract_chunk_settings(
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.ai_extractor import ai_extract_settings
-        from models.router import ModelRouter
+        from reference_pipeline.ai_extractor import ai_extract_settings
+        from llm.router import ModelRouter
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
         )
@@ -2934,9 +2078,9 @@ async def extract_chunk_all(
     import time as _time
     t0 = _time.perf_counter()
     try:
-        from analysis.feature_extraction.nlp_stats import compute_nlp_style
-        from analysis.feature_extraction.ai_extractor import ai_extract_all
-        from models.router import ModelRouter
+        from reference_pipeline.nlp_stats import compute_nlp_style
+        from reference_pipeline.ai_extractor import ai_extract_all
+        from llm.router import ModelRouter
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
         )
@@ -3012,7 +2156,7 @@ async def extract_chunk_style(
     import time as _time
     t0 = _time.perf_counter()
     try:
-        from analysis.feature_extraction.nlp_stats import compute_nlp_style
+        from reference_pipeline.nlp_stats import compute_nlp_style
         chunk_chapters, chunk_meta, total, work_ctx = await _resolve_chunk(
             db, w, ref_id, segment_index, chunk_index, body.max_chars,
         )
@@ -3020,8 +2164,8 @@ async def extract_chunk_style(
         ai: dict = {}
         errors: list[str] = []
         if body.use_ai:
-            from analysis.feature_extraction.ai_extractor import ai_extract_style
-            from models.router import ModelRouter
+            from reference_pipeline.ai_extractor import ai_extract_style
+            from llm.router import ModelRouter
             try:
                 router_inst = ModelRouter()
             except Exception as e:
@@ -3074,8 +2218,8 @@ def list_segment_chunks(ref_id: str, segment_index: int, max_chars: int = 32_000
     if max_chars < 4_000 or max_chars > 200_000:
         raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
-        from analysis.feature_extraction.ai_extractor import build_segment_text_chunks
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.ai_extractor import build_segment_text_chunks
 
         pipe = FeatureExtractionPipeline(db.db_path)
         text = pipe._load_text(w)
@@ -3124,7 +2268,7 @@ def commit_segment(ref_id: str, body: SegmentCommitRequest):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return pipe.persist_segment(ref_id, body.result, merge_after=body.merge_after)
     except ValueError as e:
@@ -3141,7 +2285,7 @@ async def run_segment(ref_id: str, body: SegmentRunRequest):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         return await pipe.run_segment(
             ref_id, body.segment_index,
@@ -3164,7 +2308,7 @@ def finalize_segments(ref_id: str):
     if not w:
         raise HTTPException(404, "参考作品不存在")
     try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
+        from reference_pipeline.pipeline import FeatureExtractionPipeline
         pipe = FeatureExtractionPipeline(db.db_path)
         out = pipe.finalize_segments(ref_id)
         updated = db.get_work(ref_id)
@@ -3248,8 +2392,8 @@ async def chat_segment(ref_id: str, body: SegmentChatRequest):
         raise HTTPException(400, "对话内容为空")
 
     try:
-        from models.router import ModelRouter
-        from models.base import LLMMessage
+        from llm.router import ModelRouter
+        from llm.base import LLMMessage
         router_inst = ModelRouter()
     except Exception as e:
         raise HTTPException(500, f"模型路由初始化失败：{e}")
@@ -3267,7 +2411,7 @@ async def chat_segment(ref_id: str, body: SegmentChatRequest):
     )
 
     try:
-        from analysis.feature_extraction.prompts import render as _render_prompt
+        from reference_pipeline.prompts import render as _render_prompt
         system_prompt = _render_prompt(
             "reference.chat_system",
             override=body.system_prompt_override,
@@ -3324,1102 +2468,3 @@ async def chat_segment(ref_id: str, body: SegmentChatRequest):
     }
 
 
-@router.post("/works/{ref_id}/plot_outline/extract")
-def extract_plot_outline_only(ref_id: str):
-    """Re-extract plot outline from chapter splits + existing narrative analysis.
-    Useful for iterating on the outline without re-running the whole pipeline.
-    """
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    try:
-        from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
-        from analysis.feature_extraction.narrative_extractor import (
-            extract_narrative, extract_plot_outline,
-        )
-        pipe = FeatureExtractionPipeline(db.db_path)
-        text = pipe._load_text(w)
-        if not text:
-            raise HTTPException(400, "缺少正文文本，无法提取大纲")
-        chapters = pipe._split_chapters(text)
-        narr = None
-        if w.get("narrative_structure_json"):
-            try:
-                narr = json.loads(w["narrative_structure_json"])
-            except Exception:
-                narr = None
-        if not narr:
-            narr = extract_narrative(chapters)
-        plot = extract_plot_outline(chapters, narrative=narr)
-        updated = db.update_work(ref_id, plot_outline_json=json.dumps(plot, ensure_ascii=False))
-        return updated
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"剧情大纲提取失败: {e}")
-
-
-@router.put("/works/{ref_id}/analysis")
-def update_analysis(ref_id: str, body: AnalysisUpdate):
-    if body.field not in _ANALYSIS_FIELDS:
-        raise HTTPException(400, f"无效字段: {body.field}。允许: {', '.join(sorted(_ANALYSIS_FIELDS))}")
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    updated = db.update_work(ref_id, **{body.field: json.dumps(body.data, ensure_ascii=False)})
-    if not updated:
-        raise HTTPException(500, "更新失败")
-    return updated
-
-
-# ═══ LoRA Training ══════════════════════════════════════
-
-import asyncio
-import logging
-
-_lora_logger = logging.getLogger("inkoctobot.ui.backend.lora_training")
-_lora_status: dict = {"status": "idle"}
-
-
-class LoRATrainRequest(BaseModel):
-    work_ids: list[str]
-    base_model: str = "Qwen/Qwen2-1.5B"
-    rank: int = 16
-    alpha: int = 32
-    epochs: int = 3
-    learning_rate: float = 2e-4
-    use_4bit: bool = True
-
-
-@router.post("/lora/train")
-async def start_lora_training(body: LoRATrainRequest):
-    global _lora_status
-    if _lora_status.get("status") == "running":
-        raise HTTPException(409, "训练任务已在进行中")
-    if not body.work_ids:
-        raise HTTPException(400, "请至少选择一个参考作品")
-
-    _lora_status = {
-        "status": "running",
-        "work_ids": body.work_ids,
-        "progress": "初始化...",
-        "error": None,
-    }
-    asyncio.create_task(_run_lora_training(body))
-    return {"status": "started", "work_ids": body.work_ids}
-
-
-async def _run_lora_training(body: LoRATrainRequest):
-    global _lora_status
-    try:
-        import tempfile
-        from preprocessing.lora.data_constructor import construct_sft_data, save_dataset
-        from preprocessing.lora.quality_filter import filter_samples
-        from preprocessing.lora.trainer import train_lora, LoRATrainConfig
-
-        db = _db()
-        all_samples = []
-        _lora_status["progress"] = f"正在为 {len(body.work_ids)} 个作品构造训练数据..."
-
-        for ref_id in body.work_ids:
-            work = db.get_work(ref_id)
-            if not work:
-                continue
-            # Get full text from file
-            file_path = work.get("file_path", "")
-            if not file_path or not Path(file_path).exists():
-                continue
-            text = Path(file_path).read_text("utf-8", errors="replace")
-            # Simple chapter splitting by double newlines
-            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-            chapters = [{"content": p, "title": f"段落{i+1}", "index": i} for i, p in enumerate(paragraphs) if len(p) > 100]
-
-            style_fp = None
-            if work.get("style_fingerprint_json"):
-                try:
-                    style_fp = json.loads(work["style_fingerprint_json"])
-                except Exception:
-                    pass
-
-            samples = construct_sft_data(
-                chapters, task_type="style_transfer",
-                style_fingerprint=style_fp,
-                metadata={"ref_id": ref_id, "title": work.get("title", "")},
-            )
-            all_samples.extend(samples)
-
-        if not all_samples:
-            _lora_status = {"status": "error", "error": "没有可用的训练数据。请确保参考作品有上传全文。"}
-            return
-
-        _lora_status["progress"] = f"质量过滤 {len(all_samples)} 个样本..."
-        filtered = filter_samples(all_samples)
-        passed = filtered.passed if hasattr(filtered, "passed") else all_samples
-
-        if not passed:
-            _lora_status = {"status": "error", "error": "所有样本都被过滤掉了"}
-            return
-
-        _lora_status["progress"] = f"保存 {len(passed)} 个样本到数据集..."
-        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w") as f:
-            dataset_path = f.name
-        save_dataset(passed, dataset_path)
-
-        output_dir = str(settings.repo_root / "data" / "lora_output")
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-        config = LoRATrainConfig(
-            base_model=body.base_model,
-            rank=body.rank,
-            alpha=body.alpha,
-            epochs=body.epochs,
-            learning_rate=body.learning_rate,
-            use_4bit=body.use_4bit,
-        )
-
-        _lora_status["progress"] = "开始 LoRA 训练..."
-
-        # Run training in executor to not block event loop
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, train_lora, config, dataset_path, output_dir)
-
-        _lora_status = {
-            "status": "done",
-            "result": result,
-            "progress": "训练完成！",
-            "samples_used": len(passed),
-        }
-
-    except Exception as e:
-        _lora_logger.error("LoRA training error: %s", e, exc_info=True)
-        _lora_status = {"status": "error", "error": str(e)[:500]}
-
-
-@router.get("/lora/status")
-def lora_training_status():
-    return _lora_status
-
-# ═══ AI metadata completion (web search) ═══════════════════
-
-_AI_COMPLETE_PROMPT = """请通过联网搜索查询以下 {media_type_zh}　的基本信息，并返回严格 JSON。
-
-标题：《{title}》
-{author_hint}
-
-请填写以下字段（找不到的字段保留空字符串/null，不要编造）：
-- creator: 作者全名（中文优先；电影/动漫/电视剧填导演或制作组）
-- genres: 题材标签列表，3-5 个，例如 ["都市", "异术超能", "穿越"]
-- serial_status: 作品状态，必须是 "ongoing"（连载中）/ "completed"（已完结）/ "hiatus"（停更）/ "unknown" 之一
-- summary: 一句话梗概，≤ 50 字
-
-只返回如下结构的 JSON 对象（不要 markdown 代码块）：
-{{"creator":"","genres":[],"serial_status":"unknown","summary":""}}
-"""
-
-_MEDIA_ZH = {
-    "web_novel": "网文小说", "literature": "文学作品", "poetry": "诗歌作品",
-    "film": "电影", "anime": "动漫", "tv_series": "电视剧", "other": "作品",
-}
-
-
-# ─── Prompt template registry (read / write / preview) ───
-
-class PromptUpdateRequest(BaseModel):
-    template: Optional[str] = None  # non-null = persist; null = reset to factory
-
-
-@router.get("/prompts")
-def list_prompts():
-    """List every registered prompt key with description + has_override flag."""
-    from analysis.feature_extraction.prompts import list_keys
-    return {"items": list_keys()}
-
-
-@router.get("/prompts/{key}")
-def get_prompt(key: str):
-    """Return the factory default + the current (possibly overridden) text."""
-    from analysis.feature_extraction.prompts import (
-        DEFAULT_PROMPTS, get_default, get_template,
-    )
-    if key not in DEFAULT_PROMPTS:
-        raise HTTPException(404, f"unknown prompt key: {key}")
-    entry = DEFAULT_PROMPTS[key]
-    default = get_default(key)
-    current = get_template(key)
-    return {
-        "key": key,
-        "description": entry.get("description", ""),
-        "vars": list(entry.get("vars") or []),
-        "default": default,
-        "current": current,
-        "has_override": current != default,
-    }
-
-
-@router.put("/prompts/{key}")
-def update_prompt(key: str, body: PromptUpdateRequest):
-    """Persist a new override (template != null) or reset to factory (null)."""
-    from analysis.feature_extraction.prompts import (
-        DEFAULT_PROMPTS, set_template, reset,
-    )
-    if key not in DEFAULT_PROMPTS:
-        raise HTTPException(404, f"unknown prompt key: {key}")
-    if body.template is None:
-        reset(key)
-    else:
-        set_template(key, body.template)
-    return get_prompt(key)
-
-
-class PromptPreviewRequest(BaseModel):
-    vars: dict[str, Any] = {}
-    override: Optional[str] = None
-
-
-@router.post("/prompts/{key}/render")
-def render_prompt(key: str, body: PromptPreviewRequest):
-    """Render the prompt with explicit vars (used by the preview UI). The
-    `override` field, if set, takes precedence over the persisted override
-    for THIS call only — nothing is saved."""
-    from analysis.feature_extraction.prompts import DEFAULT_PROMPTS, render
-    if key not in DEFAULT_PROMPTS:
-        raise HTTPException(404, f"unknown prompt key: {key}")
-    try:
-        rendered = render(key, override=body.override, **(body.vars or {}))
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    return {"key": key, "rendered": rendered}
-
-
-@router.get("/prompts/{key}/preview")
-def preview_prompt(
-    key: str,
-    ref_id: Optional[str] = None,
-    segment_index: Optional[int] = None,
-    project_id: Optional[str] = None,
-    chapter_id: Optional[str] = None,
-    chapter_num: int = 1,
-):
-    """Render the prompt with the real `vars` for a specific upcoming call.
-
-    For segment-scoped prompts (characters/settings/rhythm/chat_system),
-    the server loads the work, builds the segment text and splices it in,
-    so the UI shows EXACTLY what the model will see. For
-    `generation.single_agent`, when `project_id` is given, the full RAG
-    context is assembled so the preview matches what generation will use.
-    """
-    from analysis.feature_extraction.prompts import DEFAULT_PROMPTS, render, get_template
-    if key not in DEFAULT_PROMPTS:
-        raise HTTPException(404, f"unknown prompt key: {key}")
-
-    template = get_template(key)
-    entry = DEFAULT_PROMPTS[key]
-    required_vars = list(entry.get("vars") or [])
-
-    # If the prompt has no vars (e.g. chat_system), return as-is
-    if not required_vars:
-        return {"key": key, "template": template, "rendered": template, "vars": {}}
-
-    # Work-scoped (whole work, no segment): volume_detect just needs ref_id
-    if key == "reference.volume_detect":
-        if not ref_id:
-            raise HTTPException(400, "ref_id required for this prompt")
-        db = _db()
-        w = db.get_work(ref_id)
-        if not w:
-            raise HTTPException(404, "参考作品不存在")
-        try:
-            from analysis.feature_extraction.pipeline import FeatureExtractionPipeline
-            pipe = FeatureExtractionPipeline(db.db_path)
-            data = pipe.render_volume_detect_prompt(ref_id)
-            return {
-                "key": key, "template": template,
-                "rendered": data["prompt"],
-                "vars": {
-                    "title": data.get("title", ""),
-                    "n_chapters": data.get("total_chapters", 0),
-                },
-            }
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        except Exception as e:
-            raise HTTPException(500, f"构建预览失败: {e}")
-
-    # Segment-scoped: need ref_id + segment_index → build chapter text
-    if key in {"reference.characters", "reference.settings", "reference.rhythm",
-               "reference.outline", "reference.style", "reference.unified"}:
-        if not ref_id or segment_index is None:
-            raise HTTPException(400, "ref_id + segment_index required for this prompt")
-        db = _db()
-        w = db.get_work(ref_id)
-        if not w:
-            raise HTTPException(404, "参考作品不存在")
-        try:
-            from analysis.feature_extraction.pipeline import (
-                FeatureExtractionPipeline, build_work_ctx,
-            )
-            pipe = FeatureExtractionPipeline(db.db_path)
-            text = pipe._load_text(w)
-            if not text:
-                raise HTTPException(400, "作品尚未上传正文")
-            all_chapters = pipe._split_chapters(text)
-            # Honor the user's saved custom plan when previewing — the
-            # user expects to see the prompt for the SAME volume layout
-            # they configured, not the auto-detected fallback.
-            plan = pipe.get_effective_plan(ref_id, all_chapters)
-            segs = plan["segments"]
-            if not segs:
-                plan = pipe.plan_segments(all_chapters)
-                segs = plan["segments"]
-            if segment_index < 0 or segment_index >= len(segs):
-                raise HTTPException(400, "segment_index 超出范围")
-            seg = segs[segment_index]
-            seg_chapters = [
-                all_chapters[j - 1]
-                for j in range(seg["start_chapter"], seg["end_chapter"] + 1)
-            ]
-            from analysis.feature_extraction.ai_extractor import _build_segment_text
-            seg_text, nchars = _build_segment_text(seg_chapters)
-            ctx = build_work_ctx(w, seg, segment_index)
-            vars_: dict[str, Any] = {
-                **ctx,
-                "n_chapters": len(seg_chapters),
-                "n_chars": nchars,
-                "text": seg_text,
-                # Single-chunk default. The chunked preview endpoint
-                # (preview_chunks) supplies real values for these when
-                # the volume must be split for copy-to-web-LLM use.
-                "chunk_index_human": 1,
-                "total_chunks": 1,
-                "chunk_start_chapter": ctx.get("start_chapter", "?"),
-                "chunk_end_chapter": ctx.get("end_chapter", "?"),
-                "chunk_n_chapters": len(seg_chapters),
-            }
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(500, f"构建预览失败: {e}")
-        rendered = render(key, **vars_)
-        return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
-
-    # ai_complete: ref_id is enough (no segment needed)
-    if key == "reference.ai_complete":
-        if not ref_id:
-            raise HTTPException(400, "ref_id required for this prompt")
-        db = _db()
-        w = db.get_work(ref_id)
-        if not w:
-            raise HTTPException(404, "参考作品不存在")
-        author_hint = (
-            f"已知作者：{w['creator']}（可用作辅助检索；如有更准确的全名请覆盖）"
-            if w.get("creator") else "作者未知，请通过标题检索"
-        )
-        vars_ = {
-            "media_type_zh": _MEDIA_ZH.get(w.get("media_type", ""), "作品"),
-            "title": w.get("title", ""),
-            "author_hint": author_hint,
-        }
-        rendered = render(key, **vars_)
-        return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
-
-    # generation.single_agent: RAG-assembled, chapter-scoped. When a
-    # project (and optionally a chapter) is supplied, render the prompt
-    # with the SAME context that /quick-generate will use.
-    if key == "generation.single_agent" and project_id:
-        try:
-            from ui.backend.app.routers._rag_context import (
-                single_agent_vars, load_chapter_fields,
-            )
-            fields = load_chapter_fields(project_id, chapter_id or "")
-            vars_ = single_agent_vars(
-                project_id, chapter_num,
-                fields.get("synopsis", ""), fields.get("time_setting", ""),
-                fields.get("location", ""), fields.get("characters", []),
-                fields.get("existing_content", ""),
-            )
-            rendered = render(key, **vars_)
-            return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
-        except Exception as e:
-            raise HTTPException(500, f"构建预览失败: {e}")
-
-    # Fallback (assistant.* / generation.* / pipeline.* prompts): these
-    # are not work-scoped, so there are no real vars to splice. Render
-    # with placeholder values so the preview still shows the structure.
-    placeholder_vars = {v: f"〔{v}〕" for v in required_vars}
-    try:
-        rendered = render(key, **placeholder_vars)
-    except ValueError:
-        rendered = template
-    return {"key": key, "template": template, "rendered": rendered,
-            "vars": placeholder_vars}
-
-
-@router.get("/prompts/{key}/preview_chunks")
-def preview_prompt_chunks(
-    key: str,
-    ref_id: str,
-    segment_index: int,
-    max_chars: int = 32_000,
-):
-    """Render the prompt for a segment as **multiple** chunks so the
-    user can run an over-budget volume as N separate web-LLM calls
-    instead of having content silently truncated.
-
-    Returns::
-
-        {"key": ..., "total_chunks": N, "chunks": [
-            {"chunk_index": 0, "rendered": "...", "start_chapter": 1,
-             "end_chapter": 30, "n_chapters": 30, "n_chars": 28000}, ...
-        ]}
-
-    Currently only ``reference.outline`` supports chunking — it's the
-    only prompt that benefits from running each chunk independently
-    (characters / settings ideally see the full text). For other keys
-    this returns a single-chunk list, equivalent to the regular preview.
-    """
-    from analysis.feature_extraction.prompts import (
-        DEFAULT_PROMPTS, render, get_template,
-    )
-    if key not in DEFAULT_PROMPTS:
-        raise HTTPException(404, f"unknown prompt key: {key}")
-    if max_chars < 4_000 or max_chars > 200_000:
-        raise HTTPException(400, "max_chars 必须在 4000–200000 之间")
-
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    try:
-        from analysis.feature_extraction.pipeline import (
-            FeatureExtractionPipeline, build_work_ctx,
-        )
-        from analysis.feature_extraction.ai_extractor import (
-            build_segment_text_chunks,
-        )
-        pipe = FeatureExtractionPipeline(db.db_path)
-        text = pipe._load_text(w)
-        if not text:
-            raise HTTPException(400, "作品尚未上传正文")
-        all_chapters = pipe._split_chapters(text)
-        plan = pipe.get_effective_plan(ref_id, all_chapters)
-        segs = plan["segments"]
-        if not segs:
-            plan = pipe.plan_segments(all_chapters)
-            segs = plan["segments"]
-        if segment_index < 0 or segment_index >= len(segs):
-            raise HTTPException(400, "segment_index 超出范围")
-        seg = segs[segment_index]
-        seg_chapters = [
-            all_chapters[j - 1]
-            for j in range(seg["start_chapter"], seg["end_chapter"] + 1)
-        ]
-        ctx = build_work_ctx(w, seg, segment_index)
-
-        chunk_infos = build_segment_text_chunks(
-            seg_chapters, max_chars=max_chars,
-            segment_start_chapter=seg["start_chapter"],
-        )
-        if not chunk_infos:
-            return {"key": key, "total_chunks": 0, "chunks": []}
-
-        rendered_chunks: list[dict[str, Any]] = []
-        for ci in chunk_infos:
-            vars_: dict[str, Any] = {
-                **ctx,
-                "n_chapters": seg["end_chapter"] - seg["start_chapter"] + 1,
-                "n_chars": ci["n_chars"],
-                "text": ci["text"],
-                "chunk_index_human": ci["chunk_index"] + 1,
-                "total_chunks": ci["total_chunks"],
-                "chunk_start_chapter": ci["start_chapter"],
-                "chunk_end_chapter": ci["end_chapter"],
-                "chunk_n_chapters": ci["n_chapters"],
-            }
-            # reference.style / reference.unified reference {start_chapter}/
-            # {end_chapter}/{n_chapters} as the *chunk* range (they have no
-            # separate chunk_* vars), so narrow them to this chunk.
-            if key in ("reference.style", "reference.unified"):
-                vars_["start_chapter"] = ci["start_chapter"]
-                vars_["end_chapter"] = ci["end_chapter"]
-                vars_["n_chapters"] = ci["n_chapters"]
-            try:
-                rendered = render(key, **vars_)
-            except ValueError as e:
-                # If the user's custom template doesn't reference the new
-                # chunk vars, render still succeeds (only complains on
-                # missing required vars). Surface the underlying error.
-                raise HTTPException(400, str(e))
-            rendered_chunks.append({
-                "chunk_index": ci["chunk_index"],
-                "rendered": rendered,
-                "start_chapter": ci["start_chapter"],
-                "end_chapter": ci["end_chapter"],
-                "n_chapters": ci["n_chapters"],
-                "n_chars": ci["n_chars"],
-            })
-        return {
-            "key": key,
-            "total_chunks": len(rendered_chunks),
-            "chunks": rendered_chunks,
-            "volume": {
-                "index": segment_index,
-                "title": ctx.get("volume_title"),
-                "start_chapter": seg["start_chapter"],
-                "end_chapter": seg["end_chapter"],
-            },
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"构建分段预览失败: {e}")
-
-
-class OutlineSummaryPromptRequest(BaseModel):
-    ref_id: str
-    segment_index: int
-    # Flat list of event dicts (from one or more outline per-chunk runs).
-    # Each dict needs at least name+description; we strip unknown keys
-    # before embedding so the rendered prompt stays small.
-    events: list[dict]
-
-
-@router.post("/works/{ref_id}/chronicle/summarize")
-async def summarize_chronicle(ref_id: str):
-    """Run the chronological-summary AI pass on the currently-persisted
-    chronicle. Reads `plot_outline_json`, flattens all events from
-    all epochs/periods, sends them through `ai_summarize_outline`, and
-    returns the reorganized chronicle (does NOT auto-persist — the UI
-    decides whether to save the result).
-
-    On AI failure the response carries `error` + the rendered prompt
-    + the event list so the UI can switch the user to the manual
-    web-LLM path (copy prompt → run in browser → paste back)."""
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-
-    plot_raw = w.get("plot_outline_json") or "{}"
-    try:
-        plot = json.loads(plot_raw)
-    except Exception:
-        plot = {}
-    flat_events: list[dict] = []
-    for ep in (plot.get("epochs") or []):
-        if not isinstance(ep, dict):
-            continue
-        for per in (ep.get("periods") or []):
-            if not isinstance(per, dict):
-                continue
-            for ev in (per.get("events") or []):
-                if isinstance(ev, dict):
-                    flat_events.append(ev)
-    if not flat_events:
-        raise HTTPException(400, "编年史为空，没有事件可总结")
-
-    try:
-        from analysis.feature_extraction.pipeline import (
-            FeatureExtractionPipeline, build_work_ctx,
-        )
-        from analysis.feature_extraction.prompts import render
-        from analysis.feature_extraction.ai_extractor import (
-            _normalize_event, ai_summarize_outline,
-        )
-        pipe = FeatureExtractionPipeline(db.db_path)
-        text = pipe._load_text(w)
-        all_chapters = pipe._split_chapters(text) if text else []
-        # Build a synthetic work-wide ctx (segment 0 covers the whole work)
-        whole_segment = {
-            "title": w.get("title") or "全书",
-            "start_chapter": 1,
-            "end_chapter": len(all_chapters) or 0,
-        }
-        ctx = build_work_ctx(w, whole_segment, 0)
-
-        # Normalize+dedupe events so the prompt size stays sane.
-        seen: set[tuple] = set()
-        cleaned: list[dict] = []
-        for ev in flat_events:
-            n = _normalize_event(ev)
-            if n is None:
-                continue
-            sig = (n["subject"], n["name"], n["description"])
-            if sig in seen:
-                continue
-            seen.add(sig)
-            cleaned.append(n)
-
-        # Render the prompt up-front so we can return it on AI failure.
-        events_json = json.dumps(cleaned, ensure_ascii=False, indent=2)
-        rendered_prompt = render(
-            "reference.outline_summary",
-            title=ctx["title"], author=ctx["author"],
-            volume_index=ctx["volume_index"], volume_title=ctx["volume_title"],
-            start_chapter=ctx["start_chapter"], end_chapter=ctx["end_chapter"],
-            n_chapters=len(all_chapters) or 0,
-            event_count=len(cleaned), events_json=events_json,
-        )
-
-        try:
-            from models.router import ModelRouter
-            router_inst = ModelRouter()
-        except Exception as e:
-            return {
-                "ok": False,
-                "error": f"AI 路由初始化失败：{e}",
-                "rendered_prompt": rendered_prompt,
-                "event_count": len(cleaned),
-                "events": cleaned,
-            }
-        try:
-            chronicle = await ai_summarize_outline(
-                cleaned, router_inst, work_ctx=ctx,
-            )
-        except Exception as e:
-            return {
-                "ok": False,
-                "error": f"AI 总结失败：{str(e)[:200]}",
-                "rendered_prompt": rendered_prompt,
-                "event_count": len(cleaned),
-                "events": cleaned,
-            }
-        if not chronicle.get("epochs"):
-            return {
-                "ok": False,
-                "error": "AI 返回为空，请改用复制 prompt 以使用AI大模型网页版的方式",
-                "rendered_prompt": rendered_prompt,
-                "event_count": len(cleaned),
-                "events": cleaned,
-            }
-        return {
-            "ok": True,
-            "chronicle": chronicle,
-            "event_count": len(cleaned),
-            "rendered_prompt": rendered_prompt,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"总结失败: {e}")
-
-
-# ── Plot-outline granularity ────────────────────────────────────────
-# The chapter-level outline from preprocessing + feature extraction is
-# the finest grain. This lets the user condense it to a more macro view.
-
-_OUTLINE_LEVELS = {
-    "major_event": ("大事件级", "只保留推动主线与重要支线的关键事件，合并琐碎情节；事件总数约压缩到原来的三分之一。"),
-    "volume": ("卷级", "每个 epoch（卷 / 大阶段）只保留 3-6 个里程碑级事件，periods 大幅合并。"),
-    "book": ("全书级", "把整本书概括为 1 个 epoch、5-10 个事件，只呈现全书主干脉络。"),
-}
-
-
-class OutlineGranularityRequest(BaseModel):
-    level: str = "major_event"   # major_event | volume | book
-    prompt_only: bool = False
-
-
-def _build_granularity_prompt(plot: dict, level: str) -> str:
-    level_cn, level_hint = _OUTLINE_LEVELS[level]
-    return (
-        "[自动化数据抽取 · 不是对话] 你的输出会被 json.loads 直接解析；"
-        "任何非 JSON 字符都会导致失败。\n\n"
-        "下面是一部作品的「章节级」细颗粒度剧情大纲（编年史）。\n"
-        f"请把它**概括**为更宏观的「{level_cn}」颗粒度大纲：{level_hint}\n\n"
-        "严格禁止：寒暄 / 解释 / markdown 包装 / <think> 块 / JSON 之外的文字。\n"
-        "只输出以 { 开始、} 结束的合法 JSON，结构与输入保持一致：\n"
-        '{ "logline": "≤ 50 字一句话概括", "epochs": [ { "title": "大段标题", '
-        '"periods": [ { "title": "时间段标题", "time_marker": "可选时间锚点", '
-        '"events": [ { "subject": "主语", "category": '
-        '"plot_main|plot_side|character|setting|conflict|revelation|foreshadow|other", '
-        '"name": "事件名 ≤ 12 字", "description": "1-2 句客观描述", '
-        '"time_marker": "可选" } ] } ] } ] }\n\n'
-        "原始章节级大纲：\n"
-        + json.dumps(plot, ensure_ascii=False, indent=1)
-    )
-
-
-@router.post("/works/{ref_id}/plot_outline/summarize")
-async def summarize_plot_outline(ref_id: str, body: OutlineGranularityRequest):
-    """Condense the chapter-level plot outline to a coarser granularity
-    (大事件 / 卷 / 全书). Does NOT persist — the UI applies the result.
-    With prompt_only=true, returns the prompt for the web-LLM path."""
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    if body.level not in _OUTLINE_LEVELS:
-        raise HTTPException(400, f"无效的颗粒度：{body.level}")
-    try:
-        plot = json.loads(w.get("plot_outline_json") or "{}")
-    except Exception:
-        plot = {}
-    if not (isinstance(plot, dict) and plot.get("epochs")):
-        raise HTTPException(400, "暂无章节级剧情大纲，请先在「特征提取」中生成")
-    prompt = _build_granularity_prompt(plot, body.level)
-    if body.prompt_only:
-        return {"ok": True, "prompt": prompt}
-    try:
-        from models.router import ModelRouter
-        from models.base import LLMMessage
-        router_inst = ModelRouter()
-        provider = router_inst._get_provider("reference_extractor")
-        resp = await provider.generate(
-            [LLMMessage(role="user", content=prompt)],
-            temperature=0.2, max_tokens=4096,
-        )
-        result = json.loads(_strip_json_blob(resp.content or ""))
-    except Exception as e:
-        return {"ok": False, "error": f"AI 概括失败：{str(e)[:200]}", "prompt": prompt}
-    if not isinstance(result, dict) or not result.get("epochs"):
-        return {"ok": False, "error": "AI 返回为空，请改用复制 prompt 以使用AI大模型网页版的方式", "prompt": prompt}
-    return {"ok": True, "plot_outline": result}
-
-
-@router.post("/prompts/reference.outline_summary/render")
-def render_outline_summary_prompt(body: OutlineSummaryPromptRequest):
-    """Render the chronological-summary prompt with the user's
-    accumulated events spliced in. Step 2 of the manual outline flow:
-    after running all per-chunk extraction prompts and accumulating
-    events, the user calls this to get a ready-to-copy summary prompt
-    that asks the LLM to reorder by story-time + group into periods/epochs.
-
-    POST (not GET) because the events array can be large and shouldn't
-    sit in a URL. The endpoint itself does no AI work — it just renders."""
-    db = _db()
-    w = db.get_work(body.ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    try:
-        from analysis.feature_extraction.pipeline import (
-            FeatureExtractionPipeline, build_work_ctx,
-        )
-        from analysis.feature_extraction.prompts import render
-        from analysis.feature_extraction.ai_extractor import _normalize_event
-
-        pipe = FeatureExtractionPipeline(db.db_path)
-        text = pipe._load_text(w)
-        if not text:
-            raise HTTPException(400, "作品尚未上传正文")
-        all_chapters = pipe._split_chapters(text)
-        plan = pipe.get_effective_plan(body.ref_id, all_chapters)
-        segs = plan["segments"]
-        if not segs:
-            plan = pipe.plan_segments(all_chapters)
-            segs = plan["segments"]
-        if body.segment_index < 0 or body.segment_index >= len(segs):
-            raise HTTPException(400, "segment_index 超出范围")
-        seg = segs[body.segment_index]
-        ctx = build_work_ctx(w, seg, body.segment_index)
-
-        # Normalize and dedupe events on (subject, name, description)
-        # so accidental double-pastes don't bloat the rendered prompt.
-        seen: set[tuple] = set()
-        cleaned: list[dict] = []
-        for ev in body.events or []:
-            n = _normalize_event(ev)
-            if n is None:
-                continue
-            sig = (n["subject"], n["name"], n["description"])
-            if sig in seen:
-                continue
-            seen.add(sig)
-            cleaned.append(n)
-
-        events_json = json.dumps(cleaned, ensure_ascii=False, indent=2)
-        rendered = render(
-            "reference.outline_summary",
-            title=ctx["title"], author=ctx["author"],
-            volume_index=ctx["volume_index"], volume_title=ctx["volume_title"],
-            start_chapter=ctx["start_chapter"], end_chapter=ctx["end_chapter"],
-            n_chapters=seg["end_chapter"] - seg["start_chapter"] + 1,
-            event_count=len(cleaned), events_json=events_json,
-        )
-        return {
-            "key": "reference.outline_summary",
-            "rendered": rendered,
-            "event_count": len(cleaned),
-            "dropped": len(body.events or []) - len(cleaned),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"构建总结 prompt 失败: {e}")
-
-
-@router.get("/web_search/capability")
-def web_search_capability():
-    """Return whether the configured ``reference_web_search`` role's
-    provider+model is in the known web-search-capable set."""
-    try:
-        from models.router import ModelRouter
-        from models.web_search_capabilities import supports_web_search, describe
-        router_inst = ModelRouter()
-        provider, model = router_inst.resolve_role("reference_web_search")
-        enabled = supports_web_search(provider, model)
-        return {
-            "enabled": enabled,
-            "provider": provider, "model": model,
-            "reason": describe(provider, model),
-        }
-    except Exception as e:
-        return {
-            "enabled": False, "provider": "", "model": "",
-            "reason": f"加载模型路由失败：{e}",
-        }
-
-
-def _strip_json_blob(raw: str) -> str:
-    import re as _re
-    s = (raw or "").strip()
-    fence = _re.match(r"^```(?:json)?\s*(.*?)\s*```$", s, _re.DOTALL)
-    if fence:
-        s = fence.group(1).strip()
-    a = s.find("{")
-    b = s.rfind("}")
-    if 0 <= a < b:
-        s = s[a:b+1]
-    return s
-
-
-class AiCompleteRequest(BaseModel):
-    prompt_override: Optional[str] = None  # per-call override
-
-
-@router.post("/works/{ref_id}/ai_complete")
-async def ai_complete_work(ref_id: str, body: AiCompleteRequest | None = None):
-    """Use the configured ``reference_web_search`` model to fill in
-    metadata fields (creator/genre/serial_status/user_summary). Only
-    fills fields the user hasn't already set; user edits are preserved."""
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-
-    try:
-        from models.router import ModelRouter
-        from models.web_search_capabilities import supports_web_search, describe
-        router_inst = ModelRouter()
-        provider, model = router_inst.resolve_role("reference_web_search")
-    except Exception as e:
-        raise HTTPException(500, f"模型路由初始化失败：{e}")
-
-    if not supports_web_search(provider, model):
-        raise HTTPException(400, describe(provider, model))
-
-    author_hint = (
-        f"已知作者：{w['creator']}（可用作辅助检索；如有更准确的全名请覆盖）"
-        if w.get("creator") else "作者未知，请通过标题检索"
-    )
-    from analysis.feature_extraction.prompts import render as _render_prompt
-    prompt = _render_prompt(
-        "reference.ai_complete",
-        override=(body.prompt_override if body else None),
-        media_type_zh=_MEDIA_ZH.get(w.get("media_type", ""), "作品"),
-        title=w.get("title", ""),
-        author_hint=author_hint,
-    )
-
-    try:
-        raw = await router_inst.invoke_with_web_search(
-            role="reference_web_search", prompt=prompt,
-            max_tokens=1024, temperature=0.2,
-        )
-    except NotImplementedError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(502, f"联网调用失败：{e}")
-
-    try:
-        result = json.loads(_strip_json_blob(raw))
-        if not isinstance(result, dict):
-            raise ValueError("response is not a JSON object")
-    except Exception as e:
-        raise HTTPException(502, f"模型返回的 JSON 无法解析：{e}")
-
-    # Only fill empty fields (preserve user edits)
-    fields: dict = {}
-    updated_keys: list[str] = []
-
-    def _has(k: str) -> bool:
-        v = w.get(k)
-        return v not in (None, "", 0)
-
-    new_creator = (result.get("creator") or "").strip()
-    if new_creator and not _has("creator"):
-        fields["creator"] = new_creator; updated_keys.append("作者")
-
-    new_genres = result.get("genres") or []
-    if isinstance(new_genres, list) and not _has("genre"):
-        parts = [str(g).strip() for g in new_genres if str(g).strip()]
-        if parts:
-            fields["genre"] = "，".join(parts[:5])
-            updated_keys.append("题材")
-
-    new_serial = (result.get("serial_status") or "").strip().lower()
-    if new_serial in _SERIAL_STATUS_VALUES and not _has("serial_status"):
-        fields["serial_status"] = new_serial
-        updated_keys.append("连载状态")
-
-    new_summary = (result.get("summary") or "").strip()
-    if new_summary and not _has("user_summary"):
-        fields["user_summary"] = new_summary[:200]
-        updated_keys.append("一句话梗概")
-
-    if not fields:
-        return {
-            "work": w, "updated_keys": [],
-            "message": "已有字段均不为空，未做修改（如需重新生成请先清空字段）。",
-            "provider": provider, "model": model,
-            "raw_response": result,
-        }
-
-    updated = db.update_work(ref_id, **fields)
-    return {
-        "work": updated, "updated_keys": updated_keys,
-        "provider": provider, "model": model,
-        "raw_response": result,
-    }
-
-
-# ═══ Vector index + similarity search ═════════════════════════════
-
-class IndexRunRequest(BaseModel):
-    level: str = "all"   # 'L1' | 'L2' | 'L3' | 'all' (= L1 + L2)
-    include_l3: bool = False
-
-
-def _indexer():
-    """Lazily build a WorkIndexer using the configured embedding backend.
-    Raises HTTPException(503) with a clear message if any dep is missing."""
-    try:
-        from rag.work_index import make_indexer
-        db = _db()
-        return make_indexer(db.db_path)
-    except ImportError as e:
-        raise HTTPException(503, f"向量索引依赖缺失：{e}")
-    except Exception as e:
-        raise HTTPException(500, f"索引器初始化失败：{e}")
-
-
-@router.post("/works/{ref_id}/index/run")
-async def run_work_index(ref_id: str, body: IndexRunRequest):
-    """Build / refresh the vector index for one work. L1+L2 are cheap and
-    finish in-line; L3 is heavier but resumable (progress is persisted to
-    work_index_progress so the call can be killed and restarted)."""
-    db = _db()
-    w = db.get_work(ref_id)
-    if not w:
-        raise HTTPException(404, "参考作品不存在")
-    indexer = _indexer()
-    try:
-        if body.level == "L1":
-            return await indexer.index_l1(ref_id)
-        if body.level == "L2":
-            return await indexer.index_l2(ref_id)
-        if body.level == "L3":
-            return await indexer.index_l3(ref_id)
-        # default: all
-        return await indexer.index_all(ref_id, include_l3=body.include_l3)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"索引失败：{e}")
-
-
-@router.get("/works/{ref_id}/index/progress")
-def get_index_progress(ref_id: str):
-    """Per-level progress (L1/L2/L3) for resumable indexing UI."""
-    indexer = _indexer()
-    return {"items": indexer.get_progress(ref_id)}
-
-
-@router.delete("/works/{ref_id}/index")
-def clear_work_index(ref_id: str, level: Optional[str] = None):
-    """Drop a work's vectors (optionally limit to one level)."""
-    indexer = _indexer()
-    levels = [level] if level else None
-    indexer.clear_work(ref_id, levels=levels)
-    return {"ok": True}
-
-
-@router.get("/search")
-async def search_works(
-    q: str = Query(..., description="自然语言查询"),
-    k: int = Query(10, ge=1, le=50),
-    levels: str = Query("L1,L2", description="L1,L2 (默认) 或 L3 (单作品深度搜索)"),
-    ref_id: Optional[str] = None,
-):
-    """Two-stage retrieval. Default is Stage 1 (L1+L2 across all works).
-    Pass ``levels=L3&ref_id=...`` to drill into one work's raw chunks."""
-    indexer = _indexer()
-    level_list = [s.strip() for s in (levels or "L1,L2").split(",") if s.strip()]
-    if "L3" in level_list and not ref_id:
-        raise HTTPException(400, "L3 深度搜索需要指定 ref_id")
-    try:
-        hits = await indexer.search(q, k=k, levels=level_list, ref_id=ref_id)
-        return {"q": q, "k": k, "levels": level_list, "hits": hits}
-    except Exception as e:
-        raise HTTPException(500, f"搜索失败：{e}")
-
-
-# ═══ Inspiration library ═════════════════════════════════
-# A personal store of free-text idea snippets (scenes / plot devices /
-# character designs / …). Each entry can be used as a query to fuzzy-
-# search the reference works via the existing /search endpoint.
-
-
-class InspirationCreate(BaseModel):
-    category: str = "other"
-    title: str = ""
-    content: str
-
-
-class InspirationUpdate(BaseModel):
-    category: Optional[str] = None
-    title: Optional[str] = None
-    content: Optional[str] = None
-
-
-@router.get("/inspirations")
-def list_inspirations():
-    """All inspirations, newest-updated first."""
-    return {"items": _db().list_inspirations()}
-
-
-@router.post("/inspirations")
-def create_inspiration(body: InspirationCreate):
-    content = (body.content or "").strip()
-    if not content:
-        raise HTTPException(400, "灵感内容不能为空")
-    return _db().create_inspiration(
-        (body.category or "other").strip() or "other",
-        (body.title or "").strip(),
-        content,
-    )
-
-
-@router.put("/inspirations/{insp_id}")
-def update_inspiration(insp_id: str, body: InspirationUpdate):
-    if not _db().get_inspiration(insp_id):
-        raise HTTPException(404, "灵感不存在")
-    fields: dict = {}
-    if body.category is not None:
-        fields["category"] = body.category.strip() or "other"
-    if body.title is not None:
-        fields["title"] = body.title.strip()
-    if body.content is not None:
-        content = body.content.strip()
-        if not content:
-            raise HTTPException(400, "灵感内容不能为空")
-        fields["content"] = content
-    return _db().update_inspiration(insp_id, **fields)
-
-
-@router.delete("/inspirations/{insp_id}")
-def delete_inspiration(insp_id: str):
-    if not _db().delete_inspiration(insp_id):
-        raise HTTPException(404, "灵感不存在")
-    return {"ok": True}

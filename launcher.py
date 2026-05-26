@@ -8,32 +8,43 @@ import sys
 import threading
 import time
 from pathlib import Path
-from core.log_setup import setup_logging
+from framework.log_setup import setup_logging
 import uvicorn
 import webview
 
 
-# ---------- 跨平台日志目录 ----------
+# ---------- Log directory ----------
+# Source-tree runs (the common case): write to <repo>/outputs/logs/ so
+# developers can find logs alongside the code. Each launch produces a
+# fresh timestamped file via setup_logging's default naming, so old
+# logs aren't overwritten.
+#
+# PyInstaller-packaged runs (sys._MEIPASS exists): use the OS user-state
+# dir so the exe doesn't try to write inside the read-only bundle.
 def _log_dir() -> Path:
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    elif sys.platform == "darwin":
-        base = str(Path.home() / "Library" / "Logs")
+    if hasattr(sys, "_MEIPASS"):
+        # Packaged: write to OS user-state directory
+        if os.name == "nt":
+            base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+        elif sys.platform == "darwin":
+            base = str(Path.home() / "Library" / "Logs")
+        else:
+            base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+        d = Path(base) / "InkOctoBot" / "logs"
     else:
-        base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-    d = Path(base) / "InkOctoBot"
+        # Source run: write into the repo's outputs/logs/ directory.
+        d = Path(__file__).resolve().parent / "outputs" / "logs"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-LOG_PATH = _log_dir() / "launcher.log"
+# log_filename=None → setup_logging auto-generates inkoctobot_<timestamp>.log
 setup_logging(
     log_dir=_log_dir(),
     console_level=logging.WARNING,
-    log_filename="launcher.log",
 )
 logger = logging.getLogger("inkoctobot.launcher")
-logging.info("Launcher starting...")
+logger.info("Launcher starting (log dir=%s)", _log_dir())
 
 HOST = "127.0.0.1"
 PORT = 8713
@@ -74,6 +85,28 @@ def wait_for_server(host, port, timeout=15):
     return False
 
 
+def _auto_migrate_split_dbs(data_dir: Path) -> None:
+    """One-time migration: move reference + inspiration tables out of
+    novels.db into their own files.
+
+    Safe + idempotent — bails if there's nothing to do or if the
+    destination already has data. See scripts/migrate_split_dbs.py.
+    """
+    try:
+        from scripts.migrate_split_dbs import needs_migration, migrate
+        if needs_migration(data_dir):
+            logger.info("Auto-running DB split migration on %s", data_dir)
+            summary = migrate(data_dir)
+            for label, tables in summary.items():
+                total = sum(tables.values())
+                if total:
+                    logger.info("Migrated %d rows to %s.db (%s)", total, label, tables)
+    except Exception as e:
+        # Non-fatal — log + continue. Legacy fallback still leaves data
+        # accessible; user can fix manually with the CLI script.
+        logger.warning("DB split migration skipped: %s", e, exc_info=True)
+
+
 def run_server(test_mode: bool = False):
     root = _project_root()
     if str(root) not in sys.path:
@@ -86,8 +119,10 @@ def run_server(test_mode: bool = False):
         os.environ["WN_REPO_ROOT"] = str(root)
         os.environ["WN_DATA_DIR"] = str(test_data_dir)
         os.environ["WN_TEST_MODE"] = "1"
+        _auto_migrate_split_dbs(test_data_dir)
     else:
         os.environ.setdefault("WN_REPO_ROOT", str(root))
+        _auto_migrate_split_dbs(root / "data")
 
     from ui.backend.app.main import app
     uvicorn.run(app, host=HOST, port=PORT, reload=False, log_level="info")

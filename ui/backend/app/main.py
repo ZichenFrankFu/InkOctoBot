@@ -7,9 +7,9 @@ from fastapi.staticfiles import StaticFiles
 
 # ── Core data routers ──
 from .routers.reports_api import router as reports_router
-from .routers.db_api import router as db_router
+from .routers.market_db_api import router as db_router
 from .routers.analysis_api import router as analysis_router
-from .routers.data_api import router as data_router
+from .routers.json_storage_api import router as data_router
 from .routers.reference_api import router as reference_router
 from .routers.extraction_api import router as extraction_router
 from .routers.marketing_api import router as marketing_router
@@ -22,7 +22,7 @@ from .routers.prompt_api import router as prompt_router
 
 # ── Editor & content routers ──
 from .routers.editor_api import router as editor_router
-from .routers.eval_api import router as eval_router
+from .routers.evaluation_api import router as eval_router
 from .routers.version_api import router as version_router
 
 # ── Management routers ──
@@ -33,9 +33,14 @@ from .routers.worldbook_api import router as worldbook_router
 from .routers.security_api import router as security_router
 from .routers.project_api import router as project_router
 from .routers.skill_api import router as skill_router
-from .routers.dev_api import router as dev_router
+from .routers.dev_actions_api import router as dev_router
+from .routers.debug_api import router as debug_router
 
 app = FastAPI(title="InkOctoBot — AI 小说智能体工作台", version="2.1.0")
+# Bind a trace_id per HTTP request so every log line emitted while
+# handling the request is correlatable; echoed back via X-Request-ID.
+from framework.observability.request_middleware import TraceIDMiddleware
+app.add_middleware(TraceIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"],
@@ -73,8 +78,10 @@ app.include_router(security_router)
 app.include_router(project_router)
 app.include_router(skill_router)
 
-# Dev tools
+# Dev tools (actions: health-check, seed-test-data)
 app.include_router(dev_router, prefix="/api")
+# Observability / debug (read-only: logs, traces, diagnostics)
+app.include_router(debug_router)
 
 
 @app.get("/health")

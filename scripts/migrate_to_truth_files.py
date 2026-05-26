@@ -22,8 +22,8 @@ PROJECT_ROOT = HERE.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from rag.truth.migrate import migrate_all  # noqa: E402
-from rag.truth.store import TruthFileStore  # noqa: E402
+from knowledge.truth.migrate import migrate_all  # noqa: E402
+from knowledge.truth.store import TruthFileStore  # noqa: E402
 
 
 _ALL_SOURCES = (
