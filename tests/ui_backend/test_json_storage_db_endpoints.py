@@ -163,6 +163,118 @@ class TestWorldbookEndpoints(unittest.TestCase):
         )
 
 
+class TestStorylineEndpoints(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.client = _client(self.tmp)
+
+    def test_put_then_get(self) -> None:
+        resp = self.client.put(
+            "/data/storyline",
+            json={"project_id": "p1",
+                  "nodes": [
+                      {"id": "n1", "title": "起", "chapter_num": 1,
+                       "x": 10, "y": 20},
+                      {"id": "n2", "title": "承", "chapter_num": 2},
+                  ],
+                  "edges": [
+                      {"id": "e1", "from": "n1", "to": "n2", "label": "导致"},
+                  ]},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        g = self.client.get("/data/storyline?project_id=p1").json()
+        self.assertEqual(len(g["nodes"]), 2)
+        self.assertEqual(g["edges"][0]["label"], "导致")
+
+    def test_empty_default(self) -> None:
+        g = self.client.get("/data/storyline?project_id=unknown").json()
+        self.assertEqual(g["nodes"], [])
+        self.assertEqual(g["edges"], [])
+
+
+class TestWritingKnowledgeEndpoints(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.client = _client(self.tmp)
+
+    def test_crud(self) -> None:
+        resp = self.client.post(
+            "/data/writing_knowledge",
+            json={"title": "节奏", "domain": "pacing",
+                  "content": "短句加快节奏"},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        kid = resp.json()["id"]
+
+        # duplicate
+        self.assertEqual(
+            self.client.post("/data/writing_knowledge",
+                             json={"title": "节奏"}).status_code,
+            409,
+        )
+
+        # filter by domain
+        items = self.client.get(
+            "/data/writing_knowledge?domain=pacing"
+        ).json()["items"]
+        self.assertEqual(len(items), 1)
+
+        self.client.delete(f"/data/writing_knowledge/{kid}")
+        self.assertEqual(
+            self.client.get(f"/data/writing_knowledge/{kid}").status_code, 404,
+        )
+
+
+class TestChatHistoryEndpoints(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.client = _client(self.tmp)
+
+    def test_save_load_clear(self) -> None:
+        resp = self.client.put(
+            "/data/chat_history",
+            json={"project_id": "p1", "scope": "pipeline",
+                  "messages": [
+                      {"role": "user", "content": "hi"},
+                      {"role": "assistant", "content": "hello"},
+                  ]},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["count"], 2)
+
+        msgs = self.client.get(
+            "/data/chat_history?project_id=p1&scope=pipeline"
+        ).json()["messages"]
+        self.assertEqual([m["role"] for m in msgs], ["user", "assistant"])
+
+        # different scope is isolated
+        self.client.put(
+            "/data/chat_history",
+            json={"project_id": "p1", "scope": "outline_chat",
+                  "messages": [{"role": "user", "content": "B"}]},
+        )
+        self.assertEqual(
+            len(self.client.get(
+                "/data/chat_history?project_id=p1&scope=outline_chat"
+            ).json()["messages"]),
+            1,
+        )
+
+        # delete
+        self.client.delete(
+            "/data/chat_history?project_id=p1&scope=pipeline"
+        )
+        self.assertEqual(
+            self.client.get(
+                "/data/chat_history?project_id=p1&scope=pipeline"
+            ).json()["messages"],
+            [],
+        )
+
+
 class TestProjectMemoryEndpoints(unittest.TestCase):
 
     def setUp(self) -> None:

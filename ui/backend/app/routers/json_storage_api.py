@@ -205,40 +205,46 @@ def delete_worldbook_entry(eid: str):
     project_store.delete_worldbook(_db(), eid)
     return {"ok": True}
 
-# ═══ Writing Knowledge (global library) ═══
+# ═══ Writing Knowledge (DB-backed via project_store; cross-project library) ═══
 @router.get("/writing_knowledge")
 def list_writing_knowledge(domain: str | None = None, page: int = 0, size: int = 0):
-    if domain:
-        items = _list("writing_knowledge", filter_key="domain", filter_value=domain)
-    else:
-        items = _list("writing_knowledge")
+    items = project_store.list_writing_knowledge(_db(), domain)
     total = len(items)
     if size > 0:
         start = page * size
         items = items[start:start + size]
     return {"items": items, "total": total}
+
 @router.post("/writing_knowledge")
 def create_writing_knowledge(body: dict = Body(...)):
-    kid = _nid()
-    body.update({"id": kid, "title": body.get("title", "新知识条目"),
-        "domain": body.get("domain", "其他"), "content": body.get("content", ""),
-        "tags": body.get("tags", []), "source": body.get("source", ""),
-        "created_at": time.time()})
-    title = body.get("title", "")
-    if title and any(k.get("title") == title for k in _list("writing_knowledge")):
-        raise HTTPException(409, detail=f"写作知识「{title}」已存在，请使用不同的标题")
-    return _save("writing_knowledge", kid, body)
+    body = dict(body)
+    body.setdefault("title", "新知识条目")
+    body.setdefault("domain", "其他")
+    try:
+        return project_store.upsert_writing_knowledge(_db(), body)
+    except ValueError as e:
+        raise HTTPException(409 if "已存在" in str(e) else 400, detail=str(e))
+
 @router.get("/writing_knowledge/{kid}")
-def get_writing_knowledge(kid: str): return _get("writing_knowledge", kid)
+def get_writing_knowledge(kid: str):
+    item = project_store.get_writing_knowledge(_db(), kid)
+    if not item:
+        raise HTTPException(404, f"not found: writing_knowledge/{kid}")
+    return item
+
 @router.put("/writing_knowledge/{kid}")
 def update_writing_knowledge(kid: str, body: dict = Body(...)):
-    title = body.get("title", "")
-    if title and any(k.get("title") == title and k.get("id") != kid
-                     for k in _list("writing_knowledge")):
-        raise HTTPException(409, detail=f"写作知识「{title}」已存在，请使用不同的标题")
-    return _save("writing_knowledge", kid, body)
+    body = dict(body)
+    body["id"] = kid
+    try:
+        return project_store.upsert_writing_knowledge(_db(), body)
+    except ValueError as e:
+        raise HTTPException(409 if "已存在" in str(e) else 400, detail=str(e))
+
 @router.delete("/writing_knowledge/{kid}")
-def delete_writing_knowledge(kid: str): _del("writing_knowledge", kid); return {"ok": True}
+def delete_writing_knowledge(kid: str):
+    project_store.delete_writing_knowledge(_db(), kid)
+    return {"ok": True}
 
 # ═══ Reference Injection (per-project reference-work × feature selection) ═══
 def _ref_injection_path(project_id: str) -> Path:
@@ -341,38 +347,25 @@ def save_editor_data(body: dict = Body(...)):
     body["saved_at"] = time.time()
     _wj(_editor_path(pid), body); return {"ok": True, "saved_at": body["saved_at"]}
 
-# ═══ Chat History ═══
-def _chat_path(project_id: str, scope: str) -> Path:
-    d = _col("chat_history"); return d / f"{_safe_id(project_id)}_{_safe_id(scope)}.json"
-
+# ═══ Chat History (DB-backed via project_store) ═══
 @router.get("/chat_history")
 def get_chat_history(project_id: str = "default", scope: str = "pipeline"):
-    """Load persistent chat history. scope: pipeline|character_ai|studio"""
-    p = _chat_path(project_id, scope)
-    if not p.exists():
-        return {"messages": []}
-    data = json.loads(p.read_text("utf-8"))
-    return {"messages": data.get("messages", [])}
+    """Load persistent chat history. scope: pipeline|character_ai|studio|outline_chat|..."""
+    return {"messages": project_store.get_chat_history(_db(), project_id, scope)}
 
 @router.put("/chat_history")
 def save_chat_history(body: dict = Body(...)):
     """Save chat messages. body: {project_id, scope, messages}"""
     pid = body.get("project_id", "default")
     scope = body.get("scope", "pipeline")
-    messages = body.get("messages", [])
-    _wj(_chat_path(pid, scope), {
-        "project_id": pid,
-        "scope": scope,
-        "messages": messages,
-        "saved_at": time.time(),
-    })
+    messages = body.get("messages", []) or []
+    project_store.ensure_project_row(_db(), pid)
+    project_store.replace_chat_history(_db(), pid, scope, messages)
     return {"ok": True, "count": len(messages)}
 
 @router.delete("/chat_history")
 def clear_chat_history(project_id: str = "default", scope: str = "pipeline"):
-    p = _chat_path(project_id, scope)
-    if p.exists():
-        p.unlink()
+    project_store.clear_chat_history(_db(), project_id, scope)
     return {"ok": True}
 
 # ═══ Version History ═══
@@ -682,18 +675,22 @@ def _ts_fmt(ts) -> str:
         return str(ts)
 
 
-# ═══ Storyline ═══
-def _storyline_path(project_id: str = "default") -> Path:
-    d = _col("storylines"); return d / f"{_safe_id(project_id)}.json"
+# ═══ Storyline (DB-backed via project_store) ═══
 @router.get("/storyline")
 def get_storyline(project_id: str = "default"):
-    p = _storyline_path(project_id)
-    return json.loads(p.read_text("utf-8")) if p.exists() else {"nodes": [], "edges": []}
+    return project_store.get_storyline(_db(), project_id)
+
 @router.put("/storyline")
 def save_storyline(body: dict = Body(...)):
+    body = dict(body)
     pid = body.pop("project_id", "default")
-    body["saved_at"] = time.time()
-    _wj(_storyline_path(pid), body); return {"ok": True}
+    project_store.ensure_project_row(_db(), pid)
+    project_store.replace_storyline(
+        _db(), pid,
+        body.get("nodes") or [],
+        body.get("edges") or [],
+    )
+    return {"ok": True}
 
 # ═══ Settings ═══
 def _settings_path() -> Path: return _data_dir() / "settings.json"
