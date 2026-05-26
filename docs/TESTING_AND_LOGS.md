@@ -7,6 +7,48 @@
 
 ## 第一部分：测试
 
+### 1.0 一键自检脚本（推荐先跑这个）
+
+`scripts/run_full_check.py` 是一条命令跑完所有测试 + 探活所有 debug
+端点，把结果写成一份**人可读的 Markdown** 报告，可以直接 diff、保存、
+或粘给开发者排查。
+
+**最快用法**：
+```powershell
+# Linux / macOS / Windows PowerShell 都一样
+python scripts/run_full_check.py
+# 报告在 outputs/checks/check_<时间戳>.md
+```
+
+**完整自检**（先在另一个终端起 server）：
+```powershell
+# 终端 A
+python launcher.py --test --no-gui
+
+# 终端 B
+python scripts/run_full_check.py --server
+# 报告含: 项目结构 + import + seed 数据 + pytest + 5 个 live endpoint
+#         (diagnostics / db/info / rag-preview / truth-files / memory)
+#         + 日志发现
+```
+
+**跳过 pytest（30s 加速）**：
+```powershell
+python scripts/run_full_check.py --no-pytest
+python scripts/run_full_check.py --server --no-pytest   # 仅探活
+```
+
+报告样例（顶部 summary）：
+```
+| ✅ OK    | 81 |
+| ❌ FAIL  | 0  |
+| ⚠️ WARN  | 2  |
+| ⏭️ SKIP  | 3  |
+```
+
+每个 section 一段 markdown，含每个 endpoint 返回的完整 JSON、RAG 拼装
+后的 prompt 文本、L2/L4 记忆样本等——你直接 notepad 打开就能人工校准。
+
 ### 1.1 测试结构（v3 per-module 布局）
 
 测试目录**镜像源码结构**——每个顶层 Python 包对应 `tests/` 下一个
