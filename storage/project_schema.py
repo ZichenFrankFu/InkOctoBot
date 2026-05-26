@@ -106,7 +106,8 @@ CREATION_DDL = [
     # Also dropped the 'foreshadowing' + 'foreshadowing_payoff' event
     # types from the CHECK constraint — those flows go through
     # HookDelta(action='new'|'resolve'|...) now.
-    # See docs/SCHEMA_REDESIGN.md.
+    # v2.1 (MEMORY_VS_TRUTH cleanup): dropped causality_json — was
+    # never read, just written as '{}' by every caller.
     """
     CREATE TABLE IF NOT EXISTS episodic_events (
         event_id TEXT PRIMARY KEY,
@@ -118,7 +119,6 @@ CREATION_DDL = [
                                   'relationship_change','world_change')),
         description TEXT NOT NULL DEFAULT '',
         characters_json TEXT NOT NULL DEFAULT '[]',
-        causality_json TEXT NOT NULL DEFAULT '{}',
         importance INTEGER NOT NULL DEFAULT 3
             CHECK (importance BETWEEN 1 AND 5),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -227,12 +227,25 @@ CREATION_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_characters_project ON characters(project_id, sort_order);",
 
     # ── Worldbook entries (replaces data/worldbook/*.json) ──
+    # v2.1 (MEMORY_VS_TRUTH cleanup): category CHECK constraint enforces
+    # the worldbook-vs-characters split — character-shaped categories
+    # ('角色','character','主角','配角') are rejected at the SQL layer so
+    # the UI is forced to push people-data to the characters table.
+    # See docs/MEMORY_VS_TRUTH.md.
     """
     CREATE TABLE IF NOT EXISTS worldbook_entries (
         entry_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
         title TEXT NOT NULL,
-        category TEXT NOT NULL DEFAULT 'misc',
+        category TEXT NOT NULL DEFAULT '杂项'
+            CHECK (category IN (
+                -- canonical (Chinese)
+                '地点','组织','规则','物品','技术','文化','历史','自然','杂项',
+                -- legacy aliases kept readable
+                'place','organization','rule','item','tech','culture',
+                'history','nature','misc',
+                'social_structure','hard_rules','factions','力量体系'
+            )),
         content TEXT NOT NULL DEFAULT '',
         tags_json TEXT NOT NULL DEFAULT '[]',
         sort_order INTEGER NOT NULL DEFAULT 0,
@@ -363,6 +376,11 @@ def _ensure_chapter_v2_columns(conn: sqlite3.Connection) -> None:
             cur.execute(f"ALTER TABLE chapters ADD COLUMN {col} {ddl}")
 
 
+_BANNED_WORLDBOOK_CATEGORIES = {
+    "角色", "character", "characters", "主角", "配角", "反派",
+}
+
+
 def _drop_v1_redundant_objects(conn: sqlite3.Connection) -> None:
     """Drop the tables / columns that the Truth File system supersedes.
 
@@ -389,6 +407,27 @@ def _drop_v1_redundant_objects(conn: sqlite3.Connection) -> None:
         cur.execute("ALTER TABLE episodic_events DROP COLUMN foreshadow_status")
     if "foreshadow_target_chapter" in cols:
         cur.execute("ALTER TABLE episodic_events DROP COLUMN foreshadow_target_chapter")
+
+    # 3. episodic_events.causality_json — v2.1 MEMORY_VS_TRUTH cleanup.
+    #    Never read; only written as '{}'. Dropped to reclaim the column.
+    if "causality_json" in cols:
+        cur.execute("ALTER TABLE episodic_events DROP COLUMN causality_json")
+
+    # 4. worldbook_entries: coerce banned 角色-shaped categories to '杂项'
+    #    so the new CHECK constraint passes after this migration.
+    #    The CHECK itself only applies to fresh CREATEs; existing tables
+    #    keep their old schema. We coerce data here so any *new* writes
+    #    via project_store hit the right enforcement.
+    try:
+        cur.execute(
+            "UPDATE worldbook_entries SET category='杂项' WHERE category IN "
+            "(" + ",".join(["?"] * len(_BANNED_WORLDBOOK_CATEGORIES)) + ")",
+            tuple(_BANNED_WORLDBOOK_CATEGORIES),
+        )
+    except sqlite3.OperationalError:
+        # Table not yet created on first call; the fresh CREATE will
+        # carry the CHECK so the migration is a no-op.
+        pass
 
 
 def ensure_creation_tables(conn: sqlite3.Connection) -> None:

@@ -1,8 +1,22 @@
 """
 Layer 3: Semantic Memory (ChromaDB).
 
-Stores all settings, character states, events, world book entries,
-and constraint rules as vector embeddings for semantic retrieval.
+**Scope (post v2.1 MEMORY_VS_TRUTH cleanup):** vector index over chapter
+content for natural-language similarity queries. Structured state
+(facts, foreshadowing, character states, relations, emotions) lives
+in Truth Files — do NOT mirror it here.
+
+Allowed ``memory_type`` values:
+  - ``chapter_content``  — chapter prose (primary use case)
+  - ``chapter_summary``  — fallback when consolidator JSON parse fails
+
+Deprecated values (kept readable for old rows, no new writes):
+  - ``permanent_fact``  → use ``truth_current_state``
+  - ``foreshadowing``   → use ``pending_hooks``
+  - ``character_state`` → use ``emotion_arcs`` / ``character_relations``
+  - ``setting``         → use ``worldbook_entries``
+
+See docs/MEMORY_VS_TRUTH.md.
 """
 from __future__ import annotations
 
@@ -114,37 +128,31 @@ class SemanticMemory:
 
     def store_permanent_fact(self, project_id: str, content: str,
                              chapter_num: int, characters: list[str] | None = None) -> str:
-        """Deprecated: use TruthFileStore.apply_deltas with StatePatch instead.
+        """Deprecated (v2.1): no-op kept for API compatibility.
 
-        Kept as a thin wrapper around ``store(memory_type='permanent_fact')``
-        for the consolidator's free-text similarity index. The structured
-        truth lives in ``truth_current_state``.
+        Truth Files ``truth_current_state`` is canonical for permanent
+        facts; mirroring into L3 was the source of L3↔Truth redundancy.
+        Callers should emit StatePatch via TruthFileStore.apply_deltas.
         """
-        return self.store(
-            project_id, content,
-            memory_type="permanent_fact",
-            chapter_num=chapter_num,
-            characters=characters,
-            source="consolidator",
+        logger.debug(
+            "store_permanent_fact called (no-op in v2.1); content=%r",
+            (content or "")[:80],
         )
+        return ""
 
     def store_setting(self, project_id: str, content: str, setting_type: str = "world") -> str:
-        return self.store(
-            project_id, content,
-            memory_type="setting",
-            tags=[setting_type],
-            source="world_book",
-        )
+        """Deprecated (v2.1): use worldbook_entries instead."""
+        logger.debug("store_setting called (no-op in v2.1)")
+        return ""
 
     def store_character_state(self, project_id: str, character_name: str,
                                state_desc: str, chapter_num: int) -> str:
-        return self.store(
-            project_id, f"{character_name}: {state_desc}",
-            memory_type="character_state",
-            chapter_num=chapter_num,
-            characters=[character_name],
-            source="consolidator",
+        """Deprecated (v2.1): use emotion_arcs / character_relations instead."""
+        logger.debug(
+            "store_character_state called (no-op in v2.1); char=%s",
+            character_name,
         )
+        return ""
 
     def delete_project(self, project_id: str) -> None:
         self._store.delete_where({"project_id": project_id})

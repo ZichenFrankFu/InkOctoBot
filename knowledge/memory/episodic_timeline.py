@@ -49,18 +49,23 @@ class EpisodicTimeline:
         *,
         scene_index: int = 0,
         characters: list[str] | None = None,
-        causality: dict[str, Any] | None = None,
         importance: int = 3,
-        # Legacy compatibility — silently accept + ignore these
-        # so older callers don't crash. New callers should emit
-        # HookDelta via TruthFileStore instead.
+        # Legacy compatibility — silently accept + ignore these.
+        # foreshadow_* moved to Truth Files pending_hooks;
+        # causality was never read so v2.1 dropped the column.
         foreshadow_status: str | None = None,
         foreshadow_target: int | None = None,
+        causality: dict[str, Any] | None = None,
     ) -> str:
         if foreshadow_status is not None or foreshadow_target is not None:
             logger.debug(
                 "add_event ignoring legacy foreshadow_status=%s foreshadow_target=%s "
                 "(use HookDelta instead)", foreshadow_status, foreshadow_target,
+            )
+        if causality:
+            logger.debug(
+                "add_event ignoring legacy causality=%s (column dropped in v2.1)",
+                causality,
             )
         # v2 schema dropped the 'foreshadowing*' event types; coerce
         # legacy callers to 'plot' so the CHECK constraint passes.
@@ -71,12 +76,11 @@ class EpisodicTimeline:
             c.execute(
                 """INSERT INTO episodic_events
                    (event_id, project_id, chapter_num, scene_index, event_type,
-                    description, characters_json, causality_json, importance)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    description, characters_json, importance)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (eid, project_id, chapter_num, scene_index, event_type,
                  description,
                  json.dumps(characters or [], ensure_ascii=False),
-                 json.dumps(causality or {}, ensure_ascii=False),
                  importance),
             )
             c.commit()

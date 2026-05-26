@@ -135,11 +135,12 @@ class TestConsolidatorEmitsTruthDeltas(unittest.IsolatedAsyncioTestCase):
             )}
             self.assertNotIn("foreshadow_status", cols)
 
-    async def test_semantic_store_still_populated(self) -> None:
+    async def test_semantic_store_not_mirrored(self) -> None:
+        """v2.1 MEMORY_VS_TRUTH: consolidator no longer double-stores
+        facts / foreshadowing into L3. Truth Files own that state."""
         await self.consolidator.consolidate_if_needed("p1")
-        # ChromaDB free-text mirror: at least one call per fact + foreshadow
-        # (chapter content storage isn't done at this layer).
-        self.assertGreaterEqual(self.semantic.store.call_count, 2)
+        # No L3 writes from the structured-extraction path.
+        self.semantic.store.assert_not_called()
 
     async def test_unparseable_response_falls_back_to_semantic(self) -> None:
         self.router.generate = AsyncMock(return_value=_Resp("not JSON"))

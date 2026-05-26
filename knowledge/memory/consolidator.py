@@ -181,23 +181,16 @@ class MemoryConsolidator:
                     chapter_num, e,
                 )
 
-        # Also keep semantic store entries for free-text similarity search.
-        # These are useful for queries the structured tables can't answer
-        # ("有没有提到过紫色的剑？").
-        for fact in facts:
-            if isinstance(fact, str) and fact.strip():
-                self.semantic.store(
-                    project_id, fact,
-                    memory_type="permanent_fact",
-                    chapter_num=chapter_num,
-                    source="consolidator",
-                )
-        for fs in foreshadows:
-            if isinstance(fs, str) and fs.strip():
-                self.semantic.store(
-                    project_id, fs, memory_type="foreshadowing",
-                    chapter_num=chapter_num, source="consolidator",
-                )
+        # v2.1 (MEMORY_VS_TRUTH): the consolidator no longer mirrors
+        # facts/foreshadowing into the L3 vector store. Those are
+        # canonical in Truth Files (truth_current_state / pending_hooks);
+        # double-storing in ChromaDB was the original source of L3↔Truth
+        # redundancy.
+        #
+        # L3 still receives chapter_content via on_chapter_complete in
+        # MemoryManager, which is the correct path for free-text recall.
+        # The unparseable-JSON fallback path above also writes a
+        # chapter_summary entry to L3 for forensic searchability.
 
     @staticmethod
     def _parse_response(text: str) -> dict[str, Any] | None:

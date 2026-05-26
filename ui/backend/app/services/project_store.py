@@ -231,6 +231,31 @@ def get_worldbook(db_path: str, entry_id: str) -> dict | None:
     return _worldbook_row_to_payload(row) if row else None
 
 
+_BANNED_WB_CATEGORIES = {
+    "角色", "character", "characters", "主角", "配角", "反派",
+}
+
+
+def _coerce_worldbook_category(cat: str | None) -> str:
+    """Reject character-shaped categories — those belong in `characters`.
+
+    The DB CHECK constraint enforces the same; this is a friendlier
+    surface-layer normalization that maps banned inputs to '杂项' with
+    a debug log, so legacy clients don't break.
+
+    See docs/MEMORY_VS_TRUTH.md for the worldbook-vs-characters rule.
+    """
+    raw = (cat or "杂项").strip()
+    if raw.lower() in {c.lower() for c in _BANNED_WB_CATEGORIES}:
+        import logging as _lg
+        _lg.getLogger("inkoctobot.services.project_store").warning(
+            "worldbook category=%r belongs in characters table — coerced to '杂项'",
+            raw,
+        )
+        return "杂项"
+    return raw
+
+
 def upsert_worldbook(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
     eid = body.get("id") or _nid("wb_")
     pid = body.get("project_id") or ""
@@ -239,6 +264,8 @@ def upsert_worldbook(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("title is required")
     if not pid:
         raise ValueError("project_id is required")
+
+    category = _coerce_worldbook_category(body.get("category"))
 
     with open_db(db_path) as con:
         dup = con.execute(
@@ -264,7 +291,7 @@ def upsert_worldbook(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
                    sort_order = excluded.sort_order,
                    updated_at = CURRENT_TIMESTAMP""",
             (eid, pid, title,
-             body.get("category", "misc"),
+             category,
              body.get("content", ""),
              json.dumps(body.get("tags", []), ensure_ascii=False),
              int(body.get("sort_order", 0) or 0)),
