@@ -67,6 +67,7 @@ def build_truth_context(
     characters: list[str] | None = None,
     *,
     budgets_per_kind: int | None = None,
+    pov_character: str | None = None,
 ) -> str:
     """Return the 7-file Truth bundle as a single Markdown blob.
 
@@ -74,6 +75,11 @@ def build_truth_context(
     or Writer.assemble_chapter(memory_context=...). The bundle includes:
     current_state / particle_ledger / pending_hooks / chapter_summaries /
     subplot_board / emotional_arcs / character_matrix.
+
+    A1 spoiler filter: pass ``pov_character`` for character-POV bundles
+    (e.g. Actor Agent context) — spoiler hooks not yet revealed to that
+    character are omitted. Pass ``None`` for omniscient narrator /
+    single-writer view.
 
     Empty / nonexistent Truth files render as empty strings, so the
     bundle gracefully degrades on fresh projects.
@@ -87,6 +93,7 @@ def build_truth_context(
             budgets=None if budgets_per_kind is None else {
                 k: budgets_per_kind for k in TruthFileKind
             },
+            pov_character=pov_character,
         )
     except Exception as e:
         logger.debug("truth bundle skipped for project=%s: %s", project_id, e)

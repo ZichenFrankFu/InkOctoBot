@@ -149,15 +149,50 @@ def render_pending_hooks(
     hooks: list[dict[str, Any]], *, project_id: str,
     chapter_pointer: int, budget_chars: int = 5000,
     resolved_limit: int = 5,
+    pov_character: str | None = None,
 ) -> str:
+    """Render pending_hooks as a markdown block.
+
+    A1 spoiler filter: if ``pov_character`` is provided, hooks with
+    ``is_spoiler=1`` are excluded UNLESS that character is in the
+    hook's ``revealed_to_chars_json`` list. ``pov_character=None``
+    (default) means omniscient view — show everything.
+    """
     head = _frontmatter(project_id=project_id,
                         kind=TruthFileKind.pending_hooks,
                         chapter_pointer=chapter_pointer)
-    if not hooks:
+
+    # A1 spoiler filter
+    filtered_hooks = hooks
+    spoiler_omitted = 0
+    if pov_character is not None:
+        kept: list[dict[str, Any]] = []
+        for h in hooks:
+            if not h.get("is_spoiler"):
+                kept.append(h)
+                continue
+            # Spoiler — check if pov_character is in the reveal list
+            import json as _j
+            try:
+                allowed = _j.loads(h.get("revealed_to_chars_json") or "[]")
+            except (TypeError, ValueError):
+                allowed = []
+            if pov_character in allowed:
+                kept.append(h)
+            else:
+                spoiler_omitted += 1
+        filtered_hooks = kept
+
+    if not filtered_hooks:
+        if spoiler_omitted:
+            return head + (
+                f"# Pending Hooks\n\n_(empty for POV '{pov_character}' — "
+                f"{spoiler_omitted} spoiler hooks hidden)_\n"
+            )
         return head + "# Pending Hooks\n\n_(empty)_\n"
 
     by_status: dict[str, list[dict[str, Any]]] = {s: [] for s in _STATUS_ORDER}
-    for h in hooks:
+    for h in filtered_hooks:
         by_status.setdefault(h["status"], []).append(h)
 
     lines = ["# Pending Hooks", ""]

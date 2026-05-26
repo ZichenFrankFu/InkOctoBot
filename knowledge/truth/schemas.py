@@ -103,6 +103,12 @@ class HookDelta(BaseModel):
     importance: HookImportance = HookImportance.B
     expected_payoff_chapter: int | None = None
     evidence: str = ""
+    # A1 (InkOS) — spoiler filter. Defaults preserve previous shape.
+    # When ``is_spoiler=True`` and a renderer is called with a
+    # ``pov_character`` filter that's not in ``revealed_to_chars``, the
+    # hook is omitted from the bundle. Plumbing in render_pending_hooks.
+    is_spoiler: bool = False
+    revealed_to_chars: list[str] = Field(default_factory=list)
 
 
 # ──────────────────────────────────────────────────────────────

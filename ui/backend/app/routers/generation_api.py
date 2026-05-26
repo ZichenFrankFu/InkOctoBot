@@ -699,9 +699,14 @@ async def single_writer(req: SingleWriterRequest):
         truth_bundle = ""
         pressured_text = ""
         if req.truth_inject:
+            # A1: single-writer mode runs in omniscient view, so we don't
+            # pass pov_character (no spoiler filter). The Actor Agent path
+            # in the full multi-agent pipeline will pass pov_character so
+            # actor prompts only see hooks revealed to that character.
             truth_bundle = truth_ext.build_truth_context(
                 req.project_id, db_path,
                 req.chapter_num, req.characters,
+                pov_character=None,
             )
         if req.truth_pressure_inject:
             pressured_text = truth_ext.list_pressured_hooks_text(

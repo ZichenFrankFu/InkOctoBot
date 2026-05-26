@@ -259,6 +259,7 @@ class TruthFileStore:
             if h.action == "new":
                 hook_id = hook_id or _new_id()
                 threshold = self._pressure_threshold(h.importance.value)
+                import json as _json
                 conn.execute(
                     Q.INSERT_HOOK,
                     (
@@ -266,6 +267,8 @@ class TruthFileStore:
                         h.importance.value, deltas.chapter_num,
                         h.expected_payoff_chapter, deltas.chapter_num,
                         deltas.chapter_num, threshold,
+                        1 if h.is_spoiler else 0,
+                        _json.dumps(list(h.revealed_to_chars), ensure_ascii=False),
                     ),
                 )
                 self._write_hook_event(
@@ -552,7 +555,9 @@ class TruthFileStore:
         sql = (
             "SELECT hook_id, description, status, importance, "
             "origin_chapter, expected_payoff_chapter, last_mention_chapter, "
-            "last_advance_chapter, pressure_threshold, created_at, updated_at "
+            "last_advance_chapter, pressure_threshold, "
+            "is_spoiler, revealed_to_chars_json, "
+            "created_at, updated_at "
             "FROM pending_hooks WHERE project_id = ?"
         )
         params: list[Any] = [self.project_id]
@@ -693,16 +698,31 @@ class TruthFileStore:
         self, kind, *, chapter_num: int,
         characters: list[str] | None = None,
         budget_tokens: int = 2000,
+        pov_character: str | None = None,
     ) -> str:
         """Render one truth file as Markdown for LLM context.
 
         ``budget_tokens`` is converted to char budget at 2× ratio
         (roughly accurate for Chinese; chars under-counted for English).
+
+        A1 InkOS spoiler filter: ``pov_character`` (when set) filters
+        ``pending_hooks`` to omit hooks with ``is_spoiler=1`` unless that
+        character is in the hook's ``revealed_to_chars`` list. Pass
+        ``None`` for omniscient narrator / writer-pipeline view.
         """
         from knowledge.truth.markdown_renderer import render as _md_render
         budget_chars = max(budget_tokens * 2, 200)
         rows = self._rows_for_kind(kind, chapter_num=chapter_num,
                                     characters=characters)
+        from knowledge.truth.schemas import TruthFileKind as _Kind
+        if kind == _Kind.pending_hooks and pov_character is not None:
+            # Renderer-level filter (the only kind that takes pov_character)
+            from knowledge.truth.markdown_renderer import render_pending_hooks
+            return render_pending_hooks(
+                rows, project_id=self.project_id,
+                chapter_pointer=chapter_num, budget_chars=budget_chars,
+                pov_character=pov_character,
+            )
         return _md_render(
             kind, rows, project_id=self.project_id,
             chapter_pointer=chapter_num, budget_chars=budget_chars,
@@ -713,8 +733,13 @@ class TruthFileStore:
         characters: list[str] | None = None,
         kinds: list | None = None,
         budgets: dict | None = None,
+        pov_character: str | None = None,
     ) -> dict:
-        """Render multiple truth files in one call."""
+        """Render multiple truth files in one call.
+
+        A1: pass ``pov_character`` to apply the spoiler filter to
+        pending_hooks (and any future spoiler-aware truth files).
+        """
         from knowledge.truth.schemas import TruthFileKind as _Kind
         kinds = kinds if kinds is not None else list(_Kind)
         budgets = budgets or {}
@@ -724,6 +749,7 @@ class TruthFileStore:
             out[k] = self.render_for_prompt(
                 k, chapter_num=chapter_num,
                 characters=characters, budget_tokens=budget,
+                pov_character=pov_character,
             )
         return out
 

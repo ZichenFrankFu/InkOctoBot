@@ -57,8 +57,9 @@ INSERT INTO pending_hooks (
     hook_id, project_id, description, status, importance,
     origin_chapter, expected_payoff_chapter,
     last_mention_chapter, last_advance_chapter,
-    pressure_threshold
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    pressure_threshold,
+    is_spoiler, revealed_to_chars_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 GET_HOOK = """

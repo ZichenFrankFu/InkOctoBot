@@ -75,6 +75,12 @@ TRUTH_DDL = [
         last_advance_chapter INTEGER,
         pressure_threshold INTEGER NOT NULL DEFAULT 5,
         tags_json TEXT NOT NULL DEFAULT '[]',
+        -- A1 InkOS spoiler-filter (v2.2): when 1, this hook leaks future
+        -- info and should only be visible to the omniscient narrator
+        -- bundle, not to character-POV bundles. revealed_to_chars_json
+        -- is a JSON array of character names who DO know it (in-fiction).
+        is_spoiler INTEGER NOT NULL DEFAULT 0,
+        revealed_to_chars_json TEXT NOT NULL DEFAULT '[]',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
@@ -175,9 +181,31 @@ TRUTH_DDL = [
 
 
 def ensure_truth_tables(conn: sqlite3.Connection) -> None:
-    """Create all Truth File tables. Idempotent."""
+    """Create all Truth File tables. Idempotent.
+
+    Also upgrades v1-style pending_hooks (no is_spoiler / revealed_to_chars_json
+    columns) to v2.2 via ALTER. Safe to call on fresh + upgraded DBs.
+    """
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_keys = ON;")
     for ddl in TRUTH_DDL:
         cur.execute(ddl)
+
+    # v1 → v2.2 ALTER: add spoiler-filter columns if missing.
+    try:
+        cols = {row[1] for row in cur.execute("PRAGMA table_info(pending_hooks)")}
+        if "is_spoiler" not in cols:
+            cur.execute(
+                "ALTER TABLE pending_hooks ADD COLUMN "
+                "is_spoiler INTEGER NOT NULL DEFAULT 0"
+            )
+        if "revealed_to_chars_json" not in cols:
+            cur.execute(
+                "ALTER TABLE pending_hooks ADD COLUMN "
+                "revealed_to_chars_json TEXT NOT NULL DEFAULT '[]'"
+            )
+    except sqlite3.OperationalError:
+        # Table missing → CREATE above already handles it; ignore.
+        pass
+
     conn.commit()
