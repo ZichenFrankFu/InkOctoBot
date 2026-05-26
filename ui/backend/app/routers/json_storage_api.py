@@ -79,23 +79,23 @@ def _del(c: str, id: str):
 
 # ═══ Projects ═══
 def _enrich_project(proj: dict) -> dict:
-    """Compute word_count and chapter_count from editor data."""
-    pid = _safe_id(proj.get("id", "default"))
-    ep = _col("editor") / f"{pid}.json"
-    if ep.exists():
-        try:
-            ed = json.loads(ep.read_text("utf-8"))
-            total_words = 0
-            total_chapters = 0
-            for v in ed.get("volumes", []):
-                for ch in v.get("chapters", []):
-                    total_chapters += 1
-                    content = ch.get("content", "")
-                    total_words += ch.get("word_count", 0) or (len(content) - content.count(" ") - content.count("\n"))
-            proj["word_count"] = total_words
-            proj["chapter_count"] = total_chapters
-        except Exception:
-            pass
+    """Compute word_count and chapter_count from editor data (DB-backed)."""
+    pid = proj.get("id", "default")
+    try:
+        ed = project_store.get_editor_doc(_db(), pid)
+        total_words = 0
+        total_chapters = 0
+        for v in ed.get("volumes", []) or []:
+            for ch in v.get("chapters", []) or []:
+                total_chapters += 1
+                content = ch.get("content", "")
+                total_words += ch.get("word_count", 0) or (
+                    len(content) - content.count(" ") - content.count("\n")
+                )
+        proj["word_count"] = total_words
+        proj["chapter_count"] = total_chapters
+    except Exception:
+        pass
     return proj
 
 @router.get("/projects")
@@ -246,40 +246,46 @@ def delete_writing_knowledge(kid: str):
     project_store.delete_writing_knowledge(_db(), kid)
     return {"ok": True}
 
-# ═══ Reference Injection (per-project reference-work × feature selection) ═══
-def _ref_injection_path(project_id: str) -> Path:
-    d = _col("reference_injection"); return d / f"{_safe_id(project_id)}.json"
+# ═══ Reference Injection (DB-backed via project_store; blob scope) ═══
 @router.get("/reference_injection/{project_id}")
 def get_reference_injection(project_id: str):
-    p = _ref_injection_path(project_id)
-    if not p.exists():
-        return {"project_id": project_id, "selections": {}}
-    return json.loads(p.read_text("utf-8"))
+    data = project_store.get_blob(
+        _db(), project_id, "reference_injection",
+        default={"project_id": project_id, "selections": {}},
+    )
+    data.setdefault("project_id", project_id)
+    data.setdefault("selections", {})
+    return data
+
 @router.put("/reference_injection/{project_id}")
 def save_reference_injection(project_id: str, body: dict = Body(...)):
     selections = body.get("selections", {})
-    data = {"project_id": project_id,
-            "selections": selections if isinstance(selections, dict) else {},
-            "updated_at": time.time()}
-    _wj(_ref_injection_path(project_id), data)
+    project_store.save_blob(_db(), project_id, "reference_injection", {
+        "project_id": project_id,
+        "selections": selections if isinstance(selections, dict) else {},
+        "updated_at": time.time(),
+    })
     return {"ok": True}
 
-# ═══ Knowledge Injection (per-project writing-knowledge selection) ═══
-def _knowledge_injection_path(project_id: str) -> Path:
-    d = _col("knowledge_injection"); return d / f"{_safe_id(project_id)}.json"
+# ═══ Knowledge Injection (DB-backed via project_store; blob scope) ═══
 @router.get("/knowledge_injection/{project_id}")
 def get_knowledge_injection(project_id: str):
-    p = _knowledge_injection_path(project_id)
-    if not p.exists():
-        return {"project_id": project_id, "knowledge_ids": []}
-    return json.loads(p.read_text("utf-8"))
+    data = project_store.get_blob(
+        _db(), project_id, "knowledge_injection",
+        default={"project_id": project_id, "knowledge_ids": []},
+    )
+    data.setdefault("project_id", project_id)
+    data.setdefault("knowledge_ids", [])
+    return data
+
 @router.put("/knowledge_injection/{project_id}")
 def save_knowledge_injection(project_id: str, body: dict = Body(...)):
     ids = body.get("knowledge_ids", [])
-    data = {"project_id": project_id,
-            "knowledge_ids": ids if isinstance(ids, list) else [],
-            "updated_at": time.time()}
-    _wj(_knowledge_injection_path(project_id), data)
+    project_store.save_blob(_db(), project_id, "knowledge_injection", {
+        "project_id": project_id,
+        "knowledge_ids": ids if isinstance(ids, list) else [],
+        "updated_at": time.time(),
+    })
     return {"ok": True}
 
 # ═══ Project Memory (DB-backed via project_store) ═══
@@ -334,18 +340,17 @@ def save_foreshadowing(project_id: str, body: dict = Body(...)):
     _wj(_foreshadowing_path(project_id), data)
     return {"ok": True}
 
-# ═══ Editor ═══
-def _editor_path(project_id: str = "default") -> Path:
-    d = _col("editor"); return d / f"{_safe_id(project_id)}.json"
+# ═══ Editor (DB-backed: project_blobs + chapters table) ═══
 @router.get("/editor")
 def get_editor_data(project_id: str = "default"):
-    p = _editor_path(project_id)
-    return json.loads(p.read_text("utf-8")) if p.exists() else {"volumes": []}
+    return project_store.get_editor_doc(_db(), project_id)
+
 @router.put("/editor")
 def save_editor_data(body: dict = Body(...)):
+    body = dict(body)
     pid = body.pop("project_id", "default")
-    body["saved_at"] = time.time()
-    _wj(_editor_path(pid), body); return {"ok": True, "saved_at": body["saved_at"]}
+    res = project_store.save_editor_doc(_db(), pid, body)
+    return {"ok": True, "saved_at": res["saved_at"]}
 
 # ═══ Chat History (DB-backed via project_store) ═══
 @router.get("/chat_history")
@@ -416,22 +421,20 @@ def delete_version(version_id: str, project_id: str = "default"):
     _wj(p, {"versions": versions, "saved_at": time.time()})
     return {"ok": True, "remaining": len(versions)}
 
-# ═══ Calibration ═══
-def _calibration_path(project_id: str) -> Path:
-    d = _col("calibration"); return d / f"{_safe_id(project_id)}.json"
-
+# ═══ Calibration (DB-backed via project_store; blob scope) ═══
 @router.get("/calibration/{project_id}")
 def get_calibration(project_id: str):
-    p = _calibration_path(project_id)
-    if not p.exists():
-        return {"history": [], "style_params": {}, "confirmed": False}
-    return json.loads(p.read_text("utf-8"))
+    return project_store.get_blob(
+        _db(), project_id, "calibration",
+        default={"history": [], "style_params": {}, "confirmed": False},
+    )
 
 @router.put("/calibration/{project_id}")
 def save_calibration(project_id: str, body: dict = Body(...)):
+    body = dict(body)
     body["project_id"] = project_id
     body["saved_at"] = time.time()
-    _wj(_calibration_path(project_id), body)
+    project_store.save_blob(_db(), project_id, "calibration", body)
     return {"ok": True}
 
 

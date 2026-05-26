@@ -640,3 +640,188 @@ def clear_chat_history(db_path: str, project_id: str, scope: str) -> None:
             (project_id, scope),
         )
         con.commit()
+
+
+# ─────────────── Editor document (volumes + chapters) ─────────────
+
+
+def get_editor_doc(db_path: str, project_id: str) -> dict[str, Any]:
+    """Return the full editor doc (volumes + chapters) for one project.
+
+    Source of truth is ``project_blobs(scope='editor')``. Chapter content
+    is also mirrored into the ``chapters`` table for direct SQL access
+    by prompt-context loaders and the generation pipeline.
+    """
+    with open_db(db_path) as con:
+        row = con.execute(
+            "SELECT data_json FROM project_blobs "
+            "WHERE project_id = ? AND scope = 'editor'",
+            (project_id,),
+        ).fetchone()
+    if not row:
+        return {"volumes": []}
+    try:
+        data = json.loads(row["data_json"] or "{}")
+    except json.JSONDecodeError:
+        data = {}
+    if "volumes" not in data:
+        data["volumes"] = []
+    return data
+
+
+def save_editor_doc(db_path: str, project_id: str,
+                    doc: dict[str, Any]) -> dict[str, Any]:
+    """Persist the editor doc. Writes two places atomically:
+
+      1. ``project_blobs(scope='editor')`` — full UI-shaped blob.
+      2. ``chapters`` rows — denormalized per-chapter columns so SQL
+         queries (RAG, generation pipeline) can read directly.
+    """
+    body = dict(doc or {})
+    body["saved_at"] = time.time()
+    payload = json.dumps(body, ensure_ascii=False)
+
+    with open_db(db_path) as con:
+        # 1. Project row exists so all the FKs below resolve. Must run
+        # FIRST — both project_blobs and chapters point at projects.
+        con.execute(
+            """INSERT OR IGNORE INTO projects
+               (project_id, title, status, created_at, updated_at)
+               VALUES (?, '', 'planning',
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+            (project_id,),
+        )
+
+        # 2. Source-of-truth blob (UPSERT).
+        con.execute(
+            """INSERT INTO project_blobs
+               (blob_id, project_id, scope, data_json, updated_at)
+               VALUES (?, ?, 'editor', ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(blob_id) DO UPDATE SET
+                 data_json = excluded.data_json,
+                 updated_at = CURRENT_TIMESTAMP""",
+            (f"{project_id}__editor", project_id, payload),
+        )
+
+        # 3. Chapters denormalized. We REPLACE the project's chapter
+        # rows so deletions in the UI are reflected; chapter_id is
+        # stable per chapter_num so external refs remain valid.
+        # NOTE: only the project's chapter_id namespace is cleared;
+        # text_versions FK cascade from chapters_id is preserved.
+        existing_ids = {
+            r["chapter_id"]
+            for r in con.execute(
+                "SELECT chapter_id FROM chapters WHERE project_id = ?",
+                (project_id,),
+            )
+        }
+        kept_ids: set[str] = set()
+        for vol_idx, vol in enumerate(body.get("volumes", []) or []):
+            if not isinstance(vol, dict):
+                continue
+            vol_num = int(vol.get("order", vol_idx) or 0) + 1
+            for ch_idx, ch in enumerate(vol.get("chapters", []) or []):
+                if not isinstance(ch, dict):
+                    continue
+                chap_num = int(ch.get("order", ch_idx) or 0) + 1
+                # Stable, project-scoped chapter_id.
+                cid = ch.get("chapter_id") or f"{project_id}_v{vol_num}_c{chap_num:04d}"
+                kept_ids.add(cid)
+                content = ch.get("content", "") or ""
+                word_count = ch.get("word_count")
+                if not isinstance(word_count, int):
+                    word_count = len(content)
+                con.execute(
+                    """INSERT INTO chapters (
+                           chapter_id, project_id, chapter_num, volume,
+                           title, outline, final_text, word_count,
+                           synopsis, time_label, location, characters_json,
+                           pov_character, status, scene_plan_json,
+                           performance_log, evaluation_json,
+                           extra_json, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                               'draft', '[]', '', '{}', '{}',
+                               CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                       ON CONFLICT(chapter_id) DO UPDATE SET
+                           chapter_num = excluded.chapter_num,
+                           volume = excluded.volume,
+                           title = excluded.title,
+                           outline = excluded.outline,
+                           final_text = excluded.final_text,
+                           word_count = excluded.word_count,
+                           synopsis = excluded.synopsis,
+                           time_label = excluded.time_label,
+                           location = excluded.location,
+                           characters_json = excluded.characters_json,
+                           pov_character = excluded.pov_character,
+                           updated_at = CURRENT_TIMESTAMP""",
+                    (cid, project_id, chap_num, vol_num,
+                     ch.get("title", ""),
+                     ch.get("outline", ""),
+                     content,
+                     word_count,
+                     ch.get("synopsis", ""),
+                     ch.get("time", ch.get("time_label", "")),
+                     ch.get("location", ""),
+                     json.dumps(ch.get("characters", []), ensure_ascii=False),
+                     ch.get("pov_character", "")),
+                )
+
+        # Delete rows that vanished from the editor doc (user removed
+        # them in the UI). Don't touch chapter rows owned by other
+        # writers (only those previously seeded by save_editor_doc).
+        removed = existing_ids - kept_ids
+        for cid in removed:
+            con.execute(
+                "DELETE FROM chapters WHERE chapter_id = ? AND project_id = ?",
+                (cid, project_id),
+            )
+        con.commit()
+    return {"saved_at": body["saved_at"]}
+
+
+# ─────────────── Generic per-project blob (calibration, injection, ...) ──
+
+
+def get_blob(db_path: str, project_id: str, scope: str,
+             default: dict | None = None) -> dict:
+    with open_db(db_path) as con:
+        row = con.execute(
+            "SELECT data_json FROM project_blobs "
+            "WHERE project_id = ? AND scope = ?",
+            (project_id, scope),
+        ).fetchone()
+    if not row:
+        return dict(default) if default is not None else {}
+    try:
+        return json.loads(row["data_json"] or "{}")
+    except json.JSONDecodeError:
+        return dict(default) if default is not None else {}
+
+
+def save_blob(db_path: str, project_id: str, scope: str,
+              data: dict) -> None:
+    payload = json.dumps(data, ensure_ascii=False)
+    # FK requires the project row to exist.
+    ensure_project_row(db_path, project_id)
+    with open_db(db_path) as con:
+        con.execute(
+            """INSERT INTO project_blobs
+               (blob_id, project_id, scope, data_json, updated_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(blob_id) DO UPDATE SET
+                 data_json = excluded.data_json,
+                 updated_at = CURRENT_TIMESTAMP""",
+            (f"{project_id}__{scope}", project_id, scope, payload),
+        )
+        con.commit()
+
+
+def delete_blob(db_path: str, project_id: str, scope: str) -> None:
+    with open_db(db_path) as con:
+        con.execute(
+            "DELETE FROM project_blobs "
+            "WHERE project_id = ? AND scope = ?",
+            (project_id, scope),
+        )
+        con.commit()

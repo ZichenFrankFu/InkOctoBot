@@ -1205,10 +1205,9 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             # Fallback: if memory layers are empty, seed from editor content
             if not memory.has_memory_content():
                 try:
-                    from ui.backend.app.routers.json_storage_api import _col as _data_col, _safe_id as _sid
-                    _editor_path = _data_col("editor") / f"{_sid(_proj_id)}.json"
-                    if _editor_path.exists():
-                        _editor_data = json.loads(_editor_path.read_text("utf-8"))
+                    from ui.backend.app.services import project_store as _ps
+                    _editor_data = _ps.get_editor_doc(db_path, _proj_id)
+                    if _editor_data.get("volumes"):
                         _fallback_text = memory.build_fallback_from_editor(
                             _editor_data.get("volumes", []),
                             current_chapter_id=req_data.get("chapter_id", ""),
@@ -2364,10 +2363,9 @@ async def prompt_preview(req: PromptPreviewRequest):
             # Fallback: if memory is empty, build context from editor content
             if not _memory_has_content and not shared_memory_parts and not agent_memory_parts:
                 try:
-                    from ui.backend.app.routers.json_storage_api import _col as _data_col, _safe_id as _sid
-                    _editor_path = _data_col("editor") / f"{_sid(req.project_id)}.json"
-                    if _editor_path.exists():
-                        _editor_data = json.loads(_editor_path.read_text("utf-8"))
+                    from ui.backend.app.services import project_store as _ps
+                    _editor_data = _ps.get_editor_doc(_get_db_path(), req.project_id)
+                    if _editor_data.get("volumes"):
                         _fallback = _mem.build_fallback_from_editor(
                             _editor_data.get("volumes", []),
                             current_chapter_id=req.chapter_id,

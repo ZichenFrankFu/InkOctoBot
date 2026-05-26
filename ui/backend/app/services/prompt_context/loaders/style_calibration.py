@@ -5,7 +5,6 @@ Reads the project's 风格校准 (style_params) and turns the four sliders
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from ..utils import section
@@ -16,12 +15,10 @@ logger = logging.getLogger("inkoctobot.services.prompt_context.style_calibration
 def load(project_id: str) -> str:
     """Build a style note from the project's 风格校准 settings."""
     try:
-        from ui.backend.app.routers.json_storage_api import _col, _safe_id
+        from ui.backend.app.services import project_store
+        from ui.backend.app.services.project_paths import get_db_path
 
-        p = _col("calibration") / f"{_safe_id(project_id)}.json"
-        if not p.exists():
-            return ""
-        cal = json.loads(p.read_text("utf-8"))
+        cal = project_store.get_blob(get_db_path(), project_id, "calibration")
         sp = cal.get("style_params") or {}
         if not sp:
             return ""

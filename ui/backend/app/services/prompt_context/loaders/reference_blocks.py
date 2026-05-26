@@ -24,12 +24,12 @@ logger = logging.getLogger("inkoctobot.services.prompt_context.reference_blocks"
 def _selection(project_id: str) -> dict:
     """Load the per-project reference-work × feature-type selection map."""
     try:
-        from ui.backend.app.routers.json_storage_api import _col, _safe_id
+        from ui.backend.app.services import project_store
+        from ui.backend.app.services.project_paths import get_db_path
 
-        p = _col("reference_injection") / f"{_safe_id(project_id)}.json"
-        if not p.exists():
-            return {}
-        data = json.loads(p.read_text("utf-8"))
+        data = project_store.get_blob(
+            get_db_path(), project_id, "reference_injection"
+        )
         sel = data.get("selections")
         return sel if isinstance(sel, dict) else {}
     except Exception:

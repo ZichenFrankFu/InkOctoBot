@@ -6,7 +6,6 @@ to use) into a labeled prompt block.
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from ..budgets import BUDGETS
@@ -15,20 +14,24 @@ from ..utils import clip, section
 logger = logging.getLogger("inkoctobot.services.prompt_context.writing_knowledge")
 
 
+def _selected_ids_and_rows(project_id: str) -> tuple[set, list[dict]]:
+    from ui.backend.app.services import project_store
+    from ui.backend.app.services.project_paths import get_db_path
+
+    db = get_db_path()
+    sel = project_store.get_blob(db, project_id, "knowledge_injection")
+    ids = sel.get("knowledge_ids")
+    if not isinstance(ids, list) or not ids:
+        return set(), []
+    return set(ids), project_store.list_writing_knowledge(db)
+
+
 def load(project_id: str, exclude: set | None = None) -> str:
     """Inject the writing-knowledge entries selected for this project."""
     try:
-        from ui.backend.app.routers.json_storage_api import _col, _safe_id, _list
-
-        p = _col("knowledge_injection") / f"{_safe_id(project_id)}.json"
-        if not p.exists():
+        wanted, rows = _selected_ids_and_rows(project_id)
+        if not wanted:
             return ""
-        sel = json.loads(p.read_text("utf-8"))
-        ids = sel.get("knowledge_ids")
-        if not isinstance(ids, list) or not ids:
-            return ""
-        wanted = set(ids)
-        rows = _list("writing_knowledge")
         out: list[str] = []
         for k in rows:
             if k.get("id") not in wanted:
@@ -60,18 +63,13 @@ def project_writing_knowledge(project_id: str) -> list[dict]:
     so the UI can show what's wired up.
     """
     try:
-        from ui.backend.app.routers.json_storage_api import _col, _safe_id, _list
-
-        p = _col("knowledge_injection") / f"{_safe_id(project_id)}.json"
-        if not p.exists():
-            return []
-        ids = set(json.loads(p.read_text("utf-8")).get("knowledge_ids") or [])
-        if not ids:
+        wanted, rows = _selected_ids_and_rows(project_id)
+        if not wanted:
             return []
         return [
             {"id": k.get("id"), "title": (k.get("title") or "").strip()}
-            for k in _list("writing_knowledge")
-            if k.get("id") in ids
+            for k in rows
+            if k.get("id") in wanted
         ]
     except Exception as e:
         logger.debug("project writing knowledge skipped: %s", e)

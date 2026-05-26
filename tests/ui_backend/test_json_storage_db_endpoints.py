@@ -275,6 +275,99 @@ class TestChatHistoryEndpoints(unittest.TestCase):
         )
 
 
+class TestEditorEndpoints(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.client = _client(self.tmp)
+
+    def test_put_then_get(self) -> None:
+        body = {
+            "project_id": "p1",
+            "volumes": [{
+                "id": "v1", "title": "第一卷", "order": 0,
+                "chapters": [{
+                    "id": "c1", "title": "第一章", "order": 0,
+                    "outline": "大纲", "content": "正文",
+                    "synopsis": "梗概", "time": "春",
+                    "characters": ["主角"],
+                }],
+            }],
+        }
+        resp = self.client.put("/data/editor", json=body)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertIn("saved_at", resp.json())
+
+        loaded = self.client.get("/data/editor?project_id=p1").json()
+        self.assertEqual(len(loaded["volumes"]), 1)
+        self.assertEqual(
+            loaded["volumes"][0]["chapters"][0]["title"], "第一章"
+        )
+
+    def test_chapters_table_populated(self) -> None:
+        self.client.put("/data/editor", json={
+            "project_id": "p_chk",
+            "volumes": [{
+                "id": "v1", "order": 0, "chapters": [
+                    {"id": "c1", "title": "T1", "order": 0,
+                     "content": "abc", "outline": "outline1"},
+                ],
+            }],
+        })
+        from ui.backend.app.services.project_paths import get_db_path
+        with sqlite3.connect(get_db_path()) as c:
+            row = c.execute(
+                "SELECT title, outline, final_text FROM chapters "
+                "WHERE project_id='p_chk'"
+            ).fetchone()
+        self.assertEqual(row, ("T1", "outline1", "abc"))
+
+
+class TestCalibrationEndpoints(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.client = _client(self.tmp)
+
+    def test_round_trip(self) -> None:
+        resp = self.client.put(
+            "/data/calibration/p1",
+            json={"style_params": {"tone": 30, "pacing": 60}},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        loaded = self.client.get("/data/calibration/p1").json()
+        self.assertEqual(loaded["style_params"]["tone"], 30)
+        self.assertEqual(loaded["project_id"], "p1")
+
+    def test_default_on_missing(self) -> None:
+        loaded = self.client.get("/data/calibration/unknown").json()
+        self.assertEqual(loaded.get("history"), [])
+        self.assertEqual(loaded.get("style_params"), {})
+
+
+class TestInjectionEndpoints(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.client = _client(self.tmp)
+
+    def test_reference_injection_round_trip(self) -> None:
+        self.client.put(
+            "/data/reference_injection/p1",
+            json={"selections": {"ref_001": ["characters", "plot"]}},
+        )
+        loaded = self.client.get("/data/reference_injection/p1").json()
+        self.assertEqual(loaded["selections"], {"ref_001": ["characters", "plot"]})
+
+    def test_knowledge_injection_round_trip(self) -> None:
+        self.client.put(
+            "/data/knowledge_injection/p1",
+            json={"knowledge_ids": ["wk_1", "wk_2"]},
+        )
+        loaded = self.client.get("/data/knowledge_injection/p1").json()
+        self.assertEqual(loaded["knowledge_ids"], ["wk_1", "wk_2"])
+
+
 class TestProjectMemoryEndpoints(unittest.TestCase):
 
     def setUp(self) -> None:

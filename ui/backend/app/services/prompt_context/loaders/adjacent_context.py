@@ -6,7 +6,6 @@ came before and sets up what follows.
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from ..budgets import BUDGETS
@@ -21,15 +20,13 @@ def load(project_id: str, chapter_id: str, exclude: set | None = None) -> str:
         return ""
     exclude = exclude or set()
     try:
-        from ui.backend.app.routers.json_storage_api import _col, _safe_id
+        from ui.backend.app.services import project_store
+        from ui.backend.app.services.project_paths import get_db_path
 
-        p = _col("editor") / f"{_safe_id(project_id)}.json"
-        if not p.exists():
-            return ""
-        data = json.loads(p.read_text("utf-8"))
+        data = project_store.get_editor_doc(get_db_path(), project_id)
         chapters: list[dict] = []
-        for vol in data.get("volumes", []):
-            for ch in vol.get("chapters", []):
+        for vol in data.get("volumes", []) or []:
+            for ch in vol.get("chapters", []) or []:
                 chapters.append(ch)
         idx = next(
             (i for i, ch in enumerate(chapters) if ch.get("id") == chapter_id), -1,
