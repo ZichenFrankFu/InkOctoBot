@@ -1,6 +1,17 @@
 """
-/api/data — JSON-file-based CRUD for creative data.
-All data stored in {repo_root}/data/{collection}/.
+/api/data — CRUD endpoints for creative data.
+
+Storage backend by collection:
+  - characters / worldbook / project_memory  → SQLite (project_store)
+  - projects + everything else (editor doc, chat history,
+    reference_injection, knowledge_injection, calibration,
+    preferences, storyline, versions)                → JSON files
+    in ``{data_dir}/{collection}/``.
+
+The SQLite-backed collections were migrated in
+docs/SCHEMA_REDESIGN.md. Remaining JSON collections will be migrated
+in subsequent commits — the wire shape stays identical so the
+frontend never sees the cut-over.
 """
 from __future__ import annotations
 import json, time, uuid, os
@@ -8,9 +19,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from fastapi import APIRouter, HTTPException, Body
+from ..services import project_store
+from ..services.project_paths import get_db_path
 from ..settings import settings
 
 router = APIRouter(prefix="/data", tags=["data"])
+
+
+def _db() -> str:
+    """Resolve the active novels.db path (honors test mode)."""
+    return get_db_path()
 
 def _data_dir() -> Path:
     d = settings.get_data_path()
@@ -100,87 +118,92 @@ def update_project(pid: str, body: dict = Body(...)): return _save("projects", p
 @router.delete("/projects/{pid}")
 def delete_project(pid: str): _del("projects", pid); return {"ok": True}
 
-# ═══ Characters ═══
+# ═══ Characters (DB-backed via project_store) ═══
 @router.get("/characters")
 def list_characters(project_id: str | None = None, page: int = 0, size: int = 0):
-    if project_id:
-        items = _list("characters", filter_key="project_id", filter_value=project_id)
-    else:
-        items = _list("characters")
+    items = project_store.list_characters(_db(), project_id)
     total = len(items)
     if size > 0:
         start = page * size
         items = items[start:start + size]
     return {"items": items, "total": total}
+
 @router.post("/characters")
 def create_character(body: dict = Body(...)):
-    cid = _nid()
-    defaults = {"id": cid, "name": "新角色", "role": "配角",
-        "project_id": "", "personality": "", "background": "", "speech_style": "",
-        "tags": [], "layer_b": {}, "relationships": [], "created_at": time.time()}
-    for k, v in defaults.items():
-        body.setdefault(k, v)
-    # Enforce name uniqueness within project
-    pid = body.get("project_id", "")
-    name = body.get("name", "")
-    if pid and name:
-        existing = _list("characters", filter_key="project_id", filter_value=pid)
-        if any(c.get("name") == name for c in existing):
-            raise HTTPException(409, detail=f"角色「{name}」已存在，请使用不同的名字")
-    return _save("characters", cid, body)
+    body = dict(body)
+    body.setdefault("name", "新角色")
+    body.setdefault("role", "配角")
+    body.setdefault("project_id", "default")
+    project_store.ensure_project_row(_db(), body["project_id"])
+    try:
+        return project_store.upsert_character(_db(), body)
+    except ValueError as e:
+        raise HTTPException(409 if "已存在" in str(e) else 400, detail=str(e))
+
 @router.get("/characters/{cid}")
-def get_character(cid: str): return _get("characters", cid)
+def get_character(cid: str):
+    item = project_store.get_character(_db(), cid)
+    if not item:
+        raise HTTPException(404, f"not found: characters/{cid}")
+    return item
+
 @router.put("/characters/{cid}")
 def update_character(cid: str, body: dict = Body(...)):
-    # Enforce name uniqueness within project (exclude self)
-    pid = body.get("project_id", "")
-    name = body.get("name", "")
-    if pid and name:
-        existing = _list("characters", filter_key="project_id", filter_value=pid)
-        if any(c.get("name") == name and c.get("id") != cid for c in existing):
-            raise HTTPException(409, detail=f"角色「{name}」已存在，请使用不同的名字")
-    return _save("characters", cid, body)
-@router.delete("/characters/{cid}")
-def delete_character(cid: str): _del("characters", cid); return {"ok": True}
+    body = dict(body)
+    body["id"] = cid
+    try:
+        return project_store.upsert_character(_db(), body)
+    except ValueError as e:
+        raise HTTPException(409 if "已存在" in str(e) else 400, detail=str(e))
 
-# ═══ World Book ═══
+@router.delete("/characters/{cid}")
+def delete_character(cid: str):
+    project_store.delete_character(_db(), cid)
+    return {"ok": True}
+
+
+# ═══ World Book (DB-backed via project_store) ═══
 @router.get("/worldbook")
 def list_worldbook(project_id: str | None = None, page: int = 0, size: int = 0):
-    if project_id:
-        items = _list("worldbook", filter_key="project_id", filter_value=project_id)
-    else:
-        items = _list("worldbook")
+    items = project_store.list_worldbook(_db(), project_id)
     total = len(items)
     if size > 0:
         start = page * size
         items = items[start:start + size]
     return {"items": items, "total": total}
+
 @router.post("/worldbook")
 def create_worldbook_entry(body: dict = Body(...)):
-    eid = _nid()
-    body.update({"id": eid, "category": body.get("category", "力量体系"), "title": body.get("title", "新条目"),
-        "content": "", "tags": [], "project_id": body.get("project_id", ""), "created_at": time.time()})
-    # Enforce title uniqueness within project
-    pid = body.get("project_id", "")
-    title = body.get("title", "")
-    if pid and title:
-        existing = _list("worldbook", filter_key="project_id", filter_value=pid)
-        if any(e.get("title") == title for e in existing):
-            raise HTTPException(409, detail=f"世界书条目「{title}」已存在，请使用不同的标题")
-    return _save("worldbook", eid, body)
+    body = dict(body)
+    body.setdefault("title", "新条目")
+    body.setdefault("category", "力量体系")
+    body.setdefault("project_id", "default")
+    project_store.ensure_project_row(_db(), body["project_id"])
+    try:
+        return project_store.upsert_worldbook(_db(), body)
+    except ValueError as e:
+        raise HTTPException(409 if "已存在" in str(e) else 400, detail=str(e))
+
 @router.get("/worldbook/{eid}")
-def get_worldbook_entry(eid: str): return _get("worldbook", eid)
+def get_worldbook_entry(eid: str):
+    item = project_store.get_worldbook(_db(), eid)
+    if not item:
+        raise HTTPException(404, f"not found: worldbook/{eid}")
+    return item
+
 @router.put("/worldbook/{eid}")
 def update_worldbook_entry(eid: str, body: dict = Body(...)):
-    pid = body.get("project_id", "")
-    title = body.get("title", "")
-    if pid and title:
-        existing = _list("worldbook", filter_key="project_id", filter_value=pid)
-        if any(e.get("title") == title and e.get("id") != eid for e in existing):
-            raise HTTPException(409, detail=f"世界书条目「{title}」已存在，请使用不同的标题")
-    return _save("worldbook", eid, body)
+    body = dict(body)
+    body["id"] = eid
+    try:
+        return project_store.upsert_worldbook(_db(), body)
+    except ValueError as e:
+        raise HTTPException(409 if "已存在" in str(e) else 400, detail=str(e))
+
 @router.delete("/worldbook/{eid}")
-def delete_worldbook_entry(eid: str): _del("worldbook", eid); return {"ok": True}
+def delete_worldbook_entry(eid: str):
+    project_store.delete_worldbook(_db(), eid)
+    return {"ok": True}
 
 # ═══ Writing Knowledge (global library) ═══
 @router.get("/writing_knowledge")
@@ -253,45 +276,38 @@ def save_knowledge_injection(project_id: str, body: dict = Body(...)):
     _wj(_knowledge_injection_path(project_id), data)
     return {"ok": True}
 
-# ═══ Project Memory (per-project memory shared across all AI conversations) ═══
-def _project_memory_path(project_id: str) -> Path:
-    d = _col("project_memory"); return d / f"{_safe_id(project_id)}.json"
+# ═══ Project Memory (DB-backed via project_store) ═══
 @router.get("/project_memory/{project_id}")
 def get_project_memory(project_id: str):
-    p = _project_memory_path(project_id)
-    if not p.exists():
-        return {"project_id": project_id, "memories": []}
-    return json.loads(p.read_text("utf-8"))
+    return project_store.get_project_memory(_db(), project_id)
+
 @router.put("/project_memory/{project_id}")
 def save_project_memory(project_id: str, body: dict = Body(...)):
     mems = body.get("memories", [])
-    data = {"project_id": project_id,
-            "memories": mems if isinstance(mems, list) else [],
-            "updated_at": time.time()}
-    _wj(_project_memory_path(project_id), data)
+    if not isinstance(mems, list):
+        mems = []
+    project_store.ensure_project_row(_db(), project_id)
+    project_store.replace_project_memory(_db(), project_id, mems)
     return {"ok": True}
+
 @router.post("/project_memory/{project_id}")
 def add_project_memory(project_id: str, body: dict = Body(...)):
     content = (body.get("content") or "").strip()
     if not content:
         raise HTTPException(400, detail="记忆内容不能为空")
-    p = _project_memory_path(project_id)
-    data = json.loads(p.read_text("utf-8")) if p.exists() else {"project_id": project_id, "memories": []}
-    mems = data.get("memories", []) if isinstance(data.get("memories"), list) else []
-    entry = {"id": _nid(), "content": content,
-             "source": (body.get("source") or "manual"), "created_at": time.time()}
-    mems.append(entry)
-    data.update({"project_id": project_id, "memories": mems, "updated_at": time.time()})
-    _wj(_project_memory_path(project_id), data)
-    return entry
+    project_store.ensure_project_row(_db(), project_id)
+    try:
+        return project_store.add_project_memory(
+            _db(), project_id, content,
+            category=body.get("category", "note"),
+            source=body.get("source", "manual"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e))
+
 @router.delete("/project_memory/{project_id}/{memory_id}")
 def delete_project_memory(project_id: str, memory_id: str):
-    p = _project_memory_path(project_id)
-    if p.exists():
-        data = json.loads(p.read_text("utf-8"))
-        data["memories"] = [m for m in data.get("memories", []) if m.get("id") != memory_id]
-        data["updated_at"] = time.time()
-        _wj(_project_memory_path(project_id), data)
+    project_store.delete_project_memory_entry(_db(), project_id, memory_id)
     return {"ok": True}
 
 # ═══ Foreshadowing (per-project 伏笔 — title/content + linked chapters) ═══

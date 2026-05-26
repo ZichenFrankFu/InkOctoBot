@@ -346,6 +346,13 @@ def seed(target: Path) -> None:
     # ── Idea DB — 灵感库 (data/idea.db) ──
     _seed_idea_db(target / "idea.db")
 
+    # ── v2 schema migration: copy the JSON characters/worldbook/
+    # project_memory/storyline files we just wrote into the new DB
+    # tables so the DB-backed routers (project_store) see them too.
+    # See docs/SCHEMA_REDESIGN.md.
+    from scripts.migrate_to_v2_schema import run_migration
+    run_migration(target, target / "novels.db")
+
     print(f"Test data seeded into: {target}")
 
 

@@ -1,11 +1,11 @@
 """Project-memory loader.
 
 The user-confirmed facts / decisions that persist across every AI
-conversation in the project. Stored in ``data/project_memory/<pid>.json``.
+conversation in the project. Reads from the v2-schema
+``project_memories`` table (see docs/SCHEMA_REDESIGN.md).
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from ..budgets import BUDGETS
@@ -17,12 +17,10 @@ logger = logging.getLogger("inkoctobot.services.prompt_context.project_memory")
 def load(project_id: str, exclude: set | None = None) -> str:
     """Inject the project's shared memory."""
     try:
-        from ui.backend.app.routers.json_storage_api import _col, _safe_id
+        from ui.backend.app.services import project_store
+        from ui.backend.app.services.project_paths import get_db_path
 
-        p = _col("project_memory") / f"{_safe_id(project_id)}.json"
-        if not p.exists():
-            return ""
-        data = json.loads(p.read_text("utf-8"))
+        data = project_store.get_project_memory(get_db_path(), project_id)
         lines = [
             f"- {str(m.get('content') or '').strip()}"
             for m in data.get("memories", [])
