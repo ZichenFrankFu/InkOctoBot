@@ -825,3 +825,242 @@ def delete_blob(db_path: str, project_id: str, scope: str) -> None:
             (project_id, scope),
         )
         con.commit()
+
+
+# ─────────────── Projects (root project metadata) ──────────────────
+
+
+def _project_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
+    r = _row_to_dict(row)
+    extra = json.loads(r.get("style_profile_json") or "{}") or {}
+    out = {
+        "id": r["project_id"],
+        "name": r.get("title") or "",
+        "genre": r.get("genre") or "",
+        "description": r.get("logline") or "",
+        "status": r.get("status") or "planning",
+        "current_chapter": r.get("current_chapter") or 0,
+        "current_volume": r.get("current_volume") or 1,
+        "world_book_path": r.get("world_book_path") or "",
+        "model_preset": r.get("model_preset") or "balanced",
+        "created_at": r.get("created_at"),
+        "updated_at": r.get("updated_at"),
+    }
+    # Restore frontend-only keys stashed in style_profile_json.
+    for k, v in extra.items():
+        if k not in out:
+            out[k] = v
+    return out
+
+
+def list_projects(db_path: str) -> list[dict]:
+    with open_db(db_path) as con:
+        rows = con.execute(
+            "SELECT * FROM projects ORDER BY updated_at DESC, created_at DESC"
+        ).fetchall()
+    return [_project_row_to_payload(r) for r in rows]
+
+
+def get_project(db_path: str, project_id: str) -> dict | None:
+    with open_db(db_path) as con:
+        row = con.execute(
+            "SELECT * FROM projects WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+    return _project_row_to_payload(row) if row else None
+
+
+def upsert_project(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Insert or update a project row from a frontend-shaped dict.
+
+    Returns the resulting payload (in frontend shape).
+    """
+    pid = body.get("id") or _nid("proj_")
+    known_cols = {
+        "id", "name", "genre", "description", "status",
+        "current_chapter", "current_volume", "world_book_path",
+        "model_preset", "created_at", "updated_at",
+    }
+    extra = {k: v for k, v in body.items() if k not in known_cols}
+    status = body.get("status", "planning")
+    if status not in {"planning", "writing", "paused", "completed"}:
+        status = "planning"
+
+    with open_db(db_path) as con:
+        con.execute(
+            """INSERT INTO projects (
+                   project_id, title, genre, logline, status,
+                   current_chapter, current_volume, world_book_path,
+                   style_profile_json, model_preset,
+                   created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT(project_id) DO UPDATE SET
+                   title = excluded.title,
+                   genre = excluded.genre,
+                   logline = excluded.logline,
+                   status = excluded.status,
+                   current_chapter = excluded.current_chapter,
+                   current_volume = excluded.current_volume,
+                   world_book_path = excluded.world_book_path,
+                   style_profile_json = excluded.style_profile_json,
+                   model_preset = excluded.model_preset,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (pid,
+             body.get("name", ""),
+             body.get("genre", ""),
+             body.get("description", ""),
+             status,
+             int(body.get("current_chapter", 0) or 0),
+             int(body.get("current_volume", 1) or 1),
+             body.get("world_book_path", ""),
+             json.dumps(extra, ensure_ascii=False),
+             body.get("model_preset", "balanced")),
+        )
+        con.commit()
+    saved = get_project(db_path, pid)
+    if saved is None:  # pragma: no cover
+        raise RuntimeError("upsert succeeded but row not found")
+    return saved
+
+
+def delete_project(db_path: str, project_id: str) -> None:
+    """Delete a project + all CASCADE-linked rows (chapters, characters, ...)."""
+    with open_db(db_path) as con:
+        con.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+        con.commit()
+
+
+# ─────────────── Text versions (chapter version chain) ────────────
+
+
+def _version_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
+    r = _row_to_dict(row)
+    diff = json.loads(r.get("diff_json") or "{}") or {}
+    out = {
+        "version_id": r["version_id"],
+        "chapter_id": r["chapter_id"],
+        "version_num": r.get("version_num") or 1,
+        "source": r.get("source") or "ai",
+        "content": r.get("content") or "",
+        "model_used": r.get("model_used") or "",
+        "created_at": r.get("created_at"),
+        "ts": r.get("created_at"),
+    }
+    for k, v in diff.items():
+        if k not in out:
+            out[k] = v
+    return out
+
+
+def list_versions(db_path: str, project_id: str,
+                  chapter_id: str = "") -> list[dict]:
+    """List versions, optionally filtered by chapter_id.
+
+    project_id is required for the path scope; we use chapter_id when
+    given, otherwise list all versions for chapters that belong to
+    project_id.
+    """
+    with open_db(db_path) as con:
+        if chapter_id:
+            rows = con.execute(
+                "SELECT * FROM text_versions WHERE chapter_id = ? "
+                "ORDER BY version_num DESC",
+                (chapter_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """SELECT tv.* FROM text_versions tv
+                   JOIN chapters ch ON ch.chapter_id = tv.chapter_id
+                   WHERE ch.project_id = ?
+                   ORDER BY tv.created_at DESC""",
+                (project_id,),
+            ).fetchall()
+    return [_version_row_to_payload(r) for r in rows]
+
+
+def insert_version(db_path: str, project_id: str,
+                   version: dict[str, Any]) -> dict[str, Any]:
+    """Append a new version to a chapter's history.
+
+    Requires ``chapter_id`` to exist in the chapters table (FK).
+    Auto-increments ``version_num`` per chapter.
+    """
+    chapter_id = (version.get("chapter_id") or "").strip()
+    if not chapter_id:
+        raise ValueError("chapter_id is required")
+
+    known_cols = {"version_id", "chapter_id", "version_num", "source",
+                  "content", "model_used", "created_at", "ts"}
+    diff = {k: v for k, v in version.items() if k not in known_cols}
+    source = version.get("source", "ai")
+    if source not in {"ai", "user_edit", "rewrite"}:
+        source = "ai"
+
+    with open_db(db_path) as con:
+        # Auto-increment per chapter
+        max_num = con.execute(
+            "SELECT COALESCE(MAX(version_num), 0) FROM text_versions "
+            "WHERE chapter_id = ?",
+            (chapter_id,),
+        ).fetchone()[0]
+        vnum = int(version.get("version_num") or (max_num + 1))
+        vid = version.get("version_id") or _nid("ver_")
+        con.execute(
+            """INSERT INTO text_versions
+               (version_id, chapter_id, version_num, source, content,
+                diff_json, model_used, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (vid, chapter_id, vnum, source,
+             version.get("content", ""),
+             json.dumps(diff, ensure_ascii=False),
+             version.get("model_used", "")),
+        )
+        con.commit()
+        row = con.execute(
+            "SELECT * FROM text_versions WHERE version_id = ?",
+            (vid,),
+        ).fetchone()
+    return _version_row_to_payload(row)
+
+
+def delete_version(db_path: str, version_id: str) -> None:
+    with open_db(db_path) as con:
+        con.execute(
+            "DELETE FROM text_versions WHERE version_id = ?",
+            (version_id,),
+        )
+        con.commit()
+
+
+# ─────────────── Foreshadowing (legacy compat) ────────────────────
+#
+# Truth Files (pending_hooks + hook_events) is the canonical store
+# for foreshadowing. The legacy data/foreshadowing/<pid>.json file
+# is gone in v2; the endpoint still serves a flat list for the
+# 大纲 tab by reading from pending_hooks.
+
+
+def list_foreshadowing_legacy(db_path: str, project_id: str) -> list[dict]:
+    """Return open hooks shaped like the legacy {items: [...]} blob."""
+    with open_db(db_path) as con:
+        try:
+            rows = con.execute(
+                "SELECT hook_id, description, origin_chapter, "
+                "expected_payoff_chapter, status, importance "
+                "FROM pending_hooks WHERE project_id = ? "
+                "ORDER BY origin_chapter",
+                (project_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    return [{
+        "id": r["hook_id"],
+        "title": r["description"][:30],
+        "content": r["description"],
+        "chapter_ids": [],
+        "origin_chapter": r["origin_chapter"],
+        "expected_payoff_chapter": r["expected_payoff_chapter"],
+        "status": r["status"],
+        "importance": r["importance"],
+    } for r in rows]

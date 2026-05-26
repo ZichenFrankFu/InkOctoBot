@@ -141,7 +141,8 @@ def creation_context_manifest(
     Returns the concrete items behind each RAG category so the creation
     tab can show them and let the user de-select individual items.
     """
-    from ui.backend.app.routers.json_storage_api import _col, _safe_id, _list
+    from ui.backend.app.services import project_store
+    from ui.backend.app.services.project_paths import get_db_path
 
     fields = load_chapter_fields(project_id, chapter_id)
     characters = fields.get("characters") or []
@@ -154,17 +155,16 @@ def creation_context_manifest(
 
     platform_items: list[dict] = []
     try:
-        pp = _col("projects") / f"{_safe_id(project_id)}.json"
-        if pp.exists():
-            plat = (json.loads(pp.read_text("utf-8")).get("platform") or "").strip()
-            if plat:
-                platform_items = [{"id": "platform", "label": plat}]
+        proj = project_store.get_project(get_db_path(), project_id) or {}
+        plat = (proj.get("platform") or "").strip()
+        if plat:
+            platform_items = [{"id": "platform", "label": plat}]
     except Exception:
         pass
 
     wb_items: list[dict] = []
     try:
-        for e in _list("worldbook", filter_key="project_id", filter_value=project_id):
+        for e in project_store.list_worldbook(get_db_path(), project_id):
             t = (e.get("title") or "").strip()
             if t or (e.get("content") or "").strip():
                 wb_items.append({"id": str(e.get("id") or t), "label": t or "（无题）"})

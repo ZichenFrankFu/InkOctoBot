@@ -533,29 +533,80 @@ def run_migration(data_dir: Path, db_path: Path) -> dict:
 
 
 def _ensure_placeholder_projects(con: sqlite3.Connection, data_dir: Path) -> None:
-    """Best-effort: collect project_id values from JSON files and INSERT OR IGNORE."""
-    pids: set[str] = set()
+    """Insert project rows, preserving title/genre/description from JSON.
+
+    For projects discovered only as ``project_id`` on a child entity
+    (character / worldbook), insert an empty placeholder row so the FK
+    resolves. For projects with a real ``projects/<pid>.json`` file,
+    copy over the user-visible fields too.
+    """
     proj_dir = data_dir / "projects"
+    seen: set[str] = set()
+    cur = con.cursor()
+
+    # 1. Real projects/<pid>.json files — preserve user-supplied fields.
     if proj_dir.is_dir():
         for p in proj_dir.glob("*.json"):
             obj = _load_json(p)
-            if isinstance(obj, dict) and obj.get("id"):
-                pids.add(str(obj["id"]))
+            if not isinstance(obj, dict):
+                continue
+            pid = str(obj.get("id") or "").strip()
+            if not pid:
+                continue
+            seen.add(pid)
+            status = obj.get("status") or "planning"
+            if status not in {"planning", "writing", "paused", "completed"}:
+                status = "planning"
+            # Stash unknown frontend keys in style_profile_json so
+            # round-tripping the project row preserves them.
+            known = {"id", "name", "genre", "description", "status",
+                     "current_chapter", "current_volume", "world_book_path",
+                     "model_preset", "created_at", "updated_at"}
+            extra = {k: v for k, v in obj.items() if k not in known}
+            cur.execute(
+                """INSERT INTO projects
+                   (project_id, title, genre, logline, status,
+                    current_chapter, current_volume, world_book_path,
+                    style_profile_json, model_preset,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                   ON CONFLICT(project_id) DO UPDATE SET
+                     title = excluded.title,
+                     genre = excluded.genre,
+                     logline = excluded.logline,
+                     status = excluded.status,
+                     style_profile_json = excluded.style_profile_json""",
+                (pid,
+                 obj.get("name", ""),
+                 obj.get("genre", ""),
+                 obj.get("description", ""),
+                 status,
+                 int(obj.get("current_chapter", 0) or 0),
+                 int(obj.get("current_volume", 1) or 1),
+                 obj.get("world_book_path", ""),
+                 json.dumps(extra, ensure_ascii=False),
+                 obj.get("model_preset", "balanced")),
+            )
+
+    # 2. Implicit projects mentioned only by a child row — bare placeholder.
     for sub in ("characters", "worldbook"):
         d = data_dir / sub
         if d.is_dir():
             for p in d.glob("*.json"):
                 obj = _load_json(p)
                 if isinstance(obj, dict) and obj.get("project_id"):
-                    pids.add(str(obj["project_id"]))
-    cur = con.cursor()
-    for pid in pids:
-        cur.execute(
-            """INSERT OR IGNORE INTO projects
-               (project_id, title, status, created_at, updated_at)
-               VALUES (?, ?, 'planning', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
-            (pid, ""),
-        )
+                    pid = str(obj["project_id"])
+                    if pid in seen:
+                        continue
+                    cur.execute(
+                        """INSERT OR IGNORE INTO projects
+                           (project_id, title, status, created_at, updated_at)
+                           VALUES (?, '', 'planning',
+                                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+                        (pid,),
+                    )
+                    seen.add(pid)
     con.commit()
 
 

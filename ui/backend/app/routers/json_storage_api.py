@@ -98,25 +98,39 @@ def _enrich_project(proj: dict) -> dict:
         pass
     return proj
 
+# ═══ Projects (DB-backed via project_store) ═══
 @router.get("/projects")
 def list_projects(page: int = 0, size: int = 0):
-    items = [_enrich_project(p) for p in _list("projects")]
+    items = [_enrich_project(p) for p in project_store.list_projects(_db())]
     total = len(items)
     if size > 0:
         start = page * size
         items = items[start:start + size]
     return {"items": items, "total": total}
+
 @router.post("/projects")
 def create_project(body: dict = Body(...)):
-    pid = _nid()
-    body.update({"id": pid, "name": body.get("name", "新项目"), "genre": body.get("genre", ""), "description": body.get("description", ""), "created_at": time.time()})
-    return _save("projects", pid, body)
+    body = dict(body)
+    body.setdefault("name", "新项目")
+    return project_store.upsert_project(_db(), body)
+
 @router.get("/projects/{pid}")
-def get_project(pid: str): return _get("projects", pid)
+def get_project(pid: str):
+    item = project_store.get_project(_db(), pid)
+    if not item:
+        raise HTTPException(404, f"not found: projects/{pid}")
+    return _enrich_project(item)
+
 @router.put("/projects/{pid}")
-def update_project(pid: str, body: dict = Body(...)): return _save("projects", pid, body)
+def update_project(pid: str, body: dict = Body(...)):
+    body = dict(body)
+    body["id"] = pid
+    return project_store.upsert_project(_db(), body)
+
 @router.delete("/projects/{pid}")
-def delete_project(pid: str): _del("projects", pid); return {"ok": True}
+def delete_project(pid: str):
+    project_store.delete_project(_db(), pid)
+    return {"ok": True}
 
 # ═══ Characters (DB-backed via project_store) ═══
 @router.get("/characters")
@@ -322,23 +336,39 @@ def delete_project_memory(project_id: str, memory_id: str):
     project_store.delete_project_memory_entry(_db(), project_id, memory_id)
     return {"ok": True}
 
-# ═══ Foreshadowing (per-project 伏笔 — title/content + linked chapters) ═══
-def _foreshadowing_path(project_id: str) -> Path:
-    d = _col("foreshadowing"); return d / f"{_safe_id(project_id)}.json"
+# ═══ Foreshadowing (legacy) — reads pending_hooks from Truth Files ═══
+# The legacy data/foreshadowing/<pid>.json file is gone in v2; this
+# endpoint now serves the canonical pending_hooks rows reshaped to the
+# old {items:[...]} envelope so the existing 大纲 tab keeps working.
+# Writes are accepted but a deprecation warning is logged — new code
+# should emit HookDelta via TruthFileStore.apply_deltas.
+
+import logging as _fs_logging
+_fs_log = _fs_logging.getLogger("inkoctobot.routers.foreshadowing_legacy")
+
 @router.get("/foreshadowing/{project_id}")
 def get_foreshadowing(project_id: str):
-    p = _foreshadowing_path(project_id)
-    if not p.exists():
-        return {"project_id": project_id, "items": []}
-    return json.loads(p.read_text("utf-8"))
+    return {
+        "project_id": project_id,
+        "items": project_store.list_foreshadowing_legacy(_db(), project_id),
+        "source": "pending_hooks",
+    }
+
 @router.put("/foreshadowing/{project_id}")
 def save_foreshadowing(project_id: str, body: dict = Body(...)):
-    items = body.get("items", [])
-    data = {"project_id": project_id,
-            "items": items if isinstance(items, list) else [],
-            "updated_at": time.time()}
-    _wj(_foreshadowing_path(project_id), data)
-    return {"ok": True}
+    """Deprecated: foreshadowing should be emitted via TruthFileStore.
+
+    Kept as a no-op so legacy frontend save calls don't 404. The count
+    of items the client tried to save is logged so we can spot whether
+    anything is still hitting this path.
+    """
+    items = body.get("items", []) or []
+    _fs_log.warning(
+        "deprecated PUT /data/foreshadowing/%s ignored (items=%d) — "
+        "emit HookDelta via TruthFileStore.apply_deltas instead",
+        project_id, len(items),
+    )
+    return {"ok": True, "deprecated": True}
 
 # ═══ Editor (DB-backed: project_blobs + chapters table) ═══
 @router.get("/editor")
@@ -373,53 +403,32 @@ def clear_chat_history(project_id: str = "default", scope: str = "pipeline"):
     project_store.clear_chat_history(_db(), project_id, scope)
     return {"ok": True}
 
-# ═══ Version History ═══
-def _versions_path(project_id: str) -> Path:
-    d = _col("versions"); return d / f"{_safe_id(project_id)}.json"
-
+# ═══ Version History (DB-backed via project_store; text_versions table) ═══
 @router.get("/versions")
 def get_versions(project_id: str = "default", chapter_id: str = ""):
-    p = _versions_path(project_id)
-    if not p.exists():
-        return {"versions": []}
-    data = json.loads(p.read_text("utf-8"))
-    versions = data.get("versions", [])
-    if chapter_id:
-        versions = [v for v in versions if v.get("chapter_id") == chapter_id]
-    return {"versions": versions}
+    return {"versions": project_store.list_versions(
+        _db(), project_id, chapter_id,
+    )}
 
 @router.post("/versions")
 def save_version(body: dict = Body(...)):
     pid = body.get("project_id", "default")
-    version = body.get("version", {})
-    p = _versions_path(pid)
-    data = json.loads(p.read_text("utf-8")) if p.exists() else {"versions": []}
-    versions = data.get("versions", [])
-    versions.append(version)
-    # Keep last 50 versions per chapter
-    by_ch: dict[str, list] = {}
-    for v in versions:
-        ch = v.get("chapter_id", "")
-        by_ch.setdefault(ch, []).append(v)
-    trimmed = []
-    for ch_versions in by_ch.values():
-        trimmed.extend(ch_versions[-50:])
-    _wj(p, {"versions": trimmed, "saved_at": time.time()})
-    return {"ok": True, "count": len(trimmed)}
+    version = body.get("version") or {}
+    project_store.ensure_project_row(_db(), pid)
+    if not version.get("chapter_id"):
+        raise HTTPException(400, detail="version.chapter_id is required")
+    try:
+        saved = project_store.insert_version(_db(), pid, version)
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e))
+    # Match legacy response shape; the trim-to-50 policy is enforced
+    # by the FK cascade + retention logic above the API if needed.
+    return {"ok": True, "version_id": saved["version_id"]}
 
 @router.delete("/versions/{version_id}")
 def delete_version(version_id: str, project_id: str = "default"):
-    p = _versions_path(project_id)
-    if not p.exists():
-        return {"ok": False, "error": "not found"}
-    data = json.loads(p.read_text("utf-8"))
-    versions = data.get("versions", [])
-    original_count = len(versions)
-    versions = [v for v in versions if v.get("version_id") != version_id]
-    if len(versions) == original_count:
-        return {"ok": False, "error": "version not found"}
-    _wj(p, {"versions": versions, "saved_at": time.time()})
-    return {"ok": True, "remaining": len(versions)}
+    project_store.delete_version(_db(), version_id)
+    return {"ok": True}
 
 # ═══ Calibration (DB-backed via project_store; blob scope) ═══
 @router.get("/calibration/{project_id}")

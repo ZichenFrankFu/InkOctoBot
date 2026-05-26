@@ -57,12 +57,10 @@ def load(project_id: str, exclude: set | None = None) -> str:
     if exclude and "platform" in exclude:
         return ""
     try:
-        from ui.backend.app.routers.json_storage_api import _col, _safe_id
+        from ui.backend.app.services import project_store
+        from ui.backend.app.services.project_paths import get_db_path
 
-        p = _col("projects") / f"{_safe_id(project_id)}.json"
-        if not p.exists():
-            return ""
-        proj = json.loads(p.read_text("utf-8"))
+        proj = project_store.get_project(get_db_path(), project_id) or {}
         platform = str(proj.get("platform") or "").strip()
         if not platform:
             return ""

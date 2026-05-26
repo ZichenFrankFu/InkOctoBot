@@ -275,6 +275,131 @@ class TestChatHistoryEndpoints(unittest.TestCase):
         )
 
 
+class TestProjectsEndpoints(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.client = _client(self.tmp)
+
+    def test_full_crud(self) -> None:
+        # POST
+        resp = self.client.post(
+            "/data/projects",
+            json={"name": "新书", "genre": "玄幻", "platform": "起点"},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        pid = resp.json()["id"]
+        # custom field round-trips
+        self.assertEqual(resp.json()["platform"], "起点")
+
+        # GET single
+        self.assertEqual(
+            self.client.get(f"/data/projects/{pid}").json()["name"], "新书",
+        )
+        # word_count/chapter_count enriched
+        body = self.client.get(f"/data/projects/{pid}").json()
+        self.assertIn("word_count", body)
+
+        # PUT update
+        self.client.put(
+            f"/data/projects/{pid}",
+            json={"name": "新书", "genre": "都市", "status": "writing"},
+        )
+        self.assertEqual(
+            self.client.get(f"/data/projects/{pid}").json()["genre"], "都市",
+        )
+
+        # LIST
+        items = self.client.get("/data/projects").json()["items"]
+        self.assertEqual(len(items), 1)
+
+        # DELETE
+        self.assertEqual(
+            self.client.delete(f"/data/projects/{pid}").status_code, 200,
+        )
+        self.assertEqual(
+            self.client.get(f"/data/projects/{pid}").status_code, 404,
+        )
+
+
+class TestVersionsEndpoints(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.client = _client(self.tmp)
+        # Create a project + chapter so FK works
+        proj = self.client.post("/data/projects", json={"name": "P"}).json()
+        self.pid = proj["id"]
+        from ui.backend.app.services.project_paths import get_db_path
+        with sqlite3.connect(get_db_path()) as c:
+            c.execute(
+                "INSERT INTO chapters (chapter_id, project_id, chapter_num) "
+                "VALUES ('ch1', ?, 1)", (self.pid,),
+            )
+            c.commit()
+
+    def test_post_get_delete(self) -> None:
+        resp = self.client.post(
+            "/data/versions",
+            json={"project_id": self.pid,
+                  "version": {"chapter_id": "ch1", "source": "ai",
+                              "content": "v1 text"}},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        vid = resp.json()["version_id"]
+
+        items = self.client.get(
+            f"/data/versions?project_id={self.pid}&chapter_id=ch1"
+        ).json()["versions"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["content"], "v1 text")
+
+        self.client.delete(f"/data/versions/{vid}?project_id={self.pid}")
+        self.assertEqual(
+            self.client.get(
+                f"/data/versions?project_id={self.pid}&chapter_id=ch1"
+            ).json()["versions"],
+            [],
+        )
+
+    def test_missing_chapter_id_400(self) -> None:
+        resp = self.client.post(
+            "/data/versions",
+            json={"project_id": self.pid, "version": {"content": "x"}},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+
+class TestForeshadowingEndpoints(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.client = _client(self.tmp)
+        self.client.post("/data/projects", json={"id": "p1", "name": "P"})
+
+    def test_get_reads_pending_hooks(self) -> None:
+        from ui.backend.app.services.project_paths import get_db_path
+        with sqlite3.connect(get_db_path()) as c:
+            c.execute(
+                "INSERT INTO pending_hooks (hook_id, project_id, description, "
+                "status, importance, origin_chapter) "
+                "VALUES ('h1', 'p1', '伏笔A', 'open', 'B', 1)"
+            )
+            c.commit()
+        resp = self.client.get("/data/foreshadowing/p1").json()
+        self.assertEqual(resp["source"], "pending_hooks")
+        self.assertEqual(len(resp["items"]), 1)
+        self.assertEqual(resp["items"][0]["content"], "伏笔A")
+
+    def test_put_is_deprecated_noop(self) -> None:
+        resp = self.client.put(
+            "/data/foreshadowing/p1",
+            json={"items": [{"title": "ignored", "content": "x"}]},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json().get("deprecated"))
+
+
 class TestEditorEndpoints(unittest.TestCase):
 
     def setUp(self) -> None:
