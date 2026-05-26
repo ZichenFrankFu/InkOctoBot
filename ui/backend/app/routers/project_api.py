@@ -1,147 +1,67 @@
-"""FastAPI router: Project CRUD + export."""
+"""Deprecated router.
+
+``/api/projects`` was an earlier CRUD surface that pointed at the wrong
+database file (``webnovel.db`` instead of ``novels.db``), had path
+traversal bugs in its export/delete paths, and bypassed
+``services.project_paths.get_db_path`` so it never honored test mode.
+
+It was never wired to the frontend (the React app uses ``/api/data/projects``
+from json_storage_api, which goes through project_store and is DB-backed).
+
+All endpoints now return HTTP 410 Gone with a pointer to the canonical
+path. Kept as a router so older curl scripts get a clear error rather
+than 404.
+"""
 from __future__ import annotations
 
-import json
 import logging
-import sqlite3
-import uuid
-from pathlib import Path
-from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
-
-from ui.backend.app.settings import settings
+from fastapi import APIRouter, HTTPException
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 logger = logging.getLogger("inkoctobot.ui.backend.project_api")
 
 
-def _db_path() -> str:
-    return str(settings.repo_root / "data" / "webnovel.db")
+_GONE_MESSAGE = (
+    "/api/projects is deprecated and unused. Use /api/data/projects "
+    "(json_storage_api → project_store, DB-backed)."
+)
 
 
-def _conn() -> sqlite3.Connection:
-    c = sqlite3.connect(_db_path())
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys=ON")
-    return c
-
-
-class ProjectCreate(BaseModel):
-    title: str
-    genre: str = ""
-    logline: str = ""
-    model_preset: str = "balanced"
-
-
-class ProjectUpdate(BaseModel):
-    title: str | None = None
-    genre: str | None = None
-    logline: str | None = None
-    status: str | None = None
-    model_preset: str | None = None
-    style_profile_json: str | None = None
+def _gone() -> None:
+    raise HTTPException(status_code=410, detail=_GONE_MESSAGE)
 
 
 @router.get("/status")
 def projects_status():
-    return {"status": "ok", "router": "projects"}
+    return {"status": "deprecated", "see": "/api/data/projects"}
 
 
 @router.get("")
-def list_projects(
-    status: str | None = None,
-    limit: int = Query(default=50, le=200),
-    offset: int = Query(default=0, ge=0),
-):
-    try:
-        with _conn() as c:
-            if status:
-                rows = c.execute(
-                    "SELECT * FROM projects WHERE status=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                    (status, limit, offset),
-                ).fetchall()
-            else:
-                rows = c.execute(
-                    "SELECT * FROM projects ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
-                ).fetchall()
-        return {"projects": [dict(r) for r in rows]}
-    except Exception as e:
-        return {"projects": [], "error": str(e)}
+def list_projects():
+    _gone()
 
 
 @router.post("")
-def create_project(req: ProjectCreate):
-    pid = f"proj_{uuid.uuid4().hex[:12]}"
-    try:
-        from storage.project_schema import ensure_creation_tables
-        with _conn() as c:
-            ensure_creation_tables(c)
-            c.execute(
-                """INSERT INTO projects (project_id, title, genre, logline, model_preset)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (pid, req.title, req.genre, req.logline, req.model_preset),
-            )
-            c.commit()
-        # Create project directory
-        from security.test_mode_isolation import DataIsolation
-        iso = DataIsolation(str(settings.repo_root / "data" / "projects"))
-        iso.create_project_dir(pid)
-        return {"status": "ok", "project_id": pid}
-    except Exception as e:
-        logger.error("Create project error: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+def create_project():
+    _gone()
 
 
 @router.get("/{project_id}")
 def get_project(project_id: str):
-    with _conn() as c:
-        row = c.execute(
-            "SELECT * FROM projects WHERE project_id=?", (project_id,),
-        ).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return dict(row)
+    _gone()
 
 
 @router.patch("/{project_id}")
-def update_project(project_id: str, req: ProjectUpdate):
-    sets = ["updated_at=CURRENT_TIMESTAMP"]
-    params: list[Any] = []
-    for field, val in req.model_dump(exclude_none=True).items():
-        sets.append(f"{field}=?")
-        params.append(val)
-    if len(sets) == 1:
-        return get_project(project_id)
-    params.append(project_id)
-    with _conn() as c:
-        c.execute(f"UPDATE projects SET {', '.join(sets)} WHERE project_id=?", params)
-        c.commit()
-    return get_project(project_id)
+def update_project(project_id: str):
+    _gone()
 
 
 @router.delete("/{project_id}")
 def delete_project(project_id: str):
-    with _conn() as c:
-        cur = c.execute("DELETE FROM projects WHERE project_id=?", (project_id,))
-        c.commit()
-    if cur.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Project not found")
-    from security.test_mode_isolation import DataIsolation
-    iso = DataIsolation(str(settings.repo_root / "data" / "projects"))
-    iso.cleanup_project(project_id, keep_exports=False)
-    return {"status": "ok", "deleted": project_id}
+    _gone()
 
 
 @router.post("/{project_id}/export")
 def export_project(project_id: str):
-    from security.test_mode_isolation import DataIsolation
-    iso = DataIsolation(str(settings.repo_root / "data" / "projects"))
-    try:
-        output = settings.repo_root / "data" / "projects" / project_id / "exports" / f"{project_id}_export"
-        result = iso.export_project(project_id, output)
-        return {"status": "ok", "path": str(result)}
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Project not found")
+    _gone()

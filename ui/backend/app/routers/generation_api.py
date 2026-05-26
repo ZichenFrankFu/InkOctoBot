@@ -93,11 +93,17 @@ def _load_reference_style(project_id: str, db_path: str) -> str:
 
 
 def _load_unresolved_foreshadowing(project_id: str, db_path: str, chapter_num: int) -> str:
-    """Load unresolved foreshadowing for context injection (B2: foreshadowing tracking)."""
+    """Load unresolved foreshadowing for context injection (B2: foreshadowing tracking).
+
+    Reads from pending_hooks (Truth Files canonical store) via MemoryManager;
+    EpisodicTimeline.get_unresolved_foreshadowing was removed in v2.1 — the
+    foreshadow state machine moved to pending_hooks. See docs/SCHEMA_REDESIGN.md.
+    """
     try:
-        from knowledge.memory.episodic_timeline import EpisodicTimeline
-        timeline = EpisodicTimeline(db_path)
-        unresolved = timeline.get_unresolved_foreshadowing(project_id)
+        from knowledge.memory.manager import MemoryManager
+        mgr = MemoryManager(db_path=db_path)
+        mgr.set_project(project_id)
+        unresolved = mgr.get_unresolved_foreshadowing()
         if not unresolved:
             return ""
         parts = ["[未回收伏笔提醒]"]
@@ -1714,9 +1720,13 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                 _eval_db_path = _get_db_path()
                 _eval_proj_id = req_data.get("project_id", "")
                 _eval_chapter_num = req_data.get("chapter_num", 1)
-                from knowledge.memory.episodic_timeline import EpisodicTimeline
-                _eval_timeline = EpisodicTimeline(_eval_db_path)
-                _unresolved = _eval_timeline.get_unresolved_foreshadowing(_eval_proj_id)
+                # v2.1: foreshadow state moved to pending_hooks — read via
+                # MemoryManager (EpisodicTimeline.get_unresolved_foreshadowing
+                # was removed in commit 10337fc).
+                from knowledge.memory.manager import MemoryManager
+                _eval_mgr = MemoryManager(db_path=_eval_db_path)
+                _eval_mgr.set_project(_eval_proj_id)
+                _unresolved = _eval_mgr.get_unresolved_foreshadowing()
                 if _unresolved:
                     process_log.append({"detector": "CrossChapterChecker", "status": "running", "detail": "检查伏笔回收与角色一致性..."})
                     from agents.evaluation.cross_chapter_checker import CrossChapterChecker

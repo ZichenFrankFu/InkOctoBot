@@ -482,16 +482,14 @@ def memory_dump(
             except sqlite3.OperationalError as e:
                 out["knowledge_isolation"] = {"_error": str(e)}
 
-    # Project memory (confirmed facts, the user-curated shared store)
+    # Project memory (confirmed facts, the user-curated shared store).
+    # v2.1: read from the project_memories table (was a JSON file in v1).
     if want_all:
         try:
-            from ui.backend.app.settings import settings as _s
-            base = _s.data_dir if _s.data_dir else _s.repo_root / "data"
-            pm_file = base / "project_memory" / f"{project_id}.json"
-            if pm_file.exists():
-                out["project_memory"] = json.loads(pm_file.read_text("utf-8"))
-            else:
-                out["project_memory"] = {"_note": "no project_memory file"}
+            from ui.backend.app.services import project_store
+            out["project_memory"] = project_store.get_project_memory(
+                db_path, project_id,
+            )
         except Exception as e:
             out["project_memory"] = {"_error": str(e)}
 

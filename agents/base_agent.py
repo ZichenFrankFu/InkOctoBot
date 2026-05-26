@@ -85,8 +85,10 @@ class BaseAgent:
             try:
                 from reference_pipeline.prompts import get_template
                 base = get_template(reg_key) or base
-            except Exception:
-                pass
+            except Exception as e:
+                self._logger.debug(
+                    "prompt template override skipped for %s: %s", reg_key, e,
+                )
         if self._extra_system:
             base += "\n\n" + self._extra_system
         return base.strip()

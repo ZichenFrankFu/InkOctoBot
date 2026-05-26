@@ -1,35 +1,32 @@
 """
-/api/editor — Editor API for chapter content, versions, and text operations.
+/api/editor — Editor utility endpoints (diff + word count) + version
+shim that delegates to project_store / text_versions DB.
+
+History: this router used to write per-project JSON files under
+``data/versions/<pid>/`` and had a path-traversal vulnerability
+(unsanitized ``project_id`` / ``chapter_id`` in a Path) plus stored
+versions outside the canonical ``text_versions`` table. Both fixed
+in v2.1 — endpoints now route through ``project_store``.
 """
 from __future__ import annotations
 
-import json
 import logging
-import time
-import uuid
-from pathlib import Path
-from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
-from ui.backend.app.settings import settings as app_settings
+from ui.backend.app.services import project_store
+from ui.backend.app.services.project_paths import get_db_path
 
 router = APIRouter(prefix="/api/editor", tags=["editor"])
 logger = logging.getLogger("inkoctobot.ui.backend.editor_api")
-
-
-def _versions_dir(project_id: str = "default") -> Path:
-    d = app_settings.repo_root / "data" / "versions" / project_id
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 class SaveVersionRequest(BaseModel):
     project_id: str = "default"
     chapter_id: str
     text: str
-    source: str = "user_edited"
+    source: str = "user_edit"
     model_used: str = ""
 
 
@@ -44,49 +41,28 @@ def editor_status():
 
 @router.get("/versions/{chapter_id}")
 def get_versions(chapter_id: str, project_id: str = "default"):
-    """List all versions for a chapter."""
-    vdir = _versions_dir(project_id)
-    versions = []
-    for f in sorted(vdir.glob(f"{chapter_id}_v*.json")):
-        try:
-            data = json.loads(f.read_text("utf-8"))
-            versions.append(data)
-        except Exception:
-            pass
-    return {"versions": sorted(versions, key=lambda v: v.get("version", 0), reverse=True)}
+    """List all versions for a chapter. v2.1: DB-backed via text_versions."""
+    versions = project_store.list_versions(
+        get_db_path(), project_id, chapter_id=chapter_id,
+    )
+    # Match legacy field name 'version' (= version_num) for any old caller.
+    for v in versions:
+        v.setdefault("version", v.get("version_num"))
+    return {"versions": versions}
 
 
 @router.post("/save-version")
 def save_version(req: SaveVersionRequest):
-    """Save a new version of chapter text."""
-    vdir = _versions_dir(req.project_id)
-
-    # Find next version number
-    existing = list(vdir.glob(f"{req.chapter_id}_v*.json"))
-    max_ver = 0
-    for f in existing:
-        try:
-            d = json.loads(f.read_text("utf-8"))
-            max_ver = max(max_ver, d.get("version", 0))
-        except Exception:
-            pass
-
-    ver = max_ver + 1
-    version_data = {
-        "version_id": f"v_{uuid.uuid4().hex[:8]}",
+    """Save a new version of chapter text. v2.1: DB-backed."""
+    project_store.ensure_project_row(get_db_path(), req.project_id)
+    saved = project_store.insert_version(get_db_path(), req.project_id, {
         "chapter_id": req.chapter_id,
-        "version": ver,
         "source": req.source,
-        "text": req.text,
+        "content": req.text,
         "model_used": req.model_used,
-        "word_count": len(req.text.replace(" ", "").replace("\n", "")),
-        "created_at": time.time(),
-    }
-
-    fp = vdir / f"{req.chapter_id}_v{ver:04d}.json"
-    fp.write_text(json.dumps(version_data, ensure_ascii=False, indent=2), "utf-8")
-
-    return {"status": "ok", "version": version_data}
+    })
+    saved["version"] = saved.get("version_num")
+    return {"status": "ok", "version": saved}
 
 
 @router.post("/diff")
