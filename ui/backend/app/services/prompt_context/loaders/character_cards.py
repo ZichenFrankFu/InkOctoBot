@@ -14,9 +14,10 @@ def load(project_id: str, names: list[str], exclude: set | None = None) -> str:
     if not names:
         return ""
     try:
-        from ui.backend.app.routers.json_storage_api import _list
+        from ui.backend.app.services import project_store
+        from ui.backend.app.services.project_paths import get_db_path
 
-        rows = _list("characters", filter_key="project_id", filter_value=project_id)
+        rows = project_store.list_characters(get_db_path(), project_id)
         by_name = {r.get("name", ""): r for r in rows}
         cards: list[str] = []
         for name in names:

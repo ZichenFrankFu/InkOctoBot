@@ -30,52 +30,39 @@ def _db() -> str:
     """Resolve the active novels.db path (honors test mode)."""
     return get_db_path()
 
-def _data_dir() -> Path:
-    d = settings.get_data_path()
-    d.mkdir(parents=True, exist_ok=True); return d
-def _col(name: str) -> Path:
-    d = _data_dir() / name; d.mkdir(parents=True, exist_ok=True); return d
-def _rj(p: Path) -> dict:
-    return json.loads(p.read_text("utf-8")) if p.exists() else {}
-def _wj(p: Path, d: Any):
-    p.write_text(json.dumps(d, ensure_ascii=False, indent=2), "utf-8")
-def _nid() -> str:
-    return f"{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
+
+# ── JSON file helpers — only the preferences + settings endpoints
+# below still write JSON files. Everything else has moved to SQLite
+# via project_store. See docs/SCHEMA_REDESIGN.md.
 
 import re as _re
 
+
+def _data_dir() -> Path:
+    d = settings.get_data_path()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _col(name: str) -> Path:
+    d = _data_dir() / name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _wj(p: Path, d: Any) -> None:
+    p.write_text(json.dumps(d, ensure_ascii=False, indent=2), "utf-8")
+
+
 def _safe_id(val: str) -> str:
     """Sanitize user-supplied IDs to prevent path traversal."""
-    # Strip path separators and parent directory references
     sanitized = _re.sub(r'[/\\]', '_', val.strip())
     sanitized = sanitized.replace('..', '_')
-    if not sanitized:
-        sanitized = "default"
-    return sanitized
+    return sanitized or "default"
 
-def _list(c: str, *, filter_key: str = "", filter_value: str = "") -> list[dict]:
-    items = []
-    for f in sorted(_col(c).glob("*.json")):
-        try:
-            item = json.loads(f.read_text("utf-8"))
-            if filter_key and filter_value and item.get(filter_key) != filter_value:
-                continue
-            items.append(item)
-        except (json.JSONDecodeError, OSError): pass
-    return items
 
-def _get(c: str, id: str) -> dict:
-    p = _col(c) / f"{id}.json"
-    if not p.exists(): raise HTTPException(404, f"not found: {c}/{id}")
-    return json.loads(p.read_text("utf-8"))
-
-def _save(c: str, id: str, d: dict) -> dict:
-    d["id"] = id; d["updated_at"] = time.time()
-    _wj(_col(c) / f"{id}.json", d); return d
-
-def _del(c: str, id: str):
-    p = _col(c) / f"{id}.json"
-    if p.exists(): p.unlink()
+def _nid() -> str:
+    return f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
 
 # ═══ Projects ═══
 def _enrich_project(proj: dict) -> dict:

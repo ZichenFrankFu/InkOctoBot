@@ -12,9 +12,10 @@ logger = logging.getLogger("inkoctobot.services.prompt_context.worldbook")
 def load(project_id: str, exclude: set | None = None) -> str:
     """Collect the project's worldbook entries."""
     try:
-        from ui.backend.app.routers.json_storage_api import _list
+        from ui.backend.app.services import project_store
+        from ui.backend.app.services.project_paths import get_db_path
 
-        rows = _list("worldbook", filter_key="project_id", filter_value=project_id)
+        rows = project_store.list_worldbook(get_db_path(), project_id)
         if not rows:
             return ""
         entries: list[str] = []
