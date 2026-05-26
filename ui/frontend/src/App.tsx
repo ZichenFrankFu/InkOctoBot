@@ -24,11 +24,12 @@ import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
 import DevConsolePage from "./pages/DevConsolePage";
+import LoraTrainingPage from "./pages/LoraTrainingPage";
 
 type Tab =
   | "dashboard" | "rankings" | "references" | "references-overview" | "references-search" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
-  | "skills" | "settings" | "dev-console";
+  | "skills" | "settings" | "dev-console" | "lora";
 
 interface Project { id: string; name: string; genre?: string; word_count?: number; chapter_count?: number; }
 
@@ -52,6 +53,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "references-overview", icon: "▦", label: "数据库概览" },
       { key: "references-search", icon: "⌕", label: "灵感搜索" },
       { key: "references", icon: "⊞", label: "参考作品详情" },
+      { key: "lora", icon: "⚝", label: "LoRA 训练" },
     ],
   },
   {
@@ -223,6 +225,7 @@ function AppInner() {
         {tab === "storyline" && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
         {tab === "skills" && <ErrorBoundary key="skills"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
         {tab === "settings" && <ErrorBoundary key="settings"><SettingsPage /></ErrorBoundary>}
+        {tab === "lora" && <ErrorBoundary key="lora"><LoraTrainingPage /></ErrorBoundary>}
         {tab === "dev-console" && <ErrorBoundary key="dev-console"><DevConsolePage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
       </main>
 

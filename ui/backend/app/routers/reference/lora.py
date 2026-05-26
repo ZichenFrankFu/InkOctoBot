@@ -1,8 +1,13 @@
-"""LoRA fine-tuning trigger + status.
+"""LoRA fine-tuning trigger + status + hardware detection.
 
-Owns one piece of module-level state (``_lora_status``) since training
-is a single-tenant background job. The two endpoints simply start a
-job or poll its status; the heavy lifting is in ``reference_ingest.lora``.
+Owns module-level state ``_status`` since training is a single-tenant
+background job. The endpoints:
+  GET  /references/lora/hardware  — detect CUDA/MPS/CPU + recommend defaults
+  POST /references/lora/train     — start a training job
+  GET  /references/lora/status    — poll job status
+  POST /references/lora/cancel    — request cancellation
+
+Heavy lifting lives in ``reference_ingest.lora``.
 """
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ import asyncio
 import json
 import logging
 import tempfile
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -22,6 +28,7 @@ router = APIRouter()
 
 _logger = logging.getLogger("inkoctobot.ui.backend.lora_training")
 _status: dict = {"status": "idle"}
+_cancel_flag = {"cancel": False}
 
 
 class LoRATrainRequest(BaseModel):
@@ -32,24 +39,71 @@ class LoRATrainRequest(BaseModel):
     epochs: int = 3
     learning_rate: float = 2e-4
     use_4bit: bool = True
+    # Device routing — 'auto' resolves via detect_hardware().
+    # Frontend overrides these if user picks a specific device.
+    device: str = "auto"            # cuda / mps / cpu / auto
+    dtype: str = "auto"             # bf16 / fp16 / fp32 / auto
+    batch_size: int = 0             # 0 = use recommendation
+    gradient_accumulation_steps: int = 0
+
+
+@router.get("/lora/hardware")
+def lora_hardware():
+    """Detect available compute + recommend training config.
+
+    Returns the HardwareReport as a dict — frontend uses this to:
+      - show GPU name + VRAM in the training-config form
+      - prefill device / dtype / batch_size / grad_accum fields
+      - warn about CPU-only training being slow
+    """
+    from reference_ingest.lora.hardware import detect_hardware
+    rep = detect_hardware()
+    return rep.to_dict()
+
+
+@router.post("/lora/cancel")
+def cancel_lora_training():
+    """Best-effort cancellation request. The trainer polls the flag
+    between steps; cancellation takes effect at the next checkpoint."""
+    global _cancel_flag, _status
+    if _status.get("status") != "running":
+        return {"status": _status.get("status", "idle"), "cancelled": False}
+    _cancel_flag["cancel"] = True
+    _status["progress"] = "取消请求已发送，等待下一个检查点..."
+    return {"status": "cancelling", "cancelled": True}
 
 
 @router.post("/lora/train")
 async def start_lora_training(body: LoRATrainRequest):
-    global _status
+    global _status, _cancel_flag
     if _status.get("status") == "running":
         raise HTTPException(409, "训练任务已在进行中")
     if not body.work_ids:
         raise HTTPException(400, "请至少选择一个参考作品")
 
+    # Pre-flight: surface hardware report so the user sees what'll be
+    # used. Status updates in real time as training progresses.
+    try:
+        from reference_ingest.lora.hardware import detect_hardware
+        hw = detect_hardware()
+    except Exception as e:
+        _logger.warning("hardware detect failed pre-flight: %s", e)
+        hw = None
+
+    _cancel_flag["cancel"] = False
     _status = {
         "status": "running",
         "work_ids": body.work_ids,
         "progress": "初始化...",
         "error": None,
+        "hardware": hw.to_dict() if hw else None,
+        "started_at": time.time(),
     }
     asyncio.create_task(_run_lora_training(body))
-    return {"status": "started", "work_ids": body.work_ids}
+    return {
+        "status": "started", "work_ids": body.work_ids,
+        "hardware": hw.to_dict() if hw else None,
+    }
 
 
 async def _run_lora_training(body: LoRATrainRequest):
@@ -110,16 +164,36 @@ async def _run_lora_training(body: LoRATrainRequest):
         output_dir = str(settings.repo_root / "data" / "lora_output")
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+        # Build config — apply hardware recommendations for any 'auto' / 0
+        # field the caller left blank, then override with whatever the
+        # caller explicitly specified.
+        from reference_ingest.lora.hardware import detect_hardware
+        hw = detect_hardware()
         config = LoRATrainConfig(
             base_model=body.base_model,
             rank=body.rank,
             alpha=body.alpha,
             epochs=body.epochs,
             learning_rate=body.learning_rate,
-            use_4bit=body.use_4bit,
+            use_4bit=body.use_4bit if hw.recommended_device == "cuda" else False,
+            device=body.device if body.device != "auto" else hw.recommended_device,
+            dtype=body.dtype if body.dtype != "auto" else hw.recommended_dtype,
+            batch_size=body.batch_size or hw.recommended_batch_size,
+            gradient_accumulation_steps=(
+                body.gradient_accumulation_steps or hw.recommended_grad_accum
+            ),
+        )
+        _status["resolved_config"] = config.to_dict()
+        _logger.info(
+            "LoRA training resolved: device=%s dtype=%s 4bit=%s batch=%d grad_accum=%d",
+            config.device, config.dtype, config.use_4bit,
+            config.batch_size, config.gradient_accumulation_steps,
         )
 
-        _status["progress"] = "开始 LoRA 训练..."
+        _status["progress"] = (
+            f"开始 LoRA 训练 (device={config.device}, dtype={config.dtype}, "
+            f"4bit={config.use_4bit})..."
+        )
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, train_lora, config, dataset_path, output_dir)
 
@@ -128,6 +202,8 @@ async def _run_lora_training(body: LoRATrainRequest):
             "result": result,
             "progress": "训练完成！",
             "samples_used": len(passed),
+            "resolved_config": config.to_dict(),
+            "hardware": hw.to_dict(),
         }
 
     except Exception as e:
