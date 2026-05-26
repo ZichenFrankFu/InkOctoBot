@@ -2,7 +2,7 @@
 /api/generation — Creative Writing Pipeline execution via real agent pipeline.
 
 Provides both synchronous and streaming (WebSocket) generation endpoints
-that connect to the actual SceneDirector -> ActorAgents -> EditorWriter -> Evaluator pipeline.
+that connect to the actual SceneDirector -> ActorAgents -> Writer -> Evaluator pipeline.
 """
 from __future__ import annotations
 
@@ -459,8 +459,8 @@ async def rewrite_text(req: RewriteRequest):
             return {"status": "ok", "prompt": user_content}
         from llm.base import LLMMessage
         router_inst = _build_router(req.provider, req.model)
-        from agents.production.editor_writer import EditorWriter
-        editor = EditorWriter(router_inst, project_id="rewrite")
+        from agents.production.writer import Writer
+        editor = Writer(router_inst, project_id="rewrite")
         messages = [
             LLMMessage(role="system", content=editor.system_prompt),
             LLMMessage(role="user", content=user_content),
@@ -619,6 +619,114 @@ async def quick_generate(req: GenerateRequest):
         else:
             detail = msg
         raise HTTPException(500, detail=detail)
+
+
+# ═══ Single Writer mode — skip the multi-agent pipeline ═══
+
+class SingleWriterRequest(BaseModel):
+    """One-shot chapter generation that bypasses SceneDirector / Actor /
+    Narrator and goes straight to the Writer.
+
+    Faster and cheaper than ``/start`` (the full pipeline); quality
+    ceiling is lower but acceptable when the outline is already
+    detailed.
+
+    Fields parallel ``GenerateRequest`` so the frontend can reuse the
+    same form, with one extra knob (``target_word_count``).
+    """
+    project_id: str = ""
+    chapter_id: str = ""
+    chapter_num: int = 1
+    chapter_title: str = ""
+    outline: str = ""
+    synopsis: str = ""
+    time_label: str = ""
+    location: str = ""
+    characters: list[str] = []
+    pov_character: str = ""
+    narrative_instructions: str = ""
+    target_word_count: int = 2000
+    provider: str = ""
+    model: str = ""
+    # Same RAG knobs as quick-generate
+    skills: list[str] | None = None
+    rag_excludes: list[str] = []
+    # Per-item override of the prompt
+    prompt_override: str = ""
+    prompt_only: bool = False
+
+
+@router.post("/single-writer")
+async def single_writer(req: SingleWriterRequest):
+    """Generate a chapter with only the Writer agent (no SceneDirector,
+    no Actors, no Narrator). Pulls full RAG context (character cards,
+    world rules, memory, adjacent chapters) and runs one LLM call.
+    """
+    try:
+        from agents.production.writer import Writer
+        from ._rag_context import single_agent_vars
+
+        router_inst = _build_router(req.provider, req.model)
+
+        # Reuse the single-agent RAG bundle so we get the same blocks
+        # as /quick-generate (character cards, world, memory, refs).
+        vars_ = single_agent_vars(
+            req.project_id, req.chapter_num, req.outline or req.synopsis,
+            req.time_label, req.location, req.characters,
+            existing_content="",
+            character_aliases={},
+            skills=req.skills,
+            rag_excludes=req.rag_excludes,
+            web_mode=req.prompt_only,
+        )
+
+        writer = Writer(router_inst, project_id=req.project_id)
+
+        if req.prompt_only:
+            # Build the user_content (the prompt body) without invoking LLM
+            # so the user can paste it into a web UI.
+            prompt = writer._build_single_writer_prompt(
+                outline=req.outline,
+                chapter_num=req.chapter_num,
+                chapter_title=req.chapter_title,
+                synopsis=req.synopsis,
+                time_label=req.time_label,
+                location=req.location,
+                characters=req.characters,
+                pov_character=req.pov_character,
+                narrative_instructions=req.narrative_instructions,
+                target_word_count=req.target_word_count,
+            )
+            return {"status": "ok", "prompt": prompt, "rag_vars": vars_}
+
+        text = await writer.write_chapter(
+            outline=req.outline or req.synopsis,
+            chapter_num=req.chapter_num,
+            chapter_title=req.chapter_title,
+            synopsis=req.synopsis,
+            time_label=req.time_label,
+            location=req.location,
+            characters=req.characters,
+            pov_character=req.pov_character,
+            character_cards=vars_.get("character_cards", ""),
+            world_rules=vars_.get("worldbook", ""),
+            narrative_instructions=req.narrative_instructions,
+            style_profile=vars_.get("style_calibration", ""),
+            user_preferences=vars_.get("user_preferences", ""),
+            memory_context=vars_.get("memory", "") or vars_.get("project_memory", ""),
+            adjacent_context=vars_.get("adjacent_context", ""),
+            constraints="",
+            target_word_count=req.target_word_count,
+        )
+        return {
+            "status": "ok",
+            "text": text,
+            "mode": "single_writer",
+            "agent": "Writer",
+        }
+    except Exception as e:
+        logger.error("Single-writer generation failed: %s", e, exc_info=True)
+        raise HTTPException(500, detail=str(e))
 
 
 # ═══ Outline Chat — interactive outline brainstorming ═══
@@ -1425,8 +1533,8 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
         edited_text = full_text
         editor_prompt_sent = ""
         try:
-            from agents.production.editor_writer import EditorWriter
-            editor = EditorWriter(router_inst, project_id=req_data.get("project_id", ""))
+            from agents.production.writer import Writer
+            editor = Writer(router_inst, project_id=req_data.get("project_id", ""))
 
             # Build per-scene performance records for the editor
             perf_list: list[str] = []
@@ -1487,7 +1595,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                 pass
 
             editor_prompt_sent = json.dumps({
-                "method": "EditorWriter.assemble_chapter",
+                "method": "Writer.assemble_chapter",
                 "performance_count": len(perf_list),
                 "scene_count": len(all_scene_results),
                 "narrator_length": len(narrator_text),
@@ -1517,7 +1625,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                 "result": {"text": edited_text, "error": str(e)[:200]},
             })
 
-        # A2: Run chapter-complete memory hook after EditorWriter finishes
+        # A2: Run chapter-complete memory hook after Writer finishes
         try:
             _chapter_num_for_hook = req_data.get("chapter_num", 1)
             _proj_id_for_hook = req_data.get("project_id", "")
@@ -2172,9 +2280,9 @@ async def _run_batch_pipeline(session_id: str):
                         perf_list.append("\n\n".join(scene_parts))
                     narrator_text += sr.get("narrator", "")
 
-                # Step 4: EditorWriter
-                from agents.production.editor_writer import EditorWriter
-                editor = EditorWriter(router_inst, project_id=project_id)
+                # Step 4: Writer
+                from agents.production.writer import Writer
+                editor = Writer(router_inst, project_id=project_id)
                 user_prefs = _load_user_style_preferences(project_id, db_path)
                 ref_style = _load_reference_style(project_id, db_path)
                 style_profile = req_data.get("style_notes", "")

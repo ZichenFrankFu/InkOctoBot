@@ -12,7 +12,7 @@ from typing import Any
 
 from agents.production.actor_agent import ActorAgent
 from agents.production.narrator_agent import NarratorAgent
-from agents.production.editor_writer import EditorWriter
+from agents.production.writer import Writer
 from framework.event_types import EventType
 
 logger = logging.getLogger("inkoctobot.agents.production.scene_simulator")
