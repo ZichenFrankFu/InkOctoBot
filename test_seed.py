@@ -449,22 +449,27 @@ def _seed_rag_calibration_data(novels_db_path: Path, pid: str,
                  json.dumps(s["key_events"], ensure_ascii=False),
                  json.dumps({}, ensure_ascii=False)),
             )
-        # L4: episodic_events
+        # L4: episodic_events (foreshadow status now lives in pending_hooks
+        # — see docs/SCHEMA_REDESIGN.md; we only store the event payload).
         evt_id = 0
         for s in chapter_seeds:
             for ev in s["key_events"]:
                 evt_id += 1
+                # v2 schema rejects 'foreshadowing'/'foreshadowing_payoff';
+                # rewrite to 'plot' since the hook flow handles that.
+                ev_type = ev["type"]
+                if ev_type in {"foreshadowing", "foreshadowing_payoff"}:
+                    ev_type = "plot"
                 con.execute(
                     """INSERT INTO episodic_events
                        (event_id, project_id, chapter_num, scene_index,
                         event_type, description, characters_json,
-                        importance, foreshadow_status, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                        importance, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
                     (f"evt_test_{evt_id:03d}", pid, s["chapter_num"], 0,
-                     ev["type"], ev["description"],
+                     ev_type, ev["description"],
                      json.dumps(ev.get("characters", []), ensure_ascii=False),
-                     ev.get("importance", 3),
-                     ev.get("foreshadow_status", "")),
+                     ev.get("importance", 3)),
                 )
         # information_events: knowledge isolation — 李星河不知道格里芬的真实身份
         con.execute(

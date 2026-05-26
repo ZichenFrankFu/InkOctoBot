@@ -192,16 +192,13 @@ async def _run_chapter_complete_hook(
         key_events = summary_data.get("key_events", [])
         char_states = summary_data.get("character_states", {})
 
-        # Build timeline events from foreshadowing data
+        # Build timeline events from key_events only — foreshadowing
+        # now flows through Truth Files (TruthFileStore.apply_deltas
+        # with HookDelta entries) rather than the episodic_events
+        # timeline. See docs/SCHEMA_REDESIGN.md.
         events: list[dict] = []
-        for fs in summary_data.get("foreshadowing", []):
-            events.append({
-                "event_type": "foreshadowing",
-                "description": fs.get("description", ""),
-                "foreshadow_status": "planted" if fs.get("type") == "planted" else "resolved",
-            })
         for ke in key_events:
-            events.append({"event_type": "plot_event", "description": ke})
+            events.append({"event_type": "plot", "description": ke})
 
         # Update all memory layers
         await memory_manager.on_chapter_complete(

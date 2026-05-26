@@ -427,30 +427,39 @@ def memory_dump(
         except Exception as e:
             out["L3_semantic_memory"] = {"_error": str(e)}
 
-    # L4 — episodic timeline + unresolved foreshadowing
+    # L4 — episodic timeline. Foreshadowing now lives in Truth Files
+    # (pending_hooks + hook_events) — see docs/SCHEMA_REDESIGN.md.
+    # We surface both here so callers don't have to query two endpoints.
     if want_all or layer == "L4":
         with sqlite3.connect(db_path) as c:
             c.row_factory = sqlite3.Row
             try:
                 rows = c.execute(
                     "SELECT event_id, chapter_num, scene_index, event_type, "
-                    "description, characters_json, foreshadow_status, "
-                    "foreshadow_target_chapter, importance "
+                    "description, characters_json, importance "
                     "FROM episodic_events WHERE project_id=? "
                     "ORDER BY chapter_num, scene_index", (project_id,),
                 ).fetchall()
                 events = [dict(r) for r in rows]
 
-                unresolved = c.execute(
-                    "SELECT event_id, chapter_num, description, "
-                    "foreshadow_target_chapter, importance "
-                    "FROM episodic_events "
-                    "WHERE project_id=? AND foreshadow_status='planted' "
-                    "ORDER BY chapter_num", (project_id,),
-                ).fetchall()
+                # Foreshadowing read from pending_hooks (the canonical store).
+                try:
+                    hook_rows = c.execute(
+                        "SELECT hook_id, description, "
+                        "origin_chapter AS chapter_num, "
+                        "expected_payoff_chapter, importance, status "
+                        "FROM pending_hooks WHERE project_id=? "
+                        "AND status IN ('open','progressing','pressured','near_payoff') "
+                        "ORDER BY origin_chapter",
+                        (project_id,),
+                    ).fetchall()
+                    unresolved = [dict(r) for r in hook_rows]
+                except sqlite3.OperationalError:
+                    unresolved = []
+
                 out["L4_episodic_timeline"] = {
                     "events": events,
-                    "unresolved_foreshadowing": [dict(r) for r in unresolved],
+                    "unresolved_foreshadowing": unresolved,
                     "event_count": len(events),
                 }
             except sqlite3.OperationalError as e:

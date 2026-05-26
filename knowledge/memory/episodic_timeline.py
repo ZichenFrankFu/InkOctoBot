@@ -1,10 +1,16 @@
 """
 Layer 4: Episodic Timeline (SQLite).
 
-Structured storage for key events, causal chains, foreshadowing status,
-and timeline queries.  Supports queries like:
-  - "第3章埋的伏笔到现在回收了吗？"
+Structured storage for key events, causal chains, and timeline queries.
+Supports queries like:
   - "角色A和B上次见面是哪章？"
+  - "第3章发生过哪些重要事件？"
+
+NOTE: foreshadow state machine was removed in v2 — see
+docs/SCHEMA_REDESIGN.md. Foreshadowing now lives in Truth File
+``pending_hooks`` + ``hook_events``; read via
+``TruthFileStore.list_open_hooks`` or ``MemoryManager.get_unresolved_foreshadowing``
+(which now reads from pending_hooks).
 """
 from __future__ import annotations
 
@@ -19,7 +25,7 @@ logger = logging.getLogger("inkoctobot.knowledge.memory.episodic_timeline")
 
 
 class EpisodicTimeline:
-    """Layer 4 — structured event timeline with causal tracking."""
+    """Layer 4 — structured event timeline (causal/character tracking)."""
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -44,23 +50,34 @@ class EpisodicTimeline:
         scene_index: int = 0,
         characters: list[str] | None = None,
         causality: dict[str, Any] | None = None,
+        importance: int = 3,
+        # Legacy compatibility — silently accept + ignore these
+        # so older callers don't crash. New callers should emit
+        # HookDelta via TruthFileStore instead.
         foreshadow_status: str | None = None,
         foreshadow_target: int | None = None,
-        importance: int = 3,
     ) -> str:
+        if foreshadow_status is not None or foreshadow_target is not None:
+            logger.debug(
+                "add_event ignoring legacy foreshadow_status=%s foreshadow_target=%s "
+                "(use HookDelta instead)", foreshadow_status, foreshadow_target,
+            )
+        # v2 schema dropped the 'foreshadowing*' event types; coerce
+        # legacy callers to 'plot' so the CHECK constraint passes.
+        if event_type in {"foreshadowing", "foreshadowing_payoff"}:
+            event_type = "plot"
         eid = f"evt_{uuid.uuid4().hex[:12]}"
         with self._conn() as c:
             c.execute(
                 """INSERT INTO episodic_events
                    (event_id, project_id, chapter_num, scene_index, event_type,
-                    description, characters_json, causality_json,
-                    foreshadow_status, foreshadow_target_chapter, importance)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    description, characters_json, causality_json, importance)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (eid, project_id, chapter_num, scene_index, event_type,
                  description,
                  json.dumps(characters or [], ensure_ascii=False),
                  json.dumps(causality or {}, ensure_ascii=False),
-                 foreshadow_status, foreshadow_target, importance),
+                 importance),
             )
             c.commit()
         return eid
@@ -86,25 +103,9 @@ class EpisodicTimeline:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_unresolved_foreshadowing(self, project_id: str) -> list[dict]:
-        with self._conn() as c:
-            rows = c.execute(
-                """SELECT * FROM episodic_events
-                   WHERE project_id=? AND foreshadow_status='planted'
-                   ORDER BY chapter_num""",
-                (project_id,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def resolve_foreshadowing(self, event_id: str, resolution_chapter: int) -> None:
-        with self._conn() as c:
-            c.execute(
-                """UPDATE episodic_events
-                   SET foreshadow_status='resolved', foreshadow_target_chapter=?
-                   WHERE event_id=?""",
-                (resolution_chapter, event_id),
-            )
-            c.commit()
+    # (v2) Foreshadowing methods removed — see
+    # docs/SCHEMA_REDESIGN.md. Read pending_hooks via TruthFileStore
+    # or MemoryManager.get_unresolved_foreshadowing instead.
 
     def get_character_events(self, project_id: str, character_name: str) -> list[dict]:
         with self._conn() as c:
@@ -141,11 +142,17 @@ class EpisodicTimeline:
                    WHERE project_id=? GROUP BY event_type""",
                 (project_id,),
             ).fetchall()
-            unresolved = c.execute(
-                """SELECT COUNT(*) FROM episodic_events
-                   WHERE project_id=? AND foreshadow_status='planted'""",
-                (project_id,),
-            ).fetchone()[0]
+            # Foreshadowing count moved to TruthFileStore.list_open_hooks.
+            try:
+                unresolved = c.execute(
+                    "SELECT COUNT(*) FROM pending_hooks "
+                    "WHERE project_id=? AND status IN "
+                    "('open','progressing','pressured','near_payoff')",
+                    (project_id,),
+                ).fetchone()[0]
+            except sqlite3.OperationalError:
+                # pending_hooks table not yet materialized (e.g. very early bootstrap).
+                unresolved = 0
         return {
             "total_events": total,
             "by_type": {r["event_type"]: r["cnt"] for r in by_type},

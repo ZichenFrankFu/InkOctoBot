@@ -113,16 +113,47 @@ class TestForeshadowingMigration:
 
 
 # ─────── episodic_events ───────
+#
+# The v2 schema removed foreshadow_status / foreshadow_target_chapter
+# from episodic_events. ``migrate_episodic_events`` is a one-shot
+# migration that runs against pre-v2 DBs. To exercise it we have to
+# rebuild a v1-shaped episodic_events table — the active schema no
+# longer carries those columns.
+
+
+def _rebuild_v1_episodic_events(db_path: str) -> None:
+    """Replace v2 episodic_events with the v1 shape so the migrator has work to do."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE IF EXISTS episodic_events")
+        conn.execute(
+            """CREATE TABLE episodic_events (
+                   event_id TEXT PRIMARY KEY,
+                   project_id TEXT NOT NULL,
+                   chapter_num INTEGER NOT NULL,
+                   scene_index INTEGER NOT NULL DEFAULT 0,
+                   event_type TEXT NOT NULL DEFAULT 'plot',
+                   description TEXT NOT NULL DEFAULT '',
+                   characters_json TEXT NOT NULL DEFAULT '[]',
+                   causality_json TEXT NOT NULL DEFAULT '{}',
+                   foreshadow_status TEXT DEFAULT NULL,
+                   foreshadow_target_chapter INTEGER DEFAULT NULL,
+                   importance INTEGER NOT NULL DEFAULT 3,
+                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"""
+        )
+        conn.commit()
+
 
 class TestEpisodicEventsMigration:
 
-    def test_no_planted_skipped(self, store: TruthFileStore):
+    def test_no_planted_skipped(self, store: TruthFileStore, db_path: str):
+        # v2 columns absent → migrator says "nothing to do".
         rep = M.migrate_episodic_events(store)
         assert "no planted" in rep.skipped_reason
 
     def test_planted_events_migrated(
         self, store: TruthFileStore, db_path: str,
     ):
+        _rebuild_v1_episodic_events(db_path)
         with sqlite3.connect(db_path) as conn:
             conn.execute(
                 """INSERT INTO episodic_events(event_id, project_id, chapter_num,
@@ -147,6 +178,7 @@ class TestEpisodicEventsMigration:
     def test_dedup_existing_description(
         self, store: TruthFileStore, db_path: str,
     ):
+        _rebuild_v1_episodic_events(db_path)
         # seed both episodic and pending_hooks with same description
         with sqlite3.connect(db_path) as conn:
             conn.execute(

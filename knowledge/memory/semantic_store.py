@@ -114,6 +114,12 @@ class SemanticMemory:
 
     def store_permanent_fact(self, project_id: str, content: str,
                              chapter_num: int, characters: list[str] | None = None) -> str:
+        """Deprecated: use TruthFileStore.apply_deltas with StatePatch instead.
+
+        Kept as a thin wrapper around ``store(memory_type='permanent_fact')``
+        for the consolidator's free-text similarity index. The structured
+        truth lives in ``truth_current_state``.
+        """
         return self.store(
             project_id, content,
             memory_type="permanent_fact",

@@ -1,23 +1,37 @@
 """
-Memory consolidator — compresses Layer 2 overflow into Layer 3/4.
+Memory consolidator — compresses Layer 2 overflow into Truth Files (v2).
 
-When ChapterBuffer exceeds its window budget, the oldest summaries
-are processed by LLM to extract three types of permanent information:
-  - permanent_facts: irreversible facts
-  - active_foreshadowing: unresolved foreshadowing
-  - character_state_changes: character state transitions
-These are written to Layer 3 (Semantic Memory) and Layer 4 (Episodic Timeline),
-and the original summary is deactivated from Layer 2.
+When ChapterBuffer exceeds its window budget, the oldest summaries are
+processed by an LLM to extract three types of permanent information:
+  - permanent_facts          -> ``StatePatch`` entries (current_state)
+  - active_foreshadowing     -> ``HookDelta(action='new')`` entries
+  - character_state_changes  -> ``EmotionArcEntry`` entries
+
+The Consolidator then bundles them into a ``TruthDeltas`` and applies
+atomically via ``TruthFileStore.apply_deltas``. ChromaDB (Layer 3
+semantic store) still receives the chapter summary text for later
+similarity queries — vector search and structured truth coexist.
+
+History: v1 wrote ``permanent_facts`` SQL rows and tagged
+``episodic_events`` rows with ``foreshadow_status='planted'``. Both
+paths were redundant with Truth Files and are removed in v2.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
-import sqlite3
-import uuid
 from typing import Any
 
+from knowledge.truth.schemas import (
+    ChapterSummaryDelta,
+    EmotionArcEntry,
+    HookDelta,
+    HookImportance,
+    StatePatch,
+    TruthDeltas,
+)
+from knowledge.truth.store import TruthFileStore
 from llm.base import LLMMessage
 
 logger = logging.getLogger("inkoctobot.knowledge.memory.consolidator")
@@ -43,18 +57,25 @@ _CONSOLIDATION_PROMPT = """\
 
 
 class MemoryConsolidator:
-    """Compresses old chapter summaries into permanent memory."""
+    """Compresses old chapter summaries into Truth Files."""
 
     def __init__(self, router: Any, chapter_buffer: Any,
-                 semantic_memory: Any, episodic_timeline: Any, db_path: str):
+                 semantic_memory: Any, episodic_timeline: Any,
+                 db_path: str):
         self.router = router
         self.chapter_buffer = chapter_buffer
         self.semantic = semantic_memory
+        # ``episodic_timeline`` kept for backwards-compat with manager
+        # init, but consolidator no longer writes to L4 (foreshadow
+        # state lives in pending_hooks).
         self.timeline = episodic_timeline
         self.db_path = db_path
 
     async def consolidate_if_needed(self, project_id: str) -> list[str]:
-        """Check for overflow and consolidate if necessary. Returns list of processed summary IDs."""
+        """Check for overflow and consolidate if necessary.
+
+        Returns list of processed summary IDs.
+        """
         overflow = self.chapter_buffer.get_overflow_summaries(project_id)
         if not overflow:
             return []
@@ -71,7 +92,8 @@ class MemoryConsolidator:
                              summary["chapter_num"], e)
         return processed
 
-    async def _consolidate_one(self, project_id: str, summary: dict[str, Any]) -> None:
+    async def _consolidate_one(self, project_id: str,
+                               summary: dict[str, Any]) -> None:
         chapter_num = summary["chapter_num"]
         summary_text = summary["summary_text"]
 
@@ -86,11 +108,11 @@ class MemoryConsolidator:
 
         parsed = self._parse_response(resp.content)
         if not parsed:
-            # The LLM returned unparseable JSON. Log the raw response head
-            # so the operator can diagnose what shape the model produced
-            # (closes GAP 4 in the observability audit — was a silent fallback).
+            # Unparseable JSON: log the raw head and fall back to a
+            # semantic-only store. Closes GAP 4 in the observability audit.
             logger.warning(
-                "consolidator chapter=%d JSON parse failed; falling back to raw summary store. raw_head=%r",
+                "consolidator chapter=%d JSON parse failed; falling back to "
+                "raw summary store. raw_head=%r",
                 chapter_num, (resp.content or "")[:300],
             )
             self.semantic.store(project_id, summary_text,
@@ -98,12 +120,9 @@ class MemoryConsolidator:
                                 chapter_num=chapter_num, source="consolidator")
             return
 
-        facts = parsed.get("permanent_facts", [])
-        foreshadows = parsed.get("active_foreshadowing", [])
-        state_changes = parsed.get("character_state_changes", [])
-        # GAP 4: surface what was extracted so the memory system isn't a
-        # black box. INFO for counts (always useful); DEBUG for full JSON
-        # (forensic level).
+        facts = parsed.get("permanent_facts", []) or []
+        foreshadows = parsed.get("active_foreshadowing", []) or []
+        state_changes = parsed.get("character_state_changes", []) or []
         logger.info(
             "consolidator chapter=%d facts=%d foreshadowing=%d state_changes=%d",
             chapter_num, len(facts), len(foreshadows), len(state_changes),
@@ -114,37 +133,70 @@ class MemoryConsolidator:
                 chapter_num, json.dumps(parsed, ensure_ascii=False)[:4000],
             )
 
-        for fact in facts:
-            self.semantic.store_permanent_fact(project_id, fact, chapter_num)
-        if facts:
-            rows = [
-                (f"pf_{uuid.uuid4().hex[:12]}", project_id, "permanent", fact, chapter_num)
-                for fact in facts
-            ]
-            with sqlite3.connect(self.db_path) as conn:
-                conn.executemany(
-                    """INSERT INTO permanent_facts (fact_id, project_id, fact_type, content, source_chapter)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    rows,
-                )
-                conn.commit()
-
-        for fs in foreshadows:
-            self.timeline.add_event(
-                project_id, chapter_num, "foreshadowing", fs,
-                foreshadow_status="planted", importance=4,
+        # Build a Truth Files delta bundle and apply atomically.
+        state_patches = [
+            StatePatch(
+                subject="叙事",
+                predicate="确立事实",
+                object=fact,
+                valid_from_chapter=chapter_num,
             )
-            self.semantic.store(project_id, fs, memory_type="foreshadowing",
-                                chapter_num=chapter_num, source="consolidator")
-
+            for fact in facts if isinstance(fact, str) and fact.strip()
+        ]
+        hook_deltas = [
+            HookDelta(
+                description=fs.strip(),
+                action="new",
+                importance=HookImportance.B,
+            )
+            for fs in foreshadows if isinstance(fs, str) and fs.strip()
+        ]
+        emotion_entries: list[EmotionArcEntry] = []
         for cs in state_changes:
-            char = cs.get("character", "")
-            change = cs.get("change", "")
-            if char and change:
-                self.semantic.store_character_state(project_id, char, change, chapter_num)
-                self.timeline.add_event(
-                    project_id, chapter_num, "character_change", f"{char}: {change}",
-                    characters=[char], importance=3,
+            if not isinstance(cs, dict):
+                continue
+            char = (cs.get("character") or "").strip()
+            change = (cs.get("change") or "").strip()
+            if not char or not change:
+                continue
+            emotion_entries.append(EmotionArcEntry(
+                character=char,
+                from_state=cs.get("from_state") or "previous",
+                to_state=cs.get("to_state") or "current",
+                trigger=change,
+            ))
+
+        if state_patches or hook_deltas or emotion_entries:
+            try:
+                store = TruthFileStore(project_id=project_id, db_path=self.db_path)
+                store.apply_deltas(TruthDeltas(
+                    chapter_num=chapter_num,
+                    current_state_patches=state_patches,
+                    hook_deltas=hook_deltas,
+                    emotion_arc_entries=emotion_entries,
+                ))
+            except Exception as e:
+                logger.error(
+                    "consolidator apply_deltas failed for chapter=%d: %s",
+                    chapter_num, e,
+                )
+
+        # Also keep semantic store entries for free-text similarity search.
+        # These are useful for queries the structured tables can't answer
+        # ("有没有提到过紫色的剑？").
+        for fact in facts:
+            if isinstance(fact, str) and fact.strip():
+                self.semantic.store(
+                    project_id, fact,
+                    memory_type="permanent_fact",
+                    chapter_num=chapter_num,
+                    source="consolidator",
+                )
+        for fs in foreshadows:
+            if isinstance(fs, str) and fs.strip():
+                self.semantic.store(
+                    project_id, fs, memory_type="foreshadowing",
+                    chapter_num=chapter_num, source="consolidator",
                 )
 
     @staticmethod

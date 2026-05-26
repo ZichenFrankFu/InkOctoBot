@@ -89,7 +89,36 @@ class MemoryManager:
         )
 
     def get_unresolved_foreshadowing(self) -> list[dict]:
-        return self.timeline.get_unresolved_foreshadowing(self._project_id)
+        """Open foreshadowing read from Truth Files' ``pending_hooks``.
+
+        Returns dicts shaped for legacy consumers:
+          ``{description, chapter_num, status, importance, hook_id, foreshadow_status}``
+        where ``chapter_num`` is the origin_chapter (where it was planted)
+        and ``foreshadow_status`` is an alias of ``status`` (kept so old
+        formatters that read ``f['foreshadow_status']`` keep working).
+        """
+        import sqlite3
+        try:
+            with sqlite3.connect(self.db_path) as c:
+                c.row_factory = sqlite3.Row
+                rows = c.execute(
+                    "SELECT hook_id, description, origin_chapter AS chapter_num, "
+                    "status, importance, expected_payoff_chapter "
+                    "FROM pending_hooks "
+                    "WHERE project_id=? AND status IN "
+                    "('open','progressing','pressured','near_payoff') "
+                    "ORDER BY origin_chapter",
+                    (self._project_id,),
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            # Legacy alias — some callers read d['foreshadow_status'].
+            d["foreshadow_status"] = d["status"]
+            out.append(d)
+        return out
 
     def get_timeline(self, from_chapter: int = 0, to_chapter: int = 9999) -> list[dict]:
         return self.timeline.get_timeline(

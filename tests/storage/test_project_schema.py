@@ -32,11 +32,18 @@ class TestCreationSchema(unittest.TestCase):
         ).fetchall()]
         expected = [
             "projects", "chapters", "text_versions", "chapter_summaries",
-            "episodic_events", "information_events", "permanent_facts",
+            "episodic_events", "information_events",
             "user_style_preferences", "constraint_rules",
         ]
         for t in expected:
             self.assertIn(t, tables, f"Missing table: {t}")
+        # v2 redesign: permanent_facts was removed (replaced by
+        # truth_current_state). See docs/SCHEMA_REDESIGN.md.
+        self.assertNotIn("permanent_facts", tables)
+        # episodic_events lost two columns in v2.
+        ep_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(episodic_events)")}
+        self.assertNotIn("foreshadow_status", ep_cols)
+        self.assertNotIn("foreshadow_target_chapter", ep_cols)
 
     def test_project_crud(self):
         pid = f"proj_{uuid.uuid4().hex[:8]}"
@@ -89,16 +96,19 @@ class TestCreationSchema(unittest.TestCase):
         self.assertIsNone(row)
 
     def test_episodic_events(self):
+        # v2 schema: foreshadow_status / foreshadow_target_chapter columns
+        # were dropped (data moved to pending_hooks). 'foreshadowing' is
+        # no longer a valid event_type — write a 'plot' row instead.
         pid = "proj_ep"
         self.conn.execute("INSERT INTO projects (project_id, title) VALUES (?, ?)", (pid, "T"))
         self.conn.execute(
             """INSERT INTO episodic_events (event_id, project_id, chapter_num, event_type, description,
-               foreshadow_status, importance) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            ("ev1", pid, 1, "foreshadowing", "暗门伏笔", "planted", 4),
+               importance) VALUES (?, ?, ?, ?, ?, ?)""",
+            ("ev1", pid, 1, "plot", "重要剧情节点", 4),
         )
         self.conn.commit()
         row = self.conn.execute("SELECT * FROM episodic_events WHERE event_id='ev1'").fetchone()
-        self.assertEqual(row["foreshadow_status"], "planted")
+        self.assertEqual(row["event_type"], "plot")
         self.assertEqual(row["importance"], 4)
 
     def test_constraint_rules(self):

@@ -174,6 +174,12 @@ def migrate_episodic_events(
     report = MigrationReport(source="episodic_events")
     rows: list[dict[str, Any]] = []
     with sqlite3.connect(store.db_path) as conn:
+        # v2 schema removed these columns. If they're absent, the
+        # v1->v2 migration already ran and there's nothing left to do.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(episodic_events)")}
+        if not {"foreshadow_status", "foreshadow_target_chapter"}.issubset(cols):
+            report.skipped_reason = "no planted foreshadowing rows"
+            return report
         try:
             rows = conn.execute(
                 """SELECT event_id, chapter_num, description, importance,

@@ -144,35 +144,29 @@ class TestEpisodicTimeline(unittest.TestCase):
         events = self.timeline.get_timeline("p1")
         self.assertEqual(len(events), 3)
 
-    def test_foreshadowing_tracking(self):
-        self.timeline.add_event(
-            "p1", 1, "foreshadowing", "暗门背后的秘密",
-            foreshadow_status="planted", importance=4,
-        )
-        self.timeline.add_event(
-            "p1", 5, "foreshadowing", "暗门伏笔已解",
-            foreshadow_status="resolved", importance=4,
-        )
-        unresolved = self.timeline.get_unresolved_foreshadowing("p1")
-        self.assertEqual(len(unresolved), 1)
-        self.assertIn("暗门背后", unresolved[0]["description"])
-
-    def test_resolve_foreshadowing(self):
+    def test_legacy_foreshadow_args_silently_dropped(self):
+        """v2: foreshadow_status/foreshadow_target are accepted (legacy API)
+        but ignored; event_type 'foreshadowing' is coerced to 'plot'.
+        Hooks now live in Truth Files (pending_hooks).
+        """
         eid = self.timeline.add_event(
-            "p1", 1, "foreshadowing", "伏笔A",
-            foreshadow_status="planted",
+            "p1", 1, "foreshadowing", "legacy call",
+            foreshadow_status="planted", foreshadow_target=5,
         )
-        self.timeline.resolve_foreshadowing(eid, 5)
-        unresolved = self.timeline.get_unresolved_foreshadowing("p1")
-        self.assertEqual(len(unresolved), 0)
+        # Event was stored, but as 'plot' (not 'foreshadowing').
+        events = self.timeline.get_timeline("p1")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_id"], eid)
+        self.assertEqual(events[0]["event_type"], "plot")
 
     def test_event_stats(self):
         self.timeline.add_event("p1", 1, "plot", "A")
-        self.timeline.add_event("p1", 1, "foreshadowing", "B", foreshadow_status="planted")
+        self.timeline.add_event("p1", 1, "revelation", "B")
         self.timeline.add_event("p1", 2, "character_change", "C", characters=["张远"])
         stats = self.timeline.get_event_stats("p1")
         self.assertEqual(stats["total_events"], 3)
-        self.assertEqual(stats["unresolved_foreshadowing"], 1)
+        # foreshadowing count now reads from pending_hooks; empty here.
+        self.assertEqual(stats["unresolved_foreshadowing"], 0)
 
     def test_character_events(self):
         self.timeline.add_event("p1", 1, "character_change", "张远变强", characters=["张远"])

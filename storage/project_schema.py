@@ -101,6 +101,12 @@ CREATION_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_summaries_project ON chapter_summaries(project_id, is_active);",
 
     # ── Layer 4: Episodic Timeline ──
+    # v2: dropped foreshadow_status + foreshadow_target_chapter columns
+    # (superseded by Truth Files pending_hooks + hook_events).
+    # Also dropped the 'foreshadowing' + 'foreshadowing_payoff' event
+    # types from the CHECK constraint — those flows go through
+    # HookDelta(action='new'|'resolve'|...) now.
+    # See docs/SCHEMA_REDESIGN.md.
     """
     CREATE TABLE IF NOT EXISTS episodic_events (
         event_id TEXT PRIMARY KEY,
@@ -109,14 +115,10 @@ CREATION_DDL = [
         scene_index INTEGER NOT NULL DEFAULT 0,
         event_type TEXT NOT NULL DEFAULT 'plot'
             CHECK (event_type IN ('plot','character_change','revelation',
-                                  'foreshadowing','foreshadowing_payoff',
                                   'relationship_change','world_change')),
         description TEXT NOT NULL DEFAULT '',
         characters_json TEXT NOT NULL DEFAULT '[]',
         causality_json TEXT NOT NULL DEFAULT '{}',
-        foreshadow_status TEXT DEFAULT NULL
-            CHECK (foreshadow_status IN (NULL,'planted','partially_resolved','resolved','abandoned')),
-        foreshadow_target_chapter INTEGER DEFAULT NULL,
         importance INTEGER NOT NULL DEFAULT 3
             CHECK (importance BETWEEN 1 AND 5),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -124,7 +126,6 @@ CREATION_DDL = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_episodic_project ON episodic_events(project_id, chapter_num);",
-    "CREATE INDEX IF NOT EXISTS idx_episodic_foreshadow ON episodic_events(project_id, foreshadow_status);",
     "CREATE INDEX IF NOT EXISTS idx_episodic_type ON episodic_events(project_id, event_type);",
 
     # ── Knowledge isolation: information events ──
@@ -147,21 +148,11 @@ CREATION_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_info_char ON information_events(project_id, character_name);",
     "CREATE INDEX IF NOT EXISTS idx_info_fact ON information_events(project_id, fact_key);",
 
-    # ── Permanent facts (from Layer 2 compression) ──
-    """
-    CREATE TABLE IF NOT EXISTS permanent_facts (
-        fact_id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        fact_type TEXT NOT NULL DEFAULT 'permanent'
-            CHECK (fact_type IN ('permanent','active_foreshadowing','character_state_change')),
-        content TEXT NOT NULL DEFAULT '',
-        source_chapter INTEGER NOT NULL DEFAULT 0,
-        characters_json TEXT NOT NULL DEFAULT '[]',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
-    );
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_perm_project ON permanent_facts(project_id, fact_type);",
+    # ── (removed in v2) permanent_facts table — see
+    # docs/SCHEMA_REDESIGN.md. The Truth File
+    # ``truth_current_state`` table is canonical for permanent facts.
+    # Existing v1 DBs get the table DROPped by
+    # ``_drop_v1_redundant_objects`` below.
 
     # ── User style preferences (from EditAnalyzer) ──
     """
@@ -372,17 +363,47 @@ def _ensure_chapter_v2_columns(conn: sqlite3.Connection) -> None:
             cur.execute(f"ALTER TABLE chapters ADD COLUMN {col} {ddl}")
 
 
+def _drop_v1_redundant_objects(conn: sqlite3.Connection) -> None:
+    """Drop the tables / columns that the Truth File system supersedes.
+
+    Idempotent — checks existence before dropping. SQLite supports
+    ``DROP COLUMN`` since 3.35 (2021) and the project already depends
+    on a recent enough Python (3.11) which ships with 3.40+.
+
+    Order matters: drop indexes BEFORE dropping the columns they
+    reference, else SQLite errors out.
+
+    See docs/SCHEMA_REDESIGN.md for what each removal is replaced by.
+    """
+    cur = conn.cursor()
+
+    # 1. permanent_facts → truth_current_state
+    cur.execute("DROP INDEX IF EXISTS idx_perm_project")
+    cur.execute("DROP TABLE IF EXISTS permanent_facts")
+
+    # 2. episodic_events.foreshadow_status / foreshadow_target_chapter
+    #    → pending_hooks / hook_events
+    cur.execute("DROP INDEX IF EXISTS idx_episodic_foreshadow")
+    cols = {row[1] for row in cur.execute("PRAGMA table_info(episodic_events)")}
+    if "foreshadow_status" in cols:
+        cur.execute("ALTER TABLE episodic_events DROP COLUMN foreshadow_status")
+    if "foreshadow_target_chapter" in cols:
+        cur.execute("ALTER TABLE episodic_events DROP COLUMN foreshadow_target_chapter")
+
+
 def ensure_creation_tables(conn: sqlite3.Connection) -> None:
     """Create all project tables (v2 schema), plus Truth File tables.
 
     Idempotent: safe to call on a fresh DB or one that already has the
-    v1 schema. Adds v2-only columns / tables in-place.
+    v1 schema. Adds v2-only columns / tables in-place AND drops the
+    v1-only tables / columns that the Truth File system supersedes.
     """
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_keys = ON;")
     for ddl in CREATION_DDL:
         cur.execute(ddl)
     _ensure_chapter_v2_columns(conn)
+    _drop_v1_redundant_objects(conn)
     conn.commit()
 
     from storage.truth_schema import ensure_truth_tables
