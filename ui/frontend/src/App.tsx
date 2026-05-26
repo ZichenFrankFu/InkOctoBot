@@ -23,12 +23,12 @@ import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
-// DevToolsPage removed
+import DevConsolePage from "./pages/DevConsolePage";
 
 type Tab =
   | "dashboard" | "rankings" | "references" | "references-overview" | "references-search" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
-  | "skills" | "settings";
+  | "skills" | "settings" | "dev-console";
 
 interface Project { id: string; name: string; genre?: string; word_count?: number; chapter_count?: number; }
 
@@ -69,6 +69,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     items: [
       { key: "skills", icon: "⚙", label: "智能体" },
       { key: "settings", icon: "☸", label: "设置" },
+      { key: "dev-console", icon: "⚉", label: "开发者控制台" },
     ],
   },
 ];
@@ -222,6 +223,7 @@ function AppInner() {
         {tab === "storyline" && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
         {tab === "skills" && <ErrorBoundary key="skills"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
         {tab === "settings" && <ErrorBoundary key="settings"><SettingsPage /></ErrorBoundary>}
+        {tab === "dev-console" && <ErrorBoundary key="dev-console"><DevConsolePage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
       </main>
 
       <GlobalSearch
