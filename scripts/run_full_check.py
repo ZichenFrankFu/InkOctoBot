@@ -236,6 +236,11 @@ def check_test_seed(r: Report) -> None:
                 ("character_relations", 2, "Truth: 2 relation rows"),
                 ("emotion_arcs", 2, "Truth: 2 emotion arc entries"),
                 ("truth_apply_log", 3, "Truth: 3 apply log entries"),
+                # v2 schema tables (added in commit:
+                #   "feat: schema redesign v2 — drop L3/L4 redundancy")
+                # The seed currently populates JSON files only; running the
+                # migration script in this check will fill these tables.
+                # For now we only verify that the TABLES exist (not rows).
             ]
             counts: dict[str, int] = {}
             for t, want, msg in checks:
@@ -250,6 +255,22 @@ def check_test_seed(r: Report) -> None:
                     r.fail(f"`{t}` missing or unreadable", str(e))
 
             r.code(_safe_json(counts), "json")
+
+            # v2 tables — assert they exist (rows may be 0 until the
+            # migrator or DB-aware routers populate them).
+            v2_tables = [
+                "characters", "worldbook_entries", "project_memories",
+                "storyline_nodes", "storyline_edges",
+                "writing_knowledge", "chat_messages", "project_blobs",
+            ]
+            v2_present = {row[0] for row in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+            for t in v2_tables:
+                if t in v2_present:
+                    r.ok(f"v2 table `{t}` present")
+                else:
+                    r.fail(f"v2 table `{t}` missing")
 
         # reference.db + idea.db row counts
         with sqlite3.connect(str(tmp / "reference.db")) as c:
@@ -272,6 +293,28 @@ def check_test_seed(r: Report) -> None:
                     r.fail(f"idea.db `inspirations` has {n}, want >= 3")
             except sqlite3.OperationalError as e:
                 r.fail("idea.db `inspirations` missing", str(e))
+
+        # v2 migration smoke test — runs scripts/migrate_to_v2_schema.py
+        # against the just-seeded data dir; verifies the JSON files land
+        # in the new v2 tables.
+        r.h3("v2 schema migration (scripts/migrate_to_v2_schema.py)")
+        try:
+            from scripts.migrate_to_v2_schema import run_migration
+            report = run_migration(tmp, tmp / "novels.db")
+            total = sum(v["inserted"] for v in report.values())
+            r.ok(f"migration ran clean: {total} rows inserted across "
+                 f"{len(report)} collections")
+            with sqlite3.connect(str(tmp / "novels.db")) as c:
+                for t, want in [("characters", 3), ("worldbook_entries", 3),
+                                ("project_memories", 3),
+                                ("storyline_nodes", 3), ("storyline_edges", 2)]:
+                    n = c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                    if n >= want:
+                        r.ok(f"v2 `{t}` has {n} rows (>= {want})")
+                    else:
+                        r.fail(f"v2 `{t}` has {n} rows (< {want})")
+        except Exception as e:
+            r.fail("v2 migration smoke test failed", repr(e))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

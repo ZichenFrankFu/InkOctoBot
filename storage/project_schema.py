@@ -1,8 +1,13 @@
 """
-creation_schema.py — DDL for creation workflow + memory system tables.
+project_schema.py — DDL for project workflow + memory + canonical entities.
 
-Covers: projects, chapters, versions, memory layers 2/4,
-information events (knowledge isolation), user style preferences.
+v2 (see docs/SCHEMA_REDESIGN.md): in addition to the legacy memory and
+creation tables, all per-project entities that used to live as JSON
+files under ``data/`` are now first-class tables here:
+  - characters, worldbook_entries, project_memories
+  - storyline_nodes, storyline_edges
+  - writing_knowledge, chat_messages
+  - project_blobs (single-row KV per project: editor doc, calibration, ...)
 """
 from __future__ import annotations
 
@@ -29,6 +34,9 @@ CREATION_DDL = [
     """,
 
     # ── Chapters ──
+    # v2: added synopsis/time_label/location/characters_json/pov_character
+    # /extra_json so the editor doc JSON file becomes obsolete. The added
+    # columns are appended via ALTER below for backward compat with v1 DBs.
     """
     CREATE TABLE IF NOT EXISTS chapters (
         chapter_id TEXT PRIMARY KEY,
@@ -44,6 +52,12 @@ CREATION_DDL = [
         scene_plan_json TEXT NOT NULL DEFAULT '[]',
         performance_log TEXT NOT NULL DEFAULT '',
         evaluation_json TEXT NOT NULL DEFAULT '{}',
+        synopsis TEXT NOT NULL DEFAULT '',
+        time_label TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        characters_json TEXT NOT NULL DEFAULT '[]',
+        pov_character TEXT NOT NULL DEFAULT '',
+        extra_json TEXT NOT NULL DEFAULT '{}',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
@@ -189,15 +203,186 @@ CREATION_DDL = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_constraints_project ON constraint_rules(project_id, rule_type, is_active);",
+
+    # ══════════════════════════════════════════════════════════════════
+    # v2 canonical entity tables (replace data/{characters,worldbook,...} JSON)
+    # See docs/SCHEMA_REDESIGN.md for rationale.
+    # ══════════════════════════════════════════════════════════════════
+
+    # ── Characters (replaces data/characters/*.json) ──
+    """
+    CREATE TABLE IF NOT EXISTS characters (
+        character_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        personality TEXT NOT NULL DEFAULT '',
+        background TEXT NOT NULL DEFAULT '',
+        appearance TEXT NOT NULL DEFAULT '',
+        speech_style TEXT NOT NULL DEFAULT '',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        relationships_json TEXT NOT NULL DEFAULT '[]',
+        layer_a_json TEXT NOT NULL DEFAULT '{}',
+        layer_b_json TEXT NOT NULL DEFAULT '{}',
+        extra_json TEXT NOT NULL DEFAULT '{}',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+        UNIQUE(project_id, name)
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_characters_project ON characters(project_id, sort_order);",
+
+    # ── Worldbook entries (replaces data/worldbook/*.json) ──
+    """
+    CREATE TABLE IF NOT EXISTS worldbook_entries (
+        entry_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'misc',
+        content TEXT NOT NULL DEFAULT '',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_worldbook_project ON worldbook_entries(project_id, category);",
+
+    # ── Project memories (replaces data/project_memory/<pid>.json) ──
+    """
+    CREATE TABLE IF NOT EXISTS project_memories (
+        memory_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'note',
+        content TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'user',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_project_memories_project ON project_memories(project_id, category);",
+
+    # ── Storyline nodes + edges (replaces data/storylines/<pid>.json) ──
+    """
+    CREATE TABLE IF NOT EXISTS storyline_nodes (
+        node_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        chapter_num INTEGER,
+        summary TEXT NOT NULL DEFAULT '',
+        time_label TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        pos_x REAL NOT NULL DEFAULT 0,
+        pos_y REAL NOT NULL DEFAULT 0,
+        extra_json TEXT NOT NULL DEFAULT '{}',
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_storyline_nodes_project ON storyline_nodes(project_id);",
+    """
+    CREATE TABLE IF NOT EXISTS storyline_edges (
+        edge_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        from_node_id TEXT NOT NULL,
+        to_node_id TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+        FOREIGN KEY (from_node_id) REFERENCES storyline_nodes(node_id) ON DELETE CASCADE,
+        FOREIGN KEY (to_node_id) REFERENCES storyline_nodes(node_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_storyline_edges_project ON storyline_edges(project_id, from_node_id);",
+
+    # ── Writing knowledge (replaces data/writing_knowledge/*.json) ──
+    # Cross-project: no project_id (reusable craft notes).
+    """
+    CREATE TABLE IF NOT EXISTS writing_knowledge (
+        knowledge_id TEXT PRIMARY KEY,
+        domain TEXT NOT NULL DEFAULT 'general',
+        title TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_writing_knowledge_domain ON writing_knowledge(domain);",
+
+    # ── Chat messages (replaces data/chat_history/*.json) ──
+    """
+    CREATE TABLE IF NOT EXISTS chat_messages (
+        message_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'pipeline',
+        role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
+        content TEXT NOT NULL DEFAULT '',
+        meta_json TEXT NOT NULL DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_chat_project_scope ON chat_messages(project_id, scope, created_at);",
+
+    # ── Project blobs — single-row-per-project KV
+    # (editor doc, calibration, reference_injection, knowledge_injection,
+    #  foreshadowing_legacy, ...) ──
+    """
+    CREATE TABLE IF NOT EXISTS project_blobs (
+        blob_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        data_json TEXT NOT NULL DEFAULT '{}',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+        UNIQUE(project_id, scope)
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_project_blobs_lookup ON project_blobs(project_id, scope);",
 ]
 
 
+# ── ALTER TABLE upgrade map for v1 -> v2 ───────────────────────────
+# (column_name, DDL fragment). Applied via ``_ensure_chapter_v2_columns``
+# below. Idempotent — checks PRAGMA table_info first.
+_CHAPTERS_V2_COLUMNS = [
+    ("synopsis",        "TEXT NOT NULL DEFAULT ''"),
+    ("time_label",      "TEXT NOT NULL DEFAULT ''"),
+    ("location",        "TEXT NOT NULL DEFAULT ''"),
+    ("characters_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("pov_character",   "TEXT NOT NULL DEFAULT ''"),
+    ("extra_json",      "TEXT NOT NULL DEFAULT '{}'"),
+]
+
+
+def _ensure_chapter_v2_columns(conn: sqlite3.Connection) -> None:
+    """Add v2 columns to an existing v1 chapters table.
+
+    SQLite refuses to add columns with non-constant defaults, so each
+    added column has a constant DEFAULT and we never see a NOT NULL
+    violation on existing rows.
+    """
+    cur = conn.cursor()
+    existing = {row[1] for row in cur.execute("PRAGMA table_info(chapters)")}
+    for col, ddl in _CHAPTERS_V2_COLUMNS:
+        if col not in existing:
+            cur.execute(f"ALTER TABLE chapters ADD COLUMN {col} {ddl}")
+
+
 def ensure_creation_tables(conn: sqlite3.Connection) -> None:
-    """Create all creation + memory tables, plus the Truth File system tables."""
+    """Create all project tables (v2 schema), plus Truth File tables.
+
+    Idempotent: safe to call on a fresh DB or one that already has the
+    v1 schema. Adds v2-only columns / tables in-place.
+    """
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_keys = ON;")
     for ddl in CREATION_DDL:
         cur.execute(ddl)
+    _ensure_chapter_v2_columns(conn)
     conn.commit()
 
     from storage.truth_schema import ensure_truth_tables
