@@ -871,15 +871,13 @@ def _seed_reference_db(db_path: Path) -> None:
 
     # Sample reference works
     works = [
-        ("ref_test_001", "诛仙", "萧鼎", "web_novel", "仙侠", '["经典","仙侠"]',
-         "manual", None, None, 5, "仙侠经典之作", "世界观宏大，感情线细腻",
-         '["style","world"]'),
-        ("ref_test_002", "斗破苍穹", "天蚕土豆", "web_novel", "玄幻", '["热血","升级"]',
-         "manual", None, None, 4, "爽文标杆", "节奏把控出色，爽点密集",
-         '["plot","style"]'),
-        ("ref_test_003", "三体", "刘慈欣", "literature", "科幻", '["硬科幻","哲学"]',
-         "manual", None, None, 5, "中国科幻巅峰", "硬科幻设定与哲学思考的完美融合",
-         '["world","style","mood"]'),
+        ("ref_test_001", "诡秘之主", "爱潜水的乌贼", "web_novel", "克苏鲁奇幻",
+         '["克苏鲁","SCP","蒸汽朋克","序列","非凡者"]',
+         "manual", None, None, 5,
+         "克苏鲁神话 + 蒸汽朋克 + SCP 元素融合的非凡者世界，叙诡叙事流派标杆",
+         "世界观体量惊人但严谨自洽；序列体系是该类型设定的范本；"
+         "气氛营造、不可名状的恐怖、克莱因的成长弧光与小丑笑的彩蛋",
+         '["world","style","mood","plot"]'),
     ]
     for w in works:
         cur.execute(
@@ -889,20 +887,40 @@ def _seed_reference_db(db_path: Path) -> None:
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", w,
         )
 
-    # Sample reference entries
+    # Sample reference entries — all extracted from 《诡秘之主》
     entries = [
-        ("ent_test_001", "ref_test_001", "style_sample", "碧瑶的自我牺牲",
-         "天地不仁，以万物为刍狗。她站在诛仙剑下，嘴角带着温柔的笑意...",
-         "original_text", "第84章", "经典感情高潮场景", None, 5, '["感情","牺牲"]'),
-        ("ent_test_002", "ref_test_001", "worldbuilding", "青云门体系",
-         "青云门分七脉，各有所长。大竹峰擅剑术，小竹峰善法术...",
-         "user_written", None, "完善的门派体系参考", None, 4, '["设定","门派"]'),
-        ("ent_test_003", "ref_test_002", "hook", "开篇废材设定",
-         "三年之约，萧炎从天才跌落为废物。纳兰嫣然的退婚更是雪上加霜...",
-         "user_written", "第1章", "经典废材流开篇hook", None, 5, '["开篇","hook"]'),
-        ("ent_test_004", "ref_test_003", "atmosphere", "三体世界描写",
-         "三个太阳无规律地出现，文明在一次次毁灭中轮回...",
-         "original_text", "第一部", "极致的末日氛围营造", None, 5, '["氛围","科幻"]'),
+        ("ent_test_001", "ref_test_001", "worldbuilding", "序列体系",
+         "非凡者通过服用魔药晋升序列。每条途径有 9 个序列（9 → 1），"
+         "数字越小力量越强；序列 0 是天使，但需要通过「扮演」与「自我消化」"
+         "才能稳定吸收魔药——若失败将不可逆地疯狂。22 个途径分属七大神系，"
+         "彼此互相约束。",
+         "user_written", "全书核心设定", "序列途径体系——非凡者世界的硬规则范本",
+         None, 5, '["设定","非凡者","硬规则"]'),
+        ("ent_test_002", "ref_test_001", "style_sample", "克莱因第一次愚者扮演",
+         "他闭上眼，让自己沉入灰雾。背后那张古老的长桌缓缓浮现，先生与小姐们"
+         "陆续就座。克莱因——不，「愚者」——抬起戴着黑色手套的手，开始主持仪式...",
+         "original_text", "第 16 章「愚者」初登场",
+         "叙诡式的视角切换 + 半梦半醒的灰雾世界，气氛标杆", None, 5,
+         '["氛围","叙诡","气氛"]'),
+        ("ent_test_003", "ref_test_001", "hook", "彩蛋与小丑笑伏笔",
+         "他从镜子里看见一抹略带嘲弄的小丑笑——那不是他自己，那是「他」。"
+         "这枚伏笔将贯穿整部作品到结局回收。",
+         "user_written", "第 1 章—结局",
+         "跨百万字的伏笔回收——埋点克制、回收震撼的范本",
+         None, 5, '["伏笔","跨章节"]'),
+        ("ent_test_004", "ref_test_001", "atmosphere", "贝克兰德雾都氛围",
+         "黄雾笼罩着贝克兰德，煤气灯在浓雾中投下橙黄色的晕。蒸汽机车呼啸而过，"
+         "湿漉漉的鹅卵石街道上行人匆匆，仿佛随时会从某个拐角处冒出不可名状之物...",
+         "original_text", "全书首卷",
+         "蒸汽朋克 + 维多利亚雾都 + 克苏鲁恐怖的复合氛围", None, 5,
+         '["氛围","蒸汽朋克","克苏鲁"]'),
+        ("ent_test_005", "ref_test_001", "character", "克莱因·莫雷蒂 / 周明瑞",
+         "穿越者，原名周明瑞；继承的身体是失业的会计学院毕业生克莱因。"
+         "性格谨慎、智计百出、内心善良但行事冷静。从「占卜家」一路扮演升至"
+         "「愚者」。核心矛盾：用智慧对抗远超自身实力的神秘存在。",
+         "user_written", "主角档案",
+         "「智计型」主角的成长弧光——以谨慎与情报对抗碾压级威胁",
+         None, 5, '["角色","主角","智计型"]'),
     ]
     for e in entries:
         cur.execute(
@@ -912,11 +930,12 @@ def _seed_reference_db(db_path: Path) -> None:
             "VALUES (?,?,?,?,?,?,?,?,?,?,?)", e,
         )
 
-    # Link to test project
+    # Link to test project — 诡秘之主 is the sole reference
     cur.execute(
         "INSERT INTO project_reference_links (link_id, project_id, ref_id, dimension, notes) "
         "VALUES (?,?,?,?,?)",
-        ("lnk_test_001", "test_project_001", "ref_test_003", "world", "科幻世界观参考"),
+        ("lnk_test_001", "test_project_001", "ref_test_001", "world",
+         "克苏鲁奇幻世界观 + 序列体系参考"),
     )
 
     con.commit()

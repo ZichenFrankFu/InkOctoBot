@@ -153,5 +153,67 @@ class TestDetectHardwareSmokeIntegration(unittest.TestCase):
         self.assertGreaterEqual(rep.recommended_batch_size, 1)
 
 
+class TestNvidiaSmiFallback(unittest.TestCase):
+    """The fallback should populate gpus even when torch is absent
+    or installed as CPU-only."""
+
+    def test_smi_output_parsed_when_torch_missing(self) -> None:
+        """Simulate: no torch, nvidia-smi present + returns 2 GPUs."""
+        import reference_ingest.lora.hardware as hw_mod
+
+        fake_smi_output = (
+            "0, NVIDIA GeForce RTX 4090, 24564, 23800, 8.9\n"
+            "1, NVIDIA GeForce RTX 3060, 12288, 11000, 8.6\n"
+        )
+
+        class FakeProc:
+            def __init__(self):
+                self.returncode = 0
+                self.stdout = fake_smi_output
+                self.stderr = ""
+
+        import builtins
+        orig_import = builtins.__import__
+
+        def mock_import(name, *a, **k):
+            if name == "torch":
+                raise ImportError("torch sabotaged for test")
+            return orig_import(name, *a, **k)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import), \
+             patch.object(hw_mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/nvidia-smi"))), \
+             patch.object(hw_mod, "subprocess", MagicMock(run=MagicMock(return_value=FakeProc()))):
+            rep = hw_mod.detect_hardware()
+
+        self.assertFalse(rep.torch_installed)
+        self.assertTrue(rep.cuda_available)
+        self.assertEqual(len(rep.gpus), 2)
+        self.assertEqual(rep.gpus[0].name, "NVIDIA GeForce RTX 4090")
+        self.assertEqual(rep.gpus[0].vram_total_mb, 24564)
+        self.assertEqual(rep.gpus[0].compute_capability, "8.9")
+        self.assertTrue(rep.gpus[0].bf16_supported)  # Ada (8.9) supports bf16
+        # 3060 (8.6) also supports bf16
+        self.assertTrue(rep.gpus[1].bf16_supported)
+        # Recommended device is cuda even without torch
+        self.assertEqual(rep.recommended_device, "cuda")
+
+    def test_no_smi_no_torch_falls_back_to_cpu(self) -> None:
+        import reference_ingest.lora.hardware as hw_mod
+        import builtins
+        orig_import = builtins.__import__
+
+        def mock_import(name, *a, **k):
+            if name == "torch":
+                raise ImportError("no torch")
+            return orig_import(name, *a, **k)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import), \
+             patch.object(hw_mod, "shutil", MagicMock(which=MagicMock(return_value=None))):
+            rep = hw_mod.detect_hardware()
+
+        self.assertEqual(rep.gpus, [])
+        self.assertEqual(rep.recommended_device, "cpu")
+
+
 if __name__ == "__main__":
     unittest.main()

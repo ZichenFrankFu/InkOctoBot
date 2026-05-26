@@ -274,7 +274,7 @@ def check_test_seed(r: Report) -> None:
 
         # reference.db + idea.db row counts
         with sqlite3.connect(str(tmp / "reference.db")) as c:
-            for t, want in [("reference_works", 3)]:
+            for t, want in [("reference_works", 1)]:  # 诡秘之主 only
                 try:
                     n = c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                     if n >= want:

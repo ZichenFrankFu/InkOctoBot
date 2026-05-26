@@ -69,7 +69,18 @@ class HardwareReport:
 
 
 def detect_hardware() -> HardwareReport:
-    """Probe the host. Single call; safe to memoize at the caller."""
+    """Probe the host. Single call; safe to memoize at the caller.
+
+    Two parallel detection paths:
+      1. torch (best — exposes compute capability, bf16/fp16 support,
+         bitsandbytes availability, accurate free VRAM)
+      2. nvidia-smi (fallback — runs even when torch isn't installed or
+         is the CPU-only build; gives GPU name + total/free VRAM)
+
+    Path 2 is critical because many users install torch later (after
+    seeing the hardware page) and we need to show them their GPU
+    *before* they install torch.
+    """
     rep = HardwareReport(
         platform=platform.system().lower(),
         arch=platform.machine(),
@@ -77,57 +88,143 @@ def detect_hardware() -> HardwareReport:
         total_ram_mb=_ram_total_mb(),
     )
 
+    torch_mod: Any = None
     try:
         import torch  # type: ignore
+        torch_mod = torch
+        rep.torch_installed = True
+        rep.torch_version = getattr(torch, "__version__", "")
     except ImportError:
         rep.warnings.append(
-            "torch 未安装 — LoRA 训练需要 `pip install torch transformers peft datasets`"
+            "torch 未安装 — 训练时需要 `pip install torch transformers peft datasets`。"
+            "(已尝试通过 nvidia-smi 检测 GPU 信息)"
         )
-        return rep
 
-    rep.torch_installed = True
-    rep.torch_version = getattr(torch, "__version__", "")
+    # ─── CUDA via torch (preferred path) ─────────────────────
+    if torch_mod is not None:
+        try:
+            if torch_mod.cuda.is_available():
+                rep.cuda_available = True
+                for i in range(torch_mod.cuda.device_count()):
+                    gpu = _probe_cuda_gpu(torch_mod, i)
+                    rep.gpus.append(gpu)
+        except Exception as e:
+            logger.debug("CUDA probe via torch failed: %s", e)
 
-    # ─── CUDA ────────────────────────────────────────────────
-    try:
-        if torch.cuda.is_available():
+    # ─── nvidia-smi fallback ─────────────────────────────────
+    # Runs when:
+    #  (a) torch isn't installed at all, OR
+    #  (b) torch is installed but built for CPU only (cuda.is_available=False)
+    # Either way, if the user has NVIDIA drivers, we can show GPU info
+    # — they won't be able to train until torch w/ CUDA is installed, but
+    # the UI shouldn't lie and say "no GPU".
+    if not rep.gpus:
+        smi_gpus = _probe_nvidia_smi()
+        if smi_gpus:
             rep.cuda_available = True
-            for i in range(torch.cuda.device_count()):
-                gpu = _probe_cuda_gpu(torch, i)
-                rep.gpus.append(gpu)
-    except Exception as e:
-        logger.debug("CUDA probe failed: %s", e)
+            rep.gpus.extend(smi_gpus)
+            if rep.torch_installed:
+                rep.warnings.append(
+                    "torch 已装但未启用 CUDA — 当前可能是 CPU 版的 torch。"
+                    "训练前需要重装 GPU 版：`pip install torch --index-url "
+                    "https://download.pytorch.org/whl/cu121`"
+                )
 
     # ─── ROCm (AMD on Linux) ─────────────────────────────────
-    # PyTorch's CUDA API also exposes ROCm devices via torch.cuda.*,
-    # so the rocm_available flag is informational.
-    if rep.cuda_available and rep.gpus:
+    if rep.gpus:
         first = rep.gpus[0].name.lower()
         if "amd" in first or "radeon" in first or "instinct" in first:
             rep.rocm_available = True
 
     # ─── MPS (Apple Silicon) ─────────────────────────────────
-    try:
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            rep.mps_available = True
-            # MPS doesn't expose VRAM the same way; report a conservative slot
-            rep.gpus.append(GPUInfo(
-                index=0,
-                name="Apple MPS (unified memory)",
-                vram_total_mb=rep.total_ram_mb // 2,  # rough estimate
-                vram_free_mb=rep.total_ram_mb // 2,
-                bf16_supported=True,
-                fp16_supported=True,
-                bitsandbytes_available=False,
-                notes="unified memory; bitsandbytes 4-bit not supported on MPS",
-            ))
-    except Exception as e:
-        logger.debug("MPS probe failed: %s", e)
+    if torch_mod is not None:
+        try:
+            if hasattr(torch_mod.backends, "mps") and torch_mod.backends.mps.is_available():
+                rep.mps_available = True
+                rep.gpus.append(GPUInfo(
+                    index=0,
+                    name="Apple MPS (unified memory)",
+                    vram_total_mb=rep.total_ram_mb // 2,
+                    vram_free_mb=rep.total_ram_mb // 2,
+                    bf16_supported=True,
+                    fp16_supported=True,
+                    bitsandbytes_available=False,
+                    notes="unified memory; bitsandbytes 4-bit not supported on MPS",
+                ))
+        except Exception as e:
+            logger.debug("MPS probe failed: %s", e)
 
     # ─── Recommend device + dtype + batch size ───────────────
     _populate_recommendations(rep)
 
     return rep
+
+
+def _probe_nvidia_smi() -> list[GPUInfo]:
+    """Parse `nvidia-smi --query-gpu=...` to detect NVIDIA GPUs.
+
+    Works on Windows / Linux / WSL whenever the driver is installed,
+    independent of whether torch is. Returns [] if nvidia-smi isn't
+    on PATH or returns nonzero.
+    """
+    binary = shutil.which("nvidia-smi") or shutil.which("nvidia-smi.exe")
+    if not binary:
+        return []
+    try:
+        # --query-gpu fields: index, name, memory.total, memory.free,
+        # compute_cap (driver >=510 reports it; older drivers leave blank)
+        out = subprocess.run(
+            [binary,
+             "--query-gpu=index,name,memory.total,memory.free,compute_cap",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode != 0:
+            logger.debug("nvidia-smi rc=%d stderr=%r",
+                         out.returncode, out.stderr[:200])
+            return []
+    except Exception as e:
+        logger.debug("nvidia-smi probe failed: %s", e)
+        return []
+
+    gpus: list[GPUInfo] = []
+    for line in out.stdout.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 4:
+            continue
+        try:
+            idx = int(parts[0])
+        except ValueError:
+            continue
+        name = parts[1]
+        try:
+            total = int(parts[2])
+        except ValueError:
+            total = 0
+        try:
+            free = int(parts[3])
+        except ValueError:
+            free = 0
+        cc = parts[4] if len(parts) > 4 and parts[4] != "N/A" else ""
+        # Compute capability decides bf16/fp16 support
+        bf16 = False
+        fp16 = False
+        if cc:
+            try:
+                major = int(cc.split(".")[0])
+                bf16 = major >= 8
+                fp16 = major >= 7
+            except (ValueError, IndexError):
+                pass
+        gpus.append(GPUInfo(
+            index=idx, name=name,
+            vram_total_mb=total, vram_free_mb=free,
+            compute_capability=cc,
+            bf16_supported=bf16, fp16_supported=fp16,
+            bitsandbytes_available=_bitsandbytes_works(),
+            notes="探测自 nvidia-smi（未通过 torch 验证）",
+        ))
+    return gpus
 
 
 def _probe_cuda_gpu(torch_mod, index: int) -> GPUInfo:

@@ -105,6 +105,46 @@ def entries_enriched(snapshot_id: int, limit: int = Query(default=200, ge=1, le=
         rows = con.execute("SELECT e.snapshot_id,e.novel_uid,e.rank,e.total_recommend,e.reading_count,e.extra_json,n.platform,n.author,n.main_category,n.status,n.total_words,n.url,nt.title FROM rank_entries e JOIN novels n ON n.novel_uid=e.novel_uid LEFT JOIN novel_titles nt ON nt.novel_uid=n.novel_uid AND nt.is_primary=1 WHERE e.snapshot_id=? ORDER BY e.rank ASC LIMIT ?", (snapshot_id, limit)).fetchall()
     return {"rows": [dict(r) for r in rows]}
 
+@router.get("/search_novels")
+def search_novels(
+    q: str = Query(..., description="title / author / intro search query"),
+    platform: str | None = None,
+    limit: int = Query(default=30, ge=1, le=100),
+):
+    """Search novels by title (primary or alias), author, or intro substring.
+
+    Returns rows matching ANY of: novel_titles.title LIKE %q% OR
+    novels.author LIKE %q% OR novels.intro LIKE %q%, deduplicated by
+    novel_uid, with the primary title joined for display.
+    """
+    con = _get_con()
+    if con is None:
+        return {"items": [], "total": 0}
+    pat = f"%{q.strip()}%"
+    params: list[Any] = [pat, pat, pat]
+    plat_clause = ""
+    if platform:
+        plat_clause = " AND n.platform = ?"
+        params.append(platform)
+    sql = (
+        "SELECT DISTINCT n.novel_uid, n.platform, n.author, n.main_category, "
+        "n.status, n.total_words, n.last_seen_date, "
+        "(SELECT title FROM novel_titles t WHERE t.novel_uid=n.novel_uid "
+        " ORDER BY t.is_primary DESC, t.last_seen_date DESC LIMIT 1) AS title "
+        "FROM novels n "
+        "LEFT JOIN novel_titles t ON t.novel_uid = n.novel_uid "
+        "WHERE (t.title LIKE ? OR n.author LIKE ? OR n.intro LIKE ?)"
+        + plat_clause +
+        " ORDER BY n.last_seen_date DESC LIMIT ?"
+    )
+    params.append(limit)
+    with con:
+        if not _table_exists(con, "novels"):
+            return {"items": [], "total": 0}
+        rows = con.execute(sql, params).fetchall()
+    return {"items": [dict(r) for r in rows], "total": len(rows)}
+
+
 @router.get("/novel/{novel_uid}")
 def novel_detail(novel_uid: int):
     """Returns novel info. Chapters: only metadata (title, word_count), NO content."""
@@ -122,6 +162,31 @@ def novel_detail(novel_uid: int):
         # Only return chapter metadata — NO chapter_content
         chapters = con.execute("SELECT chapter_id,novel_uid,chapter_num,chapter_title,word_count,publish_date FROM first_n_chapters WHERE novel_uid=? ORDER BY chapter_num ASC", (novel_uid,)).fetchall()
     return {"novel": dict(n), "titles": [dict(r) for r in titles], "tags": [dict(r) for r in tags], "rank_history": [dict(r) for r in history], "chapters": [dict(r) for r in chapters]}
+
+@router.get("/chapter/{chapter_id}")
+def chapter_content(chapter_id: int):
+    """Return the full content of one ``first_n_chapters`` row.
+
+    Separate endpoint so the novel_detail endpoint stays light
+    (it ships only metadata for the chapter list). Frontend fetches
+    the body on-demand when the user expands a chapter.
+    """
+    con = _get_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    with con:
+        if not _table_exists(con, "first_n_chapters"):
+            raise HTTPException(404, "chapters not available")
+        r = con.execute(
+            "SELECT chapter_id, novel_uid, chapter_num, chapter_title, "
+            "chapter_content, chapter_url, word_count, publish_date "
+            "FROM first_n_chapters WHERE chapter_id = ?",
+            (chapter_id,),
+        ).fetchone()
+    if not r:
+        raise HTTPException(404, "chapter not found")
+    return dict(r)
+
 
 @router.get("/tag_stats")
 def tag_stats(platform: str | None = None, limit: int = Query(default=30, ge=1, le=100)):
