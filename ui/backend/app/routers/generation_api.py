@@ -654,6 +654,10 @@ class SingleWriterRequest(BaseModel):
     target_word_count: int = 2000
     provider: str = ""
     model: str = ""
+    # Truth Files integration knobs (v2.2 per docs/truth_file_system.md §9)
+    truth_inject: bool = True           # Phase 1: inject 7-file bundle into context
+    truth_pressure_inject: bool = True  # Inject pressured-hooks reminder
+    truth_settle: bool = True           # Phase 2: extract + apply TruthDeltas after writing
     # Same RAG knobs as quick-generate
     skills: list[str] | None = None
     rag_excludes: list[str] = []
@@ -664,15 +668,20 @@ class SingleWriterRequest(BaseModel):
 
 @router.post("/single-writer")
 async def single_writer(req: SingleWriterRequest):
-    """Generate a chapter with only the Writer agent (no SceneDirector,
-    no Actors, no Narrator). Pulls full RAG context (character cards,
-    world rules, memory, adjacent chapters) and runs one LLM call.
+    """Generate a chapter with only the Writer agent.
+
+    Integrates with the Truth Files system per docs/truth_file_system.md §9:
+      - Phase 1: 7-file truth bundle injected as additional memory context
+      - Pressured-hooks reminder folded into narrative_instructions
+      - Phase 2: post-write settlement → TruthDeltas → apply (audit gate)
     """
     try:
         from agents.production.writer import Writer
+        from agents.production import truth_integration as truth_ext
         from ._rag_context import single_agent_vars
 
         router_inst = _build_router(req.provider, req.model)
+        db_path = _get_db_path()
 
         # Reuse the single-agent RAG bundle so we get the same blocks
         # as /quick-generate (character cards, world, memory, refs).
@@ -686,11 +695,35 @@ async def single_writer(req: SingleWriterRequest):
             web_mode=req.prompt_only,
         )
 
+        # === Truth Files integration — Phase 1 ===
+        truth_bundle = ""
+        pressured_text = ""
+        if req.truth_inject:
+            truth_bundle = truth_ext.build_truth_context(
+                req.project_id, db_path,
+                req.chapter_num, req.characters,
+            )
+        if req.truth_pressure_inject:
+            pressured_text = truth_ext.list_pressured_hooks_text(
+                req.project_id, db_path, req.chapter_num,
+            )
+
+        # Merge truth bundle into memory_context and pressured hooks
+        # into narrative_instructions. Empty strings are inert.
+        memory_context = vars_.get("memory", "") or vars_.get("project_memory", "")
+        if truth_bundle:
+            memory_context = "\n\n".join(
+                filter(None, [memory_context, "[Truth Files 状态权威]", truth_bundle])
+            )
+        narrative_instructions = req.narrative_instructions
+        if pressured_text:
+            narrative_instructions = "\n\n".join(
+                filter(None, [narrative_instructions, pressured_text])
+            )
+
         writer = Writer(router_inst, project_id=req.project_id)
 
         if req.prompt_only:
-            # Build the user_content (the prompt body) without invoking LLM
-            # so the user can paste it into a web UI.
             prompt = writer._build_single_writer_prompt(
                 outline=req.outline,
                 chapter_num=req.chapter_num,
@@ -700,10 +733,14 @@ async def single_writer(req: SingleWriterRequest):
                 location=req.location,
                 characters=req.characters,
                 pov_character=req.pov_character,
-                narrative_instructions=req.narrative_instructions,
+                narrative_instructions=narrative_instructions,
                 target_word_count=req.target_word_count,
             )
-            return {"status": "ok", "prompt": prompt, "rag_vars": vars_}
+            return {
+                "status": "ok", "prompt": prompt, "rag_vars": vars_,
+                "truth_bundle_chars": len(truth_bundle),
+                "pressured_hooks": pressured_text or None,
+            }
 
         text = await writer.write_chapter(
             outline=req.outline or req.synopsis,
@@ -716,19 +753,44 @@ async def single_writer(req: SingleWriterRequest):
             pov_character=req.pov_character,
             character_cards=vars_.get("character_cards", ""),
             world_rules=vars_.get("worldbook", ""),
-            narrative_instructions=req.narrative_instructions,
+            narrative_instructions=narrative_instructions,
             style_profile=vars_.get("style_calibration", ""),
             user_preferences=vars_.get("user_preferences", ""),
-            memory_context=vars_.get("memory", "") or vars_.get("project_memory", ""),
+            memory_context=memory_context,
             adjacent_context=vars_.get("adjacent_context", ""),
             constraints="",
             target_word_count=req.target_word_count,
         )
+
+        # === Truth Files integration — Phase 2 (settlement) ===
+        settle_result = None
+        if req.truth_settle and text.strip():
+            # Resolve known_characters from the characters table so
+            # the xref validators have something to check against.
+            try:
+                from ui.backend.app.services import project_store
+                rows = project_store.list_characters(db_path, req.project_id)
+                known = {r["name"] for r in rows if r.get("name")}
+            except Exception:
+                known = None
+
+            settle_result = await truth_ext.extract_and_apply_truth_deltas(
+                router_inst, text,
+                project_id=req.project_id, db_path=db_path,
+                chapter_num=req.chapter_num,
+                chapter_title=req.chapter_title,
+                pov_character=req.pov_character,
+                known_characters=known,
+            )
+
         return {
             "status": "ok",
             "text": text,
             "mode": "single_writer",
             "agent": "Writer",
+            "truth_bundle_chars": len(truth_bundle),
+            "pressured_hooks": pressured_text or None,
+            "settlement": settle_result,
         }
     except Exception as e:
         logger.error("Single-writer generation failed: %s", e, exc_info=True)
