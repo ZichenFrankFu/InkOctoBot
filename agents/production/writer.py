@@ -28,6 +28,11 @@ import logging
 from typing import Any
 
 from agents.base_agent import BaseAgent
+from agents.production.prompt_composer import (
+    PromptContext,
+    single_writer_composer,
+    assembly_composer,
+)
 
 logger = logging.getLogger("inkoctobot.agents.production.writer")
 
@@ -54,23 +59,33 @@ class Writer(BaseAgent):
         user_preferences: str = "",
         memory_context: str = "",
         constraints: str = "",
+        truth_bundle: str = "",
     ) -> str:
-        """Assemble raw performances into final chapter text."""
-        user_content = self._build_assembly_prompt(
-            performance_records, narrator_text,
-            chapter_num, chapter_title, narrative_instructions,
+        """Assemble raw performances into final chapter text.
+
+        Built around PromptComposer (B1 InkOS) — block ordering, format,
+        budgets all live in agents.production.prompt_composer, not here.
+        """
+        composer = assembly_composer()
+        ctx = PromptContext(
+            mode="assembly",
+            chapter_num=chapter_num,
+            chapter_title=chapter_title,
+            narrative_instructions=narrative_instructions,
+            performance_records=performance_records,
+            narrator_text=narrator_text,
+            style_profile=style_profile,
+            user_preferences=user_preferences,
+            memory_context=memory_context,
+            truth_bundle=truth_bundle,
+            target_word_count=2000,
         )
-        context_parts = []
-        if memory_context:
-            context_parts.append(memory_context)
-        if style_profile:
-            context_parts.append(f"[风格档案]\n{style_profile}")
-        if user_preferences:
-            context_parts.append(f"[用户偏好]\n{user_preferences}")
+        user_content = composer.build_user_content(ctx)
+        context = composer.build_context(ctx)
 
         resp = await self.invoke(
             user_content,
-            context="\n\n".join(context_parts),
+            context=context,
             constraints=constraints,
             temperature=0.7,
             max_tokens=8000,
@@ -103,43 +118,47 @@ class Writer(BaseAgent):
         adjacent_context: str = "",
         constraints: str = "",
         target_word_count: int = 2000,
+        # InkOS B1 — extra block hooks, optional
+        truth_bundle: str = "",
+        pressured_hooks_text: str = "",
+        ledger_anchors_text: str = "",
     ) -> str:
         """Write a complete chapter from outline + context, no other agents.
 
-        The fast / cheap path. Skips SceneDirector, ActorAgents, and
-        NarratorAgent — the Writer does everything in one LLM call.
-        Quality ceiling is lower than the full pipeline, but works well
-        when the outline is already detailed.
+        The fast / cheap path. Built around PromptComposer (B1 InkOS) —
+        block ordering, format, budgets all live in
+        agents.production.prompt_composer.
         """
-        user_content = self._build_single_writer_prompt(
-            outline=outline,
+        composer = single_writer_composer()
+        ctx = PromptContext(
+            mode="single_writer",
             chapter_num=chapter_num,
             chapter_title=chapter_title,
+            outline=outline,
             synopsis=synopsis,
             time_label=time_label,
             location=location,
             characters=characters or [],
             pov_character=pov_character,
+            character_cards=character_cards,
+            world_rules=world_rules,
+            style_profile=style_profile,
+            user_preferences=user_preferences,
+            memory_context=memory_context,
+            adjacent_context=adjacent_context,
             narrative_instructions=narrative_instructions,
             target_word_count=target_word_count,
+            # InkOS B1 hooks
+            truth_bundle=truth_bundle,
+            pressured_hooks_text=pressured_hooks_text,
+            ledger_anchors_text=ledger_anchors_text,
         )
-        context_parts: list[str] = []
-        if memory_context:
-            context_parts.append(memory_context)
-        if adjacent_context:
-            context_parts.append(adjacent_context)
-        if character_cards:
-            context_parts.append(f"[角色档案]\n{character_cards}")
-        if world_rules:
-            context_parts.append(f"[世界规则]\n{world_rules}")
-        if style_profile:
-            context_parts.append(f"[风格档案]\n{style_profile}")
-        if user_preferences:
-            context_parts.append(f"[用户偏好]\n{user_preferences}")
+        user_content = composer.build_user_content(ctx)
+        context = composer.build_context(ctx)
 
         resp = await self.invoke(
             user_content,
-            context="\n\n".join(context_parts),
+            context=context,
             constraints=constraints,
             temperature=0.7,
             max_tokens=max(4000, target_word_count * 4),
@@ -229,44 +248,24 @@ class Writer(BaseAgent):
         )
         return resp.content
 
-    # ─── Prompt builders ─────────────────────────────────────────────
+    # ─── Prompt builder shims (compat with prompt_only endpoint mode) ──
+    # Real assembly lives in agents.production.prompt_composer.
+    # These wrappers exist so `/api/generation/single-writer?prompt_only=true`
+    # can still call them with positional args.
 
     def _build_assembly_prompt(
         self, performances: list[str], narrator: str,
         chapter_num: int, title: str, instructions: str,
     ) -> str:
-        parts = [
-            f"请将以下表演记录和旁白素材剪辑成第{chapter_num}章",
-        ]
-        if title:
-            parts[0] += f"「{title}」"
-        parts[0] += "的章节正文。"
-
-        if instructions:
-            parts.append(f"\n## 叙事指令\n{instructions}")
-
-        real_perfs = [p for p in performances if p and p.strip() and p.strip() not in ("（无表演记录）",)]
-        if real_perfs:
-            parts.append("\n## 表演记录")
-            for i, perf in enumerate(real_perfs):
-                parts.append(f"\n--- 场景 {i+1} ---\n{perf}")
-        else:
-            parts.append("\n## 素材\n（表演记录为空，请根据叙事指令和旁白素材，自行创作章节正文。）")
-
-        if narrator:
-            parts.append(f"\n## 旁白素材\n{narrator}")
-
-        parts.append(f"""
-## 输出要求
-- 将表演记录中的对话、动作、内心独白转化为文学化的叙事文本
-- 融入旁白的环境描写和氛围渲染
-- 保持情绪弧线的连贯性
-- 不要保留表演记录的格式标记
-- 目标字数约2000中文字，内容要充实完整
-- 直接输出章节正文，从第一个字就是小说正文
-- 禁止输出"好的""我明白了""以下是"等确认语、标题或导航链接
-""")
-        return "\n".join(parts)
+        ctx = PromptContext(
+            mode="assembly",
+            chapter_num=chapter_num, chapter_title=title,
+            narrative_instructions=instructions,
+            performance_records=performances,
+            narrator_text=narrator,
+            target_word_count=2000,
+        )
+        return assembly_composer().build_user_content(ctx)
 
     def _build_single_writer_prompt(
         self, *, outline: str, chapter_num: int, chapter_title: str,
@@ -274,43 +273,16 @@ class Writer(BaseAgent):
         characters: list[str], pov_character: str,
         narrative_instructions: str, target_word_count: int,
     ) -> str:
-        parts = [f"请直接创作第{chapter_num}章"]
-        if chapter_title:
-            parts[0] += f"「{chapter_title}」"
-        parts[0] += "的完整章节正文。"
-
-        meta_lines: list[str] = []
-        if synopsis:
-            meta_lines.append(f"梗概：{synopsis}")
-        if time_label:
-            meta_lines.append(f"时间：{time_label}")
-        if location:
-            meta_lines.append(f"地点：{location}")
-        if pov_character:
-            meta_lines.append(f"POV 视角：{pov_character}")
-        if characters:
-            meta_lines.append(f"出场角色：{', '.join(characters)}")
-        if meta_lines:
-            parts.append("\n## 章节元数据\n" + "\n".join(meta_lines))
-
-        if outline:
-            parts.append(f"\n## 章节大纲\n{outline}")
-
-        if narrative_instructions:
-            parts.append(f"\n## 叙事指令\n{narrative_instructions}")
-
-        parts.append(f"""
-## 输出要求
-- 这是**单 Writer 模式**：你需要独立完成场景规划、角色表演、环境描写、剧情推进
-- 严格遵循上面的章节大纲，不要漏掉任何关键节点
-- 严格遵循 POV 视角，知道与不知道的信息要分清楚
-- 严格遵循世界规则和角色设定（见上下文）
-- 目标字数约 {target_word_count} 中文字，内容要充实完整
-- 直接输出章节正文，从第一个字就是小说正文
-- 禁止输出"好的""我明白了""以下是"等确认语、标题或导航链接
-- 禁止使用列表/编号语法（- 1. 2.）；用连贯的散文段落
-""")
-        return "\n".join(parts)
+        ctx = PromptContext(
+            mode="single_writer",
+            chapter_num=chapter_num, chapter_title=chapter_title,
+            outline=outline, synopsis=synopsis,
+            time_label=time_label, location=location,
+            characters=characters, pov_character=pov_character,
+            narrative_instructions=narrative_instructions,
+            target_word_count=target_word_count,
+        )
+        return single_writer_composer().build_user_content(ctx)
 
 
 # ─── Backward-compat alias ──────────────────────────────────────────
