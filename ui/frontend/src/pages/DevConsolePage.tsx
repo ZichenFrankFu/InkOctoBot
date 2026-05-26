@@ -16,12 +16,13 @@ import { apiGet } from "../api/client";
 
 interface Project { id: string; name: string; }
 
-type DevTab = "rag" | "memory" | "truth" | "logs";
+type DevTab = "rag" | "memory" | "truth" | "audit" | "logs";
 
 const TAB_LABELS: Record<DevTab, string> = {
   rag: "RAG 上下文预览",
   memory: "记忆 (L1/L2/L3/L4)",
   truth: "Truth Files (7 文件)",
+  audit: "事实库审计",
   logs: "日志 + 诊断",
 };
 
@@ -151,6 +152,7 @@ export default function DevConsolePage({ projects, activeProject }: Props) {
         {tab === "rag" && <RagPreviewTab projects={projects} activeProject={activeProject} />}
         {tab === "memory" && <MemoryTab projects={projects} activeProject={activeProject} />}
         {tab === "truth" && <TruthTab projects={projects} activeProject={activeProject} />}
+        {tab === "audit" && <AuditTab projects={projects} activeProject={activeProject} />}
         {tab === "logs" && <LogsTab />}
       </div>
     </div>
@@ -559,5 +561,219 @@ function SectionBlock({ title, data }: { title: string; data: unknown }) {
         {json}
       </pre>
     </details>
+  );
+}
+
+
+// ─────────────── Tab: Audit (B2 — InkOS audit gate, CoT view) ───────
+
+interface AuditIssue {
+  rule_id: string;
+  severity: "error" | "warning" | "info";
+  title: string;
+  thought: string;
+  observation: string;
+  suggestion: string;
+}
+
+interface AuditState {
+  audit_status: "audit_pending" | "audit_passed" | "audit_failed" | "audit_overridden";
+  audit_issues: AuditIssue[];
+  exists: boolean;
+}
+
+function AuditTab({ projects, activeProject }: Props) {
+  const [projectId, setProjectId] = useState(activeProject || projects[0]?.id || "");
+  const [chapterNum, setChapterNum] = useState(1);
+  const [data, setData] = useState<AuditState | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [overriding, setOverriding] = useState(false);
+
+  const load = useCallback(() => {
+    if (!projectId) return;
+    setLoading(true);
+    setErr("");
+    apiGet<AuditState>(`/api/generation/audit/${chapterNum}?project_id=${encodeURIComponent(projectId)}`)
+      .then(setData)
+      .catch((e) => setErr(String(e.message || e)))
+      .finally(() => setLoading(false));
+  }, [projectId, chapterNum]);
+
+  const doOverride = useCallback(async () => {
+    if (!projectId) return;
+    setOverriding(true);
+    try {
+      const resp = await fetch(
+        `/api/generation/audit/${chapterNum}/override?project_id=${encodeURIComponent(projectId)}`,
+        { method: "POST" },
+      );
+      const j = await resp.json();
+      if (j.audit_status) {
+        setData({
+          audit_status: j.audit_status,
+          audit_issues: j.audit_issues || [],
+          exists: j.exists ?? true,
+        });
+      }
+    } catch (e: any) {
+      setErr(`override 失败: ${e.message || e}`);
+    } finally {
+      setOverriding(false);
+    }
+  }, [projectId, chapterNum]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const status = data?.audit_status;
+  const statusColor =
+    status === "audit_passed" ? "lime"
+    : status === "audit_failed" ? "tomato"
+    : status === "audit_overridden" ? "orange"
+    : "var(--text-secondary)";
+  const statusLabel =
+    status === "audit_passed" ? "✓ AUDIT PASSED"
+    : status === "audit_failed" ? "✗ AUDIT FAILED"
+    : status === "audit_overridden" ? "⚠ AUDIT OVERRIDDEN"
+    : "○ AUDIT PENDING";
+
+  const errors = (data?.audit_issues || []).filter((i) => i.severity === "error" && i.rule_id !== "_meta");
+  const warnings = (data?.audit_issues || []).filter((i) => i.severity === "warning");
+  const infos = (data?.audit_issues || []).filter((i) => i.severity === "info");
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ padding: 4 }}>
+          <option value="">— 选择项目 —</option>
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <label>
+          章节:
+          <input type="number" min={1} value={chapterNum}
+            onChange={(e) => setChapterNum(Number(e.target.value) || 1)}
+            style={{ width: 60, marginLeft: 4, padding: 4 }} />
+        </label>
+        <button onClick={load} disabled={loading || !projectId} style={{ padding: "4px 12px" }}>
+          {loading ? "加载中…" : "刷新"}
+        </button>
+        {status === "audit_failed" && (
+          <button onClick={doOverride} disabled={overriding}
+            style={{ padding: "4px 12px", background: "orange", color: "white", border: "none", borderRadius: 4 }}>
+            {overriding ? "处理中…" : "Override 此章"}
+          </button>
+        )}
+      </div>
+
+      {err && <div style={{ color: "tomato", marginBottom: 8 }}>{err}</div>}
+
+      {!data && !loading && (
+        <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>
+          选择项目与章节后点「刷新」查看 Truth Files 审计状态
+        </div>
+      )}
+
+      {data && (
+        <div style={{ flex: 1, overflow: "auto" }}>
+          {/* Status banner */}
+          <div style={{
+            padding: "8px 12px", background: "var(--surface-1)",
+            border: `2px solid ${statusColor}`, borderRadius: 6,
+            marginBottom: 12, display: "flex", justifyContent: "space-between",
+            alignItems: "center",
+          }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: "bold", color: statusColor }}>
+                {statusLabel}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+                第 {chapterNum} 章 · {errors.length} error · {warnings.length} warning · {infos.length} info
+              </div>
+            </div>
+            {status === "audit_failed" && (
+              <div style={{ fontSize: 11, color: "tomato", maxWidth: 280, textAlign: "right" }}>
+                ⛔ Finalize 被阻断 — 需要修正问题，或显式 Override
+              </div>
+            )}
+            {status === "audit_overridden" && (
+              <div style={{ fontSize: 11, color: "orange", maxWidth: 280, textAlign: "right" }}>
+                ⚠ 用户已 Override — 允许 finalize 但 issues 仍记录在册
+              </div>
+            )}
+          </div>
+
+          {/* Issues — CoT-style chain */}
+          {data.audit_issues.length === 0 ? (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>
+              {status === "audit_pending" ? "此章尚未运行 Phase 2 settlement（先用单 Writer 模式生成）"
+                : "无 issues — 完美通过 ✓"}
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {data.audit_issues.map((issue, i) => (
+                <AuditIssueCard key={i} issue={issue} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AuditIssueCard({ issue }: { issue: AuditIssue }) {
+  const isMeta = issue.rule_id === "_meta";
+  const color =
+    issue.severity === "error" ? "tomato"
+    : issue.severity === "warning" ? "orange"
+    : isMeta ? "lime" : "var(--text-secondary)";
+  const sevLabel =
+    issue.severity === "error" ? "ERROR"
+    : issue.severity === "warning" ? "WARN"
+    : isMeta ? "INFO" : "INFO";
+
+  return (
+    <div style={{
+      border: `1px solid ${color}`, borderRadius: 6, overflow: "hidden",
+      background: "var(--surface-1)",
+    }}>
+      {/* Header */}
+      <div style={{
+        padding: "6px 12px", background: "var(--surface-2)",
+        display: "flex", alignItems: "center", gap: 8, fontSize: 12,
+      }}>
+        <span style={{
+          padding: "1px 6px", background: color, color: "white",
+          borderRadius: 3, fontSize: 10, fontWeight: "bold",
+        }}>
+          {sevLabel}
+        </span>
+        <span style={{ fontWeight: "bold" }}>{issue.title}</span>
+        {!isMeta && (
+          <code style={{ fontSize: 10, color: "var(--text-secondary)", marginLeft: "auto" }}>
+            {issue.rule_id}
+          </code>
+        )}
+      </div>
+      {/* CoT chain */}
+      <div style={{ padding: "8px 12px", fontSize: 12, lineHeight: 1.6 }}>
+        <div>
+          <span style={{ color: "var(--text-secondary)", marginRight: 6 }}>💭</span>
+          <span>{issue.thought}</span>
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <span style={{ color: "var(--text-secondary)", marginRight: 6 }}>🔍</span>
+          <span style={{ fontFamily: "monospace", fontSize: 11 }}>{issue.observation}</span>
+        </div>
+        {issue.suggestion && (
+          <div style={{ marginTop: 4 }}>
+            <span style={{ color: "var(--text-secondary)", marginRight: 6 }}>💡</span>
+            <span style={{ color: "var(--text-secondary)", fontStyle: "italic" }}>
+              {issue.suggestion}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

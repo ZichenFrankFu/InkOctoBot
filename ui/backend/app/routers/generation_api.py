@@ -762,17 +762,24 @@ async def single_writer(req: SingleWriterRequest):
             target_word_count=req.target_word_count,
         )
 
-        # === Truth Files integration — Phase 2 (settlement) ===
+        # === Truth Files integration — Phase 2 (settlement + audit gate) ===
         settle_result = None
         if req.truth_settle and text.strip():
-            # Resolve known_characters from the characters table so
-            # the xref validators have something to check against.
+            from ui.backend.app.services import project_store as _ps
             try:
-                from ui.backend.app.services import project_store
-                rows = project_store.list_characters(db_path, req.project_id)
+                rows = _ps.list_characters(db_path, req.project_id)
                 known = {r["name"] for r in rows if r.get("name")}
             except Exception:
                 known = None
+
+            # A2: pre-read ledger anchors so the settlement LLM can be told
+            # "the old_value for 李星河·灵石 is currently 80" — making
+            # the ledger.matches_current validator meaningful instead of
+            # vacuously true.
+            anchors = truth_ext.build_ledger_anchors(
+                req.project_id, db_path, req.chapter_num,
+                characters=req.characters,
+            )
 
             settle_result = await truth_ext.extract_and_apply_truth_deltas(
                 router_inst, text,
@@ -781,7 +788,19 @@ async def single_writer(req: SingleWriterRequest):
                 chapter_title=req.chapter_title,
                 pov_character=req.pov_character,
                 known_characters=known,
+                ledger_anchors=anchors,
             )
+
+            # B2 hard audit gate: persist audit_status to chapters table
+            # so any subsequent finalize attempt sees the failure flag.
+            try:
+                _ps.update_chapter_audit(
+                    db_path, req.project_id, req.chapter_num,
+                    audit_status=settle_result.get("audit_status", "audit_pending"),
+                    audit_issues=settle_result.get("issues") or [],
+                )
+            except Exception as _e:
+                logger.warning("audit_status persist failed: %s", _e)
 
         return {
             "status": "ok",
@@ -798,6 +817,50 @@ async def single_writer(req: SingleWriterRequest):
 
 
 # ═══ Outline Chat — interactive outline brainstorming ═══
+
+# ═══ B2: Audit gate — chapter audit status + override ═══
+
+@router.get("/audit/{chapter_num}")
+def get_chapter_audit(chapter_num: int, project_id: str):
+    """Return the chapter's current audit_status + concise CoT-style issues.
+
+    Frontend EditorPage / DevConsole panel use this to render the
+    "事实库审计" indicator. Polled after each single-writer call so the
+    panel updates as new chapters land.
+    """
+    from ui.backend.app.services import project_store
+    return project_store.get_chapter_audit(_get_db_path(), project_id, chapter_num)
+
+
+@router.post("/audit/{chapter_num}/override")
+def override_chapter_audit(chapter_num: int, project_id: str):
+    """User explicitly overrides an audit_failed chapter.
+
+    Use when you've manually fixed the truth file underneath, or
+    decided the failed rule isn't applicable to this case. Moves
+    audit_failed → audit_overridden so finalize is unblocked.
+    """
+    from ui.backend.app.services import project_store
+    project_store.override_chapter_audit(_get_db_path(), project_id, chapter_num)
+    info = project_store.get_chapter_audit(_get_db_path(), project_id, chapter_num)
+    return {"status": "ok", **info}
+
+
+@router.get("/audit/{chapter_num}/can-finalize")
+def can_finalize_chapter(chapter_num: int, project_id: str):
+    """Hard gate query: returns {allowed, reason}.
+
+    Frontend EditorPage's Finalize button calls this before allowing
+    a chapter to be marked status='finalized'. Backend mirror of
+    project_store.can_finalize_chapter — the actual finalize path
+    must also call this server-side (defense in depth).
+    """
+    from ui.backend.app.services import project_store
+    allowed, reason = project_store.can_finalize_chapter(
+        _get_db_path(), project_id, chapter_num,
+    )
+    return {"allowed": allowed, "reason": reason}
+
 
 class OutlineChatRequest(BaseModel):
     project_id: str = "default"

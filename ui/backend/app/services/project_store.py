@@ -1091,3 +1091,113 @@ def list_foreshadowing_legacy(db_path: str, project_id: str) -> list[dict]:
         "status": r["status"],
         "importance": r["importance"],
     } for r in rows]
+
+
+# ─────────────── B2: InkOS audit gate — chapter audit status ──────
+
+
+_ALLOWED_AUDIT_STATUSES = {
+    "audit_pending", "audit_passed", "audit_failed", "audit_overridden",
+}
+
+
+def update_chapter_audit(
+    db_path: str, project_id: str, chapter_num: int,
+    *, audit_status: str, audit_issues: list[dict[str, Any]],
+) -> None:
+    """Persist Phase 2 settlement audit result onto the chapter row.
+
+    Called after extract_and_apply_truth_deltas. The chapter is created
+    via INSERT OR IGNORE if it doesn't exist yet (e.g. single-writer
+    mode where the chapter row hasn't been provisioned). The audit
+    fields are then UPDATEd unconditionally.
+    """
+    if audit_status not in _ALLOWED_AUDIT_STATUSES:
+        audit_status = "audit_pending"
+    chapter_id = f"{project_id}_ch{chapter_num:04d}"
+    issues_json = json.dumps(audit_issues, ensure_ascii=False)
+    with open_db(db_path) as con:
+        con.execute(
+            """INSERT OR IGNORE INTO chapters
+               (chapter_id, project_id, chapter_num, status,
+                audit_status, audit_issues_json,
+                created_at, updated_at)
+               VALUES (?, ?, ?, 'draft', ?, ?,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+            (chapter_id, project_id, chapter_num,
+             audit_status, issues_json),
+        )
+        con.execute(
+            """UPDATE chapters
+               SET audit_status = ?,
+                   audit_issues_json = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE project_id = ? AND chapter_num = ?""",
+            (audit_status, issues_json, project_id, chapter_num),
+        )
+        con.commit()
+
+
+def get_chapter_audit(
+    db_path: str, project_id: str, chapter_num: int,
+) -> dict[str, Any]:
+    """Return the chapter's current audit status + parsed issues.
+
+    Shape: ``{audit_status, audit_issues, exists}``. Empty defaults
+    when the chapter row hasn't been touched yet.
+    """
+    with open_db(db_path) as con:
+        try:
+            row = con.execute(
+                "SELECT audit_status, audit_issues_json FROM chapters "
+                "WHERE project_id = ? AND chapter_num = ?",
+                (project_id, chapter_num),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # Old schema without audit columns — graceful default.
+            return {"audit_status": "audit_pending", "audit_issues": [], "exists": False}
+    if not row:
+        return {"audit_status": "audit_pending", "audit_issues": [], "exists": False}
+    try:
+        issues = json.loads(row["audit_issues_json"] or "[]")
+    except (TypeError, json.JSONDecodeError):
+        issues = []
+    return {
+        "audit_status": row["audit_status"] or "audit_pending",
+        "audit_issues": issues,
+        "exists": True,
+    }
+
+
+def override_chapter_audit(
+    db_path: str, project_id: str, chapter_num: int,
+) -> None:
+    """User explicitly overrides a failed audit — typically after they
+    manually fix the underlying issue. Moves audit_failed → audit_overridden
+    so the finalize-guard lets the chapter through.
+    """
+    with open_db(db_path) as con:
+        con.execute(
+            "UPDATE chapters SET audit_status='audit_overridden', "
+            "updated_at=CURRENT_TIMESTAMP "
+            "WHERE project_id=? AND chapter_num=? AND audit_status='audit_failed'",
+            (project_id, chapter_num),
+        )
+        con.commit()
+
+
+def can_finalize_chapter(
+    db_path: str, project_id: str, chapter_num: int,
+) -> tuple[bool, str]:
+    """Hard gate: returns (allowed, reason). ``allowed=False`` if the
+    chapter's audit_status is audit_failed and the user hasn't overridden.
+    """
+    info = get_chapter_audit(db_path, project_id, chapter_num)
+    status = info["audit_status"]
+    if status == "audit_failed":
+        return False, (
+            f"第 {chapter_num} 章 audit_failed — "
+            "请在编辑器的「事实库审计」面板查看 issues 并修正，"
+            "或显式 override 后再 finalize"
+        )
+    return True, ""

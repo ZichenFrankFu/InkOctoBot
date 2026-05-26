@@ -58,6 +58,14 @@ CREATION_DDL = [
         characters_json TEXT NOT NULL DEFAULT '[]',
         pov_character TEXT NOT NULL DEFAULT '',
         extra_json TEXT NOT NULL DEFAULT '{}',
+        -- v2.2 InkOS audit gate (B2): Truth Files Phase 2 settlement
+        -- result. 'audit_pending'=settlement hasn't run, 'audit_passed'=
+        -- no error-severity issues, 'audit_failed'=block finalize until
+        -- user reviews + overrides. audit_issues_json holds the concise
+        -- CoT-style summary the UI surfaces.
+        audit_status TEXT NOT NULL DEFAULT 'audit_pending'
+            CHECK (audit_status IN ('audit_pending','audit_passed','audit_failed','audit_overridden')),
+        audit_issues_json TEXT NOT NULL DEFAULT '[]',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
@@ -353,12 +361,17 @@ CREATION_DDL = [
 # (column_name, DDL fragment). Applied via ``_ensure_chapter_v2_columns``
 # below. Idempotent — checks PRAGMA table_info first.
 _CHAPTERS_V2_COLUMNS = [
-    ("synopsis",        "TEXT NOT NULL DEFAULT ''"),
-    ("time_label",      "TEXT NOT NULL DEFAULT ''"),
-    ("location",        "TEXT NOT NULL DEFAULT ''"),
-    ("characters_json", "TEXT NOT NULL DEFAULT '[]'"),
-    ("pov_character",   "TEXT NOT NULL DEFAULT ''"),
-    ("extra_json",      "TEXT NOT NULL DEFAULT '{}'"),
+    ("synopsis",          "TEXT NOT NULL DEFAULT ''"),
+    ("time_label",        "TEXT NOT NULL DEFAULT ''"),
+    ("location",          "TEXT NOT NULL DEFAULT ''"),
+    ("characters_json",   "TEXT NOT NULL DEFAULT '[]'"),
+    ("pov_character",     "TEXT NOT NULL DEFAULT ''"),
+    ("extra_json",        "TEXT NOT NULL DEFAULT '{}'"),
+    # v2.2 InkOS audit gate (no CHECK at ALTER level — SQLite limitation —
+    # so the constraint only applies on fresh CREATE. App layer enforces
+    # the same enum.)
+    ("audit_status",      "TEXT NOT NULL DEFAULT 'audit_pending'"),
+    ("audit_issues_json", "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 
