@@ -269,7 +269,10 @@ def rag_preview(
 
 
 @router.get("/truth-files")
-def truth_files_dump(project_id: str) -> dict[str, Any]:
+def truth_files_dump(
+    project_id: str,
+    chapter_pointer: int | None = None,
+) -> dict[str, Any]:
     """Dump all 7 Truth Files for one project (raw rows + markdown view).
 
     For manual calibration: after each chapter generation, call this to
@@ -293,6 +296,22 @@ def truth_files_dump(project_id: str) -> dict[str, Any]:
     db_path = get_db_path()
     tables: dict[str, Any] = {}
 
+    # A3: when chapter_pointer is given, raw rows are filtered to "as of"
+    # that chapter — newer rows hidden. Useful for "show me the truth
+    # state at the end of chapter 17". For tables without chapter_num
+    # (e.g. character_relations is a current-state view), the filter is
+    # a no-op.
+    chapter_cutoff_for_table: dict[str, str] = {
+        "truth_current_state":  "valid_from_chapter",
+        "character_ledger":     "chapter_num",
+        "pending_hooks":        "origin_chapter",
+        "hook_events":          "chapter_num",
+        "chapter_summaries":    "chapter_num",
+        "emotion_arcs":         "chapter_num",
+        "subplot_threads":      "start_chapter",
+        "truth_apply_log":      "chapter_num",
+    }
+
     truth_tables = [
         "truth_current_state",
         "character_ledger",
@@ -307,43 +326,97 @@ def truth_files_dump(project_id: str) -> dict[str, Any]:
 
     with sqlite3.connect(db_path) as c:
         c.row_factory = sqlite3.Row
-        for t in truth_tables:
+
+        # If chapter_pointer not specified, default to the latest applied
+        # chapter (= "current truth state").
+        if chapter_pointer is None:
             try:
-                rows = c.execute(
-                    f"SELECT * FROM {t} WHERE project_id=? LIMIT 200",
+                row = c.execute(
+                    "SELECT MAX(chapter_num) FROM truth_apply_log "
+                    "WHERE project_id=?",
                     (project_id,),
-                ).fetchall()
+                ).fetchone()
+                chapter_pointer = (row[0] if row and row[0] is not None else 0)
+            except sqlite3.OperationalError:
+                chapter_pointer = 0
+
+        for t in truth_tables:
+            cutoff_col = chapter_cutoff_for_table.get(t)
+            try:
+                if cutoff_col and chapter_pointer is not None:
+                    rows = c.execute(
+                        f"SELECT * FROM {t} WHERE project_id=? "
+                        f"AND {cutoff_col} <= ? LIMIT 200",
+                        (project_id, chapter_pointer),
+                    ).fetchall()
+                else:
+                    rows = c.execute(
+                        f"SELECT * FROM {t} WHERE project_id=? LIMIT 200",
+                        (project_id,),
+                    ).fetchall()
                 tables[t] = [dict(r) for r in rows]
             except sqlite3.OperationalError:
-                # Table doesn't exist (older schema or not yet migrated)
                 tables[t] = {"_error": "table missing"}
 
-    # Try to also render the canonical markdown view
+    # Render the canonical markdown view AT the chapter pointer.
+    # (Fixed in this commit: prior code called renderers with the store
+    # as positional arg, which is wrong — renderers take row lists.
+    # store.render_for_prompt handles the rowfetch + render together.)
     markdown: dict[str, str] = {}
     try:
         from knowledge.truth.store import TruthFileStore
-        from knowledge.truth.markdown_renderer import (
-            render_current_state, render_pending_hooks,
-            render_chapter_summaries, render_subplot_board,
-            render_emotional_arcs, render_character_matrix,
-            render_particle_ledger,
-        )
+        from knowledge.truth.schemas import TruthFileKind
         store = TruthFileStore(project_id=project_id, db_path=db_path)
-        markdown["current_state"] = render_current_state(store)
-        markdown["pending_hooks"] = render_pending_hooks(store)
-        markdown["chapter_summaries"] = render_chapter_summaries(store)
-        markdown["subplot_board"] = render_subplot_board(store)
-        markdown["emotional_arcs"] = render_emotional_arcs(store)
-        markdown["character_matrix"] = render_character_matrix(store)
-        markdown["particle_ledger"] = render_particle_ledger(store)
+        for kind in TruthFileKind:
+            markdown[kind.value] = store.render_for_prompt(
+                kind, chapter_num=chapter_pointer,
+            )
     except Exception as e:
         markdown["_render_error"] = str(e)
+
+    # Discover the available chapter range so the UI can render a slider
+    chapter_range = _truth_chapter_range(db_path, project_id)
 
     return {
         "project_id": project_id,
         "db_path": db_path,
+        "chapter_pointer": chapter_pointer,
+        "chapter_range": chapter_range,
         "tables": tables,
         "markdown": markdown,
+    }
+
+
+def _truth_chapter_range(db_path: str, project_id: str) -> dict[str, int]:
+    """Return {min_chapter, max_chapter} across all truth tables that have
+    a chapter index. Used by the frontend slider.
+    """
+    import sqlite3 as _sql
+    queries = [
+        "SELECT MIN(valid_from_chapter), MAX(valid_from_chapter) FROM truth_current_state WHERE project_id=?",
+        "SELECT MIN(chapter_num), MAX(chapter_num) FROM character_ledger WHERE project_id=?",
+        "SELECT MIN(origin_chapter), MAX(origin_chapter) FROM pending_hooks WHERE project_id=?",
+        "SELECT MIN(chapter_num), MAX(chapter_num) FROM chapter_summaries WHERE project_id=?",
+        "SELECT MIN(chapter_num), MAX(chapter_num) FROM truth_apply_log WHERE project_id=?",
+    ]
+    mins: list[int] = []
+    maxs: list[int] = []
+    try:
+        with _sql.connect(db_path) as c:
+            for q in queries:
+                try:
+                    row = c.execute(q, (project_id,)).fetchone()
+                    if row and row[0] is not None:
+                        mins.append(int(row[0]))
+                    if row and row[1] is not None:
+                        maxs.append(int(row[1]))
+                except _sql.OperationalError:
+                    continue
+    except Exception:
+        pass
+    return {
+        "min_chapter": min(mins) if mins else 0,
+        "max_chapter": max(maxs) if maxs else 0,
     }
 
 

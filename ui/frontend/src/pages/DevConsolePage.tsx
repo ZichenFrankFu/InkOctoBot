@@ -65,6 +65,8 @@ interface TruthResp {
   tables?: Record<string, unknown[] | { _error?: string }>;
   markdown?: Record<string, string>;
   db_path?: string;
+  chapter_pointer?: number;
+  chapter_range?: { min_chapter: number; max_chapter: number };
 }
 
 interface Props {
@@ -371,22 +373,41 @@ function TruthTab({ projects, activeProject }: Props) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [view, setView] = useState<"markdown" | "raw">("markdown");
+  // A3 InkOS chapter pointer: null = "latest" (default server-side);
+  // a number = "as of chapter N" historical snapshot
+  const [chapterPointer, setChapterPointer] = useState<number | null>(null);
 
-  const load = useCallback(() => {
+  const load = useCallback((pointerOverride?: number | null) => {
     if (!projectId) return;
     setLoading(true);
     setErr("");
-    apiGet<TruthResp>(`/api/debug/truth-files?project_id=${projectId}`)
-      .then(setData)
+    const params = new URLSearchParams({ project_id: projectId });
+    const ptr = pointerOverride !== undefined ? pointerOverride : chapterPointer;
+    if (ptr !== null && ptr !== undefined) {
+      params.set("chapter_pointer", String(ptr));
+    }
+    apiGet<TruthResp>(`/api/debug/truth-files?${params}`)
+      .then((d) => {
+        setData(d);
+        // Server fills in the pointer if we didn't pass one — sync UI
+        if (pointerOverride === undefined && chapterPointer === null) {
+          setChapterPointer(d.chapter_pointer ?? null);
+        }
+      })
       .catch((e) => setErr(String(e.message || e)))
       .finally(() => setLoading(false));
-  }, [projectId]);
+  }, [projectId, chapterPointer]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [projectId]);
+
+  const range = data?.chapter_range;
+  const maxCh = range?.max_chapter ?? 0;
+  const minCh = range?.min_chapter ?? 0;
+  const hasRange = maxCh > 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
         <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ padding: 4 }}>
           <option value="">— 选择项目 —</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -395,10 +416,45 @@ function TruthTab({ projects, activeProject }: Props) {
           <option value="markdown">Markdown 视图（注入给 prompt 的）</option>
           <option value="raw">原始 SQL 行</option>
         </select>
-        <button onClick={load} disabled={loading || !projectId} style={{ padding: "4px 12px" }}>
+        <button onClick={() => load()} disabled={loading || !projectId} style={{ padding: "4px 12px" }}>
           {loading ? "加载中…" : "刷新"}
         </button>
       </div>
+
+      {/* A3 chapter pointer slider — historical snapshot inspection */}
+      {hasRange && (
+        <div style={{
+          padding: "8px 12px", background: "var(--surface-1)", borderRadius: 4,
+          marginBottom: 12, display: "flex", alignItems: "center", gap: 12,
+        }}>
+          <span style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>
+            章节 pointer
+          </span>
+          <input
+            type="range" min={minCh} max={maxCh}
+            value={chapterPointer ?? maxCh}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setChapterPointer(v);
+              load(v);
+            }}
+            style={{ flex: 1 }}
+          />
+          <span style={{ fontSize: 13, fontWeight: "bold", minWidth: 80, textAlign: "right" }}>
+            第 {chapterPointer ?? maxCh} 章
+            {chapterPointer !== null && chapterPointer < maxCh && (
+              <span style={{ marginLeft: 6, fontSize: 10, color: "orange" }}>历史</span>
+            )}
+          </span>
+          <button
+            onClick={() => { setChapterPointer(maxCh); load(maxCh); }}
+            disabled={chapterPointer === maxCh}
+            style={{ padding: "2px 8px", fontSize: 11 }}
+          >
+            最新
+          </button>
+        </div>
+      )}
 
       {err && <div style={{ color: "tomato", marginBottom: 8 }}>{err}</div>}
 
