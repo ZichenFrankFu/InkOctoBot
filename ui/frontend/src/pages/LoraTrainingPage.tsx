@@ -70,6 +70,9 @@ interface TrainStatus {
 }
 
 export default function LoraTrainingPage() {
+  // B3 InkOS: SFT vs DPO mode
+  const [mode, setMode] = useState<"sft" | "dpo">("sft");
+
   const [hardware, setHardware] = useState<HardwareReport | null>(null);
   const [hardwareLoading, setHardwareLoading] = useState(true);
   const [works, setWorks] = useState<ReferenceWork[]>([]);
@@ -86,6 +89,14 @@ export default function LoraTrainingPage() {
   const [use4bit, setUse4bit] = useState(true);
   const [batchSize, setBatchSize] = useState(0);
   const [gradAccum, setGradAccum] = useState(0);
+
+  // DPO-specific state
+  const [dpoProjectId, setDpoProjectId] = useState("test_project_001");
+  const [dpoSftAdapter, setDpoSftAdapter] = useState("");
+  const [dpoBeta, setDpoBeta] = useState(0.1);
+  const [dpoMinDiff, setDpoMinDiff] = useState(50);
+  const [dpoPreview, setDpoPreview] = useState<{ total: number; preview: any[] } | null>(null);
+  const [dpoPreviewLoading, setDpoPreviewLoading] = useState(false);
 
   const [status, setStatus] = useState<TrainStatus>({ status: "idle" });
   const [startError, setStartError] = useState("");
@@ -137,26 +148,71 @@ export default function LoraTrainingPage() {
 
   const startTraining = useCallback(async () => {
     setStartError("");
-    if (selected.size === 0) {
-      setStartError("请至少选择一个参考作品");
-      return;
+    if (mode === "sft") {
+      if (selected.size === 0) {
+        setStartError("SFT 模式：请至少选择一个参考作品");
+        return;
+      }
+      try {
+        const resp = await apiPost<TrainStatus>("/api/references/lora/train", {
+          work_ids: Array.from(selected),
+          base_model: baseModel,
+          rank, alpha, epochs,
+          learning_rate: learningRate,
+          use_4bit: use4bit,
+          device, dtype,
+          batch_size: batchSize,
+          gradient_accumulation_steps: gradAccum,
+        });
+        setStatus({ ...resp, status: "running" });
+      } catch (e: any) {
+        setStartError(e.message || String(e));
+      }
+    } else {
+      // DPO mode
+      if (!dpoProjectId) {
+        setStartError("DPO 模式：请指定 project_id（用于挖掘 user_edit 偏好对）");
+        return;
+      }
+      try {
+        const resp = await apiPost<TrainStatus>("/api/references/lora/dpo/train", {
+          project_id: dpoProjectId,
+          base_model: baseModel,
+          sft_adapter_path: dpoSftAdapter || "",
+          rank, alpha,
+          epochs: epochs,
+          learning_rate: learningRate,
+          beta: dpoBeta,
+          use_4bit: use4bit,
+          device, dtype,
+          batch_size: batchSize,
+          gradient_accumulation_steps: gradAccum,
+          min_diff_chars: dpoMinDiff,
+        });
+        setStatus({ ...resp, status: "running" });
+      } catch (e: any) {
+        setStartError(e.message || String(e));
+      }
     }
+  }, [mode, selected, baseModel, rank, alpha, epochs, learningRate, use4bit,
+      device, dtype, batchSize, gradAccum,
+      dpoProjectId, dpoSftAdapter, dpoBeta, dpoMinDiff]);
+
+  const previewDpo = useCallback(async () => {
+    if (!dpoProjectId) return;
+    setDpoPreviewLoading(true);
+    setDpoPreview(null);
     try {
-      const resp = await apiPost<TrainStatus>("/api/references/lora/train", {
-        work_ids: Array.from(selected),
-        base_model: baseModel,
-        rank, alpha, epochs,
-        learning_rate: learningRate,
-        use_4bit: use4bit,
-        device, dtype,
-        batch_size: batchSize,
-        gradient_accumulation_steps: gradAccum,
-      });
-      setStatus({ ...resp, status: "running" });
+      const r = await apiGet<{ total: number; preview: any[] }>(
+        `/api/references/lora/dpo/preview?project_id=${encodeURIComponent(dpoProjectId)}&min_diff_chars=${dpoMinDiff}&limit=5`,
+      );
+      setDpoPreview(r);
     } catch (e: any) {
-      setStartError(e.message || String(e));
+      setStartError(`预览失败: ${e.message || e}`);
+    } finally {
+      setDpoPreviewLoading(false);
     }
-  }, [selected, baseModel, rank, alpha, epochs, learningRate, use4bit, device, dtype, batchSize, gradAccum]);
+  }, [dpoProjectId, dpoMinDiff]);
 
   const cancelTraining = useCallback(async () => {
     try {
@@ -174,6 +230,36 @@ export default function LoraTrainingPage() {
         使用参考作品的全文 fine-tune 一个 LoRA 适配器 — 可注入风格 / 用语 / 节奏
         到本地基础模型。运行硬件自动检测，参数按显存自适应。
       </p>
+
+      {/* Mode switcher: SFT vs Constitutional DPO */}
+      <div style={{ display: "flex", gap: 0, marginTop: 8, marginBottom: 8 }} role="tablist">
+        <button
+          onClick={() => setMode("sft")}
+          disabled={isRunning}
+          style={{
+            padding: "6px 16px", border: "1px solid var(--border)",
+            borderRight: "none", borderRadius: "4px 0 0 4px",
+            background: mode === "sft" ? "var(--accent)" : "var(--surface-1)",
+            color: mode === "sft" ? "white" : "var(--text-primary)",
+            cursor: isRunning ? "not-allowed" : "pointer",
+          }}
+        >
+          SFT 训练（参考作品文本 → 模型）
+        </button>
+        <button
+          onClick={() => setMode("dpo")}
+          disabled={isRunning}
+          style={{
+            padding: "6px 16px", border: "1px solid var(--border)",
+            borderRadius: "0 4px 4px 0",
+            background: mode === "dpo" ? "var(--accent)" : "var(--surface-1)",
+            color: mode === "dpo" ? "white" : "var(--text-primary)",
+            cursor: isRunning ? "not-allowed" : "pointer",
+          }}
+        >
+          Constitutional DPO（user_edit 偏好对 → 模型）
+        </button>
+      </div>
 
       {/* Hardware report card */}
       <section style={{ marginTop: 16, padding: 12, background: "var(--surface-1)", borderRadius: 6 }}>
@@ -237,7 +323,76 @@ export default function LoraTrainingPage() {
         )}
       </section>
 
-      {/* Reference works picker */}
+      {/* DPO-specific panel (only in DPO mode) */}
+      {mode === "dpo" && (
+        <section style={{ marginTop: 16, padding: 12, background: "var(--surface-1)", borderRadius: 6 }}>
+          <h3 style={{ margin: 0, fontSize: 14 }}>Constitutional DPO 数据源</h3>
+          <p style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)" }}>
+            DPO 用 (AI 生成的章节, 用户手改的版本) 作为偏好对，
+            训练模型偏向用户改后的写法。需要项目中已有至少 1 对 user_edit 版本。
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "140px 1fr 140px 1fr", gap: 8, marginTop: 8, fontSize: 12, alignItems: "center" }}>
+            <label>项目 ID</label>
+            <input value={dpoProjectId} onChange={(e) => setDpoProjectId(e.target.value)}
+              disabled={isRunning} placeholder="test_project_001"
+              style={{ padding: 4 }} />
+            <label>最小编辑差异（字符）</label>
+            <input type="number" min={10} max={1000} value={dpoMinDiff}
+              onChange={(e) => setDpoMinDiff(Number(e.target.value) || 50)}
+              disabled={isRunning} style={{ padding: 4 }} />
+
+            <label>SFT 适配器路径</label>
+            <input value={dpoSftAdapter} onChange={(e) => setDpoSftAdapter(e.target.value)}
+              disabled={isRunning}
+              placeholder="可选 — data/lora_output/adapter"
+              style={{ padding: 4 }} />
+            <label>DPO beta（温度）</label>
+            <input type="number" min={0.01} max={1.0} step={0.05}
+              value={dpoBeta}
+              onChange={(e) => setDpoBeta(Number(e.target.value) || 0.1)}
+              disabled={isRunning} style={{ padding: 4 }} />
+          </div>
+          <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+            <button onClick={previewDpo} disabled={dpoPreviewLoading || !dpoProjectId}
+              style={{ padding: "4px 12px", fontSize: 12 }}>
+              {dpoPreviewLoading ? "查询中…" : "预览偏好对"}
+            </button>
+            {dpoPreview && (
+              <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                共 <b style={{ color: "var(--text-primary)" }}>{dpoPreview.total}</b> 个偏好对可用
+              </span>
+            )}
+          </div>
+          {dpoPreview && dpoPreview.preview.length > 0 && (
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", fontSize: 12 }}>
+                前 {dpoPreview.preview.length} 个样本预览
+              </summary>
+              <div style={{ marginTop: 4, maxHeight: 280, overflow: "auto" }}>
+                {dpoPreview.preview.map((p, i) => (
+                  <div key={i} style={{ padding: 8, marginBottom: 6, background: "var(--surface-2)", borderRadius: 4, fontSize: 11 }}>
+                    <div style={{ fontWeight: "bold" }}>章节 {p.source_chapter_id}</div>
+                    {p.violation_categories && p.violation_categories.length > 0 && (
+                      <div style={{ fontSize: 10, color: "orange" }}>
+                        违规: {p.violation_categories.join(", ")}
+                      </div>
+                    )}
+                    <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-secondary)" }}>Prompt head:</div>
+                    <div style={{ fontSize: 11 }}>{p.prompt_head}…</div>
+                    <div style={{ marginTop: 4, fontSize: 10, color: "tomato" }}>✗ Rejected (AI):</div>
+                    <div style={{ fontSize: 11 }}>{p.rejected_head}…</div>
+                    <div style={{ marginTop: 4, fontSize: 10, color: "lime" }}>✓ Chosen (用户改):</div>
+                    <div style={{ fontSize: 11 }}>{p.chosen_head}…</div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </section>
+      )}
+
+      {/* Reference works picker (only in SFT mode) */}
+      {mode === "sft" && (
       <section style={{ marginTop: 16, padding: 12, background: "var(--surface-1)", borderRadius: 6 }}>
         <h3 style={{ margin: 0, fontSize: 14 }}>选择参考作品（必须已上传全文）</h3>
         <div style={{ maxHeight: 280, overflow: "auto", marginTop: 8, fontSize: 12 }}>
@@ -263,6 +418,7 @@ export default function LoraTrainingPage() {
           已选: <b>{selected.size}</b> 个作品
         </div>
       </section>
+      )}
 
       {/* Training config */}
       <section style={{ marginTop: 16, padding: 12, background: "var(--surface-1)", borderRadius: 6 }}>
@@ -313,7 +469,11 @@ export default function LoraTrainingPage() {
         <div style={{ display: "flex", gap: 8 }}>
           <button
             onClick={startTraining}
-            disabled={isRunning || hardwareLoading || selected.size === 0}
+            disabled={
+              isRunning || hardwareLoading
+              || (mode === "sft" && selected.size === 0)
+              || (mode === "dpo" && !dpoProjectId)
+            }
             style={{
               padding: "8px 24px", fontSize: 14, fontWeight: "bold",
               background: isRunning ? "var(--surface-2)" : "var(--accent)",
@@ -321,7 +481,7 @@ export default function LoraTrainingPage() {
               border: "none", borderRadius: 4, cursor: isRunning ? "not-allowed" : "pointer",
             }}
           >
-            {isRunning ? "训练中…" : "开始训练"}
+            {isRunning ? "训练中…" : (mode === "sft" ? "开始 SFT 训练" : "开始 DPO 训练")}
           </button>
           {isRunning && (
             <button

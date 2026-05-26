@@ -148,6 +148,173 @@ def save_dataset(
     logger.info("Saved %d samples to %s", len(samples), p)
 
 
+# ─── Constitutional DPO (InkOS B3) ─────────────────────────────────
+
+
+def construct_dpo_data(
+    triples: list[dict[str, Any]],
+    *,
+    max_length: int = 2048,
+    metadata: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Build DPO preference pairs from (prompt, rejected, chosen) triples.
+
+    InkOS Weaver paper's DPO stage: use the evaluator-flagged AI draft
+    as ``rejected`` and the user's hand-edit (or constitutional rewrite)
+    as ``chosen``. The model learns to prefer the constitutional shape
+    over the violating shape.
+
+    Each input triple has::
+        {
+          "prompt":   str  — the request given to the writer
+          "rejected": str  — AI output that violated some rule
+          "chosen":   str  — corrected version (user edit / second pass)
+          "rationale": str  — why chosen > rejected (optional)
+          "violation_categories": list[str]  — e.g. ['list_syntax', 'pov_break']
+        }
+
+    Output rows use TRL's standard DPO schema:
+        {prompt, chosen, rejected, metadata}
+
+    Compatible with ``trl.DPOTrainer`` and HuggingFace ``datasets``.
+    """
+    out: list[dict[str, Any]] = []
+    for t in triples:
+        prompt = (t.get("prompt") or "").strip()
+        rejected = (t.get("rejected") or "").strip()
+        chosen = (t.get("chosen") or "").strip()
+        if not (prompt and rejected and chosen):
+            continue
+        # Trivial pair (chosen == rejected) is a degenerate sample
+        if rejected == chosen:
+            continue
+        # Truncate to max_length characters defensively — TRL tokenizer
+        # truncates again at training time using model max_length.
+        if len(prompt) > max_length:
+            prompt = prompt[:max_length]
+        if len(rejected) > max_length:
+            rejected = rejected[:max_length]
+        if len(chosen) > max_length:
+            chosen = chosen[:max_length]
+        sample_meta = {
+            "rationale": t.get("rationale", ""),
+            "violation_categories": t.get("violation_categories", []),
+            "source_chapter_id": t.get("source_chapter_id", ""),
+            "source_project_id": t.get("source_project_id", ""),
+            **(metadata or {}),
+        }
+        out.append({
+            "prompt": prompt,
+            "chosen": chosen,
+            "rejected": rejected,
+            "metadata": sample_meta,
+        })
+    logger.info("Constructed %d DPO preference pairs", len(out))
+    return out
+
+
+def collect_dpo_pairs_from_db(
+    db_path: str,
+    project_id: str | None = None,
+    *,
+    min_diff_chars: int = 50,
+) -> list[dict[str, Any]]:
+    """Mine DPO triples from the text_versions table.
+
+    Strategy: find chapters where source='ai' was followed by
+    source='user_edit' (the user fixed something). Pair (ai_text, user_text)
+    as (rejected, chosen). The "prompt" reconstructs from the chapter's
+    outline + synopsis (best available approximation of what the Writer
+    saw at generation time).
+
+    The chapter's evaluation_json (if not empty) is parsed for issue
+    categories so each pair is tagged with what was wrong — useful for
+    weighting / curriculum during training.
+
+    Returns triples ready for ``construct_dpo_data``.
+    """
+    import sqlite3
+    import json as _j
+
+    sql = """
+        SELECT
+            ch.chapter_id, ch.project_id, ch.outline, ch.synopsis,
+            ch.title, ch.evaluation_json,
+            ai_v.content AS ai_text,
+            user_v.content AS user_text
+        FROM chapters ch
+        JOIN text_versions ai_v ON ai_v.chapter_id = ch.chapter_id
+                                AND ai_v.source = 'ai'
+        JOIN text_versions user_v ON user_v.chapter_id = ch.chapter_id
+                                   AND user_v.source = 'user_edit'
+                                   AND user_v.version_num > ai_v.version_num
+        WHERE LENGTH(ai_v.content) > 0
+          AND LENGTH(user_v.content) > 0
+    """
+    params: list[Any] = []
+    if project_id:
+        sql += " AND ch.project_id = ?"
+        params.append(project_id)
+    sql += " ORDER BY ch.chapter_num"
+
+    triples: list[dict[str, Any]] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError as e:
+        logger.warning("DPO mining query failed: %s", e)
+        return []
+
+    for r in rows:
+        ai_text = r["ai_text"] or ""
+        user_text = r["user_text"] or ""
+        if abs(len(ai_text) - len(user_text)) < min_diff_chars:
+            # Edit too small to be a meaningful preference signal
+            continue
+
+        # Reconstruct an approximate prompt
+        outline = r["outline"] or ""
+        title = r["title"] or ""
+        synopsis = r["synopsis"] or ""
+        prompt_parts = []
+        if title:
+            prompt_parts.append(f"章节标题：{title}")
+        if synopsis:
+            prompt_parts.append(f"梗概：{synopsis}")
+        if outline:
+            prompt_parts.append(f"大纲：\n{outline}")
+        prompt = "\n\n".join(prompt_parts) or "请根据上下文创作章节。"
+
+        # Extract violation categories from evaluation_json if available
+        violations: list[str] = []
+        try:
+            eval_data = _j.loads(r["evaluation_json"] or "{}")
+            for issue in (eval_data.get("issues") or []):
+                if isinstance(issue, dict):
+                    cat = issue.get("type") or issue.get("category")
+                    if cat:
+                        violations.append(str(cat))
+        except (TypeError, _j.JSONDecodeError):
+            pass
+
+        triples.append({
+            "prompt": prompt,
+            "rejected": ai_text,
+            "chosen": user_text,
+            "rationale": "user_edit replaced AI draft",
+            "violation_categories": violations,
+            "source_chapter_id": r["chapter_id"],
+            "source_project_id": r["project_id"],
+        })
+
+    logger.info(
+        "Mined %d DPO triples from %s",
+        len(triples), f"project={project_id}" if project_id else "all projects",
+    )
+    return triples
+
+
 # ── Internal helpers ──
 
 def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
