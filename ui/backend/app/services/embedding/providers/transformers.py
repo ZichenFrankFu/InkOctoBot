@@ -74,7 +74,24 @@ class TransformersProvider(EmbeddingProvider):
             show_progress_bar=False,
             convert_to_numpy=True,
         )
-        return arr.astype("float32", copy=False)
+        arr = arr.astype("float32", copy=False)
+        # Spec § 11.4: NaN / all-zero vectors are pathology, not data.
+        # Raise so the caller's per-row error handler isolates the
+        # offending text instead of persisting a corrupt vector.
+        import numpy as np
+        if np.isnan(arr).any():
+            raise RuntimeError(
+                f"embedding produced NaN for {self._model.model_key}"
+            )
+        if arr.ndim == 2:
+            zero_rows = np.where(~arr.any(axis=1))[0]
+            if zero_rows.size:
+                raise RuntimeError(
+                    f"embedding produced all-zero vector(s) for "
+                    f"{self._model.model_key} at row indices "
+                    f"{zero_rows.tolist()}"
+                )
+        return arr
 
     def get_device(self) -> str:
         return self._actual_device

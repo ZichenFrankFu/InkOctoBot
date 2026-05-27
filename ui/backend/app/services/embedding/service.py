@@ -81,6 +81,11 @@ class EmbeddingService:
         self._provider: EmbeddingProvider | None = None
         self._cache: OrderedDict[str, bytes] = OrderedDict()
         self._cache_lock = threading.Lock()
+        # Warnings that surface after switch_model() returns — e.g. an
+        # OOM-driven CPU fallback that only happens on the first actual
+        # load(). Caller drains via get_and_clear_pending_warnings().
+        self._pending_warnings: list[str] = []
+        self._warnings_lock = threading.Lock()
 
     # ─────────── public surface ───────────
 
@@ -238,7 +243,27 @@ class EmbeddingService:
             )
         if not self._provider.is_loaded:
             self._provider.load()
+            # OOM fallback warnings only exist after load(); copy them
+            # up so the API surface can hand them to the user.
+            extra = getattr(self._provider, "load_warnings", None) or []
+            if extra:
+                with self._warnings_lock:
+                    self._pending_warnings.extend(extra)
         return self._provider
+
+    # ─────────── pending warnings ───────────
+
+    def get_and_clear_pending_warnings(self) -> list[str]:
+        """Drain warnings accumulated since the last call.
+
+        Mainly used by ``GET /api/embedding/current`` so the UI can show
+        an OOM-driven CPU fallback once and not re-show it on every
+        poll.
+        """
+        with self._warnings_lock:
+            out = list(self._pending_warnings)
+            self._pending_warnings.clear()
+        return out
 
     # ─── cache ───
     def _cache_key(self, text: str) -> str:

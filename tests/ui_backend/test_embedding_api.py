@@ -64,6 +64,8 @@ class TestEmbeddingAPI(unittest.TestCase):
         self.assertEqual(body["dimension"], 768)
         self.assertFalse(body["is_ready"])  # nothing loaded yet
         self.assertGreater(body["estimate_load_seconds"], 0)
+        # Nothing has loaded yet → no warnings.
+        self.assertEqual(body["pending_warnings"], [])
 
     def test_hardware_status_shape(self) -> None:
         res = self.client.get("/api/embedding/hardware-status")

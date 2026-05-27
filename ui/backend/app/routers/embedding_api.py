@@ -59,13 +59,19 @@ def list_embedding_models() -> dict:
 
 @router.get("/current")
 def get_current_model() -> dict:
-    """The currently-active model for embeddings + readiness status."""
+    """The currently-active model for embeddings + readiness status.
+
+    ``pending_warnings`` drains any post-switch warnings (e.g.
+    OOM-driven CPU fallback that only surfaces on first load) so the
+    UI can show them once.
+    """
     svc = get_embedding_service()
     return {
         "model":             _model_to_dict(svc.get_current_model()),
         "is_ready":          svc.is_ready(),
         "dimension":         svc.get_dimension(),
         "estimate_load_seconds": svc.estimate_load_time(),
+        "pending_warnings":  svc.get_and_clear_pending_warnings(),
     }
 
 

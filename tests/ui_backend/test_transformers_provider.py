@@ -161,6 +161,58 @@ class TestProviderEmbed(unittest.TestCase):
         self.assertEqual(provider.dimension, self.model.dimension)
 
 
+class TestNaNAndZeroDetection(unittest.TestCase):
+    """Spec § 11.4: NaN / all-zero vectors are corruption, not data.
+    The provider raises so the caller's per-row error handler can
+    isolate the offending text instead of persisting garbage."""
+
+    def setUp(self) -> None:
+        _install_stub_sentence_transformers()
+        _StubST.factory = None
+        self.model = get_model("bge-base-zh")
+
+    def tearDown(self) -> None:
+        _StubST.factory = None
+        _uninstall_stub()
+
+    def test_nan_vector_raises(self) -> None:
+        class _NaNStub(_StubST):
+            def encode(self, texts, **kwargs):
+                arr = np.ones((len(texts), self._dim), dtype="float32")
+                arr[0, 0] = float("nan")
+                return arr
+
+        sys.modules["sentence_transformers"].SentenceTransformer = _NaNStub
+        provider = TransformersProvider(self.model, device="cpu")
+        with self.assertRaisesRegex(RuntimeError, "NaN"):
+            provider.embed(["ok text"])
+
+    def test_all_zero_vector_raises(self) -> None:
+        class _ZeroStub(_StubST):
+            def encode(self, texts, **kwargs):
+                return np.zeros((len(texts), self._dim), dtype="float32")
+
+        sys.modules["sentence_transformers"].SentenceTransformer = _ZeroStub
+        provider = TransformersProvider(self.model, device="cpu")
+        with self.assertRaisesRegex(RuntimeError, "all-zero"):
+            provider.embed(["ok text"])
+
+    def test_mixed_zero_row_raises_with_indices(self) -> None:
+        """If only one row of a batch is degenerate, the error names
+        the offending row so the caller can act on it."""
+        class _MixedStub(_StubST):
+            def encode(self, texts, **kwargs):
+                arr = np.ones((len(texts), self._dim), dtype="float32")
+                if len(texts) >= 2:
+                    arr[1] = 0.0
+                return arr
+
+        sys.modules["sentence_transformers"].SentenceTransformer = _MixedStub
+        provider = TransformersProvider(self.model, device="cpu")
+        with self.assertRaisesRegex(RuntimeError, r"\[1\]"):
+            provider.embed(["good", "bad"])
+
+
 class TestUnload(unittest.TestCase):
 
     def setUp(self) -> None:

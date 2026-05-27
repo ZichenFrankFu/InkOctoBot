@@ -201,5 +201,63 @@ class TestEstimateLoadTime(unittest.TestCase):
         self.assertGreater(big, small)
 
 
+class TestPendingWarnings(unittest.TestCase):
+    """OOM-fallback warnings only exist after the provider actually
+    loads — so switch_model() can't return them in SwitchResult.
+    Service must drain them on next get_and_clear_pending_warnings()."""
+
+    def setUp(self) -> None:
+        EmbeddingService._reset_for_tests()
+
+    def test_empty_when_provider_never_loaded(self) -> None:
+        with _patch_provider():
+            svc = EmbeddingService.get()
+        self.assertEqual(svc.get_and_clear_pending_warnings(), [])
+
+    def test_drains_load_warnings_on_first_embed(self) -> None:
+        """Mock provider exposing a load_warnings list; after embed()
+        the service should have copied them up."""
+        class _WarningProvider(_MockProvider):
+            def __init__(self, model, device: str = "cpu", *, fp16: bool = False) -> None:
+                super().__init__(model, device, fp16=fp16)
+                self._fired = False
+
+            def load(self) -> None:
+                super().load()
+                self._fired = True
+
+            @property
+            def load_warnings(self) -> list[str]:
+                return ["GPU 加载失败；已降级到 CPU"] if self._fired else []
+
+        with mock.patch(
+            "ui.backend.app.services.embedding.service.TransformersProvider",
+            _WarningProvider,
+        ):
+            svc = EmbeddingService.get()
+            svc.embed("warm up")  # triggers load
+            warnings = svc.get_and_clear_pending_warnings()
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("CPU", warnings[0])
+
+    def test_drain_clears_pool(self) -> None:
+        """Second call returns empty — drain is destructive."""
+        class _WarningProvider(_MockProvider):
+            @property
+            def load_warnings(self):
+                return ["one-shot warning"]
+
+        with mock.patch(
+            "ui.backend.app.services.embedding.service.TransformersProvider",
+            _WarningProvider,
+        ):
+            svc = EmbeddingService.get()
+            svc.embed("warm up")
+            first = svc.get_and_clear_pending_warnings()
+            second = svc.get_and_clear_pending_warnings()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+
+
 if __name__ == "__main__":
     unittest.main()
