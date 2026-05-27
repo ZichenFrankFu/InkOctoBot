@@ -366,7 +366,7 @@ def _seed_rag_calibration_data(novels_db_path: Path, pid: str,
     For each one we synthesize:
       - L2 summary (3-4 sentence per-chapter recap)
       - L4 key_events (1-3 events flagged with foreshadow_status)
-      - Truth-File deltas (current_state, hooks, character_matrix)
+      - StorylandState deltas (current_state, hooks, emotion_arcs)
       - 2-3 project_memory entries the user confirmed
     """
     # Ensure the project schema exists (creates the file if missing).
@@ -491,15 +491,15 @@ def _seed_rag_calibration_data(novels_db_path: Path, pid: str,
         # ── Truth Files ── Use the canonical apply_deltas path so
         # validators run and the apply_log is populated. This gives
         # /api/debug/truth-files real rows to display.
-        from knowledge.truth.store import TruthFileStore
-        from knowledge.truth.schemas import (
-            TruthDeltas, StatePatch, HookDelta, HookImportance,
-            RelationUpdate, EmotionArcEntry, ChapterSummaryDelta,
+        from knowledge.storyland_state.store import StorylandStateStore
+        from knowledge.storyland_state.schemas import (
+            StorylandStateDeltas, StatePatch, HookDelta, HookImportance,
+            EmotionArcEntry, ChapterSummaryDelta,
         )
-        store = TruthFileStore(project_id=pid, db_path=str(novels_db_path))
+        store = StorylandStateStore(project_id=pid, db_path=str(novels_db_path))
 
         # Chapter 1 — 李星河 first encounter with crystal
-        store.apply_deltas(TruthDeltas(
+        store.apply_deltas(StorylandStateDeltas(
             chapter_num=1,
             current_state_patches=[
                 StatePatch(subject="李星河", predicate="位置",
@@ -532,7 +532,7 @@ def _seed_rag_calibration_data(novels_db_path: Path, pid: str,
         ))
 
         # Chapter 2 — Su Wan enters
-        store.apply_deltas(TruthDeltas(
+        store.apply_deltas(StorylandStateDeltas(
             chapter_num=2,
             current_state_patches=[
                 StatePatch(subject="苏晚", predicate="位置",
@@ -552,38 +552,14 @@ def _seed_rag_calibration_data(novels_db_path: Path, pid: str,
                 pov_character="李星河",
                 mood="警惕+试探",
             ),
-            character_relation_updates=[
-                RelationUpdate(
-                    character_a="李星河", character_b="苏晚",
-                    relation_type="警惕的同行者",
-                    sentiment_score=-10, trust_level=5,
-                ),
-                RelationUpdate(
-                    character_a="苏晚", character_b="李星河",
-                    relation_type="可利用的资源",
-                    sentiment_score=0, trust_level=15,
-                ),
-            ],
         ))
 
         # Chapter 3 — first trust beat
-        store.apply_deltas(TruthDeltas(
+        store.apply_deltas(StorylandStateDeltas(
             chapter_num=3,
             current_state_patches=[
                 StatePatch(subject="李星河", predicate="身份",
                            object="联邦少校副官", valid_from_chapter=3),
-            ],
-            character_relation_updates=[
-                RelationUpdate(
-                    character_a="李星河", character_b="苏晚",
-                    relation_type="信任的开端",
-                    sentiment_score=15, trust_level=25,
-                ),
-                RelationUpdate(
-                    character_a="苏晚", character_b="李星河",
-                    relation_type="值得保护的同伴",
-                    sentiment_score=10, trust_level=30,
-                ),
             ],
             chapter_summary=ChapterSummaryDelta(
                 summary=chapter_seeds[2]["summary"],

@@ -306,7 +306,7 @@ class NarratorTextBlock:
 # ─────────────── Context-role providers (BaseAgent context=) ───────
 
 
-class TruthBundleContextBlock:
+class StorylandStateBundleContextBlock:
     name = "truth_bundle"
     role = "context"
 
@@ -324,7 +324,7 @@ class LedgerAnchorsContextBlock:
         return ctx.ledger_anchors_text.strip()
 
 
-class MemoryContextBlock:
+class ReaderMemoryContextBlock:
     name = "memory_context"
     role = "context"
 
@@ -408,9 +408,9 @@ def single_writer_composer() -> PromptComposer:
         NarrativeInstructionsBlock(),
         OutputRequirementsBlock(),
         # context-role providers
-        TruthBundleContextBlock(),
+        StorylandStateBundleContextBlock(),
         LedgerAnchorsContextBlock(),
-        MemoryContextBlock(),
+        ReaderMemoryContextBlock(),
         AdjacentContextBlock(),
         CharacterCardsContextBlock(),
         WorldRulesContextBlock(),
@@ -430,8 +430,8 @@ def assembly_composer() -> PromptComposer:
         NarratorTextBlock(),
         OutputRequirementsBlock(),
         # context-role providers
-        TruthBundleContextBlock(),
-        MemoryContextBlock(),
+        StorylandStateBundleContextBlock(),
+        ReaderMemoryContextBlock(),
         StyleProfileContextBlock(),
         UserPreferencesContextBlock(),
     ])

@@ -8,7 +8,6 @@ Tables:
   - hook_events            : audit log of every hook transition
   - subplot_threads        : parallel narrative threads
   - emotion_arcs           : per-character emotion trajectory entries
-  - character_relations    : pairwise relationships (A->B view)
   - truth_apply_log        : idempotency + audit log for apply_deltas
 
 chapter_summaries is re-used from creation_schema.py (no new DDL).
@@ -143,26 +142,6 @@ TRUTH_DDL = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_emotion_char ON emotion_arcs(project_id, character_name, chapter_num);",
 
-    # ── 7. character_relations ─────────────────────────────────
-    """
-    CREATE TABLE IF NOT EXISTS character_relations (
-        rel_id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        character_a TEXT NOT NULL,
-        character_b TEXT NOT NULL,
-        relation_type TEXT NOT NULL,
-        sentiment_score INTEGER NOT NULL CHECK(sentiment_score BETWEEN -100 AND 100),
-        trust_level INTEGER NOT NULL CHECK(trust_level BETWEEN 0 AND 100),
-        last_interaction_chapter INTEGER,
-        note TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
-        UNIQUE(project_id, character_a, character_b)
-    );
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_relations_proj ON character_relations(project_id, character_a);",
-
     # ── Apply log: idempotency + audit ─────────────────────────
     """
     CREATE TABLE IF NOT EXISTS truth_apply_log (
@@ -192,6 +171,9 @@ def ensure_truth_tables(conn: sqlite3.Connection) -> None:
         cur.execute(ddl)
 
     # v1 → v2.2 ALTER: add spoiler-filter columns if missing.
+    # v3.0 ALTER: add user-driven "fully resolve" override columns so users
+    # can authoritatively close hooks even when the auto-detector would
+    # otherwise keep them open (LOADER_SPEC Loader 11).
     try:
         cols = {row[1] for row in cur.execute("PRAGMA table_info(pending_hooks)")}
         if "is_spoiler" not in cols:
@@ -204,8 +186,29 @@ def ensure_truth_tables(conn: sqlite3.Connection) -> None:
                 "ALTER TABLE pending_hooks ADD COLUMN "
                 "revealed_to_chars_json TEXT NOT NULL DEFAULT '[]'"
             )
+        if "user_marked_fully_resolved" not in cols:
+            cur.execute(
+                "ALTER TABLE pending_hooks ADD COLUMN "
+                "user_marked_fully_resolved INTEGER NOT NULL DEFAULT 0"
+            )
+        if "user_resolved_at_chapter" not in cols:
+            cur.execute(
+                "ALTER TABLE pending_hooks ADD COLUMN "
+                "user_resolved_at_chapter INTEGER"
+            )
+        if "user_resolve_notes" not in cols:
+            cur.execute(
+                "ALTER TABLE pending_hooks ADD COLUMN "
+                "user_resolve_notes TEXT NOT NULL DEFAULT ''"
+            )
     except sqlite3.OperationalError:
         # Table missing → CREATE above already handles it; ignore.
         pass
+
+    # LOADER_SPEC: character_matrix removed in v3.0. Relations moved into
+    # character_snapshots.relations_overrides (delivered in Batch 5).
+    # Drop the legacy table+index unconditionally so the schema is clean.
+    cur.execute("DROP INDEX IF EXISTS idx_relations_proj")
+    cur.execute("DROP TABLE IF EXISTS character_relations")
 
     conn.commit()

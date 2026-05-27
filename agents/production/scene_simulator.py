@@ -202,7 +202,7 @@ class SceneSimulator:
         """Simulate all scenes in a chapter sequentially."""
         results = []
         for i, scene_plan in enumerate(scene_plans):
-            from knowledge.memory.immediate import SceneContext
+            from knowledge.reader_memory.immediate import SceneContext
             self.memory.start_scene(SceneContext(
                 scene_index=i,
                 characters=scene_plan.get("characters", []),

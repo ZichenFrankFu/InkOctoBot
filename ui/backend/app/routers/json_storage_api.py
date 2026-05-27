@@ -328,7 +328,7 @@ def delete_project_memory(project_id: str, memory_id: str):
 # endpoint now serves the canonical pending_hooks rows reshaped to the
 # old {items:[...]} envelope so the existing 大纲 tab keeps working.
 # Writes are accepted but a deprecation warning is logged — new code
-# should emit HookDelta via TruthFileStore.apply_deltas.
+# should emit HookDelta via StorylandStateStore.apply_deltas.
 
 import logging as _fs_logging
 _fs_log = _fs_logging.getLogger("inkoctobot.routers.foreshadowing_legacy")
@@ -343,7 +343,7 @@ def get_foreshadowing(project_id: str):
 
 @router.put("/foreshadowing/{project_id}")
 def save_foreshadowing(project_id: str, body: dict = Body(...)):
-    """Deprecated: foreshadowing should be emitted via TruthFileStore.
+    """Deprecated: foreshadowing should be emitted via StorylandStateStore.
 
     Kept as a no-op so legacy frontend save calls don't 404. The count
     of items the client tried to save is logged so we can spot whether
@@ -352,10 +352,40 @@ def save_foreshadowing(project_id: str, body: dict = Body(...)):
     items = body.get("items", []) or []
     _fs_log.warning(
         "deprecated PUT /data/foreshadowing/%s ignored (items=%d) — "
-        "emit HookDelta via TruthFileStore.apply_deltas instead",
+        "emit HookDelta via StorylandStateStore.apply_deltas instead",
         project_id, len(items),
     )
     return {"ok": True, "deprecated": True}
+
+
+@router.post("/foreshadowing/{hook_id}/fully-resolve")
+def fully_resolve_foreshadowing(hook_id: str, body: dict = Body(default={})):
+    """User-authoritative close of a hook (LOADER_SPEC Loader 11).
+
+    Body (all optional):
+      - ``chapter_num``: the chapter the user marks as the close-out
+      - ``notes``:       free-text rationale stored for audit
+
+    Returns 404 if the hook id is unknown.
+    """
+    chapter_num = body.get("chapter_num")
+    if chapter_num is not None:
+        try:
+            chapter_num = int(chapter_num)
+        except (TypeError, ValueError):
+            chapter_num = None
+    notes = str(body.get("notes") or "")
+    saved = project_store.fully_resolve_hook(
+        _db(), hook_id, chapter_num=chapter_num, notes=notes,
+    )
+    if not saved:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"hook {hook_id} not found")
+    _fs_log.info(
+        "user fully-resolved hook %s at chapter %s (notes len=%d)",
+        hook_id, chapter_num, len(notes),
+    )
+    return {"ok": True, "hook": saved}
 
 # ═══ Editor (DB-backed: project_blobs + chapters table) ═══
 @router.get("/editor")

@@ -1143,13 +1143,19 @@ def delete_version(db_path: str, version_id: str) -> None:
 
 
 def list_foreshadowing_legacy(db_path: str, project_id: str) -> list[dict]:
-    """Return open hooks shaped like the legacy {items: [...]} blob."""
+    """Return open hooks shaped like the legacy {items: [...]} blob.
+
+    Hooks the user authoritatively closed via ``fully_resolve_hook`` are
+    filtered out so the loader can't re-surface them even if the
+    auto-detector would otherwise re-open the same hook.
+    """
     with open_db(db_path) as con:
         try:
             rows = con.execute(
                 "SELECT hook_id, description, origin_chapter, "
                 "expected_payoff_chapter, status, importance "
                 "FROM pending_hooks WHERE project_id = ? "
+                "AND COALESCE(user_marked_fully_resolved, 0) = 0 "
                 "ORDER BY origin_chapter",
                 (project_id,),
             ).fetchall()
@@ -1167,6 +1173,43 @@ def list_foreshadowing_legacy(db_path: str, project_id: str) -> list[dict]:
     } for r in rows]
 
 
+def fully_resolve_hook(
+    db_path: str, hook_id: str, *,
+    chapter_num: int | None = None, notes: str = "",
+) -> dict[str, Any]:
+    """User-driven authoritative close — wins over any auto-detector update.
+
+    Sets ``user_marked_fully_resolved=1`` plus optional bookkeeping
+    fields, and flips ``status='resolved'`` so the hook is treated as
+    closed by every reader. Idempotent: a second call on an already-
+    resolved hook just refreshes the metadata.
+
+    Returns the post-update hook row (or ``{}`` if no such hook exists).
+    """
+    with open_db(db_path) as con:
+        cur = con.execute(
+            "UPDATE pending_hooks "
+            "SET user_marked_fully_resolved = 1, "
+            "    user_resolved_at_chapter = ?, "
+            "    user_resolve_notes = ?, "
+            "    status = 'resolved' "
+            "WHERE hook_id = ?",
+            (chapter_num, notes or "", hook_id),
+        )
+        if cur.rowcount == 0:
+            return {}
+        con.commit()
+        row = con.execute(
+            "SELECT hook_id, project_id, description, status, "
+            "       origin_chapter, importance, "
+            "       user_marked_fully_resolved, user_resolved_at_chapter, "
+            "       user_resolve_notes "
+            "FROM pending_hooks WHERE hook_id = ?",
+            (hook_id,),
+        ).fetchone()
+    return _row_to_dict(row) if row else {}
+
+
 # ─────────────── B2: InkOS audit gate — chapter audit status ──────
 
 
@@ -1181,7 +1224,7 @@ def update_chapter_audit(
 ) -> None:
     """Persist Phase 2 settlement audit result onto the chapter row.
 
-    Called after extract_and_apply_truth_deltas. The chapter is created
+    Called after extract_and_apply_state_deltas. The chapter is created
     via INSERT OR IGNORE if it doesn't exist yet (e.g. single-writer
     mode where the chapter row hasn't been provisioned). The audit
     fields are then UPDATEd unconditionally.

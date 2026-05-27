@@ -95,13 +95,13 @@ def _load_reference_style(project_id: str, db_path: str) -> str:
 def _load_unresolved_foreshadowing(project_id: str, db_path: str, chapter_num: int) -> str:
     """Load unresolved foreshadowing for context injection (B2: foreshadowing tracking).
 
-    Reads from pending_hooks (Truth Files canonical store) via MemoryManager;
+    Reads from pending_hooks (Truth Files canonical store) via ReaderMemoryManager;
     EpisodicTimeline.get_unresolved_foreshadowing was removed in v2.1 — the
     foreshadow state machine moved to pending_hooks. See docs/SCHEMA_REDESIGN.md.
     """
     try:
-        from knowledge.memory.manager import MemoryManager
-        mgr = MemoryManager(db_path=db_path)
+        from knowledge.reader_memory.manager import ReaderMemoryManager
+        mgr = ReaderMemoryManager(db_path=db_path)
         mgr.set_project(project_id)
         unresolved = mgr.get_unresolved_foreshadowing()
         if not unresolved:
@@ -199,7 +199,7 @@ async def _run_chapter_complete_hook(
         char_states = summary_data.get("character_states", {})
 
         # Build timeline events from key_events only — foreshadowing
-        # now flows through Truth Files (TruthFileStore.apply_deltas
+        # now flows through Truth Files (StorylandStateStore.apply_deltas
         # with HookDelta entries) rather than the episodic_events
         # timeline. See docs/SCHEMA_REDESIGN.md.
         events: list[dict] = []
@@ -657,7 +657,7 @@ class SingleWriterRequest(BaseModel):
     # Truth Files integration knobs (v2.2 per docs/truth_file_system.md §9)
     truth_inject: bool = True           # Phase 1: inject 7-file bundle into context
     truth_pressure_inject: bool = True  # Inject pressured-hooks reminder
-    truth_settle: bool = True           # Phase 2: extract + apply TruthDeltas after writing
+    truth_settle: bool = True           # Phase 2: extract + apply StorylandStateDeltas after writing
     # Same RAG knobs as quick-generate
     skills: list[str] | None = None
     rag_excludes: list[str] = []
@@ -673,11 +673,11 @@ async def single_writer(req: SingleWriterRequest):
     Integrates with the Truth Files system per docs/truth_file_system.md §9:
       - Phase 1: 7-file truth bundle injected as additional memory context
       - Pressured-hooks reminder folded into narrative_instructions
-      - Phase 2: post-write settlement → TruthDeltas → apply (audit gate)
+      - Phase 2: post-write settlement → StorylandStateDeltas → apply (audit gate)
     """
     try:
         from agents.production.writer import Writer
-        from agents.production import truth_integration as truth_ext
+        from agents.production import storyland_state_integration as truth_ext
         from ._rag_context import single_agent_vars
 
         router_inst = _build_router(req.provider, req.model)
@@ -703,7 +703,7 @@ async def single_writer(req: SingleWriterRequest):
             # pass pov_character (no spoiler filter). The Actor Agent path
             # in the full multi-agent pipeline will pass pov_character so
             # actor prompts only see hooks revealed to that character.
-            truth_bundle = truth_ext.build_truth_context(
+            truth_bundle = truth_ext.build_state_context(
                 req.project_id, db_path,
                 req.chapter_num, req.characters,
                 pov_character=None,
@@ -786,7 +786,7 @@ async def single_writer(req: SingleWriterRequest):
                 characters=req.characters,
             )
 
-            settle_result = await truth_ext.extract_and_apply_truth_deltas(
+            settle_result = await truth_ext.extract_and_apply_state_deltas(
                 router_inst, text,
                 project_id=req.project_id, db_path=db_path,
                 chapter_num=req.chapter_num,
@@ -1247,7 +1247,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             try:
                 _db_path = _get_db_path()
                 _proj_id = req_data.get("project_id", "")
-                from knowledge.memory.manager import MemoryManager as _MM
+                from knowledge.reader_memory.manager import ReaderMemoryManager as _MM
                 _mem = _MM(db_path=_db_path)
                 _mem.set_project(_proj_id)
                 _mem_text = _mem.get_context_for_scene_director(_chapter_num)
@@ -1419,7 +1419,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
         all_scene_results: list[dict] = []  # Results from each scene
         try:
             from agents.production.scene_simulator import SceneSimulator
-            from knowledge.memory.manager import MemoryManager
+            from knowledge.reader_memory.manager import ReaderMemoryManager
             from ui.backend.app.settings import settings as app_settings
 
             # Resolve DB path
@@ -1439,7 +1439,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             except Exception as _te:
                 logger.debug("ensure_creation_tables skipped: %s", _te)
 
-            memory = MemoryManager(db_path=db_path, router=router_inst)
+            memory = ReaderMemoryManager(db_path=db_path, router=router_inst)
             _proj_id = req_data.get("project_id", "")
             memory.set_project(_proj_id)
 
@@ -1455,7 +1455,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                         )
                         if _fallback_text:
                             # Inject as immediate context so agents can see it
-                            from knowledge.memory.immediate import SceneContext as _SC
+                            from knowledge.reader_memory.immediate import SceneContext as _SC
                             memory.start_scene(_SC(
                                 scene_index=0,
                                 characters=characters,
@@ -1851,10 +1851,10 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                 _eval_proj_id = req_data.get("project_id", "")
                 _eval_chapter_num = req_data.get("chapter_num", 1)
                 # v2.1: foreshadow state moved to pending_hooks — read via
-                # MemoryManager (EpisodicTimeline.get_unresolved_foreshadowing
+                # ReaderMemoryManager (EpisodicTimeline.get_unresolved_foreshadowing
                 # was removed in commit 10337fc).
-                from knowledge.memory.manager import MemoryManager
-                _eval_mgr = MemoryManager(db_path=_eval_db_path)
+                from knowledge.reader_memory.manager import ReaderMemoryManager
+                _eval_mgr = ReaderMemoryManager(db_path=_eval_db_path)
                 _eval_mgr.set_project(_eval_proj_id)
                 _unresolved = _eval_mgr.get_unresolved_foreshadowing()
                 if _unresolved:
@@ -2173,8 +2173,8 @@ async def auto_outline(req: AutoOutlineRequest):
         character_states = ""
         unresolved_threads = ""
         try:
-            from knowledge.memory.manager import MemoryManager
-            mem = MemoryManager(db_path=db_path)
+            from knowledge.reader_memory.manager import ReaderMemoryManager
+            mem = ReaderMemoryManager(db_path=db_path)
             mem.set_project(req.project_id)
 
             # Get previous chapter summaries
@@ -2194,7 +2194,7 @@ async def auto_outline(req: AutoOutlineRequest):
 
         # Get character states from most recent chapter
         try:
-            from knowledge.memory.chapter_buffer import ChapterBuffer
+            from knowledge.reader_memory.chapter_buffer import ChapterBuffer
             cb = ChapterBuffer(db_path)
             summaries = cb.get_active_summaries(req.project_id)
             if summaries:
@@ -2300,8 +2300,8 @@ async def _run_batch_pipeline(session_id: str):
         db_path = _get_db_path()
         project_id = req_data.get("project_id", "")
 
-        from knowledge.memory.manager import MemoryManager
-        memory = MemoryManager(db_path=db_path, router=router_inst)
+        from knowledge.reader_memory.manager import ReaderMemoryManager
+        memory = ReaderMemoryManager(db_path=db_path, router=router_inst)
         memory.set_project(project_id)
 
         # Ensure tables exist
@@ -2576,7 +2576,7 @@ async def prompt_preview(req: PromptPreviewRequest):
 
         try:
             _db_path = _get_db_path()
-            from knowledge.memory.manager import MemoryManager as _MM
+            from knowledge.reader_memory.manager import ReaderMemoryManager as _MM
             _mem = _MM(db_path=_db_path)
             _mem.set_project(req.project_id)
 

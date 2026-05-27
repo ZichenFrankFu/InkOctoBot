@@ -40,7 +40,7 @@ def _seed_db_with_hook() -> str:
 class TestLoadUnresolvedForeshadowing(unittest.TestCase):
 
     def test_reads_from_pending_hooks_not_episodic(self) -> None:
-        """The v2.1 path goes through MemoryManager → pending_hooks.
+        """The v2.1 path goes through ReaderMemoryManager → pending_hooks.
         Previously this crashed with AttributeError because
         EpisodicTimeline no longer has get_unresolved_foreshadowing.
         """
