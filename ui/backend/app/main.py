@@ -47,6 +47,7 @@ from .routers.commit_pipeline_api import router as commit_pipeline_router
 from .routers.notifications_api import router as notifications_router
 from .routers.state_review_api import router as state_review_router
 from .routers.historical_view_api import router as historical_view_router
+from .routers.validator_api import router as validator_router
 from .routers.debug_api import router as debug_router
 
 app = FastAPI(title="InkOctoBot — AI 小说智能体工作台", version="2.1.0")
@@ -99,6 +100,7 @@ app.include_router(commit_pipeline_router)  # /api/commit-pipeline
 app.include_router(notifications_router)  # /api/notifications
 app.include_router(state_review_router)  # /api/state-review + manual fallback CRUD
 app.include_router(historical_view_router)  # /api/historical-view
+app.include_router(validator_router)  # /api/validator
 
 # Dev tools (actions: health-check, seed-test-data)
 app.include_router(dev_router, prefix="/api")
