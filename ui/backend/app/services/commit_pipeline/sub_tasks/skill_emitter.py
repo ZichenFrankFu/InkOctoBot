@@ -60,12 +60,20 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
             "diff_size": diff_size,
         }
 
-    # Stage a SKILL_*.md placeholder under agents/learned_skills/
-    # describing the diff. Real LLM-based extraction is the follow-up
-    # work — this gives the user something visible to act on.
+    # Stage a SKILL_*.md placeholder describing the diff. Real
+    # LLM-based extraction is the follow-up work — this gives the user
+    # something visible to act on.
+    #
+    # Path resolution: honor WN_DATA_DIR (test-mode override) so unit
+    # tests don't leak into agents/learned_skills/ in the real repo.
     try:
-        repo_root = Path(__file__).resolve().parents[6]
-        skills_dir = repo_root / "agents" / "learned_skills"
+        import os
+        env = os.environ.get("WN_DATA_DIR")
+        if env:
+            skills_dir = Path(env) / "learned_skills"
+        else:
+            repo_root = Path(__file__).resolve().parents[6]
+            skills_dir = repo_root / "agents" / "learned_skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
         chapter_num = _resolve_chapter_num(ctx)
         skill_path = skills_dir / f"SKILL_pending_ch{chapter_num}.md"

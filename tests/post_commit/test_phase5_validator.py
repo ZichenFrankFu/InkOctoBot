@@ -250,7 +250,11 @@ class TestSkillEmitter(unittest.IsolatedAsyncioTestCase):
             project_id="p1", chapter_id=self.cid, db_path=self.db,
             chapter_text="", chapter_num=1,
         )
-        result = await skill_emitter.run(ctx)
+        # Redirect the skill stub writer to a tempdir so the test
+        # doesn't pollute the real agents/learned_skills/ folder.
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"WN_DATA_DIR": tmp}):
+                result = await skill_emitter.run(ctx)
         self.assertEqual(result["status"], "ok")
         self.assertGreaterEqual(result["diff_size"], 50)
 
