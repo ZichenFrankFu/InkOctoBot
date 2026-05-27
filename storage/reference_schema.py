@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS reference_chapters (
     scene_type TEXT NOT NULL DEFAULT '',
     embedding_json TEXT NOT NULL DEFAULT '[]',
     embedding_text_hash TEXT NOT NULL DEFAULT '',
+    embedding_model_key TEXT NOT NULL DEFAULT '',
     saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (ref_id, number),
     FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
@@ -155,6 +156,11 @@ def ensure_reference_tables(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "ALTER TABLE reference_chapters ADD COLUMN "
                 "embedding_text_hash TEXT NOT NULL DEFAULT ''"
+            )
+        if "embedding_model_key" not in chap_cols:
+            conn.execute(
+                "ALTER TABLE reference_chapters ADD COLUMN "
+                "embedding_model_key TEXT NOT NULL DEFAULT ''"
             )
     except sqlite3.OperationalError:
         # reference_chapters not yet created — CREATE in ALL_DDL handles it.

@@ -16,7 +16,9 @@ from typing import Any
 
 from ..budget_allocator import LOADER_BUDGETS
 from ..loader_protocol import LoaderPlan, make_plan
-from ..utils import clip, cosine, embed_sync, section
+from ..utils import (
+    clip, cosine, current_embedding_model_key, embed_sync, section,
+)
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.skills")
 
@@ -137,15 +139,32 @@ def _select(
         recommended: list[dict] = []
 
         if remaining > 0 and candidates:
+            current_model_key = current_embedding_model_key()
             stale_idx: list[int] = []
             stale_texts: list[str] = []
+            mismatched = 0
             for i, s in enumerate(candidates):
                 text = skill_index.skill_embedding_text(s)
                 expected = skill_index.hash_embedding_text(text)
-                if not s.get("embedding") or s.get("embedding_text_hash") != expected:
+                existing = s.get("embedding") or []
+                stored_model = s.get("embedding_model_key") or ""
+                cross_model = (
+                    bool(existing) and bool(stored_model)
+                    and stored_model != current_model_key
+                )
+                if cross_model:
+                    mismatched += 1
+                    s["_cross_model"] = True
+                    continue
+                if not existing or s.get("embedding_text_hash") != expected:
                     stale_idx.append(i)
                     stale_texts.append(text)
                     s["_text_hash"] = expected
+            if mismatched:
+                logger.debug(
+                    "skills: %d entries embedded with a different model; "
+                    "skipped from ranking.", mismatched,
+                )
 
             query = (chapter_outline or "").strip()
             if on_stage_characters:
@@ -168,16 +187,21 @@ def _select(
                         skill_index.set_embedding(
                             db_path, candidates[idx]["skill_id"], vec,
                             candidates[idx]["_text_hash"],
+                            model_key=current_model_key,
                         )
                     except Exception as e:
                         logger.debug("persist skill embedding failed for %s: %s",
                                       candidates[idx].get("skill_id"), e)
 
             if not query_vec:
-                recommended = candidates[:remaining]
+                recommended = [
+                    s for s in candidates if not s.get("_cross_model")
+                ][:remaining]
             else:
                 scored: list[tuple[float, dict]] = []
                 for s in candidates:
+                    if s.get("_cross_model"):
+                        continue
                     vec = s.get("embedding") or []
                     score = cosine(query_vec, vec) if vec else float("-inf")
                     scored.append((score, s))

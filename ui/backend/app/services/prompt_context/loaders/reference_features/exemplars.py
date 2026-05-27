@@ -24,19 +24,30 @@ _SCENE_BONUS = 0.05
 
 
 def _list_chapter_rows(db_path: str, ref_id: str) -> list[dict]:
-    """Best-effort list of chapter chunks with their embeddings."""
+    """Best-effort list of chapter chunks with their embeddings.
+
+    EMBEDDING_SPEC Phase 2: rows whose ``embedding_model_key`` doesn't
+    match the active model are dropped from the candidate pool — they
+    can't be ranked safely against the current outline vector.
+    """
     try:
         with sqlite3.connect(db_path) as con:
             con.row_factory = sqlite3.Row
             rows = con.execute(
                 "SELECT ref_id, number, title, scene_type, content, "
-                "embedding_json FROM reference_chapters "
+                "embedding_json, embedding_model_key FROM reference_chapters "
                 "WHERE ref_id = ? AND COALESCE(is_author_note, 0) = 0 "
                 "ORDER BY number",
                 (ref_id,),
             ).fetchall()
     except sqlite3.OperationalError:
         return []
+    # Resolve current model_key once.
+    try:
+        from ...utils import current_embedding_model_key
+        current_model_key = current_embedding_model_key()
+    except Exception:
+        current_model_key = ""
     out: list[dict] = []
     for r in rows:
         d = dict(r)
@@ -44,6 +55,11 @@ def _list_chapter_rows(db_path: str, ref_id: str) -> list[dict]:
             d["embedding"] = json.loads(d.get("embedding_json") or "[]")
         except (TypeError, json.JSONDecodeError):
             d["embedding"] = []
+        stored_model = d.get("embedding_model_key") or ""
+        if d["embedding"] and stored_model and current_model_key \
+                and stored_model != current_model_key:
+            # Cross-model embedding — skip; reindex will refresh.
+            continue
         out.append(d)
     return out
 

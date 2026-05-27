@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS inspirations (
     tags_json TEXT NOT NULL DEFAULT '[]',
     embedding_json TEXT NOT NULL DEFAULT '[]',
     embedding_text_hash TEXT NOT NULL DEFAULT '',
+    embedding_model_key TEXT NOT NULL DEFAULT '',
     used_in_chapters_json TEXT NOT NULL DEFAULT '[]',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -43,6 +44,7 @@ _INSPIRATIONS_V3_COLUMNS = [
     ("tags_json",               "TEXT NOT NULL DEFAULT '[]'"),
     ("embedding_json",          "TEXT NOT NULL DEFAULT '[]'"),
     ("embedding_text_hash",     "TEXT NOT NULL DEFAULT ''"),
+    ("embedding_model_key",     "TEXT NOT NULL DEFAULT ''"),
     ("used_in_chapters_json",   "TEXT NOT NULL DEFAULT '[]'"),
 ]
 

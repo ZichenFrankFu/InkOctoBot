@@ -227,6 +227,7 @@ def _worldbook_row_to_payload(row: sqlite3.Row,
         except (TypeError, json.JSONDecodeError):
             out["embedding"] = []
         out["embedding_text_hash"] = r.get("embedding_text_hash") or ""
+        out["embedding_model_key"] = r.get("embedding_model_key") or ""
     return out
 
 
@@ -273,19 +274,27 @@ def get_worldbook(db_path: str, entry_id: str,
     return _worldbook_row_to_payload(row, include_embedding=include_embedding) if row else None
 
 
-def set_worldbook_embedding(db_path: str, entry_id: str,
-                            embedding: list[float], text_hash: str) -> None:
+def set_worldbook_embedding(
+    db_path: str, entry_id: str,
+    embedding: list[float], text_hash: str,
+    model_key: str = "",
+) -> None:
     """Persist a freshly-computed embedding for a worldbook entry.
 
     Used by the prompt_context loader to backfill embeddings lazily —
     upsert_worldbook intentionally clears the embedding (text-hash
     mismatch) so the loader recomputes against the current content.
+    ``model_key`` is the active embedding model at compute time; the
+    loader uses it on read to detect cross-model staleness after a
+    user-driven model switch.
     """
     with open_db(db_path) as con:
         con.execute(
             "UPDATE worldbook_entries SET embedding_json = ?, "
-            "embedding_text_hash = ? WHERE entry_id = ?",
-            (json.dumps(list(embedding), ensure_ascii=False), text_hash, entry_id),
+            "embedding_text_hash = ?, embedding_model_key = ? "
+            "WHERE entry_id = ?",
+            (json.dumps(list(embedding), ensure_ascii=False),
+             text_hash, model_key or "", entry_id),
         )
         con.commit()
 

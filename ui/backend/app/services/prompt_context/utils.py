@@ -103,36 +103,50 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / ((na ** 0.5) * (nb ** 0.5))
 
 
-def embed_sync(texts: list[str]) -> list[list[float]]:
-    """Synchronously embed a batch via the configured backend.
+def current_embedding_model_key() -> str:
+    """Active ``EmbeddingService`` model_key for cross-model staleness
+    checks. Returns ``""`` if the service is unavailable (tests with no
+    torch, etc.) so callers can default to "always trust the stored
+    embedding" rather than dropping every row.
+    """
+    try:
+        from ui.backend.app.services.embedding import get_embedding_service
+        return get_embedding_service().get_current_model().model_key
+    except Exception as e:
+        logger.debug("embedding service unavailable: %s", e)
+        return ""
 
-    Bridges from sync loader code into the async embedding API. Returns
-    ``[[] for _ in texts]`` on any failure so callers can degrade
-    gracefully without throwing.
+
+def embed_sync(texts: list[str]) -> list[list[float]]:
+    """Synchronously embed a batch via the global ``EmbeddingService``.
+
+    EMBEDDING_SPEC Phase 2: routes through the spec service so all
+    loaders share one model + one cache. Back-compat shape preserved
+    (``list[list[float]]``) so existing loader call sites work
+    unchanged. Returns ``[[] for _ in texts]`` on any failure so
+    callers can degrade gracefully without throwing.
     """
     if not texts:
         return []
-
-    async def _do() -> list[list[float]]:
-        from llm.embedding_provider import get_embedding_provider
-        prov = get_embedding_provider()
-        arr = await prov.embed(texts)
-        try:
-            return arr.tolist()  # numpy ndarray
-        except AttributeError:
-            return [list(v) for v in arr]
-
     try:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            # Inside an async caller (FastAPI route) — run in a worker
-            # thread so we don't block the loop or nest asyncio.run().
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, _do()).result()
-        return asyncio.run(_do())
+        import numpy as np
+        from ui.backend.app.services.embedding import get_embedding_service
+        svc = get_embedding_service()
+        dim = svc.get_dimension()
+        raw = svc.embed_batch(texts)
+        out: list[list[float]] = []
+        for b in raw:
+            if not b:
+                out.append([])
+                continue
+            arr = np.frombuffer(b, dtype="float32")
+            if arr.size != dim:
+                # Defensive: dimension mismatch from a freshly-switched
+                # model that hasn't reloaded yet → degrade per call.
+                out.append([])
+            else:
+                out.append(arr.tolist())
+        return out
     except Exception as e:
         logger.debug("embedding failed: %s", e)
         return [[] for _ in texts]

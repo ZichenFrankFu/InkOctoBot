@@ -442,6 +442,7 @@ CREATION_DDL = [
         body_snippet TEXT NOT NULL DEFAULT '',
         embedding_json TEXT NOT NULL DEFAULT '[]',
         embedding_text_hash TEXT NOT NULL DEFAULT '',
+        embedding_model_key TEXT NOT NULL DEFAULT '',
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """,
@@ -583,9 +584,32 @@ _WORLDBOOK_V2_COLUMNS = [
     # Stored as JSON list[float]; empty list means "not yet computed".
     # text_hash lets the loader detect a stale embedding when title /
     # category / content was edited after the embedding was stored.
-    ("embedding_json",      "TEXT NOT NULL DEFAULT '[]'"),
-    ("embedding_text_hash", "TEXT NOT NULL DEFAULT ''"),
+    ("embedding_json",       "TEXT NOT NULL DEFAULT '[]'"),
+    ("embedding_text_hash",  "TEXT NOT NULL DEFAULT ''"),
+    # EMBEDDING_SPEC Phase 2: which model produced this embedding.
+    # Empty means "unknown / legacy" → loader treats it as model-key
+    # mismatch and skips the row from cosine ranking until reindex.
+    ("embedding_model_key",  "TEXT NOT NULL DEFAULT ''"),
 ]
+
+
+def _ensure_skill_index_v2_columns(conn: sqlite3.Connection) -> None:
+    """Add embedding_model_key to an existing skill_index table.
+
+    EMBEDDING_SPEC Phase 2: every embedding-bearing table tracks the
+    model that produced the stored vector so the loader can tell when
+    a switch-model has invalidated the cache.
+    """
+    cur = conn.cursor()
+    try:
+        existing = {row[1] for row in cur.execute("PRAGMA table_info(skill_index)")}
+    except sqlite3.OperationalError:
+        return
+    if "embedding_model_key" not in existing:
+        cur.execute(
+            "ALTER TABLE skill_index ADD COLUMN "
+            "embedding_model_key TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _ensure_worldbook_v2_columns(conn: sqlite3.Connection) -> None:
@@ -696,6 +720,7 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
         cur.execute(ddl)
     _ensure_chapter_v2_columns(conn)
     _ensure_worldbook_v2_columns(conn)
+    _ensure_skill_index_v2_columns(conn)
     _ensure_chapter_summaries_v3_columns(conn)
     _drop_v1_redundant_objects(conn)
     conn.commit()

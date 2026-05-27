@@ -27,7 +27,9 @@ import logging
 from typing import Any
 
 from ..loader_protocol import LoaderPlan, make_plan
-from ..utils import clip, cosine, embed_sync, section
+from ..utils import (
+    clip, cosine, current_embedding_model_key, embed_sync, section,
+)
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.inspiration")
 
@@ -171,16 +173,32 @@ def _select(
             query = f"{query}\n人物：{','.join(on_stage)}".strip()
 
         from knowledge.idea_db import inspiration_embedding_text, hash_embedding_text
+        current_model_key = current_embedding_model_key()
         stale_idx: list[int] = []
         stale_texts: list[str] = []
+        mismatched = 0
         for i, r in enumerate(rows):
             text = inspiration_embedding_text(r)
             current_hash = hash_embedding_text(text)
             existing = r.get("embedding") or []
+            stored_model = r.get("embedding_model_key") or ""
+            cross_model = (
+                bool(existing) and bool(stored_model)
+                and stored_model != current_model_key
+            )
+            if cross_model:
+                mismatched += 1
+                r["_cross_model"] = True
+                continue
             if not existing or r.get("embedding_text_hash") != current_hash:
                 stale_idx.append(i)
                 stale_texts.append(text)
                 r["_text_hash"] = current_hash
+        if mismatched:
+            logger.debug(
+                "inspiration: %d entries embedded with a different model; "
+                "skipped from ranking.", mismatched,
+            )
 
         recommended: list[dict] = []
         remaining = max(0, top_k - len(pinned))
@@ -201,16 +219,19 @@ def _select(
                     rows[idx]["embedding"] = vec
                     try:
                         db.set_embedding(rows[idx]["id"], vec,
-                                          rows[idx]["_text_hash"])
+                                          rows[idx]["_text_hash"],
+                                          model_key=current_model_key)
                     except Exception as e:
                         logger.debug("persist embedding failed for %s: %s",
                                       rows[idx].get("id"), e)
 
             if not query_vec:
-                recommended = candidates[:remaining]
+                recommended = [r for r in candidates if not r.get("_cross_model")][:remaining]
             else:
                 scored: list[tuple[float, dict]] = []
                 for r in candidates:
+                    if r.get("_cross_model"):
+                        continue
                     vec = r.get("embedding") or []
                     score = cosine(query_vec, vec) if vec else float("-inf")
                     scored.append((score, r))

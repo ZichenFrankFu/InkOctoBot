@@ -127,6 +127,7 @@ TRUTH_DDL = [
         related_character_ids_json TEXT NOT NULL DEFAULT '[]',
         embedding_json TEXT NOT NULL DEFAULT '[]',
         embedding_text_hash TEXT NOT NULL DEFAULT '',
+        embedding_model_key TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
@@ -239,6 +240,11 @@ def ensure_truth_tables(conn: sqlite3.Connection) -> None:
             cur.execute(
                 "ALTER TABLE subplot_threads ADD COLUMN "
                 "embedding_text_hash TEXT NOT NULL DEFAULT ''"
+            )
+        if "embedding_model_key" not in sp_cols:
+            cur.execute(
+                "ALTER TABLE subplot_threads ADD COLUMN "
+                "embedding_model_key TEXT NOT NULL DEFAULT ''"
             )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_subplots_proj_type "

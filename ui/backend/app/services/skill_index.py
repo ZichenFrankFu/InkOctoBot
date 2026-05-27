@@ -71,6 +71,7 @@ def _row_to_payload(row: sqlite3.Row, *, include_embedding: bool = False) -> dic
         except (TypeError, json.JSONDecodeError):
             out["embedding"] = []
         out["embedding_text_hash"] = r.get("embedding_text_hash") or ""
+        out["embedding_model_key"] = r.get("embedding_model_key") or ""
     return out
 
 
@@ -149,14 +150,17 @@ def delete_skill(db_path: str, skill_id: str) -> None:
         con.commit()
 
 
-def set_embedding(db_path: str, skill_id: str,
-                  embedding: list[float], text_hash: str) -> None:
+def set_embedding(
+    db_path: str, skill_id: str,
+    embedding: list[float], text_hash: str,
+    model_key: str = "",
+) -> None:
     with open_db(db_path) as con:
         con.execute(
-            "UPDATE skill_index SET embedding_json = ?, embedding_text_hash = ? "
-            "WHERE skill_id = ?",
+            "UPDATE skill_index SET embedding_json = ?, embedding_text_hash = ?, "
+            "embedding_model_key = ? WHERE skill_id = ?",
             (json.dumps(list(embedding), ensure_ascii=False),
-             text_hash, skill_id),
+             text_hash, model_key or "", skill_id),
         )
         con.commit()
 

@@ -24,7 +24,9 @@ from typing import Any
 
 from ..budget_allocator import LOADER_BUDGETS
 from ..loader_protocol import LoaderPlan
-from ..utils import clip, cosine, embed_sync, section
+from ..utils import (
+    clip, cosine, current_embedding_model_key, embed_sync, section,
+)
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.subplots")
 
@@ -58,7 +60,7 @@ def _list_active_subplots(db_path: str, project_id: str) -> list[dict]:
     sql = (
         "SELECT thread_id, project_id, name, description, status, "
         "thread_type, start_chapter, last_advanced_chapter, "
-        "embedding_json, embedding_text_hash "
+        "embedding_json, embedding_text_hash, embedding_model_key "
         "FROM subplot_threads "
         f"WHERE project_id = ? AND status IN ({placeholders}) "
         "ORDER BY thread_type DESC, start_chapter"  # 'sub' before 'main'? -> reverse
@@ -73,14 +75,16 @@ def _list_active_subplots(db_path: str, project_id: str) -> list[dict]:
 
 
 def _persist_embedding(db_path: str, thread_id: str,
-                       embedding: list[float], text_hash: str) -> None:
+                       embedding: list[float], text_hash: str,
+                       model_key: str = "") -> None:
     try:
         with sqlite3.connect(db_path) as con:
             con.execute(
                 "UPDATE subplot_threads SET embedding_json = ?, "
-                "embedding_text_hash = ? WHERE thread_id = ?",
+                "embedding_text_hash = ?, embedding_model_key = ? "
+                "WHERE thread_id = ?",
                 (json.dumps(list(embedding), ensure_ascii=False),
-                 text_hash, thread_id),
+                 text_hash, model_key or "", thread_id),
             )
             con.commit()
     except sqlite3.OperationalError as e:
@@ -143,15 +147,33 @@ def _prepare(
 
         selected_subs: list[dict] = []
         if sub_pool:
+            current_model_key = current_embedding_model_key()
             stale_idx: list[int] = []
             stale_texts: list[str] = []
+            mismatched = 0
             for i, r in enumerate(sub_pool):
                 text = _subplot_embedding_text(r)
                 expected = _hash_text(text)
-                if not r.get("embedding") or r.get("embedding_text_hash") != expected:
+                existing = r.get("embedding") or []
+                stored_model = r.get("embedding_model_key") or ""
+                cross_model = (
+                    bool(existing) and bool(stored_model)
+                    and stored_model != current_model_key
+                )
+                if cross_model:
+                    mismatched += 1
+                    r["_cross_model"] = True
+                    continue
+                if not existing or r.get("embedding_text_hash") != expected:
                     stale_idx.append(i)
                     stale_texts.append(text)
                     r["_text_hash"] = expected
+            if mismatched:
+                logger.debug(
+                    "subplots: %d sub-line embeddings produced by a different "
+                    "model; skipped from ranking — run reindex to refresh.",
+                    mismatched,
+                )
 
             query = (chapter_outline or "").strip()
             batch_in = ([query] if query else []) + stale_texts
@@ -170,15 +192,24 @@ def _prepare(
                     _persist_embedding(
                         db_path, sub_pool[idx]["thread_id"], vec,
                         sub_pool[idx]["_text_hash"],
+                        model_key=current_model_key,
                     )
 
             if not query_vec:
+                # Embedding unavailable — fallback excludes cross-model
+                # entries so they don't dominate the newest-first list.
+                fallback_pool = [
+                    r for r in sub_pool if not r.get("_cross_model")
+                ]
                 selected_subs = sorted(
-                    sub_pool, key=lambda r: -(r.get("start_chapter") or 0),
+                    fallback_pool, key=lambda r: -(r.get("start_chapter") or 0),
                 )[:top_k]
             else:
                 scored: list[tuple[float, dict]] = []
                 for r in sub_pool:
+                    if r.get("_cross_model"):
+                        scored.append((float("-inf"), r))
+                        continue
                     vec = r.get("embedding") or []
                     score = cosine(query_vec, vec) if vec else float("-inf")
                     scored.append((score, r))

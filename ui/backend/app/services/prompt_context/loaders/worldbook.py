@@ -6,7 +6,7 @@ from typing import Any
 
 from ..budget_allocator import LOADER_BUDGETS
 from ..loader_protocol import LoaderPlan
-from ..utils import clip, cosine, embed_sync, section
+from ..utils import clip, cosine, current_embedding_model_key, embed_sync, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.worldbook")
 
@@ -59,16 +59,36 @@ def _prepare(project_id: str, chapter_id: str) -> list[dict] | None:
         if not rows:
             return None
 
+        # EMBEDDING_SPEC § 7.2: skip rows whose stored embedding was
+        # produced by a different model. Stale-by-text-hash is still
+        # eligible for lazy recompute.
+        current_model_key = current_embedding_model_key()
         stale_idx: list[int] = []
         stale_texts: list[str] = []
+        mismatched = 0
         for i, e in enumerate(rows):
             text = project_store.worldbook_embedding_text(e)
             current_hash = project_store._hash_embedding_text(text)
             existing = e.get("embedding") or []
+            stored_model = e.get("embedding_model_key") or ""
+            cross_model = (
+                bool(existing) and bool(stored_model)
+                and stored_model != current_model_key
+            )
+            if cross_model:
+                mismatched += 1
+                e["_cross_model"] = True
+                continue
             if not existing or e.get("embedding_text_hash") != current_hash:
                 stale_idx.append(i)
                 stale_texts.append(text)
                 e["_text_hash"] = current_hash
+
+        if mismatched:
+            logger.debug(
+                "worldbook: %d entries embedded with a different model; "
+                "skipped from ranking — run reindex to refresh.", mismatched,
+            )
 
         batch_in = [synopsis] + stale_texts
         batch_out = embed_sync(batch_in)
@@ -83,6 +103,7 @@ def _prepare(project_id: str, chapter_id: str) -> list[dict] | None:
             try:
                 project_store.set_worldbook_embedding(
                     db_path, rows[idx]["id"], new_vec, rows[idx]["_text_hash"],
+                    model_key=current_model_key,
                 )
             except Exception as ex:
                 logger.debug("persist embedding failed for %s: %s",
@@ -90,6 +111,11 @@ def _prepare(project_id: str, chapter_id: str) -> list[dict] | None:
 
         scored: list[tuple[float, dict]] = []
         for e in rows:
+            if e.get("_cross_model"):
+                # Sink to the bottom — present in fallback render but
+                # never wins the cosine ranking.
+                scored.append((float("-inf"), e))
+                continue
             vec = e.get("embedding") or []
             score = cosine(query_vec, vec) if vec else float("-inf")
             scored.append((score, e))

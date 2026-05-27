@@ -90,6 +90,7 @@ def _row_to_payload(row: sqlite3.Row, *, include_embedding: bool = False) -> dic
         except (TypeError, json.JSONDecodeError):
             out["embedding"] = []
         out["embedding_text_hash"] = r.get("embedding_text_hash") or ""
+        out["embedding_model_key"] = r.get("embedding_model_key") or ""
     return out
 
 
@@ -232,13 +233,15 @@ class IdeaDB:
 
     def set_embedding(
         self, insp_id: str, embedding: list[float], text_hash: str,
+        model_key: str = "",
     ) -> None:
-        """Persist a freshly-computed embedding."""
+        """Persist a freshly-computed embedding + the model that produced it."""
         with _conn(self.db_path) as c:
             c.execute(
-                "UPDATE inspirations SET embedding_json=?, embedding_text_hash=? "
-                "WHERE id=?",
-                (json.dumps(list(embedding), ensure_ascii=False), text_hash, insp_id),
+                "UPDATE inspirations SET embedding_json=?, embedding_text_hash=?, "
+                "embedding_model_key=? WHERE id=?",
+                (json.dumps(list(embedding), ensure_ascii=False),
+                 text_hash, model_key or "", insp_id),
             )
             c.commit()
 
