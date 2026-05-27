@@ -106,7 +106,7 @@ def _resolve_chapter_num(ctx: "SubTaskContext") -> int:
     try:
         with sqlite3.connect(ctx.db_path) as con:
             row = con.execute(
-                "SELECT chapter_num FROM chapters WHERE id = ?",
+                "SELECT chapter_num FROM chapters WHERE chapter_id = ?",
                 (ctx.chapter_id,),
             ).fetchone()
             return int(row[0]) if row and row[0] else 0

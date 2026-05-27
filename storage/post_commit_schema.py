@@ -72,11 +72,90 @@ _DDL: tuple[str, ...] = (
     "ON user_notifications(project_id, severity, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_notif_chapter "
     "ON user_notifications(chapter_id)",
+
+    # ── Phase 3: state_change_log (append-only audit) ──
+    """
+    CREATE TABLE IF NOT EXISTS state_change_log (
+        log_id               TEXT PRIMARY KEY,
+        project_id           TEXT NOT NULL,
+        subject              TEXT NOT NULL,
+        subject_type         TEXT NOT NULL DEFAULT 'character',
+        predicate            TEXT NOT NULL,
+        old_value            TEXT,
+        new_value            TEXT,
+        change_chapter       INTEGER NOT NULL,
+        trigger              TEXT,
+        source               TEXT NOT NULL DEFAULT 'llm_auto'
+                              CHECK (source IN (
+                                  'llm_auto', 'user_manual', 'user_correction'
+                              )),
+        change_type          TEXT NOT NULL DEFAULT 'state_change'
+                              CHECK (change_type IN (
+                                  'state_change', 'cancellation', 'correction'
+                              )),
+        llm_model_used       TEXT,
+        validation_warning   TEXT,
+        parent_log_id        TEXT,
+        recorded_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_state_log_project_chapter "
+    "ON state_change_log(project_id, change_chapter)",
+    "CREATE INDEX IF NOT EXISTS idx_state_log_subject_predicate "
+    "ON state_change_log(subject, predicate, change_chapter)",
+
+    # ── Phase 3: entity_review_queue (suspected-duplicate review) ──
+    """
+    CREATE TABLE IF NOT EXISTS entity_review_queue (
+        queue_id                    TEXT PRIMARY KEY,
+        project_id                  TEXT NOT NULL,
+        chapter_id                  TEXT NOT NULL,
+        candidate_name              TEXT NOT NULL,
+        candidate_type              TEXT NOT NULL,
+        candidate_aliases_json      TEXT NOT NULL DEFAULT '[]',
+        similar_existing_entity_id  TEXT,
+        similarity_score            REAL,
+        llm_extraction_context      TEXT,
+        status                      TEXT NOT NULL DEFAULT 'pending'
+                                     CHECK (status IN (
+                                         'pending', 'merged',
+                                         'created_separately', 'discarded'
+                                     )),
+        user_decision_at            TIMESTAMP,
+        created_at                  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_entity_review_status "
+    "ON entity_review_queue(project_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_entity_review_chapter "
+    "ON entity_review_queue(chapter_id)",
 )
 
 
+# Columns added to existing tables to support Phase 3 (storyland_entities
+# attribution + mention tracking). Idempotent ALTER block.
+_STORYLAND_ENTITIES_PC3_COLUMNS = [
+    ("mention_count",   "INTEGER NOT NULL DEFAULT 0"),
+    ("auto_created",    "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+def _ensure_storyland_entities_pc3_columns(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    try:
+        existing = {row[1] for row in cur.execute(
+            "PRAGMA table_info(storyland_entities)",
+        )}
+    except sqlite3.OperationalError:
+        return
+    for col, ddl in _STORYLAND_ENTITIES_PC3_COLUMNS:
+        if col not in existing:
+            cur.execute(f"ALTER TABLE storyland_entities ADD COLUMN {col} {ddl}")
+
+
 def ensure_post_commit_tables(conn: sqlite3.Connection) -> None:
-    """Create ``commit_tasks`` + ``user_notifications`` tables + indexes.
+    """Create all Phase 1-3 post-commit tables + indexes; add columns
+    to legacy tables that need attribution / metadata.
 
     Idempotent. Called from ``ensure_creation_tables`` so every project
     DB picks up the schema on next backend startup.
@@ -84,4 +163,6 @@ def ensure_post_commit_tables(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     for ddl in _DDL:
         cur.execute(ddl)
+    conn.commit()
+    _ensure_storyland_entities_pc3_columns(conn)
     conn.commit()
