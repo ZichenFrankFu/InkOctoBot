@@ -22,7 +22,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..budgets import BUDGETS
+from ..budget_allocator import LOADER_BUDGETS
+from ..loader_protocol import LoaderPlan, make_plan
 from ..utils import clip, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.current_chapter_draft")
@@ -35,6 +36,50 @@ _VALID_MODES = {"fresh", "continue", "rewrite_from", "modify_section"}
 _CONTINUE_TAIL_CHARS = 3500
 
 
+_BLOCK = "current_chapter_draft"
+
+
+def plan(
+    project_id: str,
+    chapter_id: str = "",
+    *,
+    generation_mode: str = "fresh",
+    revision_anchor: dict[str, Any] | None = None,
+    include_failed_drafts_as_hint: bool = True,
+    exclude: set | None = None,
+) -> LoaderPlan | None:
+    if not chapter_id:
+        return None
+    mode = generation_mode if generation_mode in _VALID_MODES else "fresh"
+    try:
+        from ui.backend.app.services import segment_manager
+        from ui.backend.app.services.project_paths import get_db_path
+
+        db_path = get_db_path()
+        segments = segment_manager.get_segments(db_path, chapter_id)
+        if mode == "fresh":
+            result = _render_fresh(db_path, chapter_id, segments,
+                                     include_failed_drafts_as_hint)
+        elif not segments:
+            return None
+        elif mode == "continue":
+            result = _render_continue(segments)
+        elif mode == "rewrite_from":
+            result = _render_rewrite_from(segments, revision_anchor or {})
+        elif mode == "modify_section":
+            result = _render_modify_section(segments, revision_anchor or {})
+        else:
+            return None
+    except Exception as e:
+        logger.debug("current_chapter_draft skipped: %s", e)
+        return None
+
+    if not result:
+        return None
+    title, body = result
+    return make_plan(_BLOCK, title, body)
+
+
 def load(
     project_id: str,
     chapter_id: str = "",
@@ -44,31 +89,14 @@ def load(
     include_failed_drafts_as_hint: bool = True,
     exclude: set | None = None,
 ) -> str:
-    """Render the existing-content block for the chosen mode."""
-    if not chapter_id:
-        return ""
-    mode = generation_mode if generation_mode in _VALID_MODES else "fresh"
-    try:
-        from ui.backend.app.services import segment_manager
-        from ui.backend.app.services.project_paths import get_db_path
-
-        db_path = get_db_path()
-        segments = segment_manager.get_segments(db_path, chapter_id)
-        if mode == "fresh":
-            return _render_fresh(db_path, chapter_id, segments,
-                                  include_failed_drafts_as_hint)
-        if not segments:
-            return ""
-        if mode == "continue":
-            return _render_continue(segments)
-        if mode == "rewrite_from":
-            return _render_rewrite_from(segments, revision_anchor or {})
-        if mode == "modify_section":
-            return _render_modify_section(segments, revision_anchor or {})
-        return ""
-    except Exception as e:
-        logger.debug("current_chapter_draft skipped: %s", e)
-        return ""
+    p = plan(
+        project_id, chapter_id,
+        generation_mode=generation_mode,
+        revision_anchor=revision_anchor,
+        include_failed_drafts_as_hint=include_failed_drafts_as_hint,
+        exclude=exclude,
+    )
+    return p.render(p.target) if p else ""
 
 
 # ─────────── fresh ───────────
@@ -94,7 +122,7 @@ def _detect_gaps(positions: list[int]) -> list[tuple[int, int]]:
 def _render_fresh(
     db_path: str, chapter_id: str, segments: list[dict],
     include_failed_hint: bool,
-) -> str:
+) -> tuple[str, str] | None:
     """Show only user-touched paragraphs + anti-hints from rejections."""
     valuable = [
         s for s in segments
@@ -146,14 +174,13 @@ def _render_fresh(
                 parts.append(f"- 避免：{h}")
 
     if not parts:
-        return ""
-    body = clip("\n".join(parts), BUDGETS["current_chapter_draft"])
-    return section("本章已有内容", body)
+        return None
+    return "本章已有内容", "\n".join(parts)
 
 
 # ─────────── continue ───────────
 
-def _render_continue(segments: list[dict]) -> str:
+def _render_continue(segments: list[dict]) -> tuple[str, str] | None:
     """Take the tail (≤ ``_CONTINUE_TAIL_CHARS``) so the Writer can pick
     up where the existing text leaves off.
     """
@@ -179,8 +206,7 @@ def _render_continue(segments: list[dict]) -> str:
             parts.append(f"\n[user 手写]\n{body}")
         else:
             parts.append(f"\n{body}")
-    text = clip("\n".join(parts), BUDGETS["current_chapter_draft"])
-    return section("本章已有正文（续写）", text)
+    return "本章已有正文（续写）", "\n".join(parts)
 
 
 # ─────────── rewrite_from ───────────
@@ -211,7 +237,7 @@ def _resolve_rewrite_anchor(segments: list[dict], anchor: dict) -> int:
     return len(segments)
 
 
-def _render_rewrite_from(segments: list[dict], anchor: dict) -> str:
+def _render_rewrite_from(segments: list[dict], anchor: dict) -> tuple[str, str] | None:
     rewrite_from = _resolve_rewrite_anchor(segments, anchor)
     kept = segments[:rewrite_from]
     discarded = segments[rewrite_from:]
@@ -235,13 +261,12 @@ def _render_rewrite_from(segments: list[dict], anchor: dict) -> str:
             f"「{discard_head}...」，请换个写法]"
         )
 
-    body = clip("\n".join(parts), BUDGETS["current_chapter_draft"])
-    return section("本章已有正文（保留前段，重写后段）", body)
+    return "本章已有正文（保留前段，重写后段）", "\n".join(parts)
 
 
 # ─────────── modify_section ───────────
 
-def _render_modify_section(segments: list[dict], anchor: dict) -> str:
+def _render_modify_section(segments: list[dict], anchor: dict) -> tuple[str, str] | None:
     try:
         start = int(anchor.get("start_paragraph", 0))
     except (TypeError, ValueError):
@@ -275,5 +300,4 @@ def _render_modify_section(segments: list[dict], anchor: dict) -> str:
         for seg in after:
             parts.append(seg.get("content") or "")
 
-    body = clip("\n".join(parts), BUDGETS["current_chapter_draft"])
-    return section("本章已有正文（局部修改）", body)
+    return "本章已有正文（局部修改）", "\n".join(parts)

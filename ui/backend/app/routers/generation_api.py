@@ -315,21 +315,18 @@ async def start_generation(req: GenerateRequest):
     # writing-knowledge) into world_rules so the pipeline agents are
     # grounded in the same material as single-agent generation.
     try:
-        from ._rag_context import build_generation_context, _load_writing_skills
+        from ._rag_context import build_generation_context
         ctx = build_generation_context(
             req.project_id, req.chapter_num, req.characters, skills=req.skills,
             chapter_id=req.chapter_id, rag_excludes=req.rag_excludes)
-        # Manual cluster runs are a copy-to-web-LLM flow → Skill-Access check.
-        _skill_block = (_load_writing_skills(req.skills, web_mode=True)
-                        if req.manual else ctx["blocks"].get("writing_skills", ""))
         rag_text = "\n".join(
             b for b in (
-                ctx["blocks"].get("adjacent_context", ""),
                 ctx["blocks"].get("character_cards", ""),
                 ctx["blocks"].get("worldbook", ""),
-                ctx["blocks"].get("reference_summary", ""),
-                ctx["blocks"].get("writing_knowledge", ""),
-                _skill_block,
+                ctx["blocks"].get("reference", ""),
+                ctx["blocks"].get("storyland_state", ""),
+                ctx["blocks"].get("reader_memory", ""),
+                ctx["blocks"].get("skills", ""),
             ) if (b or "").strip()
         ).strip()
         if rag_text:
@@ -493,7 +490,7 @@ def context_manifest(
         return creation_context_manifest(project_id, chapter_id, chapter_num, mode)
     except Exception as e:
         logger.error("context manifest error: %s", e, exc_info=True)
-        return {"rag": [], "default_skills": [], "learned_skills": [], "writing_knowledge": []}
+        return {"rag": [], "default_skills": [], "learned_skills": []}
 
 
 @router.post("/evaluate")
@@ -759,10 +756,10 @@ async def single_writer(req: SingleWriterRequest):
             character_cards=vars_.get("character_cards", ""),
             world_rules=vars_.get("worldbook", ""),
             narrative_instructions=narrative_instructions,
-            style_profile=vars_.get("style_calibration", ""),
+            style_profile=vars_.get("user_special_requirements", ""),
             user_preferences=vars_.get("user_preferences", ""),
             memory_context=memory_context,
-            adjacent_context=vars_.get("adjacent_context", ""),
+            adjacent_context="",
             constraints="",
             target_word_count=req.target_word_count,
         )

@@ -18,7 +18,8 @@ import logging
 import sqlite3
 from typing import Any
 
-from ..budgets import BUDGETS
+from ..budget_allocator import LOADER_BUDGETS
+from ..loader_protocol import LoaderPlan, make_plan
 from ..utils import clip, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.storyland_state")
@@ -116,20 +117,16 @@ def _query_emotion_arcs(
     return [dict(r) for r in rows]
 
 
-def load(
-    project_id: str,
-    chapter_num: int,
-    on_stage_entities: dict[str, list[str]] | None = None,
-    *,
-    pov_character: str | None = None,
-    exclude: set | None = None,
+_BLOCK = "storyland_state"
+
+
+def _build_body(
+    project_id: str, chapter_num: int,
+    on_stage_entities: dict[str, list[str]], exclude: set | None,
 ) -> str:
-    """Build the storyland-state block for the chapter."""
-    on_stage_entities = on_stage_entities or {}
     try:
         from ui.backend.app.services.project_paths import get_db_path
         db_path = get_db_path()
-
         parts: list[str] = []
 
         for env_key, subject_type, header in _ENTITY_KEYS_TO_SUBJECT_TYPE:
@@ -176,12 +173,36 @@ def load(
                     f"- {a['character_name']}: {a['from_state']} -> {a['to_state']}"
                     f"（自第 {a['chapter_num']} 章，触发: {a.get('trigger') or '—'}）"
                 )
-
-        if not parts:
-            return ""
-        title = f"Storyland 客观状态（截至第 {chapter_num - 1} 章）"
-        body = clip("\n".join(parts), BUDGETS["storyland_state"])
-        return section(title, body)
+        return "\n".join(parts)
     except Exception as e:
         logger.debug("storyland_state skipped: %s", e)
         return ""
+
+
+def plan(
+    project_id: str,
+    chapter_num: int,
+    on_stage_entities: dict[str, list[str]] | None = None,
+    *,
+    pov_character: str | None = None,
+    exclude: set | None = None,
+) -> LoaderPlan | None:
+    body = _build_body(
+        project_id, chapter_num,
+        on_stage_entities or {}, exclude,
+    )
+    title = f"Storyland 客观状态（截至第 {chapter_num - 1} 章）"
+    return make_plan(_BLOCK, title, body)
+
+
+def load(
+    project_id: str,
+    chapter_num: int,
+    on_stage_entities: dict[str, list[str]] | None = None,
+    *,
+    pov_character: str | None = None,
+    exclude: set | None = None,
+) -> str:
+    p = plan(project_id, chapter_num, on_stage_entities,
+              pov_character=pov_character, exclude=exclude)
+    return p.render(p.target) if p else ""

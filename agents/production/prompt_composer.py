@@ -68,9 +68,12 @@ class PromptContext:
     style_profile: str = ""
     user_preferences: str = ""
     memory_context: str = ""
-    adjacent_context: str = ""
-    reference_blocks: str = ""
-    writing_knowledge: str = ""
+    # adjacent_context / reference_blocks / writing_knowledge fields
+    # removed in v3.1 along with their loaders. Kept as ``""`` aliases
+    # below for any caller still passing keyword args.
+    adjacent_context: str = ""  # deprecated: ignored
+    reference_blocks: str = ""  # deprecated: ignored
+    writing_knowledge: str = ""  # deprecated: ignored
 
     # InkOS Truth Files
     truth_bundle: str = ""
@@ -332,14 +335,6 @@ class ReaderMemoryContextBlock:
         return ctx.memory_context.strip()
 
 
-class AdjacentContextBlock:
-    name = "adjacent_context"
-    role = "context"
-
-    def render(self, ctx: PromptContext) -> str:
-        return ctx.adjacent_context.strip()
-
-
 class CharacterCardsContextBlock:
     name = "character_cards"
     role = "context"
@@ -380,20 +375,8 @@ class UserPreferencesContextBlock:
         return f"[用户偏好]\n{ctx.user_preferences.strip()}"
 
 
-class ReferenceBlocksContextBlock:
-    name = "reference_blocks"
-    role = "context"
-
-    def render(self, ctx: PromptContext) -> str:
-        return ctx.reference_blocks.strip()
-
-
-class WritingKnowledgeContextBlock:
-    name = "writing_knowledge"
-    role = "context"
-
-    def render(self, ctx: PromptContext) -> str:
-        return ctx.writing_knowledge.strip()
+# ReferenceBlocksContextBlock / WritingKnowledgeContextBlock /
+# AdjacentContextBlock removed in v3.1 along with their loaders.
 
 
 # ─────────────── Pre-built composers ────────────────────────────────
@@ -411,13 +394,10 @@ def single_writer_composer() -> PromptComposer:
         StorylandStateBundleContextBlock(),
         LedgerAnchorsContextBlock(),
         ReaderMemoryContextBlock(),
-        AdjacentContextBlock(),
         CharacterCardsContextBlock(),
         WorldRulesContextBlock(),
         StyleProfileContextBlock(),
         UserPreferencesContextBlock(),
-        ReferenceBlocksContextBlock(),
-        WritingKnowledgeContextBlock(),
     ])
 
 

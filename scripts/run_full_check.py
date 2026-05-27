@@ -260,7 +260,7 @@ def check_test_seed(r: Report) -> None:
             v2_tables = [
                 "characters", "worldbook_entries", "project_memories",
                 "storyline_nodes", "storyline_edges",
-                "writing_knowledge", "chat_messages", "project_blobs",
+                "chat_messages", "project_blobs",
             ]
             v2_present = {row[0] for row in c.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"

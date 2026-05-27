@@ -36,17 +36,15 @@ from ui.backend.app.services.prompt_context.builder import (
 
 
 EXPECTED_BLOCK_KEYS = {
-    # System layer
-    "platform_directive", "style_calibration",
-    "reference_summary", "user_preferences",
+    # System
+    "platform_directive", "user_preferences", "user_special_requirements",
     # Project static
     "character_cards", "worldbook", "chapter_outline",
     # Project dynamic
-    "adjacent_context", "foreshadowing",
+    "foreshadowing",
     "current_chapter_draft", "storyland_state",
     "subplots", "reader_memory",
     # Resources / context
-    "writing_knowledge", "writing_skills",
     "inspiration", "skills", "reference",
 }
 

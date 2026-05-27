@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..budgets import BUDGETS
+from ..loader_protocol import LoaderPlan, make_plan
 from ..utils import clip, cosine, embed_sync, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.inspiration")
@@ -68,10 +68,13 @@ def _format_tags(row: dict) -> str:
     return ""
 
 
-def _render_block(
+_BLOCK = "inspiration"
+_TITLE = "相关灵感（用户灵感库）"
+
+
+def _build_body(
     pinned: list[dict], recommended: list[dict],
 ) -> str:
-    """Two-section output: explicit user picks, then system recs."""
     parts: list[str] = []
     if pinned:
         parts.append("### 用户显式关联")
@@ -87,10 +90,34 @@ def _render_block(
             tag = _format_tags(r)
             head = f"{tag} " if tag else ""
             parts.append(f"- {head}{(r.get('content') or '').strip()}")
-    if not parts:
+    return "\n".join(parts)
+
+
+def _render_block(pinned: list[dict], recommended: list[dict]) -> str:
+    body = _build_body(pinned, recommended)
+    if not body:
         return ""
-    body = clip("\n".join(parts), BUDGETS["inspiration"])
-    return section("相关灵感（用户灵感库）", body)
+    from ..budget_allocator import LOADER_BUDGETS
+    return section(_TITLE, clip(body, LOADER_BUDGETS[_BLOCK]["target"]))
+
+
+def plan(
+    project_id: str,
+    chapter_outline: str = "",
+    on_stage_characters: list[str] | None = None,
+    *,
+    user_pinned_ids: list[str] | None = None,
+    chapter_num: int = 0,
+    top_k: int = 3,
+    min_relevance: float = 0.35,
+    exclude: set | None = None,
+) -> LoaderPlan | None:
+    pinned, recommended = _select(
+        project_id, chapter_outline, on_stage_characters or [],
+        user_pinned_ids or [], chapter_num, top_k, min_relevance,
+        exclude or set(),
+    )
+    return make_plan(_BLOCK, _TITLE, _build_body(pinned, recommended))
 
 
 def load(
@@ -104,38 +131,41 @@ def load(
     min_relevance: float = 0.35,
     exclude: set | None = None,
 ) -> str:
-    """Inject the inspirations most relevant to the chapter.
+    p = plan(
+        project_id, chapter_outline, on_stage_characters,
+        user_pinned_ids=user_pinned_ids, chapter_num=chapter_num,
+        top_k=top_k, min_relevance=min_relevance, exclude=exclude,
+    )
+    return p.render(p.target) if p else ""
 
-    User-pinned ids are always included (subject to ``exclude``). The
-    remaining ``top_k - len(pinned)`` slots come from embedding
-    similarity over the chapter outline + character names.
-    """
+
+def _select(
+    project_id: str, chapter_outline: str, on_stage_characters: list[str],
+    user_pinned_ids: list[str], chapter_num: int, top_k: int,
+    min_relevance: float, exclude: set,
+) -> tuple[list[dict], list[dict]]:
+    """Run the query + ranking; return (pinned, recommended)."""
     try:
         db = _idea_db()
         rows = db.list_inspirations(
             project_id=project_id or None, include_embedding=True,
         )
         if not rows:
-            return ""
+            return [], []
 
-        excl: set[str] = set(exclude or [])
-        rows = [r for r in rows if r["id"] not in excl]
+        rows = [r for r in rows if r["id"] not in exclude]
         if not rows:
-            return ""
+            return [], []
 
-        # Split pinned vs candidate pool.
-        pin_set = set(user_pinned_ids or [])
+        pin_set = set(user_pinned_ids)
         pinned = [r for r in rows if r["id"] in pin_set]
-        # Auto-recommend candidates: not pinned + not over-mined.
         candidates = [
             r for r in rows
             if r["id"] not in pin_set
                and not _used_too_often(r, chapter_num)
         ]
 
-        # Build the query string and the batch of stale-embedding texts
-        # in one go so a single backend call services both.
-        on_stage = list(on_stage_characters or [])
+        on_stage = list(on_stage_characters)
         query = (chapter_outline or "").strip()
         if on_stage:
             query = f"{query}\n人物：{','.join(on_stage)}".strip()
@@ -165,8 +195,6 @@ def load(
             else:
                 stale_vecs = batch_out
 
-            # Persist any newly-computed embeddings even if the query
-            # itself failed — they'll save tokens next time.
             for j, idx in enumerate(stale_idx):
                 vec = stale_vecs[j] if j < len(stale_vecs) else []
                 if vec:
@@ -179,9 +207,6 @@ def load(
                                       rows[idx].get("id"), e)
 
             if not query_vec:
-                # Embedding backend unavailable → fall back to
-                # newest-first ordering (IdeaDB.list_inspirations sorts
-                # by updated_at DESC already).
                 recommended = candidates[:remaining]
             else:
                 scored: list[tuple[float, dict]] = []
@@ -195,7 +220,7 @@ def load(
                         break
                     recommended.append(r)
 
-        return _render_block(pinned, recommended)
+        return pinned, recommended
     except Exception as e:
         logger.debug("inspiration skipped: %s", e)
-        return ""
+        return [], []

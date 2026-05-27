@@ -193,38 +193,8 @@ class TestStorylineEndpoints(unittest.TestCase):
         self.assertEqual(g["edges"], [])
 
 
-class TestWritingKnowledgeEndpoints(unittest.TestCase):
-
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
-        self.client = _client(self.tmp)
-
-    def test_crud(self) -> None:
-        resp = self.client.post(
-            "/data/writing_knowledge",
-            json={"title": "节奏", "domain": "pacing",
-                  "content": "短句加快节奏"},
-        )
-        self.assertEqual(resp.status_code, 200, resp.text)
-        kid = resp.json()["id"]
-
-        # duplicate
-        self.assertEqual(
-            self.client.post("/data/writing_knowledge",
-                             json={"title": "节奏"}).status_code,
-            409,
-        )
-
-        # filter by domain
-        items = self.client.get(
-            "/data/writing_knowledge?domain=pacing"
-        ).json()["items"]
-        self.assertEqual(len(items), 1)
-
-        self.client.delete(f"/data/writing_knowledge/{kid}")
-        self.assertEqual(
-            self.client.get(f"/data/writing_knowledge/{kid}").status_code, 404,
-        )
+# TestWritingKnowledgeEndpoints removed in v3.1 along with the
+# /data/writing_knowledge endpoints.
 
 
 class TestChatHistoryEndpoints(unittest.TestCase):

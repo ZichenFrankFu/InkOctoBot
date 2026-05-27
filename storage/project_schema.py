@@ -66,6 +66,7 @@ CREATION_DDL = [
         audit_status TEXT NOT NULL DEFAULT 'audit_pending'
             CHECK (audit_status IN ('audit_pending','audit_passed','audit_failed','audit_overridden')),
         audit_issues_json TEXT NOT NULL DEFAULT '[]',
+        special_requirements TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
@@ -315,20 +316,9 @@ CREATION_DDL = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_storyline_edges_project ON storyline_edges(project_id, from_node_id);",
 
-    # ── Writing knowledge (replaces data/writing_knowledge/*.json) ──
-    # Cross-project: no project_id (reusable craft notes).
-    """
-    CREATE TABLE IF NOT EXISTS writing_knowledge (
-        knowledge_id TEXT PRIMARY KEY,
-        domain TEXT NOT NULL DEFAULT 'general',
-        title TEXT NOT NULL,
-        content TEXT NOT NULL DEFAULT '',
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_writing_knowledge_domain ON writing_knowledge(domain);",
+    # writing_knowledge table removed in v3.1 — the loader, helpers,
+    # router and UI are all gone. _drop_v1_redundant_objects below
+    # drops the table on existing DBs so the schema stays clean.
 
     # ── Chat messages (replaces data/chat_history/*.json) ──
     """
@@ -553,6 +543,9 @@ _CHAPTERS_V2_COLUMNS = [
     # JSON envelope shape:
     #   {"characters":[...],"locations":[...],"items":[...],"organizations":[...]}
     ("on_stage_entities", "TEXT NOT NULL DEFAULT '{}'"),
+    # v3.1 LOADER_SPEC user_special_requirements: per-chapter free-text
+    # the user wants the Writer to honour for THIS chapter only.
+    ("special_requirements", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -683,6 +676,11 @@ def _drop_v1_redundant_objects(conn: sqlite3.Connection) -> None:
         # Table not yet created on first call; the fresh CREATE will
         # carry the CHECK so the migration is a no-op.
         pass
+
+    # 5. writing_knowledge — removed in v3.1 (loader + helpers + router
+    #    all gone). Drop the table on existing DBs.
+    cur.execute("DROP INDEX IF EXISTS idx_writing_knowledge_domain")
+    cur.execute("DROP TABLE IF EXISTS writing_knowledge")
 
 
 def ensure_creation_tables(conn: sqlite3.Connection) -> None:

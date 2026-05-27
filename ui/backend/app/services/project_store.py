@@ -607,90 +607,10 @@ def replace_storyline(db_path: str, project_id: str,
         con.commit()
 
 
-# ─────────────── Writing knowledge (cross-project) ────────────────
-
-
-def _knowledge_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
-    r = _row_to_dict(row)
-    return {
-        "id": r["knowledge_id"],
-        "domain": r.get("domain") or "general",
-        "title": r.get("title") or "",
-        "content": r.get("content") or "",
-        "tags": json.loads(r.get("tags_json") or "[]"),
-        "created_at": r.get("created_at"),
-        "updated_at": r.get("updated_at"),
-    }
-
-
-def list_writing_knowledge(db_path: str,
-                           domain: str | None = None) -> list[dict]:
-    sql = "SELECT * FROM writing_knowledge"
-    params: tuple = ()
-    if domain:
-        sql += " WHERE domain = ?"
-        params = (domain,)
-    sql += " ORDER BY domain, title"
-    with open_db(db_path) as con:
-        rows = con.execute(sql, params).fetchall()
-    return [_knowledge_row_to_payload(r) for r in rows]
-
-
-def get_writing_knowledge(db_path: str, knowledge_id: str) -> dict | None:
-    with open_db(db_path) as con:
-        row = con.execute(
-            "SELECT * FROM writing_knowledge WHERE knowledge_id = ?",
-            (knowledge_id,),
-        ).fetchone()
-    return _knowledge_row_to_payload(row) if row else None
-
-
-def upsert_writing_knowledge(db_path: str,
-                             body: dict[str, Any]) -> dict[str, Any]:
-    kid = body.get("id") or _nid("wk_")
-    title = (body.get("title") or "").strip()
-    if not title:
-        raise ValueError("title is required")
-    with open_db(db_path) as con:
-        dup = con.execute(
-            "SELECT knowledge_id FROM writing_knowledge "
-            "WHERE title = ? AND knowledge_id != ?",
-            (title, kid),
-        ).fetchone()
-        if dup:
-            raise ValueError(f"写作知识「{title}」已存在，请使用不同的标题")
-        con.execute(
-            """INSERT INTO writing_knowledge
-               (knowledge_id, domain, title, content, tags_json,
-                created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?,
-                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-               ON CONFLICT(knowledge_id) DO UPDATE SET
-                   domain = excluded.domain,
-                   title = excluded.title,
-                   content = excluded.content,
-                   tags_json = excluded.tags_json,
-                   updated_at = CURRENT_TIMESTAMP""",
-            (kid,
-             body.get("domain", "general"),
-             title,
-             body.get("content", ""),
-             json.dumps(body.get("tags", []), ensure_ascii=False)),
-        )
-        con.commit()
-    saved = get_writing_knowledge(db_path, kid)
-    if saved is None:  # pragma: no cover
-        raise RuntimeError("upsert succeeded but row not found")
-    return saved
-
-
-def delete_writing_knowledge(db_path: str, knowledge_id: str) -> None:
-    with open_db(db_path) as con:
-        con.execute(
-            "DELETE FROM writing_knowledge WHERE knowledge_id = ?",
-            (knowledge_id,),
-        )
-        con.commit()
+# Writing knowledge helpers removed in v3.1. The writing_knowledge
+# table is dropped by ``_drop_v1_redundant_objects`` in
+# ``storage/project_schema.py``; CRUD endpoints and the prompt-context
+# loader are gone.
 
 
 # ─────────────── Chat history ─────────────────────────────────────
@@ -874,10 +794,11 @@ def save_editor_doc(db_path: str, project_id: str,
                            title, outline, final_text, word_count,
                            synopsis, time_label, location, characters_json,
                            pov_character, on_stage_entities,
+                           special_requirements,
                            status, scene_plan_json,
                            performance_log, evaluation_json,
                            extra_json, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                                'draft', '[]', '', '{}', '{}',
                                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                        ON CONFLICT(chapter_id) DO UPDATE SET
@@ -893,6 +814,7 @@ def save_editor_doc(db_path: str, project_id: str,
                            characters_json = excluded.characters_json,
                            pov_character = excluded.pov_character,
                            on_stage_entities = excluded.on_stage_entities,
+                           special_requirements = excluded.special_requirements,
                            updated_at = CURRENT_TIMESTAMP""",
                     (cid, project_id, chap_num, vol_num,
                      ch.get("title", ""),
@@ -904,7 +826,8 @@ def save_editor_doc(db_path: str, project_id: str,
                      ch.get("location", ""),
                      json.dumps(characters_list, ensure_ascii=False),
                      ch.get("pov_character", ""),
-                     json.dumps(on_stage_blob, ensure_ascii=False)),
+                     json.dumps(on_stage_blob, ensure_ascii=False),
+                     (ch.get("special_requirements") or "")),
                 )
                 pending_segment_updates.append((cid, project_id, content))
 

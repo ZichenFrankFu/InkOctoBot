@@ -22,7 +22,8 @@ import logging
 import sqlite3
 from typing import Any
 
-from ..budgets import BUDGETS
+from ..budget_allocator import LOADER_BUDGETS
+from ..loader_protocol import LoaderPlan
 from ..utils import clip, cosine, embed_sync, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.subplots")
@@ -87,7 +88,11 @@ def _persist_embedding(db_path: str, thread_id: str,
                       thread_id, e)
 
 
-def _render(main_lines: list[dict], sub_lines: list[dict]) -> str:
+_BLOCK = "subplots"
+_TITLE = "当前涉及的故事线"
+
+
+def _build_body(main_lines: list[dict], sub_lines: list[dict]) -> str:
     parts: list[str] = []
     if main_lines:
         parts.append("### 主线（必须推进或呼应）")
@@ -105,43 +110,39 @@ def _render(main_lines: list[dict], sub_lines: list[dict]) -> str:
             if (s.get("description") or "").strip():
                 line += (s.get("description") or "").strip()
             parts.append(line)
-    if not parts:
+    return "\n".join(parts)
+
+
+def _render(main_lines: list[dict], sub_lines: list[dict]) -> str:
+    body = _build_body(main_lines, sub_lines)
+    if not body:
         return ""
-    body = clip("\n".join(parts), BUDGETS["subplots"])
-    return section("当前涉及的故事线", body)
+    return section(_TITLE, clip(body, LOADER_BUDGETS[_BLOCK]["target"]))
 
 
-def load(
-    project_id: str,
-    chapter_outline: str = "",
-    chapter_num: int = 0,
-    *,
-    top_k: int = 5,
-    min_relevance: float = 0.3,
-    exclude: set | None = None,
-) -> str:
-    """Inject main lines + outline-similar sub lines."""
+def _prepare(
+    project_id: str, chapter_outline: str, top_k: int,
+    min_relevance: float, exclude: set | None,
+) -> tuple[list[dict], list[dict]] | None:
+    """Return (main_lines, selected_subs) or None when inactive."""
     try:
         from ui.backend.app.services.project_paths import get_db_path
         db_path = get_db_path()
 
         rows = _list_active_subplots(db_path, project_id)
         if not rows:
-            return ""
+            return None
 
         excl = exclude or set()
         rows = [r for r in rows if r["thread_id"] not in excl]
         if not rows:
-            return ""
+            return None
 
         main_lines = [r for r in rows if r.get("thread_type") == "main"]
         sub_pool = [r for r in rows if r.get("thread_type") != "main"]
 
-        # Always-include main lines; rank sub lines by cosine similarity
-        # to the chapter outline.
         selected_subs: list[dict] = []
         if sub_pool:
-            # Collect stale-embedding texts + the query into one batch.
             stale_idx: list[int] = []
             stale_texts: list[str] = []
             for i, r in enumerate(sub_pool):
@@ -172,7 +173,6 @@ def load(
                     )
 
             if not query_vec:
-                # Backend unavailable → newest-first by start_chapter desc.
                 selected_subs = sorted(
                     sub_pool, key=lambda r: -(r.get("start_chapter") or 0),
                 )[:top_k]
@@ -188,7 +188,55 @@ def load(
                         break
                     selected_subs.append(r)
 
-        return _render(main_lines, selected_subs)
+        if not (main_lines or selected_subs):
+            return None
+        return main_lines, selected_subs
     except Exception as e:
         logger.debug("subplots loader skipped: %s", e)
-        return ""
+        return None
+
+
+def plan(
+    project_id: str,
+    chapter_outline: str = "",
+    chapter_num: int = 0,
+    *,
+    top_k: int = 5,
+    min_relevance: float = 0.3,
+    exclude: set | None = None,
+) -> LoaderPlan | None:
+    prepared = _prepare(project_id, chapter_outline, top_k, min_relevance, exclude)
+    if prepared is None:
+        return None
+    main_lines, selected_subs = prepared
+    body = _build_body(main_lines, selected_subs)
+    if not body:
+        return None
+
+    cfg = LOADER_BUDGETS[_BLOCK]
+    overhead = len(_TITLE) + 6
+    natural = overhead + len(body)
+
+    def render(budget: int) -> str:
+        return section(_TITLE, clip(body, max(0, budget - overhead)))
+
+    return LoaderPlan(
+        block_id=_BLOCK,
+        natural_length=natural,
+        minimum=cfg["min"], target=cfg["target"], maximum=cfg["max"],
+        priority_tier=cfg["tier"], render=render,
+    )
+
+
+def load(
+    project_id: str,
+    chapter_outline: str = "",
+    chapter_num: int = 0,
+    *,
+    top_k: int = 5,
+    min_relevance: float = 0.3,
+    exclude: set | None = None,
+) -> str:
+    p = plan(project_id, chapter_outline, chapter_num,
+              top_k=top_k, min_relevance=min_relevance, exclude=exclude)
+    return p.render(p.target) if p else ""

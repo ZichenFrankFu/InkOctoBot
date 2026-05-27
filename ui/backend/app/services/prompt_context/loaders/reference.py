@@ -38,7 +38,7 @@ import json
 import logging
 from typing import Any
 
-from ..budgets import BUDGETS
+from ..loader_protocol import LoaderPlan, make_plan
 from ..utils import clip, embed_sync, section
 from .reference_features import (
     characters as feat_characters,
@@ -174,6 +174,23 @@ def _list_works(db_path: str, project_id: str) -> list[dict]:
         return []
 
 
+_BLOCK = "reference"
+_TITLE = "参考作品综合"
+
+
+def plan(
+    project_id: str,
+    db_path: str,
+    chapter_outline: str = "",
+    *,
+    scene_types: list[str] | None = None,
+    exclude: set | None = None,
+) -> LoaderPlan | None:
+    body = _build_body(project_id, db_path, chapter_outline,
+                         scene_types=scene_types, exclude=exclude)
+    return make_plan(_BLOCK, _TITLE, body)
+
+
 def load(
     project_id: str,
     db_path: str,
@@ -181,6 +198,15 @@ def load(
     *,
     scene_types: list[str] | None = None,
     exclude: set | None = None,
+) -> str:
+    p = plan(project_id, db_path, chapter_outline,
+              scene_types=scene_types, exclude=exclude)
+    return p.render(p.target) if p else ""
+
+
+def _build_body(
+    project_id: str, db_path: str, chapter_outline: str,
+    *, scene_types: list[str] | None = None, exclude: set | None = None,
 ) -> str:
     """Build the dual-path reference block.
 
@@ -311,5 +337,4 @@ def load(
             block_lines.append(f"**{feature_labels[feature]}**：{text}")
         parts.append("\n".join(block_lines))
 
-    body = clip("\n\n".join(parts), BUDGETS["reference"])
-    return section("参考作品综合", body)
+    return "\n\n".join(parts)

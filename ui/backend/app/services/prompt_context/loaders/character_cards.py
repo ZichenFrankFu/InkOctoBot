@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..budgets import BUDGETS
+from ..loader_protocol import LoaderPlan, make_plan
 from ..utils import clip, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.character_cards")
@@ -299,14 +299,13 @@ def _render_transition_complete(
 # ─────────── main entry ───────────
 
 
-def load(
-    project_id: str,
-    names: list[str],
-    exclude: set | None = None,
-    *,
-    chapter_num: int = 0,
+_BLOCK = "character_cards"
+_TITLE = "出场角色档案"
+
+
+def _build_body(
+    project_id: str, names: list[str], exclude: set | None, chapter_num: int,
 ) -> str:
-    """Build deep character cards for the chapter's on-stage characters."""
     if not names:
         return ""
     try:
@@ -344,12 +343,29 @@ def load(
             else:
                 card = _render_stable(c, resolution["baseline_snapshot"])
             cards.append(card)
-        if not cards:
-            return ""
-        return section(
-            "出场角色档案",
-            clip("\n\n".join(cards), BUDGETS["character_cards"]),
-        )
+        return "\n\n".join(cards)
     except Exception as e:
         logger.debug("character cards skipped: %s", e)
         return ""
+
+
+def plan(
+    project_id: str,
+    names: list[str],
+    exclude: set | None = None,
+    *,
+    chapter_num: int = 0,
+) -> LoaderPlan | None:
+    return make_plan(_BLOCK, _TITLE,
+                       _build_body(project_id, names, exclude, chapter_num))
+
+
+def load(
+    project_id: str,
+    names: list[str],
+    exclude: set | None = None,
+    *,
+    chapter_num: int = 0,
+) -> str:
+    p = plan(project_id, names, exclude, chapter_num=chapter_num)
+    return p.render(p.target) if p else ""

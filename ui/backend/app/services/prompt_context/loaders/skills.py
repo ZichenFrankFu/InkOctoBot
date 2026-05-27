@@ -14,7 +14,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..budgets import BUDGETS
+from ..budget_allocator import LOADER_BUDGETS
+from ..loader_protocol import LoaderPlan, make_plan
 from ..utils import clip, cosine, embed_sync, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.skills")
@@ -34,7 +35,11 @@ def _format_skill(skill: dict, *, source_label: str) -> str:
     return f"{head}\n{body}"
 
 
-def _render(pinned: list[dict], recommended: list[dict]) -> str:
+_BLOCK = "skills"
+
+
+def _build(pinned: list[dict], recommended: list[dict]) -> tuple[str, str]:
+    """Return (title, body). Body is empty when both lists are empty."""
     parts: list[str] = []
     if pinned:
         parts.append(f"### 用户主动选中（{len(pinned)} 项）")
@@ -48,11 +53,34 @@ def _render(pinned: list[dict], recommended: list[dict]) -> str:
         for s in recommended:
             parts.append("")
             parts.append(_format_skill(s, source_label="auto"))
-    if not parts:
+    title = f"创作技能（已加载 {len(pinned) + len(recommended)} 项）"
+    return title, "\n".join(parts)
+
+
+def _render(pinned: list[dict], recommended: list[dict]) -> str:
+    title, body = _build(pinned, recommended)
+    if not body:
         return ""
-    header = f"创作技能（已加载 {len(pinned) + len(recommended)} 项）"
-    body = clip("\n".join(parts), BUDGETS["skills"])
-    return section(header, body)
+    return section(title, clip(body, LOADER_BUDGETS[_BLOCK]["target"]))
+
+
+def plan(
+    project_id: str,
+    chapter_outline: str = "",
+    on_stage_characters: list[str] | None = None,
+    *,
+    user_pinned_skill_ids: list[str] | None = None,
+    max_total: int = 5,
+    min_relevance: float = 0.3,
+    exclude: set | None = None,
+) -> LoaderPlan | None:
+    pinned, recommended = _select(
+        project_id, chapter_outline, on_stage_characters or [],
+        user_pinned_skill_ids or [], max_total, min_relevance,
+        exclude or set(),
+    )
+    title, body = _build(pinned, recommended)
+    return make_plan(_BLOCK, title, body)
 
 
 def load(
@@ -65,19 +93,26 @@ def load(
     min_relevance: float = 0.3,
     exclude: set | None = None,
 ) -> str:
-    """Render the writing-skills block.
+    """Render the writing-skills block."""
+    p = plan(
+        project_id, chapter_outline, on_stage_characters,
+        user_pinned_skill_ids=user_pinned_skill_ids,
+        max_total=max_total, min_relevance=min_relevance, exclude=exclude,
+    )
+    return p.render(p.target) if p else ""
 
-    ``user_pinned_skill_ids`` is unioned with the per-project pin set
-    stored in the DB. Both are honored unconditionally; only the
-    auto-recommend tail is gated by ``min_relevance``.
-    """
+
+def _select(
+    project_id: str, chapter_outline: str, on_stage_characters: list[str],
+    user_pinned_skill_ids: list[str], max_total: int,
+    min_relevance: float, exclude: set,
+) -> tuple[list[dict], list[dict]]:
+    """Run the lookup + ranking. Returns (pinned, recommended)."""
     try:
         from ui.backend.app.services import skill_index
         from ui.backend.app.services.project_paths import get_db_path
 
         db_path = get_db_path()
-        # Lazy mirror — first call per process pulls from disk; later
-        # calls reuse the snapshot.
         try:
             skill_index.sync_from_registry(db_path)
         except Exception as e:
@@ -85,15 +120,12 @@ def load(
 
         all_skills = skill_index.list_skills(db_path, include_embedding=True)
         if not all_skills:
-            return ""
-
-        excl = exclude or set()
-        all_skills = [s for s in all_skills if s["skill_id"] not in excl]
+            return [], []
+        all_skills = [s for s in all_skills if s["skill_id"] not in exclude]
         if not all_skills:
-            return ""
+            return [], []
 
-        # Union explicit pin ids with the project's persistent pins.
-        pin_set: set[str] = set(user_pinned_skill_ids or [])
+        pin_set: set[str] = set(user_pinned_skill_ids)
         try:
             pin_set.update(skill_index.list_pinned_skill_ids(db_path, project_id))
         except Exception as e:
@@ -101,12 +133,10 @@ def load(
 
         pinned = [s for s in all_skills if s["skill_id"] in pin_set]
         candidates = [s for s in all_skills if s["skill_id"] not in pin_set]
-
         remaining = max(0, max_total - len(pinned))
         recommended: list[dict] = []
 
         if remaining > 0 and candidates:
-            # Refresh embeddings whose canonical text shifted.
             stale_idx: list[int] = []
             stale_texts: list[str] = []
             for i, s in enumerate(candidates):
@@ -117,10 +147,9 @@ def load(
                     stale_texts.append(text)
                     s["_text_hash"] = expected
 
-            on_stage = list(on_stage_characters or [])
             query = (chapter_outline or "").strip()
-            if on_stage:
-                query = f"{query}\n人物：{','.join(on_stage)}".strip()
+            if on_stage_characters:
+                query = f"{query}\n人物：{','.join(on_stage_characters)}".strip()
 
             batch_in = ([query] if query else []) + stale_texts
             batch_out = embed_sync(batch_in) if batch_in else []
@@ -145,7 +174,6 @@ def load(
                                       candidates[idx].get("skill_id"), e)
 
             if not query_vec:
-                # Backend unavailable → first-come (already sorted by display_name).
                 recommended = candidates[:remaining]
             else:
                 scored: list[tuple[float, dict]] = []
@@ -159,7 +187,7 @@ def load(
                         break
                     recommended.append(s)
 
-        return _render(pinned, recommended)
+        return pinned, recommended
     except Exception as e:
         logger.debug("skills loader skipped: %s", e)
-        return ""
+        return [], []

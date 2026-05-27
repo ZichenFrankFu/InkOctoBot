@@ -117,8 +117,10 @@ class TestMigrate(unittest.TestCase):
         self.assertEqual(report["project_memory"]["inserted"], 2)
         # Storylines: 2 nodes + 1 edge = 3
         self.assertEqual(report["storylines"]["inserted"], 3)
-        # Writing knowledge: 1
-        self.assertEqual(report["writing_knowledge"]["inserted"], 1)
+        # writing_knowledge: table dropped in v3.1; migrator still
+        # attempts the insert but it skips because the table is gone.
+        self.assertEqual(report["writing_knowledge"]["inserted"], 0)
+        self.assertEqual(report["writing_knowledge"]["skipped"], 1)
         # Chat: 2 messages
         self.assertEqual(report["chat_history"]["inserted"], 2)
         # Editor: 1 blob + 2 chapter rows = 3
@@ -153,7 +155,7 @@ class TestMigrate(unittest.TestCase):
         # Total inserted on rerun should be small (only project_blobs use REPLACE
         # so they get re-inserted; counted tables use OR IGNORE).
         for name in ["characters", "worldbook", "project_memory",
-                     "storylines", "writing_knowledge", "chat_history"]:
+                     "storylines", "chat_history"]:
             self.assertEqual(
                 second[name]["inserted"], 0,
                 f"second run inserted into {name}, expected idempotent",

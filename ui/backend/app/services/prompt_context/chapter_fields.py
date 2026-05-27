@@ -25,6 +25,10 @@ def load_chapter_fields(project_id: str, chapter_id: str) -> dict[str, Any]:
         "on_stage_entities": {
             "characters": [], "locations": [], "items": [], "organizations": [],
         },
+        # LOADER_SPEC user_special_requirements: per-chapter free-text
+        # the Writer must honour for this chapter only. Empty by
+        # default; loader skips itself when blank.
+        "special_requirements": "",
     }
     if not chapter_id:
         return fields
@@ -43,6 +47,7 @@ def load_chapter_fields(project_id: str, chapter_id: str) -> dict[str, Any]:
                     fields["existing_content"] = ch.get("content", "") or ""
                     fields["referenced_events"] = ch.get("referenced_events", []) or []
                     fields["referenced_inspirations"] = ch.get("referenced_inspirations", []) or []
+                    fields["special_requirements"] = (ch.get("special_requirements") or "").strip()
                     ose = ch.get("on_stage_entities")
                     if isinstance(ose, dict):
                         fields["on_stage_entities"] = {

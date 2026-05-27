@@ -26,7 +26,8 @@ import logging
 import sqlite3
 from typing import Any
 
-from ..budgets import BUDGETS
+from ..budget_allocator import LOADER_BUDGETS
+from ..loader_protocol import LoaderPlan, make_plan
 from ..utils import clip, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.reader_memory")
@@ -157,12 +158,12 @@ def _query_episodic(
     return out
 
 
-def _render(
-    chapter_num: int,
-    recent: list[dict],
-    anchors: list[dict],
-    semantic: list[dict],
-    episodic: list[dict],
+_BLOCK = "reader_memory"
+
+
+def _build_body(
+    recent: list[dict], anchors: list[dict],
+    semantic: list[dict], episodic: list[dict],
 ) -> str:
     parts: list[str] = []
     if recent:
@@ -197,11 +198,83 @@ def _render(
         parts.append("### 相关事件时间线")
         for e in episodic:
             parts.append(f"- 第 {e['chapter_num']} 章：{e['description']}")
-    if not parts:
+    return "\n".join(parts)
+
+
+def _render(
+    chapter_num: int,
+    recent: list[dict], anchors: list[dict],
+    semantic: list[dict], episodic: list[dict],
+) -> str:
+    body = _build_body(recent, anchors, semantic, episodic)
+    if not body:
         return ""
     title = f"读者视角记忆（截至第 {chapter_num - 1} 章）"
-    body = clip("\n".join(parts), BUDGETS["reader_memory"])
-    return section(title, body)
+    return section(title, clip(body, LOADER_BUDGETS[_BLOCK]["target"]))
+
+
+def _gather(
+    project_id: str, chapter_num: int,
+    chapter_outline: str, on_stage_characters: list[str],
+    window_size: int, semantic_top_k: int, excl: set,
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    from ui.backend.app.services.project_paths import get_db_path
+    db_path = get_db_path()
+
+    recent = (
+        [] if "recent" in excl
+        else _query_recent_summaries(db_path, project_id, chapter_num, window_size)
+    )
+    anchors = (
+        [] if "anchors" in excl
+        else _query_anchors(db_path, project_id, chapter_num)
+    )
+    recent_chs = {r["chapter_num"] for r in recent}
+    anchors = [a for a in anchors if a["chapter_num"] not in recent_chs]
+
+    semantic = (
+        [] if "semantic" in excl
+        else _query_semantic(
+            project_id, chapter_num,
+            (chapter_outline or "").strip(), semantic_top_k,
+        )
+    )
+    episodic = (
+        [] if "episodic" in excl
+        else _query_episodic(
+            db_path, project_id, chapter_num,
+            on_stage_characters or [],
+            lookback=_DEFAULT_EPISODIC_LOOKBACK,
+            limit=_DEFAULT_EPISODIC_LIMIT,
+        )
+    )
+    return recent, anchors, semantic, episodic
+
+
+def plan(
+    project_id: str,
+    chapter_num: int,
+    *,
+    chapter_outline: str = "",
+    on_stage_characters: list[str] | None = None,
+    window_size: int = _DEFAULT_WINDOW,
+    semantic_top_k: int = _DEFAULT_SEMANTIC_TOP_K,
+    exclude: set | None = None,
+) -> LoaderPlan | None:
+    if chapter_num <= 1:
+        return None
+    try:
+        recent, anchors, semantic, episodic = _gather(
+            project_id, chapter_num, chapter_outline,
+            list(on_stage_characters or []), window_size, semantic_top_k,
+            exclude or set(),
+        )
+    except Exception as e:
+        logger.debug("reader_memory skipped: %s", e)
+        return None
+    body = _build_body(recent, anchors, semantic, episodic)
+    title = f"读者视角记忆（截至第 {chapter_num - 1} 章）"
+    return make_plan(_BLOCK, title, body)
 
 
 def load(
@@ -214,48 +287,11 @@ def load(
     semantic_top_k: int = _DEFAULT_SEMANTIC_TOP_K,
     exclude: set | None = None,
 ) -> str:
-    """Build the reader-memory block."""
-    if chapter_num <= 1:
-        return ""  # nothing has happened yet
-    excl = exclude or set()
-    try:
-        from ui.backend.app.services.project_paths import get_db_path
-        db_path = get_db_path()
-
-        recent = (
-            [] if "recent" in excl
-            else _query_recent_summaries(
-                db_path, project_id, chapter_num, window_size,
-            )
-        )
-        anchors = (
-            [] if "anchors" in excl
-            else _query_anchors(db_path, project_id, chapter_num)
-        )
-        # De-dup: any anchor that's also in the recent window appears
-        # once in the recent section (keeps the layered view tidy).
-        recent_chs = {r["chapter_num"] for r in recent}
-        anchors = [a for a in anchors if a["chapter_num"] not in recent_chs]
-
-        semantic = (
-            [] if "semantic" in excl
-            else _query_semantic(
-                project_id, chapter_num,
-                (chapter_outline or "").strip(),
-                semantic_top_k,
-            )
-        )
-        episodic = (
-            [] if "episodic" in excl
-            else _query_episodic(
-                db_path, project_id, chapter_num,
-                on_stage_characters or [],
-                lookback=_DEFAULT_EPISODIC_LOOKBACK,
-                limit=_DEFAULT_EPISODIC_LIMIT,
-            )
-        )
-
-        return _render(chapter_num, recent, anchors, semantic, episodic)
-    except Exception as e:
-        logger.debug("reader_memory skipped: %s", e)
-        return ""
+    p = plan(
+        project_id, chapter_num,
+        chapter_outline=chapter_outline,
+        on_stage_characters=on_stage_characters,
+        window_size=window_size, semantic_top_k=semantic_top_k,
+        exclude=exclude,
+    )
+    return p.render(p.target) if p else ""

@@ -1,34 +1,22 @@
-"""Worldbook (世界书) loader — outline-driven similarity injection.
-
-Picks the entries most relevant to the chapter's outline rather than
-dumping the whole worldbook. Flow:
-
-1. Read the chapter's ``synopsis`` (大纲) from the editor doc.
-2. If absent → return ``""`` (no outline, no targeted selection).
-3. Compute the synopsis embedding via the configured embedding backend.
-4. For each worldbook entry, ensure its stored embedding is fresh
-   (recompute + persist if missing or stale via text-hash mismatch).
-5. Rank by cosine similarity, apply the exclude set, take entries until
-   the character budget is exhausted.
-
-The embedding backend may be offline (local sentence-transformers not
-installed, no OpenAI key, etc.) — in that case the loader falls back to
-returning ALL entries (existing behavior) so generation still grounds
-against the worldbook.
-"""
+"""Worldbook (世界书) loader — outline-driven similarity injection."""
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from ..budgets import BUDGETS
+from ..budget_allocator import LOADER_BUDGETS
+from ..loader_protocol import LoaderPlan
 from ..utils import clip, cosine, embed_sync, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.worldbook")
 
 
-def _render_entries(entries: list[dict], exclude: set | None) -> str:
-    """Render an ordered list of worldbook entries into the prompt block."""
+_BLOCK = "worldbook"
+_TITLE = "世界观设定（世界书）"
+
+
+def _format_entries(entries: list[dict], exclude: set | None) -> str:
+    """Format a pre-ordered list of entries into the prompt body (no clip)."""
     lines: list[str] = []
     for e in entries:
         eid = str(e.get("id") or e.get("title") or "")
@@ -41,17 +29,18 @@ def _render_entries(entries: list[dict], exclude: set | None) -> str:
         cat = (e.get("category") or "").strip()
         head = f"【{title}】" + (f"（{cat}）" if cat else "")
         lines.append(f"{head} {content}".strip())
-    if not lines:
+    return "\n".join(lines)
+
+
+def _render_entries(entries: list[dict], exclude: set | None) -> str:
+    body = _format_entries(entries, exclude)
+    if not body:
         return ""
-    return section("世界观设定（世界书）", clip("\n".join(lines), BUDGETS["worldbook"]))
+    return section(_TITLE, clip(body, LOADER_BUDGETS[_BLOCK]["target"]))
 
 
-def load(project_id: str, chapter_id: str = "", exclude: set | None = None) -> str:
-    """Inject the worldbook entries most relevant to the chapter outline.
-
-    No outline → ``""`` (per user-configured behavior). Embedding-backend
-    failure → fall back to all entries (existing pre-similarity behavior).
-    """
+def _prepare(project_id: str, chapter_id: str) -> list[dict] | None:
+    """Run the query / embedding pipeline; return ordered rows or None."""
     try:
         from ui.backend.app.services import project_store
         from ui.backend.app.services.project_paths import get_db_path
@@ -64,15 +53,12 @@ def load(project_id: str, chapter_id: str = "", exclude: set | None = None) -> s
                 _cf.load_chapter_fields(project_id, chapter_id).get("synopsis") or ""
             ).strip()
         if not synopsis:
-            return ""
+            return None
 
         rows = project_store.list_worldbook(db_path, project_id, include_embedding=True)
         if not rows:
-            return ""
+            return None
 
-        # Identify entries needing (re)embedding. Stale = hash mismatch
-        # OR empty embedding. Compute query embedding in the same batch
-        # so a single network round-trip serves both.
         stale_idx: list[int] = []
         stale_texts: list[str] = []
         for i, e in enumerate(rows):
@@ -83,14 +69,11 @@ def load(project_id: str, chapter_id: str = "", exclude: set | None = None) -> s
                 stale_idx.append(i)
                 stale_texts.append(text)
                 e["_text_hash"] = current_hash
-                e["_canonical"] = text
 
-        # Batch: [query, *stale_texts] in one embed() call.
         batch_in = [synopsis] + stale_texts
         batch_out = embed_sync(batch_in)
         if not batch_out or not batch_out[0]:
-            # Embedding unavailable — fall back to all entries unranked.
-            return _render_entries(rows, exclude)
+            return rows  # embedding unavailable — unsorted fallback
         query_vec = batch_out[0]
         for j, idx in enumerate(stale_idx):
             new_vec = batch_out[1 + j] if 1 + j < len(batch_out) else []
@@ -101,21 +84,48 @@ def load(project_id: str, chapter_id: str = "", exclude: set | None = None) -> s
                 project_store.set_worldbook_embedding(
                     db_path, rows[idx]["id"], new_vec, rows[idx]["_text_hash"],
                 )
-            except Exception as e:
+            except Exception as ex:
                 logger.debug("persist embedding failed for %s: %s",
-                              rows[idx].get("id"), e)
+                              rows[idx].get("id"), ex)
 
-        # Score and sort by descending similarity. Entries without a
-        # vector (embedding still failed) get -inf so they sink to the
-        # bottom but remain available as filler when budget allows.
         scored: list[tuple[float, dict]] = []
         for e in rows:
             vec = e.get("embedding") or []
             score = cosine(query_vec, vec) if vec else float("-inf")
             scored.append((score, e))
         scored.sort(key=lambda t: t[0], reverse=True)
-        ordered = [e for _, e in scored]
-        return _render_entries(ordered, exclude)
+        return [e for _, e in scored]
     except Exception as e:
         logger.debug("worldbook skipped: %s", e)
-        return ""
+        return None
+
+
+def plan(
+    project_id: str, chapter_id: str = "",
+    exclude: set | None = None,
+) -> LoaderPlan | None:
+    ordered = _prepare(project_id, chapter_id)
+    if not ordered:
+        return None
+    body = _format_entries(ordered, exclude)
+    if not body:
+        return None
+
+    cfg = LOADER_BUDGETS[_BLOCK]
+    overhead = len(_TITLE) + 6
+    natural = overhead + len(body)
+
+    def render(budget: int) -> str:
+        return section(_TITLE, clip(body, max(0, budget - overhead)))
+
+    return LoaderPlan(
+        block_id=_BLOCK,
+        natural_length=natural,
+        minimum=cfg["min"], target=cfg["target"], maximum=cfg["max"],
+        priority_tier=cfg["tier"], render=render,
+    )
+
+
+def load(project_id: str, chapter_id: str = "", exclude: set | None = None) -> str:
+    p = plan(project_id, chapter_id, exclude)
+    return p.render(p.target) if p else ""

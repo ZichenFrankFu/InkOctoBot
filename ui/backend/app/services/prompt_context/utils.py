@@ -6,6 +6,7 @@
 - ``parse_rag_excludes`` — turn ``["block::id", ...]`` into ``{block: {ids}}``
 - ``cosine`` — vector similarity (zero-fail tolerant)
 - ``embed_sync`` — sync bridge into the async embedding provider
+- ``estimate_tokens`` — character-count → token estimate (project-wide heuristic)
 """
 from __future__ import annotations
 
@@ -65,6 +66,25 @@ def parse_rag_excludes(rag_excludes: list[str] | None) -> dict[str, set[str]]:
         blk, _, iid = s.partition("::")
         excl.setdefault(blk.strip(), set()).add(iid.strip())
     return excl
+
+
+# CJK character → token ratio. GPT-4 tokenizer averages 1 token per
+# ~1.7 CJK characters; ASCII text averages ~1 token per 4 chars.
+# This is the project-wide heuristic; not exact, but stable across
+# loaders so per-loader telemetry is comparable.
+_CJK_TOKEN_RATIO = 1.7
+
+
+def estimate_tokens(text: str) -> int:
+    """Approximate the token count of ``text``.
+
+    CJK-biased heuristic: ``len(text) / 1.7``. Returns ``0`` for empty
+    input. Same constant used for total + per-loader telemetry so the
+    reported numbers add up.
+    """
+    if not text:
+        return 0
+    return int(len(text) / _CJK_TOKEN_RATIO)
 
 
 def cosine(a: list[float], b: list[float]) -> float:

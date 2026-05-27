@@ -206,46 +206,8 @@ def delete_worldbook_entry(eid: str):
     project_store.delete_worldbook(_db(), eid)
     return {"ok": True}
 
-# ═══ Writing Knowledge (DB-backed via project_store; cross-project library) ═══
-@router.get("/writing_knowledge")
-def list_writing_knowledge(domain: str | None = None, page: int = 0, size: int = 0):
-    items = project_store.list_writing_knowledge(_db(), domain)
-    total = len(items)
-    if size > 0:
-        start = page * size
-        items = items[start:start + size]
-    return {"items": items, "total": total}
-
-@router.post("/writing_knowledge")
-def create_writing_knowledge(body: dict = Body(...)):
-    body = dict(body)
-    body.setdefault("title", "新知识条目")
-    body.setdefault("domain", "其他")
-    try:
-        return project_store.upsert_writing_knowledge(_db(), body)
-    except ValueError as e:
-        raise HTTPException(409 if "已存在" in str(e) else 400, detail=str(e))
-
-@router.get("/writing_knowledge/{kid}")
-def get_writing_knowledge(kid: str):
-    item = project_store.get_writing_knowledge(_db(), kid)
-    if not item:
-        raise HTTPException(404, f"not found: writing_knowledge/{kid}")
-    return item
-
-@router.put("/writing_knowledge/{kid}")
-def update_writing_knowledge(kid: str, body: dict = Body(...)):
-    body = dict(body)
-    body["id"] = kid
-    try:
-        return project_store.upsert_writing_knowledge(_db(), body)
-    except ValueError as e:
-        raise HTTPException(409 if "已存在" in str(e) else 400, detail=str(e))
-
-@router.delete("/writing_knowledge/{kid}")
-def delete_writing_knowledge(kid: str):
-    project_store.delete_writing_knowledge(_db(), kid)
-    return {"ok": True}
+# Writing Knowledge endpoints removed in v3.1 — the writing_knowledge
+# table, helpers, prompt loader and frontend pages are gone.
 
 # ═══ Reference Injection (DB-backed via project_store; blob scope) ═══
 @router.get("/reference_injection/{project_id}")

@@ -115,7 +115,7 @@ class Writer(BaseAgent):
         style_profile: str = "",
         user_preferences: str = "",
         memory_context: str = "",
-        adjacent_context: str = "",
+        adjacent_context: str = "",  # deprecated v3.1; kept for back-compat callers
         constraints: str = "",
         target_word_count: int = 2000,
         # InkOS B1 — extra block hooks, optional

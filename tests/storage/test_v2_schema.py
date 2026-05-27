@@ -58,9 +58,16 @@ class TestV2Tables(unittest.TestCase):
         for t in [
             "characters", "worldbook_entries", "project_memories",
             "storyline_nodes", "storyline_edges",
-            "writing_knowledge", "chat_messages", "project_blobs",
+            "chat_messages", "project_blobs",
         ]:
             self.assertIn(t, tables, f"v2 table missing: {t}")
+
+    def test_writing_knowledge_dropped(self) -> None:
+        """v3.1: writing_knowledge table is dropped on upgrade."""
+        tables = {row["name"] for row in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        self.assertNotIn("writing_knowledge", tables)
 
     def test_chapters_has_v2_columns(self) -> None:
         cols = {row["name"] for row in self.conn.execute(
@@ -156,17 +163,7 @@ class TestV2Tables(unittest.TestCase):
                 ("m1", "p1", "bogus_role", ""),
             )
 
-    def test_writing_knowledge_no_project_id(self) -> None:
-        # Cross-project: no FK
-        self.conn.execute(
-            "INSERT INTO writing_knowledge (knowledge_id, domain, title) VALUES (?, ?, ?)",
-            ("wk1", "pacing", "节奏控制"),
-        )
-        self.conn.commit()
-        row = self.conn.execute(
-            "SELECT * FROM writing_knowledge WHERE knowledge_id='wk1'"
-        ).fetchone()
-        self.assertEqual(row["domain"], "pacing")
+    # test_writing_knowledge_no_project_id deleted in v3.1 — table gone.
 
     def test_idempotent_ensure(self) -> None:
         ensure_creation_tables(self.conn)
