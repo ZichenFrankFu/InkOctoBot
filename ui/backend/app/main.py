@@ -52,6 +52,8 @@ from .routers.market_extractor_api import (
     router as market_extractor_router,
     profiles_router as platform_profiles_router,
 )
+from .routers.llm_paste_api import router as llm_paste_router
+from .routers.llm_audit_api import router as llm_audit_router
 from .routers.debug_api import router as debug_router
 
 app = FastAPI(title="InkOctoBot — AI 小说智能体工作台", version="2.1.0")
@@ -107,6 +109,8 @@ app.include_router(historical_view_router)  # /api/historical-view
 app.include_router(validator_router)  # /api/validator
 app.include_router(market_extractor_router)  # /api/market-extractor
 app.include_router(platform_profiles_router)  # /api/platform-profiles
+app.include_router(llm_paste_router)  # /api/llm-paste (manual mode inbox)
+app.include_router(llm_audit_router)  # /api/llm-audit (unified audit view)
 
 # Dev tools (actions: health-check, seed-test-data)
 app.include_router(dev_router, prefix="/api")

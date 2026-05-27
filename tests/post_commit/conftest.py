@@ -30,13 +30,13 @@ def _stub_subtask_llm_io(monkeypatch):
     framework tests don't hit a real network.
     """
 
-    async def _summary_stub(chapter_text, chapter_num):
+    async def _summary_stub(chapter_text, chapter_num, **_kw):
         return ("默认标题", "默认摘要内容", "mock/m")
 
-    async def _events_stub(chapter_text, chapter_num, characters):
+    async def _events_stub(chapter_text, chapter_num, characters, **_kw):
         return ([], "mock/m")
 
-    async def _state_stub(chapter_text, chapter_num, existing_entities):
+    async def _state_stub(chapter_text, chapter_num, existing_entities, **_kw):
         return ({"state_deltas": [], "ledger_deltas": [],
                   "emotion_deltas": [], "new_entities": []}, "mock/m")
 

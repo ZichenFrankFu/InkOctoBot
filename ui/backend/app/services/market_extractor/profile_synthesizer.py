@@ -58,11 +58,14 @@ def _strip_naming_suggestions(text: str) -> str:
 
 async def _call_synthesis_llm(
     stats: dict, platform: str, category: str,
+    *, db_path: str | None = None,
 ) -> tuple[dict, str]:
-    """Single cloud-LLM call to synthesize the 6-part profile. Uses the
-    same FallbackRouter chain so a cloud failure can still resolve via
-    the local fallback."""
-    from llm.fallback_router import get_fallback_router
+    """Single cloud-LLM call to synthesize the 6-part profile.
+
+    Routes through LLMCallSite so the same auto/manual toggle + audit
+    apply to this Cloud LLM call as everywhere else.
+    """
+    from llm.call_site import LLMCallSite
     from llm.router import ModelRouter
 
     # Strip housekeeping columns the LLM doesn't need.
@@ -77,16 +80,19 @@ async def _call_synthesis_llm(
         stats_json=json.dumps(payload, ensure_ascii=False, indent=2),
     )
 
-    router = ModelRouter()
-    fr = get_fallback_router(router)
-    raw = await fr.invoke(
+    cs = LLMCallSite(
+        call_site_id="market_extractor.profile_synthesis",
         primary_role="post_commit",
+        parsed_target_table="platform_profiles",
+        default_max_tokens=4000, default_temperature=0.3,
+    )
+    raw = await cs.invoke(
         prompt=prompt,
         system="你是网文市场分析专家。只输出 JSON。",
-        max_tokens=4000, temperature=0.3,
+        project_id=f"{platform}/{category}", db_path=db_path,
     )
     parsed = _extract_json(raw)
-    provider, model = router.resolve_role("post_commit")
+    provider, model = ModelRouter().resolve_role("post_commit")
     return parsed, f"{provider}/{model}".strip("/")
 
 
@@ -166,7 +172,9 @@ async def synthesize(
             "run Phase 4 aggregator first"
         )
     started_at = datetime.utcnow().isoformat(timespec="seconds")
-    profile, model_label = await _call_synthesis_llm(stats, platform, category)
+    profile, model_label = await _call_synthesis_llm(
+        stats, platform, category, db_path=db_path,
+    )
     completed_at = datetime.utcnow().isoformat(timespec="seconds")
     src_ids = json.loads(stats.get("source_works_ids_json") or "[]")
     profile_id = _persist(

@@ -39,28 +39,33 @@ def _extract_json(raw: str) -> dict:
 
 async def call_llm_for_chapter(
     chapter_text: str, chapter_num: int, *, is_first_chapter: bool,
+    work_id: str = "", db_path: str | None = None,
 ) -> tuple[dict, str]:
     """Single LLM call producing the 15-dim feature dict + model label.
 
     Raises on parse failure or LLM error so the caller's
-    retry/skip logic decides what to do next."""
-    from llm.fallback_router import get_fallback_router
+    retry/skip logic decides what to do next.
+    """
+    from llm.call_site import LLMCallSite
     from llm.router import ModelRouter
-    router = ModelRouter()
-    fr = get_fallback_router(router)
+    cs = LLMCallSite(
+        call_site_id="market_extractor.chapter_features",
+        primary_role="post_commit",
+        parsed_target_table="chapter_features",
+        default_max_tokens=3000, default_temperature=0.2,
+    )
     prompt = _load_prompt_template().format(
         chapter_num=chapter_num,
         is_first_chapter="是" if is_first_chapter else "否",
         chapter_text=(chapter_text or "")[:8000],
     )
-    raw = await fr.invoke(
-        primary_role="post_commit",
+    raw = await cs.invoke(
         prompt=prompt,
         system="你是网文分析专家。只输出 JSON。",
-        max_tokens=3000, temperature=0.2,
+        project_id=work_id, db_path=db_path,
     )
     parsed = _extract_json(raw)
-    provider, model = router.resolve_role("post_commit")
+    provider, model = ModelRouter().resolve_role("post_commit")
     return parsed, f"{provider}/{model}".strip("/")
 
 

@@ -94,6 +94,10 @@ def _defaults() -> dict:
             "post_commit_fallback": {"provider": "", "model": "", "compare_models": []},
         },
         "embedding_backend": "local",
+        # Global manual-mode toggle for the unified LLMCallSite layer.
+        # When true, every LLM call routes through llm.manual_paste —
+        # user copies prompt to web LLM and pastes response back.
+        "llm_manual_mode": False,
     }
 
 

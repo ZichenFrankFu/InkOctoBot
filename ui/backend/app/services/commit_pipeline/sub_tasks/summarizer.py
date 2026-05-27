@@ -73,28 +73,38 @@ def _extract_json(raw: str) -> dict:
     return json.loads(m.group(0))
 
 
-async def _call_llm(chapter_text: str, chapter_num: int) -> tuple[str, str, str]:
+async def _call_llm(
+    chapter_text: str, chapter_num: int,
+    *, project_id: str = "", chapter_id: str = "", db_path: str | None = None,
+) -> tuple[str, str, str]:
     """Returns (title, summary, model_label). Raises on any failure
-    so the pipeline retry/notify path kicks in."""
-    from llm.fallback_router import get_fallback_router
+    so the pipeline retry/notify path kicks in.
+
+    Routes through ``LLMCallSite`` so auto/manual mode + tokenizer +
+    audit row all happen uniformly with every other call site.
+    """
+    from llm.call_site import LLMCallSite
     from llm.router import ModelRouter
-    router = ModelRouter()
-    fr = get_fallback_router(router)
-    raw = await fr.invoke(
+    cs = LLMCallSite(
+        call_site_id="post_commit.summarizer",
         primary_role="post_commit",
+        parsed_target_table="chapter_summaries",
+        default_max_tokens=600, default_temperature=0.3,
+    )
+    raw = await cs.invoke(
         prompt=_USER_TMPL.format(
             chapter_num=chapter_num,
-            chapter_text=chapter_text[:8000],   # cap context input
+            chapter_text=chapter_text[:8000],
         ),
         system=_SYSTEM,
-        max_tokens=600, temperature=0.3,
+        project_id=project_id, chapter_id=chapter_id, db_path=db_path,
     )
     parsed = _extract_json(raw)
     title = str(parsed.get("title") or "").strip()[:120]
     summary = _strip_meta(str(parsed.get("summary") or "").strip())[:1200]
     if not title or not summary:
         raise ValueError(f"LLM response missing title/summary: {parsed}")
-    provider, model = router.resolve_role("post_commit")
+    provider, model = ModelRouter().resolve_role("post_commit")
     return title, summary, f"{provider}/{model}".strip("/")
 
 
@@ -174,7 +184,11 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
         # Empty chapter (placeholder version, etc.) — nothing to summarize.
         return {"status": "skipped", "reason": "empty_chapter_text"}
     chapter_num = _resolve_chapter_num(ctx)
-    title, summary, model_label = await _call_llm(chapter_text, chapter_num)
+    title, summary, model_label = await _call_llm(
+        chapter_text, chapter_num,
+        project_id=ctx.project_id, chapter_id=ctx.chapter_id,
+        db_path=ctx.db_path,
+    )
     sid = _persist(
         ctx.db_path, ctx.project_id, chapter_num,
         title, summary, model_label,

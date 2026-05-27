@@ -760,3 +760,6 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
 
     from storage.market_extractor_schema import ensure_market_extractor_tables
     ensure_market_extractor_tables(conn)
+
+    from storage.llm_outputs_schema import ensure_llm_outputs_table
+    ensure_llm_outputs_table(conn)

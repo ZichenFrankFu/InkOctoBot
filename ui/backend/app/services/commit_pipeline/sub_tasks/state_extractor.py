@@ -86,24 +86,30 @@ _USER_TMPL = (
 
 async def _call_llm(
     chapter_text: str, chapter_num: int, existing_entities: list[str],
+    *, project_id: str = "", chapter_id: str = "", db_path: str | None = None,
 ) -> tuple[dict, str]:
-    from llm.fallback_router import get_fallback_router
+    """Goes through LLMCallSite so auto/manual mode + audit are
+    uniform with the rest of the codebase."""
+    from llm.call_site import LLMCallSite
     from llm.router import ModelRouter
-    router = ModelRouter()
-    fr = get_fallback_router(router)
-    existing_str = "、".join(existing_entities[:50]) if existing_entities else "（无）"
-    raw = await fr.invoke(
+    cs = LLMCallSite(
+        call_site_id="post_commit.state_extractor",
         primary_role="post_commit",
+        parsed_target_table="truth_current_state",
+        default_max_tokens=2000, default_temperature=0.2,
+    )
+    existing_str = "、".join(existing_entities[:50]) if existing_entities else "（无）"
+    raw = await cs.invoke(
         prompt=_USER_TMPL.format(
             chapter_num=chapter_num,
             chapter_text=chapter_text[:8000],
             existing=existing_str,
         ),
         system=_SYSTEM,
-        max_tokens=2000, temperature=0.2,
+        project_id=project_id, chapter_id=chapter_id, db_path=db_path,
     )
     parsed = _extract_json(raw)
-    provider, model = router.resolve_role("post_commit")
+    provider, model = ModelRouter().resolve_role("post_commit")
     return parsed, f"{provider}/{model}".strip("/")
 
 
@@ -510,6 +516,8 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
 
     parsed, model_label = await _call_llm(
         chapter_text, chapter_num, existing_names,
+        project_id=ctx.project_id, chapter_id=ctx.chapter_id,
+        db_path=ctx.db_path,
     )
 
     state_deltas    = parsed.get("state_deltas")    or []

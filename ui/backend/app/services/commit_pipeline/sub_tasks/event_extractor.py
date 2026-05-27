@@ -54,28 +54,37 @@ _USER_TMPL = (
 
 async def _call_llm(
     chapter_text: str, chapter_num: int, characters: list[str],
+    *, project_id: str = "", chapter_id: str = "", db_path: str | None = None,
 ) -> tuple[list[dict], str]:
     """Returns (events, model_label). Raises on parse failure or
-    invalid shape so the retry path engages."""
-    from llm.fallback_router import get_fallback_router
+    invalid shape so the retry path engages.
+
+    Goes through ``LLMCallSite`` so auto/manual + tokenizer + audit
+    are uniform with every other call site.
+    """
+    from llm.call_site import LLMCallSite
     from llm.router import ModelRouter
-    router = ModelRouter()
-    fr = get_fallback_router(router)
-    raw = await fr.invoke(
+    cs = LLMCallSite(
+        call_site_id="post_commit.event_extractor",
         primary_role="post_commit",
+        parsed_target_table="episodic_events",
+        default_max_tokens=1200, default_temperature=0.3,
+    )
+    raw = await cs.invoke(
         prompt=_USER_TMPL.format(
             chapter_num=chapter_num,
             chapter_text=chapter_text[:8000],
             characters="、".join(characters) if characters else "（未指定）",
         ),
         system=_SYSTEM,
-        max_tokens=1200, temperature=0.3,
+        project_id=project_id, chapter_id=chapter_id, db_path=db_path,
     )
     parsed = _extract_json(raw)
     events_raw = parsed.get("events") or []
     if not isinstance(events_raw, list):
         raise ValueError(f"LLM events field is not a list: {events_raw!r}")
     events: list[dict] = []
+    provider, model = ModelRouter().resolve_role("post_commit")
     for e in events_raw[:5]:
         if not isinstance(e, dict):
             continue
@@ -97,7 +106,6 @@ async def _call_llm(
             "characters":  [str(c).strip() for c in chars if str(c).strip()],
             "importance":  importance,
         })
-    provider, model = router.resolve_role("post_commit")
     return events, f"{provider}/{model}".strip("/")
 
 
@@ -147,7 +155,11 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
         return {"status": "skipped", "reason": "empty_chapter_text"}
     chapter_num = _resolve_chapter_num(ctx)
     characters = _resolve_characters(ctx)
-    events, model_label = await _call_llm(chapter_text, chapter_num, characters)
+    events, model_label = await _call_llm(
+        chapter_text, chapter_num, characters,
+        project_id=ctx.project_id, chapter_id=ctx.chapter_id,
+        db_path=ctx.db_path,
+    )
     if not events:
         return {"status": "ok", "events": 0, "llm_model": model_label}
     ids = _persist(ctx.db_path, ctx.project_id, chapter_num, events, model_label)

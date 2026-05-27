@@ -176,8 +176,13 @@ async def run_layer3(
         return []
     batch = candidates[:_MAX_LLM_ITEMS]
     try:
-        from llm.fallback_router import get_fallback_router
-        fr = get_fallback_router()
+        from llm.call_site import LLMCallSite
+        cs = LLMCallSite(
+            call_site_id="post_commit.validator_layer3",
+            primary_role="post_commit",
+            parsed_target_table="validator_issues",
+            default_max_tokens=1500, default_temperature=0.2,
+        )
         prompt = (
             "以下是世界状态一致性候选问题，每条 JSON 一条。请判断每条是否"
             "是真实冲突，输出 JSON："
@@ -189,11 +194,10 @@ async def run_layer3(
                 "description": c.description,
             } for c in batch], ensure_ascii=False, indent=2)
         )
-        raw = await fr.invoke(
-            primary_role="post_commit",
+        raw = await cs.invoke(
             prompt=prompt,
             system="你是世界一致性审查助手。",
-            max_tokens=1500, temperature=0.2,
+            project_id=project_id, db_path=db_path,
         )
         from .sub_tasks.summarizer import _extract_json
         parsed = _extract_json(raw)

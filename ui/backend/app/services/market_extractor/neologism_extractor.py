@@ -173,6 +173,7 @@ def filter_by_genre_dict(
 
 async def classify_with_llm(
     candidates: dict[str, dict], category: str,
+    *, work_id: str = "", db_path: str | None = None,
 ) -> tuple[list[dict], str]:
     """Send the top-N candidates to the LLM for is_work_specific +
     type classification. Returns the classified list + model label."""
@@ -193,20 +194,23 @@ async def classify_with_llm(
         candidates="\n".join(lines),
     )
 
-    from llm.fallback_router import get_fallback_router
+    from llm.call_site import LLMCallSite
     from llm.router import ModelRouter
     from .llm_extractor import _extract_json
-    router = ModelRouter()
-    fr = get_fallback_router(router)
-    raw = await fr.invoke(
+    cs = LLMCallSite(
+        call_site_id="market_extractor.neologism_classify",
         primary_role="post_commit",
+        parsed_target_table="work_neologisms",
+        default_max_tokens=2500, default_temperature=0.2,
+    )
+    raw = await cs.invoke(
         prompt=prompt,
         system="你是网文专有名词分析专家。只输出 JSON。",
-        max_tokens=2500, temperature=0.2,
+        project_id=work_id, db_path=db_path,
     )
     parsed = _extract_json(raw)
     classified = parsed.get("neologisms") or []
-    provider, model = router.resolve_role("post_commit")
+    provider, model = ModelRouter().resolve_role("post_commit")
     return classified, f"{provider}/{model}".strip("/")
 
 
@@ -266,7 +270,9 @@ async def extract_for_work(
     filtered = filter_by_genre_dict(candidates, category)
     if not filtered:
         return {"recalled": len(candidates), "filtered": 0, "saved": 0}
-    classified, model_label = await classify_with_llm(filtered, category)
+    classified, model_label = await classify_with_llm(
+        filtered, category, work_id=work_id, db_path=db_path,
+    )
     written = persist(db_path, work_id, filtered, classified, model_label)
     return {
         "recalled":   len(candidates),

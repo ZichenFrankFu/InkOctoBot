@@ -379,7 +379,7 @@ class TestProfileSynthesizer(unittest.IsolatedAsyncioTestCase):
             "loader_payload": "起点玄幻：穿越/重生开局，短句快节奏，10章内必打脸。",
         }
 
-        async def fake_call(stats, platform, category):
+        async def fake_call(stats, platform, category, **_kw):
             return fake_profile, "mock/m"
 
         with mock.patch.object(
@@ -421,7 +421,7 @@ class TestProfileSynthesizer(unittest.IsolatedAsyncioTestCase):
             "loader_payload": "起点玄幻特性。命名模式：N+王国/N+教派。短句节奏。",
         }
 
-        async def fake_call(stats, platform, category):
+        async def fake_call(stats, platform, category, **_kw):
             return contaminated, "mock/m"
 
         with mock.patch.object(
@@ -540,16 +540,16 @@ class TestJobRunner(unittest.IsolatedAsyncioTestCase):
         db = _fresh_db()
         crawler = _seed_crawler_db()
 
-        async def fake_chapter_llm(text, num, *, is_first_chapter):
+        async def fake_chapter_llm(text, num, *, is_first_chapter, **_kw):
             return ({
                 "A1_protagonist_first_appearance": {"chapter": num},
                 "D1_opening_hook": {"type": "穿越"},
             }, "mock/m")
 
-        async def fake_neologism_llm(cands, cat):
+        async def fake_neologism_llm(cands, cat, **_kw):
             return ([], "mock/m")
 
-        async def fake_synth(stats, platform, category):
+        async def fake_synth(stats, platform, category, **_kw):
             return ({
                 "profile_summary": "测试 profile",
                 "recommended_openings": [],
