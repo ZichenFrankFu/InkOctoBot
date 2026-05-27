@@ -1,16 +1,159 @@
-"""Event-extractor sub-task — Phase 1 stub.
+"""event_extractor — LLM extracts 0–5 key events per chapter.
 
-Phase 2 implements: extract 0-5 key events per chapter and INSERT into
-``episodic_events`` with ``generated_by='llm_auto'`` + ``llm_model``.
-See spec § 模块 3.
+Writes into ``episodic_events`` with ``generated_by='llm_auto'`` +
+``llm_model``. Strict cap of 5 events per chapter — quality over
+quantity is the spec.
 """
 from __future__ import annotations
 
+import json
+import logging
+import re
+import sqlite3
+import uuid
 from typing import TYPE_CHECKING, Any
+
+from .summarizer import _call_llm as _summarizer_call_llm   # for type ref only
+from .summarizer import _extract_json, _resolve_chapter_num, _resolve_chapter_text
+
+logger = logging.getLogger("inkoctobot.commit_pipeline.event_extractor")
 
 if TYPE_CHECKING:
     from . import SubTaskContext
 
 
+# Allowed event_type values match the existing CHECK constraint on
+# episodic_events.event_type.
+_ALLOWED_TYPES = ("plot", "character_change", "revelation",
+                  "relationship_change", "world_change")
+_ALLOWED_IMPORTANCE = ("A", "B", "C")
+
+# The DB stores importance as INTEGER 1-5 (legacy schema); the spec
+# expresses it as A/B/C for LLM-friendliness. Map at persist time.
+_IMPORTANCE_TO_INT = {"A": 5, "B": 3, "C": 1}
+
+_SYSTEM = (
+    "你是小说编辑助手。从一章正文里提取最多 5 条本章的关键事件。\n"
+    "严格要求：\n"
+    "1. 只挑真正影响后续剧情或人物状态的事件，宁少勿多\n"
+    "2. 每条事件给出：event_type / description / characters_involved / importance\n"
+    "3. event_type 只能从以下选：plot / character_change / revelation / relationship_change / world_change\n"
+    "4. importance 只能是 A（强）/ B（中）/ C（弱）\n"
+    "5. characters_involved 是出场角色名 list\n"
+    "6. 输出 JSON：{\"events\": [{...}, ...]}"
+)
+
+_USER_TMPL = (
+    "章节号：第 {chapter_num} 章\n"
+    "出场角色：{characters}\n\n"
+    "章节正文：\n"
+    "{chapter_text}\n\n"
+    "请输出 JSON。如本章无关键事件可输出 {{\"events\": []}}"
+)
+
+
+async def _call_llm(
+    chapter_text: str, chapter_num: int, characters: list[str],
+) -> tuple[list[dict], str]:
+    """Returns (events, model_label). Raises on parse failure or
+    invalid shape so the retry path engages."""
+    from llm.fallback_router import get_fallback_router
+    from llm.router import ModelRouter
+    router = ModelRouter()
+    fr = get_fallback_router(router)
+    raw = await fr.invoke(
+        primary_role="post_commit",
+        prompt=_USER_TMPL.format(
+            chapter_num=chapter_num,
+            chapter_text=chapter_text[:8000],
+            characters="、".join(characters) if characters else "（未指定）",
+        ),
+        system=_SYSTEM,
+        max_tokens=1200, temperature=0.3,
+    )
+    parsed = _extract_json(raw)
+    events_raw = parsed.get("events") or []
+    if not isinstance(events_raw, list):
+        raise ValueError(f"LLM events field is not a list: {events_raw!r}")
+    events: list[dict] = []
+    for e in events_raw[:5]:
+        if not isinstance(e, dict):
+            continue
+        evt_type = str(e.get("event_type") or "plot").strip()
+        if evt_type not in _ALLOWED_TYPES:
+            evt_type = "plot"
+        importance = str(e.get("importance") or "B").strip().upper()
+        if importance not in _ALLOWED_IMPORTANCE:
+            importance = "B"
+        desc = str(e.get("description") or "").strip()[:500]
+        if not desc:
+            continue
+        chars = e.get("characters_involved") or []
+        if not isinstance(chars, list):
+            chars = []
+        events.append({
+            "event_type":  evt_type,
+            "description": desc,
+            "characters":  [str(c).strip() for c in chars if str(c).strip()],
+            "importance":  importance,
+        })
+    provider, model = router.resolve_role("post_commit")
+    return events, f"{provider}/{model}".strip("/")
+
+
+def _persist(
+    db_path: str, project_id: str, chapter_num: int,
+    events: list[dict], llm_model: str,
+) -> list[str]:
+    """INSERT every event row; return generated event_ids."""
+    ids: list[str] = []
+    with sqlite3.connect(db_path) as con:
+        for i, e in enumerate(events):
+            eid = f"ev_{uuid.uuid4().hex[:12]}"
+            con.execute(
+                "INSERT INTO episodic_events "
+                "(event_id, project_id, chapter_num, scene_index, "
+                " event_type, description, characters_json, importance, "
+                " generated_by, llm_model) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'llm_auto', ?)",
+                (eid, project_id, chapter_num, i,
+                 e["event_type"], e["description"],
+                 json.dumps(e["characters"], ensure_ascii=False),
+                 _IMPORTANCE_TO_INT.get(e["importance"], 3), llm_model),
+            )
+            ids.append(eid)
+        con.commit()
+    return ids
+
+
+def _resolve_characters(ctx: "SubTaskContext") -> list[str]:
+    """Pull on-stage characters from the chapter's chapter_fields."""
+    try:
+        from ui.backend.app.services.prompt_context.chapter_fields import (
+            load_chapter_fields,
+        )
+        fields = load_chapter_fields(ctx.project_id, ctx.chapter_id) or {}
+        return (
+            (fields.get("on_stage_entities") or {}).get("characters")
+            or fields.get("characters") or []
+        )
+    except Exception:
+        return []
+
+
 async def run(ctx: "SubTaskContext") -> dict[str, Any]:
-    return {"status": "stub", "task": "event_extractor"}
+    chapter_text = _resolve_chapter_text(ctx)
+    if not chapter_text.strip():
+        return {"status": "skipped", "reason": "empty_chapter_text"}
+    chapter_num = _resolve_chapter_num(ctx)
+    characters = _resolve_characters(ctx)
+    events, model_label = await _call_llm(chapter_text, chapter_num, characters)
+    if not events:
+        return {"status": "ok", "events": 0, "llm_model": model_label}
+    ids = _persist(ctx.db_path, ctx.project_id, chapter_num, events, model_label)
+    return {
+        "status":    "ok",
+        "events":    len(ids),
+        "event_ids": ids,
+        "llm_model": model_label,
+    }

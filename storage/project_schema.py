@@ -628,9 +628,35 @@ def _ensure_worldbook_v2_columns(conn: sqlite3.Connection) -> None:
 # title columns so the reader_memory loader can surface user-marked
 # "key chapter" anchors and render summaries with their titles.
 _CHAPTER_SUMMARIES_V3_COLUMNS = [
-    ("is_anchor", "INTEGER NOT NULL DEFAULT 0"),
-    ("title",     "TEXT NOT NULL DEFAULT ''"),
+    ("is_anchor",    "INTEGER NOT NULL DEFAULT 0"),
+    ("title",        "TEXT NOT NULL DEFAULT ''"),
+    # Post-commit Phase 2: track which subsystem produced the summary
+    # ('llm_auto' from chapter_summarizer, 'user_manual' from manual
+    # editing) + which LLM model + when. ``llm_model='' && generated_at
+    # IS NULL`` for legacy rows that predate this column.
+    ("generated_by", "TEXT NOT NULL DEFAULT ''"),
+    ("llm_model",    "TEXT NOT NULL DEFAULT ''"),
+    ("generated_at", "TIMESTAMP"),
 ]
+
+
+# Post-commit Phase 2: parallel additions to episodic_events so the
+# event_extractor sub-task can attribute auto-generated events.
+_EPISODIC_EVENTS_PC_COLUMNS = [
+    ("generated_by", "TEXT NOT NULL DEFAULT ''"),
+    ("llm_model",    "TEXT NOT NULL DEFAULT ''"),
+]
+
+
+def _ensure_episodic_events_pc_columns(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    try:
+        existing = {row[1] for row in cur.execute("PRAGMA table_info(episodic_events)")}
+    except sqlite3.OperationalError:
+        return
+    for col, ddl in _EPISODIC_EVENTS_PC_COLUMNS:
+        if col not in existing:
+            cur.execute(f"ALTER TABLE episodic_events ADD COLUMN {col} {ddl}")
 
 
 def _ensure_chapter_summaries_v3_columns(conn: sqlite3.Connection) -> None:
@@ -722,6 +748,7 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
     _ensure_worldbook_v2_columns(conn)
     _ensure_skill_index_v2_columns(conn)
     _ensure_chapter_summaries_v3_columns(conn)
+    _ensure_episodic_events_pc_columns(conn)
     _drop_v1_redundant_objects(conn)
     conn.commit()
 

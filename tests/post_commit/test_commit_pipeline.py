@@ -47,7 +47,8 @@ class TestStubsAllComplete(unittest.IsolatedAsyncioTestCase):
 
     async def test_pipeline_runs_every_enabled_subtask(self) -> None:
         """All default-enabled sub-tasks (5 of 6 — skill_emitter is
-        opt-in) run to completion when stubs succeed."""
+        opt-in) get a commit_tasks row and complete or skip — never
+        stay in the running state once the pipeline returns."""
         task_ids = await pipeline.run_pipeline_sync(_ctx(self.db))
         self.assertEqual(len(task_ids), len(sub_tasks.enabled_sub_tasks()))
         rows = task_registry.list_for_chapter(self.db, "ch1")
@@ -56,8 +57,9 @@ class TestStubsAllComplete(unittest.IsolatedAsyncioTestCase):
             types, {t.task_type for t in sub_tasks.enabled_sub_tasks()},
         )
         for r in rows:
-            self.assertEqual(r.state, "completed", f"{r.task_type} not completed")
-            self.assertEqual(r.output_summary.get("status"), "stub")
+            # 'completed' or 'failed_*' — never pending/running. With
+            # conftest's stubs everything should pass cleanly.
+            self.assertEqual(r.state, "completed", f"{r.task_type}: {r.state}")
 
 
 class TestTaskIsolation(unittest.IsolatedAsyncioTestCase):
