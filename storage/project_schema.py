@@ -757,3 +757,6 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
 
     from storage.post_commit_schema import ensure_post_commit_tables
     ensure_post_commit_tables(conn)
+
+    from storage.market_extractor_schema import ensure_market_extractor_tables
+    ensure_market_extractor_tables(conn)

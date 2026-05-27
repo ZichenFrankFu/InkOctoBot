@@ -48,6 +48,10 @@ from .routers.notifications_api import router as notifications_router
 from .routers.state_review_api import router as state_review_router
 from .routers.historical_view_api import router as historical_view_router
 from .routers.validator_api import router as validator_router
+from .routers.market_extractor_api import (
+    router as market_extractor_router,
+    profiles_router as platform_profiles_router,
+)
 from .routers.debug_api import router as debug_router
 
 app = FastAPI(title="InkOctoBot — AI 小说智能体工作台", version="2.1.0")
@@ -101,6 +105,8 @@ app.include_router(notifications_router)  # /api/notifications
 app.include_router(state_review_router)  # /api/state-review + manual fallback CRUD
 app.include_router(historical_view_router)  # /api/historical-view
 app.include_router(validator_router)  # /api/validator
+app.include_router(market_extractor_router)  # /api/market-extractor
+app.include_router(platform_profiles_router)  # /api/platform-profiles
 
 # Dev tools (actions: health-check, seed-test-data)
 app.include_router(dev_router, prefix="/api")

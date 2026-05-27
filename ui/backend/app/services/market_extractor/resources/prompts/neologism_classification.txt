@@ -1,0 +1,33 @@
+你是网文专有名词分析专家。
+
+以下是从某本小说前 5 章自动提取的候选词。
+对每个词判断:
+
+1. 是否是该作品的专有名词（虚构概念/人物/地点/物品/组织）
+2. 如果是，分类:
+   - character (人物姓名)
+   - location (地点/世界/区域)
+   - organization (组织/势力/教派/职业)
+   - item (物品/物质/武器/法宝)
+   - concept (体系/规则/魔法名)
+   - title (称号/职位/等级)
+   - deity (神祇/超自然实体)
+   - event (特定事件/历史)
+   - other
+3. 给出 1 句定义（基于上下文）
+
+候选词清单（含频率 + 上下文样本）:
+{candidates}
+
+输出 JSON。只输出 JSON，不要其它文本：
+
+{{
+  "neologisms": [
+    {{
+      "term": "...",
+      "is_work_specific": true,
+      "type": "character",
+      "definition_hint": "..."
+    }}
+  ]
+}}
