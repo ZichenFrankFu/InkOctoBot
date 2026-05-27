@@ -468,6 +468,64 @@ CREATION_DDL = [
         FOREIGN KEY (skill_id) REFERENCES skill_index(skill_id) ON DELETE CASCADE
     );
     """,
+
+    # ── character_snapshots (LOADER_SPEC Loader 5, Batch 5) ────────────
+    # Snapshot-level character overrides, bound to specific chapters so
+    # the prompt loader can render the "right" personality / speech /
+    # Layer B / relation state for whichever chapter is being written.
+    # Replaces the v0 ``characters.extra_json.dynamic_snapshots`` field
+    # (one-shot migration moves any pre-existing data into this table).
+    """
+    CREATE TABLE IF NOT EXISTS character_snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        character_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        snapshot_order INTEGER NOT NULL,
+        expected_chapter_range_start INTEGER,
+        expected_chapter_range_end INTEGER,
+        trigger_description TEXT NOT NULL DEFAULT '',
+        personality_override TEXT NOT NULL DEFAULT '',
+        speech_style_override TEXT NOT NULL DEFAULT '',
+        alias TEXT NOT NULL DEFAULT '',
+        layer_b_overrides_json TEXT NOT NULL DEFAULT '{}',
+        relations_overrides_json TEXT NOT NULL DEFAULT '{}',
+        other_changes TEXT NOT NULL DEFAULT '',
+        bound_chapters_json TEXT NOT NULL DEFAULT '[]',
+        transition_complete_chapter INTEGER,
+        bound_by TEXT NOT NULL DEFAULT 'user'
+            CHECK (bound_by IN ('user','auto')),
+        bound_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (character_id, snapshot_order),
+        FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_snapshots_char_order ON character_snapshots(character_id, snapshot_order);",
+    "CREATE INDEX IF NOT EXISTS idx_snapshots_proj ON character_snapshots(project_id);",
+
+    # ── character_snapshot_reminders (LOADER_SPEC Loader 5) ────────────
+    # Bookkeeping for the snapshot_reminder service so the same overdue
+    # reminder isn't surfaced on every prompt build. The UNIQUE
+    # constraint is the de-dup key — INSERT OR IGNORE keeps emits
+    # idempotent.
+    """
+    CREATE TABLE IF NOT EXISTS character_snapshot_reminders (
+        reminder_id TEXT PRIMARY KEY,
+        snapshot_id TEXT NOT NULL,
+        reminder_type TEXT NOT NULL
+            CHECK (reminder_type IN
+                ('snapshot_not_started','snapshot_transition_not_completed')),
+        triggered_at_chapter INTEGER NOT NULL,
+        user_acknowledged INTEGER NOT NULL DEFAULT 0,
+        user_action TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (snapshot_id, reminder_type, triggered_at_chapter),
+        FOREIGN KEY (snapshot_id) REFERENCES character_snapshots(snapshot_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_reminders_snap ON character_snapshot_reminders(snapshot_id, reminder_type);",
 ]
 
 

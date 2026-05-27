@@ -26,4 +26,6 @@ BUDGETS: dict[str, int] = {
     "subplots":            1200,
     "skills":              2400,
     "reference":           2400,
+    # LOADER_SPEC v3 — Batch 5 loaders
+    "storyland_state":     2000,
 }

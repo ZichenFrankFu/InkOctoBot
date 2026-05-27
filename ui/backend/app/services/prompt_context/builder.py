@@ -31,6 +31,7 @@ from .loaders import (
     reference as reference_loader,
     reference_blocks,
     skills as skills_loader,
+    storyland_state as storyland_state_loader,
     style_calibration,
     subplots as subplots_loader,
     user_preferences,
@@ -135,6 +136,12 @@ def build_generation_context(
             project_id, db_path or "", chapter_synopsis,
             exclude=excl.get("reference"),
         ),
+        # LOADER_SPEC v3 — Batch 5 loaders
+        "storyland_state":    storyland_state_loader.load(
+            project_id, chapter_num,
+            on_stage_entities=(chapter_fields.get("on_stage_entities") or {}),
+            exclude=excl.get("storyland_state"),
+        ),
     }
     if "__all__" in excl.get("foreshadowing", set()):
         blocks["foreshadowing"] = ""
@@ -150,6 +157,8 @@ def build_generation_context(
         blocks["skills"] = ""
     if "__all__" in excl.get("reference", set()):
         blocks["reference"] = ""
+    if "__all__" in excl.get("storyland_state", set()):
+        blocks["storyland_state"] = ""
 
     sections: list[dict[str, str]] = []
     for val in blocks.values():

@@ -42,11 +42,17 @@ class TestPlatformMarketPlaceholder(unittest.TestCase):
         self.assertEqual(platform_market.load("p1", exclude={"platform"}), "")
 
 
-class TestCharacterCardsSnapshot(unittest.TestCase):
+class TestCharacterCardsLoaderBaseline(unittest.TestCase):
+    """Smoke tests for the rewritten loader — stable path only.
+
+    The full 4-transition-state coverage lives in
+    ``test_loader_character_cards_v2.py``; this class just exercises
+    the no-snapshot baseline so the legacy file keeps its top-level
+    smoke check.
+    """
 
     def setUp(self) -> None:
         self.db = _fresh_db()
-        # Patch get_db_path so loader picks our temp DB.
         self._patcher = mock.patch(
             "ui.backend.app.services.project_paths.get_db_path",
             return_value=self.db,
@@ -56,51 +62,7 @@ class TestCharacterCardsSnapshot(unittest.TestCase):
     def tearDown(self) -> None:
         self._patcher.stop()
 
-    def _seed_character(self) -> None:
-        project_store.upsert_character(self.db, {
-            "project_id": "p1", "name": "李星河",
-            "role": "主角",
-            "appearance": "瘦削；眼神锐利",
-            "personality": "沉稳寡言",
-            "background": "考古世家",
-            "speech_style": "言简意赅",
-            "layer_b": {"loss_aversion": 1.5, "value_weights": {"survival": 0.4}},
-            "dynamic_snapshots": [
-                {
-                    "chapter": "第3章",
-                    "personality": "更加阴沉",
-                    "layer_b": {"loss_aversion": 3.0, "impulse_probability": 0.5},
-                    "hidden_identities": [
-                        {"name": "陈墨", "revealed_to": ["李清漪"],
-                         "notes": "为复仇隐姓埋名"},
-                    ],
-                },
-                {
-                    "chapter": "第8章",
-                    "personality": "重新平静",
-                    "layer_b": {"loss_aversion": 2.0},
-                    "hidden_identities": [],
-                },
-            ],
-        })
-
-    def test_picks_latest_snapshot_when_no_chapter_num(self) -> None:
-        self._seed_character()
-        out = character_cards.load("p1", ["李星河"])
-        # Last snapshot wins → personality "重新平静"
-        self.assertIn("重新平静", out)
-        self.assertNotIn("更加阴沉", out)
-        self.assertIn("决策倾向", out)
-
-    def test_picks_chapter_3_snapshot_when_chapter_num_is_5(self) -> None:
-        self._seed_character()
-        out = character_cards.load("p1", ["李星河"], chapter_num=5)
-        # Snapshot 第3章 wins (latest ≤ 5)
-        self.assertIn("更加阴沉", out)
-        self.assertIn("化名「陈墨」", out)
-        self.assertIn("已知真相：李清漪", out)
-
-    def test_renders_base_layer_b_when_no_snapshot(self) -> None:
+    def test_renders_base_card_without_snapshots(self) -> None:
         project_store.upsert_character(self.db, {
             "project_id": "p1", "name": "无快照",
             "personality": "活泼",
@@ -112,8 +74,10 @@ class TestCharacterCardsSnapshot(unittest.TestCase):
         self.assertIn("自由 60%", out)
 
     def test_exclude_filters_character(self) -> None:
-        self._seed_character()
-        out = character_cards.load("p1", ["李星河"], exclude={"李星河"})
+        project_store.upsert_character(self.db, {
+            "project_id": "p1", "name": "X", "personality": "x",
+        })
+        out = character_cards.load("p1", ["X"], exclude={"X"})
         self.assertEqual(out, "")
 
     def test_unknown_name_skipped(self) -> None:

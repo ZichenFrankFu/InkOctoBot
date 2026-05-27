@@ -86,33 +86,19 @@ class TestCharacters(unittest.TestCase):
                 self.db, {"project_id": "p1"}
             )
 
-    def test_dynamic_snapshots_with_hidden_identities_roundtrip(self) -> None:
-        """Snapshot list (incl. hidden_identities) must persist via extras."""
-        snap = {
-            "chapter": "第3章",
-            "personality": "更加阴沉",
-            "background": "已知身世真相",
-            "speech_style": "",
-            "notes": "重大转折",
-            "relationships": [],
-            "layer_b": {"loss_aversion": 3.5, "value_weights": {"power": 0.5}},
-            "hidden_identities": [
-                {"name": "陈墨", "revealed_to": ["李清漪"], "notes": "为复仇而隐姓埋名"},
-                {"name": "影卫七号", "revealed_to": [], "notes": ""},
-            ],
-        }
+    def test_dynamic_snapshots_field_dropped_silently(self) -> None:
+        """LOADER_SPEC v3 Batch 5: dynamic_snapshots no longer lives on
+        the character row — the snapshot system owns its own table.
+        Any leftover payloads are dropped without raising and never
+        surface on read."""
         saved = project_store.upsert_character(
             self.db,
             {"project_id": "p1", "name": "主角",
-             "dynamic_snapshots": [snap]},
+             "dynamic_snapshots": [{"chapter": "第3章"}]},
         )
-        self.assertEqual(len(saved["dynamic_snapshots"]), 1)
+        self.assertNotIn("dynamic_snapshots", saved)
         loaded = project_store.get_character(self.db, saved["id"])
-        rt = loaded["dynamic_snapshots"][0]
-        self.assertEqual(rt["chapter"], "第3章")
-        self.assertEqual(rt["layer_b"]["loss_aversion"], 3.5)
-        self.assertEqual(rt["hidden_identities"][0]["name"], "陈墨")
-        self.assertEqual(rt["hidden_identities"][0]["revealed_to"], ["李清漪"])
+        self.assertNotIn("dynamic_snapshots", loaded)
 
 
 class TestWorldbook(unittest.TestCase):
