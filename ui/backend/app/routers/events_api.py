@@ -1,4 +1,10 @@
-"""FastAPI router: Agent event stream websocket and history."""
+"""FastAPI router: Agent event stream websocket and history.
+
+Resolves the bus via :func:`framework.global_event_bus.get_event_bus`
+on every request so producers (post_commit pipeline notifications,
+agent suggestions) and consumers (this router) share one instance
+without an explicit ``set_event_bus`` call at startup.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -7,15 +13,16 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
+from framework.global_event_bus import get_event_bus, set_event_bus as _set
+
 router = APIRouter(prefix="/api/events", tags=["events"])
 logger = logging.getLogger("inkoctobot.ui.backend.events_api")
 
-_event_bus = None
-
 
 def set_event_bus(bus: Any) -> None:
-    global _event_bus
-    _event_bus = bus
+    """Back-compat shim — delegates to the global accessor.
+    Kept so any external caller that imported it still works."""
+    _set(bus)
 
 
 @router.get("/health")
@@ -28,16 +35,14 @@ def get_event_history(
     event_type: str | None = None,
     limit: int = Query(default=50, le=200),
 ):
-    if _event_bus is None:
-        return {"events": [], "note": "Event bus not initialized"}
-    return {"events": _event_bus.get_history(event_type=event_type, limit=limit)}
+    bus = get_event_bus()
+    return {"events": bus.get_history(event_type=event_type, limit=limit)}
 
 
 @router.get("/suggestions")
 def get_pending_suggestions():
-    if _event_bus is None:
-        return {"suggestions": []}
-    suggestions = _event_bus.get_suggestions_nowait()
+    bus = get_event_bus()
+    suggestions = bus.get_suggestions_nowait()
     return {"suggestions": [s.to_dict() for s in suggestions]}
 
 
@@ -50,15 +55,12 @@ async def websocket_event_stream(websocket: WebSocket):
     close the connection. Exits cleanly on client disconnect.
     """
     await websocket.accept()
-    if _event_bus is None:
-        await websocket.send_json({"error": "Event bus not initialized"})
-        await websocket.close()
-        return
+    bus = get_event_bus()
     try:
         while True:
             try:
                 suggestion = await asyncio.wait_for(
-                    _event_bus.get_suggestion(), timeout=30.0,
+                    bus.get_suggestion(), timeout=30.0,
                 )
             except asyncio.TimeoutError:
                 # Keepalive only — keep looping, don't exit.

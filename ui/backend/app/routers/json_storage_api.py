@@ -423,6 +423,9 @@ def get_versions(project_id: str = "default", chapter_id: str = ""):
 
 @router.post("/versions")
 def save_version(body: dict = Body(...)):
+    """Legacy save-version endpoint. Fires the post-commit pipeline
+    just like ``/api/editor/save-version`` so UI clients on either
+    path trigger the same background work."""
     pid = body.get("project_id", "default")
     version = body.get("version") or {}
     project_store.ensure_project_row(_db(), pid)
@@ -432,6 +435,16 @@ def save_version(body: dict = Body(...)):
         saved = project_store.insert_version(_db(), pid, version)
     except ValueError as e:
         raise HTTPException(400, detail=str(e))
+
+    from ui.backend.app.services.commit_pipeline import (
+        fire_and_forget_from_handler,
+    )
+    fire_and_forget_from_handler(
+        project_id=pid,
+        chapter_id=version["chapter_id"],
+        db_path=_db(),
+        chapter_text=version.get("content", "") or "",
+    )
     # Match legacy response shape; the trim-to-50 policy is enforced
     # by the FK cascade + retention logic above the API if needed.
     return {"ok": True, "version_id": saved["version_id"]}

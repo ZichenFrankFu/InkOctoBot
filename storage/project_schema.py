@@ -727,3 +727,6 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
 
     from storage.truth_schema import ensure_truth_tables
     ensure_truth_tables(conn)
+
+    from storage.post_commit_schema import ensure_post_commit_tables
+    ensure_post_commit_tables(conn)

@@ -43,6 +43,8 @@ from .routers.embedding_api import (
     router as embedding_router,
     settings_router as embedding_settings_router,
 )
+from .routers.commit_pipeline_api import router as commit_pipeline_router
+from .routers.notifications_api import router as notifications_router
 from .routers.debug_api import router as debug_router
 
 app = FastAPI(title="InkOctoBot — AI 小说智能体工作台", version="2.1.0")
@@ -91,6 +93,8 @@ app.include_router(snapshot_router)  # /api/snapshots
 app.include_router(snapshot_reminder_router)  # /api/snapshot-reminders
 app.include_router(embedding_router)  # /api/embedding (Phase 1 + 3)
 app.include_router(embedding_settings_router)  # /api/settings/embedding-language-mode
+app.include_router(commit_pipeline_router)  # /api/commit-pipeline
+app.include_router(notifications_router)  # /api/notifications
 
 # Dev tools (actions: health-check, seed-test-data)
 app.include_router(dev_router, prefix="/api")

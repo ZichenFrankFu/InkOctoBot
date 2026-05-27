@@ -52,8 +52,14 @@ def get_versions(chapter_id: str, project_id: str = "default"):
 
 
 @router.post("/save-version")
-def save_version(req: SaveVersionRequest):
-    """Save a new version of chapter text. v2.1: DB-backed."""
+async def save_version(req: SaveVersionRequest):
+    """Save a new version of chapter text. v2.1: DB-backed.
+
+    After the INSERT succeeds, fires the post-commit pipeline
+    (chapter_summarizer / event_extractor / chromadb_indexer /
+    state_extractor / snapshot_detector). Fire-and-forget — commit
+    returns immediately, pipeline runs in the background.
+    """
     project_store.ensure_project_row(get_db_path(), req.project_id)
     saved = project_store.insert_version(get_db_path(), req.project_id, {
         "chapter_id": req.chapter_id,
@@ -62,6 +68,16 @@ def save_version(req: SaveVersionRequest):
         "model_used": req.model_used,
     })
     saved["version"] = saved.get("version_num")
+
+    from ui.backend.app.services.commit_pipeline import (
+        fire_and_forget_from_handler,
+    )
+    fire_and_forget_from_handler(
+        project_id=req.project_id,
+        chapter_id=req.chapter_id,
+        db_path=get_db_path(),
+        chapter_text=req.text,
+    )
     return {"status": "ok", "version": saved}
 
 
