@@ -210,7 +210,18 @@ def fire_and_forget_from_handler(
     care about the event loop. Any failure to schedule (e.g. no
     running loop in a sync handler) is logged and swallowed —
     commit must always succeed even if the pipeline can't start.
+
+    Before kicking off the async sub-tasks, captures a
+    chapter_snapshots row synchronously so the historical-view API
+    can return a meaningful row even if the pipeline never completes.
     """
+    # Phase 4: snapshot first (cheap, sync, no LLM). Swallow any failure.
+    try:
+        from .snapshot_writer import capture_snapshot
+        capture_snapshot(db_path, project_id, chapter_id, chapter_num)
+    except Exception as e:
+        logger.error("chapter snapshot capture failed: %s", e)
+
     ctx = SubTaskContext(
         project_id=project_id, chapter_id=chapter_id, db_path=db_path,
         chapter_text=chapter_text, chapter_num=chapter_num,

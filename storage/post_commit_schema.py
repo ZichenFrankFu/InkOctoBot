@@ -129,6 +129,42 @@ _DDL: tuple[str, ...] = (
     "ON entity_review_queue(project_id, status)",
     "CREATE INDEX IF NOT EXISTS idx_entity_review_chapter "
     "ON entity_review_queue(chapter_id)",
+
+    # ── Phase 4: chapter_snapshots (version history) ──
+    """
+    CREATE TABLE IF NOT EXISTS chapter_snapshots (
+        snapshot_id                       TEXT PRIMARY KEY,
+        project_id                        TEXT NOT NULL,
+        chapter_id                        TEXT NOT NULL,
+        chapter_num                       INTEGER NOT NULL,
+        committed_at                      TIMESTAMP NOT NULL
+                                            DEFAULT CURRENT_TIMESTAMP,
+        chapter_outline_snapshot          TEXT,
+        on_stage_entities_snapshot        TEXT,
+        special_requirements_snapshot     TEXT,
+        project_config_hash               TEXT,
+        characters_config_hash            TEXT,
+        worldbook_hash                    TEXT,
+        full_prompt_snapshot              TEXT,
+        diagnostics_snapshot              TEXT,
+        generation_model_used             TEXT,
+        embedding_model_used              TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_chapter_snapshots_chapter "
+    "ON chapter_snapshots(chapter_id, committed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_chapter_snapshots_project "
+    "ON chapter_snapshots(project_id, chapter_num)",
+
+    # ── Phase 4: chapter_config_snapshots (hash-deduped store) ──
+    """
+    CREATE TABLE IF NOT EXISTS chapter_config_snapshots (
+        config_hash          TEXT PRIMARY KEY,
+        config_type          TEXT NOT NULL,
+        full_content         TEXT NOT NULL,
+        first_referenced_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 )
 
 
