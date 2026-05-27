@@ -62,9 +62,13 @@ class TestDiagnostics(unittest.TestCase):
                 "p1", chapter_num=1, db_path=db,
             )
         diag = ctx["diagnostics"]
-        self.assertIn("total_chars", diag)
-        self.assertIn("total_tokens", diag)
+        # MVP shape: total/sections/loaders/alerts.
+        self.assertIn("total", diag)
+        self.assertIn("chars", diag["total"])
+        self.assertIn("tokens", diag["total"])
         self.assertIn("loaders", diag)
+        self.assertIn("sections", diag)
+        self.assertIn("alerts", diag)
         # Every spec block is listed (active or inactive).
         for k in (
             "platform_directive", "user_preferences",
@@ -118,7 +122,7 @@ class TestDiagnostics(unittest.TestCase):
             ctx = builder.build_generation_context(
                 "p1", chapter_num=1, characters=["李星河"], db_path=db,
             )
-        total = ctx["diagnostics"]["total_tokens"]
+        total = ctx["diagnostics"]["total"]["tokens"]
         per_sum = sum(
             v["tokens"] for v in ctx["diagnostics"]["loaders"].values()
         )

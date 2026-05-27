@@ -68,23 +68,19 @@ def parse_rag_excludes(rag_excludes: list[str] | None) -> dict[str, set[str]]:
     return excl
 
 
-# CJK character → token ratio. GPT-4 tokenizer averages 1 token per
-# ~1.7 CJK characters; ASCII text averages ~1 token per 4 chars.
-# This is the project-wide heuristic; not exact, but stable across
-# loaders so per-loader telemetry is comparable.
-_CJK_TOKEN_RATIO = 1.7
-
-
 def estimate_tokens(text: str) -> int:
     """Approximate the token count of ``text``.
 
-    CJK-biased heuristic: ``len(text) / 1.7``. Returns ``0`` for empty
-    input. Same constant used for total + per-loader telemetry so the
-    reported numbers add up.
+    Thin wrapper over :class:`TokenCounter` — the latter uses tiktoken
+    cl100k_base when available and a CJK-aware heuristic otherwise.
+    Kept as a free function for back-compat with the v3.1 call sites
+    that import it directly; new code should use ``get_token_counter()``
+    so the method (``tiktoken`` vs ``heuristic``) is observable.
     """
     if not text:
         return 0
-    return int(len(text) / _CJK_TOKEN_RATIO)
+    from .token_counter import get_token_counter
+    return get_token_counter().count(text)
 
 
 def cosine(a: list[float], b: list[float]) -> float:

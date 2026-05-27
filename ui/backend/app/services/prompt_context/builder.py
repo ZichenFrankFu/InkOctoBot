@@ -45,9 +45,43 @@ from .loaders import (
     worldbook,
 )
 from .references import build_referenced_materials_block
-from .utils import estimate_tokens, parse_rag_excludes, section
+from .token_counter import get_token_counter
+from .utils import parse_rag_excludes, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.builder")
+
+
+# Diagnostics alert thresholds. Tweak here so the next reader doesn't
+# go hunting through the diagnostics-assembly code.
+EMPTY_THRESHOLD = 0.1       # utilization below this lands in alerts.empty
+PRESSURE_THRESHOLD = 0.9    # utilization above this lands in alerts.pressure
+DOMINANT_THRESHOLD = 0.3    # share_of_total_tokens above this → alerts.dominant
+
+
+# Logical section grouping for diagnostics.sections. The full prompt's
+# system/user split happens at the Jinja template layer (which the
+# builder doesn't see); these groupings classify each context block by
+# what role it plays in the final prompt so the diagnostics caller has
+# a coarse 3-bucket view without re-implementing prompt assembly.
+_SECTION_GROUPS: dict[str, str] = {
+    # system — directives & cross-chapter writing preferences
+    "platform_directive":         "system",
+    "user_preferences":           "system",
+    # context — background grounding (RAG-style)
+    "worldbook":                  "context",
+    "reference":                  "context",
+    "character_cards":            "context",
+    "foreshadowing":              "context",
+    "inspiration":                "context",
+    "subplots":                   "context",
+    "skills":                     "context",
+    "storyland_state":            "context",
+    "reader_memory":              "context",
+    # user — this chapter's specific inputs
+    "chapter_outline":            "user",
+    "current_chapter_draft":      "user",
+    "user_special_requirements":  "user",
+}
 
 
 # Ordered list of (block_id, plan_callable). Plan callables take
@@ -226,7 +260,7 @@ def build_generation_context(
         render_ms[p.block_id] = (time.perf_counter() - t0) * 1000.0
         blocks[p.block_id] = rendered
 
-    # ── Sections + token estimate ───────────────────────────────
+    # ── Sections list (back-compat preserve) ────────────────────
     sections: list[dict[str, str]] = []
     for v in blocks.values():
         v = (v or "").strip()
@@ -235,16 +269,20 @@ def build_generation_context(
         head, _, rest = v.partition("\n")
         sections.append({"label": head.lstrip("# ").strip(), "content": rest.strip()})
 
+    # ── Diagnostics ─────────────────────────────────────────────
+    counter = get_token_counter()
     total_chars = sum(len(v) for v in blocks.values())
-    total_tokens = sum(estimate_tokens(v) for v in blocks.values())
+    # Cache per-block token counts — re-used for total, per-loader,
+    # per-section, and share calculations below.
+    block_tokens: dict[str, int] = {bid: counter.count(v) for bid, v in blocks.items()}
+    total_tokens = sum(block_tokens.values())
 
-    # Per-loader diagnostics.
     plan_by_id = {p.block_id: p for p in plans}
     diag_loaders: dict[str, dict[str, Any]] = {}
     for block_id, _ in callables:
         body = blocks[block_id]
         chars = len(body)
-        tokens = estimate_tokens(body)
+        tokens = block_tokens[block_id]
         p = plan_by_id.get(block_id)
         if p is None:
             status = "inactive"
@@ -255,26 +293,58 @@ def build_generation_context(
             natural = p.natural_length
             allocated = allocations.get(block_id, p.target)
             tier = p.priority_tier
-            status = "clipped" if chars < natural and chars > 0 else "rendered"
+            status = "clipped" if natural > allocated else "rendered"
+        utilization = (chars / allocated) if allocated > 0 else 0.0
+        share = (tokens / total_tokens) if total_tokens > 0 else 0.0
         diag_loaders[block_id] = {
-            "chars":            chars,
-            "tokens":           tokens,
-            "natural_length":   natural,
-            "allocated_budget": allocated,
-            "tier":             tier,
-            "plan_ms":          round(plan_ms.get(block_id, 0.0), 3),
-            "render_ms":        round(render_ms.get(block_id, 0.0), 3),
-            "status":           status,
+            "status":                 status,
+            "chars":                  chars,
+            "tokens":                 tokens,
+            "natural_length":         natural,
+            "allocated_budget":       allocated,
+            "utilization":            round(utilization, 4),
+            "share_of_total_tokens":  round(share, 4),
+            "tier":                   tier,
+            "plan_ms":                round(plan_ms.get(block_id, 0.0), 3),
+            "render_ms":              round(render_ms.get(block_id, 0.0), 3),
         }
+
+    # Per-section roll-up.
+    section_bins: dict[str, dict[str, int]] = {
+        "system":  {"chars": 0, "tokens": 0},
+        "context": {"chars": 0, "tokens": 0},
+        "user":    {"chars": 0, "tokens": 0},
+    }
+    for block_id, v in blocks.items():
+        group = _SECTION_GROUPS.get(block_id)
+        if group is None or not v:
+            continue
+        section_bins[group]["chars"] += len(v)
+        section_bins[group]["tokens"] += block_tokens[block_id]
+
+    # Alerts.
+    alerts: dict[str, list[str]] = {"empty": [], "pressure": [], "dominant": []}
+    for block_id, info in diag_loaders.items():
+        if info["status"] == "inactive" or info["utilization"] < EMPTY_THRESHOLD:
+            alerts["empty"].append(block_id)
+        if info["status"] == "clipped" or info["utilization"] > PRESSURE_THRESHOLD:
+            alerts["pressure"].append(block_id)
+        if info["share_of_total_tokens"] > DOMINANT_THRESHOLD:
+            alerts["dominant"].append(block_id)
 
     return {
         "blocks":         blocks,
         "sections":       sections,
         "token_estimate": total_tokens,
         "diagnostics": {
-            "total_chars":  total_chars,
-            "total_tokens": total_tokens,
-            "loaders":      diag_loaders,
+            "total": {
+                "chars":            total_chars,
+                "tokens":           total_tokens,
+                "tokenizer_method": counter.get_method(),
+            },
+            "sections": section_bins,
+            "loaders":  diag_loaders,
+            "alerts":   alerts,
         },
     }
 
