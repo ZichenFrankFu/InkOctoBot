@@ -430,6 +430,44 @@ CREATION_DDL = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_failed_gens_chapter ON chapter_failed_generations(chapter_id, rejected_at);",
+
+    # ── skill_index (LOADER_SPEC Loader 14 prerequisite) ───────────────
+    # DB mirror of the filesystem SkillRegistry, keyed by skill_id (=
+    # filesystem skill name). Holds the per-skill embedding so the
+    # prompt-context loader can rank skills against the chapter outline
+    # without re-embedding on every call. SkillRegistry is still the
+    # source of truth for which skills exist; this table is rebuilt
+    # from it via ``skill_index.sync_from_registry``.
+    """
+    CREATE TABLE IF NOT EXISTS skill_index (
+        skill_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL DEFAULT 'builtin'
+            CHECK (kind IN ('builtin','learned')),
+        body_snippet TEXT NOT NULL DEFAULT '',
+        embedding_json TEXT NOT NULL DEFAULT '[]',
+        embedding_text_hash TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_skill_index_kind ON skill_index(kind);",
+
+    # ── project_skill_pins (LOADER_SPEC Loader 14) ─────────────────────
+    # User's per-project must-include skill set. Pins survive across
+    # SkillRegistry rescans because skill_id is the stable filesystem
+    # name; if the skill itself disappears from disk, sync_from_registry
+    # cascades the pin away via the FK on skill_index.
+    """
+    CREATE TABLE IF NOT EXISTS project_skill_pins (
+        project_id TEXT NOT NULL,
+        skill_id TEXT NOT NULL,
+        pinned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (project_id, skill_id),
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+        FOREIGN KEY (skill_id) REFERENCES skill_index(skill_id) ON DELETE CASCADE
+    );
+    """,
 ]
 
 

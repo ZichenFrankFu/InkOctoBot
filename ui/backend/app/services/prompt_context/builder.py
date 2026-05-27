@@ -28,8 +28,11 @@ from .loaders import (
     foreshadowing,
     inspiration,
     platform_market,
+    reference as reference_loader,
     reference_blocks,
+    skills as skills_loader,
     style_calibration,
+    subplots as subplots_loader,
     user_preferences,
     worldbook,
     writing_knowledge,
@@ -96,6 +99,9 @@ def build_generation_context(
         "style_calibration":  style_calibration.load(project_id),
         "character_cards":    character_cards.load(project_id, characters, excl.get("character_cards"), chapter_num=chapter_num),
         "worldbook":          worldbook.load(project_id, chapter_id, excl.get("worldbook")),
+        # NOTE: ``reference_summary`` (legacy reference_blocks) remains a
+        # fallback while V1 reference_injection blobs are still around.
+        # New ``reference`` block is the V2 5-feature dual-path output.
         "reference_summary":  reference_blocks.load(project_id, db_path or "", excl.get("reference_summary")),
         "writing_knowledge":  writing_knowledge.load(project_id, excl.get("writing_knowledge")),
         "writing_skills":     load_writing_skills(skills),
@@ -116,6 +122,19 @@ def build_generation_context(
             revision_anchor=revision_anchor,
             exclude=excl.get("current_chapter_draft"),
         ),
+        # LOADER_SPEC v3 — Batch 4 loaders
+        "subplots":           subplots_loader.load(
+            project_id, chapter_synopsis, chapter_num,
+            exclude=excl.get("subplots"),
+        ),
+        "skills":             skills_loader.load(
+            project_id, chapter_synopsis, on_stage_characters,
+            exclude=excl.get("skills"),
+        ),
+        "reference":          reference_loader.load(
+            project_id, db_path or "", chapter_synopsis,
+            exclude=excl.get("reference"),
+        ),
     }
     if "__all__" in excl.get("foreshadowing", set()):
         blocks["foreshadowing"] = ""
@@ -125,6 +144,12 @@ def build_generation_context(
         blocks["inspiration"] = ""
     if "__all__" in excl.get("current_chapter_draft", set()):
         blocks["current_chapter_draft"] = ""
+    if "__all__" in excl.get("subplots", set()):
+        blocks["subplots"] = ""
+    if "__all__" in excl.get("skills", set()):
+        blocks["skills"] = ""
+    if "__all__" in excl.get("reference", set()):
+        blocks["reference"] = ""
 
     sections: list[dict[str, str]] = []
     for val in blocks.values():

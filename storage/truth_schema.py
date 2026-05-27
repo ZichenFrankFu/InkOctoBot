@@ -119,16 +119,23 @@ TRUTH_DDL = [
         description TEXT,
         status TEXT NOT NULL DEFAULT 'setup'
             CHECK(status IN ('setup','building','climax','resolution','dormant')),
+        thread_type TEXT NOT NULL DEFAULT 'sub'
+            CHECK(thread_type IN ('main','sub')),
         start_chapter INTEGER NOT NULL,
         last_advanced_chapter INTEGER,
         related_hook_ids_json TEXT NOT NULL DEFAULT '[]',
         related_character_ids_json TEXT NOT NULL DEFAULT '[]',
+        embedding_json TEXT NOT NULL DEFAULT '[]',
+        embedding_text_hash TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_subplots_proj_status ON subplot_threads(project_id, status);",
+    # NOTE: idx_subplots_proj_type lives in the ALTER block — v2 DBs
+    # don't have the thread_type column yet when this DDL list runs,
+    # so the index is created after the ALTER adds the column.
 
     # ── 6. emotion_arcs ────────────────────────────────────────
     """
@@ -207,6 +214,37 @@ def ensure_truth_tables(conn: sqlite3.Connection) -> None:
             )
     except sqlite3.OperationalError:
         # Table missing → CREATE above already handles it; ignore.
+        pass
+
+    # v3.0 LOADER_SPEC Loader 12: subplot_threads grows thread_type
+    # ('main'/'sub') so the loader can render main lines unconditionally
+    # and rank sub-lines by outline similarity. Adds embedding columns
+    # for the similarity ranker (same pattern as worldbook_entries).
+    try:
+        sp_cols = {
+            row[1]
+            for row in cur.execute("PRAGMA table_info(subplot_threads)")
+        }
+        if "thread_type" not in sp_cols:
+            cur.execute(
+                "ALTER TABLE subplot_threads ADD COLUMN "
+                "thread_type TEXT NOT NULL DEFAULT 'sub'"
+            )
+        if "embedding_json" not in sp_cols:
+            cur.execute(
+                "ALTER TABLE subplot_threads ADD COLUMN "
+                "embedding_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "embedding_text_hash" not in sp_cols:
+            cur.execute(
+                "ALTER TABLE subplot_threads ADD COLUMN "
+                "embedding_text_hash TEXT NOT NULL DEFAULT ''"
+            )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_subplots_proj_type "
+            "ON subplot_threads(project_id, thread_type)"
+        )
+    except sqlite3.OperationalError:
         pass
 
     # LOADER_SPEC: character_matrix removed in v3.0. Relations moved into

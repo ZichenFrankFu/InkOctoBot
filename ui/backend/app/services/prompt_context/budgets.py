@@ -22,4 +22,8 @@ BUDGETS: dict[str, int] = {
     "inspiration":          800,
     "chapter_outline":     1200,
     "current_chapter_draft": 4000,
+    # LOADER_SPEC v3 — Batch 4 loaders
+    "subplots":            1200,
+    "skills":              2400,
+    "reference":           2400,
 }

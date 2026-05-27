@@ -487,6 +487,55 @@ def toggle_skill(name: str):
     return {"status": "ok", "name": name, "active": active}
 
 
+# ─────────── project-level pins + reindex (LOADER_SPEC Loader 14) ─────
+
+
+def _db_path() -> str:
+    from ui.backend.app.services.project_paths import get_db_path
+    return get_db_path()
+
+
+@router.post("/{skill_id}/pin-to-project")
+def pin_skill_to_project(skill_id: str, project_id: str):
+    """Pin a skill so the prompt-context loader always includes it for
+    the given project. Idempotent: a second pin is a no-op."""
+    from ui.backend.app.services import skill_index
+    # Make sure the skill exists in the mirror; sync first.
+    try:
+        skill_index.sync_from_registry(_db_path())
+    except Exception:
+        pass
+    if not skill_index.get_skill(_db_path(), skill_id):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"skill {skill_id} not found")
+    skill_index.pin_skill(_db_path(), project_id, skill_id)
+    return {"ok": True}
+
+
+@router.delete("/{skill_id}/pin-to-project")
+def unpin_skill_from_project(skill_id: str, project_id: str):
+    from ui.backend.app.services import skill_index
+    skill_index.unpin_skill(_db_path(), project_id, skill_id)
+    return {"ok": True}
+
+
+@router.post("/reindex")
+def reindex_skills():
+    """Force a fresh mirror rebuild + clear embedding cache so the next
+    prompt build recomputes vectors for every skill."""
+    from ui.backend.app.services import skill_index
+    skill_index.reset_sync_cache()
+    n = skill_index.sync_from_registry(_db_path(), force=True)
+    # Clear embeddings unconditionally so the next loader call recomputes.
+    import sqlite3 as _sql
+    with _sql.connect(_db_path()) as con:
+        con.execute(
+            "UPDATE skill_index SET embedding_json = '[]', embedding_text_hash = ''"
+        )
+        con.commit()
+    return {"ok": True, "synced": n}
+
+
 class SkillExecuteRequest(BaseModel):
     name: str
     inputs: dict[str, Any] = {}
