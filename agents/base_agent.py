@@ -124,14 +124,22 @@ class BaseAgent:
         temperature: float | None = None,
         max_tokens: int | None = None,
         parse_json: bool = False,
+        project_id: str = "",
+        chapter_id: str = "",
+        parsed_target_table: str = "",
+        parsed_target_row_id: str = "",
     ) -> LLMResponse:
         """Call the LLM through the router.
 
-        Logs the prompt envelope at INFO (message count + total chars) so
-        a developer can see "what got sent" without dumping the full
-        prompt; DEBUG-level logs the full message bodies for forensic
-        analysis. LLM errors propagate with a logged exc_info so failures
-        are never silent (was GAP 2 in the architecture review).
+        Wrapped in :func:`llm.call_site.with_audit_and_manual_mode` so
+        every production-agent call goes through:
+          - global ``llm_manual_mode`` toggle (paste-back support)
+          - per-model tokenizer counting
+          - one row in ``llm_outputs`` audit table per call
+
+        The agent's own router + messages format stay intact — the
+        helper just wraps the real ``router.generate`` call. Tests
+        that mock ``self.router.generate`` keep working.
         """
         msgs = self.build_messages(
             user_content, context=context, constraints=constraints, history=history,
@@ -149,11 +157,32 @@ class BaseAgent:
                     ensure_ascii=False,
                 )[:8000],
             )
-        t0 = time.monotonic()
-        try:
+
+        # Flatten messages into prompt + system text for the llm_outputs
+        # audit row. The real call still uses the original message list.
+        system_text = "\n".join(m.content for m in msgs if m.role == "system")
+        user_text = "\n".join(m.content for m in msgs if m.role != "system")
+        captured: dict[str, Any] = {}
+
+        async def _auto_executor() -> str:
             resp = await self.router.generate(
                 agent_role=self.agent_name, messages=msgs,
                 temperature=temperature, max_tokens=max_tokens,
+            )
+            captured["resp"] = resp
+            return resp.content or ""
+
+        from llm.call_site import with_audit_and_manual_mode
+        t0 = time.monotonic()
+        try:
+            raw = await with_audit_and_manual_mode(
+                call_site_id=f"agent.{self.agent_name}",
+                primary_role=self.agent_name,
+                prompt_full=user_text, system_prompt=system_text,
+                auto_executor=_auto_executor,
+                parsed_target_table=parsed_target_table,
+                parsed_target_row_id=parsed_target_row_id,
+                project_id=project_id, chapter_id=chapter_id,
             )
         except Exception:
             elapsed = time.monotonic() - t0
@@ -163,6 +192,20 @@ class BaseAgent:
             )
             raise
         elapsed = time.monotonic() - t0
+
+        # Manual mode bypasses the real router → no captured LLMResponse.
+        # Synthesize one so callers' resp.content / resp.input_tokens /
+        # resp.output_tokens accesses keep working.
+        resp = captured.get("resp")
+        if resp is None:
+            resp = LLMResponse(
+                content=raw,
+                model="manual_paste",
+                input_tokens=0,
+                output_tokens=0,
+                raw={},
+            )
+
         self._total_input_tokens += resp.input_tokens
         self._total_output_tokens += resp.output_tokens
         self._call_count += 1

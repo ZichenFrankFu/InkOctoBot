@@ -584,12 +584,35 @@ async def quick_generate(req: GenerateRequest):
             LLMMessage(role="user", content=user_content),
         ]
 
-        response = await router_inst.generate(
-            agent_role="editor_stylist",
-            messages=messages,
-            temperature=0.8,
-            max_tokens=4096,
+        captured: dict[str, Any] = {}
+
+        async def _exec() -> str:
+            resp = await router_inst.generate(
+                agent_role="editor_stylist",
+                messages=messages,
+                temperature=0.8,
+                max_tokens=4096,
+            )
+            captured["resp"] = resp
+            return resp.content or ""
+
+        from llm.call_site import with_audit_and_manual_mode
+        raw_text = await with_audit_and_manual_mode(
+            call_site_id="generation.quick_generate",
+            primary_role="editor_stylist",
+            prompt_full=user_content, system_prompt=system_prompt,
+            auto_executor=_exec,
+            parsed_target_table="text_versions",
+            project_id=req.project_id,
+            chapter_id=req.chapter_id or "",
+            provider_override=req.provider, model_override=req.model,
         )
+        response = captured.get("resp") or type(
+            "ManualResp", (), {
+                "content": raw_text, "model": "manual_paste",
+                "input_tokens": 0, "output_tokens": 0,
+            },
+        )()
 
         return {
             "status": "ok",

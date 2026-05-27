@@ -47,24 +47,37 @@ async def consistency_check(req: ConsistencyRequest):
 
     try:
         from llm.base import LLMMessage
+        from llm.call_site import with_audit_and_manual_mode
         router_inst = _build_router(req.provider, req.model)
 
-        messages = [
-            LLMMessage(role="system", content=(
-                "你是一个世界观一致性检查专家。仔细检查以下世界书条目是否存在内部矛盾或逻辑冲突。"
-                "列出所有发现的问题，每条一行。如果没有矛盾，请说明设定一致性良好。"
-            )),
-            LLMMessage(role="user", content=f"请检查以下世界书条目的一致性：\n\n{text}"),
-        ]
-
-        response = await router_inst.generate(
-            agent_role="evaluator",
-            messages=messages,
-            temperature=0.3,
+        system_prompt = (
+            "你是一个世界观一致性检查专家。仔细检查以下世界书条目是否存在内部矛盾或逻辑冲突。"
+            "列出所有发现的问题，每条一行。如果没有矛盾，请说明设定一致性良好。"
         )
+        user_prompt = f"请检查以下世界书条目的一致性：\n\n{text}"
 
-        # Parse issues from response
-        content = response.content.strip()
+        async def _exec() -> str:
+            messages = [
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=user_prompt),
+            ]
+            response = await router_inst.generate(
+                agent_role="evaluator",
+                messages=messages,
+                temperature=0.3,
+            )
+            return (response.content or "").strip()
+
+        content = await with_audit_and_manual_mode(
+            call_site_id="worldbook.consistency_check",
+            primary_role="evaluator",
+            prompt_full=user_prompt, system_prompt=system_prompt,
+            auto_executor=_exec,
+            parsed_target_table="worldbook_entries",
+            project_id=req.project_id,
+            provider_override=req.provider, model_override=req.model,
+        )
+        content = content.strip()
         issues = []
         for line in content.split("\n"):
             line = line.strip()

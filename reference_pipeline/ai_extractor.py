@@ -270,9 +270,20 @@ async def _invoke(router: Any, prompt: str, *,
         kw: dict[str, Any] = {}
         if expect == "object":
             kw["response_format"] = {"type": "json_object"}
-        raw = await router.invoke(
-            role=role, prompt=prompt, system=system,
-            max_tokens=max_tokens, temperature=0.1, **kw,
+
+        async def _exec() -> str:
+            return await router.invoke(
+                role=role, prompt=prompt, system=system,
+                max_tokens=max_tokens, temperature=0.1, **kw,
+            )
+
+        from llm.call_site import with_audit_and_manual_mode
+        raw = await with_audit_and_manual_mode(
+            call_site_id=f"reference_pipeline.ai_extractor::{expect}",
+            primary_role=role,
+            prompt_full=prompt, system_prompt=system,
+            auto_executor=_exec,
+            parsed_target_table="reference_works",
         )
     raw = raw or ""
     # Diagnostic: log a short snippet so the server log shows whether the

@@ -137,10 +137,23 @@ async def detect_after_chapter_commit(
             continue
         try:
             prompt = _build_prompt(pending, char_name, chapter_content)
-            resp = await router.generate(messages=[
-                {"role": "user", "content": prompt},
-            ])
-            text = getattr(resp, "content", "") or ""
+
+            async def _exec() -> str:
+                resp = await router.generate(messages=[
+                    {"role": "user", "content": prompt},
+                ])
+                return getattr(resp, "content", "") or ""
+
+            from llm.call_site import with_audit_and_manual_mode
+            text = await with_audit_and_manual_mode(
+                call_site_id="snapshot_auto_detector",
+                primary_role="snapshot_detector",
+                prompt_full=prompt, system_prompt="",
+                auto_executor=_exec,
+                parsed_target_table="character_snapshots",
+                parsed_target_row_id=str(pending.get("snapshot_id") or ""),
+                project_id=project_id,
+            )
             parsed = _parse_response(text)
         except Exception as e:
             logger.debug("auto_detector LLM failed for %s: %s",

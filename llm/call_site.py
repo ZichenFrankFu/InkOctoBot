@@ -31,6 +31,13 @@ What that single call now does:
 6. Writes one row into ``llm_outputs`` (audit + manual-mode anchor).
 7. Returns the raw response string so the caller's existing JSON
    parser keeps working unchanged.
+
+For call sites that already own their own router + message format
+(e.g. ``BaseAgent.invoke``, ``ai_extractor._invoke``), use the
+:func:`with_audit_and_manual_mode` helper instead — it adds the same
+audit + manual-mode + tokenizer machinery around a caller-supplied
+``auto_executor`` closure so the caller keeps its existing routing
+code intact.
 """
 from __future__ import annotations
 
@@ -40,7 +47,7 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 
 logger = logging.getLogger("inkoctobot.llm.call_site")
@@ -261,3 +268,118 @@ class LLMCallSite:
             logger.debug("audit table missing: %s", e)
         except Exception as e:
             logger.warning("llm audit write failed: %s", e)
+
+
+# ─────────── helper for call sites with their own router ───────────
+
+
+async def with_audit_and_manual_mode(
+    *,
+    call_site_id: str,
+    primary_role: str,
+    prompt_full: str,
+    system_prompt: str = "",
+    auto_executor: Callable[[], Awaitable[str]],
+    parsed_target_table: str = "",
+    parsed_target_row_id: str = "",
+    project_id: str = "",
+    chapter_id: str = "",
+    db_path: str | None = None,
+    manual_mode: bool | None = None,
+    provider_override: str = "",
+    model_override: str = "",
+) -> str:
+    """Wrap a caller-owned LLM invocation with the standard machinery.
+
+    Use this when you already have a configured router + message
+    format and just want the audit + manual-mode + tokenizer layer
+    without surrendering control of the call itself.
+
+    ``auto_executor`` is an async callable that, when invoked, runs
+    the real LLM call and returns the response string. The helper
+    decides whether to call it (auto mode) or skip it in favor of a
+    manual paste (manual mode), then writes one row into
+    ``llm_outputs`` either way.
+
+    ``provider_override`` / ``model_override`` let the caller record
+    the actual resolved provider+model when it differs from what
+    ``ModelRouter.resolve_role(primary_role)`` would say (e.g. when
+    a per-request provider was supplied).
+    """
+    if manual_mode is None:
+        manual_mode = _is_manual_mode()
+
+    # Resolve provider/model for tokenizer + audit.
+    if provider_override or model_override:
+        provider, model = provider_override, model_override
+    else:
+        try:
+            from llm.router import ModelRouter
+            provider, model = ModelRouter().resolve_role(primary_role)
+        except Exception:
+            provider, model = ("", "")
+
+    prompt_tokens = _count_tokens(provider, model, (prompt_full or "") + (system_prompt or ""))
+
+    t0 = time.perf_counter()
+    if manual_mode:
+        from llm.manual_paste import await_paste, register_pending_paste
+        token = register_pending_paste(
+            call_site_id, prompt_full, system_prompt,
+            project_id=project_id, chapter_id=chapter_id,
+        )
+        logger.info(
+            "manual paste registered: site=%s token=%s", call_site_id, token,
+        )
+        raw = await await_paste(token)
+        source = "manual"
+    else:
+        raw = await auto_executor()
+        source = "auto"
+    duration_ms = (time.perf_counter() - t0) * 1000.0
+
+    response_tokens = _count_tokens(provider, model, raw or "")
+
+    # Audit write — same logic as LLMCallSite._persist_audit.
+    path = db_path
+    if path is None:
+        try:
+            from ui.backend.app.services.project_paths import get_db_path
+            path = get_db_path()
+        except Exception:
+            path = None
+    if path:
+        try:
+            with sqlite3.connect(path) as con:
+                con.execute(
+                    "INSERT INTO llm_outputs "
+                    "(output_id, call_site_id, project_id, chapter_id, "
+                    " prompt_hash, prompt_full, system_prompt, response_raw, "
+                    " parsed_target_table, parsed_target_row_id, source, "
+                    " provider, model, token_count_prompt, "
+                    " token_count_response, duration_ms) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (_new_output_id(), call_site_id,
+                     project_id or None, chapter_id or None,
+                     _hash_prompt(prompt_full, system_prompt),
+                     prompt_full, system_prompt or None, raw,
+                     parsed_target_table or None,
+                     parsed_target_row_id or None,
+                     source, provider or None, model or None,
+                     prompt_tokens, response_tokens, duration_ms),
+                )
+                con.commit()
+        except sqlite3.OperationalError as e:
+            logger.debug("audit table missing: %s", e)
+        except Exception as e:
+            logger.warning("llm audit write failed: %s", e)
+
+    return raw
+
+
+def _count_tokens(provider: str, model: str, text: str) -> int:
+    try:
+        from llm.tokenizer_registry import count_tokens
+        return count_tokens(provider, model, text or "")
+    except Exception:
+        return 0
