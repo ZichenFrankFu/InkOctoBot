@@ -18,66 +18,13 @@ against the worldbook.
 """
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import logging
 from typing import Any
 
 from ..budgets import BUDGETS
-from ..utils import clip, section
+from ..utils import clip, cosine, embed_sync, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.worldbook")
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    """Cosine similarity for two equal-length vectors. 0.0 on bad input."""
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for x, y in zip(a, b):
-        dot += x * y
-        na += x * x
-        nb += y * y
-    if na == 0.0 or nb == 0.0:
-        return 0.0
-    return dot / ((na ** 0.5) * (nb ** 0.5))
-
-
-def _embed_sync(texts: list[str]) -> list[list[float]]:
-    """Synchronously embed a batch via the configured backend.
-
-    Bridges from sync loader code into the async embedding API. Returns
-    ``[[] for _ in texts]`` on any failure so callers can degrade
-    gracefully.
-    """
-    if not texts:
-        return []
-
-    async def _do() -> list[list[float]]:
-        from llm.embedding_provider import get_embedding_provider
-        prov = get_embedding_provider()
-        arr = await prov.embed(texts)
-        try:
-            return arr.tolist()  # numpy ndarray
-        except AttributeError:
-            return [list(v) for v in arr]
-
-    try:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            # Inside an async caller (FastAPI route) — run in a worker
-            # thread so we don't block the loop or nest asyncio.run().
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, _do()).result()
-        return asyncio.run(_do())
-    except Exception as e:
-        logger.debug("embedding failed: %s", e)
-        return [[] for _ in texts]
 
 
 def _render_entries(entries: list[dict], exclude: set | None) -> str:
@@ -140,7 +87,7 @@ def load(project_id: str, chapter_id: str = "", exclude: set | None = None) -> s
 
         # Batch: [query, *stale_texts] in one embed() call.
         batch_in = [synopsis] + stale_texts
-        batch_out = _embed_sync(batch_in)
+        batch_out = embed_sync(batch_in)
         if not batch_out or not batch_out[0]:
             # Embedding unavailable — fall back to all entries unranked.
             return _render_entries(rows, exclude)
@@ -164,7 +111,7 @@ def load(project_id: str, chapter_id: str = "", exclude: set | None = None) -> s
         scored: list[tuple[float, dict]] = []
         for e in rows:
             vec = e.get("embedding") or []
-            score = _cosine(query_vec, vec) if vec else float("-inf")
+            score = cosine(query_vec, vec) if vec else float("-inf")
             scored.append((score, e))
         scored.sort(key=lambda t: t[0], reverse=True)
         ordered = [e for _, e in scored]

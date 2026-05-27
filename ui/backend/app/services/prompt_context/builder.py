@@ -22,8 +22,11 @@ from typing import Any
 from .chapter_fields import load_chapter_fields
 from .loaders import (
     adjacent_context,
+    chapter_outline as chapter_outline_loader,
     character_cards,
+    current_chapter_draft,
     foreshadowing,
+    inspiration,
     platform_market,
     reference_blocks,
     style_calibration,
@@ -52,6 +55,10 @@ def build_generation_context(
     skills: list[str] | None = None,
     chapter_id: str = "",
     rag_excludes: list[str] | None = None,
+    *,
+    generation_mode: str = "fresh",
+    revision_anchor: dict | None = None,
+    linked_inspiration_ids: list[str] | None = None,
 ) -> dict:
     """Assemble the RAG context for a chapter-generation call.
 
@@ -60,6 +67,10 @@ def build_generation_context(
     self-contained ``\\n\\n## 标题\\n...`` string ready to splice into the
     ``generation.single_agent`` template. ``rag_excludes`` carries the
     user's per-item de-selections (``"block::id"``).
+
+    ``generation_mode`` / ``revision_anchor`` drive the
+    ``current_chapter_draft`` loader (Loader 9). Default ``'fresh'``
+    keeps every legacy caller working.
     """
     characters = characters or []
     if db_path is None:
@@ -70,6 +81,16 @@ def build_generation_context(
             db_path = ""
 
     excl = parse_rag_excludes(rag_excludes)
+
+    # Pull the chapter's outline + on-stage envelope once so the new
+    # loaders that need them don't all re-fetch from the editor doc.
+    chapter_fields = load_chapter_fields(project_id, chapter_id) if chapter_id else {}
+    chapter_synopsis = (chapter_fields.get("synopsis") or "").strip()
+    on_stage_characters = (
+        (chapter_fields.get("on_stage_entities") or {}).get("characters")
+        or chapter_fields.get("characters") or characters
+    )
+
     blocks: dict[str, str] = {
         "platform_directive": platform_market.load(project_id, excl.get("platform")),
         "style_calibration":  style_calibration.load(project_id),
@@ -81,9 +102,29 @@ def build_generation_context(
         "adjacent_context":   adjacent_context.load(project_id, chapter_id, excl.get("adjacent_context")),
         "foreshadowing":      foreshadowing.load(project_id, chapter_id),
         "user_preferences":   user_preferences.load(project_id, db_path or ""),
+        # LOADER_SPEC v3 — Batch 3 loaders
+        "chapter_outline":    chapter_outline_loader.load(project_id, chapter_id),
+        "inspiration":        inspiration.load(
+            project_id, chapter_synopsis, on_stage_characters,
+            user_pinned_ids=linked_inspiration_ids,
+            chapter_num=chapter_num,
+            exclude=excl.get("inspiration"),
+        ),
+        "current_chapter_draft": current_chapter_draft.load(
+            project_id, chapter_id,
+            generation_mode=generation_mode,
+            revision_anchor=revision_anchor,
+            exclude=excl.get("current_chapter_draft"),
+        ),
     }
     if "__all__" in excl.get("foreshadowing", set()):
         blocks["foreshadowing"] = ""
+    if "__all__" in excl.get("chapter_outline", set()):
+        blocks["chapter_outline"] = ""
+    if "__all__" in excl.get("inspiration", set()):
+        blocks["inspiration"] = ""
+    if "__all__" in excl.get("current_chapter_draft", set()):
+        blocks["current_chapter_draft"] = ""
 
     sections: list[dict[str, str]] = []
     for val in blocks.values():

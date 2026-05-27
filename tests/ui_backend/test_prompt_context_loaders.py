@@ -162,8 +162,8 @@ class TestWorldbookLoader(unittest.TestCase):
                 "id": "ch1", "synopsis": "主角找到黑曜宝石封印星门",
             }]}],
         })
-        # Force _embed_sync to fail → fall back to unranked render.
-        with mock.patch.object(worldbook, "_embed_sync", return_value=[]):
+        # Force embed_sync to fail → fall back to unranked render.
+        with mock.patch.object(worldbook, "embed_sync", return_value=[]):
             out = worldbook.load("p1", chapter_id="ch1")
         self.assertIn("星门", out)
         self.assertIn("六道议会", out)
@@ -177,7 +177,7 @@ class TestWorldbookLoader(unittest.TestCase):
         })
         # Query embedding [1, 0, 0] → 星门 (1.0) > 黑曜宝石 (~0.99) > 六道议会 (0).
         with mock.patch.object(
-            worldbook, "_embed_sync",
+            worldbook, "embed_sync",
             return_value=[[1.0, 0.0, 0.0]],  # only query, no stale entries
         ):
             out = worldbook.load("p1", chapter_id="ch1")

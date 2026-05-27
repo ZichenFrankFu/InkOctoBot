@@ -6,8 +6,11 @@ broken loader can never block generation.
 """
 from . import (
     adjacent_context,
+    chapter_outline,
     character_cards,
+    current_chapter_draft,
     foreshadowing,
+    inspiration,
     platform_market,
     project_memory,
     reference_blocks,
@@ -19,8 +22,11 @@ from . import (
 
 __all__ = [
     "adjacent_context",
+    "chapter_outline",
     "character_cards",
+    "current_chapter_draft",
     "foreshadowing",
+    "inspiration",
     "platform_market",
     "project_memory",
     "reference_blocks",

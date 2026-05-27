@@ -18,4 +18,8 @@ BUDGETS: dict[str, int] = {
     "adjacent_context":    1200,
     "foreshadowing":        800,
     "user_preferences":     800,
+    # LOADER_SPEC v3 — Batch 3 loaders
+    "inspiration":          800,
+    "chapter_outline":     1200,
+    "current_chapter_draft": 4000,
 }
