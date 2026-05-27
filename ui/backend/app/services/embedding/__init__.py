@@ -24,12 +24,14 @@ from .registry import (
 )
 from .hardware_detector import HardwareCapabilities, detect_hardware
 from .service import EmbeddingService, SwitchResult, get_embedding_service
+from . import batch_reindex
 
 __all__ = [
     "EmbeddingService",
     "HardwareCapabilities",
     "ModelInfo",
     "SwitchResult",
+    "batch_reindex",
     "default_for_language",
     "detect_hardware",
     "get_embedding_service",
