@@ -257,6 +257,8 @@ CREATION_DDL = [
         content TEXT NOT NULL DEFAULT '',
         tags_json TEXT NOT NULL DEFAULT '[]',
         sort_order INTEGER NOT NULL DEFAULT 0,
+        embedding_json TEXT NOT NULL DEFAULT '[]',
+        embedding_text_hash TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
@@ -389,6 +391,28 @@ def _ensure_chapter_v2_columns(conn: sqlite3.Connection) -> None:
             cur.execute(f"ALTER TABLE chapters ADD COLUMN {col} {ddl}")
 
 
+_WORLDBOOK_V2_COLUMNS = [
+    # Per-entry embedding for outline-based similarity injection.
+    # Stored as JSON list[float]; empty list means "not yet computed".
+    # text_hash lets the loader detect a stale embedding when title /
+    # category / content was edited after the embedding was stored.
+    ("embedding_json",      "TEXT NOT NULL DEFAULT '[]'"),
+    ("embedding_text_hash", "TEXT NOT NULL DEFAULT ''"),
+]
+
+
+def _ensure_worldbook_v2_columns(conn: sqlite3.Connection) -> None:
+    """Add embedding columns to an existing worldbook_entries table."""
+    cur = conn.cursor()
+    try:
+        existing = {row[1] for row in cur.execute("PRAGMA table_info(worldbook_entries)")}
+    except sqlite3.OperationalError:
+        return  # table not yet created; CREATE in CREATION_DDL will carry the columns
+    for col, ddl in _WORLDBOOK_V2_COLUMNS:
+        if col not in existing:
+            cur.execute(f"ALTER TABLE worldbook_entries ADD COLUMN {col} {ddl}")
+
+
 _BANNED_WORLDBOOK_CATEGORIES = {
     "角色", "character", "characters", "主角", "配角", "反派",
 }
@@ -455,6 +479,7 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
     for ddl in CREATION_DDL:
         cur.execute(ddl)
     _ensure_chapter_v2_columns(conn)
+    _ensure_worldbook_v2_columns(conn)
     _drop_v1_redundant_objects(conn)
     conn.commit()
 

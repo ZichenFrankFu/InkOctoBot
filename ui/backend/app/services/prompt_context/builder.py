@@ -73,8 +73,8 @@ def build_generation_context(
     blocks: dict[str, str] = {
         "platform_directive": platform_market.load(project_id, excl.get("platform")),
         "style_calibration":  style_calibration.load(project_id),
-        "character_cards":    character_cards.load(project_id, characters, excl.get("character_cards")),
-        "worldbook":          worldbook.load(project_id, excl.get("worldbook")),
+        "character_cards":    character_cards.load(project_id, characters, excl.get("character_cards"), chapter_num=chapter_num),
+        "worldbook":          worldbook.load(project_id, chapter_id, excl.get("worldbook")),
         "reference_summary":  reference_blocks.load(project_id, db_path or "", excl.get("reference_summary")),
         "writing_knowledge":  writing_knowledge.load(project_id, excl.get("writing_knowledge")),
         "writing_skills":     load_writing_skills(skills),

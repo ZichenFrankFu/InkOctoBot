@@ -86,6 +86,34 @@ class TestCharacters(unittest.TestCase):
                 self.db, {"project_id": "p1"}
             )
 
+    def test_dynamic_snapshots_with_hidden_identities_roundtrip(self) -> None:
+        """Snapshot list (incl. hidden_identities) must persist via extras."""
+        snap = {
+            "chapter": "第3章",
+            "personality": "更加阴沉",
+            "background": "已知身世真相",
+            "speech_style": "",
+            "notes": "重大转折",
+            "relationships": [],
+            "layer_b": {"loss_aversion": 3.5, "value_weights": {"power": 0.5}},
+            "hidden_identities": [
+                {"name": "陈墨", "revealed_to": ["李清漪"], "notes": "为复仇而隐姓埋名"},
+                {"name": "影卫七号", "revealed_to": [], "notes": ""},
+            ],
+        }
+        saved = project_store.upsert_character(
+            self.db,
+            {"project_id": "p1", "name": "主角",
+             "dynamic_snapshots": [snap]},
+        )
+        self.assertEqual(len(saved["dynamic_snapshots"]), 1)
+        loaded = project_store.get_character(self.db, saved["id"])
+        rt = loaded["dynamic_snapshots"][0]
+        self.assertEqual(rt["chapter"], "第3章")
+        self.assertEqual(rt["layer_b"]["loss_aversion"], 3.5)
+        self.assertEqual(rt["hidden_identities"][0]["name"], "陈墨")
+        self.assertEqual(rt["hidden_identities"][0]["revealed_to"], ["李清漪"])
+
 
 class TestWorldbook(unittest.TestCase):
 
@@ -107,6 +135,49 @@ class TestWorldbook(unittest.TestCase):
 
         project_store.delete_worldbook(self.db, saved["id"])
         self.assertIsNone(project_store.get_worldbook(self.db, saved["id"]))
+
+    def test_embedding_column_lifecycle(self) -> None:
+        """embedding persists; edits to content invalidate it; idle edits don't."""
+        saved = project_store.upsert_worldbook(
+            self.db, {"project_id": "p1", "title": "星门",
+                      "category": "hard_rules", "content": "传送门"}
+        )
+        # Fresh entry has no embedding yet.
+        fetched = project_store.get_worldbook(
+            self.db, saved["id"], include_embedding=True,
+        )
+        self.assertEqual(fetched["embedding"], [])
+
+        # Backfill an embedding the way the loader would.
+        text = project_store.worldbook_embedding_text(fetched)
+        h = project_store._hash_embedding_text(text)
+        project_store.set_worldbook_embedding(
+            self.db, saved["id"], [0.1, 0.2, 0.3], h,
+        )
+        fetched = project_store.get_worldbook(
+            self.db, saved["id"], include_embedding=True,
+        )
+        self.assertEqual(fetched["embedding"], [0.1, 0.2, 0.3])
+        self.assertEqual(fetched["embedding_text_hash"], h)
+
+        # No-op upsert (same canonical text) keeps the embedding.
+        project_store.upsert_worldbook(
+            self.db, {**fetched, "sort_order": 5},
+        )
+        fetched = project_store.get_worldbook(
+            self.db, saved["id"], include_embedding=True,
+        )
+        self.assertEqual(fetched["embedding"], [0.1, 0.2, 0.3])
+
+        # Editing content invalidates the embedding.
+        project_store.upsert_worldbook(
+            self.db, {**fetched, "content": "彻底改了"},
+        )
+        fetched = project_store.get_worldbook(
+            self.db, saved["id"], include_embedding=True,
+        )
+        self.assertEqual(fetched["embedding"], [])
+        self.assertEqual(fetched["embedding_text_hash"], "")
 
 
 class TestProjectMemory(unittest.TestCase):

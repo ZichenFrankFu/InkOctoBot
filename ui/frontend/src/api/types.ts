@@ -178,6 +178,13 @@ export interface DynamicPropertySnapshot {
   notes?: string;
   relationships?: CharacterRelationship[];
   layer_b?: CharacterLayerB;
+  hidden_identities?: HiddenIdentity[];
+}
+
+export interface HiddenIdentity {
+  name: string;                // 化名 / 伪装身份
+  revealed_to?: string[];      // 已得知真相的角色名（其他人仍蒙在鼓里）
+  notes?: string;              // 伪装动机 / 破绽 / 其他说明
 }
 
 // ── World Book ──

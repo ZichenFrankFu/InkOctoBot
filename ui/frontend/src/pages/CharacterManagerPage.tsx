@@ -446,6 +446,45 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     setDirty(true);
   };
 
+  // Snapshot-level hidden identities helpers
+  const addSnapshotHidden = (snapIdx: number) => {
+    if (!editing) return;
+    const snaps = [...(editing.dynamic_snapshots || [])];
+    const snap = snaps[snapIdx];
+    if (!snap) return;
+    const list = snap.hidden_identities || [];
+    snaps[snapIdx] = {
+      ...snap,
+      hidden_identities: [...list, { name: "", revealed_to: [], notes: "" }],
+    };
+    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setDirty(true);
+  };
+
+  const updateSnapshotHidden = (snapIdx: number, hIdx: number, key: string, val: any) => {
+    if (!editing) return;
+    const snaps = [...(editing.dynamic_snapshots || [])];
+    const snap = snaps[snapIdx];
+    if (!snap) return;
+    const list = [...(snap.hidden_identities || [])];
+    list[hIdx] = { ...list[hIdx], [key]: val };
+    snaps[snapIdx] = { ...snap, hidden_identities: list };
+    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setDirty(true);
+  };
+
+  const removeSnapshotHidden = (snapIdx: number, hIdx: number) => {
+    if (!editing) return;
+    const snaps = [...(editing.dynamic_snapshots || [])];
+    const snap = snaps[snapIdx];
+    if (!snap) return;
+    const list = [...(snap.hidden_identities || [])];
+    list.splice(hIdx, 1);
+    snaps[snapIdx] = { ...snap, hidden_identities: list };
+    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setDirty(true);
+  };
+
   const updateSnapshotLayerB = (snapIdx: number, key: keyof CharacterLayerB, val: number) => {
     if (!editing) return;
     const snaps = [...(editing.dynamic_snapshots || [])];
@@ -1029,6 +1068,39 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                     <button className="btn-primary" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => addSnapshotRel(flashcardIndex, relTarget)} disabled={!relTarget}>+ 添加</button>
                                   </div>
                                 )}
+                              </div>
+
+                              {/* ── Snapshot Hidden Identities ── */}
+                              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 12 }}>
+                                <div className="flex items-center justify-between mb-8">
+                                  <label className="label" style={{ marginBottom: 0, fontWeight: 600 }}>
+                                    隐藏身份 / 化名 ({(snap.hidden_identities || []).length})
+                                  </label>
+                                  <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 8px" }}
+                                          onClick={() => addSnapshotHidden(flashcardIndex)}>+ 添加</button>
+                                </div>
+                                <div style={{ padding: "6px 8px", marginBottom: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+                                  化名/伪装身份在此阶段有效；"已知真相"中的角色看穿伪装，其他角色仍以化名认知。
+                                </div>
+                                {(snap.hidden_identities || []).map((h, hIdx) => (
+                                  <div key={hIdx} style={{ padding: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", marginBottom: 8, border: "1px solid var(--border)" }}>
+                                    <div className="flex items-center justify-between mb-6">
+                                      <input className="input" value={h.name} onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "name", e.target.value)}
+                                             placeholder="化名 / 伪装身份名" style={{ fontSize: 11, fontWeight: 600, flex: 1, marginRight: 6 }} />
+                                      <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 6px" }}
+                                              onClick={() => removeSnapshotHidden(flashcardIndex, hIdx)}>移除</button>
+                                    </div>
+                                    <div className="field mb-6">
+                                      <input className="input" value={(h.revealed_to || []).join("、")}
+                                             onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "revealed_to",
+                                                 e.target.value.split(/[、,，\s]+/).map(s => s.trim()).filter(Boolean))}
+                                             placeholder="已知真相的角色（用、或,分隔）" style={{ fontSize: 11 }} />
+                                    </div>
+                                    <input className="input" value={h.notes || ""}
+                                           onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "notes", e.target.value)}
+                                           placeholder="伪装动机 / 破绽 / 备注..." style={{ fontSize: 11 }} />
+                                  </div>
+                                ))}
                               </div>
 
                               {/* ── Snapshot Layer B ── */}

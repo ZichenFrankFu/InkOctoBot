@@ -195,9 +195,10 @@ def delete_character(db_path: str, character_id: str) -> None:
 # ─────────────── Worldbook entries ────────────────────────────────
 
 
-def _worldbook_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _worldbook_row_to_payload(row: sqlite3.Row,
+                              include_embedding: bool = False) -> dict[str, Any]:
     r = _row_to_dict(row)
-    return {
+    out: dict[str, Any] = {
         "id": r["entry_id"],
         "project_id": r["project_id"],
         "title": r["title"],
@@ -208,9 +209,37 @@ def _worldbook_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": r.get("created_at"),
         "updated_at": r.get("updated_at"),
     }
+    if include_embedding:
+        try:
+            out["embedding"] = json.loads(r.get("embedding_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            out["embedding"] = []
+        out["embedding_text_hash"] = r.get("embedding_text_hash") or ""
+    return out
 
 
-def list_worldbook(db_path: str, project_id: str | None = None) -> list[dict]:
+def worldbook_embedding_text(entry: dict[str, Any]) -> str:
+    """Canonical text used to compute a worldbook entry's embedding.
+
+    Title + category + content concatenated. Both the upsert path and
+    the prompt-context loader's stale-check must derive the same string,
+    so this helper is the single source of truth.
+    """
+    parts = [
+        (entry.get("title") or "").strip(),
+        (entry.get("category") or "").strip(),
+        (entry.get("content") or "").strip(),
+    ]
+    return "\n".join(p for p in parts if p)
+
+
+def _hash_embedding_text(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def list_worldbook(db_path: str, project_id: str | None = None,
+                   include_embedding: bool = False) -> list[dict]:
     sql = (
         "SELECT * FROM worldbook_entries"
         + (" WHERE project_id = ?" if project_id else "")
@@ -219,16 +248,34 @@ def list_worldbook(db_path: str, project_id: str | None = None) -> list[dict]:
     params = (project_id,) if project_id else ()
     with open_db(db_path) as con:
         rows = con.execute(sql, params).fetchall()
-    return [_worldbook_row_to_payload(r) for r in rows]
+    return [_worldbook_row_to_payload(r, include_embedding=include_embedding) for r in rows]
 
 
-def get_worldbook(db_path: str, entry_id: str) -> dict | None:
+def get_worldbook(db_path: str, entry_id: str,
+                  include_embedding: bool = False) -> dict | None:
     with open_db(db_path) as con:
         row = con.execute(
             "SELECT * FROM worldbook_entries WHERE entry_id = ?",
             (entry_id,),
         ).fetchone()
-    return _worldbook_row_to_payload(row) if row else None
+    return _worldbook_row_to_payload(row, include_embedding=include_embedding) if row else None
+
+
+def set_worldbook_embedding(db_path: str, entry_id: str,
+                            embedding: list[float], text_hash: str) -> None:
+    """Persist a freshly-computed embedding for a worldbook entry.
+
+    Used by the prompt_context loader to backfill embeddings lazily —
+    upsert_worldbook intentionally clears the embedding (text-hash
+    mismatch) so the loader recomputes against the current content.
+    """
+    with open_db(db_path) as con:
+        con.execute(
+            "UPDATE worldbook_entries SET embedding_json = ?, "
+            "embedding_text_hash = ? WHERE entry_id = ?",
+            (json.dumps(list(embedding), ensure_ascii=False), text_hash, entry_id),
+        )
+        con.commit()
 
 
 _BANNED_WB_CATEGORIES = {
@@ -266,6 +313,11 @@ def upsert_worldbook(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("project_id is required")
 
     category = _coerce_worldbook_category(body.get("category"))
+    content = body.get("content", "")
+    new_text = worldbook_embedding_text(
+        {"title": title, "category": category, "content": content}
+    )
+    new_hash = _hash_embedding_text(new_text)
 
     with open_db(db_path) as con:
         dup = con.execute(
@@ -276,11 +328,29 @@ def upsert_worldbook(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
         if dup:
             raise ValueError(f"世界书条目「{title}」已存在，请使用不同的标题")
 
+        # Preserve the existing embedding if the canonical text didn't
+        # change — otherwise clear it so the loader recomputes lazily.
+        prev_hash = ""
+        prev_embed = "[]"
+        prev = con.execute(
+            "SELECT embedding_json, embedding_text_hash "
+            "FROM worldbook_entries WHERE entry_id = ?",
+            (eid,),
+        ).fetchone()
+        if prev is not None:
+            prev_hash = prev["embedding_text_hash"] or ""
+            prev_embed = prev["embedding_json"] or "[]"
+        if prev_hash == new_hash:
+            keep_embed_json, keep_hash = prev_embed, prev_hash
+        else:
+            keep_embed_json, keep_hash = "[]", ""
+
         con.execute(
             """INSERT INTO worldbook_entries (
                    entry_id, project_id, title, category, content,
-                   tags_json, sort_order, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?,
+                   tags_json, sort_order, embedding_json,
+                   embedding_text_hash, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                ON CONFLICT(entry_id) DO UPDATE SET
                    project_id = excluded.project_id,
@@ -289,12 +359,16 @@ def upsert_worldbook(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
                    content = excluded.content,
                    tags_json = excluded.tags_json,
                    sort_order = excluded.sort_order,
+                   embedding_json = excluded.embedding_json,
+                   embedding_text_hash = excluded.embedding_text_hash,
                    updated_at = CURRENT_TIMESTAMP""",
             (eid, pid, title,
              category,
-             body.get("content", ""),
+             content,
              json.dumps(body.get("tags", []), ensure_ascii=False),
-             int(body.get("sort_order", 0) or 0)),
+             int(body.get("sort_order", 0) or 0),
+             keep_embed_json,
+             keep_hash),
         )
         con.commit()
     saved = get_worldbook(db_path, eid)
