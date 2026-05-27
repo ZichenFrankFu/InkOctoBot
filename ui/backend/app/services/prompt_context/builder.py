@@ -28,6 +28,7 @@ from .loaders import (
     foreshadowing,
     inspiration,
     platform_market,
+    reader_memory as reader_memory_loader,
     reference as reference_loader,
     reference_blocks,
     skills as skills_loader,
@@ -142,6 +143,13 @@ def build_generation_context(
             on_stage_entities=(chapter_fields.get("on_stage_entities") or {}),
             exclude=excl.get("storyland_state"),
         ),
+        # LOADER_SPEC v3 — Batch 6 loaders
+        "reader_memory":      reader_memory_loader.load(
+            project_id, chapter_num,
+            chapter_outline=chapter_synopsis,
+            on_stage_characters=on_stage_characters,
+            exclude=excl.get("reader_memory"),
+        ),
     }
     if "__all__" in excl.get("foreshadowing", set()):
         blocks["foreshadowing"] = ""
@@ -159,6 +167,8 @@ def build_generation_context(
         blocks["reference"] = ""
     if "__all__" in excl.get("storyland_state", set()):
         blocks["storyland_state"] = ""
+    if "__all__" in excl.get("reader_memory", set()):
+        blocks["reader_memory"] = ""
 
     sections: list[dict[str, str]] = []
     for val in blocks.values():

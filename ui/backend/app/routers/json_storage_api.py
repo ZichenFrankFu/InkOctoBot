@@ -358,6 +358,38 @@ def save_foreshadowing(project_id: str, body: dict = Body(...)):
     return {"ok": True, "deprecated": True}
 
 
+# ─── Chapter-summary anchor toggle (LOADER_SPEC Loader 8, Batch 6) ───
+
+
+@router.post("/chapters/{chapter_num}/toggle-anchor")
+def toggle_chapter_anchor(
+    chapter_num: int,
+    body: dict = Body(default={}),
+):
+    """Flip ``is_anchor`` on the chapter_summaries row, so the
+    reader_memory loader surfaces this chapter in the anchor section
+    regardless of how far back it is.
+
+    Body: ``{"project_id": "..."}`` (required). Returns 404 if no
+    summary exists for that chapter yet — anchors only make sense for
+    chapters the summary pipeline has already processed.
+    """
+    project_id = (body.get("project_id") or "").strip()
+    if not project_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="project_id is required")
+    out = project_store.toggle_chapter_summary_anchor(
+        _db(), project_id, chapter_num,
+    )
+    if out is None:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=404,
+            detail=f"no chapter summary for project={project_id!r} chapter={chapter_num}",
+        )
+    return out
+
+
 @router.post("/foreshadowing/{hook_id}/fully-resolve")
 def fully_resolve_foreshadowing(hook_id: str, body: dict = Body(default={})):
     """User-authoritative close of a hook (LOADER_SPEC Loader 11).

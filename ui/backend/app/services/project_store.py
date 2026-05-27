@@ -1263,6 +1263,58 @@ def fully_resolve_hook(
     return _row_to_dict(row) if row else {}
 
 
+# ─────────────── chapter_summaries anchor toggle ──────────────────
+
+
+def toggle_chapter_summary_anchor(
+    db_path: str, project_id: str, chapter_num: int,
+) -> dict[str, Any] | None:
+    """Flip ``is_anchor`` on the chapter_summaries row for this chapter.
+
+    Returns the new state (``{"chapter_num", "is_anchor"}``), or None
+    if no summary exists for the given (project_id, chapter_num) yet.
+    Idempotent on the same value — anchoring twice still leaves it
+    anchored after the second call.
+    """
+    with open_db(db_path) as con:
+        row = con.execute(
+            "SELECT is_anchor FROM chapter_summaries "
+            "WHERE project_id = ? AND chapter_num = ?",
+            (project_id, int(chapter_num)),
+        ).fetchone()
+        if row is None:
+            return None
+        new_state = 0 if row["is_anchor"] else 1
+        con.execute(
+            "UPDATE chapter_summaries SET is_anchor = ? "
+            "WHERE project_id = ? AND chapter_num = ?",
+            (new_state, project_id, int(chapter_num)),
+        )
+        con.commit()
+    return {"chapter_num": int(chapter_num), "is_anchor": new_state}
+
+
+def set_chapter_summary_anchor(
+    db_path: str, project_id: str, chapter_num: int, is_anchor: bool,
+) -> dict[str, Any] | None:
+    """Explicit setter — like toggle but doesn't depend on the prior state."""
+    with open_db(db_path) as con:
+        row = con.execute(
+            "SELECT 1 FROM chapter_summaries "
+            "WHERE project_id = ? AND chapter_num = ?",
+            (project_id, int(chapter_num)),
+        ).fetchone()
+        if row is None:
+            return None
+        con.execute(
+            "UPDATE chapter_summaries SET is_anchor = ? "
+            "WHERE project_id = ? AND chapter_num = ?",
+            (1 if is_anchor else 0, project_id, int(chapter_num)),
+        )
+        con.commit()
+    return {"chapter_num": int(chapter_num), "is_anchor": 1 if is_anchor else 0}
+
+
 # ─────────────── B2: InkOS audit gate — chapter audit status ──────
 
 

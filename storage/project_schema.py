@@ -101,12 +101,16 @@ CREATION_DDL = [
         key_events_json TEXT NOT NULL DEFAULT '[]',
         character_states_json TEXT NOT NULL DEFAULT '{}',
         is_active INTEGER NOT NULL DEFAULT 1,
+        is_anchor INTEGER NOT NULL DEFAULT 0,
+        title TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
         UNIQUE(project_id, chapter_num)
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_summaries_project ON chapter_summaries(project_id, is_active);",
+    # idx_summaries_anchor lives in the v3 migration helper — v2 DBs
+    # don't have the is_anchor column yet when this DDL list runs.
 
     # ── Layer 4: Episodic Timeline ──
     # v2: dropped foreshadow_status + foreshadow_target_chapter columns
@@ -603,6 +607,30 @@ def _ensure_worldbook_v2_columns(conn: sqlite3.Connection) -> None:
             cur.execute(f"ALTER TABLE worldbook_entries ADD COLUMN {col} {ddl}")
 
 
+# LOADER_SPEC Loader 8 (Batch 6): chapter_summaries gains is_anchor +
+# title columns so the reader_memory loader can surface user-marked
+# "key chapter" anchors and render summaries with their titles.
+_CHAPTER_SUMMARIES_V3_COLUMNS = [
+    ("is_anchor", "INTEGER NOT NULL DEFAULT 0"),
+    ("title",     "TEXT NOT NULL DEFAULT ''"),
+]
+
+
+def _ensure_chapter_summaries_v3_columns(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    try:
+        existing = {row[1] for row in cur.execute("PRAGMA table_info(chapter_summaries)")}
+    except sqlite3.OperationalError:
+        return
+    for col, ddl in _CHAPTER_SUMMARIES_V3_COLUMNS:
+        if col not in existing:
+            cur.execute(f"ALTER TABLE chapter_summaries ADD COLUMN {col} {ddl}")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_summaries_anchor "
+        "ON chapter_summaries(project_id, is_anchor)"
+    )
+
+
 _BANNED_WORLDBOOK_CATEGORIES = {
     "角色", "character", "characters", "主角", "配角", "反派",
 }
@@ -670,6 +698,7 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
         cur.execute(ddl)
     _ensure_chapter_v2_columns(conn)
     _ensure_worldbook_v2_columns(conn)
+    _ensure_chapter_summaries_v3_columns(conn)
     _drop_v1_redundant_objects(conn)
     conn.commit()
 

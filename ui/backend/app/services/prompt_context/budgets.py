@@ -28,4 +28,6 @@ BUDGETS: dict[str, int] = {
     "reference":           2400,
     # LOADER_SPEC v3 — Batch 5 loaders
     "storyland_state":     2000,
+    # LOADER_SPEC v3 — Batch 6 loaders
+    "reader_memory":       4500,
 }
