@@ -62,6 +62,9 @@ class SPOTriple(BaseModel):
     confidence: float = 1.0
 
 
+SubjectType = Literal["character", "location", "item", "organization", "concept"]
+
+
 class StatePatch(BaseModel):
     """A delta-form mutation to current_state."""
     model_config = ConfigDict(frozen=True)
@@ -70,6 +73,10 @@ class StatePatch(BaseModel):
     object: str
     action: Literal["upsert", "invalidate"] = "upsert"
     valid_from_chapter: int
+    # LOADER_SPEC Loader 10: tag the subject's entity type so the
+    # loader can render state grouped by character / location / etc.
+    # Default 'character' keeps every existing call site working.
+    subject_type: SubjectType = "character"
 
 
 # ──────────────────────────────────────────────────────────────

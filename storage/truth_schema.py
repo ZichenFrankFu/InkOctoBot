@@ -24,6 +24,7 @@ TRUTH_DDL = [
         triple_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
         subject TEXT NOT NULL,
+        subject_type TEXT NOT NULL DEFAULT 'character',
         predicate TEXT NOT NULL,
         object TEXT NOT NULL,
         valid_from_chapter INTEGER NOT NULL,
@@ -37,6 +38,9 @@ TRUTH_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_state_subject ON truth_current_state(project_id, subject);",
     "CREATE INDEX IF NOT EXISTS idx_state_predicate ON truth_current_state(project_id, predicate);",
     "CREATE INDEX IF NOT EXISTS idx_state_window ON truth_current_state(project_id, valid_from_chapter, valid_to_chapter);",
+    # NOTE: idx_state_subject_type lives in the ALTER block below — for v2
+    # DBs the column doesn't exist yet when this DDL list runs, so the
+    # index has to be created after the ALTER adds the column.
 
     # ── 2. character_ledger ────────────────────────────────────
     """
@@ -210,5 +214,63 @@ def ensure_truth_tables(conn: sqlite3.Connection) -> None:
     # Drop the legacy table+index unconditionally so the schema is clean.
     cur.execute("DROP INDEX IF EXISTS idx_relations_proj")
     cur.execute("DROP TABLE IF EXISTS character_relations")
+
+    # v3.0 LOADER_SPEC Loader 10: truth_current_state grows a
+    # subject_type column so the loader can query state per entity type
+    # (character / location / item / organization / concept). Default
+    # 'character' keeps existing rows queryable; the heuristic backfill
+    # below upgrades rows whose subject is recognizably a worldbook
+    # location/organization/item.
+    try:
+        state_cols = {
+            row[1]
+            for row in cur.execute("PRAGMA table_info(truth_current_state)")
+        }
+        if "subject_type" not in state_cols:
+            cur.execute(
+                "ALTER TABLE truth_current_state ADD COLUMN "
+                "subject_type TEXT NOT NULL DEFAULT 'character'"
+            )
+            # Heuristic backfill — best-effort. Lookup misses stay
+            # 'character' (the most common case) and can be fixed via
+            # the entity registry later.
+            try:
+                cur.execute("""
+                    UPDATE truth_current_state
+                       SET subject_type = 'location'
+                     WHERE subject IN (
+                         SELECT title FROM worldbook_entries
+                          WHERE project_id = truth_current_state.project_id
+                            AND category IN ('地点','place')
+                     )
+                """)
+                cur.execute("""
+                    UPDATE truth_current_state
+                       SET subject_type = 'organization'
+                     WHERE subject IN (
+                         SELECT title FROM worldbook_entries
+                          WHERE project_id = truth_current_state.project_id
+                            AND category IN ('组织','organization','factions')
+                     )
+                """)
+                cur.execute("""
+                    UPDATE truth_current_state
+                       SET subject_type = 'item'
+                     WHERE subject IN (
+                         SELECT title FROM worldbook_entries
+                          WHERE project_id = truth_current_state.project_id
+                            AND category IN ('物品','item')
+                     )
+                """)
+            except sqlite3.OperationalError:
+                # worldbook_entries may not exist yet on a brand-new DB
+                pass
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_state_subject_type "
+            "ON truth_current_state(project_id, subject_type, valid_from_chapter)"
+        )
+    except sqlite3.OperationalError:
+        # truth_current_state itself missing → CREATE above handles it.
+        pass
 
     conn.commit()

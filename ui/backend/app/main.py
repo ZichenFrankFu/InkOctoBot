@@ -34,6 +34,7 @@ from .routers.security_api import router as security_router
 from .routers.project_api import router as project_router
 from .routers.skill_api import router as skill_router
 from .routers.dev_actions_api import router as dev_router
+from .routers.entity_api import router as entity_router
 from .routers.debug_api import router as debug_router
 
 app = FastAPI(title="InkOctoBot — AI 小说智能体工作台", version="2.1.0")
@@ -77,6 +78,7 @@ app.include_router(worldbook_router)
 app.include_router(security_router)
 app.include_router(project_router)
 app.include_router(skill_router)
+app.include_router(entity_router)  # /api/entities (prefix already set on the router)
 
 # Dev tools (actions: health-check, seed-test-data)
 app.include_router(dev_router, prefix="/api")

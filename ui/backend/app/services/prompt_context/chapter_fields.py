@@ -18,6 +18,13 @@ def load_chapter_fields(project_id: str, chapter_id: str) -> dict[str, Any]:
         "synopsis": "", "time_setting": "", "location": "",
         "characters": [], "existing_content": "",
         "referenced_events": [], "referenced_inspirations": [],
+        # LOADER_SPEC Loader 7: envelope of all on-stage entities the
+        # chapter touches. Always returned; defaults to the legacy
+        # ``characters`` list inside an otherwise-empty shape so
+        # downstream loaders can rely on the keys being present.
+        "on_stage_entities": {
+            "characters": [], "locations": [], "items": [], "organizations": [],
+        },
     }
     if not chapter_id:
         return fields
@@ -36,6 +43,23 @@ def load_chapter_fields(project_id: str, chapter_id: str) -> dict[str, Any]:
                     fields["existing_content"] = ch.get("content", "") or ""
                     fields["referenced_events"] = ch.get("referenced_events", []) or []
                     fields["referenced_inspirations"] = ch.get("referenced_inspirations", []) or []
+                    ose = ch.get("on_stage_entities")
+                    if isinstance(ose, dict):
+                        fields["on_stage_entities"] = {
+                            "characters":    ose.get("characters") if isinstance(ose.get("characters"), list) else fields["characters"],
+                            "locations":     ose.get("locations") if isinstance(ose.get("locations"), list) else [],
+                            "items":         ose.get("items") if isinstance(ose.get("items"), list) else [],
+                            "organizations": ose.get("organizations") if isinstance(ose.get("organizations"), list) else [],
+                        }
+                    else:
+                        # No explicit blob in the editor doc — derive
+                        # from the legacy ``characters`` list.
+                        fields["on_stage_entities"] = {
+                            "characters":    fields["characters"],
+                            "locations":     [],
+                            "items":         [],
+                            "organizations": [],
+                        }
                     return fields
     except Exception as e:
         logger.debug("load chapter fields skipped: %s", e)

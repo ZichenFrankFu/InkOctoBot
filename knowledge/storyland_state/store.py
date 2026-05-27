@@ -214,8 +214,8 @@ class StorylandStateStore:
                 conn.execute(
                     Q.INSERT_SPO,
                     (
-                        new_id, self.project_id, p.subject, p.predicate,
-                        p.object, p.valid_from_chapter, 1.0,
+                        new_id, self.project_id, p.subject, p.subject_type,
+                        p.predicate, p.object, p.valid_from_chapter, 1.0,
                     ),
                 )
                 n += 1

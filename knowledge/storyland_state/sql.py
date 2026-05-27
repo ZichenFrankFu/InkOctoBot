@@ -10,9 +10,9 @@ from __future__ import annotations
 
 INSERT_SPO = """
 INSERT INTO truth_current_state (
-    triple_id, project_id, subject, predicate, object,
+    triple_id, project_id, subject, subject_type, predicate, object,
     valid_from_chapter, confidence
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 # Mark all currently-valid triples with the same (subject, predicate) as

@@ -182,6 +182,11 @@ def upsert_character(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
     saved = get_character(db_path, cid)
     if saved is None:  # pragma: no cover — defensive
         raise RuntimeError("upsert succeeded but row not found")
+    # Mirror into storyland_entities so the entity registry stays
+    # current. Sync is wrapped in try/except inside the helper — a
+    # registry hiccup must never break the character save.
+    from . import entity_registry as _er
+    _er.sync_from_character(db_path, saved)
     return saved
 
 
@@ -190,6 +195,8 @@ def delete_character(db_path: str, character_id: str) -> None:
         con.execute("DELETE FROM characters WHERE character_id = ?",
                     (character_id,))
         con.commit()
+    from . import entity_registry as _er
+    _er.sync_delete_character(db_path, character_id)
 
 
 # ─────────────── Worldbook entries ────────────────────────────────
@@ -374,6 +381,10 @@ def upsert_worldbook(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
     saved = get_worldbook(db_path, eid)
     if saved is None:  # pragma: no cover
         raise RuntimeError("upsert succeeded but row not found")
+    # Mirror entry → storyland_entities iff category is stage-able
+    # (地点/组织/物品). The helper itself decides + handles failures.
+    from . import entity_registry as _er
+    _er.sync_from_worldbook(db_path, saved)
     return saved
 
 
@@ -382,6 +393,8 @@ def delete_worldbook(db_path: str, entry_id: str) -> None:
         con.execute("DELETE FROM worldbook_entries WHERE entry_id = ?",
                     (entry_id,))
         con.commit()
+    from . import entity_registry as _er
+    _er.sync_delete_worldbook(db_path, entry_id)
 
 
 # ─────────────── Project memory ───────────────────────────────────
@@ -817,6 +830,9 @@ def save_editor_doc(db_path: str, project_id: str,
             )
         }
         kept_ids: set[str] = set()
+        # Pending segment syncs — applied after the chapter commit so
+        # segment_manager's own connection sees the latest chapter row.
+        pending_segment_updates: list[tuple[str, str, str]] = []
         for vol_idx, vol in enumerate(body.get("volumes", []) or []):
             if not isinstance(vol, dict):
                 continue
@@ -832,15 +848,31 @@ def save_editor_doc(db_path: str, project_id: str,
                 word_count = ch.get("word_count")
                 if not isinstance(word_count, int):
                     word_count = len(content)
+                # on_stage_entities: prefer the explicit blob if the
+                # editor doc supplies one; otherwise derive from the
+                # legacy ``characters`` list so the column is always
+                # populated downstream of save_editor_doc.
+                characters_list = ch.get("characters", []) or []
+                ose = ch.get("on_stage_entities")
+                if not isinstance(ose, dict):
+                    ose = {}
+                ose_characters = ose.get("characters") if isinstance(ose.get("characters"), list) else None
+                on_stage_blob = {
+                    "characters":    ose_characters if ose_characters is not None else characters_list,
+                    "locations":     ose.get("locations") if isinstance(ose.get("locations"), list) else [],
+                    "items":         ose.get("items") if isinstance(ose.get("items"), list) else [],
+                    "organizations": ose.get("organizations") if isinstance(ose.get("organizations"), list) else [],
+                }
                 con.execute(
                     """INSERT INTO chapters (
                            chapter_id, project_id, chapter_num, volume,
                            title, outline, final_text, word_count,
                            synopsis, time_label, location, characters_json,
-                           pov_character, status, scene_plan_json,
+                           pov_character, on_stage_entities,
+                           status, scene_plan_json,
                            performance_log, evaluation_json,
                            extra_json, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                                'draft', '[]', '', '{}', '{}',
                                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                        ON CONFLICT(chapter_id) DO UPDATE SET
@@ -855,6 +887,7 @@ def save_editor_doc(db_path: str, project_id: str,
                            location = excluded.location,
                            characters_json = excluded.characters_json,
                            pov_character = excluded.pov_character,
+                           on_stage_entities = excluded.on_stage_entities,
                            updated_at = CURRENT_TIMESTAMP""",
                     (cid, project_id, chap_num, vol_num,
                      ch.get("title", ""),
@@ -864,9 +897,11 @@ def save_editor_doc(db_path: str, project_id: str,
                      ch.get("synopsis", ""),
                      ch.get("time", ch.get("time_label", "")),
                      ch.get("location", ""),
-                     json.dumps(ch.get("characters", []), ensure_ascii=False),
-                     ch.get("pov_character", "")),
+                     json.dumps(characters_list, ensure_ascii=False),
+                     ch.get("pov_character", ""),
+                     json.dumps(on_stage_blob, ensure_ascii=False)),
                 )
+                pending_segment_updates.append((cid, project_id, content))
 
         # Delete rows that vanished from the editor doc (user removed
         # them in the UI). Don't touch chapter rows owned by other
@@ -878,6 +913,19 @@ def save_editor_doc(db_path: str, project_id: str,
                 (cid, project_id),
             )
         con.commit()
+
+    # Sync chapter_segments after the chapter rows commit so the
+    # segment manager's own connection sees the latest text. Failures
+    # here must not abort the save — segments are a derived view.
+    from . import segment_manager as _sm
+    for cid, pid, content in pending_segment_updates:
+        try:
+            _sm.update_chapter_content(db_path, cid, pid, content)
+        except Exception as e:  # pragma: no cover — defensive
+            import logging as _lg
+            _lg.getLogger("inkoctobot.services.project_store").warning(
+                "segment sync failed for %s: %s", cid, e,
+            )
     return {"saved_at": body["saved_at"]}
 
 

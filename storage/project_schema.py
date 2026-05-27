@@ -356,6 +356,80 @@ CREATION_DDL = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_project_blobs_lookup ON project_blobs(project_id, scope);",
+
+    # ── storyland_entities (LOADER_SPEC Loader 10 prerequisite) ────────
+    # One registry of all named entities a chapter can put "on stage" —
+    # characters, locations, items, organizations, abstract concepts.
+    # Auto-synced from characters / worldbook_entries so user-edited
+    # tables stay the source of truth; ``manual`` rows are user-created.
+    """
+    CREATE TABLE IF NOT EXISTS storyland_entities (
+        entity_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        entity_type TEXT NOT NULL
+            CHECK (entity_type IN
+                ('character','location','item','organization','concept')),
+        description TEXT NOT NULL DEFAULT '',
+        introduced_chapter INTEGER,
+        aliases_json TEXT NOT NULL DEFAULT '[]',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        source TEXT NOT NULL DEFAULT 'manual'
+            CHECK (source IN ('character','worldbook','manual')),
+        source_ref_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+        UNIQUE (project_id, name)
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_entities_type ON storyland_entities(project_id, entity_type);",
+    "CREATE INDEX IF NOT EXISTS idx_entities_introduced ON storyland_entities(project_id, introduced_chapter);",
+
+    # ── chapter_segments (LOADER_SPEC Loader 9 prerequisite) ───────────
+    # Paragraph-level provenance: each segment tracks whether the user
+    # wrote it, the AI generated it, or the AI generated it and the user
+    # then edited it. Lets the current_chapter_draft loader decide what
+    # to preserve in each generation mode.
+    """
+    CREATE TABLE IF NOT EXISTS chapter_segments (
+        segment_id TEXT PRIMARY KEY,
+        chapter_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        sequence_order INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        source TEXT NOT NULL
+            CHECK (source IN ('user_written','ai_generated','ai_user_edited')),
+        generation_id TEXT,
+        original_ai_content TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (chapter_id, sequence_order),
+        FOREIGN KEY (chapter_id) REFERENCES chapters(chapter_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_segments_chapter ON chapter_segments(chapter_id, sequence_order);",
+
+    # ── chapter_failed_generations (LOADER_SPEC Loader 9) ──────────────
+    # When the user discards a generation, archive it so the next fresh
+    # generation can avoid the same direction. ``issues_detected`` is
+    # populated lazily by FailureAnalyzer (LLM).
+    """
+    CREATE TABLE IF NOT EXISTS chapter_failed_generations (
+        failed_gen_id TEXT PRIMARY KEY,
+        chapter_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        content_snippet TEXT NOT NULL DEFAULT '',
+        full_content TEXT NOT NULL DEFAULT '',
+        rejected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        rejection_reason TEXT NOT NULL DEFAULT '',
+        issues_detected TEXT NOT NULL DEFAULT '[]',
+        FOREIGN KEY (chapter_id) REFERENCES chapters(chapter_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_failed_gens_chapter ON chapter_failed_generations(chapter_id, rejected_at);",
 ]
 
 
@@ -374,6 +448,11 @@ _CHAPTERS_V2_COLUMNS = [
     # the same enum.)
     ("audit_status",      "TEXT NOT NULL DEFAULT 'audit_pending'"),
     ("audit_issues_json", "TEXT NOT NULL DEFAULT '[]'"),
+    # v3.0 LOADER_SPEC Loader 7: chapters carry not just characters but
+    # locations / items / organizations the chapter puts on stage.
+    # JSON envelope shape:
+    #   {"characters":[...],"locations":[...],"items":[...],"organizations":[...]}
+    ("on_stage_entities", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 
@@ -389,6 +468,21 @@ def _ensure_chapter_v2_columns(conn: sqlite3.Connection) -> None:
     for col, ddl in _CHAPTERS_V2_COLUMNS:
         if col not in existing:
             cur.execute(f"ALTER TABLE chapters ADD COLUMN {col} {ddl}")
+
+    # Backfill on_stage_entities for rows that pre-date the v3 column:
+    # carry the legacy characters_json into the new envelope so the
+    # loader always sees a populated structure. Skip rows that already
+    # have a non-default value (someone wrote them explicitly).
+    cur.execute("""
+        UPDATE chapters
+           SET on_stage_entities = json_object(
+                   'characters',    json(COALESCE(NULLIF(characters_json,''), '[]')),
+                   'locations',     json('[]'),
+                   'items',         json('[]'),
+                   'organizations', json('[]')
+               )
+         WHERE on_stage_entities IN ('', '{}')
+    """)
 
 
 _WORLDBOOK_V2_COLUMNS = [
