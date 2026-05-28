@@ -84,6 +84,50 @@ def get_embedding_model_key() -> str:
     return str(blob.get("embedding_model_key") or _DEFAULT_MODEL_KEY)
 
 
+# ── edit-learning threshold (Part A) ────────────────────────────────
+#
+# How many user edits accumulate before we batch-extract preferences
+# and probe for domain knowledge gaps. Single edits are noise; the
+# batch is what reveals stable habits. Lives in the same settings.json
+# so the UI can surface a "every N chapters" number input.
+
+
+_DEFAULT_EDIT_LEARNING_THRESHOLD = 5
+_EDIT_LEARNING_THRESHOLD_MIN = 1
+_EDIT_LEARNING_THRESHOLD_MAX = 50
+
+
+def get_edit_learning_threshold() -> int:
+    """How many unconsumed ``edit_observations`` trigger batch extraction.
+
+    Reads from ``data/settings.json[edit_learning_threshold]``. Missing
+    or malformed → default 5. Clamped to [1, 50] to guard against
+    accidental zero/huge values."""
+    blob = _read_embedding_settings_blob()
+    raw = blob.get("edit_learning_threshold", _DEFAULT_EDIT_LEARNING_THRESHOLD)
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_EDIT_LEARNING_THRESHOLD
+    if n < _EDIT_LEARNING_THRESHOLD_MIN:
+        return _EDIT_LEARNING_THRESHOLD_MIN
+    if n > _EDIT_LEARNING_THRESHOLD_MAX:
+        return _EDIT_LEARNING_THRESHOLD_MAX
+    return n
+
+
+def set_edit_learning_threshold(n: int) -> int:
+    """Persist the threshold. Returns the clamped + written value."""
+    n = max(_EDIT_LEARNING_THRESHOLD_MIN,
+            min(_EDIT_LEARNING_THRESHOLD_MAX, int(n)))
+    p = _embedding_settings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    blob = _read_embedding_settings_blob()
+    blob["edit_learning_threshold"] = n
+    p.write_text(_json.dumps(blob, ensure_ascii=False, indent=2), encoding="utf-8")
+    return n
+
+
 def set_embedding_settings(
     *, language_mode: str | None = None, model_key: str | None = None,
 ) -> dict:
