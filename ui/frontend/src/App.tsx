@@ -25,18 +25,33 @@ import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
 import DevConsolePage from "./pages/DevConsolePage";
 import MarketSearchPage from "./pages/MarketSearchPage";
-// P0 + P1: learning / paste / audit surfaces newly added — see
-// docs/UI_REDESIGN_SPEC.md.
+// New IA per latest UI overhaul: 4 top-level groups
+// (市场 / 参考 / 灵感 / 创作), 学习反馈 absorbed into 智能体,
+// Truth 审阅 moved into 创作.
 import PasteInboxPage from "./pages/PasteInboxPage";
-import DomainLearningPage from "./pages/DomainLearningPage";
-import PreferencesPage from "./pages/PreferencesPage";
 import TruthReviewPage from "./pages/TruthReviewPage";
+import MarketOverviewPage from "./pages/MarketOverviewPage";
+import MarketFeatureExtractionPage from "./pages/MarketFeatureExtractionPage";
+import InspirationOverviewPage from "./pages/InspirationOverviewPage";
+import InspirationSearchPage from "./pages/InspirationSearchPage";
+import InspirationLibraryPage from "./pages/InspirationLibraryPage";
 
 type Tab =
-  | "dashboard" | "rankings" | "references" | "references-overview" | "references-search" | "analysis"
-  | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
-  | "skills" | "settings" | "dev-console" | "market-search"
-  | "paste-inbox" | "domain-learning" | "preferences" | "truth-review";
+  // 市场数据库
+  | "market-overview" | "market-search" | "references" | "market-features"
+  // 参考数据库 (references = 参考作品特征提取, references-search = 工具)
+  | "references-overview" | "references-search"
+  // 灵感数据库
+  | "inspiration-overview" | "inspiration-search" | "inspiration-library"
+  // 创作
+  | "projects" | "project-setup" | "editor" | "characters"
+  | "worldbook" | "storyline" | "truth-review"
+  // 智能体与设置
+  | "skills" | "settings" | "dev-console" | "paste-inbox"
+  // legacy / dashboard
+  | "dashboard" | "rankings" | "analysis"
+  // legacy aliases kept for deep-links from the inspector drawer:
+  | "preferences" | "domain-learning";
 
 interface Project { id: string; name: string; genre?: string; word_count?: number; chapter_count?: number; }
 
@@ -50,44 +65,50 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   {
     section: "市场数据库",
     items: [
-      { key: "rankings", icon: "≡", label: "市场总览" },
-      { key: "analysis", icon: "↗", label: "分析面板" },
-      { key: "market-search", icon: "⌕", label: "作品搜索" },
+      // 市场总览 = 榜单 + 分析（合并）
+      { key: "market-overview", icon: "≡", label: "市场总览" },
+      { key: "market-search",   icon: "⌕", label: "市场作品搜索" },
+      { key: "market-features", icon: "△", label: "市场特征提取" },
     ],
   },
   {
     section: "参考数据库",
     items: [
       { key: "references-overview", icon: "▦", label: "数据库概览" },
-      { key: "references-search", icon: "⌕", label: "灵感搜索" },
-      { key: "references", icon: "⊞", label: "参考作品详情" },
+      // 参考作品详情 → 参考作品特征提取（renamed for clarity）
+      { key: "references",          icon: "⊞", label: "参考作品特征提取" },
+      // 工具页内含: 参考作品搜索 / 作品对比 / 索引管理
+      { key: "references-search",   icon: "⚒", label: "参考数据库工具" },
+    ],
+  },
+  {
+    section: "灵感数据库",
+    items: [
+      { key: "inspiration-overview", icon: "▣", label: "灵感总览" },
+      { key: "inspiration-search",   icon: "⌕", label: "灵感搜索" },
+      { key: "inspiration-library",  icon: "✦", label: "灵感库" },
     ],
   },
   {
     section: "创作",
     items: [
-      { key: "projects", icon: "□", label: "开书" },
-      { key: "characters", icon: "♢", label: "角色管理" },
-      { key: "worldbook", icon: "⊕", label: "世界书" },
-      { key: "editor", icon: "✎", label: "编辑器" },
-      { key: "storyline", icon: "─", label: "剧情线" },
-    ],
-  },
-  {
-    section: "学习反馈",
-    items: [
-      { key: "preferences", icon: "△", label: "写作偏好" },
-      { key: "domain-learning", icon: "✦", label: "领域知识" },
+      { key: "projects",     icon: "□", label: "开书" },
+      { key: "characters",   icon: "♢", label: "角色管理" },
+      { key: "worldbook",    icon: "⊕", label: "世界书" },
+      { key: "editor",       icon: "✎", label: "编辑器" },
+      { key: "storyline",    icon: "─", label: "剧情线" },
+      // Truth 审阅 is per-project, belongs to 创作 group
       { key: "truth-review", icon: "⚖", label: "Truth 审阅" },
-      { key: "paste-inbox", icon: "▽", label: "粘贴收件箱" },
     ],
   },
   {
     section: "智能体与设置",
     items: [
-      { key: "skills", icon: "⚙", label: "智能体" },
-      { key: "settings", icon: "☸", label: "设置" },
-      { key: "dev-console", icon: "⚉", label: "开发者控制台" },
+      // 智能体 page now also hosts 写作偏好 + 领域知识 as tabs
+      { key: "skills",       icon: "⚙", label: "智能体" },
+      { key: "paste-inbox",  icon: "▽", label: "粘贴收件箱" },
+      { key: "settings",     icon: "☸", label: "设置" },
+      { key: "dev-console",  icon: "⚉", label: "开发者控制台" },
     ],
   },
 ];
@@ -228,25 +249,44 @@ function AppInner() {
 
       <main id="main-content" className="main-content" role="main" aria-label="Page content">
         {tab === "dashboard" && <ErrorBoundary key="dashboard"><DashboardPage projects={projects} onNavigate={(t: string) => setTab(t as Tab)} onSelectProject={setActiveProject} /></ErrorBoundary>}
-        {tab === "rankings" && <ErrorBoundary key="rankings"><RankingsPage /></ErrorBoundary>}
+
+        {/* 市场数据库 */}
+        {tab === "market-overview" && <ErrorBoundary key="market-overview"><MarketOverviewPage /></ErrorBoundary>}
+        {tab === "market-search"   && <ErrorBoundary key="market-search"><MarketSearchPage /></ErrorBoundary>}
+        {tab === "market-features" && <ErrorBoundary key="market-features"><MarketFeatureExtractionPage /></ErrorBoundary>}
+        {/* Legacy aliases — kept so deep-links / bookmarks still resolve */}
+        {tab === "rankings" && <ErrorBoundary key="rankings"><MarketOverviewPage /></ErrorBoundary>}
+        {tab === "analysis" && <ErrorBoundary key="analysis"><MarketOverviewPage /></ErrorBoundary>}
+
+        {/* 参考数据库 */}
         {tab === "references-overview" && <ErrorBoundary key="references-overview"><ReferenceOverviewPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
-        {tab === "references-search" && <ErrorBoundary key="references-search"><ReferenceSearchPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
-        {tab === "references" && <ErrorBoundary key="references"><ReferenceLibraryPage /></ErrorBoundary>}
-        {tab === "analysis" && <ErrorBoundary key="analysis"><AnalysisDashboardPage /></ErrorBoundary>}
-        {tab === "projects" && <ErrorBoundary key="projects"><ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {tab === "references"          && <ErrorBoundary key="references"><ReferenceLibraryPage /></ErrorBoundary>}
+        {tab === "references-search"   && <ErrorBoundary key="references-search"><ReferenceSearchPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+
+        {/* 灵感数据库 (NEW) */}
+        {tab === "inspiration-overview" && <ErrorBoundary key="inspiration-overview"><InspirationOverviewPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {tab === "inspiration-search"   && <ErrorBoundary key="inspiration-search"><InspirationSearchPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {tab === "inspiration-library"  && <ErrorBoundary key="inspiration-library"><InspirationLibraryPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+
+        {/* 创作 */}
+        {tab === "projects"      && <ErrorBoundary key="projects"><ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "project-setup" && <ErrorBoundary key="project-setup"><ProjectSetupPage projectId={activeProject} /></ErrorBoundary>}
-        {tab === "editor" && <ErrorBoundary key="editor"><EditorPage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
-        {tab === "characters" && <ErrorBoundary key="characters"><CharacterManagerPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
-        {tab === "worldbook" && <ErrorBoundary key="worldbook"><WorldBookPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
-        {tab === "storyline" && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
-        {tab === "skills" && <ErrorBoundary key="skills"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
-        {tab === "settings" && <ErrorBoundary key="settings"><SettingsPage /></ErrorBoundary>}
-        {tab === "market-search" && <ErrorBoundary key="market-search"><MarketSearchPage /></ErrorBoundary>}
-        {tab === "dev-console" && <ErrorBoundary key="dev-console"><DevConsolePage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
+        {tab === "editor"        && <ErrorBoundary key="editor"><EditorPage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {tab === "characters"    && <ErrorBoundary key="characters"><CharacterManagerPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
+        {tab === "worldbook"     && <ErrorBoundary key="worldbook"><WorldBookPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
+        {tab === "storyline"     && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
+        {tab === "truth-review"  && <ErrorBoundary key="truth-review"><TruthReviewPage projectId={activeProject} onOpenChapter={() => setTab("editor")} /></ErrorBoundary>}
+
+        {/* 智能体与设置 */}
+        {tab === "skills"      && <ErrorBoundary key="skills"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
         {tab === "paste-inbox" && <ErrorBoundary key="paste-inbox"><PasteInboxPage /></ErrorBoundary>}
-        {tab === "domain-learning" && <ErrorBoundary key="domain-learning"><DomainLearningPage projectId={activeProject} /></ErrorBoundary>}
-        {tab === "preferences" && <ErrorBoundary key="preferences"><PreferencesPage projectId={activeProject} /></ErrorBoundary>}
-        {tab === "truth-review" && <ErrorBoundary key="truth-review"><TruthReviewPage projectId={activeProject} onOpenChapter={() => setTab("editor")} /></ErrorBoundary>}
+        {tab === "settings"    && <ErrorBoundary key="settings"><SettingsPage /></ErrorBoundary>}
+        {tab === "dev-console" && <ErrorBoundary key="dev-console"><DevConsolePage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
+
+        {/* Legacy deep-link tab keys — route into the new IA where preferences / domain
+            live as tabs inside SkillsPage. */}
+        {tab === "preferences"     && <ErrorBoundary key="alias-preferences"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
+        {tab === "domain-learning" && <ErrorBoundary key="alias-domain"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
       </main>
 
       <GlobalSearch
