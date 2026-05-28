@@ -489,6 +489,13 @@ def creation_context_manifest(
             {"name": s["name"], "description": s["description"], "skill_md": s["body"]}
             for s in active_learned_skills()
         ],
+        # v3.1 dropped the writing_knowledge table + CRUD entirely, but
+        # the React editor still reads ``manifest.writing_knowledge.length``
+        # (EditorPage.tsx:2217). Returning an empty list keeps the API
+        # contract the bundled frontend expects and avoids the
+        # ``Cannot read properties of undefined (reading 'length')``
+        # crash that every chapter page hit after the v3.1 cleanup.
+        "writing_knowledge": [],
     }
 
 

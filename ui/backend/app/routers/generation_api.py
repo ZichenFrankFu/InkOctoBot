@@ -628,7 +628,12 @@ def context_manifest(
         return creation_context_manifest(project_id, chapter_id, chapter_num, mode)
     except Exception as e:
         logger.error("context manifest error: %s", e, exc_info=True)
-        return {"rag": [], "default_skills": [], "learned_skills": []}
+        # All four lists must be present — the bundled frontend reads
+        # ``.length`` on each without nullish guards.
+        return {
+            "rag": [], "default_skills": [],
+            "learned_skills": [], "writing_knowledge": [],
+        }
 
 
 @router.post("/evaluate")
