@@ -74,12 +74,14 @@ def cancel_job_endpoint(job_id: str) -> dict:
 
 @router.get("/platforms")
 def list_platforms() -> dict:
-    """Surface platforms the user actually has in the crawler DB."""
-    import os as _os, sqlite3 as _sqlite3
-    crawler_db_path = _os.path.join(
-        _os.path.dirname(get_db_path()), "InkOctoBot_Crawler.db",
-    )
-    if not _os.path.exists(crawler_db_path):
+    """Distinct ``platform`` values from the crawler DB. Uses the
+    same path resolver as the rest of the market endpoints so the
+    user-configured market-DB path takes effect."""
+    import sqlite3 as _sqlite3
+    from pathlib import Path as _Path
+    from ui.backend.app.utils import resolve_crawler_db_path
+    crawler_db_path = resolve_crawler_db_path()
+    if not crawler_db_path or not _Path(crawler_db_path).exists():
         return {"platforms": [], "warning": "crawler DB not configured"}
     try:
         with _sqlite3.connect(crawler_db_path) as con:
@@ -125,12 +127,12 @@ def get_aggregated_stats(platform: str = Query(...), category: str = Query(...))
 
 @router.get("/categories")
 def list_categories(platform: str = Query("")) -> dict:
-    """Surface 榜单 categories from the crawler DB."""
-    import os as _os, sqlite3 as _sqlite3
-    crawler_db_path = _os.path.join(
-        _os.path.dirname(get_db_path()), "InkOctoBot_Crawler.db",
-    )
-    if not _os.path.exists(crawler_db_path):
+    """Distinct rank_family × rank_sub_cat from the crawler DB."""
+    import sqlite3 as _sqlite3
+    from pathlib import Path as _Path
+    from ui.backend.app.utils import resolve_crawler_db_path
+    crawler_db_path = resolve_crawler_db_path()
+    if not crawler_db_path or not _Path(crawler_db_path).exists():
         return {"categories": [], "warning": "crawler DB not configured"}
     try:
         with _sqlite3.connect(crawler_db_path) as con:

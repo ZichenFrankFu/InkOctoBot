@@ -225,6 +225,24 @@ export function tInspirationCategory(key: string): string {
 }
 
 
+/** Platform keys are stored in the DB as the crawler's English slug
+ *  (qidian / fanqie / zongheng / ciweimao / 17k). The UI should display
+ *  the localised Chinese name in zh mode. */
+const PLATFORM_NAMES: Record<string, { zh: string; en: string }> = {
+  qidian:   { zh: "起点",   en: "Qidian" },
+  fanqie:   { zh: "番茄",   en: "Fanqie" },
+  zongheng: { zh: "纵横",   en: "Zongheng" },
+  ciweimao: { zh: "刺猬猫", en: "Ciweimao" },
+  "17k":    { zh: "17K",    en: "17K" },
+};
+
+export function tPlatform(key: string): string {
+  const meta = PLATFORM_NAMES[(key || "").toLowerCase()];
+  if (!meta) return key;
+  return _lang === "en" ? meta.en : meta.zh;
+}
+
+
 // Initialize <html lang="..."> on first import.
 try {
   document.documentElement.setAttribute("lang", _lang);

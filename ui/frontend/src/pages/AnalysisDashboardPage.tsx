@@ -158,16 +158,37 @@ export default function AnalysisDashboardPage() {
     setter(prev => prev.key === field ? { key: field, dir: prev.dir === "asc" ? "desc" : "asc" } : { key: field, dir: "desc" });
   };
 
-  /* ── Auto-run trend analysis on mount ── */
+  /* ── Auto-run trend analysis on mount, but skip when the
+   *    crawler DB hasn't changed since the cached result. ── */
   useEffect(() => {
-    if (!autoRan && !trendData && !loadingTrend) {
-      setAutoRan(true);
-      runTrendAnalysis();
-    }
+    if (autoRan) return;
+    setAutoRan(true);
+    (async () => {
+      try {
+        const m = await apiGet<{ mtime: number; size?: number; exists: boolean }>(
+          "/api/db/db-mtime",
+        );
+        const cacheKey = `inkoctobot_analysis_cache_v1_${trendPlatform}_${lookback}_${topK}`;
+        const mtimeKey = m.exists ? `${m.mtime}.${m.size ?? 0}` : "";
+        if (mtimeKey) {
+          const raw = sessionStorage.getItem(cacheKey);
+          if (raw) {
+            const c = JSON.parse(raw);
+            if (c.mtimeKey === mtimeKey && c.data) {
+              setTrendData(c.data);
+              return;
+            }
+          }
+        }
+        runTrendAnalysis(mtimeKey, cacheKey);
+      } catch {
+        runTrendAnalysis();
+      }
+    })();
   }, []);
 
   /* ── Run trend analysis (GET /api/analysis/run) ── */
-  const runTrendAnalysis = useCallback(() => {
+  const runTrendAnalysis = useCallback((mtimeKey?: string, cacheKey?: string) => {
     setLoadingTrend(true);
     setTrendError("");
     const params = new URLSearchParams({
@@ -182,6 +203,13 @@ export default function AnalysisDashboardPage() {
           setTrendData(null);
         } else {
           setTrendData(res);
+          if (mtimeKey && cacheKey) {
+            try {
+              sessionStorage.setItem(cacheKey, JSON.stringify({
+                mtimeKey, data: res,
+              }));
+            } catch { /* ignore quota */ }
+          }
         }
       })
       .catch(e => {
@@ -244,7 +272,7 @@ export default function AnalysisDashboardPage() {
                     {[10, 15, 20, 30, 50].map(k => <option key={k} value={k}>{k}</option>)}
                   </select>
                 </div>
-                <button className="btn-primary" onClick={runTrendAnalysis} disabled={loadingTrend}>
+                <button className="btn-primary" onClick={() => runTrendAnalysis()} disabled={loadingTrend}>
                   {loadingTrend ? "分析中..." : "重新分析"}
                 </button>
               </div>

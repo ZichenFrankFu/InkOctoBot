@@ -165,25 +165,76 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
   }, [projects]);
 
   /* ── fetch market data on platform change ── */
+  // Lazy market data preview: skip the network round-trip when the
+  // crawler DB hasn't changed since our last load (the data turns
+  // over roughly once a day). The cache key combines mtime + size +
+  // platform filter so any DB write — including manual CRUD —
+  // invalidates the cached overview.
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setLoadError(false);
     const qs = platform ? `?platform=${platform}` : "";
-    Promise.all([
-      apiGet<Overview>(`/api/db/overview${qs}`),
-      apiGet<{ rows: HighFreqNovel[] }>(`/api/db/top_novels${qs}`),
-      apiGet<{ rows: HotTag[] }>(`/api/db/tag_stats${qs}`),
-    ])
-      .then(([ov, hf, tg]) => {
-        setOverview(ov);
-        setHighFreq(Array.isArray(hf.rows) ? hf.rows : []);
-        setHotTags(Array.isArray(tg.rows) ? tg.rows : []);
-      })
-      .catch((e) => {
+
+    (async () => {
+      // 1. cheap mtime check
+      let mtimeKey = "";
+      try {
+        const m = await apiGet<{ mtime: number; size?: number; exists: boolean }>(
+          "/api/db/db-mtime",
+        );
+        if (m.exists) mtimeKey = `${m.mtime}.${m.size ?? 0}.${platform}`;
+      } catch { /* fall through to full load */ }
+
+      const cacheKey = "inkoctobot_market_preview_v1";
+      if (mtimeKey) {
+        try {
+          const raw = sessionStorage.getItem(cacheKey);
+          if (raw) {
+            const cached = JSON.parse(raw);
+            if (cached.mtimeKey === mtimeKey) {
+              if (!cancelled) {
+                setOverview(cached.overview);
+                setHighFreq(cached.highFreq || []);
+                setHotTags(cached.hotTags || []);
+                setLoading(false);
+              }
+              return;
+            }
+          }
+        } catch { /* ignore parse errors */ }
+      }
+
+      try {
+        const [ov, hf, tg] = await Promise.all([
+          apiGet<Overview>(`/api/db/overview${qs}`),
+          apiGet<{ rows: HighFreqNovel[] }>(`/api/db/top_novels${qs}`),
+          apiGet<{ rows: HotTag[] }>(`/api/db/tag_stats${qs}`),
+        ]);
+        if (cancelled) return;
+        const overview = ov;
+        const highFreq = Array.isArray(hf.rows) ? hf.rows : [];
+        const hotTags = Array.isArray(tg.rows) ? tg.rows : [];
+        setOverview(overview);
+        setHighFreq(highFreq);
+        setHotTags(hotTags);
+        if (mtimeKey) {
+          try {
+            sessionStorage.setItem(cacheKey, JSON.stringify({
+              mtimeKey, overview, highFreq, hotTags,
+            }));
+          } catch { /* sessionStorage quota — skip cache */ }
+        }
+      } catch (e: any) {
+        if (cancelled) return;
         setLoadError(true);
         toast(e.message || "加载失败", "error");
-      })
-      .finally(() => setLoading(false));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
   }, [platform, retryKey]);
 
   /* ── derived ── */

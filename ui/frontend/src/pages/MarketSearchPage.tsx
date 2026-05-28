@@ -11,7 +11,9 @@
  *   GET /api/db/chapter/{chapter_id}   (single chapter content, lazy-loaded)
  */
 import React, { useCallback, useEffect, useState } from "react";
-import { apiGet } from "../api/client";
+import { apiGet, apiPut, apiDelete } from "../api/client";
+import { tPlatform, useLang } from "../i18n";
+import { useToast } from "../components/shared/Toast";
 
 interface SearchHit {
   novel_uid: number;
@@ -54,6 +56,8 @@ interface NovelDetail {
 }
 
 export default function MarketSearchPage() {
+  const { toast } = useToast();
+  useLang();
   const [query, setQuery] = useState("");
   const [platform, setPlatform] = useState<string>("");
   const [hits, setHits] = useState<SearchHit[]>([]);
@@ -63,6 +67,13 @@ export default function MarketSearchPage() {
   const [selected, setSelected] = useState<SearchHit | null>(null);
   const [detail, setDetail] = useState<NovelDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+
+  // Edit modal — populated when the user clicks "编辑" on the detail.
+  const [editing, setEditing] = useState<{
+    novel_uid: number; author: string; main_category: string;
+    status: string; total_words: number; url: string; intro: string;
+    title: string;
+  } | null>(null);
 
   // Lazy-loaded chapter content cache
   const [chapterContent, setChapterContent] = useState<Record<number, string>>({});
@@ -270,9 +281,47 @@ export default function MarketSearchPage() {
           {loadingDetail && <div>加载中…</div>}
           {detail && !loadingDetail && (
             <>
-              <h3 style={{ margin: 0 }}>{detail.titles.find((t) => t.is_primary)?.title || selected?.title}</h3>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                <h3 style={{ margin: 0 }}>{detail.titles.find((t) => t.is_primary)?.title || selected?.title}</h3>
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <button
+                    className="btn"
+                    style={{ fontSize: 11, padding: "3px 10px" }}
+                    onClick={() => {
+                      const title = detail.titles.find(t => t.is_primary)?.title || selected?.title || "";
+                      setEditing({
+                        novel_uid: detail.novel.novel_uid,
+                        author: detail.novel.author || "",
+                        main_category: detail.novel.main_category || "",
+                        status: detail.novel.status || "ongoing",
+                        total_words: detail.novel.total_words || 0,
+                        url: (detail.novel as any).url || "",
+                        intro: detail.novel.intro || "",
+                        title,
+                      });
+                    }}
+                  >编辑</button>
+                  <button
+                    className="btn"
+                    style={{ fontSize: 11, padding: "3px 10px", color: "var(--danger)" }}
+                    onClick={async () => {
+                      const title = detail.titles.find(t => t.is_primary)?.title || "this work";
+                      if (!window.confirm(`确认删除「${title}」？\n会同时清掉它在 rank_entries / chapters / titles / tag_map 中的所有引用，不可恢复。`)) return;
+                      try {
+                        await apiDelete(`/api/db/novel/${detail.novel.novel_uid}`);
+                        toast("已删除", "success");
+                        setHits(prev => prev.filter(h => h.novel_uid !== detail.novel.novel_uid));
+                        setSelected(null);
+                        setDetail(null);
+                      } catch (e: any) {
+                        toast(`删除失败: ${e.message}`, "error");
+                      }
+                    }}
+                  >删除</button>
+                </div>
+              </div>
               <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-secondary)" }}>
-                {detail.novel.platform}{detail.novel.author ? ` · ${detail.novel.author}` : ""}
+                {tPlatform(detail.novel.platform || "")}{detail.novel.author ? ` · ${detail.novel.author}` : ""}
                 {detail.novel.main_category ? ` · ${detail.novel.main_category}` : ""}
                 {detail.novel.total_words ? ` · ${(detail.novel.total_words / 10000).toFixed(1)} 万字` : ""}
               </div>
@@ -400,6 +449,81 @@ export default function MarketSearchPage() {
         </div>
         )}
       </div>
+
+      {editing && (
+        <div onClick={() => setEditing(null)} style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100,
+        }}>
+          <div className="card" onClick={e => e.stopPropagation()} style={{
+            width: "min(560px, 95vw)", maxHeight: "90vh", overflow: "auto",
+            background: "var(--bg-surface)", padding: 16,
+          }}>
+            <h3 style={{ marginTop: 0 }}>编辑作品: {editing.title || editing.novel_uid}</h3>
+            <Field label="作者">
+              <input className="input" value={editing.author}
+                     onChange={e => setEditing({ ...editing, author: e.target.value })} />
+            </Field>
+            <Field label="主类目">
+              <input className="input" value={editing.main_category}
+                     onChange={e => setEditing({ ...editing, main_category: e.target.value })} />
+            </Field>
+            <Field label="字数">
+              <input className="input" type="number" value={editing.total_words}
+                     onChange={e => setEditing({ ...editing, total_words: parseInt(e.target.value) || 0 })} />
+            </Field>
+            <Field label="状态">
+              <select className="select" value={editing.status}
+                      onChange={e => setEditing({ ...editing, status: e.target.value })}>
+                <option value="ongoing">ongoing</option>
+                <option value="completed">completed</option>
+              </select>
+            </Field>
+            <Field label="URL">
+              <input className="input" value={editing.url}
+                     onChange={e => setEditing({ ...editing, url: e.target.value })} />
+            </Field>
+            <Field label="简介">
+              <textarea className="input" rows={5} value={editing.intro}
+                        onChange={e => setEditing({ ...editing, intro: e.target.value })} />
+            </Field>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+              <button className="btn" onClick={() => setEditing(null)}>取消</button>
+              <button className="btn-primary" onClick={async () => {
+                try {
+                  await apiPut(`/api/db/novel/${editing.novel_uid}`, {
+                    author: editing.author,
+                    intro: editing.intro,
+                    main_category: editing.main_category,
+                    status: editing.status,
+                    total_words: editing.total_words,
+                    url: editing.url,
+                  });
+                  toast("已保存", "success");
+                  // Refresh the detail so the user sees the changes.
+                  if (selected) {
+                    const d = await apiGet<NovelDetail>(`/api/db/novel/${selected.novel_uid}`);
+                    setDetail(d);
+                  }
+                  setEditing(null);
+                } catch (e: any) {
+                  toast(`保存失败: ${e.message}`, "error");
+                }
+              }}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>{label}</label>
+      {children}
     </div>
   );
 }

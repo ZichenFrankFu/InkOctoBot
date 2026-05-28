@@ -468,6 +468,22 @@ def create_novel(body: _NewNovelBody):
     return {"novel_uid": novel_uid}
 
 
+@router.get("/db-mtime")
+def db_mtime():
+    """Return the crawler DB's mtime so the UI can lazily skip
+    reloading the home-page summary when nothing has changed."""
+    from ..utils import resolve_crawler_db_path
+    db_path = resolve_crawler_db_path()
+    if not db_path or not Path(db_path).exists():
+        return {"mtime": 0, "exists": False}
+    try:
+        mtime = int(Path(db_path).stat().st_mtime)
+        size = Path(db_path).stat().st_size
+        return {"mtime": mtime, "size": size, "exists": True}
+    except OSError:
+        return {"mtime": 0, "exists": False}
+
+
 @router.get("/info")
 def db_info():
     """Where the market DB actually resolves to + which precedence layer

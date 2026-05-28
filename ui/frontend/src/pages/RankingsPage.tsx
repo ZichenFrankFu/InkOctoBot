@@ -225,8 +225,10 @@ export default function RankingsPage({ hideOwnHeader = false, hideOpeningAi = fa
         </div>
       )}
 
-      {/* ══ 开篇章节分析 ══ */}
-      {openingStats?.available && openingStats.first_chapter && (
+      {/* ══ 开篇章节分析 ══ — relocated to 市场特征提取 page.
+          Suppress here when ``hideOpeningAi`` is set (i.e. when this
+          page is mounted inside MarketOverviewPage). */}
+      {!hideOpeningAi && openingStats?.available && openingStats.first_chapter && (
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header" style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
             onClick={() => setOpeningOpen(o => !o)}>

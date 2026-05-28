@@ -19,6 +19,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
+import { tPlatform } from "../i18n";
 
 
 type ResultTab = "jobs" | "profiles" | "loader" | "works" | "preview";
@@ -334,7 +335,6 @@ export default function MarketFeatureExtractionPage() {
         <div className="page-header-row">
           <div>
             <h2>市场特征提取</h2>
-            <p>选平台 + 榜单 → API 启动 / 手动模式 → 看任务进度、代表作提取、平台 profile</p>
           </div>
           <button className="btn" onClick={refreshAll} disabled={loading}>
             {loading ? "刷新中..." : "刷新"}
@@ -368,7 +368,7 @@ export default function MarketFeatureExtractionPage() {
                   style={{ fontSize: 11, padding: "3px 10px" }}
                   onClick={() => setPlatform(p.key)}
                   title={`${p.book_count} 本作品`}
-                >{p.label}</button>
+                >{tPlatform(p.key)}</button>
               ))}
             </div>
           </div>
@@ -413,13 +413,6 @@ export default function MarketFeatureExtractionPage() {
             </button>
           </div>
 
-          <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.55 }}>
-              API 模式跑完整的 5 阶段管道（代表作选择 → 章节抓取 → NLP/LLM 提取 → 综合写 platform_directive → 入库）。
-              运行中可点「取消」让管道在下一个阶段 checkpoint 停下。
-              手动模式只生成一份综合 prompt，用网页 LLM 跑完后粘回 → 直接写入 profile。
-            </div>
-          </div>
         </div>
 
         {/* RIGHT — Results tabs */}
@@ -480,15 +473,15 @@ export default function MarketFeatureExtractionPage() {
         </div>
       </div>
 
+      {/* 开篇章节分析 — moved from RankingsPage */}
+      <OpeningAnalysisPanel platform={platform} />
+
       {/* AI 总结开篇技巧 — moved from RankingsPage */}
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-header">
           <h3 style={{ margin: 0, fontSize: 14 }}>AI 总结开篇技巧（基于已爬取的开篇章节正文）</h3>
         </div>
         <div className="card-body">
-          <p style={{ color: "var(--text-tertiary)", fontSize: 12, marginTop: 0 }}>
-            汇总当前平台筛选下所有已采集的开篇章节，请 LLM 总结开篇技巧。可用 API 模式也可走手动粘贴。
-          </p>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn-primary" onClick={runOpeningSummary}>
               生成 prompt 并打开对话框
@@ -865,6 +858,75 @@ function LoaderPreviewTab({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+
+function OpeningAnalysisPanel({ platform }: { platform: string }) {
+  const [stats, setStats] = React.useState<any>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [open, setOpen] = React.useState(true);
+
+  React.useEffect(() => {
+    setLoading(true);
+    const qs = platform ? `?platform=${encodeURIComponent(platform)}` : "";
+    apiGet<any>(`/api/db/opening_analysis${qs}`)
+      .then(setStats)
+      .catch(() => setStats(null))
+      .finally(() => setLoading(false));
+  }, [platform]);
+
+  if (!stats?.available || !stats.first_chapter) {
+    return null;
+  }
+  const fc = stats.first_chapter;
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="card-header" style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+           onClick={() => setOpen(o => !o)}>
+        <h3 style={{ margin: 0, fontSize: 14 }}>{open ? "▾ " : "▸ "}开篇章节分析</h3>
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+          已采集 {stats.novels_with_chapters} 部作品的开篇章节
+        </span>
+      </div>
+      {open && (
+        <div className="card-body">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 20, marginBottom: 14 }}>
+            {([
+              ["已采集作品",    stats.novels_with_chapters ?? 0],
+              ["开篇章节总数",  stats.total_chapters ?? 0],
+              ["首章平均字数",  fc.avg_words],
+              ["首章字数中位数", fc.median_words],
+              ["首章字数范围",  `${fc.min_words}–${fc.max_words}`],
+            ] as const).map(([label, val]) => (
+              <div key={label}>
+                <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{label}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: "var(--accent)" }}>{val}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 12, marginBottom: 6 }}>
+            首章字数分布（共 {fc.count} 章）
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {Object.entries(fc.distribution as Record<string, number>).map(([bucket, n]) => {
+              const total = fc.count || 1;
+              const pct = Math.round(n / total * 100);
+              return (
+                <div key={bucket} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 84, fontSize: 11, color: "var(--text-secondary)" }}>{bucket}</span>
+                  <div style={{ flex: 1, height: 14, background: "var(--bg-surface-2)", borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ width: `${pct}%`, height: "100%", background: "var(--accent)" }} />
+                  </div>
+                  <span style={{ width: 72, textAlign: "right", fontSize: 11, fontFamily: "var(--font-mono)" }}>{n}（{pct}%）</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {loading && <div style={{ padding: 8, fontSize: 11, color: "var(--text-tertiary)" }}>加载中...</div>}
     </div>
   );
 }
