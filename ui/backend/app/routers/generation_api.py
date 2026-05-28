@@ -334,6 +334,42 @@ async def start_generation(req: GenerateRequest):
             req_data["world_rules"] = f"{existing}\n\n{rag_text}".strip() if existing else rag_text
     except Exception as e:
         logger.debug("pipeline RAG context skipped: %s", e)
+
+    # ── Stage 1 Task 3 Phase 1: Truth Files bundle injection ──
+    # Pull the 7-file Truth bundle + pressured hooks reminder for the
+    # chapter being generated, fold both into world_rules so every
+    # downstream agent (SceneDirector / Writer / Evaluator) sees the
+    # same truth state the single-writer endpoint sees. Previously
+    # this injection was /single-writer only — multi-agent /start was
+    # generating chapters with no awareness of truth_current_state /
+    # character_ledger / pending_hooks etc.
+    try:
+        from ui.backend.app.services.truth_files import TruthFilesIntegration
+        truth_bundle = TruthFilesIntegration.build_bundle(
+            req.chapter_id or "",
+            chapter_num=req.chapter_num,
+            db_path=_get_db_path(),
+            project_id=req.project_id,
+            characters=req.characters or [],
+        )
+        truth_parts = []
+        if truth_bundle.bundle_text:
+            truth_parts.append(truth_bundle.bundle_text)
+        if truth_bundle.pressured_hooks_text:
+            truth_parts.append(
+                "## 待推进伏笔（本章应继续推进）\n"
+                + truth_bundle.pressured_hooks_text
+            )
+        if truth_parts:
+            req_data["truth_bundle"] = "\n\n".join(truth_parts)
+            existing = (req_data.get("world_rules") or "").strip()
+            req_data["world_rules"] = (
+                f"{existing}\n\n{req_data['truth_bundle']}".strip()
+                if existing else req_data["truth_bundle"]
+            )
+    except Exception as e:
+        logger.debug("truth bundle injection skipped for %s: %s",
+                      req.chapter_id, e)
     _active_sessions[session_id] = {
         "status": "running",
         "request": req_data,
@@ -2005,6 +2041,44 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
         session["text"] = edited_text
         session["result"] = {"text": edited_text, "evaluation": eval_result}
 
+        # ── Stage 1 Task 3 Phase 2: Truth Files settlement + audit gate ──
+        # Before finalizing the chapter, run the settlement LLM call to
+        # extract structured StorylandStateDeltas from the prose and
+        # apply them to truth tables. The result includes audit_status
+        # (audit_passed / audit_failed / audit_pending). If audit_failed,
+        # we still persist the chapter (so the user can see the output)
+        # but mark the session 'paused_audit_review' so the user knows
+        # they need to use the Review Dialog before this chapter can be
+        # finalized. The audit gate check is also persisted to
+        # chapters.audit_status by apply_settlement.
+        audit_status = "audit_pending"
+        try:
+            audit = await _run_settlement_for_session(
+                session_id, req_data, edited_text,
+            )
+            audit_status = audit.audit_status
+            _emit(session_id, {
+                "type": "audit_done",
+                "audit_status": audit_status,
+                "issues_count": len(audit.issues),
+                "applied_counts": audit.applied_counts,
+            })
+            if audit.failed:
+                _emit(session_id, {
+                    "type": "warning",
+                    "message": (
+                        "Truth Files 审计失败 — 章节已写入但需在 Review Dialog "
+                        f"处理 {len(audit.issues)} 条 issues 后才能 finalize。"
+                    ),
+                })
+                session["status"] = "paused_audit_review"
+        except Exception as e:
+            logger.error("settlement failed: %s", e, exc_info=True)
+            _emit(session_id, {
+                "type": "warning",
+                "message": f"Truth Files 结算失败：{str(e)[:200]}",
+            })
+
         # ── Stage 1 Task 1: persist + trigger post-commit pipeline ──
         # Multi-agent /start finalize now writes a text_versions row
         # AND fires the post-commit pipeline (summarizer / event_extractor
@@ -2034,6 +2108,55 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
         logger.error("Pipeline background error: %s", e, exc_info=True)
         _emit(session_id, {"type": "error", "message": str(e)[:300]})
         session["status"] = "error"
+
+
+async def _run_settlement_for_session(
+    session_id: str, req_data: dict, final_text: str,
+):
+    """Phase 2 settlement: extract truth deltas from the generated
+    chapter, apply to truth_current_state / character_ledger /
+    emotion_arcs / etc., persist chapters.audit_status.
+
+    Returns an :class:`AuditResult`. Skips gracefully (returns an
+    'audit_pending' AuditResult) when project_id or chapter_id is
+    missing — same idempotent guard as the persist helper.
+    """
+    from ui.backend.app.services.truth_files import (
+        AuditResult, TruthFilesIntegration,
+    )
+
+    project_id = (req_data.get("project_id") or "").strip()
+    chapter_id = (req_data.get("chapter_id") or "").strip()
+    chapter_num = int(req_data.get("chapter_num") or 0)
+    if not project_id or not chapter_id:
+        return AuditResult(
+            chapter_id=chapter_id, chapter_num=chapter_num,
+            success=False, audit_status="audit_pending",
+            error="no project/chapter id — settlement skipped",
+        )
+
+    db_path = ""
+    try:
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+    except Exception:
+        pass
+
+    pov = (
+        (req_data.get("characters") or [None])[0]
+        if isinstance(req_data.get("characters"), list)
+        else None
+    )
+    known_chars = set(req_data.get("characters") or [])
+
+    return await TruthFilesIntegration.apply_settlement(
+        chapter_id, final_text,
+        db_path=db_path or None,
+        project_id=project_id, chapter_num=chapter_num,
+        chapter_title=req_data.get("chapter_title") or "",
+        pov_character=pov or "",
+        known_characters=known_chars or None,
+    )
 
 
 def _persist_and_trigger_post_commit(
