@@ -144,8 +144,9 @@ def run_env_check() -> Report:
     if not db:
         r.fail("project_paths.get_db_path() unavailable")
     elif not Path(db).exists():
-        r.warn(f"DB file not yet created at {db}; will be initialised "
-               f"on first project save.")
+        r.warn(f"DB file not yet created at {db} — will be "
+               f"initialised on first backend start or "
+               f"`python scripts/live_run_check.py --seed`.")
     else:
         try:
             with sqlite3.connect(db) as con:
@@ -155,12 +156,23 @@ def run_env_check() -> Report:
                         "WHERE type='table'"
                     ).fetchall()
                 }
-            for t in _REQUIRED_TABLES:
-                if t in names:
+            present = [t for t in _REQUIRED_TABLES if t in names]
+            missing = [t for t in _REQUIRED_TABLES if t not in names]
+            if not present:
+                # Empty / blank DB — friendlier single-line warning
+                # than 13 individual rows.
+                r.warn(f"DB at {db} exists but contains no project "
+                       f"tables yet — run "
+                       f"`python scripts/live_run_check.py --seed` "
+                       f"(or just start the backend once) to "
+                       f"initialise.")
+            else:
+                for t in present:
                     r.ok(f"table `{t}` exists")
-                else:
-                    r.warn(f"table `{t}` missing — run "
-                           f"`ensure_creation_tables(conn)` once")
+                for t in missing:
+                    r.warn(f"table `{t}` missing — partial schema; "
+                           f"backend restart will pick it up via "
+                           f"`ensure_creation_tables`.")
         except Exception as e:
             r.fail(f"could not inspect DB: {e}")
 
@@ -261,8 +273,7 @@ _VERIFY_TABLES: list[tuple[str, str, str]] = [
      "WHERE c.project_id = ?",
      "no chapter ever finalised; check pipeline `_run_pipeline_inner`"),
     ("chapter_summaries",
-     "JOIN chapters c ON c.chapter_id = chapter_summaries.chapter_id "
-     "WHERE c.project_id = ?",
+     "WHERE project_id = ?",
      "summarizer sub-task didn't run; check commit_pipeline.summarizer"),
     ("episodic_events",
      "WHERE project_id = ?",
