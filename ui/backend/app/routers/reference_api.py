@@ -1,8 +1,8 @@
 """
 /api/references — 参考作品库 CRUD + 预处理触发 + 条目管理
 
-This module is mid-refactor. The first 7 sub-routers (inspirations,
-entries, links, stats, lora, index, patterns) have been extracted to
+This module is mid-refactor. The first 6 sub-routers (inspirations,
+entries, links, stats, index, patterns) have been extracted to
 ``ui.backend.app.routers.reference.<name>`` and re-mounted below. The
 remaining endpoints (works CRUD/upload/files, preprocess, chapter
 editing, segments, analysis writer, prompts, web_search) still live

@@ -1,0 +1,35 @@
+你是网文市场分析专家。
+
+以下是从 {n_works} 部成功的 [{platform}-{category}] 作品提取的统计数据。
+请生成一份给 AI 写手用的「平台风格档案」。
+
+输入数据:
+{stats_json}
+
+请按以下 JSON 格式输出，6 部分。只输出 JSON，不要其它文本。
+
+{{
+  "profile_summary": "150 字内的平台特性总结",
+  "recommended_openings": [
+    {{
+      "name": "X 流开篇",
+      "structure": "...",
+      "example_template": "..."
+    }}
+  ],
+  "style_baseline": {{
+    "sentence_style": "...",
+    "dialogue_ratio": "...",
+    "paragraph_rhythm": "...",
+    "punctuation_habit": "..."
+  }},
+  "signature_devices_description": "...",
+  "pacing_guidance": {{
+    "first_chapter": "...",
+    "first_5_chapters": "...",
+    "first_arc": "..."
+  }},
+  "loader_payload": "< 1000 字符，紧凑版本，直接注入 prompt 用"
+}}
+
+★ 禁止包含「生造词命名建议」或「命名模式总结」。

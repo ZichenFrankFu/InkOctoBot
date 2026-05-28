@@ -17,9 +17,15 @@ import sqlite3
 _INSPIRATIONS = """
 CREATE TABLE IF NOT EXISTS inspirations (
     id TEXT PRIMARY KEY,
+    project_id TEXT,
     category TEXT NOT NULL DEFAULT 'other',
     title TEXT,
     content TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    embedding_json TEXT NOT NULL DEFAULT '[]',
+    embedding_text_hash TEXT NOT NULL DEFAULT '',
+    embedding_model_key TEXT NOT NULL DEFAULT '',
+    used_in_chapters_json TEXT NOT NULL DEFAULT '[]',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"""
@@ -27,7 +33,33 @@ CREATE TABLE IF NOT EXISTS inspirations (
 _INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_inspirations_category ON inspirations (category);
 CREATE INDEX IF NOT EXISTS idx_inspirations_updated ON inspirations (updated_at);
+CREATE INDEX IF NOT EXISTS idx_inspirations_project ON inspirations (project_id);
 """
+
+# v3 LOADER_SPEC Loader 4: project-scoped lookup + embedding-based
+# similarity ranking + used-in-chapter exclusion. Existing rows have
+# project_id=NULL ("global") and remain visible to every project.
+_INSPIRATIONS_V3_COLUMNS = [
+    ("project_id",              "TEXT"),
+    ("tags_json",               "TEXT NOT NULL DEFAULT '[]'"),
+    ("embedding_json",          "TEXT NOT NULL DEFAULT '[]'"),
+    ("embedding_text_hash",     "TEXT NOT NULL DEFAULT ''"),
+    ("embedding_model_key",     "TEXT NOT NULL DEFAULT ''"),
+    ("used_in_chapters_json",   "TEXT NOT NULL DEFAULT '[]'"),
+]
+
+
+def _ensure_inspirations_v3_columns(conn: sqlite3.Connection) -> None:
+    """Idempotently add v3 columns to a pre-existing inspirations table."""
+    cur = conn.cursor()
+    try:
+        existing = {row[1] for row in cur.execute("PRAGMA table_info(inspirations)")}
+    except sqlite3.OperationalError:
+        return  # table not yet created; CREATE in ALL_DDL handles it
+    for col, ddl in _INSPIRATIONS_V3_COLUMNS:
+        if col not in existing:
+            cur.execute(f"ALTER TABLE inspirations ADD COLUMN {col} {ddl}")
+
 
 ALL_DDL = [_INSPIRATIONS, _INDEXES]
 
@@ -52,6 +84,7 @@ def ensure_idea_tables(conn: sqlite3.Connection) -> None:
         return
     for ddl in ALL_DDL:
         conn.executescript(ddl)
+    _ensure_inspirations_v3_columns(conn)
     conn.commit()
     if path != ":memory:":
         _ensured_paths.add(path)

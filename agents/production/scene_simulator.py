@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agents.production.actor_agent import ActorAgent
 from agents.production.narrator_agent import NarratorAgent
 from agents.production.writer import Writer
 from framework.event_types import EventType
+
+if TYPE_CHECKING:
+    from agents.contracts import (
+        SceneSimulatorRequest, SceneSimulatorResponse,
+    )
 
 logger = logging.getLogger("inkoctobot.agents.production.scene_simulator")
 
@@ -190,6 +195,17 @@ class SceneSimulator:
             parts.append(f"[{char_name}的表演]\n{perf}\n")
         return "\n".join(parts)
 
+    async def simulate_chapter_typed(
+        self, request: "SceneSimulatorRequest",
+    ) -> "SceneSimulatorResponse":
+        """Stage 4 typed wrapper around ``simulate_chapter``."""
+        from agents.contracts import SceneSimulatorResponse
+        kwargs = request.to_legacy_kwargs()
+        # legacy method takes its mode arg only via simulate_scene
+        kwargs.pop("mode", None)
+        raw = await self.simulate_chapter(**kwargs)
+        return SceneSimulatorResponse.from_legacy_list(raw)
+
     async def simulate_chapter(
         self,
         scene_plans: list[dict[str, Any]],
@@ -202,7 +218,7 @@ class SceneSimulator:
         """Simulate all scenes in a chapter sequentially."""
         results = []
         for i, scene_plan in enumerate(scene_plans):
-            from knowledge.memory.immediate import SceneContext
+            from knowledge.reader_memory.immediate import SceneContext
             self.memory.start_scene(SceneContext(
                 scene_index=i,
                 characters=scene_plan.get("characters", []),

@@ -80,7 +80,6 @@ tests/
 
   llm/test_base.py
   market_analysis/test_formula_engine.py
-  reference_ingest/test_lora_pipeline.py
   reference_pipeline/test_advanced.py
   storage/test_project_schema.py / test_connection.py
 

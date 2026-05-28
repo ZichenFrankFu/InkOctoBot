@@ -25,7 +25,7 @@ re-exported below for backward compat.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agents.base_agent import BaseAgent
 from agents.production.prompt_composer import (
@@ -33,6 +33,11 @@ from agents.production.prompt_composer import (
     single_writer_composer,
     assembly_composer,
 )
+
+if TYPE_CHECKING:
+    from agents.contracts import (
+        WriterAssembleRequest, WriterWriteRequest, WriterResponse,
+    )
 
 logger = logging.getLogger("inkoctobot.agents.production.writer")
 
@@ -46,6 +51,26 @@ class Writer(BaseAgent):
     agent_name = "editor_writer"
 
     # ─── Mode 1: Assembly (multi-agent pipeline final stage) ─────────
+
+    async def assemble_chapter_typed(
+        self, request: "WriterAssembleRequest",
+    ) -> "WriterResponse":
+        """Stage 4 typed wrapper around ``assemble_chapter``."""
+        from agents.contracts import WriterResponse
+        text = await self.assemble_chapter(**request.to_legacy_kwargs())
+        return WriterResponse.from_text(
+            text, chapter_num=request.chapter_num, mode="assembly",
+        )
+
+    async def write_chapter_typed(
+        self, request: "WriterWriteRequest",
+    ) -> "WriterResponse":
+        """Stage 4 typed wrapper around ``write_chapter`` (single-agent)."""
+        from agents.contracts import WriterResponse
+        text = await self.write_chapter(**request.to_legacy_kwargs())
+        return WriterResponse.from_text(
+            text, chapter_num=request.chapter_num, mode="single_writer",
+        )
 
     async def assemble_chapter(
         self,
@@ -115,7 +140,7 @@ class Writer(BaseAgent):
         style_profile: str = "",
         user_preferences: str = "",
         memory_context: str = "",
-        adjacent_context: str = "",
+        adjacent_context: str = "",  # deprecated v3.1; kept for back-compat callers
         constraints: str = "",
         target_word_count: int = 2000,
         # InkOS B1 — extra block hooks, optional

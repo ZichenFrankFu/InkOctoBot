@@ -36,12 +36,8 @@ scikit-learn>=1.3.0
 # embedding (optional — TF-IDF fallback when unavailable)
 # sentence-transformers>=2.2.0
 
-# LoRA fine-tuning (optional — install when GPU training is needed)
-# torch>=2.0.0
-# transformers>=4.36.0
-# peft>=0.7.0
-# bitsandbytes>=0.41.0
-# datasets>=2.14.0
+# token counting for builder diagnostics (CJK heuristic fallback exists)
+tiktoken>=0.5.0
 
 # CLI
 typer>=0.9.0

@@ -12,9 +12,9 @@ Public API:
 - ``single_agent_vars``             — variable dict for single_agent template
 - ``build_referenced_materials_block`` — chapter-tab linked refs
 - ``load_chapter_fields``           — read chapter local fields
-- ``load_writing_skills``           — active learned skills (SKILL.md)
-- ``build_simple_block``            — short skill-names block
-- ``active_writing_skill_names``    — display names of active skills
+- ``active_writing_skill_names``    — display names of active learned skills
+- ``creation_default_skills``       — built-in skills for the creation mode
+- ``load_project_memory_block``     — project-memory loader public block
 """
 from .builder import (
     build_generation_context,
@@ -27,9 +27,7 @@ from .chapter_fields import load_chapter_fields
 from .skills_block import (
     active_learned_skills,
     active_writing_skill_names,
-    build_simple_block,
     creation_default_skills,
-    load_writing_skills,
 )
 from .loaders.project_memory import public_block as load_project_memory_block
 
@@ -42,8 +40,6 @@ __all__ = [
     "load_chapter_fields",
     "active_learned_skills",
     "active_writing_skill_names",
-    "build_simple_block",
     "creation_default_skills",
-    "load_writing_skills",
     "load_project_memory_block",
 ]

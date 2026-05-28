@@ -32,7 +32,6 @@ _PROVIDER_CLS: dict[str, str] = {
     "gemini":    "llm.gemini_provider.GeminiProvider",
     "ollama":    "llm.ollama_provider.OllamaProvider",
     "vllm":      "llm.vllm_provider.VLLMProvider",
-    "lora":      "llm.lora_provider.LoRAProvider",
     "mock":      "llm.mock_provider.MockProvider",
 }
 

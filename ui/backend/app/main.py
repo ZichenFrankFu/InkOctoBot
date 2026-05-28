@@ -34,6 +34,26 @@ from .routers.security_api import router as security_router
 from .routers.project_api import router as project_router
 from .routers.skill_api import router as skill_router
 from .routers.dev_actions_api import router as dev_router
+from .routers.entity_api import router as entity_router
+from .routers.snapshot_api import (
+    router as snapshot_router,
+    reminder_router as snapshot_reminder_router,
+)
+from .routers.embedding_api import (
+    router as embedding_router,
+    settings_router as embedding_settings_router,
+)
+from .routers.commit_pipeline_api import router as commit_pipeline_router
+from .routers.notifications_api import router as notifications_router
+from .routers.state_review_api import router as state_review_router
+from .routers.historical_view_api import router as historical_view_router
+from .routers.validator_api import router as validator_router
+from .routers.market_extractor_api import (
+    router as market_extractor_router,
+    profiles_router as platform_profiles_router,
+)
+from .routers.llm_paste_api import router as llm_paste_router
+from .routers.llm_audit_api import router as llm_audit_router
 from .routers.debug_api import router as debug_router
 
 app = FastAPI(title="InkOctoBot — AI 小说智能体工作台", version="2.1.0")
@@ -77,11 +97,50 @@ app.include_router(worldbook_router)
 app.include_router(security_router)
 app.include_router(project_router)
 app.include_router(skill_router)
+app.include_router(entity_router)  # /api/entities (prefix already set on the router)
+app.include_router(snapshot_router)  # /api/snapshots
+app.include_router(snapshot_reminder_router)  # /api/snapshot-reminders
+app.include_router(embedding_router)  # /api/embedding (Phase 1 + 3)
+app.include_router(embedding_settings_router)  # /api/settings/embedding-language-mode
+app.include_router(commit_pipeline_router)  # /api/commit-pipeline
+app.include_router(notifications_router)  # /api/notifications
+app.include_router(state_review_router)  # /api/state-review + manual fallback CRUD
+app.include_router(historical_view_router)  # /api/historical-view
+app.include_router(validator_router)  # /api/validator
+app.include_router(market_extractor_router)  # /api/market-extractor
+app.include_router(platform_profiles_router)  # /api/platform-profiles
+app.include_router(llm_paste_router)  # /api/llm-paste (manual mode inbox)
+app.include_router(llm_audit_router)  # /api/llm-audit (unified audit view)
 
 # Dev tools (actions: health-check, seed-test-data)
 app.include_router(dev_router, prefix="/api")
 # Observability / debug (read-only: logs, traces, diagnostics)
 app.include_router(debug_router)
+
+
+@app.on_event("startup")
+def _stage5_mark_interrupted_pipeline_sessions() -> None:
+    """Stage 5: on every boot, flip ``status='running'`` /
+    ``'paused_audit_review'`` rows in ``pipeline_sessions`` to
+    ``'interrupted'`` — the asyncio.Task that was driving them is
+    gone, the row stays for the history view."""
+    try:
+        from .services import pipeline_session_store
+        from .services.project_paths import get_db_path
+        db_path = get_db_path()
+        if not db_path:
+            return
+        n = pipeline_session_store.mark_running_as_interrupted(db_path)
+        if n:
+            import logging
+            logging.getLogger("inkoctobot.main").info(
+                "marked %d stale pipeline session(s) as interrupted", n,
+            )
+    except Exception:
+        import logging
+        logging.getLogger("inkoctobot.main").exception(
+            "stage 5 startup hook failed",
+        )
 
 
 @app.get("/health")

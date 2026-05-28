@@ -56,7 +56,7 @@ class LLMResponse:
 @dataclass
 class ProviderConfig:
     """Provider-level configuration."""
-    provider_type: str        # "openai" | "anthropic" | "deepseek" | "gemini" | "ollama" | "vllm" | "lora"
+    provider_type: str        # "openai" | "anthropic" | "deepseek" | "gemini" | "ollama" | "vllm"
     base_url: str | None = None
     api_key: str | None = None
     model_name: str = ""

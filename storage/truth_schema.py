@@ -8,7 +8,6 @@ Tables:
   - hook_events            : audit log of every hook transition
   - subplot_threads        : parallel narrative threads
   - emotion_arcs           : per-character emotion trajectory entries
-  - character_relations    : pairwise relationships (A->B view)
   - truth_apply_log        : idempotency + audit log for apply_deltas
 
 chapter_summaries is re-used from creation_schema.py (no new DDL).
@@ -25,6 +24,7 @@ TRUTH_DDL = [
         triple_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
         subject TEXT NOT NULL,
+        subject_type TEXT NOT NULL DEFAULT 'character',
         predicate TEXT NOT NULL,
         object TEXT NOT NULL,
         valid_from_chapter INTEGER NOT NULL,
@@ -38,6 +38,9 @@ TRUTH_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_state_subject ON truth_current_state(project_id, subject);",
     "CREATE INDEX IF NOT EXISTS idx_state_predicate ON truth_current_state(project_id, predicate);",
     "CREATE INDEX IF NOT EXISTS idx_state_window ON truth_current_state(project_id, valid_from_chapter, valid_to_chapter);",
+    # NOTE: idx_state_subject_type lives in the ALTER block below — for v2
+    # DBs the column doesn't exist yet when this DDL list runs, so the
+    # index has to be created after the ALTER adds the column.
 
     # ── 2. character_ledger ────────────────────────────────────
     """
@@ -116,16 +119,24 @@ TRUTH_DDL = [
         description TEXT,
         status TEXT NOT NULL DEFAULT 'setup'
             CHECK(status IN ('setup','building','climax','resolution','dormant')),
+        thread_type TEXT NOT NULL DEFAULT 'sub'
+            CHECK(thread_type IN ('main','sub')),
         start_chapter INTEGER NOT NULL,
         last_advanced_chapter INTEGER,
         related_hook_ids_json TEXT NOT NULL DEFAULT '[]',
         related_character_ids_json TEXT NOT NULL DEFAULT '[]',
+        embedding_json TEXT NOT NULL DEFAULT '[]',
+        embedding_text_hash TEXT NOT NULL DEFAULT '',
+        embedding_model_key TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_subplots_proj_status ON subplot_threads(project_id, status);",
+    # NOTE: idx_subplots_proj_type lives in the ALTER block — v2 DBs
+    # don't have the thread_type column yet when this DDL list runs,
+    # so the index is created after the ALTER adds the column.
 
     # ── 6. emotion_arcs ────────────────────────────────────────
     """
@@ -142,26 +153,6 @@ TRUTH_DDL = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_emotion_char ON emotion_arcs(project_id, character_name, chapter_num);",
-
-    # ── 7. character_relations ─────────────────────────────────
-    """
-    CREATE TABLE IF NOT EXISTS character_relations (
-        rel_id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        character_a TEXT NOT NULL,
-        character_b TEXT NOT NULL,
-        relation_type TEXT NOT NULL,
-        sentiment_score INTEGER NOT NULL CHECK(sentiment_score BETWEEN -100 AND 100),
-        trust_level INTEGER NOT NULL CHECK(trust_level BETWEEN 0 AND 100),
-        last_interaction_chapter INTEGER,
-        note TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
-        UNIQUE(project_id, character_a, character_b)
-    );
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_relations_proj ON character_relations(project_id, character_a);",
 
     # ── Apply log: idempotency + audit ─────────────────────────
     """
@@ -192,6 +183,9 @@ def ensure_truth_tables(conn: sqlite3.Connection) -> None:
         cur.execute(ddl)
 
     # v1 → v2.2 ALTER: add spoiler-filter columns if missing.
+    # v3.0 ALTER: add user-driven "fully resolve" override columns so users
+    # can authoritatively close hooks even when the auto-detector would
+    # otherwise keep them open (LOADER_SPEC Loader 11).
     try:
         cols = {row[1] for row in cur.execute("PRAGMA table_info(pending_hooks)")}
         if "is_spoiler" not in cols:
@@ -204,8 +198,123 @@ def ensure_truth_tables(conn: sqlite3.Connection) -> None:
                 "ALTER TABLE pending_hooks ADD COLUMN "
                 "revealed_to_chars_json TEXT NOT NULL DEFAULT '[]'"
             )
+        if "user_marked_fully_resolved" not in cols:
+            cur.execute(
+                "ALTER TABLE pending_hooks ADD COLUMN "
+                "user_marked_fully_resolved INTEGER NOT NULL DEFAULT 0"
+            )
+        if "user_resolved_at_chapter" not in cols:
+            cur.execute(
+                "ALTER TABLE pending_hooks ADD COLUMN "
+                "user_resolved_at_chapter INTEGER"
+            )
+        if "user_resolve_notes" not in cols:
+            cur.execute(
+                "ALTER TABLE pending_hooks ADD COLUMN "
+                "user_resolve_notes TEXT NOT NULL DEFAULT ''"
+            )
     except sqlite3.OperationalError:
         # Table missing → CREATE above already handles it; ignore.
+        pass
+
+    # v3.0 LOADER_SPEC Loader 12: subplot_threads grows thread_type
+    # ('main'/'sub') so the loader can render main lines unconditionally
+    # and rank sub-lines by outline similarity. Adds embedding columns
+    # for the similarity ranker (same pattern as worldbook_entries).
+    try:
+        sp_cols = {
+            row[1]
+            for row in cur.execute("PRAGMA table_info(subplot_threads)")
+        }
+        if "thread_type" not in sp_cols:
+            cur.execute(
+                "ALTER TABLE subplot_threads ADD COLUMN "
+                "thread_type TEXT NOT NULL DEFAULT 'sub'"
+            )
+        if "embedding_json" not in sp_cols:
+            cur.execute(
+                "ALTER TABLE subplot_threads ADD COLUMN "
+                "embedding_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "embedding_text_hash" not in sp_cols:
+            cur.execute(
+                "ALTER TABLE subplot_threads ADD COLUMN "
+                "embedding_text_hash TEXT NOT NULL DEFAULT ''"
+            )
+        if "embedding_model_key" not in sp_cols:
+            cur.execute(
+                "ALTER TABLE subplot_threads ADD COLUMN "
+                "embedding_model_key TEXT NOT NULL DEFAULT ''"
+            )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_subplots_proj_type "
+            "ON subplot_threads(project_id, thread_type)"
+        )
+    except sqlite3.OperationalError:
+        pass
+
+    # LOADER_SPEC: character_matrix removed in v3.0. Relations moved into
+    # character_snapshots.relations_overrides (delivered in Batch 5).
+    # Drop the legacy table+index unconditionally so the schema is clean.
+    cur.execute("DROP INDEX IF EXISTS idx_relations_proj")
+    cur.execute("DROP TABLE IF EXISTS character_relations")
+
+    # v3.0 LOADER_SPEC Loader 10: truth_current_state grows a
+    # subject_type column so the loader can query state per entity type
+    # (character / location / item / organization / concept). Default
+    # 'character' keeps existing rows queryable; the heuristic backfill
+    # below upgrades rows whose subject is recognizably a worldbook
+    # location/organization/item.
+    try:
+        state_cols = {
+            row[1]
+            for row in cur.execute("PRAGMA table_info(truth_current_state)")
+        }
+        if "subject_type" not in state_cols:
+            cur.execute(
+                "ALTER TABLE truth_current_state ADD COLUMN "
+                "subject_type TEXT NOT NULL DEFAULT 'character'"
+            )
+            # Heuristic backfill — best-effort. Lookup misses stay
+            # 'character' (the most common case) and can be fixed via
+            # the entity registry later.
+            try:
+                cur.execute("""
+                    UPDATE truth_current_state
+                       SET subject_type = 'location'
+                     WHERE subject IN (
+                         SELECT title FROM worldbook_entries
+                          WHERE project_id = truth_current_state.project_id
+                            AND category IN ('地点','place')
+                     )
+                """)
+                cur.execute("""
+                    UPDATE truth_current_state
+                       SET subject_type = 'organization'
+                     WHERE subject IN (
+                         SELECT title FROM worldbook_entries
+                          WHERE project_id = truth_current_state.project_id
+                            AND category IN ('组织','organization','factions')
+                     )
+                """)
+                cur.execute("""
+                    UPDATE truth_current_state
+                       SET subject_type = 'item'
+                     WHERE subject IN (
+                         SELECT title FROM worldbook_entries
+                          WHERE project_id = truth_current_state.project_id
+                            AND category IN ('物品','item')
+                     )
+                """)
+            except sqlite3.OperationalError:
+                # worldbook_entries may not exist yet on a brand-new DB
+                pass
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_state_subject_type "
+            "ON truth_current_state(project_id, subject_type, valid_from_chapter)"
+        )
+    except sqlite3.OperationalError:
+        # truth_current_state itself missing → CREATE above handles it.
         pass
 
     conn.commit()

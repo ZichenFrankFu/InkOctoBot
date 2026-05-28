@@ -1,5 +1,5 @@
 """
-Tests for the B2 audit gate (truth_integration.summarize_audit_issues +
+Tests for the B2 audit gate (storyland_state_integration.summarize_audit_issues +
 project_store audit-status helpers + can_finalize_chapter guard).
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 from storage.project_schema import ensure_creation_tables
-from agents.production import truth_integration as ti
+from agents.production import storyland_state_integration as ti
 from ui.backend.app.services import project_store
 
 
@@ -167,7 +167,7 @@ class TestExtractAndApplyWithAuditGate(unittest.IsolatedAsyncioTestCase):
             })
         router.generate.return_value = _Resp()
 
-        result = await ti.extract_and_apply_truth_deltas(
+        result = await ti.extract_and_apply_state_deltas(
             router, "章节正文",
             project_id="p1", db_path=db, chapter_num=1,
         )
@@ -183,7 +183,7 @@ class TestExtractAndApplyWithAuditGate(unittest.IsolatedAsyncioTestCase):
             content = "garbage non-json"
         router.generate = AsyncMock(return_value=_Resp())
 
-        result = await ti.extract_and_apply_truth_deltas(
+        result = await ti.extract_and_apply_state_deltas(
             router, "x", project_id="p1", db_path=db, chapter_num=1,
         )
         self.assertEqual(result["audit_status"], "audit_failed")

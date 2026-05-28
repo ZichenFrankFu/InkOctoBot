@@ -1,0 +1,104 @@
+你是网文分析专家。请阅读以下章节内容，提取 15 项特征。
+
+章节号: 第 {chapter_num} 章
+是否第一章: {is_first_chapter}
+
+章节内容:
+{chapter_text}
+
+请严格按以下 JSON 格式输出，所有字段都要填（未提及的字段填 null）。
+只输出 JSON，不要其它文本。
+
+{{
+  "A1_protagonist_first_appearance": {{
+    "chapter": null,
+    "position": "",
+    "context": "",
+    "is_first_sentence": false,
+    "screen_time_ratio": 0.0
+  }},
+  "A2_protagonist_profile": {{
+    "strength_position": "",
+    "personality_keywords": [],
+    "appearance_detail": "",
+    "age_group": "",
+    "contrast_point": ""
+  }},
+  "A3_protagonist_cheat": {{
+    "type": "",
+    "source": "",
+    "revealed_chapter": null,
+    "reveal_level": "",
+    "description": ""
+  }},
+  "A4_protagonist_agency": {{
+    "mode": "",
+    "first_decision_chapter": null,
+    "decision_cost": ""
+  }},
+  "A5_drive_conflict": {{
+    "type": "",
+    "urgency": "",
+    "object": "",
+    "method": "",
+    "description": ""
+  }},
+  "B1_social_network": {{
+    "characters_in_5ch": [],
+    "key_relationships": []
+  }},
+  "B2_focus_strategy": {{
+    "mode": "",
+    "character_count_5ch": 0,
+    "antagonist_first_chapter": null,
+    "antagonist_type": ""
+  }},
+  "C1_worldview": {{
+    "power_system": "",
+    "time_space": "",
+    "hybrid_type": "",
+    "novelty_level": ""
+  }},
+  "C2_setting_unfold": {{
+    "word_ratio": 0.0,
+    "style": "",
+    "first_chapter_density": "",
+    "core_revealed": ""
+  }},
+  "C3_setting_contrast": {{
+    "point": ""
+  }},
+  "D1_opening_hook": {{
+    "type": "",
+    "description": "",
+    "trigger_position": ""
+  }},
+  "D2_pleasure_points": {{
+    "has_early_face_slap": false,
+    "first_face_slap_chapter": null,
+    "type": "",
+    "density": 0
+  }},
+  "E1_writing_style": {{
+    "keywords": [],
+    "representative_sentences": []
+  }},
+  "E2_emotional_tone": {{
+    "dominant": "",
+    "volatility": "",
+    "darkness": ""
+  }},
+  "F1_info_disclosure": {{
+    "strategy": "",
+    "early_foreshadows": [],
+    "revealed_vs_planted_ratio": 0.0
+  }},
+  "F2_first_arc": {{
+    "concept": "",
+    "locked_chapter": null
+  }},
+  "G1_chapter_end_hook": {{
+    "type": "",
+    "strength": ""
+  }}
+}}

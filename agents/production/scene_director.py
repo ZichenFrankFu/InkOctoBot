@@ -8,16 +8,32 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agents.base_agent import BaseAgent
 from llm.base import LLMResponse
+
+if TYPE_CHECKING:
+    from agents.contracts import SceneDirectorRequest, SceneDirectorResponse
 
 logger = logging.getLogger("inkoctobot.agents.production.scene_director")
 
 
 class SceneDirector(BaseAgent):
     agent_name = "scene_director"
+
+    async def plan_scenes_typed(
+        self, request: "SceneDirectorRequest",
+    ) -> "SceneDirectorResponse":
+        """Stage 4 typed wrapper around ``plan_scenes``.
+
+        Forwards to the existing kwargs-based implementation, then
+        parses the return dict into a ``SceneDirectorResponse``. Use
+        this from new call sites; legacy ``plan_scenes`` still works
+        and is unchanged."""
+        from agents.contracts import SceneDirectorResponse
+        raw = await self.plan_scenes(**request.to_legacy_kwargs())
+        return SceneDirectorResponse.from_legacy_dict(raw)
 
     async def plan_scenes(
         self,

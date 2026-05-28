@@ -1,86 +1,101 @@
 """Platform market directive loader.
 
-Pulls the genre/tag share conclusions from the market-database analysis
-panel for the project's target publishing platform (起点 / 番茄 / both).
-Result is cached per platform for 30 minutes to avoid repeated analysis
-runs on every chapter generation.
+Reads from the ``platform_profiles`` table populated by the market
+extractor (services/market_extractor). The latest active profile for
+the project's (platform, category) is consumed verbatim — no LLM call
+at prompt-build time.
+
+Returns ``None`` when:
+- the project has no platform / category set, or
+- no profile exists for that pair, or
+- the latest profile is confidence='low' (per spec § 五).
 """
 from __future__ import annotations
 
-import json
 import logging
-import time
+import sqlite3
 
+from ..budget_allocator import LOADER_BUDGETS
+from ..loader_protocol import LoaderPlan
 from ..utils import clip, section
 
 logger = logging.getLogger("inkoctobot.services.prompt_context.platform_market")
 
-_cache: dict[str, tuple[float, str]] = {}
-_CACHE_TTL = 1800  # 30 minutes
+
+_BLOCK = "platform_directive"
+_TITLE = "平台风格基线"
 
 
-def _build_directive(plat_code: str) -> str:
-    """Run the market-analysis panel for a platform and distil into a directive."""
-    cached = _cache.get(plat_code)
-    if cached and time.time() - cached[0] < _CACHE_TTL:
-        return cached[1]
-    directive = ""
+def _resolve_project_platform_category(db_path: str, project_id: str) -> tuple[str, str]:
     try:
-        from ui.backend.app.routers.analysis_api import run_analysis
+        with sqlite3.connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            # The projects table may not have platform/category columns
+            # in older schemas — wrap in try so loader skips cleanly.
+            row = con.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+        if not row:
+            return "", ""
+        d = dict(row)
+        return (
+            str(d.get("platform") or "").strip(),
+            str(d.get("category") or d.get("genre") or "").strip(),
+        )
+    except sqlite3.OperationalError:
+        return "", ""
 
-        res = run_analysis(platform=plat_code, lookback="all", top_k=20)
-        if (not res.get("empty")) or plat_code == "both":
-            parts: list[str] = []
-            tags = [t for t in (res.get("tag_rollup") or []) if t.get("tag")]
-            if tags:
-                top = sorted(tags, key=lambda t: t.get("latest_share") or 0, reverse=True)[:12]
-                parts.append("高份额题材标签（份额）：" + "、".join(
-                    f"{t['tag']}({(t.get('latest_share') or 0):.1%})" for t in top))
-            cats = [c for c in (res.get("cat_rollup") or []) if c.get("category")]
-            if cats:
-                topc = sorted(cats, key=lambda c: c.get("latest_count") or 0, reverse=True)[:8]
-                parts.append("主流分类：" + "、".join(str(c["category"]) for c in topc))
-            opps = [o for o in (res.get("opportunities") or []) if o.get("tag")]
-            if opps:
-                topo = sorted(opps, key=lambda o: o.get("opportunity_score") or 0, reverse=True)[:6]
-                parts.append("当前开书机会（份额上升的题材）：" + "、".join(
-                    f"{o.get('category') or ''}·{o['tag']}".strip("·") for o in topo))
-            directive = "\n".join(parts)
-    except Exception as e:
-        logger.debug("platform market analysis skipped: %s", e)
-    _cache[plat_code] = (time.time(), directive)
-    return directive
+
+def _load_active_profile(db_path: str, platform: str, category: str) -> str:
+    """Return the loader_payload for the latest non-superseded profile
+    with confidence in {'high', 'medium'}. Empty string if none."""
+    try:
+        with sqlite3.connect(db_path) as con:
+            row = con.execute(
+                "SELECT loader_payload FROM platform_profiles "
+                "WHERE platform = ? AND category = ? "
+                "AND superseded_by_profile_id IS NULL "
+                "AND (confidence_label IS NULL OR confidence_label IN ('high', 'medium')) "
+                "ORDER BY profile_version DESC LIMIT 1",
+                (platform, category),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return ""
+    return (row[0] or "").strip() if row else ""
+
+
+def plan(project_id: str, exclude: set | None = None) -> LoaderPlan | None:
+    try:
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+    except Exception:
+        return None
+
+    platform, category = _resolve_project_platform_category(db_path, project_id)
+    if not platform or not category:
+        return None
+
+    payload = _load_active_profile(db_path, platform, category)
+    if not payload:
+        return None
+
+    cfg = LOADER_BUDGETS[_BLOCK]
+    overhead = len(_TITLE) + 6
+    natural = overhead + len(payload)
+
+    def render(budget: int) -> str:
+        return section(_TITLE, clip(payload, max(0, budget - overhead)))
+
+    return LoaderPlan(
+        block_id=_BLOCK,
+        natural_length=natural,
+        minimum=cfg["min"], target=cfg["target"], maximum=cfg["max"],
+        priority_tier=cfg["tier"],
+        render=render,
+    )
 
 
 def load(project_id: str, exclude: set | None = None) -> str:
-    """Ground the project's publishing platform in real data."""
-    if exclude and "platform" in exclude:
-        return ""
-    try:
-        from ui.backend.app.services import project_store
-        from ui.backend.app.services.project_paths import get_db_path
-
-        proj = project_store.get_project(get_db_path(), project_id) or {}
-        platform = str(proj.get("platform") or "").strip()
-        if not platform:
-            return ""
-        low = platform.lower()
-        if "番茄" in platform or "fanqie" in low:
-            plat_code = "fanqie"
-        elif "起点" in platform or "qidian" in low:
-            plat_code = "qidian"
-        else:
-            plat_code = "both"
-        directive = _build_directive(plat_code)
-        if not directive and plat_code != "both":
-            directive = _build_directive("both")
-        if not directive:
-            return ""
-        body = clip(f"目标发布平台：{platform}\n{directive}", 1800)
-        return section(
-            "目标平台市场特性（基于市场数据库分析面板的真实数据）",
-            f"{body}\n（以上为该平台真实题材 / 份额分析；与本章具体指令冲突时以章节指令为准。）",
-        )
-    except Exception as e:
-        logger.debug("platform directive skipped: %s", e)
-        return ""
+    p = plan(project_id, exclude)
+    return p.render(p.target) if p else ""

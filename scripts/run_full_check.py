@@ -168,8 +168,8 @@ def check_imports(r: Report) -> None:
         "framework.observability",
         "framework.skill_registry",
         "llm.router",
-        "knowledge.memory.manager",
-        "knowledge.truth.store",
+        "knowledge.reader_memory.manager",
+        "knowledge.storyland_state.store",
         "knowledge.idea_db",
         "agents.base_agent",
         "agents.production.scene_director",
@@ -233,7 +233,6 @@ def check_test_seed(r: Report) -> None:
                 ("information_events", 1, "knowledge isolation: 1 rule"),
                 ("truth_current_state", 4, "Truth: 4 current_state rows"),
                 ("pending_hooks", 2, "Truth: 2 hooks"),
-                ("character_relations", 2, "Truth: 2 relation rows"),
                 ("emotion_arcs", 2, "Truth: 2 emotion arc entries"),
                 ("truth_apply_log", 3, "Truth: 3 apply log entries"),
                 # v2 schema tables (added in commit:
@@ -261,7 +260,7 @@ def check_test_seed(r: Report) -> None:
             v2_tables = [
                 "characters", "worldbook_entries", "project_memories",
                 "storyline_nodes", "storyline_edges",
-                "writing_knowledge", "chat_messages", "project_blobs",
+                "chat_messages", "project_blobs",
             ]
             v2_present = {row[0] for row in c.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -435,7 +434,7 @@ def check_server_endpoints(r: Report) -> None:
             else:
                 r.warn(f"`{t}` — {rows}")
         # Sample of biggest table
-        for t in ("truth_current_state", "pending_hooks", "character_relations"):
+        for t in ("truth_current_state", "pending_hooks"):
             rows = tables.get(t)
             if isinstance(rows, list) and rows:
                 r.h3(f"5.4.x sample row from `{t}`")

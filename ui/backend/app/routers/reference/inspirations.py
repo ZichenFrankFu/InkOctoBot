@@ -3,12 +3,18 @@
 A personal store of free-text idea snippets (scenes / plot devices /
 character designs / …). Each entry can be used as a query to fuzzy-
 search the reference works via the existing /search endpoint.
+
+LOADER_SPEC Loader 4 (Batch 3) extensions:
+- Optional ``project_id`` on every row. ``project_id IS NULL`` means
+  "global" — visible to every project. The list endpoint with a
+  ``project_id`` query param returns global rows + the project's own.
+- Optional ``tags`` array alongside the legacy ``category`` string.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from ._common import idea_db
@@ -20,18 +26,27 @@ class InspirationCreate(BaseModel):
     category: str = "other"
     title: str = ""
     content: str
+    project_id: Optional[str] = None
+    tags: Optional[list[str]] = None
 
 
 class InspirationUpdate(BaseModel):
     category: Optional[str] = None
     title: Optional[str] = None
     content: Optional[str] = None
+    project_id: Optional[str] = None
+    tags: Optional[list[str]] = None
 
 
 @router.get("/inspirations")
-def list_inspirations():
-    """All inspirations, newest-updated first."""
-    return {"items": idea_db().list_inspirations()}
+def list_inspirations(project_id: Optional[str] = Query(None)):
+    """List inspirations newest-updated first.
+
+    When ``project_id`` is provided, returns global (NULL ``project_id``)
+    rows plus the project's own. Without ``project_id``, returns every
+    row (legacy behavior).
+    """
+    return {"items": idea_db().list_inspirations(project_id=project_id)}
 
 
 @router.post("/inspirations")
@@ -43,6 +58,8 @@ def create_inspiration(body: InspirationCreate):
         (body.category or "other").strip() or "other",
         (body.title or "").strip(),
         content,
+        project_id=body.project_id,
+        tags=body.tags,
     )
 
 
@@ -60,6 +77,10 @@ def update_inspiration(insp_id: str, body: InspirationUpdate):
         if not content:
             raise HTTPException(400, "灵感内容不能为空")
         fields["content"] = content
+    if body.project_id is not None:
+        fields["project_id"] = body.project_id or None
+    if body.tags is not None:
+        fields["tags"] = list(body.tags)
     return idea_db().update_inspiration(insp_id, **fields)
 
 

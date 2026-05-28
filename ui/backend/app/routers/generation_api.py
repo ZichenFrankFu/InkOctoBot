@@ -22,6 +22,43 @@ logger = logging.getLogger("inkoctobot.ui.backend.generation_api")
 _active_sessions: dict[str, dict[str, Any]] = {}
 
 
+# ─── Stage 5: pipeline session persistence ───────────────────────────
+# In-memory ``_active_sessions`` is still authoritative at runtime
+# because it owns the asyncio.Task / Event handles. After every state
+# transition we mirror the persistable subset to the ``pipeline_sessions``
+# table so a server restart loses only the live task, not the audit
+# trail.
+
+def _mirror_session_to_db(session_id: str) -> None:
+    """Mirror ``_active_sessions[session_id]`` to the pipeline_sessions
+    table. Best-effort: never raises (the store catches DB errors)."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        return
+    try:
+        from ui.backend.app.services import pipeline_session_store
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+        if not db_path:
+            return
+        req = session.get("request") or {}
+        error_msg = ""
+        # Last error event payload, if any, becomes error_message.
+        for ev in reversed(session.get("events") or []):
+            if isinstance(ev, dict) and ev.get("type") == "error":
+                error_msg = str(ev.get("message") or "")[:500]
+                break
+        pipeline_session_store.upsert_session(
+            db_path, session_id, session,
+            project_id=str(req.get("project_id") or ""),
+            chapter_id=str(req.get("chapter_id") or ""),
+            chapter_num=int(req.get("chapter_num") or 0),
+            error_message=error_msg,
+        )
+    except Exception as e:
+        logger.debug("session DB mirror failed for %s: %s", session_id, e)
+
+
 # ═══ Usage Tracking — moved to ui.backend.app.services.usage_tracker ═══
 # (with debounced writes; this file just exposes the HTTP endpoints).
 
@@ -95,13 +132,13 @@ def _load_reference_style(project_id: str, db_path: str) -> str:
 def _load_unresolved_foreshadowing(project_id: str, db_path: str, chapter_num: int) -> str:
     """Load unresolved foreshadowing for context injection (B2: foreshadowing tracking).
 
-    Reads from pending_hooks (Truth Files canonical store) via MemoryManager;
+    Reads from pending_hooks (Truth Files canonical store) via ReaderMemoryManager;
     EpisodicTimeline.get_unresolved_foreshadowing was removed in v2.1 — the
     foreshadow state machine moved to pending_hooks. See docs/SCHEMA_REDESIGN.md.
     """
     try:
-        from knowledge.memory.manager import MemoryManager
-        mgr = MemoryManager(db_path=db_path)
+        from knowledge.reader_memory.manager import ReaderMemoryManager
+        mgr = ReaderMemoryManager(db_path=db_path)
         mgr.set_project(project_id)
         unresolved = mgr.get_unresolved_foreshadowing()
         if not unresolved:
@@ -199,7 +236,7 @@ async def _run_chapter_complete_hook(
         char_states = summary_data.get("character_states", {})
 
         # Build timeline events from key_events only — foreshadowing
-        # now flows through Truth Files (TruthFileStore.apply_deltas
+        # now flows through Truth Files (StorylandStateStore.apply_deltas
         # with HookDelta entries) rather than the episodic_events
         # timeline. See docs/SCHEMA_REDESIGN.md.
         events: list[dict] = []
@@ -315,21 +352,18 @@ async def start_generation(req: GenerateRequest):
     # writing-knowledge) into world_rules so the pipeline agents are
     # grounded in the same material as single-agent generation.
     try:
-        from ._rag_context import build_generation_context, _load_writing_skills
+        from ._rag_context import build_generation_context
         ctx = build_generation_context(
             req.project_id, req.chapter_num, req.characters, skills=req.skills,
             chapter_id=req.chapter_id, rag_excludes=req.rag_excludes)
-        # Manual cluster runs are a copy-to-web-LLM flow → Skill-Access check.
-        _skill_block = (_load_writing_skills(req.skills, web_mode=True)
-                        if req.manual else ctx["blocks"].get("writing_skills", ""))
         rag_text = "\n".join(
             b for b in (
-                ctx["blocks"].get("adjacent_context", ""),
                 ctx["blocks"].get("character_cards", ""),
                 ctx["blocks"].get("worldbook", ""),
-                ctx["blocks"].get("reference_summary", ""),
-                ctx["blocks"].get("writing_knowledge", ""),
-                _skill_block,
+                ctx["blocks"].get("reference", ""),
+                ctx["blocks"].get("storyland_state", ""),
+                ctx["blocks"].get("reader_memory", ""),
+                ctx["blocks"].get("skills", ""),
             ) if (b or "").strip()
         ).strip()
         if rag_text:
@@ -337,6 +371,60 @@ async def start_generation(req: GenerateRequest):
             req_data["world_rules"] = f"{existing}\n\n{rag_text}".strip() if existing else rag_text
     except Exception as e:
         logger.debug("pipeline RAG context skipped: %s", e)
+
+    # ── Stage 3 Task 3.4: build canonical ChapterContext ──
+    # Attached to the session so multi-agent agents that want
+    # structured loader_blocks / truth_bundle access (instead of
+    # grep-ing the world_rules string) can pull it via
+    # session["chapter_context"]. Best-effort: build failures don't
+    # block /start — agents that don't need ChapterContext won't
+    # notice it's missing.
+    chapter_context_obj = None
+    try:
+        from ui.backend.app.services.chapter_context import (
+            BuildRequest, ChapterContext,
+        )
+        build_req = BuildRequest(**req_data)
+        chapter_context_obj = await ChapterContext.build(build_req)
+    except Exception as e:
+        logger.debug("ChapterContext build skipped for %s: %s",
+                      req.chapter_id, e)
+
+    # ── Stage 1 Task 3 Phase 1: Truth Files bundle injection ──
+    # Pull the 7-file Truth bundle + pressured hooks reminder for the
+    # chapter being generated, fold both into world_rules so every
+    # downstream agent (SceneDirector / Writer / Evaluator) sees the
+    # same truth state the single-writer endpoint sees. Previously
+    # this injection was /single-writer only — multi-agent /start was
+    # generating chapters with no awareness of truth_current_state /
+    # character_ledger / pending_hooks etc.
+    try:
+        from ui.backend.app.services.truth_files import TruthFilesIntegration
+        truth_bundle = TruthFilesIntegration.build_bundle(
+            req.chapter_id or "",
+            chapter_num=req.chapter_num,
+            db_path=_get_db_path(),
+            project_id=req.project_id,
+            characters=req.characters or [],
+        )
+        truth_parts = []
+        if truth_bundle.bundle_text:
+            truth_parts.append(truth_bundle.bundle_text)
+        if truth_bundle.pressured_hooks_text:
+            truth_parts.append(
+                "## 待推进伏笔（本章应继续推进）\n"
+                + truth_bundle.pressured_hooks_text
+            )
+        if truth_parts:
+            req_data["truth_bundle"] = "\n\n".join(truth_parts)
+            existing = (req_data.get("world_rules") or "").strip()
+            req_data["world_rules"] = (
+                f"{existing}\n\n{req_data['truth_bundle']}".strip()
+                if existing else req_data["truth_bundle"]
+            )
+    except Exception as e:
+        logger.debug("truth bundle injection skipped for %s: %s",
+                      req.chapter_id, e)
     _active_sessions[session_id] = {
         "status": "running",
         "request": req_data,
@@ -349,18 +437,65 @@ async def start_generation(req: GenerateRequest):
         "confirm_event": None,  # asyncio.Event for confirm signal
         "confirm_data": None,   # data from user confirm
         "task": None,           # background asyncio.Task
+        # Stage 3 Task 3.4: ChapterContext object for agents that
+        # want structured loader_blocks / truth_bundle access
+        # (instead of grep-ing req_data['world_rules']).
+        "chapter_context": chapter_context_obj,
     }
+    # Stage 5: mirror initial session state to DB before kicking off
+    # the background task — guarantees the row exists even if the task
+    # crashes during its first await.
+    _mirror_session_to_db(session_id)
     # Start pipeline as background task
     task = asyncio.create_task(_run_pipeline_background(session_id))
     _active_sessions[session_id]["task"] = task
     return {"status": "ok", "session_id": session_id}
 
 
+@router.get("/sessions")
+def list_persisted_sessions(
+    project_id: str = "", chapter_id: str = "",
+    status: str = "", limit: int = 50,
+):
+    """Stage 5: list session rows from the persistent ``pipeline_sessions``
+    table — newest first.
+
+    Use this for the History view. For *live* status of an actively
+    running session, prefer ``GET /status/{session_id}`` which reads
+    from ``_active_sessions`` (the in-memory authoritative source).
+    """
+    from ui.backend.app.services import pipeline_session_store
+    from ui.backend.app.services.project_paths import get_db_path
+    db_path = get_db_path()
+    rows = pipeline_session_store.list_sessions(
+        db_path, project_id=project_id, chapter_id=chapter_id,
+        status_filter=status, limit=limit,
+    )
+    return {"sessions": rows, "count": len(rows)}
+
+
 @router.get("/status/{session_id}")
 def get_session_status(session_id: str):
     session = _active_sessions.get(session_id)
     if not session:
-        raise HTTPException(404, "Session not found")
+        # Stage 5: fall back to persisted row before 404 — running
+        # sessions live in-memory, completed/interrupted ones live in DB.
+        from ui.backend.app.services import pipeline_session_store
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+        row = pipeline_session_store.get_session(db_path, session_id) if db_path else None
+        if not row:
+            raise HTTPException(404, "Session not found")
+        return {
+            "status": row["status"],
+            "current_step": row.get("current_step", ""),
+            "waiting_confirm": bool(row.get("waiting_confirm")),
+            "waiting_manual": bool(row.get("waiting_manual")),
+            "manual_step": row.get("manual_step", ""),
+            "events_count": len(row.get("events") or []),
+            "result": row.get("result"),
+            "persisted": True,
+        }
     return {
         "status": session["status"],
         "current_step": session.get("current_step", ""),
@@ -493,7 +628,7 @@ def context_manifest(
         return creation_context_manifest(project_id, chapter_id, chapter_num, mode)
     except Exception as e:
         logger.error("context manifest error: %s", e, exc_info=True)
-        return {"rag": [], "default_skills": [], "learned_skills": [], "writing_knowledge": []}
+        return {"rag": [], "default_skills": [], "learned_skills": []}
 
 
 @router.post("/evaluate")
@@ -587,12 +722,35 @@ async def quick_generate(req: GenerateRequest):
             LLMMessage(role="user", content=user_content),
         ]
 
-        response = await router_inst.generate(
-            agent_role="editor_stylist",
-            messages=messages,
-            temperature=0.8,
-            max_tokens=4096,
+        captured: dict[str, Any] = {}
+
+        async def _exec() -> str:
+            resp = await router_inst.generate(
+                agent_role="editor_stylist",
+                messages=messages,
+                temperature=0.8,
+                max_tokens=4096,
+            )
+            captured["resp"] = resp
+            return resp.content or ""
+
+        from llm.call_site import with_audit_and_manual_mode
+        raw_text = await with_audit_and_manual_mode(
+            call_site_id="generation.quick_generate",
+            primary_role="editor_stylist",
+            prompt_full=user_content, system_prompt=system_prompt,
+            auto_executor=_exec,
+            parsed_target_table="text_versions",
+            project_id=req.project_id,
+            chapter_id=req.chapter_id or "",
+            provider_override=req.provider, model_override=req.model,
         )
+        response = captured.get("resp") or type(
+            "ManualResp", (), {
+                "content": raw_text, "model": "manual_paste",
+                "input_tokens": 0, "output_tokens": 0,
+            },
+        )()
 
         return {
             "status": "ok",
@@ -657,7 +815,7 @@ class SingleWriterRequest(BaseModel):
     # Truth Files integration knobs (v2.2 per docs/truth_file_system.md §9)
     truth_inject: bool = True           # Phase 1: inject 7-file bundle into context
     truth_pressure_inject: bool = True  # Inject pressured-hooks reminder
-    truth_settle: bool = True           # Phase 2: extract + apply TruthDeltas after writing
+    truth_settle: bool = True           # Phase 2: extract + apply StorylandStateDeltas after writing
     # Same RAG knobs as quick-generate
     skills: list[str] | None = None
     rag_excludes: list[str] = []
@@ -673,11 +831,11 @@ async def single_writer(req: SingleWriterRequest):
     Integrates with the Truth Files system per docs/truth_file_system.md §9:
       - Phase 1: 7-file truth bundle injected as additional memory context
       - Pressured-hooks reminder folded into narrative_instructions
-      - Phase 2: post-write settlement → TruthDeltas → apply (audit gate)
+      - Phase 2: post-write settlement → StorylandStateDeltas → apply (audit gate)
     """
     try:
         from agents.production.writer import Writer
-        from agents.production import truth_integration as truth_ext
+        from agents.production import storyland_state_integration as truth_ext
         from ._rag_context import single_agent_vars
 
         router_inst = _build_router(req.provider, req.model)
@@ -703,7 +861,7 @@ async def single_writer(req: SingleWriterRequest):
             # pass pov_character (no spoiler filter). The Actor Agent path
             # in the full multi-agent pipeline will pass pov_character so
             # actor prompts only see hooks revealed to that character.
-            truth_bundle = truth_ext.build_truth_context(
+            truth_bundle = truth_ext.build_state_context(
                 req.project_id, db_path,
                 req.chapter_num, req.characters,
                 pov_character=None,
@@ -759,10 +917,10 @@ async def single_writer(req: SingleWriterRequest):
             character_cards=vars_.get("character_cards", ""),
             world_rules=vars_.get("worldbook", ""),
             narrative_instructions=narrative_instructions,
-            style_profile=vars_.get("style_calibration", ""),
+            style_profile=vars_.get("user_special_requirements", ""),
             user_preferences=vars_.get("user_preferences", ""),
             memory_context=memory_context,
-            adjacent_context=vars_.get("adjacent_context", ""),
+            adjacent_context="",
             constraints="",
             target_word_count=req.target_word_count,
         )
@@ -786,7 +944,7 @@ async def single_writer(req: SingleWriterRequest):
                 characters=req.characters,
             )
 
-            settle_result = await truth_ext.extract_and_apply_truth_deltas(
+            settle_result = await truth_ext.extract_and_apply_state_deltas(
                 router_inst, text,
                 project_id=req.project_id, db_path=db_path,
                 chapter_num=req.chapter_num,
@@ -932,6 +1090,8 @@ def _emit(session_id: str, event: dict):
     if session:
         event["ts"] = time.time()
         session["events"].append(event)
+        # Stage 5: mirror after each event so the DB log is in sync.
+        _mirror_session_to_db(session_id)
 
 
 def _format_scene_plan_readable(scene_plan: dict) -> str:
@@ -1247,7 +1407,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             try:
                 _db_path = _get_db_path()
                 _proj_id = req_data.get("project_id", "")
-                from knowledge.memory.manager import MemoryManager as _MM
+                from knowledge.reader_memory.manager import ReaderMemoryManager as _MM
                 _mem = _MM(db_path=_db_path)
                 _mem.set_project(_proj_id)
                 _mem_text = _mem.get_context_for_scene_director(_chapter_num)
@@ -1419,7 +1579,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
         all_scene_results: list[dict] = []  # Results from each scene
         try:
             from agents.production.scene_simulator import SceneSimulator
-            from knowledge.memory.manager import MemoryManager
+            from knowledge.reader_memory.manager import ReaderMemoryManager
             from ui.backend.app.settings import settings as app_settings
 
             # Resolve DB path
@@ -1439,7 +1599,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             except Exception as _te:
                 logger.debug("ensure_creation_tables skipped: %s", _te)
 
-            memory = MemoryManager(db_path=db_path, router=router_inst)
+            memory = ReaderMemoryManager(db_path=db_path, router=router_inst)
             _proj_id = req_data.get("project_id", "")
             memory.set_project(_proj_id)
 
@@ -1455,7 +1615,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                         )
                         if _fallback_text:
                             # Inject as immediate context so agents can see it
-                            from knowledge.memory.immediate import SceneContext as _SC
+                            from knowledge.reader_memory.immediate import SceneContext as _SC
                             memory.start_scene(_SC(
                                 scene_index=0,
                                 characters=characters,
@@ -1851,10 +2011,10 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                 _eval_proj_id = req_data.get("project_id", "")
                 _eval_chapter_num = req_data.get("chapter_num", 1)
                 # v2.1: foreshadow state moved to pending_hooks — read via
-                # MemoryManager (EpisodicTimeline.get_unresolved_foreshadowing
+                # ReaderMemoryManager (EpisodicTimeline.get_unresolved_foreshadowing
                 # was removed in commit 10337fc).
-                from knowledge.memory.manager import MemoryManager
-                _eval_mgr = MemoryManager(db_path=_eval_db_path)
+                from knowledge.reader_memory.manager import ReaderMemoryManager
+                _eval_mgr = ReaderMemoryManager(db_path=_eval_db_path)
                 _eval_mgr.set_project(_eval_proj_id)
                 _unresolved = _eval_mgr.get_unresolved_foreshadowing()
                 if _unresolved:
@@ -1984,11 +2144,193 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
         session["status"] = "complete"
         session["text"] = edited_text
         session["result"] = {"text": edited_text, "evaluation": eval_result}
+        _mirror_session_to_db(session_id)  # Stage 5: capture final state
+
+        # ── Stage 1 Task 3 Phase 2: Truth Files settlement + audit gate ──
+        # Before finalizing the chapter, run the settlement LLM call to
+        # extract structured StorylandStateDeltas from the prose and
+        # apply them to truth tables. The result includes audit_status
+        # (audit_passed / audit_failed / audit_pending). If audit_failed,
+        # we still persist the chapter (so the user can see the output)
+        # but mark the session 'paused_audit_review' so the user knows
+        # they need to use the Review Dialog before this chapter can be
+        # finalized. The audit gate check is also persisted to
+        # chapters.audit_status by apply_settlement.
+        audit_status = "audit_pending"
+        try:
+            audit = await _run_settlement_for_session(
+                session_id, req_data, edited_text,
+            )
+            audit_status = audit.audit_status
+            _emit(session_id, {
+                "type": "audit_done",
+                "audit_status": audit_status,
+                "issues_count": len(audit.issues),
+                "applied_counts": audit.applied_counts,
+            })
+            if audit.failed:
+                _emit(session_id, {
+                    "type": "warning",
+                    "message": (
+                        "Truth Files 审计失败 — 章节已写入但需在 Review Dialog "
+                        f"处理 {len(audit.issues)} 条 issues 后才能 finalize。"
+                    ),
+                })
+                session["status"] = "paused_audit_review"
+                _mirror_session_to_db(session_id)  # Stage 5
+        except Exception as e:
+            logger.error("settlement failed: %s", e, exc_info=True)
+            _emit(session_id, {
+                "type": "warning",
+                "message": f"Truth Files 结算失败：{str(e)[:200]}",
+            })
+
+        # ── Stage 1 Task 1: persist + trigger post-commit pipeline ──
+        # Multi-agent /start finalize now writes a text_versions row
+        # AND fires the post-commit pipeline (summarizer / event_extractor
+        # / chromadb_indexer / state_extractor / snapshot_detector /
+        # skill_emitter). Previously only the /api/editor/save-version
+        # path triggered post-commit; multi-agent finalize was a black
+        # hole — chapter text never persisted automatically and none of
+        # the per-chapter machinery ever ran. Fire-and-forget so the
+        # caller (the websocket polling loop) doesn't block on it; any
+        # commit failure is logged but does not unwind the pipeline.
+        try:
+            await _persist_and_trigger_post_commit(
+                session_id=session_id,
+                req_data=req_data,
+                final_text=edited_text,
+                eval_result=eval_result,
+            )
+        except Exception as e:
+            logger.error("multi-agent post-commit trigger failed: %s", e,
+                          exc_info=True)
+            _emit(session_id, {
+                "type": "warning",
+                "message": f"章节已生成但 post-commit pipeline 触发失败：{str(e)[:200]}",
+            })
 
     except Exception as e:
         logger.error("Pipeline background error: %s", e, exc_info=True)
         _emit(session_id, {"type": "error", "message": str(e)[:300]})
         session["status"] = "error"
+        _mirror_session_to_db(session_id)  # Stage 5
+
+
+async def _run_settlement_for_session(
+    session_id: str, req_data: dict, final_text: str,
+):
+    """Phase 2 settlement: extract truth deltas from the generated
+    chapter, apply to truth_current_state / character_ledger /
+    emotion_arcs / etc., persist chapters.audit_status.
+
+    Returns an :class:`AuditResult`. Skips gracefully (returns an
+    'audit_pending' AuditResult) when project_id or chapter_id is
+    missing — same idempotent guard as the persist helper.
+    """
+    from ui.backend.app.services.truth_files import (
+        AuditResult, TruthFilesIntegration,
+    )
+
+    project_id = (req_data.get("project_id") or "").strip()
+    chapter_id = (req_data.get("chapter_id") or "").strip()
+    chapter_num = int(req_data.get("chapter_num") or 0)
+    if not project_id or not chapter_id:
+        return AuditResult(
+            chapter_id=chapter_id, chapter_num=chapter_num,
+            success=False, audit_status="audit_pending",
+            error="no project/chapter id — settlement skipped",
+        )
+
+    db_path = ""
+    try:
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+    except Exception:
+        pass
+
+    pov = (
+        (req_data.get("characters") or [None])[0]
+        if isinstance(req_data.get("characters"), list)
+        else None
+    )
+    known_chars = set(req_data.get("characters") or [])
+
+    return await TruthFilesIntegration.apply_settlement(
+        chapter_id, final_text,
+        db_path=db_path or None,
+        project_id=project_id, chapter_num=chapter_num,
+        chapter_title=req_data.get("chapter_title") or "",
+        pov_character=pov or "",
+        known_characters=known_chars or None,
+    )
+
+
+async def _persist_and_trigger_post_commit(
+    *, session_id: str, req_data: dict, final_text: str, eval_result: dict,
+) -> None:
+    """Persist chapter text + fire post-commit pipeline.
+
+    Stage 2 Task 2.4: this helper now delegates to
+    :meth:`ChapterContext.commit` so multi-agent /start goes through
+    the same canonical commit path as any future caller. The helper
+    signature stays the same so the existing `_run_pipeline_inner`
+    call site (and its tests) keep working unchanged.
+
+    Idempotent guard: missing project_id / chapter_id → skip silently.
+    Eval pass / fail is encoded into model_used so downstream loaders
+    can distinguish a clean finalize from a failed-eval rescue write.
+    """
+    project_id = (req_data.get("project_id") or "").strip()
+    chapter_id = (req_data.get("chapter_id") or "").strip()
+    if not project_id or not chapter_id:
+        logger.info(
+            "multi-agent session %s: no project/chapter id — skip persist",
+            session_id,
+        )
+        return
+
+    db_path = ""
+    try:
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+    except Exception as e:
+        logger.warning("get_db_path failed: %s", e)
+        return
+
+    eval_passed = bool(eval_result and eval_result.get("passed", True))
+    model_used = (
+        "multi_agent_pipeline.eval_passed"
+        if eval_passed
+        else "multi_agent_pipeline.eval_failed"
+    )
+
+    # Delegate persistence + post-commit trigger to ChapterContext.
+    # The Context is minimal here (no loader/truth fields needed —
+    # we already injected those upstream into req_data['world_rules']);
+    # commit() only needs identifiers + db_path + the content + the
+    # model_used signal.
+    from ui.backend.app.services.chapter_context import ChapterContext
+    ctx = ChapterContext(
+        project_id=project_id,
+        chapter_id=chapter_id,
+        chapter_num=int(req_data.get("chapter_num") or 0),
+        db_path=db_path,
+    )
+
+    try:
+        version_id = await ctx.commit(
+            final_text,
+            source="ai",
+            model_used=model_used,
+            trigger_post_commit=True,
+        )
+        logger.info(
+            "multi-agent session %s: ChapterContext.commit → version=%s",
+            session_id, version_id,
+        )
+    except Exception as e:
+        logger.error("ChapterContext.commit failed: %s", e, exc_info=True)
 
 
 @router.websocket("/ws/{session_id}")
@@ -2173,8 +2515,8 @@ async def auto_outline(req: AutoOutlineRequest):
         character_states = ""
         unresolved_threads = ""
         try:
-            from knowledge.memory.manager import MemoryManager
-            mem = MemoryManager(db_path=db_path)
+            from knowledge.reader_memory.manager import ReaderMemoryManager
+            mem = ReaderMemoryManager(db_path=db_path)
             mem.set_project(req.project_id)
 
             # Get previous chapter summaries
@@ -2194,7 +2536,7 @@ async def auto_outline(req: AutoOutlineRequest):
 
         # Get character states from most recent chapter
         try:
-            from knowledge.memory.chapter_buffer import ChapterBuffer
+            from knowledge.reader_memory.chapter_buffer import ChapterBuffer
             cb = ChapterBuffer(db_path)
             summaries = cb.get_active_summaries(req.project_id)
             if summaries:
@@ -2300,8 +2642,8 @@ async def _run_batch_pipeline(session_id: str):
         db_path = _get_db_path()
         project_id = req_data.get("project_id", "")
 
-        from knowledge.memory.manager import MemoryManager
-        memory = MemoryManager(db_path=db_path, router=router_inst)
+        from knowledge.reader_memory.manager import ReaderMemoryManager
+        memory = ReaderMemoryManager(db_path=db_path, router=router_inst)
         memory.set_project(project_id)
 
         # Ensure tables exist
@@ -2576,7 +2918,7 @@ async def prompt_preview(req: PromptPreviewRequest):
 
         try:
             _db_path = _get_db_path()
-            from knowledge.memory.manager import MemoryManager as _MM
+            from knowledge.reader_memory.manager import ReaderMemoryManager as _MM
             _mem = _MM(db_path=_db_path)
             _mem.set_project(req.project_id)
 

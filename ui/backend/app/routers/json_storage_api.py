@@ -206,46 +206,8 @@ def delete_worldbook_entry(eid: str):
     project_store.delete_worldbook(_db(), eid)
     return {"ok": True}
 
-# ═══ Writing Knowledge (DB-backed via project_store; cross-project library) ═══
-@router.get("/writing_knowledge")
-def list_writing_knowledge(domain: str | None = None, page: int = 0, size: int = 0):
-    items = project_store.list_writing_knowledge(_db(), domain)
-    total = len(items)
-    if size > 0:
-        start = page * size
-        items = items[start:start + size]
-    return {"items": items, "total": total}
-
-@router.post("/writing_knowledge")
-def create_writing_knowledge(body: dict = Body(...)):
-    body = dict(body)
-    body.setdefault("title", "新知识条目")
-    body.setdefault("domain", "其他")
-    try:
-        return project_store.upsert_writing_knowledge(_db(), body)
-    except ValueError as e:
-        raise HTTPException(409 if "已存在" in str(e) else 400, detail=str(e))
-
-@router.get("/writing_knowledge/{kid}")
-def get_writing_knowledge(kid: str):
-    item = project_store.get_writing_knowledge(_db(), kid)
-    if not item:
-        raise HTTPException(404, f"not found: writing_knowledge/{kid}")
-    return item
-
-@router.put("/writing_knowledge/{kid}")
-def update_writing_knowledge(kid: str, body: dict = Body(...)):
-    body = dict(body)
-    body["id"] = kid
-    try:
-        return project_store.upsert_writing_knowledge(_db(), body)
-    except ValueError as e:
-        raise HTTPException(409 if "已存在" in str(e) else 400, detail=str(e))
-
-@router.delete("/writing_knowledge/{kid}")
-def delete_writing_knowledge(kid: str):
-    project_store.delete_writing_knowledge(_db(), kid)
-    return {"ok": True}
+# Writing Knowledge endpoints removed in v3.1 — the writing_knowledge
+# table, helpers, prompt loader and frontend pages are gone.
 
 # ═══ Reference Injection (DB-backed via project_store; blob scope) ═══
 @router.get("/reference_injection/{project_id}")
@@ -328,7 +290,7 @@ def delete_project_memory(project_id: str, memory_id: str):
 # endpoint now serves the canonical pending_hooks rows reshaped to the
 # old {items:[...]} envelope so the existing 大纲 tab keeps working.
 # Writes are accepted but a deprecation warning is logged — new code
-# should emit HookDelta via TruthFileStore.apply_deltas.
+# should emit HookDelta via StorylandStateStore.apply_deltas.
 
 import logging as _fs_logging
 _fs_log = _fs_logging.getLogger("inkoctobot.routers.foreshadowing_legacy")
@@ -343,7 +305,7 @@ def get_foreshadowing(project_id: str):
 
 @router.put("/foreshadowing/{project_id}")
 def save_foreshadowing(project_id: str, body: dict = Body(...)):
-    """Deprecated: foreshadowing should be emitted via TruthFileStore.
+    """Deprecated: foreshadowing should be emitted via StorylandStateStore.
 
     Kept as a no-op so legacy frontend save calls don't 404. The count
     of items the client tried to save is logged so we can spot whether
@@ -352,10 +314,72 @@ def save_foreshadowing(project_id: str, body: dict = Body(...)):
     items = body.get("items", []) or []
     _fs_log.warning(
         "deprecated PUT /data/foreshadowing/%s ignored (items=%d) — "
-        "emit HookDelta via TruthFileStore.apply_deltas instead",
+        "emit HookDelta via StorylandStateStore.apply_deltas instead",
         project_id, len(items),
     )
     return {"ok": True, "deprecated": True}
+
+
+# ─── Chapter-summary anchor toggle (LOADER_SPEC Loader 8, Batch 6) ───
+
+
+@router.post("/chapters/{chapter_num}/toggle-anchor")
+def toggle_chapter_anchor(
+    chapter_num: int,
+    body: dict = Body(default={}),
+):
+    """Flip ``is_anchor`` on the chapter_summaries row, so the
+    reader_memory loader surfaces this chapter in the anchor section
+    regardless of how far back it is.
+
+    Body: ``{"project_id": "..."}`` (required). Returns 404 if no
+    summary exists for that chapter yet — anchors only make sense for
+    chapters the summary pipeline has already processed.
+    """
+    project_id = (body.get("project_id") or "").strip()
+    if not project_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="project_id is required")
+    out = project_store.toggle_chapter_summary_anchor(
+        _db(), project_id, chapter_num,
+    )
+    if out is None:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=404,
+            detail=f"no chapter summary for project={project_id!r} chapter={chapter_num}",
+        )
+    return out
+
+
+@router.post("/foreshadowing/{hook_id}/fully-resolve")
+def fully_resolve_foreshadowing(hook_id: str, body: dict = Body(default={})):
+    """User-authoritative close of a hook (LOADER_SPEC Loader 11).
+
+    Body (all optional):
+      - ``chapter_num``: the chapter the user marks as the close-out
+      - ``notes``:       free-text rationale stored for audit
+
+    Returns 404 if the hook id is unknown.
+    """
+    chapter_num = body.get("chapter_num")
+    if chapter_num is not None:
+        try:
+            chapter_num = int(chapter_num)
+        except (TypeError, ValueError):
+            chapter_num = None
+    notes = str(body.get("notes") or "")
+    saved = project_store.fully_resolve_hook(
+        _db(), hook_id, chapter_num=chapter_num, notes=notes,
+    )
+    if not saved:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"hook {hook_id} not found")
+    _fs_log.info(
+        "user fully-resolved hook %s at chapter %s (notes len=%d)",
+        hook_id, chapter_num, len(notes),
+    )
+    return {"ok": True, "hook": saved}
 
 # ═══ Editor (DB-backed: project_blobs + chapters table) ═══
 @router.get("/editor")
@@ -399,6 +423,9 @@ def get_versions(project_id: str = "default", chapter_id: str = ""):
 
 @router.post("/versions")
 def save_version(body: dict = Body(...)):
+    """Legacy save-version endpoint. Fires the post-commit pipeline
+    just like ``/api/editor/save-version`` so UI clients on either
+    path trigger the same background work."""
     pid = body.get("project_id", "default")
     version = body.get("version") or {}
     project_store.ensure_project_row(_db(), pid)
@@ -408,6 +435,16 @@ def save_version(body: dict = Body(...)):
         saved = project_store.insert_version(_db(), pid, version)
     except ValueError as e:
         raise HTTPException(400, detail=str(e))
+
+    from ui.backend.app.services.commit_pipeline import (
+        fire_and_forget_from_handler,
+    )
+    fire_and_forget_from_handler(
+        project_id=pid,
+        chapter_id=version["chapter_id"],
+        db_path=_db(),
+        chapter_text=version.get("content", "") or "",
+    )
     # Match legacy response shape; the trim-to-50 policy is enforced
     # by the FK cascade + retention logic above the API if needed.
     return {"ok": True, "version_id": saved["version_id"]}

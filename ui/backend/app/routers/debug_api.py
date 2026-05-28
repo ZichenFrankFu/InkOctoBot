@@ -281,8 +281,8 @@ def truth_files_dump(
     Returns:
       - tables: per-table row dumps (current_state / particle_ledger /
                 pending_hooks + hook_events / chapter_summaries /
-                subplot_threads / emotion_arcs / character_relations)
-      - markdown: on-demand 7-file markdown view (the same one that
+                subplot_threads / emotion_arcs)
+      - markdown: on-demand 6-file markdown view (the same one that
                   gets injected into prompts)
       - apply_log: idempotency log entries
 
@@ -298,9 +298,8 @@ def truth_files_dump(
 
     # A3: when chapter_pointer is given, raw rows are filtered to "as of"
     # that chapter — newer rows hidden. Useful for "show me the truth
-    # state at the end of chapter 17". For tables without chapter_num
-    # (e.g. character_relations is a current-state view), the filter is
-    # a no-op.
+    # state at the end of chapter 17". Tables without a chapter_num
+    # column simply skip the filter.
     chapter_cutoff_for_table: dict[str, str] = {
         "truth_current_state":  "valid_from_chapter",
         "character_ledger":     "chapter_num",
@@ -320,7 +319,6 @@ def truth_files_dump(
         "chapter_summaries",
         "subplot_threads",
         "emotion_arcs",
-        "character_relations",
         "truth_apply_log",
     ]
 
@@ -364,10 +362,10 @@ def truth_files_dump(
     # store.render_for_prompt handles the rowfetch + render together.)
     markdown: dict[str, str] = {}
     try:
-        from knowledge.truth.store import TruthFileStore
-        from knowledge.truth.schemas import TruthFileKind
-        store = TruthFileStore(project_id=project_id, db_path=db_path)
-        for kind in TruthFileKind:
+        from knowledge.storyland_state.store import StorylandStateStore
+        from knowledge.storyland_state.schemas import StorylandStateKind
+        store = StorylandStateStore(project_id=project_id, db_path=db_path)
+        for kind in StorylandStateKind:
             markdown[kind.value] = store.render_for_prompt(
                 kind, chapter_num=chapter_pointer,
             )
@@ -486,7 +484,7 @@ def memory_dump(
         try:
             from ui.backend.app.settings import settings as _s
             chromadb_dir = (_s.data_dir or _s.repo_root / "data") / "chromadb"
-            from knowledge.memory.semantic_store import SemanticMemory
+            from knowledge.reader_memory.semantic_store import SemanticMemory
             sm = SemanticMemory(str(chromadb_dir))
             l3: dict[str, Any] = {
                 "collection_count": sm.count(),

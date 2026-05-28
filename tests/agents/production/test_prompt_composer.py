@@ -17,9 +17,9 @@ from agents.production.prompt_composer import (
     OutlineBlock,
     ChapterMetadataBlock,
     OutputRequirementsBlock,
-    TruthBundleContextBlock,
+    StorylandStateBundleContextBlock,
     LedgerAnchorsContextBlock,
-    MemoryContextBlock,
+    ReaderMemoryContextBlock,
     CharacterCardsContextBlock,
     single_writer_composer,
     assembly_composer,
@@ -107,11 +107,11 @@ class TestProviders(unittest.TestCase):
         self.assertIn("表演记录", assembly)
 
     def test_truth_bundle_context_block(self) -> None:
-        out = TruthBundleContextBlock().render(PromptContext(truth_bundle="some truth"))
+        out = StorylandStateBundleContextBlock().render(PromptContext(truth_bundle="some truth"))
         self.assertIn("[Truth Files 状态权威]", out)
         self.assertIn("some truth", out)
 
-        empty = TruthBundleContextBlock().render(PromptContext())
+        empty = StorylandStateBundleContextBlock().render(PromptContext())
         self.assertEqual(empty, "")
 
     def test_character_cards_wrapper(self) -> None:

@@ -87,42 +87,8 @@ class TestStoryline(unittest.TestCase):
         self.assertEqual([e["id"] for e in g["edges"]], ["e_ok"])
 
 
-class TestWritingKnowledge(unittest.TestCase):
-
-    def setUp(self) -> None:
-        self.db = _fresh_db()
-
-    def test_crud(self) -> None:
-        saved = project_store.upsert_writing_knowledge(self.db, {
-            "title": "节奏", "domain": "pacing",
-            "content": "短句加快节奏", "tags": ["节奏"],
-        })
-        self.assertTrue(saved["id"].startswith("wk_"))
-        self.assertEqual(saved["domain"], "pacing")
-
-        # list with filter
-        only_pacing = project_store.list_writing_knowledge(self.db, "pacing")
-        self.assertEqual(len(only_pacing), 1)
-        all_items = project_store.list_writing_knowledge(self.db)
-        self.assertEqual(len(all_items), 1)
-
-        # duplicate title rejected
-        with self.assertRaises(ValueError):
-            project_store.upsert_writing_knowledge(self.db, {"title": "节奏"})
-
-        # update preserves id
-        updated = project_store.upsert_writing_knowledge(self.db, {
-            "id": saved["id"], "title": "节奏",
-            "content": "更新后的内容",
-        })
-        self.assertEqual(updated["content"], "更新后的内容")
-        self.assertEqual(updated["id"], saved["id"])
-
-        # delete
-        project_store.delete_writing_knowledge(self.db, saved["id"])
-        self.assertIsNone(
-            project_store.get_writing_knowledge(self.db, saved["id"])
-        )
+# TestWritingKnowledge removed in v3.1 — the writing_knowledge table,
+# helpers, prompt loader, API endpoints and UI pages were all dropped.
 
 
 class TestChatHistory(unittest.TestCase):

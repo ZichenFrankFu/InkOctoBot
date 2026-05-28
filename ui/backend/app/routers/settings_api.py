@@ -87,8 +87,17 @@ def _defaults() -> dict:
             "analyzer": {"provider": "ollama", "model": "", "compare_models": []},
             "reference_extractor": {"provider": "ollama", "model": "", "compare_models": []},
             "reference_web_search": {"provider": "", "model": "", "compare_models": []},
+            # Post-commit pipeline (chapter_summarizer / event_extractor /
+            # state_extractor / etc). Local by default; falls back to
+            # post_commit_fallback when the local endpoint is down.
+            "post_commit": {"provider": "ollama", "model": "", "compare_models": []},
+            "post_commit_fallback": {"provider": "", "model": "", "compare_models": []},
         },
         "embedding_backend": "local",
+        # Global manual-mode toggle for the unified LLMCallSite layer.
+        # When true, every LLM call routes through llm.manual_paste —
+        # user copies prompt to web LLM and pastes response back.
+        "llm_manual_mode": False,
     }
 
 

@@ -25,11 +25,11 @@ narrative state consistent across hundreds of chapters.
 agents/              Multi-agent pipeline (planner/production/evaluation/guardrails/reference_extractors)
 framework/           Runtime kernel: config, logging, events, skill registry/learner, observability, triggers
 knowledge/           Memory (4 layers) + Truth Files (7 canonical) + character_cards/world_book/references/ideas/vector_store
-llm/                 Provider abstraction (Anthropic/OpenAI/DeepSeek/Gemini/Ollama/vLLM/LoRA/Mock) + router + cost
+llm/                 Provider abstraction (Anthropic/OpenAI/DeepSeek/Gemini/Ollama/vLLM/Mock) + router + cost
 storage/             SQLite schemas (project/truth/reference/idea/market/extraction) + connection pool
 market_analysis/     Market data analysis (heat/trend/metrics/formula engine/reports)
 reference_pipeline/  Reference-work feature extraction (parser/AI extractor/embedding/rhetoric/...)
-reference_ingest/    Reference-work ingestion (novel ingester/style/skill mining/LoRA training data)
+reference_ingest/    Reference-work ingestion (novel ingester/style/skill mining)
 security/            API-key manager + test-mode isolation
 ui/backend/app/      FastAPI app (28 routers, services/, pipeline/)
 ui/frontend/         React + Vite SPA (14 pages)
@@ -148,7 +148,7 @@ Base classes: `base_agent.py:BaseAgent`, `base_skill.py:BaseSkill`.
 |---|---|
 | `base.py` | `BaseLLMProvider`, `LLMMessage`, `LLMResponse` |
 | `router.py` | `ModelRouter` — dispatches to provider by agent_role |
-| `anthropic_provider.py` / `openai_provider.py` / `deepseek_provider.py` / `gemini_provider.py` / `ollama_provider.py` / `vllm_provider.py` / `lora_provider.py` | 7 cloud + local providers |
+| `anthropic_provider.py` / `openai_provider.py` / `deepseek_provider.py` / `gemini_provider.py` / `ollama_provider.py` / `vllm_provider.py` | 6 cloud + local providers |
 | `mock_provider.py` | Deterministic mock for tests |
 | `embedding_provider.py` | Embedding abstraction |
 | `cost_estimator.py` | Token accounting |
@@ -165,7 +165,7 @@ Base classes: `base_agent.py:BaseAgent`, `base_skill.py:BaseSkill`.
 | `reference_schema.py` | reference_works + reference_entries + project_reference_links + work_index_progress |
 | `idea_schema.py` | inspirations (single table, `data/idea.db`) |
 | `market_schema.py` | novels, novel_titles, tags, rank_lists, rank_entries, ... (crawler import) |
-| `extraction_schema.py` | LoRA training data extraction |
+| `extraction_schema.py` | Novel skill extraction pipeline tables |
 | `market_db.py` | High-level wrapper around market schema |
 | `DATABASE.md` | Schema docs |
 
@@ -195,7 +195,6 @@ Base classes: `base_agent.py:BaseAgent`, `base_skill.py:BaseSkill`.
 | `style_extractor.py` | Author style fingerprint |
 | `chapter_splitter.py` | Standalone chapter detection |
 | `skill_extraction/` | Mines novel patterns into Skill candidates |
-| `lora/` | LoRA training data construction |
 
 ### 3.9 `security/`
 
@@ -453,7 +452,6 @@ Documented in `docs/SCHEMA_REDESIGN.md`. The 7 commits between
 
 **Half-finished / future**:
 - Marketing agent LLM-driven recommendations (currently data-only)
-- LoRA training loop end-to-end (data construction works; training launch stub)
 - Batch chapter generation UI integration
 - Skill-learner refinement loop (proposes skills; needs user feedback closure)
 - `agents/reference_extractors/` — package exists but only contains `skills/` (no top-level extractor classes yet)

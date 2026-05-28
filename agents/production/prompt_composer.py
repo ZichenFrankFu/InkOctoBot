@@ -68,9 +68,12 @@ class PromptContext:
     style_profile: str = ""
     user_preferences: str = ""
     memory_context: str = ""
-    adjacent_context: str = ""
-    reference_blocks: str = ""
-    writing_knowledge: str = ""
+    # adjacent_context / reference_blocks / writing_knowledge fields
+    # removed in v3.1 along with their loaders. Kept as ``""`` aliases
+    # below for any caller still passing keyword args.
+    adjacent_context: str = ""  # deprecated: ignored
+    reference_blocks: str = ""  # deprecated: ignored
+    writing_knowledge: str = ""  # deprecated: ignored
 
     # InkOS Truth Files
     truth_bundle: str = ""
@@ -142,6 +145,41 @@ class PromptComposer:
 
     def __init__(self, providers: Iterable[BlockProvider]):
         self.providers: list[BlockProvider] = list(providers)
+
+    def add_block(self, provider: BlockProvider) -> None:
+        """Append a single BlockProvider to the chain."""
+        self.providers.append(provider)
+
+    def add_loader_blocks(
+        self,
+        loader_plans: dict[str, Any],
+        *,
+        allocations: dict[str, int] | None = None,
+    ) -> None:
+        """Bulk-register LoaderPlan results as BlockProviders
+        (roadmap Stage 3 Task 3.2).
+
+        Lets multi-agent agents consume the same 14-loader output the
+        single-agent Jinja template uses, via the same protocol —
+        eliminating the dual-track block hierarchy that existed
+        before. Inactive loader_plans (None) are silently skipped.
+
+        ``allocations`` (block_id → char budget) is optional. When
+        omitted each plan renders at its own target. Pass the
+        builder's diagnostics ``allocated_budget`` per block when you
+        want the composer to honour the dynamic budget the loader
+        chain computed.
+        """
+        for block_id, plan in loader_plans.items():
+            if plan is None:
+                continue
+            # Duck-type: only objects with .to_block_provider() are
+            # accepted — straight LoaderPlan or any future subclass.
+            to_bp = getattr(plan, "to_block_provider", None)
+            if to_bp is None:
+                continue
+            budget = (allocations or {}).get(block_id)
+            self.providers.append(to_bp(budget))
 
     def build_user_content(self, ctx: PromptContext) -> str:
         parts = [
@@ -306,7 +344,7 @@ class NarratorTextBlock:
 # ─────────────── Context-role providers (BaseAgent context=) ───────
 
 
-class TruthBundleContextBlock:
+class StorylandStateBundleContextBlock:
     name = "truth_bundle"
     role = "context"
 
@@ -324,20 +362,12 @@ class LedgerAnchorsContextBlock:
         return ctx.ledger_anchors_text.strip()
 
 
-class MemoryContextBlock:
+class ReaderMemoryContextBlock:
     name = "memory_context"
     role = "context"
 
     def render(self, ctx: PromptContext) -> str:
         return ctx.memory_context.strip()
-
-
-class AdjacentContextBlock:
-    name = "adjacent_context"
-    role = "context"
-
-    def render(self, ctx: PromptContext) -> str:
-        return ctx.adjacent_context.strip()
 
 
 class CharacterCardsContextBlock:
@@ -380,20 +410,8 @@ class UserPreferencesContextBlock:
         return f"[用户偏好]\n{ctx.user_preferences.strip()}"
 
 
-class ReferenceBlocksContextBlock:
-    name = "reference_blocks"
-    role = "context"
-
-    def render(self, ctx: PromptContext) -> str:
-        return ctx.reference_blocks.strip()
-
-
-class WritingKnowledgeContextBlock:
-    name = "writing_knowledge"
-    role = "context"
-
-    def render(self, ctx: PromptContext) -> str:
-        return ctx.writing_knowledge.strip()
+# ReferenceBlocksContextBlock / WritingKnowledgeContextBlock /
+# AdjacentContextBlock removed in v3.1 along with their loaders.
 
 
 # ─────────────── Pre-built composers ────────────────────────────────
@@ -408,16 +426,13 @@ def single_writer_composer() -> PromptComposer:
         NarrativeInstructionsBlock(),
         OutputRequirementsBlock(),
         # context-role providers
-        TruthBundleContextBlock(),
+        StorylandStateBundleContextBlock(),
         LedgerAnchorsContextBlock(),
-        MemoryContextBlock(),
-        AdjacentContextBlock(),
+        ReaderMemoryContextBlock(),
         CharacterCardsContextBlock(),
         WorldRulesContextBlock(),
         StyleProfileContextBlock(),
         UserPreferencesContextBlock(),
-        ReferenceBlocksContextBlock(),
-        WritingKnowledgeContextBlock(),
     ])
 
 
@@ -430,8 +445,8 @@ def assembly_composer() -> PromptComposer:
         NarratorTextBlock(),
         OutputRequirementsBlock(),
         # context-role providers
-        TruthBundleContextBlock(),
-        MemoryContextBlock(),
+        StorylandStateBundleContextBlock(),
+        ReaderMemoryContextBlock(),
         StyleProfileContextBlock(),
         UserPreferencesContextBlock(),
     ])

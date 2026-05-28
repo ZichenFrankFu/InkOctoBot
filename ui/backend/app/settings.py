@@ -43,3 +43,65 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ── embedding settings helpers (EMBEDDING_SPEC § 3) ────────────────
+#
+# The active model + language mode live in ``data/settings.json``
+# alongside the legacy ``embedding_backend`` key. These helpers keep
+# the JSON read/write path centralized so the EmbeddingService and
+# the embedding API endpoints don't duplicate it.
+
+import json as _json
+
+
+_DEFAULT_LANGUAGE_MODE = "zh"
+_DEFAULT_MODEL_KEY = "bge-base-zh"
+
+
+def _embedding_settings_path() -> Path:
+    return settings.get_data_path("settings.json")
+
+
+def _read_embedding_settings_blob() -> dict:
+    p = _embedding_settings_path()
+    if not p.exists():
+        return {}
+    try:
+        return _json.loads(p.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def get_embedding_language_mode() -> str:
+    blob = _read_embedding_settings_blob()
+    mode = str(blob.get("embedding_language_mode") or _DEFAULT_LANGUAGE_MODE)
+    return mode if mode in ("zh", "en") else _DEFAULT_LANGUAGE_MODE
+
+
+def get_embedding_model_key() -> str:
+    blob = _read_embedding_settings_blob()
+    return str(blob.get("embedding_model_key") or _DEFAULT_MODEL_KEY)
+
+
+def set_embedding_settings(
+    *, language_mode: str | None = None, model_key: str | None = None,
+) -> dict:
+    """Persist embedding settings to ``data/settings.json``. Missing
+    keys keep their existing value. Returns the post-update blob."""
+    p = _embedding_settings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    blob = _read_embedding_settings_blob()
+    if language_mode is not None:
+        blob["embedding_language_mode"] = language_mode
+    if model_key is not None:
+        blob["embedding_model_key"] = model_key
+    p.write_text(_json.dumps(blob, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "embedding_language_mode": blob.get(
+            "embedding_language_mode", _DEFAULT_LANGUAGE_MODE,
+        ),
+        "embedding_model_key": blob.get(
+            "embedding_model_key", _DEFAULT_MODEL_KEY,
+        ),
+    }

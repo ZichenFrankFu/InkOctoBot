@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS reference_chapters (
     content TEXT,
     content_start INTEGER,
     content_end INTEGER,
+    scene_type TEXT NOT NULL DEFAULT '',
+    embedding_json TEXT NOT NULL DEFAULT '[]',
+    embedding_text_hash TEXT NOT NULL DEFAULT '',
+    embedding_model_key TEXT NOT NULL DEFAULT '',
     saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (ref_id, number),
     FOREIGN KEY (ref_id) REFERENCES reference_works (ref_id) ON DELETE CASCADE
@@ -129,6 +133,39 @@ def ensure_reference_tables(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE reference_works ADD COLUMN rhythm_json TEXT")
     if "chapter_comments_json" not in cols:
         conn.execute("ALTER TABLE reference_works ADD COLUMN chapter_comments_json TEXT")
+
+    # LOADER_SPEC Loader 3 (Batch 4): reference_chapters grows scene_type +
+    # per-chunk embedding so the exemplars feature can pull scene-matched
+    # passages by outline similarity.
+    try:
+        chap_cols = {
+            r[1] for r in
+            conn.execute("PRAGMA table_info(reference_chapters)").fetchall()
+        }
+        if "scene_type" not in chap_cols:
+            conn.execute(
+                "ALTER TABLE reference_chapters ADD COLUMN "
+                "scene_type TEXT NOT NULL DEFAULT ''"
+            )
+        if "embedding_json" not in chap_cols:
+            conn.execute(
+                "ALTER TABLE reference_chapters ADD COLUMN "
+                "embedding_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "embedding_text_hash" not in chap_cols:
+            conn.execute(
+                "ALTER TABLE reference_chapters ADD COLUMN "
+                "embedding_text_hash TEXT NOT NULL DEFAULT ''"
+            )
+        if "embedding_model_key" not in chap_cols:
+            conn.execute(
+                "ALTER TABLE reference_chapters ADD COLUMN "
+                "embedding_model_key TEXT NOT NULL DEFAULT ''"
+            )
+    except sqlite3.OperationalError:
+        # reference_chapters not yet created — CREATE in ALL_DDL handles it.
+        pass
+
     conn.commit()
     if path != ":memory:":
         _ensured_paths.add(path)

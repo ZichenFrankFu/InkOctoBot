@@ -127,6 +127,11 @@ def upsert_character(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
         "tags", "relationships", "layer_a", "layer_b",
         "created_at", "updated_at",
     }
+    # LOADER_SPEC v3 Batch 5: ``dynamic_snapshots`` lived on extras_json
+    # in earlier versions but the snapshot system now owns its own table
+    # (see ``snapshot_store``). Drop the legacy key so it can't sneak
+    # back in via a stale frontend payload.
+    body = {k: v for k, v in body.items() if k != "dynamic_snapshots"}
     extra = {k: v for k, v in body.items() if k not in known_cols}
 
     with open_db(db_path) as con:
@@ -182,6 +187,11 @@ def upsert_character(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
     saved = get_character(db_path, cid)
     if saved is None:  # pragma: no cover — defensive
         raise RuntimeError("upsert succeeded but row not found")
+    # Mirror into storyland_entities so the entity registry stays
+    # current. Sync is wrapped in try/except inside the helper — a
+    # registry hiccup must never break the character save.
+    from . import entity_registry as _er
+    _er.sync_from_character(db_path, saved)
     return saved
 
 
@@ -190,14 +200,17 @@ def delete_character(db_path: str, character_id: str) -> None:
         con.execute("DELETE FROM characters WHERE character_id = ?",
                     (character_id,))
         con.commit()
+    from . import entity_registry as _er
+    _er.sync_delete_character(db_path, character_id)
 
 
 # ─────────────── Worldbook entries ────────────────────────────────
 
 
-def _worldbook_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _worldbook_row_to_payload(row: sqlite3.Row,
+                              include_embedding: bool = False) -> dict[str, Any]:
     r = _row_to_dict(row)
-    return {
+    out: dict[str, Any] = {
         "id": r["entry_id"],
         "project_id": r["project_id"],
         "title": r["title"],
@@ -208,9 +221,38 @@ def _worldbook_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": r.get("created_at"),
         "updated_at": r.get("updated_at"),
     }
+    if include_embedding:
+        try:
+            out["embedding"] = json.loads(r.get("embedding_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            out["embedding"] = []
+        out["embedding_text_hash"] = r.get("embedding_text_hash") or ""
+        out["embedding_model_key"] = r.get("embedding_model_key") or ""
+    return out
 
 
-def list_worldbook(db_path: str, project_id: str | None = None) -> list[dict]:
+def worldbook_embedding_text(entry: dict[str, Any]) -> str:
+    """Canonical text used to compute a worldbook entry's embedding.
+
+    Title + category + content concatenated. Both the upsert path and
+    the prompt-context loader's stale-check must derive the same string,
+    so this helper is the single source of truth.
+    """
+    parts = [
+        (entry.get("title") or "").strip(),
+        (entry.get("category") or "").strip(),
+        (entry.get("content") or "").strip(),
+    ]
+    return "\n".join(p for p in parts if p)
+
+
+def _hash_embedding_text(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def list_worldbook(db_path: str, project_id: str | None = None,
+                   include_embedding: bool = False) -> list[dict]:
     sql = (
         "SELECT * FROM worldbook_entries"
         + (" WHERE project_id = ?" if project_id else "")
@@ -219,16 +261,42 @@ def list_worldbook(db_path: str, project_id: str | None = None) -> list[dict]:
     params = (project_id,) if project_id else ()
     with open_db(db_path) as con:
         rows = con.execute(sql, params).fetchall()
-    return [_worldbook_row_to_payload(r) for r in rows]
+    return [_worldbook_row_to_payload(r, include_embedding=include_embedding) for r in rows]
 
 
-def get_worldbook(db_path: str, entry_id: str) -> dict | None:
+def get_worldbook(db_path: str, entry_id: str,
+                  include_embedding: bool = False) -> dict | None:
     with open_db(db_path) as con:
         row = con.execute(
             "SELECT * FROM worldbook_entries WHERE entry_id = ?",
             (entry_id,),
         ).fetchone()
-    return _worldbook_row_to_payload(row) if row else None
+    return _worldbook_row_to_payload(row, include_embedding=include_embedding) if row else None
+
+
+def set_worldbook_embedding(
+    db_path: str, entry_id: str,
+    embedding: list[float], text_hash: str,
+    model_key: str = "",
+) -> None:
+    """Persist a freshly-computed embedding for a worldbook entry.
+
+    Used by the prompt_context loader to backfill embeddings lazily —
+    upsert_worldbook intentionally clears the embedding (text-hash
+    mismatch) so the loader recomputes against the current content.
+    ``model_key`` is the active embedding model at compute time; the
+    loader uses it on read to detect cross-model staleness after a
+    user-driven model switch.
+    """
+    with open_db(db_path) as con:
+        con.execute(
+            "UPDATE worldbook_entries SET embedding_json = ?, "
+            "embedding_text_hash = ?, embedding_model_key = ? "
+            "WHERE entry_id = ?",
+            (json.dumps(list(embedding), ensure_ascii=False),
+             text_hash, model_key or "", entry_id),
+        )
+        con.commit()
 
 
 _BANNED_WB_CATEGORIES = {
@@ -266,6 +334,11 @@ def upsert_worldbook(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("project_id is required")
 
     category = _coerce_worldbook_category(body.get("category"))
+    content = body.get("content", "")
+    new_text = worldbook_embedding_text(
+        {"title": title, "category": category, "content": content}
+    )
+    new_hash = _hash_embedding_text(new_text)
 
     with open_db(db_path) as con:
         dup = con.execute(
@@ -276,11 +349,29 @@ def upsert_worldbook(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
         if dup:
             raise ValueError(f"世界书条目「{title}」已存在，请使用不同的标题")
 
+        # Preserve the existing embedding if the canonical text didn't
+        # change — otherwise clear it so the loader recomputes lazily.
+        prev_hash = ""
+        prev_embed = "[]"
+        prev = con.execute(
+            "SELECT embedding_json, embedding_text_hash "
+            "FROM worldbook_entries WHERE entry_id = ?",
+            (eid,),
+        ).fetchone()
+        if prev is not None:
+            prev_hash = prev["embedding_text_hash"] or ""
+            prev_embed = prev["embedding_json"] or "[]"
+        if prev_hash == new_hash:
+            keep_embed_json, keep_hash = prev_embed, prev_hash
+        else:
+            keep_embed_json, keep_hash = "[]", ""
+
         con.execute(
             """INSERT INTO worldbook_entries (
                    entry_id, project_id, title, category, content,
-                   tags_json, sort_order, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?,
+                   tags_json, sort_order, embedding_json,
+                   embedding_text_hash, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                ON CONFLICT(entry_id) DO UPDATE SET
                    project_id = excluded.project_id,
@@ -289,17 +380,25 @@ def upsert_worldbook(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
                    content = excluded.content,
                    tags_json = excluded.tags_json,
                    sort_order = excluded.sort_order,
+                   embedding_json = excluded.embedding_json,
+                   embedding_text_hash = excluded.embedding_text_hash,
                    updated_at = CURRENT_TIMESTAMP""",
             (eid, pid, title,
              category,
-             body.get("content", ""),
+             content,
              json.dumps(body.get("tags", []), ensure_ascii=False),
-             int(body.get("sort_order", 0) or 0)),
+             int(body.get("sort_order", 0) or 0),
+             keep_embed_json,
+             keep_hash),
         )
         con.commit()
     saved = get_worldbook(db_path, eid)
     if saved is None:  # pragma: no cover
         raise RuntimeError("upsert succeeded but row not found")
+    # Mirror entry → storyland_entities iff category is stage-able
+    # (地点/组织/物品). The helper itself decides + handles failures.
+    from . import entity_registry as _er
+    _er.sync_from_worldbook(db_path, saved)
     return saved
 
 
@@ -308,6 +407,8 @@ def delete_worldbook(db_path: str, entry_id: str) -> None:
         con.execute("DELETE FROM worldbook_entries WHERE entry_id = ?",
                     (entry_id,))
         con.commit()
+    from . import entity_registry as _er
+    _er.sync_delete_worldbook(db_path, entry_id)
 
 
 # ─────────────── Project memory ───────────────────────────────────
@@ -515,90 +616,10 @@ def replace_storyline(db_path: str, project_id: str,
         con.commit()
 
 
-# ─────────────── Writing knowledge (cross-project) ────────────────
-
-
-def _knowledge_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
-    r = _row_to_dict(row)
-    return {
-        "id": r["knowledge_id"],
-        "domain": r.get("domain") or "general",
-        "title": r.get("title") or "",
-        "content": r.get("content") or "",
-        "tags": json.loads(r.get("tags_json") or "[]"),
-        "created_at": r.get("created_at"),
-        "updated_at": r.get("updated_at"),
-    }
-
-
-def list_writing_knowledge(db_path: str,
-                           domain: str | None = None) -> list[dict]:
-    sql = "SELECT * FROM writing_knowledge"
-    params: tuple = ()
-    if domain:
-        sql += " WHERE domain = ?"
-        params = (domain,)
-    sql += " ORDER BY domain, title"
-    with open_db(db_path) as con:
-        rows = con.execute(sql, params).fetchall()
-    return [_knowledge_row_to_payload(r) for r in rows]
-
-
-def get_writing_knowledge(db_path: str, knowledge_id: str) -> dict | None:
-    with open_db(db_path) as con:
-        row = con.execute(
-            "SELECT * FROM writing_knowledge WHERE knowledge_id = ?",
-            (knowledge_id,),
-        ).fetchone()
-    return _knowledge_row_to_payload(row) if row else None
-
-
-def upsert_writing_knowledge(db_path: str,
-                             body: dict[str, Any]) -> dict[str, Any]:
-    kid = body.get("id") or _nid("wk_")
-    title = (body.get("title") or "").strip()
-    if not title:
-        raise ValueError("title is required")
-    with open_db(db_path) as con:
-        dup = con.execute(
-            "SELECT knowledge_id FROM writing_knowledge "
-            "WHERE title = ? AND knowledge_id != ?",
-            (title, kid),
-        ).fetchone()
-        if dup:
-            raise ValueError(f"写作知识「{title}」已存在，请使用不同的标题")
-        con.execute(
-            """INSERT INTO writing_knowledge
-               (knowledge_id, domain, title, content, tags_json,
-                created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?,
-                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-               ON CONFLICT(knowledge_id) DO UPDATE SET
-                   domain = excluded.domain,
-                   title = excluded.title,
-                   content = excluded.content,
-                   tags_json = excluded.tags_json,
-                   updated_at = CURRENT_TIMESTAMP""",
-            (kid,
-             body.get("domain", "general"),
-             title,
-             body.get("content", ""),
-             json.dumps(body.get("tags", []), ensure_ascii=False)),
-        )
-        con.commit()
-    saved = get_writing_knowledge(db_path, kid)
-    if saved is None:  # pragma: no cover
-        raise RuntimeError("upsert succeeded but row not found")
-    return saved
-
-
-def delete_writing_knowledge(db_path: str, knowledge_id: str) -> None:
-    with open_db(db_path) as con:
-        con.execute(
-            "DELETE FROM writing_knowledge WHERE knowledge_id = ?",
-            (knowledge_id,),
-        )
-        con.commit()
+# Writing knowledge helpers removed in v3.1. The writing_knowledge
+# table is dropped by ``_drop_v1_redundant_objects`` in
+# ``storage/project_schema.py``; CRUD endpoints and the prompt-context
+# loader are gone.
 
 
 # ─────────────── Chat history ─────────────────────────────────────
@@ -743,6 +764,9 @@ def save_editor_doc(db_path: str, project_id: str,
             )
         }
         kept_ids: set[str] = set()
+        # Pending segment syncs — applied after the chapter commit so
+        # segment_manager's own connection sees the latest chapter row.
+        pending_segment_updates: list[tuple[str, str, str]] = []
         for vol_idx, vol in enumerate(body.get("volumes", []) or []):
             if not isinstance(vol, dict):
                 continue
@@ -758,15 +782,32 @@ def save_editor_doc(db_path: str, project_id: str,
                 word_count = ch.get("word_count")
                 if not isinstance(word_count, int):
                     word_count = len(content)
+                # on_stage_entities: prefer the explicit blob if the
+                # editor doc supplies one; otherwise derive from the
+                # legacy ``characters`` list so the column is always
+                # populated downstream of save_editor_doc.
+                characters_list = ch.get("characters", []) or []
+                ose = ch.get("on_stage_entities")
+                if not isinstance(ose, dict):
+                    ose = {}
+                ose_characters = ose.get("characters") if isinstance(ose.get("characters"), list) else None
+                on_stage_blob = {
+                    "characters":    ose_characters if ose_characters is not None else characters_list,
+                    "locations":     ose.get("locations") if isinstance(ose.get("locations"), list) else [],
+                    "items":         ose.get("items") if isinstance(ose.get("items"), list) else [],
+                    "organizations": ose.get("organizations") if isinstance(ose.get("organizations"), list) else [],
+                }
                 con.execute(
                     """INSERT INTO chapters (
                            chapter_id, project_id, chapter_num, volume,
                            title, outline, final_text, word_count,
                            synopsis, time_label, location, characters_json,
-                           pov_character, status, scene_plan_json,
+                           pov_character, on_stage_entities,
+                           special_requirements,
+                           status, scene_plan_json,
                            performance_log, evaluation_json,
                            extra_json, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                                'draft', '[]', '', '{}', '{}',
                                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                        ON CONFLICT(chapter_id) DO UPDATE SET
@@ -781,6 +822,8 @@ def save_editor_doc(db_path: str, project_id: str,
                            location = excluded.location,
                            characters_json = excluded.characters_json,
                            pov_character = excluded.pov_character,
+                           on_stage_entities = excluded.on_stage_entities,
+                           special_requirements = excluded.special_requirements,
                            updated_at = CURRENT_TIMESTAMP""",
                     (cid, project_id, chap_num, vol_num,
                      ch.get("title", ""),
@@ -790,9 +833,12 @@ def save_editor_doc(db_path: str, project_id: str,
                      ch.get("synopsis", ""),
                      ch.get("time", ch.get("time_label", "")),
                      ch.get("location", ""),
-                     json.dumps(ch.get("characters", []), ensure_ascii=False),
-                     ch.get("pov_character", "")),
+                     json.dumps(characters_list, ensure_ascii=False),
+                     ch.get("pov_character", ""),
+                     json.dumps(on_stage_blob, ensure_ascii=False),
+                     (ch.get("special_requirements") or "")),
                 )
+                pending_segment_updates.append((cid, project_id, content))
 
         # Delete rows that vanished from the editor doc (user removed
         # them in the UI). Don't touch chapter rows owned by other
@@ -804,6 +850,19 @@ def save_editor_doc(db_path: str, project_id: str,
                 (cid, project_id),
             )
         con.commit()
+
+    # Sync chapter_segments after the chapter rows commit so the
+    # segment manager's own connection sees the latest text. Failures
+    # here must not abort the save — segments are a derived view.
+    from . import segment_manager as _sm
+    for cid, pid, content in pending_segment_updates:
+        try:
+            _sm.update_chapter_content(db_path, cid, pid, content)
+        except Exception as e:  # pragma: no cover — defensive
+            import logging as _lg
+            _lg.getLogger("inkoctobot.services.project_store").warning(
+                "segment sync failed for %s: %s", cid, e,
+            )
     return {"saved_at": body["saved_at"]}
 
 
@@ -1069,13 +1128,19 @@ def delete_version(db_path: str, version_id: str) -> None:
 
 
 def list_foreshadowing_legacy(db_path: str, project_id: str) -> list[dict]:
-    """Return open hooks shaped like the legacy {items: [...]} blob."""
+    """Return open hooks shaped like the legacy {items: [...]} blob.
+
+    Hooks the user authoritatively closed via ``fully_resolve_hook`` are
+    filtered out so the loader can't re-surface them even if the
+    auto-detector would otherwise re-open the same hook.
+    """
     with open_db(db_path) as con:
         try:
             rows = con.execute(
                 "SELECT hook_id, description, origin_chapter, "
                 "expected_payoff_chapter, status, importance "
                 "FROM pending_hooks WHERE project_id = ? "
+                "AND COALESCE(user_marked_fully_resolved, 0) = 0 "
                 "ORDER BY origin_chapter",
                 (project_id,),
             ).fetchall()
@@ -1093,6 +1158,95 @@ def list_foreshadowing_legacy(db_path: str, project_id: str) -> list[dict]:
     } for r in rows]
 
 
+def fully_resolve_hook(
+    db_path: str, hook_id: str, *,
+    chapter_num: int | None = None, notes: str = "",
+) -> dict[str, Any]:
+    """User-driven authoritative close — wins over any auto-detector update.
+
+    Sets ``user_marked_fully_resolved=1`` plus optional bookkeeping
+    fields, and flips ``status='resolved'`` so the hook is treated as
+    closed by every reader. Idempotent: a second call on an already-
+    resolved hook just refreshes the metadata.
+
+    Returns the post-update hook row (or ``{}`` if no such hook exists).
+    """
+    with open_db(db_path) as con:
+        cur = con.execute(
+            "UPDATE pending_hooks "
+            "SET user_marked_fully_resolved = 1, "
+            "    user_resolved_at_chapter = ?, "
+            "    user_resolve_notes = ?, "
+            "    status = 'resolved' "
+            "WHERE hook_id = ?",
+            (chapter_num, notes or "", hook_id),
+        )
+        if cur.rowcount == 0:
+            return {}
+        con.commit()
+        row = con.execute(
+            "SELECT hook_id, project_id, description, status, "
+            "       origin_chapter, importance, "
+            "       user_marked_fully_resolved, user_resolved_at_chapter, "
+            "       user_resolve_notes "
+            "FROM pending_hooks WHERE hook_id = ?",
+            (hook_id,),
+        ).fetchone()
+    return _row_to_dict(row) if row else {}
+
+
+# ─────────────── chapter_summaries anchor toggle ──────────────────
+
+
+def toggle_chapter_summary_anchor(
+    db_path: str, project_id: str, chapter_num: int,
+) -> dict[str, Any] | None:
+    """Flip ``is_anchor`` on the chapter_summaries row for this chapter.
+
+    Returns the new state (``{"chapter_num", "is_anchor"}``), or None
+    if no summary exists for the given (project_id, chapter_num) yet.
+    Idempotent on the same value — anchoring twice still leaves it
+    anchored after the second call.
+    """
+    with open_db(db_path) as con:
+        row = con.execute(
+            "SELECT is_anchor FROM chapter_summaries "
+            "WHERE project_id = ? AND chapter_num = ?",
+            (project_id, int(chapter_num)),
+        ).fetchone()
+        if row is None:
+            return None
+        new_state = 0 if row["is_anchor"] else 1
+        con.execute(
+            "UPDATE chapter_summaries SET is_anchor = ? "
+            "WHERE project_id = ? AND chapter_num = ?",
+            (new_state, project_id, int(chapter_num)),
+        )
+        con.commit()
+    return {"chapter_num": int(chapter_num), "is_anchor": new_state}
+
+
+def set_chapter_summary_anchor(
+    db_path: str, project_id: str, chapter_num: int, is_anchor: bool,
+) -> dict[str, Any] | None:
+    """Explicit setter — like toggle but doesn't depend on the prior state."""
+    with open_db(db_path) as con:
+        row = con.execute(
+            "SELECT 1 FROM chapter_summaries "
+            "WHERE project_id = ? AND chapter_num = ?",
+            (project_id, int(chapter_num)),
+        ).fetchone()
+        if row is None:
+            return None
+        con.execute(
+            "UPDATE chapter_summaries SET is_anchor = ? "
+            "WHERE project_id = ? AND chapter_num = ?",
+            (1 if is_anchor else 0, project_id, int(chapter_num)),
+        )
+        con.commit()
+    return {"chapter_num": int(chapter_num), "is_anchor": 1 if is_anchor else 0}
+
+
 # ─────────────── B2: InkOS audit gate — chapter audit status ──────
 
 
@@ -1107,7 +1261,7 @@ def update_chapter_audit(
 ) -> None:
     """Persist Phase 2 settlement audit result onto the chapter row.
 
-    Called after extract_and_apply_truth_deltas. The chapter is created
+    Called after extract_and_apply_state_deltas. The chapter is created
     via INSERT OR IGNORE if it doesn't exist yet (e.g. single-writer
     mode where the chapter row hasn't been provisioned). The audit
     fields are then UPDATEd unconditionally.
