@@ -238,23 +238,50 @@ def _insert_worldbook(con: sqlite3.Connection) -> None:
         )
 
 
-def _insert_chapters(con: sqlite3.Connection) -> None:
-    for ch in _CHAPTERS:
-        con.execute(
-            """INSERT OR REPLACE INTO chapters
-               (chapter_id, project_id, chapter_num, title, outline,
-                synopsis, location, time_label, special_requirements,
-                characters_json, pov_character)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                ch["chapter_id"], PROJECT_ID, ch["chapter_num"],
-                ch["title"], ch["synopsis"], ch["synopsis"],
-                ch["location"], ch["time_label"],
-                ch["special_requirements"],
-                json.dumps(CHARACTER_NAMES, ensure_ascii=False),
-                "林越",  # POV — Lin Yue is the focal character.
-            ),
-        )
+def _insert_chapters(db_path: str) -> None:
+    """Write chapters via ``save_editor_doc`` so BOTH the editor blob
+    (``project_blobs(scope='editor')``, source of truth for the UI
+    chapter tree) AND the denormalized ``chapters`` rows (read by
+    the RAG/generation loaders) are populated atomically.
+
+    A direct INSERT into ``chapters`` is not enough: the UI editor
+    page reads from ``GET /api/data/editor?project_id=...`` which
+    queries ``project_blobs``. With an empty blob the chapter tree
+    is empty, and several React components downstream of it call
+    ``.length`` on undefined nested arrays and crash."""
+    from ui.backend.app.services import project_store
+
+    editor_doc = {
+        "volumes": [{
+            "volume_id":   f"{PROJECT_ID}_v1",
+            "order":       0,
+            "title":       "第一卷",
+            "chapters": [
+                {
+                    "chapter_id":   ch["chapter_id"],
+                    "order":        ch["chapter_num"] - 1,
+                    "title":        ch["title"],
+                    "synopsis":     ch["synopsis"],
+                    "outline":      ch["synopsis"],
+                    "content":      "",
+                    "word_count":   0,
+                    "time":         ch["time_label"],
+                    "location":     ch["location"],
+                    "characters":   CHARACTER_NAMES,
+                    "pov_character": "林越",
+                    "special_requirements": ch["special_requirements"],
+                    "on_stage_entities": {
+                        "characters":    CHARACTER_NAMES,
+                        "locations":     [],
+                        "items":         [],
+                        "organizations": [],
+                    },
+                }
+                for ch in _CHAPTERS
+            ],
+        }],
+    }
+    project_store.save_editor_doc(db_path, PROJECT_ID, editor_doc)
 
 
 def _insert_subplots(con: sqlite3.Connection) -> None:
@@ -292,9 +319,12 @@ def seed_project(db_path: str) -> dict[str, Any]:
         _insert_project(con)
         _insert_characters(con)
         _insert_worldbook(con)
-        _insert_chapters(con)
         _insert_subplots(con)
         con.commit()
+    # Chapters must go through save_editor_doc so the project_blobs
+    # editor blob the UI reads is populated alongside the chapters
+    # table — opens its own connection internally.
+    _insert_chapters(db_path)
     return {
         "project_id":      PROJECT_ID,
         "chapter_ids":     list(CHAPTER_IDS),

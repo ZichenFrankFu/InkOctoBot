@@ -75,6 +75,25 @@ class TestSeedFixture(unittest.TestCase):
                 {"启明号空间站", "曲率残响"},
             )
 
+    def test_seed_populates_editor_blob_for_ui(self) -> None:
+        """The UI editor page reads ``project_blobs(scope='editor')``;
+        an empty blob renders an empty chapter tree and crashes
+        several downstream components. Verify the seed populates it
+        with the 5-chapter volume structure."""
+        db, _ = _fresh_db_with_seed()
+        from ui.backend.app.services import project_store
+        doc = project_store.get_editor_doc(db, "rt_proj")
+        self.assertEqual(len(doc.get("volumes", [])), 1)
+        chapters = doc["volumes"][0].get("chapters", [])
+        self.assertEqual(len(chapters), 5)
+        # Every chapter has the fields the React tree component touches.
+        for ch in chapters:
+            for key in ("chapter_id", "title", "synopsis",
+                        "characters", "pov_character",
+                        "special_requirements"):
+                self.assertIn(key, ch)
+            self.assertIsInstance(ch["characters"], list)
+
     def test_seed_chapters_have_special_requirements(self) -> None:
         db, _ = _fresh_db_with_seed()
         with sqlite3.connect(db) as con:
