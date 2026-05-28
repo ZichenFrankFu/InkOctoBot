@@ -120,12 +120,21 @@ class TestSeedFixture(unittest.TestCase):
         chapters = doc["volumes"][0].get("chapters", [])
         self.assertEqual(len(chapters), 5)
         # Every chapter has the fields the React tree component touches.
+        # Mirrors ui/frontend/src/api/types.ts ChapterOutline.
         for ch in chapters:
-            for key in ("chapter_id", "title", "synopsis",
+            for key in ("id", "chapter_id", "volume_id",
+                        "title", "order", "synopsis",
                         "characters", "pov_character",
                         "special_requirements"):
-                self.assertIn(key, ch)
+                self.assertIn(key, ch, f"chapter missing key {key!r}")
             self.assertIsInstance(ch["characters"], list)
+            self.assertIsInstance(ch["referenced_events"], list)
+
+        # Volume must also match ui/frontend/src/api/types.ts Volume —
+        # missing project_id was the crash trigger reported by the user.
+        vol = doc["volumes"][0]
+        for key in ("id", "project_id", "title", "order", "chapters"):
+            self.assertIn(key, vol, f"volume missing key {key!r}")
 
     def test_load_chapter_fields_finds_seeded_synopsis(self) -> None:
         """Regression: ``chapter_fields.py`` keys off ``ch.get("id")``

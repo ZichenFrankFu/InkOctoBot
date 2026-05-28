@@ -263,11 +263,14 @@ def _insert_chapters(db_path: str) -> None:
 
     editor_doc = {
         "volumes": [{
-            # Frontend tree components key off various id fields
-            # depending on which screen — provide all the common ones.
+            # Match the frontend Volume interface (ui/frontend/src/api/
+            # types.ts:237) — id / project_id / title / order / chapters
+            # are ALL required for the React editor to render without
+            # crashing on a missing-field traversal.
             "id":          f"{PROJECT_ID}_v1",
             "volume_id":   f"{PROJECT_ID}_v1",
-            "order":       0,
+            "project_id":  PROJECT_ID,
+            "order":       1,
             "title":       "第一卷",
             "chapters": [
                 {
@@ -281,12 +284,15 @@ def _insert_chapters(db_path: str) -> None:
                     # synopsis that's only reachable via the ``id`` key).
                     "id":           ch["chapter_id"],
                     "chapter_id":   ch["chapter_id"],
-                    "order":        ch["chapter_num"] - 1,
+                    # Required by frontend ChapterOutline interface.
+                    "volume_id":    f"{PROJECT_ID}_v1",
+                    "order":        ch["chapter_num"],
                     "title":        ch["title"],
                     "synopsis":     ch["synopsis"],
                     "outline":      ch["synopsis"],
                     "content":      "",
                     "word_count":   0,
+                    "status":       "draft",
                     "time":         ch["time_label"],
                     "location":     ch["location"],
                     "characters":   list(CHARACTER_NAMES),
@@ -295,8 +301,10 @@ def _insert_chapters(db_path: str) -> None:
                     # Defensive defaults — the React editor touches
                     # these arrays without nullish guards in several
                     # places (referenced_events.length, etc.).
+                    "references":              [],
                     "referenced_events":       [],
                     "referenced_inspirations": [],
+                    "character_aliases":       {},
                     "scenes":                  [],
                     "scene_plans":             [],
                     "beats":                   [],
