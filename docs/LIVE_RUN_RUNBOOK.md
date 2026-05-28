@@ -19,18 +19,38 @@ quality or hit external services. Use this runbook to fill that gap.
 | **Real market DB** (`market_data.db` from your Crawler) | Marketing Agent and trend analysis |
 | **Real reference DB** (`references.db`) | reference-work integration |
 
+## ⚠️ Critical: match the backend's DB path
+
+`launcher.py` uses **two** DB files:
+
+- **production mode** (`python launcher.py`) → `data/novels.db`
+- **test mode** (`python launcher.py --test`) → `data_test/novels.db`
+
+`live_run_check.py` mirrors this with a `--test` flag. **If your
+backend was launched with `--test`, you must also pass `--test` to
+every `live_run_check.py` invocation** — otherwise this script writes
+to / reads from a different DB file than the UI and you'll see "the
+project doesn't show up" with no obvious cause.
+
+The `--seed` report now prints which DB path it wrote to in big
+letters — eyeball it against your backend's startup logs to confirm.
+
 ## Three-step pre-flight
 
 ```bash
-# 1. Environment self-check
+# 1. Environment self-check  (add --test if backend uses --test)
 python scripts/live_run_check.py --env
 
-# 2. Seed the "轨道挽歌" demo project (does NOT touch market/reference DBs)
+# 2. Seed the "轨道挽歌" demo project (does NOT touch market/reference DBs).
+#    Add --test if your backend was started with --test:
 python scripts/live_run_check.py --seed
+# or
+python scripts/live_run_check.py --test --seed
 
-# 3. ...walk through the sections below...
+# 3. Restart the backend (or just hit refresh in the UI), then walk
+#    through the sections below.
 
-# 4. Post-walkthrough DB inspection
+# 4. Post-walkthrough DB inspection (match the --test flag from step 2)
 python scripts/live_run_check.py --verify --project rt_proj
 ```
 

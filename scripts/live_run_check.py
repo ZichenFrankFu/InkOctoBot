@@ -255,11 +255,29 @@ def run_seed() -> Report:
         r.fail(f"seed failed: {e}")
         return r
 
+    r.section("⚠️ DB path — read carefully")
+    import os
+    is_test = os.environ.get("WN_TEST_MODE") == "1"
+    r.ok(f"This seed was written to: **{db}**")
+    if is_test:
+        r.note("Test mode is active (WN_TEST_MODE=1). Your backend "
+               "MUST also be launched with `--test` for the UI to "
+               "see this project.")
+    else:
+        r.note("Production mode (no --test). Your backend must NOT "
+               "be launched with `--test` — otherwise it reads from "
+               "`data_test/novels.db` and won't see this seed.")
+        r.note("If your backend was launched with `--test`, re-run "
+               "this with: `python scripts/live_run_check.py --test "
+               "--seed`")
+
     r.section("Next steps")
+    r.note("Restart the backend (or refresh the UI project list).")
     r.note("Open the editor, find project `轨道挽歌`.")
     r.note("Follow docs/LIVE_RUN_RUNBOOK.md sections A → I.")
     r.note("When done, run: `python scripts/live_run_check.py "
-           "--verify --project rt_proj`")
+           "--verify --project rt_proj` (add `--test` if backend "
+           "was started with --test).")
     return r
 
 
@@ -377,6 +395,23 @@ def run_verify(project_id: str) -> Report:
 # ─────────── CLI ───────────
 
 
+def _apply_test_mode_env() -> str:
+    """Mirror what ``launcher.py --test`` does so this script writes
+    to / reads from the same DB the test-mode backend uses.
+
+    Without this, a user who launched the backend with ``--test``
+    will see the seed land in ``data/novels.db`` while their UI
+    reads from ``data_test/novels.db`` — a confusing silent miss
+    that there's no way to spot from the report alone."""
+    import os
+    test_data_dir = REPO_ROOT / "data_test"
+    test_data_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["WN_REPO_ROOT"] = str(REPO_ROOT)
+    os.environ["WN_DATA_DIR"]  = str(test_data_dir)
+    os.environ["WN_TEST_MODE"] = "1"
+    return str(test_data_dir)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Live-run helper (env / seed / verify).",
@@ -390,7 +425,17 @@ def main() -> int:
                    help="post-walkthrough DB inspection (requires --project)")
     ap.add_argument("--project", default="rt_proj",
                     help="project_id to verify (default: rt_proj)")
+    ap.add_argument("--test", action="store_true",
+                    help="match ``launcher.py --test`` data dir "
+                         "(data_test/novels.db). Use this if the "
+                         "backend you're going to use was launched "
+                         "with --test; without it, this script "
+                         "writes to data/novels.db (production path).")
     args = ap.parse_args()
+
+    if args.test:
+        _apply_test_mode_env()
+        print(f"--test mode: routing to {REPO_ROOT / 'data_test' / 'novels.db'}")
 
     if args.env:
         report = run_env_check()
