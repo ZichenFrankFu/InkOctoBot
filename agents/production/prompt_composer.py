@@ -146,6 +146,41 @@ class PromptComposer:
     def __init__(self, providers: Iterable[BlockProvider]):
         self.providers: list[BlockProvider] = list(providers)
 
+    def add_block(self, provider: BlockProvider) -> None:
+        """Append a single BlockProvider to the chain."""
+        self.providers.append(provider)
+
+    def add_loader_blocks(
+        self,
+        loader_plans: dict[str, Any],
+        *,
+        allocations: dict[str, int] | None = None,
+    ) -> None:
+        """Bulk-register LoaderPlan results as BlockProviders
+        (roadmap Stage 3 Task 3.2).
+
+        Lets multi-agent agents consume the same 14-loader output the
+        single-agent Jinja template uses, via the same protocol —
+        eliminating the dual-track block hierarchy that existed
+        before. Inactive loader_plans (None) are silently skipped.
+
+        ``allocations`` (block_id → char budget) is optional. When
+        omitted each plan renders at its own target. Pass the
+        builder's diagnostics ``allocated_budget`` per block when you
+        want the composer to honour the dynamic budget the loader
+        chain computed.
+        """
+        for block_id, plan in loader_plans.items():
+            if plan is None:
+                continue
+            # Duck-type: only objects with .to_block_provider() are
+            # accepted — straight LoaderPlan or any future subclass.
+            to_bp = getattr(plan, "to_block_provider", None)
+            if to_bp is None:
+                continue
+            budget = (allocations or {}).get(block_id)
+            self.providers.append(to_bp(budget))
+
     def build_user_content(self, ctx: PromptContext) -> str:
         parts = [
             p.render(ctx) for p in self.providers if p.role == "user_content"

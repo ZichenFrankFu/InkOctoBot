@@ -56,6 +56,70 @@ class LoaderPlan:
         if self.priority_tier > 4:
             self.priority_tier = 4
 
+    def to_block_provider(
+        self, allocated_budget: int | None = None,
+    ) -> "_LoaderBlockProviderAdapter":
+        """Return a ``BlockProvider``-compatible adapter (roadmap Stage 3 Task 3.1).
+
+        Lets PromptComposer consume LoaderPlan directly instead of
+        maintaining a parallel block hierarchy. The adapter:
+
+        - ``name``    = ``self.block_id``
+        - ``role``    = mapped from ``priority_tier`` (4→system,
+                        3→context, 2→context, 1→user_content) — same
+                        mapping the builder's diagnostics
+                        ``_SECTION_GROUPS`` uses
+        - ``render(ctx)`` = ``self.render(allocated_budget or self.target)``
+                            — the BlockProvider context arg is ignored
+                            because LoaderPlan already captured the data
+                            it needs at plan() time
+        """
+        return _LoaderBlockProviderAdapter(
+            plan=self,
+            allocated_budget=allocated_budget if allocated_budget is not None
+                              else self.target,
+        )
+
+
+def _tier_to_role(priority_tier: int) -> str:
+    if priority_tier == 4:
+        return "system"
+    if priority_tier == 1:
+        return "user_content"
+    return "context"
+
+
+@dataclass
+class _LoaderBlockProviderAdapter:
+    """Stateless adapter: makes a LoaderPlan satisfy the BlockProvider
+    protocol. Lives here (not in prompt_composer.py) to keep the
+    LoaderPlan owner the canonical source of truth — adding a new
+    tier mapping or attribute is a one-place edit."""
+
+    plan: "LoaderPlan"
+    allocated_budget: int
+
+    @property
+    def name(self) -> str:
+        return self.plan.block_id
+
+    @property
+    def role(self) -> str:
+        # PromptComposer recognizes 'user_content' and 'context'.
+        # Map system → context (system-level info still goes into the
+        # context window via BaseAgent.invoke(context=...)).
+        role = _tier_to_role(self.plan.priority_tier)
+        return role if role == "user_content" else "context"
+
+    def render(self, ctx: object = None) -> str:
+        """Render the block at the captured budget. The ``ctx`` arg is
+        the PromptComposer ``PromptContext`` — ignored here because
+        LoaderPlan already snapshotted its data at plan() time."""
+        try:
+            return self.plan.render(self.allocated_budget) or ""
+        except Exception:
+            return ""
+
 
 # Header overhead for ``section()`` output ("\n\n## TITLE\n").
 _SECTION_OVERHEAD = 6

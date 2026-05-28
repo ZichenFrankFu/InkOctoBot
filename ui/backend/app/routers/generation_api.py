@@ -335,6 +335,24 @@ async def start_generation(req: GenerateRequest):
     except Exception as e:
         logger.debug("pipeline RAG context skipped: %s", e)
 
+    # ── Stage 3 Task 3.4: build canonical ChapterContext ──
+    # Attached to the session so multi-agent agents that want
+    # structured loader_blocks / truth_bundle access (instead of
+    # grep-ing the world_rules string) can pull it via
+    # session["chapter_context"]. Best-effort: build failures don't
+    # block /start — agents that don't need ChapterContext won't
+    # notice it's missing.
+    chapter_context_obj = None
+    try:
+        from ui.backend.app.services.chapter_context import (
+            BuildRequest, ChapterContext,
+        )
+        build_req = BuildRequest(**req_data)
+        chapter_context_obj = await ChapterContext.build(build_req)
+    except Exception as e:
+        logger.debug("ChapterContext build skipped for %s: %s",
+                      req.chapter_id, e)
+
     # ── Stage 1 Task 3 Phase 1: Truth Files bundle injection ──
     # Pull the 7-file Truth bundle + pressured hooks reminder for the
     # chapter being generated, fold both into world_rules so every
@@ -382,6 +400,10 @@ async def start_generation(req: GenerateRequest):
         "confirm_event": None,  # asyncio.Event for confirm signal
         "confirm_data": None,   # data from user confirm
         "task": None,           # background asyncio.Task
+        # Stage 3 Task 3.4: ChapterContext object for agents that
+        # want structured loader_blocks / truth_bundle access
+        # (instead of grep-ing req_data['world_rules']).
+        "chapter_context": chapter_context_obj,
     }
     # Start pipeline as background task
     task = asyncio.create_task(_run_pipeline_background(session_id))

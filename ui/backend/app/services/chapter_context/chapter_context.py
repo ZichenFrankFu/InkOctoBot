@@ -32,7 +32,9 @@ class BuildRequest(BaseModel):
     Mirrors a subset of GenerateRequest so existing /start +
     /quick-generate handlers can ``BuildRequest(**req.model_dump())``
     pick what they need without coupling ChapterContext to the full
-    HTTP schema.
+    HTTP schema. List fields tolerate ``None`` (GenerateRequest's
+    ``skills`` defaults to None) by normalizing to ``[]`` in a
+    validator.
     """
     model_config = ConfigDict(extra="ignore")
 
@@ -40,13 +42,29 @@ class BuildRequest(BaseModel):
     chapter_id: str = ""
     chapter_num: int = 1
     generation_mode: GenerationMode = "fresh"
-    characters: list[str] = Field(default_factory=list)
-    skills: list[str] = Field(default_factory=list)
-    rag_excludes: list[str] = Field(default_factory=list)
-    on_stage_entities: dict = Field(default_factory=dict)
+    characters: Optional[list[str]] = None
+    skills: Optional[list[str]] = None
+    rag_excludes: Optional[list[str]] = None
+    on_stage_entities: Optional[dict] = None
     pov_character: str = ""
-    scene_types: list[str] = Field(default_factory=list)
+    scene_types: Optional[list[str]] = None
     user_special_requirements: str = ""
+
+    def model_post_init(self, __ctx) -> None:
+        """Normalize None → empty list/dict for fields where callers
+        legitimately pass None (e.g. ``GenerateRequest.skills=None``
+        means "no explicit skill list"). ChapterContext.build then
+        always sees concrete containers."""
+        if self.characters is None:
+            self.characters = []
+        if self.skills is None:
+            self.skills = []
+        if self.rag_excludes is None:
+            self.rag_excludes = []
+        if self.scene_types is None:
+            self.scene_types = []
+        if self.on_stage_entities is None:
+            self.on_stage_entities = {}
 
 
 class ChapterContext(BaseModel):
