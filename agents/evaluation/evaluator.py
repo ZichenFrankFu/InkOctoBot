@@ -8,15 +8,26 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agents.base_agent import BaseAgent
+
+if TYPE_CHECKING:
+    from agents.contracts import EvaluatorRequest, EvaluatorResponse
 
 logger = logging.getLogger("inkoctobot.agents.evaluation.evaluator")
 
 
 class Evaluator(BaseAgent):
     agent_name = "evaluator"
+
+    async def evaluate_chapter_typed(
+        self, request: "EvaluatorRequest",
+    ) -> "EvaluatorResponse":
+        """Stage 4 typed wrapper around ``evaluate_chapter``."""
+        from agents.contracts import EvaluatorResponse
+        raw = await self.evaluate_chapter(**request.to_legacy_kwargs())
+        return EvaluatorResponse.from_legacy_dict(raw)
 
     async def evaluate_chapter(
         self,
