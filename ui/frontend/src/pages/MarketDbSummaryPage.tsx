@@ -52,7 +52,6 @@ export default function MarketDbSummaryPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const maxPlatform = useMemo(() => Math.max(1, ...(data?.platform_breakdown.map(p => p.count) || [1])), [data]);
   const maxCategory = useMemo(() => Math.max(1, ...(data?.categories.map(c => c.count) || [1])), [data]);
 
   if (!data && loading) {
@@ -89,22 +88,7 @@ export default function MarketDbSummaryPage() {
           {(data?.platform_breakdown || []).length === 0 ? (
             <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>无数据</p>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {data!.platform_breakdown.map(p => (
-                <div key={p.platform} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ width: 80, fontSize: 12, color: "var(--text-secondary)" }}>{tPlatform(p.platform)}</span>
-                  <div style={{ flex: 1, height: 18, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
-                    <div style={{
-                      width: `${(p.count / maxPlatform) * 100}%`,
-                      height: "100%",
-                      background: "linear-gradient(90deg, var(--accent), var(--cyan))",
-                      transition: "width 0.4s ease",
-                    }} />
-                  </div>
-                  <span className="font-mono" style={{ fontSize: 11, width: 60, textAlign: "right" }}>{p.count.toLocaleString()}</span>
-                </div>
-              ))}
-            </div>
+            <PlatformDistributionChart breakdown={data!.platform_breakdown} />
           )}
         </div>
 
@@ -175,6 +159,123 @@ function StatTile({ label, value, accent }: { label: string; value: number | str
       <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{label}</div>
       <div style={{ fontSize: 26, fontWeight: 700, marginTop: 4 }}>
         {typeof value === "number" ? value.toLocaleString() : value}
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * PlatformDistributionChart — a richer view when there are only a few
+ * platforms (typically 起点 / 番茄). Renders:
+ *   - a hero stat row with total + per-platform share %
+ *   - a 100% stacked ratio bar so the relative split reads at a glance
+ *   - per-platform breakdown cards with count, share, and an accent dot
+ */
+function PlatformDistributionChart({
+  breakdown,
+}: { breakdown: Array<{ platform: string; count: number }> }) {
+  const total = breakdown.reduce((s, p) => s + (p.count || 0), 0) || 1;
+  // Color palette keyed by platform; falls back through an accent cycle
+  // for platforms we don't know about.
+  const FALLBACK_COLORS = ["var(--accent)", "var(--jade)", "var(--gold)", "var(--indigo)", "var(--cyan)"];
+  const PLATFORM_COLORS: Record<string, string> = {
+    qidian:   "var(--accent)",
+    fanqie:   "var(--gold)",
+    zongheng: "var(--jade)",
+    "17k":    "var(--indigo)",
+    jjwxc:    "var(--cyan)",
+  };
+  const colorFor = (key: string, i: number) =>
+    PLATFORM_COLORS[key] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
+
+  const sorted = [...breakdown].sort((a, b) => b.count - a.count);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Hero — total */}
+      <div style={{
+        padding: "8px 0 4px",
+        display: "flex", alignItems: "baseline", gap: 10,
+        borderBottom: "1px solid var(--border)",
+      }}>
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>合计</span>
+        <span style={{ fontSize: 26, fontWeight: 700, fontFamily: "var(--font-mono)" }}>
+          {total.toLocaleString()}
+        </span>
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+          部作品 · {sorted.length} 个平台
+        </span>
+      </div>
+
+      {/* 100% stacked ratio bar */}
+      <div style={{
+        height: 28, display: "flex", borderRadius: 6, overflow: "hidden",
+        boxShadow: "inset 0 0 0 1px var(--border)",
+      }}>
+        {sorted.map((p, i) => {
+          const pct = (p.count / total) * 100;
+          if (pct < 0.01) return null;
+          return (
+            <div
+              key={p.platform}
+              title={`${tPlatform(p.platform)} · ${p.count.toLocaleString()} · ${pct.toFixed(1)}%`}
+              style={{
+                width: `${pct}%`,
+                background: colorFor(p.platform, i),
+                position: "relative",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                color: "white", fontSize: 11, fontWeight: 600,
+                transition: "width 0.4s ease",
+              }}
+            >
+              {pct > 8 ? `${pct.toFixed(1)}%` : ""}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Per-platform tiles */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: `repeat(${Math.min(sorted.length, 4)}, 1fr)`,
+        gap: 10,
+      }}>
+        {sorted.map((p, i) => {
+          const accent = colorFor(p.platform, i);
+          const pct = (p.count / total) * 100;
+          return (
+            <div
+              key={p.platform}
+              style={{
+                padding: 12,
+                background: "var(--bg-surface-2)",
+                borderRadius: 6,
+                borderLeft: `3px solid ${accent}`,
+              }}
+            >
+              <div style={{
+                display: "flex", alignItems: "center", gap: 6,
+                fontSize: 12, color: "var(--text-secondary)",
+              }}>
+                <span style={{
+                  width: 8, height: 8, borderRadius: "50%", background: accent,
+                  display: "inline-block",
+                }} />
+                {tPlatform(p.platform)}
+              </div>
+              <div style={{
+                fontSize: 20, fontWeight: 700, fontFamily: "var(--font-mono)",
+                marginTop: 4, color: "var(--text-primary)",
+              }}>
+                {p.count.toLocaleString()}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>
+                占比 {pct.toFixed(1)}%
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

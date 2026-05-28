@@ -21,7 +21,6 @@ import AnalysisDashboardPage from "./AnalysisDashboardPage";
 import { tPlatform } from "../i18n";
 
 
-type ResultTab = "jobs" | "profiles" | "loader" | "works" | "preview";
 type TopTab = "extract" | "analysis";
 
 
@@ -52,15 +51,6 @@ interface PlatformProfile {
   source_works_count?: number;
   extraction_completed_at?: string;
   confidence_label?: string;
-}
-
-
-interface RepresentativeWork {
-  work_id: string;
-  title?: string;
-  author?: string;
-  rank_score?: number;
-  word_count?: number;
 }
 
 
@@ -132,12 +122,7 @@ export default function MarketFeatureExtractionPage() {
 
   const [jobs, setJobs] = useState<Job[]>([]);
   const [profiles, setProfiles] = useState<PlatformProfile[]>([]);
-  const [works, setWorks] = useState<RepresentativeWork[]>([]);
-  const [selectedWork, setSelectedWork] = useState<RepresentativeWork | null>(null);
-  const [chapterFeatures, setChapterFeatures] = useState<any[]>([]);
-  const [neologisms, setNeologisms] = useState<any[]>([]);
 
-  const [tab, setTab] = useState<ResultTab>("jobs");
   const [topTab, setTopTab] = useState<TopTab>("extract");
   const [loading, setLoading] = useState(false);
 
@@ -201,18 +186,6 @@ export default function MarketFeatureExtractionPage() {
     }
   }, [toast]);
 
-  const refreshWorks = useCallback(async (pl: string, cat: string) => {
-    if (!pl || !cat) return;
-    try {
-      const r = await apiGet<{ works: RepresentativeWork[] }>(
-        `/api/market-extractor/representative-works?platform=${encodeURIComponent(pl)}&category=${encodeURIComponent(cat)}`,
-      );
-      setWorks(r.works || []);
-    } catch (e: any) {
-      toast(`加载代表作失败: ${e.message}`, "error");
-      setWorks([]);
-    }
-  }, [toast]);
 
   useEffect(() => {
     loadPlatforms();
@@ -227,13 +200,6 @@ export default function MarketFeatureExtractionPage() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [platform]);
-
-  useEffect(() => {
-    if (platform && category) {
-      refreshWorks(platform, category);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platform, category]);
 
   useEffect(() => {
     const active = jobs.some(j => isActive(j.state));
@@ -261,7 +227,6 @@ export default function MarketFeatureExtractionPage() {
         { platform, category },
       );
       toast(`任务已启动 (${r.job_id.slice(0, 8)}...)`, "success");
-      setTab("jobs");
       await refreshJobs();
     } catch (e: any) {
       toast(`启动失败: ${e.message}`, "error");
@@ -315,30 +280,8 @@ export default function MarketFeatureExtractionPage() {
       { platform, category, response_raw: payload.text },
     );
     toast(`平台档案已写入 (${r.profile_id})`, "success");
-    setTab("profiles");
     refreshProfiles();
   }, [platform, category, refreshProfiles, toast]);
-
-  const openWorkPreview = useCallback(async (work: RepresentativeWork) => {
-    setSelectedWork(work);
-    setTab("preview");
-    try {
-      const [cf, neo] = await Promise.all([
-        apiGet<{ chapters: any[] }>(
-          `/api/market-extractor/chapter-features/${encodeURIComponent(work.work_id)}`,
-        ),
-        apiGet<{ neologisms: any[] }>(
-          `/api/market-extractor/neologisms/${encodeURIComponent(work.work_id)}`,
-        ),
-      ]);
-      setChapterFeatures(cf.chapters || []);
-      setNeologisms(neo.neologisms || []);
-    } catch (e: any) {
-      toast(`加载提取结果失败: ${e.message}`, "error");
-      setChapterFeatures([]);
-      setNeologisms([]);
-    }
-  }, [toast]);
 
   const platformProfiles = useMemo(() => {
     return profiles.filter(p =>
@@ -350,11 +293,8 @@ export default function MarketFeatureExtractionPage() {
   const refreshAll = useCallback(async () => {
     setLoading(true);
     await Promise.all([refreshJobs(), refreshProfiles()]);
-    if (platform && category) {
-      await refreshWorks(platform, category);
-    }
     setLoading(false);
-  }, [refreshJobs, refreshProfiles, refreshWorks, platform, category]);
+  }, [refreshJobs, refreshProfiles]);
 
   const SELECTION_OK = !!platform && !!category;
 
@@ -531,93 +471,37 @@ export default function MarketFeatureExtractionPage() {
           </div>
         </div>
 
-        {/* RIGHT — Results tabs */}
+        {/* RIGHT — 提取记录 (just one section, no tabs) */}
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           <div style={{
-            display: "flex", gap: 4, alignItems: "center",
+            padding: "10px 14px",
             borderBottom: "1px solid var(--border)",
-            padding: "10px 14px 0",
             background: "var(--bg-surface-2)",
+            display: "flex", alignItems: "baseline", justifyContent: "space-between",
           }}>
-            {([
-              { key: "jobs" as const,     label: "任务",          count: jobs.length },
-              { key: "profiles" as const, label: "平台风格档案",   count: platformProfiles.length },
-              { key: "loader" as const,   label: "注入预览",      count: null as number | null },
-              { key: "works" as const,    label: "代表作",        count: works.length },
-              { key: "preview" as const,
-                label: selectedWork ? `预览·${selectedWork.title || selectedWork.work_id.slice(0, 6)}` : "预览",
-                count: null as number | null },
-            ]).map(t => {
-              const active = tab === t.key;
-              const disabled = t.key === "preview" && !selectedWork;
-              return (
-                <button
-                  key={t.key}
-                  onClick={() => setTab(t.key)}
-                  disabled={disabled}
-                  style={{
-                    padding: "8px 14px",
-                    fontSize: 12,
-                    fontWeight: active ? 600 : 500,
-                    color: active ? "var(--accent)" : "var(--text-secondary)",
-                    background: active ? "var(--bg-surface)" : "transparent",
-                    border: "1px solid",
-                    borderColor: active ? "var(--border)" : "transparent",
-                    borderBottomColor: active ? "var(--bg-surface)" : "transparent",
-                    borderRadius: "6px 6px 0 0",
-                    cursor: disabled ? "not-allowed" : "pointer",
-                    marginBottom: -1,
-                    opacity: disabled ? 0.4 : 1,
-                    display: "inline-flex", alignItems: "center", gap: 6,
-                    transition: "background 0.15s, color 0.15s",
-                  }}
-                >
-                  {t.label}
-                  {t.count !== null && (
-                    <span style={{
-                      display: "inline-block",
-                      minWidth: 18,
-                      padding: "1px 6px",
-                      borderRadius: 9,
-                      background: active ? "var(--accent)" : "var(--bg-surface-2)",
-                      color: active ? "white" : "var(--text-tertiary)",
-                      fontSize: 10,
-                      fontWeight: 600,
-                      textAlign: "center",
-                      lineHeight: "14px",
-                    }}>{t.count}</span>
-                  )}
-                </button>
-              );
-            })}
+            <h3 style={{ margin: 0, fontSize: 13 }}>
+              提取记录
+              <span style={{
+                display: "inline-block", minWidth: 18, padding: "1px 7px",
+                borderRadius: 9, background: "var(--accent)", color: "white",
+                fontSize: 10, fontWeight: 600, marginLeft: 8,
+              }}>{jobs.length}</span>
+            </h3>
+            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+              提醒：以下任务的「结束」时间即对应平台档案的最近更新时间
+            </span>
           </div>
-
-          <div style={{ padding: 18, minHeight: 420, background: "var(--bg-surface)" }}>
-            {tab === "jobs" && <JobsTab jobs={jobs} onCancel={cancelJob} onDelete={deleteJob} />}
-            {tab === "profiles" && <ProfilesTab profiles={platformProfiles} />}
-            {tab === "loader" && <LoaderPreviewTab platform={platform} category={category} profiles={platformProfiles} />}
-            {tab === "works" && (
-              <WorksTab
-                works={works}
-                onSelect={openWorkPreview}
-                emptyHint={works.length === 0
-                  ? `没有 (${platform || "—"}×${category || "—"}) 的代表作。先启动一次提取任务。`
-                  : ""}
-              />
-            )}
-            {tab === "preview" && (
-              <PreviewTab
-                work={selectedWork}
-                chapterFeatures={chapterFeatures}
-                neologisms={neologisms}
-              />
-            )}
+          <div style={{ padding: 14, minHeight: 420, background: "var(--bg-surface)" }}>
+            <JobsTab jobs={jobs} onCancel={cancelJob} onDelete={deleteJob} />
           </div>
         </div>
       </div>
 
-      {/* 开篇章节分析 — moved from RankingsPage */}
+      {/* 开篇章节分析 — 含 NLP 子节 */}
       <OpeningAnalysisPanel platform={platform} />
+
+      {/* 平台风格档案 — 独立 section */}
+      <PlatformProfileSection profiles={platformProfiles} platform={platform} category={category} />
 
       </>)}
 
@@ -775,241 +659,36 @@ function ProfilesTab({ profiles }: { profiles: PlatformProfile[] }) {
 }
 
 
-function WorksTab({
-  works, onSelect, emptyHint,
-}: { works: RepresentativeWork[]; onSelect: (w: RepresentativeWork) => void; emptyHint?: string }) {
-  if (works.length === 0) {
-    return <Empty msg={emptyHint || "没有代表作。"} />;
-  }
+/**
+ * PlatformProfileSection — full-width card under 开篇章节分析 that
+ * shows the saved platform-style profile (was 平台风格档案 tab) and
+ * an expandable header so the user can see when it was last updated.
+ */
+function PlatformProfileSection({
+  profiles, platform, category,
+}: { profiles: PlatformProfile[]; platform: string; category: string }) {
+  const top = profiles[0] || null;
   return (
-    <table style={{ width: "100%", fontSize: 12 }}>
-      <thead>
-        <tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
-          <th style={{ padding: "6px" }}>书名</th>
-          <th style={{ padding: "6px" }}>作者</th>
-          <th style={{ padding: "6px" }}>排名分</th>
-          <th style={{ padding: "6px" }}>字数</th>
-          <th style={{ padding: "6px" }}></th>
-        </tr>
-      </thead>
-      <tbody>
-        {works.map(w => (
-          <tr key={w.work_id} style={{ borderTop: "1px solid var(--border)" }}>
-            <td style={{ padding: "6px" }}><strong>{w.title || w.work_id.slice(0, 8)}</strong></td>
-            <td style={{ padding: "6px" }}>{w.author || "—"}</td>
-            <td style={{ padding: "6px" }}>{w.rank_score?.toFixed(2) || "—"}</td>
-            <td style={{ padding: "6px" }}>{w.word_count ? w.word_count.toLocaleString() : "—"}</td>
-            <td style={{ padding: "6px", textAlign: "right" }}>
-              <button className="btn" style={{ fontSize: 11, padding: "2px 10px" }}
-                      onClick={() => onSelect(w)}>查看提取结果</button>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-
-function PreviewTab({
-  work, chapterFeatures, neologisms,
-}: { work: RepresentativeWork | null; chapterFeatures: any[]; neologisms: any[] }) {
-  if (!work) {
-    return <Empty msg="请在「代表作」标签页选一部作品查看提取结果。" />;
-  }
-  return (
-    <div>
-      <div style={{ marginBottom: 12 }}>
-        <h3 style={{ marginTop: 0 }}>{work.title || work.work_id}</h3>
-        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-          作者 {work.author || "—"} · 字数 {work.word_count ? work.word_count.toLocaleString() : "—"}
-        </div>
+    <div className="card" style={{ marginTop: 16, borderTop: "3px solid var(--jade)" }}>
+      <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h3 style={{ margin: 0, fontSize: 14 }}>平台风格档案</h3>
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+          {top
+            ? `${tPlatform(top.platform)} · ${top.category || "—"} · 更新于 ${top.extraction_completed_at || "—"}`
+            : (platform && category
+                ? `${tPlatform(platform)} × ${category} 暂无档案`
+                : "请在左上选定平台与榜单")}
+        </span>
       </div>
-
-      <h4 style={{ fontSize: 13, marginTop: 12 }}>章节特征 ({chapterFeatures.length})</h4>
-      {chapterFeatures.length === 0 ? (
-        <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>
-          这部作品还没有提取结果。先在左侧启动一次任务。
-        </p>
-      ) : (
-        <div style={{ maxHeight: 300, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-          <table style={{ width: "100%", fontSize: 11 }}>
-            <thead style={{ position: "sticky", top: 0, background: "var(--bg-surface)" }}>
-              <tr style={{ color: "var(--text-tertiary)" }}>
-                <th style={{ padding: "4px 6px", textAlign: "left" }}>章</th>
-                <th style={{ padding: "4px 6px", textAlign: "left" }}>对白比</th>
-                <th style={{ padding: "4px 6px", textAlign: "left" }}>平均句长</th>
-                <th style={{ padding: "4px 6px", textAlign: "left" }}>首句类型</th>
-                <th style={{ padding: "4px 6px", textAlign: "left" }}>结尾情绪</th>
-                <th style={{ padding: "4px 6px", textAlign: "left" }}>驱动类型</th>
-              </tr>
-            </thead>
-            <tbody>
-              {chapterFeatures.slice(0, 30).map((cf, i) => (
-                <tr key={cf.feature_id || i} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ padding: "4px 6px" }}>{cf.chapter_num}</td>
-                  <td style={{ padding: "4px 6px" }}>{cf.dialogue_ratio?.toFixed(2) ?? "—"}</td>
-                  <td style={{ padding: "4px 6px" }}>{cf.avg_sentence_length?.toFixed(1) ?? "—"}</td>
-                  <td style={{ padding: "4px 6px" }}>{cf.first_sentence_type || "—"}</td>
-                  <td style={{ padding: "4px 6px" }}>{cf.last_200_chars_emotion || "—"}</td>
-                  <td style={{ padding: "4px 6px" }}>{cf.drive_type || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <h4 style={{ fontSize: 13, marginTop: 16 }}>新词 ({neologisms.length})</h4>
-      {neologisms.length === 0 ? (
-        <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>暂无</p>
-      ) : (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {neologisms.slice(0, 50).map((n: any, i) => (
-            <span key={n.term || i} style={{
-              padding: "2px 8px", borderRadius: 10,
-              background: "var(--bg-surface-2)", fontSize: 11,
-            }}>
-              {n.term || n.word} <span style={{ color: "var(--text-tertiary)" }}>({n.frequency_in_5_chapters ?? n.frequency})</span>
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-function LoaderPreviewTab({
-  platform, category, profiles,
-}: { platform: string; category: string; profiles: PlatformProfile[] }) {
-  const [stats, setStats] = React.useState<any>(null);
-  const [loading, setLoading] = React.useState(false);
-
-  React.useEffect(() => {
-    if (!platform || !category) return;
-    setLoading(true);
-    apiGet<{ stats: any }>(
-      `/api/market-extractor/aggregated-stats?platform=${encodeURIComponent(platform)}&category=${encodeURIComponent(category)}`,
-    ).then(r => setStats(r.stats))
-     .catch(() => setStats(null))
-     .finally(() => setLoading(false));
-  }, [platform, category]);
-
-  const activeProfile = profiles[0] || null;
-  if (!platform || !category) {
-    return <Empty msg="先在左侧选定平台 + 榜单。" />;
-  }
-  if (loading) {
-    return <Empty msg="加载中..." />;
-  }
-  if (!activeProfile && !stats) {
-    return <Empty msg={`(${tPlatform(platform)}×${category}) 还没有任何提取产物。先启动一次「使用大模型 API 提取」或「使用大模型网页版提取」生成平台档案。`} />;
-  }
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <p style={{ fontSize: 12, color: "var(--text-tertiary)", margin: 0 }}>
-        以下两块即生成章节时「平台风格」与「市场画像」两个注入器会读到并写入提示词的全部内容。
-      </p>
-
-      {/* ── 平台风格注入 (platform_market loader) ── */}
-      <div className="card" style={{ padding: 14 }}>
-        <h3 style={{ marginTop: 0, fontSize: 13 }}>
-          平台风格注入
-          <span style={{ fontSize: 11, color: "var(--text-tertiary)", fontWeight: 400, marginLeft: 8 }}>
-            读取 platform_profiles 表的 loader_payload 列
-          </span>
-        </h3>
-        {!activeProfile ? (
-          <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>当前没有可用的有效档案（可能因置信度过低被过滤）。</p>
+      <div className="card-body" style={{ padding: 14 }}>
+        {profiles.length === 0 ? (
+          <Empty msg={
+            platform && category
+              ? `(${tPlatform(platform)}×${category}) 暂无平台档案。先用上方的「使用大模型 API 提取」或「使用大模型网页版提取」生成档案。`
+              : "请在上方选定平台与榜单，再启动一次提取以生成档案。"
+          } />
         ) : (
-          <div>
-            <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 8 }}>
-              档案编号 {activeProfile.profile_id} · 版本 {(activeProfile as any).profile_version || "—"}
-              · 置信度 {tConfidence(activeProfile.confidence_label)}
-              · 样本数 {activeProfile.source_works_count ?? "—"}
-              · 完成于 {activeProfile.extraction_completed_at || "—"}
-            </div>
-            {[
-              ["综述",            activeProfile.profile_summary],
-              ["风格基线",        activeProfile.style_baseline],
-              ["招牌叙事手法",    activeProfile.signature_devices_description],
-              ["节奏指南",        activeProfile.pacing_guidance],
-              ["推荐开篇套路",    (activeProfile as any).recommended_openings_json],
-              ["最终注入正文",    (activeProfile as any).loader_payload],
-            ].map(([label, val]) => (val ? (
-              <details key={label as string} style={{ marginBottom: 6 }} open={label === "最终注入正文"}>
-                <summary style={{ fontSize: 12, cursor: "pointer", color: "var(--text-secondary)" }}>{label}</summary>
-                <pre style={{
-                  margin: "4px 0 0", padding: 8, fontSize: 11,
-                  background: "var(--bg-surface-2)",
-                  borderRadius: 4, maxHeight: 220, overflow: "auto",
-                  whiteSpace: "pre-wrap", wordBreak: "break-word",
-                  fontFamily: "var(--font-mono)",
-                }}>{typeof val === "string" ? val : JSON.stringify(val, null, 2)}</pre>
-              </details>
-            ) : null))}
-          </div>
-        )}
-      </div>
-
-      {/* ── 市场画像注入 (category_aggregated_stats) ── */}
-      <div className="card" style={{ padding: 14 }}>
-        <h3 style={{ marginTop: 0, fontSize: 13 }}>
-          市场画像注入
-          <span style={{ fontSize: 11, color: "var(--text-tertiary)", fontWeight: 400, marginLeft: 8 }}>
-            该类目 × 平台的整体分布画像
-          </span>
-        </h3>
-        {!stats ? (
-          <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>
-            尚无市场画像数据。该数据在「类目级聚合」阶段完成时写入。
-          </p>
-        ) : (
-          <div>
-            <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 8 }}>
-              样本数 {stats.source_works_count ?? "—"}
-              · 首次突破章节中位数 {stats.first_breakthrough_chapter_median ?? "—"}
-              · 反派首次出场章节中位数 {stats.antagonist_first_chapter_median ?? "—"}
-              · 首次打脸章节中位数 {stats.first_face_slap_chapter_median ?? "—"}
-              · 单作平均新词数 {stats.avg_neologisms_per_work?.toFixed?.(2) ?? "—"}
-            </div>
-            {/* 各项分布字段 */}
-            {([
-              ["opening_hook_type_distribution_json",       "开篇钩子类型分布"],
-              ["protagonist_cheat_type_distribution_json",  "主角金手指类型分布"],
-              ["protagonist_agency_distribution_json",      "主角主动性分布"],
-              ["worldview_type_distribution_json",          "世界观类型分布"],
-              ["writing_style_distribution_json",           "行文风格分布"],
-              ["emotional_tone_distribution_json",          "情绪基调分布"],
-              ["info_disclosure_distribution_json",         "信息释放策略分布"],
-              ["chapter_word_count_stats_json",             "章节字数分布"],
-              ["dialogue_ratio_stats_json",                 "对白占比分布"],
-              ["setting_word_ratio_stats_json",             "场景描写占比分布"],
-              ["genre_vocabulary_top_json",                 "题材高频词 Top"],
-              ["neologism_type_distribution_json",          "新词类型分布"],
-              ["chapter_end_hook_type_distribution_json",   "章末钩子类型分布"],
-            ] as const).map(([field, label]) => {
-              const raw = stats[field];
-              if (!raw) return null;
-              let parsed: any = raw;
-              try { parsed = JSON.parse(raw); } catch { /* leave as string */ }
-              return (
-                <details key={field} style={{ marginBottom: 6 }}>
-                  <summary style={{ fontSize: 11, cursor: "pointer", color: "var(--text-secondary)" }}>
-                    {label}
-                  </summary>
-                  <pre style={{
-                    margin: "4px 0 0", padding: 8, fontSize: 10,
-                    background: "var(--bg-surface-2)",
-                    borderRadius: 4, maxHeight: 200, overflow: "auto",
-                    whiteSpace: "pre-wrap", wordBreak: "break-word",
-                    fontFamily: "var(--font-mono)",
-                  }}>{JSON.stringify(parsed, null, 2)}</pre>
-                </details>
-              );
-            })}
-          </div>
+          <ProfilesTab profiles={profiles} />
         )}
       </div>
     </div>

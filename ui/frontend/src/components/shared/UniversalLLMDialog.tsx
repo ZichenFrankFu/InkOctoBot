@@ -381,7 +381,8 @@ export default function UniversalLLMDialog({
                 pasteBuf={pasteBuf}
                 setPasteBuf={setPasteBuf}
                 onSubmit={submitManual}
-                onCancel={() => setPhase("preview")}
+                onCancel={initialMode === "manual_only" ? onClose : () => setPhase("preview")}
+                cancelLabel={initialMode === "manual_only" ? "关闭" : "取消"}
               />
             )}
 
@@ -499,10 +500,11 @@ function RunningPane({ onAbort }: { onAbort: () => void }) {
 
 
 function ManualPastePane({
-  pasteBuf, setPasteBuf, onSubmit, onCancel,
+  pasteBuf, setPasteBuf, onSubmit, onCancel, cancelLabel,
 }: {
   pasteBuf: string; setPasteBuf: (v: string) => void;
   onSubmit: () => void; onCancel: () => void;
+  cancelLabel?: string;
 }) {
   return (
     <>
@@ -517,8 +519,11 @@ function ManualPastePane({
         style={{
           flex: 1, marginTop: 8, padding: 10, fontSize: 13,
           fontFamily: "var(--font-mono)",
+          background: "var(--bg-surface-2)",
+          color: "var(--text-primary)",
           border: "1px solid var(--border)", borderRadius: 4,
           minHeight: 280, resize: "vertical",
+          outline: "none",
         }}
       />
       <div style={{
@@ -529,7 +534,7 @@ function ManualPastePane({
           {pasteBuf.length} 字
         </span>
         <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn" onClick={onCancel}>取消</button>
+          <button className="btn" onClick={onCancel}>{cancelLabel || "取消"}</button>
           <button
             className="btn primary"
             onClick={onSubmit}
@@ -570,8 +575,11 @@ function ResultPane({
         style={{
           flex: 1, padding: 10, fontSize: 13,
           fontFamily: "var(--font-mono)",
+          background: "var(--bg-surface-2)",
+          color: "var(--text-primary)",
           border: "1px solid var(--border)", borderRadius: 4,
           minHeight: 240, resize: "vertical", marginTop: 8,
+          outline: "none",
         }}
       />
       {parsed !== undefined && (
