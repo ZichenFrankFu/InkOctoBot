@@ -322,12 +322,14 @@ export default function RankingsPage({ hideOwnHeader = false, hideOpeningAi = fa
               {step === "snapshots" ? (
                 <span>
                   {platformLabel(selectedList.platform)} · {selectedList.rank_family}
-                  {selectedList.rank_sub_cat && ` · ${selectedList.rank_sub_cat}`}
+                  {selectedList.rank_sub_cat && selectedList.rank_sub_cat !== selectedList.rank_family
+                    && ` · ${selectedList.rank_sub_cat}`}
                 </span>
               ) : (
                 <button onClick={goToSnapshots}>
                   {selectedList.rank_family}
-                  {selectedList.rank_sub_cat && ` · ${selectedList.rank_sub_cat}`}
+                  {selectedList.rank_sub_cat && selectedList.rank_sub_cat !== selectedList.rank_family
+                    && ` · ${selectedList.rank_sub_cat}`}
                 </button>
               )}
             </div>
@@ -369,45 +371,65 @@ export default function RankingsPage({ hideOwnHeader = false, hideOpeningAi = fa
               >
                 {Object.entries(groupedLists).map(([key, lists]) => {
                   const [plat, family] = key.split("|");
+                  // Collapse entries whose sub_cat duplicates the family
+                  // (e.g. "月票榜 / 月票榜") so the user doesn't see
+                  // the same name rendered twice.
+                  const distinct = lists.filter(
+                    (rl) => rl.rank_sub_cat && rl.rank_sub_cat !== family,
+                  );
+                  const familySelf = lists.find(
+                    (rl) => !rl.rank_sub_cat || rl.rank_sub_cat === family,
+                  );
+                  // If the group ONLY has a self-named entry (no real
+                  // sub-categories), make the card header itself the
+                  // clickable target — skip the redundant inner row.
+                  const headerOnly = distinct.length === 0 && !!familySelf;
                   return (
-                    <div className="card" key={key}>
+                    <div
+                      className="card"
+                      key={key}
+                      onClick={headerOnly ? () => selectList(familySelf!) : undefined}
+                      style={headerOnly ? { cursor: "pointer" } : undefined}
+                    >
                       <div className="card-header">
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <span className={`tag ${plat}`}>{platformLabel(plat)}</span>
                           <h3>{family}</h3>
                         </div>
                         <p style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
-                          {lists.length} 个子榜
+                          {headerOnly ? "无子榜" : `${distinct.length} 个子榜`}
                         </p>
                       </div>
-                      <div className="card-body" style={{ padding: "6px 10px" }}>
-                        {lists.map((rl) => (
-                          <div
-                            key={rl.rank_list_id}
-                            onClick={() => selectList(rl)}
-                            style={{
-                              padding: "10px 12px",
-                              borderRadius: "var(--radius-sm)",
-                              cursor: "pointer",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              transition: "background 0.15s",
-                            }}
-                            onMouseEnter={(e) =>
-                              (e.currentTarget.style.background = "var(--bg-surface-hover)")
-                            }
-                            onMouseLeave={(e) =>
-                              (e.currentTarget.style.background = "transparent")
-                            }
-                          >
-                            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                              {rl.rank_sub_cat || family}
-                            </span>
-                            <span style={{ fontSize: 16, color: "var(--text-disabled)" }}>›</span>
-                          </div>
-                        ))}
-                      </div>
+                      {!headerOnly && (
+                        <div className="card-body" style={{ padding: "6px 10px" }}>
+                          {distinct.map((rl) => (
+                            <div
+                              key={rl.rank_list_id}
+                              onClick={() => selectList(rl)}
+                              style={{
+                                padding: "10px 12px",
+                                borderRadius: "var(--radius-sm)",
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                transition: "background 0.15s",
+                              }}
+                              onMouseEnter={(e) =>
+                                (e.currentTarget.style.background = "var(--bg-surface-hover)")
+                              }
+                              onMouseLeave={(e) =>
+                                (e.currentTarget.style.background = "transparent")
+                              }
+                            >
+                              <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                                {rl.rank_sub_cat}
+                              </span>
+                              <span style={{ fontSize: 16, color: "var(--text-disabled)" }}>›</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -465,7 +487,8 @@ export default function RankingsPage({ hideOwnHeader = false, hideOpeningAi = fa
                 <div>
                   <h3>
                     {selectedList?.rank_family}
-                    {selectedList?.rank_sub_cat && ` · ${selectedList.rank_sub_cat}`}
+                    {selectedList?.rank_sub_cat && selectedList.rank_sub_cat !== selectedList.rank_family
+                      && ` · ${selectedList.rank_sub_cat}`}
                   </h3>
                   <p style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
                     {selectedSnapshot?.snapshot_date} · {entries.length} 部作品
@@ -692,7 +715,7 @@ function NovelPanel({ detail }: { detail: NovelDetail }) {
                     </td>
                     <td style={{ fontSize: 12 }}>
                       {h.rank_family}
-                      {h.rank_sub_cat && ` · ${h.rank_sub_cat}`}
+                      {h.rank_sub_cat && h.rank_sub_cat !== h.rank_family && ` · ${h.rank_sub_cat}`}
                     </td>
                     <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>
                       {h.rank}

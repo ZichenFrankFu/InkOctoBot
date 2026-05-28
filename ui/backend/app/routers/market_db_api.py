@@ -298,6 +298,150 @@ def opening_analysis(platform: str | None = None):
     }
 
 
+@router.get("/opening_nlp_analysis")
+def opening_nlp_analysis(platform: str | None = None) -> dict:
+    """Heuristic NLP analysis on the crawled first chapters.
+
+    Pure-Python regex / counting — no model inference, so it's cheap
+    enough to drive on user demand. Computes per-chapter dialogue
+    ratio, mean sentence length, first-sentence type, end-hook style,
+    and aggregates them into platform-level distributions. The frontend
+    panel calls this once (then caches by db-mtime) and exposes a
+    manual refresh button.
+    """
+    import re
+    con = _get_con()
+    if con is None:
+        return {"available": False, "reason": "crawler DB not configured"}
+    with con:
+        if not _table_exists(con, "first_n_chapters"):
+            return {"available": False, "reason": "no first_n_chapters table"}
+        frm = "first_n_chapters fc"
+        cond = " WHERE fc.chapter_num=1 AND fc.chapter_content IS NOT NULL AND length(fc.chapter_content) > 300"
+        params: list = []
+        if platform and _table_exists(con, "novels"):
+            frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
+            cond += " AND n.platform=?"
+            params.append(platform)
+        rows = con.execute(
+            f"SELECT fc.chapter_content cc, fc.word_count wc FROM {frm}{cond} LIMIT 200",
+            params,
+        ).fetchall()
+    if not rows:
+        return {"available": False, "reason": "no openings to analyze"}
+
+    # Quote chars used in mainland web fiction.
+    QUOTE_RE = re.compile(r"[「][^」]{1,400}[」]|[“][^”]{1,400}[”]|[\"][^\"]{1,400}[\"]")
+    SENT_SPLIT_RE = re.compile(r"[。！？!?…]+")
+
+    def first_sentence_type(text: str) -> str:
+        t = text.strip()[:300]
+        if not t:
+            return "未知"
+        # Pull the first sentence (up to the first 。！？).
+        m = SENT_SPLIT_RE.split(t, maxsplit=1)
+        first = (m[0] if m else t)[:160]
+        if QUOTE_RE.search(first):
+            return "对白开场"
+        if re.search(r"[挥砍劈刺撞冲扑奔跑跃飞掷炸轰击撕扯踢踹]", first):
+            return "动作开场"
+        if re.search(r"年|月|日|时|公元|纪元|世纪", first):
+            return "时间地点铺陈"
+        if re.search(r"我|他|她|它|此刻|忽然|突然", first):
+            return "人物心理/动作"
+        if re.search(r"在.+(里|中|上|下)|城|山|村|庙|殿|宫|林", first):
+            return "环境/世界观"
+        return "叙事铺陈"
+
+    def end_hook_type(text: str) -> str:
+        tail = text.strip()[-300:]
+        if not tail:
+            return "未知"
+        if QUOTE_RE.search(tail):
+            return "对白收尾"
+        if re.search(r"[？?]\s*$", tail):
+            return "悬疑提问"
+        if re.search(r"[！!]\s*$", tail):
+            return "冲突爆发"
+        if re.search(r"[…]{2,}\s*$|\.{3,}\s*$", tail):
+            return "悬念省略"
+        if re.search(r"看到|发现|出现|睁开|想起|意识到", tail[-100:]):
+            return "悬念揭示"
+        return "平稳过渡"
+
+    dialogue_ratios: list[float] = []
+    sentence_lengths: list[float] = []
+    first_types: dict[str, int] = {}
+    end_types: dict[str, int] = {}
+    word_counts: list[int] = []
+
+    for r in rows:
+        text = str(r["cc"] or "")
+        if not text:
+            continue
+        total_len = len(text)
+        word_counts.append(int(r["wc"] or total_len))
+        # dialogue ratio
+        dialogue_chars = sum(len(m.group(0)) for m in QUOTE_RE.finditer(text))
+        dialogue_ratios.append(round(dialogue_chars / total_len, 4) if total_len else 0)
+        # sentence lengths
+        sents = [s.strip() for s in SENT_SPLIT_RE.split(text) if s.strip()]
+        if sents:
+            sentence_lengths.append(sum(len(s) for s in sents) / len(sents))
+        # categorical
+        ft = first_sentence_type(text)
+        first_types[ft] = first_types.get(ft, 0) + 1
+        et = end_hook_type(text)
+        end_types[et] = end_types.get(et, 0) + 1
+
+    def _mean(xs: list[float]) -> float:
+        return round(sum(xs) / len(xs), 3) if xs else 0.0
+
+    def _hist(xs: list[float], buckets: list[tuple[str, float, float]]) -> dict:
+        out = {label: 0 for label, _, _ in buckets}
+        for x in xs:
+            for label, lo, hi in buckets:
+                if lo <= x < hi:
+                    out[label] += 1
+                    break
+        return out
+
+    return {
+        "available": True,
+        "platform": platform or "all",
+        "sample_count": len(rows),
+        "dialogue_ratio": {
+            "mean": _mean(dialogue_ratios),
+            "distribution": _hist(dialogue_ratios, [
+                ("0-10%", 0.0, 0.10),
+                ("10-25%", 0.10, 0.25),
+                ("25-40%", 0.25, 0.40),
+                (">=40%", 0.40, 9.99),
+            ]),
+        },
+        "sentence_length": {
+            "mean": _mean(sentence_lengths),
+            "distribution": _hist(sentence_lengths, [
+                ("≤15字", 0.0, 15.0),
+                ("15-25字", 15.0, 25.0),
+                ("25-40字", 25.0, 40.0),
+                (">40字", 40.0, 9999.0),
+            ]),
+        },
+        "first_sentence_types":
+            sorted([{"label": k, "count": v} for k, v in first_types.items()],
+                   key=lambda d: -d["count"]),
+        "end_hook_types":
+            sorted([{"label": k, "count": v} for k, v in end_types.items()],
+                   key=lambda d: -d["count"]),
+        "word_count_summary": {
+            "mean": int(sum(word_counts) / len(word_counts)) if word_counts else 0,
+            "min": min(word_counts) if word_counts else 0,
+            "max": max(word_counts) if word_counts else 0,
+        },
+    }
+
+
 @router.post("/opening_ai_summary")
 async def opening_ai_summary(body: dict = Body(...)):
     """AI analysis of the crawled opening-chapter content. ``prompt_only``

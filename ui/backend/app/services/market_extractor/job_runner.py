@@ -102,6 +102,29 @@ def cancel_job(db_path: str, job_id: str) -> dict | None:
     return {"job_id": job_id, "state": "cancelled"}
 
 
+def delete_job(db_path: str, job_id: str) -> dict | None:
+    """Hard-delete a job row. Refuses to delete a job that is still
+    actively running — caller must cancel + wait first."""
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT state FROM platform_extraction_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        state = row["state"]
+        if state and state.startswith("running"):
+            return {"job_id": job_id, "state": state, "deleted": False,
+                    "reason": "job still running — cancel first"}
+        con.execute(
+            "DELETE FROM platform_extraction_jobs WHERE job_id = ?",
+            (job_id,),
+        )
+        con.commit()
+    return {"job_id": job_id, "deleted": True}
+
+
 def _check_cancelled(db_path: str, job_id: str) -> bool:
     """Cheap checkpoint used between phases by ``run_job_async``."""
     j = _get_job(db_path, job_id)

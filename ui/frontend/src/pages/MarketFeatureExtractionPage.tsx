@@ -16,7 +16,7 @@
  *    Rankings: a "AI 总结开篇技巧" panel below the launch console.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet, apiPost, apiDelete } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
 import AnalysisDashboardPage from "./AnalysisDashboardPage";
@@ -84,6 +84,26 @@ const STATE_COLOR: Record<string, string> = {
   completed:        "var(--success)",
   failed:           "var(--danger)",
   cancelled:        "var(--text-disabled)",
+};
+
+const STATE_LABEL_CN: Record<string, string> = {
+  queued:           "排队中",
+  running_phase_1:  "阶段 1 运行中",
+  running_phase_2:  "阶段 2 运行中",
+  running_phase_3:  "阶段 3 运行中",
+  running_phase_4:  "阶段 4 运行中",
+  running_phase_5:  "阶段 5 运行中",
+  completed:        "已完成",
+  failed:           "已失败",
+  cancelled:        "已取消",
+};
+
+const PHASE_LABEL_CN: Record<string, string> = {
+  phase_1: "代表作选取",
+  phase_2: "章节抓取与抽取",
+  phase_3: "作品级聚合",
+  phase_4: "类目级聚合",
+  phase_5: "合成平台档案",
 };
 
 
@@ -171,7 +191,7 @@ export default function MarketFeatureExtractionPage() {
       );
       setProfiles((r.profiles || r.items || []) as PlatformProfile[]);
     } catch (e: any) {
-      toast(`加载 profile 失败: ${e.message}`, "error");
+      toast(`加载平台档案失败: ${e.message}`, "error");
     }
   }, [toast]);
 
@@ -225,8 +245,8 @@ export default function MarketFeatureExtractionPage() {
     }
     if (!window.confirm(
       `准备启动 API 提取任务：\n平台: ${platform}\n榜单: ${category}\n\n` +
-      `会调用 LLM 抽取代表作的 chapter features 与 neologisms，` +
-      `更新对应的 platform profile。可能耗时数分钟。继续？`,
+      `会调用大模型抽取代表作的章节特征与新词，` +
+      `更新对应的平台风格档案。可能耗时数分钟。继续？`,
     )) return;
     setLaunching(true);
     try {
@@ -255,6 +275,17 @@ export default function MarketFeatureExtractionPage() {
     }
   }, [refreshJobs, toast]);
 
+  const deleteJob = useCallback(async (job_id: string) => {
+    if (!window.confirm("从任务列表中永久删除该任务？\n仅删除任务行本身，已写入的平台档案 / 代表作不受影响。")) return;
+    try {
+      await apiDelete(`/api/market-extractor/jobs/${job_id}`);
+      toast("任务已删除", "success");
+      refreshJobs();
+    } catch (e: any) {
+      toast(`删除失败: ${e.message}`, "error");
+    }
+  }, [refreshJobs, toast]);
+
   const startManualMode = useCallback(async () => {
     if (!platform || !category) {
       toast("请先选择平台 + 榜单", "error");
@@ -277,7 +308,7 @@ export default function MarketFeatureExtractionPage() {
       "/api/market-extractor/manual-submit",
       { platform, category, response_raw: payload.text },
     );
-    toast(`Profile 已写入 (${r.profile_id})`, "success");
+    toast(`平台档案已写入 (${r.profile_id})`, "success");
     setTab("profiles");
     refreshProfiles();
   }, [platform, category, refreshProfiles, toast]);
@@ -482,17 +513,26 @@ export default function MarketFeatureExtractionPage() {
                 className="btn-primary"
                 onClick={launchJob}
                 disabled={launching || !SELECTION_OK}
-                style={{ width: "100%", padding: "10px 0", fontSize: 13, fontWeight: 600 }}
+                style={{
+                  width: "100%", padding: "10px 0",
+                  fontSize: 13, fontWeight: 600,
+                  textAlign: "center",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
               >
-                {launching ? "启动中..." : "API 模式"}
+                {launching ? "启动中..." : "使用大模型 API 提取"}
               </button>
               <button
                 className="btn"
                 onClick={startManualMode}
                 disabled={!SELECTION_OK}
-                style={{ width: "100%", padding: "10px 0", fontSize: 13 }}
+                style={{
+                  width: "100%", padding: "10px 0", fontSize: 13,
+                  textAlign: "center",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
               >
-                手动模式
+                使用大模型网页版提取
               </button>
             </div>
           </div>
@@ -507,10 +547,10 @@ export default function MarketFeatureExtractionPage() {
             background: "var(--bg-surface-2)",
           }}>
             {([
-              { key: "jobs" as const,     label: "任务",            count: jobs.length },
-              { key: "profiles" as const, label: "平台 Profile",     count: platformProfiles.length },
-              { key: "loader" as const,   label: "Loader 注入预览",  count: null as number | null },
-              { key: "works" as const,    label: "代表作",          count: works.length },
+              { key: "jobs" as const,     label: "任务",          count: jobs.length },
+              { key: "profiles" as const, label: "平台风格档案",   count: platformProfiles.length },
+              { key: "loader" as const,   label: "注入预览",      count: null as number | null },
+              { key: "works" as const,    label: "代表作",        count: works.length },
               { key: "preview" as const,
                 label: selectedWork ? `预览·${selectedWork.title || selectedWork.work_id.slice(0, 6)}` : "预览",
                 count: null as number | null },
@@ -560,7 +600,7 @@ export default function MarketFeatureExtractionPage() {
           </div>
 
           <div style={{ padding: 18, minHeight: 420, background: "var(--bg-surface)" }}>
-            {tab === "jobs" && <JobsTab jobs={jobs} onCancel={cancelJob} />}
+            {tab === "jobs" && <JobsTab jobs={jobs} onCancel={cancelJob} onDelete={deleteJob} />}
             {tab === "profiles" && <ProfilesTab profiles={platformProfiles} />}
             {tab === "loader" && <LoaderPreviewTab platform={platform} category={category} profiles={platformProfiles} />}
             {tab === "works" && (
@@ -624,18 +664,19 @@ export default function MarketFeatureExtractionPage() {
 
       </>)}
 
-      {/* Manual-mode dialog */}
+      {/* 网页版大模型手动粘贴弹窗 */}
       <UniversalLLMDialog
         open={manualOpen}
         onClose={() => setManualOpen(false)}
-        title={`手动模式: ${platform} × ${category}`}
-        description="复制下方 prompt 到网页 LLM 跑 → 粘回结果 → 提交后入 platform_profile 表"
+        title={`网页版大模型提取: ${tPlatform(platform)} × ${category}`}
+        description="复制左侧提示词到网页版大模型运行，将完整回复粘回右侧；提交后写入平台档案表。"
         prompt={manualPrompt}
         onCommit={commitManual}
         minChars={80}
+        initialMode="manual_only"
       />
 
-      {/* AI 开篇总结 dialog */}
+      {/* AI 开篇总结对话框 */}
       <UniversalLLMDialog
         open={openingDialogOpen}
         onClose={() => setOpeningDialogOpen(false)}
@@ -653,9 +694,11 @@ export default function MarketFeatureExtractionPage() {
 }
 
 
-function JobsTab({ jobs, onCancel }: { jobs: Job[]; onCancel: (id: string) => void }) {
+function JobsTab({
+  jobs, onCancel, onDelete,
+}: { jobs: Job[]; onCancel: (id: string) => void; onDelete: (id: string) => void }) {
   if (jobs.length === 0) {
-    return <Empty msg="还没有任何任务。在左侧选好平台 + 榜单后点「API 模式」或「手动模式」。" />;
+    return <Empty msg="还没有任何任务。在左侧选好平台 + 榜单后点「使用大模型 API 提取」或「使用大模型网页版提取」。" />;
   }
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
@@ -664,22 +707,24 @@ function JobsTab({ jobs, onCancel }: { jobs: Job[]; onCancel: (id: string) => vo
           <tr style={{
             color: "var(--text-tertiary)", textAlign: "left",
             background: "var(--bg-surface-2)",
-            fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5,
+            fontSize: 11, letterSpacing: 0.5,
           }}>
-            <th style={{ padding: "8px 10px" }}>Job</th>
+            <th style={{ padding: "8px 10px" }}>任务编号</th>
             <th style={{ padding: "8px 10px" }}>平台</th>
             <th style={{ padding: "8px 10px" }}>榜单</th>
             <th style={{ padding: "8px 10px" }}>状态</th>
             <th style={{ padding: "8px 10px" }}>进度</th>
             <th style={{ padding: "8px 10px" }}>开始</th>
             <th style={{ padding: "8px 10px" }}>结束</th>
-            <th style={{ padding: "8px 10px" }}></th>
+            <th style={{ padding: "8px 10px", textAlign: "right" }}>操作</th>
           </tr>
         </thead>
         <tbody>
           {jobs.map(j => {
             const pct = typeof j.progress_pct === "number" ? Math.round(j.progress_pct) : null;
             const stateColor = STATE_COLOR[j.state || ""] || "var(--text-secondary)";
+            const stateLabel = STATE_LABEL_CN[j.state || ""] || j.state || "—";
+            const phaseLabel = j.progress_phase ? (PHASE_LABEL_CN[j.progress_phase] || j.progress_phase) : "";
             return (
               <tr key={j.job_id} style={{ borderTop: "1px solid var(--border)" }}>
                 <td style={{ padding: "8px 10px" }}>
@@ -696,10 +741,10 @@ function JobsTab({ jobs, onCancel }: { jobs: Job[]; onCancel: (id: string) => vo
                     color: stateColor,
                     fontSize: 11,
                     fontWeight: 600,
-                  }}>{j.state || "—"}</span>
-                  {j.progress_phase && j.state?.startsWith("running") && (
+                  }}>{stateLabel}</span>
+                  {phaseLabel && j.state?.startsWith("running") && (
                     <span style={{ color: "var(--text-tertiary)", marginLeft: 6, fontSize: 11 }}>
-                      {j.progress_phase}
+                      {phaseLabel}
                     </span>
                   )}
                 </td>
@@ -722,12 +767,18 @@ function JobsTab({ jobs, onCancel }: { jobs: Job[]; onCancel: (id: string) => vo
                 </td>
                 <td style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)" }}>{j.started_at || "—"}</td>
                 <td style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)" }}>{j.completed_at || "—"}</td>
-                <td style={{ padding: "8px 10px", textAlign: "right" }}>
-                  {isActive(j.state) && (
+                <td style={{ padding: "8px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
+                  {isActive(j.state) ? (
                     <button className="btn"
                             style={{ fontSize: 11, padding: "3px 12px", borderRadius: 12 }}
                             onClick={() => onCancel(j.job_id)}>
                       取消
+                    </button>
+                  ) : (
+                    <button className="btn"
+                            style={{ fontSize: 11, padding: "3px 12px", borderRadius: 12, color: "var(--danger)" }}
+                            onClick={() => onDelete(j.job_id)}>
+                      删除
                     </button>
                   )}
                 </td>
@@ -743,7 +794,7 @@ function JobsTab({ jobs, onCancel }: { jobs: Job[]; onCancel: (id: string) => vo
 
 function ProfilesTab({ profiles }: { profiles: PlatformProfile[] }) {
   if (profiles.length === 0) {
-    return <Empty msg="尚无匹配当前平台 / 榜单的 profile。任务跑完后会自动出现。" />;
+    return <Empty msg="尚无匹配当前平台 / 榜单的平台档案。任务跑完后会自动出现。" />;
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -751,7 +802,7 @@ function ProfilesTab({ profiles }: { profiles: PlatformProfile[] }) {
         <div key={p.profile_id || `${p.platform}-${p.category || i}`}
              className="card" style={{ padding: 12, background: "var(--bg-surface-2)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-            <strong>{p.platform} · {p.category || "—"}</strong>
+            <strong>{tPlatform(p.platform)} · {p.category || "—"}</strong>
             <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
               {p.confidence_label && <>置信度 {p.confidence_label} · </>}
               样本 {p.source_works_count ?? "—"} · 更新 {p.extraction_completed_at || "—"}
@@ -760,7 +811,7 @@ function ProfilesTab({ profiles }: { profiles: PlatformProfile[] }) {
           {[
             ["综述", p.profile_summary],
             ["风格基线", p.style_baseline],
-            ["特征设备", p.signature_devices_description],
+            ["招牌叙事手法", p.signature_devices_description],
             ["节奏指南", p.pacing_guidance],
           ].map(([label, val]) => (val ? (
             <details key={label as string} style={{ marginTop: 6 }}>
@@ -821,7 +872,7 @@ function PreviewTab({
   work, chapterFeatures, neologisms,
 }: { work: RepresentativeWork | null; chapterFeatures: any[]; neologisms: any[] }) {
   if (!work) {
-    return <Empty msg="在「代表作」tab 选一部作品查看提取结果。" />;
+    return <Empty msg="请在「代表作」标签页选一部作品查看提取结果。" />;
   }
   return (
     <div>
@@ -910,42 +961,41 @@ function LoaderPreviewTab({
     return <Empty msg="加载中..." />;
   }
   if (!activeProfile && !stats) {
-    return <Empty msg={`(${platform}×${category}) 还没有任何提取产物。先启动一次 API 模式或手动模式生成 profile。`} />;
+    return <Empty msg={`(${tPlatform(platform)}×${category}) 还没有任何提取产物。先启动一次「使用大模型 API 提取」或「使用大模型网页版提取」生成平台档案。`} />;
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <p style={{ fontSize: 12, color: "var(--text-tertiary)", margin: 0 }}>
-        以下两块就是生成章节时 <code>platform_market</code> 与 market overview 两个 loader
-        会读到并注入到 prompt 的全部内容。
+        以下两块即生成章节时「平台风格」与「市场画像」两个注入器会读到并写入提示词的全部内容。
       </p>
 
-      {/* ── platform_market loader ── */}
+      {/* ── 平台风格注入 (platform_market loader) ── */}
       <div className="card" style={{ padding: 14 }}>
         <h3 style={{ marginTop: 0, fontSize: 13 }}>
-          platform_market loader
+          平台风格注入
           <span style={{ fontSize: 11, color: "var(--text-tertiary)", fontWeight: 400, marginLeft: 8 }}>
-            读取 platform_profiles.loader_payload （或 fallback 字段）
+            读取 platform_profiles 表的 loader_payload 列
           </span>
         </h3>
         {!activeProfile ? (
-          <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>没有可用的 active profile（可能 confidence_label='low' 被过滤）。</p>
+          <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>当前没有可用的有效档案（可能因置信度过低被过滤）。</p>
         ) : (
           <div>
             <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 8 }}>
-              profile_id={activeProfile.profile_id} · version={(activeProfile as any).profile_version || "—"}
-              · confidence={activeProfile.confidence_label || "—"}
-              · samples={activeProfile.source_works_count ?? "—"}
-              · 完成={activeProfile.extraction_completed_at || "—"}
+              档案编号 {activeProfile.profile_id} · 版本 {(activeProfile as any).profile_version || "—"}
+              · 置信度 {activeProfile.confidence_label || "—"}
+              · 样本数 {activeProfile.source_works_count ?? "—"}
+              · 完成于 {activeProfile.extraction_completed_at || "—"}
             </div>
             {[
-              ["profile_summary",                 activeProfile.profile_summary],
-              ["style_baseline",                  activeProfile.style_baseline],
-              ["signature_devices_description",   activeProfile.signature_devices_description],
-              ["pacing_guidance",                 activeProfile.pacing_guidance],
-              ["recommended_openings_json",       (activeProfile as any).recommended_openings_json],
-              ["loader_payload (最终注入)",       (activeProfile as any).loader_payload],
+              ["综述",            activeProfile.profile_summary],
+              ["风格基线",        activeProfile.style_baseline],
+              ["招牌叙事手法",    activeProfile.signature_devices_description],
+              ["节奏指南",        activeProfile.pacing_guidance],
+              ["推荐开篇套路",    (activeProfile as any).recommended_openings_json],
+              ["最终注入正文",    (activeProfile as any).loader_payload],
             ].map(([label, val]) => (val ? (
-              <details key={label as string} style={{ marginBottom: 6 }} open={label === "loader_payload (最终注入)"}>
+              <details key={label as string} style={{ marginBottom: 6 }} open={label === "最终注入正文"}>
                 <summary style={{ fontSize: 12, cursor: "pointer", color: "var(--text-secondary)" }}>{label}</summary>
                 <pre style={{
                   margin: "4px 0 0", padding: 8, fontSize: 11,
@@ -960,43 +1010,43 @@ function LoaderPreviewTab({
         )}
       </div>
 
-      {/* ── market_overview / category_aggregated_stats ── */}
+      {/* ── 市场画像注入 (category_aggregated_stats) ── */}
       <div className="card" style={{ padding: 14 }}>
         <h3 style={{ marginTop: 0, fontSize: 13 }}>
-          market overview (category_aggregated_stats)
+          市场画像注入
           <span style={{ fontSize: 11, color: "var(--text-tertiary)", fontWeight: 400, marginLeft: 8 }}>
-            这一类别 / 平台的整体分布画像
+            该类目 × 平台的整体分布画像
           </span>
         </h3>
         {!stats ? (
           <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>
-            没有 category_aggregated_stats 行。该表在 phase 3 (aggregation) 完成时写入。
+            尚无市场画像数据。该数据在「类目级聚合」阶段完成时写入。
           </p>
         ) : (
           <div>
             <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 8 }}>
-              source_works_count={stats.source_works_count ?? "—"}
-              · first_breakthrough_chapter_median={stats.first_breakthrough_chapter_median ?? "—"}
-              · antagonist_first_chapter_median={stats.antagonist_first_chapter_median ?? "—"}
-              · first_face_slap_chapter_median={stats.first_face_slap_chapter_median ?? "—"}
-              · avg_neologisms_per_work={stats.avg_neologisms_per_work?.toFixed?.(2) ?? "—"}
+              样本数 {stats.source_works_count ?? "—"}
+              · 首次突破章节中位数 {stats.first_breakthrough_chapter_median ?? "—"}
+              · 反派首次出场章节中位数 {stats.antagonist_first_chapter_median ?? "—"}
+              · 首次打脸章节中位数 {stats.first_face_slap_chapter_median ?? "—"}
+              · 单作平均新词数 {stats.avg_neologisms_per_work?.toFixed?.(2) ?? "—"}
             </div>
-            {/* All json-distribution fields */}
-            {[
-              "opening_hook_type_distribution_json",
-              "protagonist_cheat_type_distribution_json",
-              "protagonist_agency_distribution_json",
-              "worldview_type_distribution_json",
-              "writing_style_distribution_json",
-              "emotional_tone_distribution_json",
-              "info_disclosure_distribution_json",
-              "chapter_word_count_stats_json",
-              "dialogue_ratio_stats_json",
-              "setting_word_ratio_stats_json",
-              "genre_vocabulary_top_json",
-              "neologism_type_distribution_json",
-              "chapter_end_hook_type_distribution_json",
-            ].map(field => {
+            {/* 各项分布字段 */}
+            {([
+              ["opening_hook_type_distribution_json",       "开篇钩子类型分布"],
+              ["protagonist_cheat_type_distribution_json",  "主角金手指类型分布"],
+              ["protagonist_agency_distribution_json",      "主角主动性分布"],
+              ["worldview_type_distribution_json",          "世界观类型分布"],
+              ["writing_style_distribution_json",           "行文风格分布"],
+              ["emotional_tone_distribution_json",          "情绪基调分布"],
+              ["info_disclosure_distribution_json",         "信息释放策略分布"],
+              ["chapter_word_count_stats_json",             "章节字数分布"],
+              ["dialogue_ratio_stats_json",                 "对白占比分布"],
+              ["setting_word_ratio_stats_json",             "场景描写占比分布"],
+              ["genre_vocabulary_top_json",                 "题材高频词 Top"],
+              ["neologism_type_distribution_json",          "新词类型分布"],
+              ["chapter_end_hook_type_distribution_json",   "章末钩子类型分布"],
+            ] as const).map(([field, label]) => {
               const raw = stats[field];
               if (!raw) return null;
               let parsed: any = raw;
@@ -1004,7 +1054,7 @@ function LoaderPreviewTab({
               return (
                 <details key={field} style={{ marginBottom: 6 }}>
                   <summary style={{ fontSize: 11, cursor: "pointer", color: "var(--text-secondary)" }}>
-                    {field}
+                    {label}
                   </summary>
                   <pre style={{
                     margin: "4px 0 0", padding: 8, fontSize: 10,
@@ -1085,9 +1135,201 @@ function OpeningAnalysisPanel({ platform }: { platform: string }) {
               );
             })}
           </div>
+
+          {/* ── 一键 NLP 分析 ── */}
+          <NlpAnalysisSection platform={platform} />
         </div>
       )}
       {loading && <div style={{ padding: 8, fontSize: 11, color: "var(--text-tertiary)" }}>加载中...</div>}
+    </div>
+  );
+}
+
+
+/**
+ * NlpAnalysisSection — runs heuristic NLP over the already-crawled
+ * opening chapters. Dual-mode caching:
+ *  - Lazy trigger: results auto-load only when the crawler DB has
+ *    changed (sessionStorage cache keyed by mtime + size + platform).
+ *  - Manual refresh: a 「重新分析」 button forces a re-fetch even when
+ *    the cache is fresh.
+ * No backend job, no LLM call — the endpoint is pure regex/counting,
+ * so triggering is cheap.
+ */
+function NlpAnalysisSection({ platform }: { platform: string }) {
+  type NlpData = {
+    available: boolean; reason?: string; sample_count?: number;
+    dialogue_ratio?: { mean: number; distribution: Record<string, number> };
+    sentence_length?: { mean: number; distribution: Record<string, number> };
+    first_sentence_types?: { label: string; count: number }[];
+    end_hook_types?: { label: string; count: number }[];
+    word_count_summary?: { mean: number; min: number; max: number };
+  };
+  const [data, setData] = React.useState<NlpData | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [err, setErr] = React.useState("");
+  const [hasRun, setHasRun] = React.useState(false);
+  const [fromCache, setFromCache] = React.useState(false);
+
+  const cacheKey = `inkoctobot_nlp_opening_v1_${platform || "all"}`;
+
+  const runAnalysis = React.useCallback(async (force: boolean) => {
+    setLoading(true);
+    setErr("");
+    try {
+      // Check db-mtime first; if cache is fresh and !force, reuse.
+      let mtimeKey = "";
+      try {
+        const m = await apiGet<{ mtime: number; size?: number; exists: boolean }>(
+          "/api/db/db-mtime",
+        );
+        mtimeKey = m.exists ? `${m.mtime}.${m.size ?? 0}` : "";
+      } catch { /* fall through to live fetch */ }
+
+      if (!force && mtimeKey) {
+        const raw = sessionStorage.getItem(cacheKey);
+        if (raw) {
+          try {
+            const c = JSON.parse(raw);
+            if (c.mtimeKey === mtimeKey && c.data) {
+              setData(c.data);
+              setHasRun(true);
+              setFromCache(true);
+              return;
+            }
+          } catch { /* ignore corrupt cache */ }
+        }
+      }
+
+      const qs = platform ? `?platform=${encodeURIComponent(platform)}` : "";
+      const r = await apiGet<NlpData>(`/api/db/opening_nlp_analysis${qs}`);
+      setData(r);
+      setHasRun(true);
+      setFromCache(false);
+      if (mtimeKey && r?.available) {
+        try {
+          sessionStorage.setItem(cacheKey, JSON.stringify({ mtimeKey, data: r }));
+        } catch { /* ignore quota */ }
+      }
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [cacheKey, platform]);
+
+  // Lazy trigger on mount / platform change — only fires the network
+  // call when the cache is stale. Cached results show immediately.
+  React.useEffect(() => {
+    runAnalysis(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform]);
+
+  return (
+    <div style={{
+      marginTop: 20, padding: 14,
+      background: "var(--bg-surface-2)",
+      borderRadius: 6,
+      borderLeft: "3px solid var(--jade)",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div>
+          <strong style={{ fontSize: 13 }}>开篇章节 NLP 分析</strong>
+          <span style={{ fontSize: 11, color: "var(--text-tertiary)", marginLeft: 8 }}>
+            对白比 · 句长 · 首句类型 · 章末钩子（启发式分析，无需大模型）
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {fromCache && hasRun && (
+            <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+              来自缓存（数据库未变化）
+            </span>
+          )}
+          <button
+            className="btn"
+            onClick={() => runAnalysis(true)}
+            disabled={loading}
+            style={{ fontSize: 12, padding: "5px 14px", borderRadius: 14 }}
+          >
+            {loading ? "分析中..." : (hasRun ? "重新分析" : "一键启动分析")}
+          </button>
+        </div>
+      </div>
+      {err && (
+        <div style={{ fontSize: 12, color: "var(--danger)", marginBottom: 8 }}>
+          分析失败：{err}
+        </div>
+      )}
+      {data && !data.available && (
+        <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
+          暂无可分析数据{data.reason ? `（${data.reason}）` : ""}。
+        </div>
+      )}
+      {data && data.available && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <NlpHistCard
+            title={`对白占比分布（均值 ${data.dialogue_ratio ? Math.round(data.dialogue_ratio.mean * 100) : 0}%）`}
+            entries={Object.entries(data.dialogue_ratio?.distribution || {})}
+            accent="var(--accent)"
+          />
+          <NlpHistCard
+            title={`平均句长分布（均值 ${data.sentence_length?.mean.toFixed(1) || 0} 字）`}
+            entries={Object.entries(data.sentence_length?.distribution || {})}
+            accent="var(--gold)"
+          />
+          <NlpHistCard
+            title="首句类型分布"
+            entries={(data.first_sentence_types || []).map(d => [d.label, d.count] as [string, number])}
+            accent="var(--jade)"
+          />
+          <NlpHistCard
+            title="章末钩子类型分布"
+            entries={(data.end_hook_types || []).map(d => [d.label, d.count] as [string, number])}
+            accent="var(--indigo)"
+          />
+          <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--text-tertiary)" }}>
+            样本数 {data.sample_count} 章
+            {data.word_count_summary ? ` · 字数 均值 ${data.word_count_summary.mean} / 最小 ${data.word_count_summary.min} / 最大 ${data.word_count_summary.max}` : ""}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function NlpHistCard({
+  title, entries, accent,
+}: { title: string; entries: [string, number][]; accent: string }) {
+  const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
+  return (
+    <div style={{
+      background: "var(--bg-surface)",
+      padding: 10,
+      borderRadius: 4,
+      border: "1px solid var(--border)",
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{title}</div>
+      {entries.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {entries.map(([label, n]) => {
+            const pct = Math.round((n / total) * 100);
+            return (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 96, fontSize: 11, color: "var(--text-secondary)" }}>{label}</span>
+                <div style={{ flex: 1, height: 10, background: "var(--bg-surface-2)", borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{ width: `${pct}%`, height: "100%", background: accent }} />
+                </div>
+                <span style={{ width: 56, textAlign: "right", fontSize: 10, fontFamily: "var(--font-mono)" }}>
+                  {n}（{pct}%）
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

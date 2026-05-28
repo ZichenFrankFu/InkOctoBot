@@ -75,6 +75,15 @@ export interface UniversalLLMDialogProps {
 
   /** Optional minimum chars before commit is enabled. Default 30. */
   minChars?: number;
+
+  /**
+   * Force a single execution mode. ``"manual_only"`` skips the
+   * preview/picker entirely and jumps straight to the manual-paste
+   * phase, so the user sees the copy-prompt + paste-back surface as
+   * the first screen. Useful when the parent already labels the
+   * action "使用大模型网页版提取".
+   */
+  initialMode?: "picker" | "manual_only";
 }
 
 
@@ -91,10 +100,15 @@ export default function UniversalLLMDialog({
   prompt, system, loaderStatus,
   invokeApi, parseResponse, onCommit,
   minChars = 30,
+  initialMode = "picker",
 }: UniversalLLMDialogProps) {
   const { toast } = useToast();
-  const [phase, setPhase] = useState<Phase>("preview");
-  const [mode, setMode] = useState<LLMCallMode>("api");
+  const [phase, setPhase] = useState<Phase>(
+    initialMode === "manual_only" ? "manual_pending" : "preview",
+  );
+  const [mode, setMode] = useState<LLMCallMode>(
+    initialMode === "manual_only" ? "manual" : "api",
+  );
   const [responseText, setResponseText] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [pasteBuf, setPasteBuf] = useState("");
@@ -105,7 +119,8 @@ export default function UniversalLLMDialog({
   // Reset on open.
   useEffect(() => {
     if (open) {
-      setPhase("preview");
+      setPhase(initialMode === "manual_only" ? "manual_pending" : "preview");
+      setMode(initialMode === "manual_only" ? "manual" : "api");
       setResponseText("");
       setPasteBuf("");
       setParsed(undefined);
@@ -114,7 +129,7 @@ export default function UniversalLLMDialog({
       abortRef.current?.abort();
       abortRef.current = null;
     }
-  }, [open]);
+  }, [open, initialMode]);
 
   // ── actions ──
   // NOTE: every hook below MUST run on every render — the early
@@ -275,13 +290,36 @@ export default function UniversalLLMDialog({
             borderRight: "1px solid var(--border)",
             display: "flex", flexDirection: "column", minHeight: 0,
           }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <strong style={{ fontSize: 13 }}> Prompt 预览</strong>
-              <div style={{ display: "flex", gap: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <strong style={{ fontSize: 13 }}>提示词预览</strong>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
                   {(prompt.length + (system?.length || 0))} 字
                 </span>
-                <button className="btn-sm" onClick={copyPrompt}> 复制</button>
+                <button
+                  onClick={copyPrompt}
+                  title="复制完整提示词到剪贴板"
+                  style={{
+                    padding: "6px 14px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "white",
+                    background: "var(--accent)",
+                    border: "none",
+                    borderRadius: 16,
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    transition: "background 0.15s, transform 0.08s",
+                  }}
+                  onMouseDown={e => (e.currentTarget as HTMLButtonElement).style.transform = "scale(0.97)"}
+                  onMouseUp={e => (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)"}
+                  onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)"}
+                >
+                  ⧉ 复制提示词
+                </button>
               </div>
             </div>
 
@@ -289,7 +327,7 @@ export default function UniversalLLMDialog({
             {loaderStatus && loaderStatus.length > 0 && (
               <details style={{ marginBottom: 10 }} open>
                 <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--text-secondary)" }}>
-                  Loader 注入状态 ({loaderStatus.filter(l => l.present).length}/{loaderStatus.length})
+                  注入状态 ({loaderStatus.filter(l => l.present).length}/{loaderStatus.length})
                 </summary>
                 <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "1fr", gap: 2 }}>
                   {loaderStatus.map(l => (
@@ -309,14 +347,14 @@ export default function UniversalLLMDialog({
             {/* System (collapsed) */}
             {system && (
               <details style={{ marginBottom: 8 }}>
-                <summary style={{ cursor: "pointer", fontSize: 12 }}>System ({system.length})</summary>
+                <summary style={{ cursor: "pointer", fontSize: 12 }}>系统提示 ({system.length})</summary>
                 <pre style={preStyle()}>{system}</pre>
               </details>
             )}
 
             {/* User prompt */}
             <details open style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-              <summary style={{ cursor: "pointer", fontSize: 12 }}>User Prompt ({prompt.length})</summary>
+              <summary style={{ cursor: "pointer", fontSize: 12 }}>用户提示词 ({prompt.length})</summary>
               <pre style={{ ...preStyle(), flex: 1, maxHeight: "none" }}>{prompt}</pre>
             </details>
           </div>
@@ -352,7 +390,7 @@ export default function UniversalLLMDialog({
                 text={responseText}
                 onTextChange={setResponseText}
                 parsed={parsed}
-                source={mode === "api" ? "API" : "Manual Paste"}
+                source={mode === "api" ? "API 调用" : "网页版粘贴"}
                 onCommit={commit}
                 onRetry={() => setPhase("preview")}
                 committing={committing}
@@ -413,7 +451,7 @@ function PreviewPane({
     <>
       <h4 style={{ marginTop: 0 }}>选择执行方式</h4>
       <p style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
-        左边是 prompt 完整内容。检查无误后选择如何调用 LLM：
+        左侧为完整提示词。检查无误后选择如何调用大模型：
       </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 16 }}>
         <button
@@ -422,10 +460,10 @@ function PreviewPane({
           disabled={!hasInvokeApi}
           style={{ padding: "12px 16px", textAlign: "left" }}
         >
-          <div style={{ fontSize: 14, fontWeight: 600 }}> API 模式</div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>使用大模型 API 提取</div>
           <div style={{ fontSize: 11, opacity: 0.85, marginTop: 4 }}>
-            直接调当前 provider；运行中可中断 / resume
-            {!hasInvokeApi && " · 此调用未提供 API 钩子"}
+            直连当前服务商；运行中可中断 / 续跑
+            {!hasInvokeApi && " · 该调用未提供 API 钩子"}
           </div>
         </button>
         <button
@@ -433,9 +471,9 @@ function PreviewPane({
           onClick={onUseManual}
           style={{ padding: "12px 16px", textAlign: "left" }}
         >
-          <div style={{ fontSize: 14, fontWeight: 600 }}> Manual 粘贴</div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>使用大模型网页版提取</div>
           <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
-            复制 prompt 到网页 LLM 跑 → 拷回结果 → app 自动 parse
+            复制提示词到网页大模型运行 → 粘回结果 → 自动解析入库
           </div>
         </button>
       </div>
@@ -448,9 +486,9 @@ function RunningPane({ onAbort }: { onAbort: () => void }) {
   return (
     <div style={{ textAlign: "center", padding: 40 }}>
       <div style={{ fontSize: 32, marginBottom: 16 }}>⏳</div>
-      <h4>正在调用 LLM...</h4>
+      <h4>正在调用大模型...</h4>
       <p style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
-        若中断则停止生成；resume 时会重发同一份 prompt。
+        中断后会停止生成；重试时将重发同一份提示词。
       </p>
       <button className="btn danger" onClick={onAbort} style={{ marginTop: 16 }}>
         中断
@@ -468,14 +506,14 @@ function ManualPastePane({
 }) {
   return (
     <>
-      <h4 style={{ marginTop: 0 }}> 把 LLM 输出粘贴到这里</h4>
-      <p style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
-        先去左边「复制」prompt → 拿到网页 LLM 跑 → 把回复粘到下框。
+      <h4 style={{ marginTop: 0 }}>将大模型输出粘贴到此处</h4>
+      <p style={{ fontSize: 12, color: "var(--text-tertiary)", lineHeight: 1.6 }}>
+        先点左侧「复制提示词」 → 在网页版大模型粘贴并运行 → 将完整回复粘到下方文本框。
       </p>
       <textarea
         value={pasteBuf}
         onChange={e => setPasteBuf(e.target.value)}
-        placeholder="LLM 的输出..."
+        placeholder="在这里粘贴大模型回复..."
         style={{
           flex: 1, marginTop: 8, padding: 10, fontSize: 13,
           fontFamily: "var(--font-mono)",
@@ -520,11 +558,11 @@ function ResultPane({
   return (
     <>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-        <h4 style={{ margin: 0 }}> 结果就绪 ({source})</h4>
+        <h4 style={{ margin: 0 }}>结果就绪（来源：{source}）</h4>
         <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{text.length} 字</span>
       </div>
       <p style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-        预览结果，必要时直接编辑。点提交后写入 / 应用到上层。
+        预览结果，必要时直接编辑。点击提交后写入 / 应用到上层。
       </p>
       <textarea
         value={text}
@@ -539,7 +577,7 @@ function ResultPane({
       {parsed !== undefined && (
         <details style={{ marginTop: 8 }}>
           <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-tertiary)" }}>
-            已解析的结构 (parsed)
+            已解析的结构
           </summary>
           <pre style={preStyle()}>{JSON.stringify(parsed, null, 2)}</pre>
         </details>
@@ -575,7 +613,7 @@ function ErrorPane({
       }}>{msg}</pre>
       <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 16 }}>
         <button className="btn" onClick={onCancel}>关闭</button>
-        <button className="btn primary" onClick={onRetry}>Resume / 重试</button>
+        <button className="btn primary" onClick={onRetry}>续跑 / 重试</button>
       </div>
     </div>
   );

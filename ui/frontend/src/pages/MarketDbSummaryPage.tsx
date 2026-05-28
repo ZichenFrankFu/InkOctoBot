@@ -64,7 +64,7 @@ export default function MarketDbSummaryPage() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
         <StatTile label="作品总数"     value={data?.novel_count ?? 0}     accent="var(--accent)" />
         <StatTile label="榜单总数"     value={data?.rank_list_count ?? 0} accent="var(--gold)" />
-        <StatTile label="snapshot 数"  value={data?.snapshot_count ?? 0}  accent="var(--cyan)" />
+        <StatTile label="快照数"       value={data?.snapshot_count ?? 0}  accent="var(--cyan)" />
         <StatTile label="已采集开篇章节" value={data?.chapter_count ?? 0}   accent="var(--jade)" />
       </div>
 
@@ -135,7 +135,7 @@ export default function MarketDbSummaryPage() {
       </div>
 
       <div className="card" style={{ padding: 14 }}>
-        <h3 style={{ marginTop: 0, fontSize: 14 }}>最近 snapshot</h3>
+        <h3 style={{ marginTop: 0, fontSize: 14 }}>最近快照</h3>
         {(data?.recent_snapshots || []).length === 0 ? (
           <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>无数据</p>
         ) : (
@@ -153,7 +153,10 @@ export default function MarketDbSummaryPage() {
                 <tr key={`${s.snapshot_date}-${i}`} style={{ borderTop: "1px solid var(--border)" }}>
                   <td style={{ padding: "4px 6px" }}>{s.snapshot_date}</td>
                   <td style={{ padding: "4px 6px" }}>{tPlatform(s.platform)}</td>
-                  <td style={{ padding: "4px 6px" }}>{s.rank_family}{s.rank_sub_cat ? ` · ${s.rank_sub_cat}` : ""}</td>
+                  <td style={{ padding: "4px 6px" }}>
+                    {s.rank_family}
+                    {s.rank_sub_cat && s.rank_sub_cat !== s.rank_family ? ` · ${s.rank_sub_cat}` : ""}
+                  </td>
                   <td style={{ padding: "4px 6px", textAlign: "right" }}>{s.item_count}</td>
                 </tr>
               ))}
