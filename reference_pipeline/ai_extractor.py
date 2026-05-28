@@ -252,9 +252,18 @@ async def _invoke(router: Any, prompt: str, *,
     """
     system = _JSON_SYSTEM_LIST if expect == "list" else _JSON_SYSTEM_OBJ
     if use_web_search:
-        # Web-search providers don't reliably honor response_format and
-        # the search-then-summarize flow can't be system-prompted.
-        # Keep the legacy path but still embed the cross-check hint.
+        # NOTE: The web-search variant intentionally bypasses
+        # ``llm.call_site.with_audit_and_manual_mode``. The provider
+        # method invoked here (``invoke_with_web_search``) runs a
+        # search → summarize flow that LLMCallSite has no concept of:
+        # it doesn't accept a system_prompt separately, doesn't honor
+        # ``response_format`` from JSON-mode providers, and the call
+        # may stream multiple internal LLM hops behind a single
+        # provider boundary. Manual-paste mode also can't reproduce
+        # the search step from outside. We therefore keep this path
+        # unaudited; if you need an audit row, run the non-web-search
+        # branch with a hand-curated prompt instead. Tracked in
+        # docs/INKOCTOBOT_EXPECTED_STATE.md (PART G — LLM 调用层).
         full_prompt = (
             f"{system}\n\n{_WEB_VERIFY_HINT}\n\n{prompt}\n\n"
             "再次提醒：只输出纯 JSON，不要任何其他文字。"

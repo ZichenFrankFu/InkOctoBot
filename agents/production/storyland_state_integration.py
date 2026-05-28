@@ -300,20 +300,43 @@ async def extract_state_deltas(
         LLMMessage(role="system", content=_SETTLEMENT_PROMPT),
         LLMMessage(role="user", content=user_content),
     ]
-    try:
+
+    # Settlement LLM call goes through LLMCallSite so it shows up in
+    # the unified llm_outputs audit (call_site_id =
+    # storyland_state.settlement) and supports the global manual-mode
+    # paste toggle just like every other LLM call. The agent's own
+    # router is still used inside the auto_executor closure so callers'
+    # router-injection patterns (and test mocks of ``router.generate``)
+    # keep working.
+    captured: dict[str, Any] = {}
+
+    async def _auto_executor() -> str:
         resp = await router.generate(
             agent_role=agent_role, messages=messages,
             temperature=0.2, max_tokens=4000,
+        )
+        captured["resp"] = resp
+        return resp.content or ""
+
+    try:
+        from llm.call_site import with_audit_and_manual_mode
+        raw_response = await with_audit_and_manual_mode(
+            call_site_id="storyland_state.settlement",
+            primary_role=agent_role,
+            prompt_full=user_content,
+            system_prompt=_SETTLEMENT_PROMPT,
+            auto_executor=_auto_executor,
+            parsed_target_table="truth_current_state",
         )
     except Exception as e:
         logger.warning("settlement LLM call failed: %s", e)
         return None
 
-    parsed = _parse_settlement_response(resp.content)
+    parsed = _parse_settlement_response(raw_response)
     if parsed is None:
         logger.warning(
             "settlement parse failed for chapter=%d; raw_head=%r",
-            chapter_num, (resp.content or "")[:300],
+            chapter_num, (raw_response or "")[:300],
         )
         return None
 

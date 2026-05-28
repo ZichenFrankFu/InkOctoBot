@@ -593,6 +593,39 @@ _WORLDBOOK_V2_COLUMNS = [
 ]
 
 
+# Roadmap 2026 Q2 Stage 1 Task 5: projects table gains platform +
+# category columns so Loader 2 (platform_market) can look up the
+# project's platform_profile from market extractor data. Older project
+# DBs created before this addition silently get the columns added on
+# next backend boot; Loader 2 already gracefully returns None when the
+# columns are missing, so the migration is non-breaking either way.
+_PROJECTS_MARKET_COLUMNS = [
+    ("platform", "TEXT NOT NULL DEFAULT ''"),
+    ("category", "TEXT NOT NULL DEFAULT ''"),
+]
+
+
+def _ensure_projects_market_columns(conn: sqlite3.Connection) -> None:
+    """Add platform + category to an existing projects table.
+
+    Both columns are nullable-by-default (empty string) so legacy
+    projects don't break — Loader 2 / market extractor treat empty
+    strings the same as missing columns: no profile lookup.
+    """
+    cur = conn.cursor()
+    try:
+        existing = {row[1] for row in cur.execute("PRAGMA table_info(projects)")}
+    except sqlite3.OperationalError:
+        return
+    for col, ddl in _PROJECTS_MARKET_COLUMNS:
+        if col not in existing:
+            cur.execute(f"ALTER TABLE projects ADD COLUMN {col} {ddl}")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_projects_platform_cat "
+        "ON projects(platform, category)"
+    )
+
+
 def _ensure_skill_index_v2_columns(conn: sqlite3.Connection) -> None:
     """Add embedding_model_key to an existing skill_index table.
 
@@ -747,6 +780,7 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
     _ensure_chapter_v2_columns(conn)
     _ensure_worldbook_v2_columns(conn)
     _ensure_skill_index_v2_columns(conn)
+    _ensure_projects_market_columns(conn)
     _ensure_chapter_summaries_v3_columns(conn)
     _ensure_episodic_events_pc_columns(conn)
     _drop_v1_redundant_objects(conn)

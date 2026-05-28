@@ -131,13 +131,30 @@ class BaseSkill(ABC):
         inputs: dict[str, Any],
         model_router: Any,
     ) -> dict[str, Any]:
-        """Standard execution flow: build_prompt -> LLM call -> parse_output."""
+        """Standard execution flow: build_prompt -> LLM call -> parse_output.
+
+        Routes through ``llm.call_site.with_audit_and_manual_mode`` so
+        every Skill invocation lands in the unified llm_outputs audit
+        (call_site_id = ``skill.<skill_name>``) and supports the
+        global manual-mode paste toggle.
+        """
         prompt = await self.build_prompt(inputs)
-        raw = await model_router.invoke(
-            role=self.meta().model_role,
-            prompt=prompt,
-            max_tokens=self.meta().max_tokens,
-            temperature=self.meta().temperature,
+
+        async def _auto() -> str:
+            return await model_router.invoke(
+                role=self.meta().model_role,
+                prompt=prompt,
+                max_tokens=self.meta().max_tokens,
+                temperature=self.meta().temperature,
+            )
+
+        from llm.call_site import with_audit_and_manual_mode
+        raw = await with_audit_and_manual_mode(
+            call_site_id=f"skill.{self.meta().name}",
+            primary_role=self.meta().model_role,
+            prompt_full=prompt,
+            system_prompt="",
+            auto_executor=_auto,
         )
         return await self.parse_output(raw)
 
@@ -146,21 +163,41 @@ class BaseSkill(ABC):
         inputs: dict[str, Any],
         model_router: Any,
     ) -> dict[str, Any]:
-        """Execute using the full ModelRouter.generate() message-based API."""
+        """Execute using the full ModelRouter.generate() message-based API.
+
+        Same audit/manual-mode wrapping as :meth:`execute` — the only
+        difference is this path uses a (system, user) message pair so
+        the system prompt is preserved separately in the audit row.
+        """
         from llm.base import LLMMessage
         prompt = await self.build_prompt(inputs)
         meta = self.meta()
+        system_prompt = meta.description
         messages = [
-            LLMMessage(role="system", content=meta.description),
+            LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=prompt),
         ]
-        resp = await model_router.generate(
-            agent_role=meta.model_role,
-            messages=messages,
-            temperature=meta.temperature,
-            max_tokens=meta.max_tokens,
+        captured: dict[str, Any] = {}
+
+        async def _auto() -> str:
+            resp = await model_router.generate(
+                agent_role=meta.model_role,
+                messages=messages,
+                temperature=meta.temperature,
+                max_tokens=meta.max_tokens,
+            )
+            captured["resp"] = resp
+            return resp.content or ""
+
+        from llm.call_site import with_audit_and_manual_mode
+        raw = await with_audit_and_manual_mode(
+            call_site_id=f"skill.{meta.name}",
+            primary_role=meta.model_role,
+            prompt_full=prompt,
+            system_prompt=system_prompt,
+            auto_executor=_auto,
         )
-        return await self.parse_output(resp.content)
+        return await self.parse_output(raw)
 
     # ── Helpers ──────────────────────────────────────────────────
 
