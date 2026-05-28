@@ -229,9 +229,6 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Language toggle — sticky at the top of every settings tab */}
-      <LanguageToggleSection />
-
       {/* Tab bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "var(--bg-secondary)", padding: 4, borderRadius: 10 }}>
         {TABS.map(t => (
@@ -667,6 +664,9 @@ function SystemTab({
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, maxWidth: 800 }}>
+      {/* Language toggle (中文 / English) — system-level UI preference. */}
+      <LanguageToggleSection />
+
       {/* Crawler DB Path */}
       <div className="card" style={{ gridColumn: "1 / -1" }}>
         <div className="card-header"><h3>爬虫数据库路径</h3></div>
@@ -1106,16 +1106,9 @@ function PromptsTab() {
 function LanguageToggleSection() {
   const lang = useLang();
   return (
-    <div className="card" style={{ marginBottom: 16, padding: 12 }}>
+    <div className="card" style={{ gridColumn: "1 / -1", padding: 12 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: 14 }}>{t("语言") /* Language */}</h3>
-          <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--text-tertiary)" }}>
-            {lang === "zh"
-              ? "切换 UI 显示语言。专有名词（embedding / AI / API 等）在两种语言中保持原样。"
-              : "Switch UI display language. Proper nouns (embedding / AI / API etc.) keep their casing."}
-          </p>
-        </div>
+        <h3 style={{ margin: 0, fontSize: 14 }}>{t("语言")}</h3>
         <div style={{ display: "flex", gap: 6 }}>
           {([
             { key: "zh" as const, label: "中文" },

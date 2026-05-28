@@ -3,6 +3,7 @@ import logging
 import sqlite3
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Body
+from pydantic import BaseModel
 from ..settings import settings
 from ..utils import load_repo_config, get_crawler_db_path
 
@@ -353,6 +354,118 @@ async def opening_ai_summary(body: dict = Body(...)):
     except Exception as e:
         raise HTTPException(502, f"AI 总结调用失败：{e}")
     return {"summary": str(summary or "").strip(), "sample_count": len(rows)}
+
+
+# ─────────── novel CRUD (manual correction surface) ───────────
+
+
+_EDITABLE_NOVEL_COLS = {
+    "author", "intro", "main_category", "status", "total_words", "url",
+}
+
+
+@router.put("/novel/{novel_uid}")
+def update_novel(novel_uid: int, body: dict = Body(...)):
+    """Editable subset of the novels row for manual correction. Only the
+    fields in ``_EDITABLE_NOVEL_COLS`` are accepted; everything else is
+    ignored to avoid the UI shaping crawler-derived identity columns."""
+    con = _get_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    patches = {k: v for k, v in body.items() if k in _EDITABLE_NOVEL_COLS}
+    if not patches:
+        raise HTTPException(400, f"no editable fields. allowed: {sorted(_EDITABLE_NOVEL_COLS)}")
+    with con:
+        row = con.execute(
+            "SELECT novel_uid FROM novels WHERE novel_uid=?",
+            (novel_uid,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "novel not found")
+        sets = ", ".join(f"{k}=?" for k in patches)
+        params = list(patches.values()) + [novel_uid]
+        con.execute(f"UPDATE novels SET {sets} WHERE novel_uid=?", params)
+        con.commit()
+        # Re-read so client sees the canonical post-patch row.
+        updated = dict(con.execute(
+            "SELECT * FROM novels WHERE novel_uid=?", (novel_uid,),
+        ).fetchone())
+    return {"novel": updated, "patched": list(patches.keys())}
+
+
+@router.delete("/novel/{novel_uid}")
+def delete_novel(novel_uid: int):
+    """Hard-delete a novel and all dependent crawler rows (titles, tags,
+    chapters, rank-entry rows). For the manual-correction surface — use
+    carefully."""
+    con = _get_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    with con:
+        row = con.execute(
+            "SELECT novel_uid FROM novels WHERE novel_uid=?",
+            (novel_uid,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "novel not found")
+        for stmt in [
+            "DELETE FROM rank_entries WHERE novel_uid=?",
+            "DELETE FROM novel_tag_map WHERE novel_uid=?",
+            "DELETE FROM novel_titles WHERE novel_uid=?",
+            "DELETE FROM first_n_chapters WHERE novel_uid=?",
+            "DELETE FROM novels WHERE novel_uid=?",
+        ]:
+            try:
+                con.execute(stmt, (novel_uid,))
+            except sqlite3.OperationalError:
+                pass
+        con.commit()
+    return {"ok": True, "novel_uid": novel_uid}
+
+
+class _NewNovelBody(BaseModel):
+    platform: str
+    platform_novel_id: str = ""
+    author: str = ""
+    main_category: str = ""
+    intro: str = ""
+    status: str = "ongoing"
+    total_words: int = 0
+    url: str = ""
+    title: str = ""
+
+
+@router.post("/novel")
+def create_novel(body: _NewNovelBody):
+    """Insert a manually-curated novel row + a primary title (the UI
+    needs a way to fix up the data set when a crawler missed something)."""
+    con = _get_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    if not body.platform.strip():
+        raise HTTPException(400, "platform required")
+    with con:
+        cur = con.execute(
+            """INSERT INTO novels
+               (platform, platform_novel_id, author, intro, main_category,
+                status, total_words, url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (body.platform.strip(), body.platform_novel_id.strip(),
+             body.author.strip(), body.intro.strip(),
+             body.main_category.strip(), body.status.strip(),
+             int(body.total_words or 0), body.url.strip()),
+        )
+        novel_uid = cur.lastrowid
+        if body.title.strip():
+            from datetime import date as _date
+            con.execute(
+                "INSERT INTO novel_titles (novel_uid, title, is_primary, "
+                "first_seen_date, last_seen_date) VALUES (?, ?, 1, ?, ?)",
+                (novel_uid, body.title.strip(),
+                 _date.today().isoformat(), _date.today().isoformat()),
+            )
+        con.commit()
+    return {"novel_uid": novel_uid}
 
 
 @router.get("/info")

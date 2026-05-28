@@ -19,6 +19,8 @@ interface Inspiration {
   updated_at?: string;
 }
 
+import { tInspirationCategory } from "../i18n";
+
 const CATEGORIES: { key: string; label: string; color: string }[] = [
   { key: "scene",         label: "场景",     color: "var(--accent)" },
   { key: "plot_device",   label: "桥段",     color: "var(--gold)" },
@@ -26,7 +28,9 @@ const CATEGORIES: { key: string; label: string; color: string }[] = [
   { key: "worldbuilding", label: "设定",     color: "var(--jade)" },
   { key: "other",         label: "其他",     color: "var(--text-tertiary)" },
 ];
-const catLabel = (k: string) => CATEGORIES.find(c => c.key === k)?.label || k;
+// Route through i18n so labels switch with the language toggle. Falls
+// through to the raw key when the category isn't in the i18n dict.
+const catLabel = (k: string) => tInspirationCategory(k);
 const catColor = (k: string) => CATEGORIES.find(c => c.key === k)?.color || "var(--text-tertiary)";
 
 export default function InspirationLibrary({ onSearchWorks }: {
@@ -132,7 +136,7 @@ export default function InspirationLibrary({ onSearchWorks }: {
               <button key={c.key}
                       className={catFilter === c.key ? "btn-primary" : "btn"}
                       style={{ fontSize: 11, padding: "2px 10px" }}
-                      onClick={() => setCatFilter(c.key)}>{c.label}</button>
+                      onClick={() => setCatFilter(c.key)}>{tInspirationCategory(c.key)}</button>
             ))}
             <div style={{ flex: 1 }} />
             <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
@@ -154,7 +158,7 @@ export default function InspirationLibrary({ onSearchWorks }: {
               <select className="select" value={draft.category}
                       onChange={e => setDraft({ ...draft, category: e.target.value })}
                       style={{ fontSize: 12 }}>
-                {CATEGORIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                {CATEGORIES.map(c => <option key={c.key} value={c.key}>{tInspirationCategory(c.key)}</option>)}
               </select>
             </div>
             <div className="flex items-center gap-8">

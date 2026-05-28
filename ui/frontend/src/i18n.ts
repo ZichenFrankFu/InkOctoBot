@@ -203,6 +203,28 @@ export function t(zh: string): string {
 }
 
 
+/** Domain-specific lookup for inspiration categories. Values are stored
+ *  in the DB as the raw English key ("scene", "plot_device", etc.) but
+ *  the UI should always show the localised label. */
+const INSPIRATION_CATEGORY: Record<string, { zh: string; en: string }> = {
+  scene:         { zh: "场景",     en: "Scene" },
+  plot_device:   { zh: "桥段",     en: "Plot device" },
+  character:     { zh: "人物设计", en: "Character design" },
+  worldbuilding: { zh: "设定",     en: "Worldbuilding" },
+  other:         { zh: "其他",     en: "Other" },
+};
+
+
+/** Resolve an inspiration category key into the active language. Falls
+ *  back to the raw key if it isn't a recognised inspiration category
+ *  (e.g. legacy free-text values). */
+export function tInspirationCategory(key: string): string {
+  const meta = INSPIRATION_CATEGORY[key];
+  if (!meta) return key;
+  return _lang === "en" ? meta.en : meta.zh;
+}
+
+
 // Initialize <html lang="..."> on first import.
 try {
   document.documentElement.setAttribute("lang", _lang);

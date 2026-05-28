@@ -10,6 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet } from "../api/client";
 import { useToast } from "../components/shared/Toast";
+import { t, tInspirationCategory, useLang } from "../i18n";
 
 
 interface Inspiration {
@@ -31,6 +32,7 @@ interface UsageEntry {
 
 export default function InspirationOverviewPage() {
   const { toast } = useToast();
+  useLang();  // re-render on language change
   const [items, setItems] = useState<Inspiration[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -110,7 +112,7 @@ export default function InspirationOverviewPage() {
                   padding: "6px 12px", borderRadius: 12,
                   background: "var(--bg-surface-2)", fontSize: 12,
                 }}>
-                  {cat}: <strong>{n}</strong>
+                  {tInspirationCategory(cat)}: <strong>{n}</strong>
                 </div>
               ))}
           </div>
@@ -143,7 +145,7 @@ export default function InspirationOverviewPage() {
                       title={u.inspiration.content}>
                     {u.inspiration.title || u.inspiration.content.slice(0, 30) + "..."}
                   </td>
-                  <td style={{ padding: "6px" }}>{u.inspiration.category || "—"}</td>
+                  <td style={{ padding: "6px" }}>{u.inspiration.category ? tInspirationCategory(u.inspiration.category) : "—"}</td>
                   <td style={{ padding: "6px" }}><strong>{u.used_chapters.length}</strong></td>
                   <td style={{ padding: "6px", fontSize: 11, color: "var(--text-tertiary)" }}>
                     {u.used_chapters.slice(0, 4).map(c =>
