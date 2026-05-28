@@ -205,6 +205,16 @@ def _insert_project(con: sqlite3.Connection) -> None:
     )
 
 
+def _stable_id(prefix: str, *parts: str) -> str:
+    """Deterministic ID so re-running the seed updates existing rows
+    rather than inserting a new uuid every time (which would silently
+    accumulate duplicates because INSERT OR REPLACE only resolves
+    PRIMARY KEY / UNIQUE collisions)."""
+    import hashlib
+    digest = hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}_{digest}"
+
+
 def _insert_characters(con: sqlite3.Connection) -> None:
     for i, ch in enumerate(_CHARACTERS):
         con.execute(
@@ -214,7 +224,7 @@ def _insert_characters(con: sqlite3.Connection) -> None:
                 layer_a_json, layer_b_json, sort_order)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                f"char_{uuid.uuid4().hex[:8]}", PROJECT_ID,
+                _stable_id("char", PROJECT_ID, ch["name"]), PROJECT_ID,
                 ch["name"], ch["role"], ch["description"],
                 ch["personality"], ch["background"], ch["appearance"],
                 ch["speech_style"],
@@ -232,7 +242,7 @@ def _insert_worldbook(con: sqlite3.Connection) -> None:
                (entry_id, project_id, title, category, content, sort_order)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (
-                f"wb_{uuid.uuid4().hex[:8]}", PROJECT_ID,
+                _stable_id("wb", PROJECT_ID, w["title"]), PROJECT_ID,
                 w["title"], w["category"], w["content"], i,
             ),
         )
@@ -258,6 +268,15 @@ def _insert_chapters(db_path: str) -> None:
             "title":       "第一卷",
             "chapters": [
                 {
+                    # The two keys ARE intentional. ``chapter_id`` is the
+                    # column save_editor_doc writes into the ``chapters``
+                    # table. ``id`` is what ``chapter_fields.py`` (and the
+                    # React frontend) look up when reading the editor doc
+                    # JSON. The two paths use different keys; missing
+                    # either silently breaks the prompt-context loaders
+                    # (worldbook/storyland/special_req all key off the
+                    # synopsis that's only reachable via the ``id`` key).
+                    "id":           ch["chapter_id"],
                     "chapter_id":   ch["chapter_id"],
                     "order":        ch["chapter_num"] - 1,
                     "title":        ch["title"],
@@ -297,8 +316,9 @@ def _insert_subplots(con: sqlite3.Connection) -> None:
                     (thread_id, project_id, name, description,
                      start_chapter)
                     VALUES (?, ?, ?, ?, ?)""",
-                (f"sp_{uuid.uuid4().hex[:8]}", PROJECT_ID,
-                 payload["name"], payload["description"], 1),
+                (_stable_id("sp", PROJECT_ID, payload["name"]),
+                 PROJECT_ID, payload["name"],
+                 payload["description"], 1),
             )
         except sqlite3.Error:
             # Table absent or schema-mismatched — subplots are

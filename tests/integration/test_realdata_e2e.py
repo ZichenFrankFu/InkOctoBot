@@ -75,6 +75,39 @@ class TestSeedFixture(unittest.TestCase):
                 {"启明号空间站", "曲率残响"},
             )
 
+    def test_repeated_seed_does_not_duplicate(self) -> None:
+        """Running --seed twice in a row must not double up rows.
+        Earlier the seed used fresh uuids per call, so INSERT OR
+        REPLACE never matched and every re-run added another copy of
+        every character / worldbook / subplot — which then showed up
+        as duplicates in the assembled prompt."""
+        db, _ = _fresh_db_with_seed()
+        seed_project(db)  # second run
+        seed_project(db)  # third run
+        with sqlite3.connect(db) as con:
+            con.row_factory = sqlite3.Row
+            n_chars = con.execute(
+                "SELECT COUNT(*) FROM characters WHERE project_id='rt_proj'"
+            ).fetchone()[0]
+            n_wb = con.execute(
+                "SELECT COUNT(*) FROM worldbook_entries "
+                "WHERE project_id='rt_proj'"
+            ).fetchone()[0]
+            try:
+                n_sub = con.execute(
+                    "SELECT COUNT(*) FROM subplot_threads "
+                    "WHERE project_id='rt_proj'"
+                ).fetchone()[0]
+            except sqlite3.OperationalError:
+                n_sub = 0
+        self.assertEqual(n_chars, 2,
+                         "characters duplicated across seed runs")
+        self.assertEqual(n_wb, 2,
+                         "worldbook duplicated across seed runs")
+        if n_sub:
+            self.assertEqual(n_sub, 1,
+                             "subplot duplicated across seed runs")
+
     def test_seed_populates_editor_blob_for_ui(self) -> None:
         """The UI editor page reads ``project_blobs(scope='editor')``;
         an empty blob renders an empty chapter tree and crashes
@@ -93,6 +126,28 @@ class TestSeedFixture(unittest.TestCase):
                         "special_requirements"):
                 self.assertIn(key, ch)
             self.assertIsInstance(ch["characters"], list)
+
+    def test_load_chapter_fields_finds_seeded_synopsis(self) -> None:
+        """Regression: ``chapter_fields.py`` keys off ``ch.get("id")``
+        while ``save_editor_doc`` writes ``ch.get("chapter_id")``. The
+        seed must include BOTH so loaders downstream of the editor
+        doc can actually find the chapter's synopsis (without it the
+        worldbook + storyland + special_req loaders all silently
+        return None → those blocks disappear from the prompt)."""
+        db, _ = _fresh_db_with_seed()
+        with mock.patch(
+            "ui.backend.app.services.project_paths.get_db_path",
+            return_value=db,
+        ):
+            from ui.backend.app.services.prompt_context.chapter_fields \
+                import load_chapter_fields
+            fields = load_chapter_fields("rt_proj", "rt_ch1")
+        self.assertTrue(fields["synopsis"],
+                        "synopsis must be reachable via chapter_fields")
+        self.assertIn("启明号", fields["synopsis"])
+        self.assertIn("舱段", fields["special_requirements"])
+        self.assertEqual(fields["location"], "启明号·主控舱")
+        self.assertIn("林越", fields["characters"])
 
     def test_seed_chapters_have_special_requirements(self) -> None:
         db, _ = _fresh_db_with_seed()
