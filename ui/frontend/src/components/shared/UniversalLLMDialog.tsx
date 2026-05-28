@@ -116,9 +116,12 @@ export default function UniversalLLMDialog({
     }
   }, [open]);
 
-  if (!open) return null;
-
   // ── actions ──
+  // NOTE: every hook below MUST run on every render — the early
+  // ``if (!open) return null`` lives at the bottom of the function so
+  // hook count stays constant whether the dialog is mounted-but-hidden
+  // or visible. Putting hooks after a conditional return produces
+  // React error #310 the first time ``open`` flips.
 
   const startApi = useCallback(async () => {
     if (!invokeApi) {
@@ -218,6 +221,8 @@ export default function UniversalLLMDialog({
   }, [responseText, minChars, onCommit, mode, parsed, prompt, system, onClose]);
 
   // ── render ──
+
+  if (!open) return null;
 
   return (
     <div

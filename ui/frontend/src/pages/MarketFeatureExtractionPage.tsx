@@ -329,6 +329,8 @@ export default function MarketFeatureExtractionPage() {
     setLoading(false);
   }, [refreshJobs, refreshProfiles, refreshWorks, platform, category]);
 
+  const SELECTION_OK = !!platform && !!category;
+
   return (
     <div className="page-container" style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto" }}>
       <div className="page-header" style={{ paddingBottom: 12 }}>
@@ -342,30 +344,33 @@ export default function MarketFeatureExtractionPage() {
         </div>
       </div>
 
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "340px 1fr",
-        gap: 16,
-        alignItems: "start",
-      }}>
-        {/* LEFT — Launch panel */}
-        <div className="card" style={{ padding: 14 }}>
-          <h3 style={{ marginTop: 0, fontSize: 14 }}>启动新任务</h3>
+      <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 18, alignItems: "start" }}>
+        {/* ════════════ LEFT: configurator + launch ════════════ */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
-          <div style={{ marginTop: 12 }}>
-            <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-              平台 ({platforms.length}) — 自动从市场库读取
-            </label>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4, maxHeight: 96, overflowY: "auto" }}>
+          {/* Step 1 — platform */}
+          <div className="card" style={{ padding: 16, borderTop: "3px solid var(--accent)" }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
+              <h3 style={{ margin: 0, fontSize: 14 }}>
+                <span style={{
+                  display: "inline-block", width: 22, height: 22, borderRadius: "50%",
+                  background: "var(--accent)", color: "white", fontSize: 12, fontWeight: 700,
+                  textAlign: "center", lineHeight: "22px", marginRight: 8,
+                }}>1</span>
+                选择平台
+              </h3>
+              <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{platforms.length} 个</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 120, overflowY: "auto" }}>
               {platforms.length === 0 ? (
-                <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                  未读到平台。请先在设置页配置市场数据库路径。
+                <span style={{ fontSize: 12, color: "var(--text-tertiary)", padding: 8 }}>
+                  未读到平台 — 检查 Settings → 市场数据库路径
                 </span>
               ) : platforms.map(p => (
                 <button
                   key={p.key}
                   className={platform === p.key ? "btn-primary" : "btn"}
-                  style={{ fontSize: 11, padding: "3px 10px" }}
+                  style={{ fontSize: 12, padding: "5px 14px", borderRadius: 20 }}
                   onClick={() => setPlatform(p.key)}
                   title={`${p.book_count} 本作品`}
                 >{tPlatform(p.key)}</button>
@@ -373,20 +378,35 @@ export default function MarketFeatureExtractionPage() {
             </div>
           </div>
 
-          <div style={{ marginTop: 14 }}>
-            <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-              榜单 / 类别 ({categories.length})
-            </label>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4, maxHeight: 140, overflowY: "auto" }}>
+          {/* Step 2 — category */}
+          <div className="card" style={{
+            padding: 16,
+            borderTop: `3px solid ${platform ? "var(--gold)" : "var(--border)"}`,
+            opacity: platform ? 1 : 0.5,
+            transition: "opacity 0.18s",
+          }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
+              <h3 style={{ margin: 0, fontSize: 14 }}>
+                <span style={{
+                  display: "inline-block", width: 22, height: 22, borderRadius: "50%",
+                  background: platform ? "var(--gold)" : "var(--text-disabled)",
+                  color: "white", fontSize: 12, fontWeight: 700,
+                  textAlign: "center", lineHeight: "22px", marginRight: 8,
+                }}>2</span>
+                选择榜单
+              </h3>
+              <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{categories.length} 个</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 200, overflowY: "auto" }}>
               {categories.length === 0 ? (
-                <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                  选定平台后这里会出现该平台的所有 rank list。
+                <span style={{ fontSize: 12, color: "var(--text-tertiary)", padding: 8 }}>
+                  {platform ? "该平台还没有榜单数据" : "先选定平台"}
                 </span>
               ) : categories.map(c => (
                 <button
                   key={c.key}
                   className={category === c.key ? "btn-primary" : "btn"}
-                  style={{ fontSize: 11, padding: "3px 10px" }}
+                  style={{ fontSize: 11, padding: "4px 12px", borderRadius: 16 }}
                   onClick={() => setCategory(c.key)}
                   title={`${c.list_count} 个榜单`}
                 >{c.label}</button>
@@ -394,62 +414,116 @@ export default function MarketFeatureExtractionPage() {
             </div>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16 }}>
-            <button
-              className="btn-primary"
-              onClick={launchJob}
-              disabled={launching || !platform || !category}
-              style={{ width: "100%", padding: "8px 0" }}
-            >
-              {launching ? "启动中..." : "API 模式: 启动 LLM 提取"}
-            </button>
-            <button
-              className="btn"
-              onClick={startManualMode}
-              disabled={!platform || !category}
-              style={{ width: "100%", padding: "8px 0" }}
-            >
-              手动模式: 复制 prompt 跑网页 LLM
-            </button>
+          {/* Step 3 — launch */}
+          <div className="card" style={{
+            padding: 16,
+            borderTop: `3px solid ${SELECTION_OK ? "var(--jade)" : "var(--border)"}`,
+            opacity: SELECTION_OK ? 1 : 0.5,
+            transition: "opacity 0.18s",
+          }}>
+            <h3 style={{ margin: "0 0 12px", fontSize: 14 }}>
+              <span style={{
+                display: "inline-block", width: 22, height: 22, borderRadius: "50%",
+                background: SELECTION_OK ? "var(--jade)" : "var(--text-disabled)",
+                color: "white", fontSize: 12, fontWeight: 700,
+                textAlign: "center", lineHeight: "22px", marginRight: 8,
+              }}>3</span>
+              启动提取
+            </h3>
+            {SELECTION_OK && (
+              <div style={{
+                padding: 10, marginBottom: 12,
+                background: "var(--bg-surface-2)", borderRadius: 6,
+                fontSize: 12, color: "var(--text-secondary)",
+              }}>
+                <strong>{tPlatform(platform)}</strong>
+                <span style={{ color: "var(--text-tertiary)", margin: "0 6px" }}>×</span>
+                <strong>{category}</strong>
+              </div>
+            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <button
+                className="btn-primary"
+                onClick={launchJob}
+                disabled={launching || !SELECTION_OK}
+                style={{ width: "100%", padding: "10px 0", fontSize: 13, fontWeight: 600 }}
+              >
+                {launching ? "启动中..." : "API 模式"}
+              </button>
+              <button
+                className="btn"
+                onClick={startManualMode}
+                disabled={!SELECTION_OK}
+                style={{ width: "100%", padding: "10px 0", fontSize: 13 }}
+              >
+                手动模式
+              </button>
+            </div>
           </div>
-
         </div>
 
         {/* RIGHT — Results tabs */}
-        <div className="card" style={{ padding: 0 }}>
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           <div style={{
-            display: "flex", gap: 0,
+            display: "flex", gap: 4, alignItems: "center",
             borderBottom: "1px solid var(--border)",
-            padding: "0 12px", paddingTop: 8,
+            padding: "10px 14px 0",
+            background: "var(--bg-surface-2)",
           }}>
             {([
-              { key: "jobs" as const,     label: `任务 (${jobs.length})` },
-              { key: "profiles" as const, label: `平台 Profile (${platformProfiles.length})` },
-              { key: "loader" as const,   label: "Loader 注入预览" },
-              { key: "works" as const,    label: `代表作 (${works.length})` },
-              { key: "preview" as const,  label: selectedWork ? `预览: ${selectedWork.title || selectedWork.work_id.slice(0, 6)}` : "预览" },
-            ]).map(t => (
-              <button
-                key={t.key}
-                onClick={() => setTab(t.key)}
-                disabled={t.key === "preview" && !selectedWork}
-                style={{
-                  padding: "8px 16px",
-                  fontSize: 12,
-                  fontWeight: tab === t.key ? 600 : 400,
-                  color: tab === t.key ? "var(--accent)" : "var(--text-secondary)",
-                  background: "none",
-                  border: "none",
-                  borderBottom: tab === t.key ? "2px solid var(--accent)" : "2px solid transparent",
-                  cursor: t.key === "preview" && !selectedWork ? "not-allowed" : "pointer",
-                  marginBottom: -1,
-                  opacity: t.key === "preview" && !selectedWork ? 0.4 : 1,
-                }}
-              >{t.label}</button>
-            ))}
+              { key: "jobs" as const,     label: "任务",            count: jobs.length },
+              { key: "profiles" as const, label: "平台 Profile",     count: platformProfiles.length },
+              { key: "loader" as const,   label: "Loader 注入预览",  count: null as number | null },
+              { key: "works" as const,    label: "代表作",          count: works.length },
+              { key: "preview" as const,
+                label: selectedWork ? `预览·${selectedWork.title || selectedWork.work_id.slice(0, 6)}` : "预览",
+                count: null as number | null },
+            ]).map(t => {
+              const active = tab === t.key;
+              const disabled = t.key === "preview" && !selectedWork;
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  disabled={disabled}
+                  style={{
+                    padding: "8px 14px",
+                    fontSize: 12,
+                    fontWeight: active ? 600 : 500,
+                    color: active ? "var(--accent)" : "var(--text-secondary)",
+                    background: active ? "var(--bg-surface)" : "transparent",
+                    border: "1px solid",
+                    borderColor: active ? "var(--border)" : "transparent",
+                    borderBottomColor: active ? "var(--bg-surface)" : "transparent",
+                    borderRadius: "6px 6px 0 0",
+                    cursor: disabled ? "not-allowed" : "pointer",
+                    marginBottom: -1,
+                    opacity: disabled ? 0.4 : 1,
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                    transition: "background 0.15s, color 0.15s",
+                  }}
+                >
+                  {t.label}
+                  {t.count !== null && (
+                    <span style={{
+                      display: "inline-block",
+                      minWidth: 18,
+                      padding: "1px 6px",
+                      borderRadius: 9,
+                      background: active ? "var(--accent)" : "var(--bg-surface-2)",
+                      color: active ? "white" : "var(--text-tertiary)",
+                      fontSize: 10,
+                      fontWeight: 600,
+                      textAlign: "center",
+                      lineHeight: "14px",
+                    }}>{t.count}</span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
-          <div style={{ padding: 14, minHeight: 380 }}>
+          <div style={{ padding: 18, minHeight: 420, background: "var(--bg-surface)" }}>
             {tab === "jobs" && <JobsTab jobs={jobs} onCancel={cancelJob} />}
             {tab === "profiles" && <ProfilesTab profiles={platformProfiles} />}
             {tab === "loader" && <LoaderPreviewTab platform={platform} category={category} profiles={platformProfiles} />}
@@ -477,23 +551,35 @@ export default function MarketFeatureExtractionPage() {
       <OpeningAnalysisPanel platform={platform} />
 
       {/* AI 总结开篇技巧 — moved from RankingsPage */}
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-header">
-          <h3 style={{ margin: 0, fontSize: 14 }}>AI 总结开篇技巧（基于已爬取的开篇章节正文）</h3>
+      <div className="card" style={{ marginTop: 16, borderTop: "3px solid var(--accent)" }}>
+        <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0, fontSize: 14 }}>AI 总结开篇技巧</h3>
+          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>基于已爬取的开篇章节正文</span>
         </div>
         <div className="card-body">
           <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn-primary" onClick={runOpeningSummary}>
+            <button
+              className="btn-primary"
+              onClick={runOpeningSummary}
+              style={{ padding: "8px 18px", borderRadius: 18, fontSize: 13 }}
+            >
               生成 prompt 并打开对话框
             </button>
             {openingSummary && (
-              <button className="btn" onClick={() => setOpeningSummary("")}>清空结果</button>
+              <button
+                className="btn"
+                onClick={() => setOpeningSummary("")}
+                style={{ padding: "8px 18px", borderRadius: 18, fontSize: 13 }}
+              >清空结果</button>
             )}
           </div>
           {openingSummary && (
             <div style={{
-              marginTop: 12, padding: 12, background: "var(--bg-surface-2)",
-              borderRadius: 4, fontSize: 13, lineHeight: 1.7,
+              marginTop: 12, padding: 14,
+              background: "var(--bg-surface-2)",
+              border: "1px solid var(--border)",
+              borderLeft: "3px solid var(--accent)",
+              borderRadius: 6, fontSize: 13, lineHeight: 1.7,
               whiteSpace: "pre-wrap",
             }}>{openingSummary}</div>
           )}
@@ -534,48 +620,85 @@ function JobsTab({ jobs, onCancel }: { jobs: Job[]; onCancel: (id: string) => vo
     return <Empty msg="还没有任何任务。在左侧选好平台 + 榜单后点「API 模式」或「手动模式」。" />;
   }
   return (
-    <table style={{ width: "100%", fontSize: 12 }}>
-      <thead>
-        <tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
-          <th style={{ padding: "6px" }}>Job</th>
-          <th style={{ padding: "6px" }}>平台</th>
-          <th style={{ padding: "6px" }}>榜单</th>
-          <th style={{ padding: "6px" }}>状态</th>
-          <th style={{ padding: "6px" }}>进度</th>
-          <th style={{ padding: "6px" }}>开始</th>
-          <th style={{ padding: "6px" }}>结束</th>
-          <th style={{ padding: "6px" }}></th>
-        </tr>
-      </thead>
-      <tbody>
-        {jobs.map(j => (
-          <tr key={j.job_id} style={{ borderTop: "1px solid var(--border)" }}>
-            <td style={{ padding: "6px" }}><code style={{ fontSize: 11 }}>{j.job_id.slice(0, 10)}</code></td>
-            <td style={{ padding: "6px" }}>{j.platform || "—"}</td>
-            <td style={{ padding: "6px" }}>{j.category || "—"}</td>
-            <td style={{ padding: "6px", color: STATE_COLOR[j.state || ""] || undefined }}>
-              {j.state || "—"}
-              {j.progress_phase && j.state?.startsWith("running") && (
-                <span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>
-                  ({j.progress_phase})
-                </span>
-              )}
-            </td>
-            <td style={{ padding: "6px" }}>{typeof j.progress_pct === "number" ? `${Math.round(j.progress_pct)}%` : "—"}</td>
-            <td style={{ padding: "6px" }}>{j.started_at || "—"}</td>
-            <td style={{ padding: "6px" }}>{j.completed_at || "—"}</td>
-            <td style={{ padding: "6px", textAlign: "right" }}>
-              {isActive(j.state) && (
-                <button className="btn" style={{ fontSize: 11, padding: "2px 10px" }}
-                        onClick={() => onCancel(j.job_id)}>
-                  取消
-                </button>
-              )}
-            </td>
+    <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={{
+            color: "var(--text-tertiary)", textAlign: "left",
+            background: "var(--bg-surface-2)",
+            fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5,
+          }}>
+            <th style={{ padding: "8px 10px" }}>Job</th>
+            <th style={{ padding: "8px 10px" }}>平台</th>
+            <th style={{ padding: "8px 10px" }}>榜单</th>
+            <th style={{ padding: "8px 10px" }}>状态</th>
+            <th style={{ padding: "8px 10px" }}>进度</th>
+            <th style={{ padding: "8px 10px" }}>开始</th>
+            <th style={{ padding: "8px 10px" }}>结束</th>
+            <th style={{ padding: "8px 10px" }}></th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {jobs.map(j => {
+            const pct = typeof j.progress_pct === "number" ? Math.round(j.progress_pct) : null;
+            const stateColor = STATE_COLOR[j.state || ""] || "var(--text-secondary)";
+            return (
+              <tr key={j.job_id} style={{ borderTop: "1px solid var(--border)" }}>
+                <td style={{ padding: "8px 10px" }}>
+                  <code style={{ fontSize: 11, color: "var(--text-secondary)" }}>{j.job_id.slice(0, 10)}</code>
+                </td>
+                <td style={{ padding: "8px 10px" }}>{j.platform ? tPlatform(j.platform) : "—"}</td>
+                <td style={{ padding: "8px 10px" }}>{j.category || "—"}</td>
+                <td style={{ padding: "8px 10px" }}>
+                  <span style={{
+                    display: "inline-block",
+                    padding: "2px 8px",
+                    borderRadius: 10,
+                    background: `color-mix(in srgb, ${stateColor} 14%, transparent)`,
+                    color: stateColor,
+                    fontSize: 11,
+                    fontWeight: 600,
+                  }}>{j.state || "—"}</span>
+                  {j.progress_phase && j.state?.startsWith("running") && (
+                    <span style={{ color: "var(--text-tertiary)", marginLeft: 6, fontSize: 11 }}>
+                      {j.progress_phase}
+                    </span>
+                  )}
+                </td>
+                <td style={{ padding: "8px 10px", minWidth: 90 }}>
+                  {pct !== null ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{
+                        flex: 1, height: 6,
+                        background: "var(--bg-surface-2)",
+                        borderRadius: 3, overflow: "hidden", minWidth: 50,
+                      }}>
+                        <div style={{
+                          width: `${pct}%`, height: "100%",
+                          background: stateColor, transition: "width 0.3s",
+                        }} />
+                      </div>
+                      <span style={{ fontSize: 11, fontFamily: "var(--font-mono)" }}>{pct}%</span>
+                    </div>
+                  ) : "—"}
+                </td>
+                <td style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)" }}>{j.started_at || "—"}</td>
+                <td style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)" }}>{j.completed_at || "—"}</td>
+                <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                  {isActive(j.state) && (
+                    <button className="btn"
+                            style={{ fontSize: 11, padding: "3px 12px", borderRadius: 12 }}
+                            onClick={() => onCancel(j.job_id)}>
+                      取消
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -935,7 +1058,14 @@ function OpeningAnalysisPanel({ platform }: { platform: string }) {
 function Empty({ msg }: { msg: string }) {
   return (
     <div style={{
-      padding: 36, textAlign: "center", color: "var(--text-tertiary)", fontSize: 12,
+      padding: "48px 24px",
+      textAlign: "center",
+      color: "var(--text-tertiary)",
+      fontSize: 13,
+      lineHeight: 1.6,
+      background: "var(--bg-surface-2)",
+      border: "1px dashed var(--border)",
+      borderRadius: 8,
     }}>{msg}</div>
   );
 }
