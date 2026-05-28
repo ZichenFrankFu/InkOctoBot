@@ -38,6 +38,10 @@ export default function InspirationLibrary({ onSearchWorks }: {
   const [items, setItems] = useState<Inspiration[]>([]);
   const [loading, setLoading] = useState(false);
   const [catFilter, setCatFilter] = useState("");
+  // Text search filter — kept lightweight (no server round-trip, no
+  // embedding cosine). For semantic cross-work search, the user can
+  // jump to 灵感搜索 page (or click "搜索参考作品" on any card).
+  const [textFilter, setTextFilter] = useState("");
   // draft being added/edited; id === "" means a new inspiration.
   const [draft, setDraft] = useState<Inspiration | null>(null);
   const [saving, setSaving] = useState(false);
@@ -87,32 +91,57 @@ export default function InspirationLibrary({ onSearchWorks }: {
     }
   };
 
-  const shown = items.filter(it => !catFilter || it.category === catFilter);
+  const q = textFilter.trim().toLowerCase();
+  const shown = items.filter(it => {
+    if (catFilter && it.category !== catFilter) return false;
+    if (!q) return true;
+    return (it.title || "").toLowerCase().includes(q)
+        || (it.content || "").toLowerCase().includes(q);
+  });
 
   return (
     <>
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-body">
-          <div className="flex gap-8 items-center" style={{ flexWrap: "wrap" }}>
-            <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
-              <button className={catFilter === "" ? "btn-primary" : "btn"}
-                      style={{ fontSize: 11, padding: "2px 10px" }}
-                      onClick={() => setCatFilter("")}>全部</button>
-              {CATEGORIES.map(c => (
-                <button key={c.key}
-                        className={catFilter === c.key ? "btn-primary" : "btn"}
-                        style={{ fontSize: 11, padding: "2px 10px" }}
-                        onClick={() => setCatFilter(c.key)}>{c.label}</button>
-              ))}
-            </div>
-            <div style={{ flex: 1 }} />
+          {/* Top row: search box + add button */}
+          <div className="flex gap-8 items-center" style={{ flexWrap: "wrap", marginBottom: 10 }}>
+            <input
+              className="input"
+              type="text"
+              placeholder="搜索灵感（标题或正文）..."
+              value={textFilter}
+              onChange={e => setTextFilter(e.target.value)}
+              style={{ flex: 1, minWidth: 240, padding: "6px 12px", fontSize: 13 }}
+            />
+            {textFilter && (
+              <button className="btn"
+                      style={{ fontSize: 11, padding: "4px 10px" }}
+                      onClick={() => setTextFilter("")}>清除</button>
+            )}
             <button className="btn-primary"
                     onClick={() => setDraft({ id: "", category: "scene", title: "", content: "" })}>
               + 添加灵感
             </button>
           </div>
+          {/* Category row */}
+          <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
+            <button className={catFilter === "" ? "btn-primary" : "btn"}
+                    style={{ fontSize: 11, padding: "2px 10px" }}
+                    onClick={() => setCatFilter("")}>全部</button>
+            {CATEGORIES.map(c => (
+              <button key={c.key}
+                      className={catFilter === c.key ? "btn-primary" : "btn"}
+                      style={{ fontSize: 11, padding: "2px 10px" }}
+                      onClick={() => setCatFilter(c.key)}>{c.label}</button>
+            ))}
+            <div style={{ flex: 1 }} />
+            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+              {shown.length} / {items.length}
+            </span>
+          </div>
           <div className="text-xs text-muted" style={{ marginTop: 8, lineHeight: 1.55 }}>
-            把想到的场景、桥段、人物设计等记到灵感库；在任意一条灵感上点「搜索参考作品」即可用它的内容跨作品模糊检索相似的片段。
+            灵感库默认显示全部条目；搜索框为本地模糊匹配（标题/正文）。
+            如需跨参考作品做语义搜索，请在任意一条灵感上点「搜索参考作品」按钮。
           </div>
         </div>
       </div>

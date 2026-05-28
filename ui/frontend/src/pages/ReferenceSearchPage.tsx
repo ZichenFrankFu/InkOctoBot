@@ -3,7 +3,6 @@ import { apiGet, apiPost } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { ReferenceWork } from "../api/types";
-import InspirationLibrary from "../components/InspirationLibrary";
 import CompareWorksPanel from "../components/CompareWorksPanel";
 
 interface SearchHit {
@@ -54,7 +53,7 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   error:   { label: "出错",   color: "var(--error)" },
 };
 
-type RsTab = "search" | "library" | "index" | "compare";
+type RsTab = "search" | "index" | "compare";
 
 interface Props {
   onNavigate?: (tab: string) => void;
@@ -257,12 +256,9 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
       {!hideTabs && (
       <div className="flex" style={{ marginBottom: 12, gap: 4, borderBottom: "1px solid var(--border)" }}>
         {([
-          // Note: 灵感搜索 tab is renamed to "参考作品搜索" per the spec —
-          // the search is semantic-over-reference-works, despite the
-          // historical name. 灵感搜索 and 灵感库 are also mounted as
-          // dedicated top-level pages under the 灵感数据库 nav group.
+          // 灵感库 tab removed — promoted to a dedicated page in the
+          // 灵感数据库 nav group (see InspirationLibraryPage).
           { key: "search"  as const, label: "参考作品搜索" },
-          { key: "library" as const, label: "灵感库" },
           { key: "compare" as const, label: "作品对比" },
           { key: "index"   as const, label: `索引管理 · ${works.length} 部作品` },
         ]).map(t => (
@@ -371,16 +367,7 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
         </>
       )}
 
-      {activeTab === "library" && (
-        <InspirationLibrary onSearchWorks={(text) => {
-          // Cap the query — embedding models truncate long input anyway
-          // and an over-long URL query param is best avoided.
-          const query = text.trim().slice(0, 600);
-          setQ(query);
-          setActiveTab("search");
-          runSearch(query);
-        }} />
-      )}
+      {/* 灵感库 tab removed — see InspirationLibraryPage. */}
 
       {activeTab === "index" && (
         <>

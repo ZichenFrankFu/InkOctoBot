@@ -33,7 +33,8 @@ import TruthReviewPage from "./pages/TruthReviewPage";
 import MarketOverviewPage from "./pages/MarketOverviewPage";
 import MarketFeatureExtractionPage from "./pages/MarketFeatureExtractionPage";
 import InspirationOverviewPage from "./pages/InspirationOverviewPage";
-import InspirationSearchPage from "./pages/InspirationSearchPage";
+// 灵感搜索 merged into 灵感库 — InspirationSearchPage kept as a thin
+// wrapper but no longer mounted directly from the nav.
 import InspirationLibraryPage from "./pages/InspirationLibraryPage";
 
 type Tab =
@@ -67,8 +68,9 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     items: [
       // 市场总览 = 榜单 + 分析（合并）
       { key: "market-overview", icon: "≡", label: "市场总览" },
-      { key: "market-search",   icon: "⌕", label: "市场作品搜索" },
+      // 市场特征提取 before 市场作品搜索 per latest UX call.
       { key: "market-features", icon: "△", label: "市场特征提取" },
+      { key: "market-search",   icon: "⌕", label: "市场作品搜索" },
     ],
   },
   {
@@ -85,7 +87,8 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     section: "灵感数据库",
     items: [
       { key: "inspiration-overview", icon: "▣", label: "灵感总览" },
-      { key: "inspiration-search",   icon: "⌕", label: "灵感搜索" },
+      // 灵感搜索 merged INTO 灵感库 (default shows all + search box).
+      // Cross-work semantic search is still available from any card.
       { key: "inspiration-library",  icon: "✦", label: "灵感库" },
     ],
   },
@@ -265,8 +268,9 @@ function AppInner() {
 
         {/* 灵感数据库 (NEW) */}
         {tab === "inspiration-overview" && <ErrorBoundary key="inspiration-overview"><InspirationOverviewPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
-        {tab === "inspiration-search"   && <ErrorBoundary key="inspiration-search"><InspirationSearchPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "inspiration-library"  && <ErrorBoundary key="inspiration-library"><InspirationLibraryPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {/* Legacy alias — old links to 灵感搜索 now land in the merged 灵感库 */}
+        {tab === "inspiration-search"   && <ErrorBoundary key="inspiration-search"><InspirationLibraryPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
 
         {/* 创作 */}
         {tab === "projects"      && <ErrorBoundary key="projects"><ProjectListPage activeProject={activeProject} onSelectProject={setActiveProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}

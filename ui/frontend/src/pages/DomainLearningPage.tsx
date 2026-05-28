@@ -213,7 +213,7 @@ export default function DomainLearningPage({ projectId }: Props) {
     <div className="page" style={{ padding: 16 }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div>
-          <h2 style={{ margin: 0 }}>🧠 领域知识（自学习）</h2>
+          <h2 style={{ margin: 0 }}> 领域知识（自学习）</h2>
           <p style={{ color: "var(--text-tertiary)", fontSize: 12, margin: "4px 0 0" }}>
             当你的编辑反复要求某个专业方向（如航天/法律/医学），系统会建议补充该领域知识。
             审阅+保存后，相关章节生成会自动注入此知识作为创作质感参考。
@@ -262,12 +262,12 @@ export default function DomainLearningPage({ projectId }: Props) {
           padding: 16, marginBottom: 16,
           border: "2px solid var(--gold)", background: "var(--bg-surface-2)",
         }}>
-          <h3 style={{ marginTop: 0 }}>📝 手动编译 — 把下面 prompt 拿去网页 LLM</h3>
+          <h3 style={{ marginTop: 0 }}> 手动编译 — 把下面 prompt 拿去网页 LLM</h3>
           <div style={{ marginBottom: 8 }}>
             <button className="btn-sm" onClick={() => {
               navigator.clipboard.writeText(manualPrompt);
               toast("已复制", "success");
-            }}>📋 复制 prompt</button>
+            }}> 复制 prompt</button>
           </div>
           <details>
             <summary style={{ cursor: "pointer", fontSize: 12, marginBottom: 6 }}>查看 prompt</summary>
@@ -356,7 +356,7 @@ export default function DomainLearningPage({ projectId }: Props) {
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <div>
                 <h4 style={{ margin: 0 }}>
-                  ✅ {s.domain}
+                   {s.domain}
                   {s.skill_name && <span style={{ fontSize: 11, marginLeft: 8, color: "var(--text-tertiary)" }}>skill: <code>{s.skill_name}</code></span>}
                 </h4>
                 <p style={{ fontSize: 12, color: "var(--text-tertiary)", margin: "4px 0 0" }}>
@@ -437,7 +437,7 @@ function ReviewModal({
         overflow: "auto", background: "var(--bg-surface)",
       }} onClick={e => e.stopPropagation()}>
         <h2 style={{ marginTop: 0 }}>
-          {isAccepted ? "📚" : "🔍"} {review.domain}
+          {isAccepted ? "" : ""} {review.domain}
           {review.sub_domain && <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}> / {review.sub_domain}</span>}
         </h2>
         <p style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
@@ -448,7 +448,7 @@ function ReviewModal({
           fontSize: 12, borderRadius: 4, marginBottom: 12,
           border: "1px solid var(--gold)",
         }}>
-          ⚠️ 本内容由 AI 综合搜索结果编译，<strong>非权威来源</strong>。
+           本内容由 AI 综合搜索结果编译，<strong>非权威来源</strong>。
           仅供创作质感参考。你可以直接采纳，也可以改后再采纳——不要求你判断真伪。
         </div>
         <textarea

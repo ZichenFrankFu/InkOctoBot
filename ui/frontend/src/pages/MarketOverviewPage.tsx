@@ -27,8 +27,8 @@ export default function MarketOverviewPage() {
         background: "var(--bg-surface)",
       }}>
         {([
-          { key: "rankings" as const, label: "📊 榜单", desc: "逐级浏览各平台榜单" },
-          { key: "analysis" as const, label: "📈 分析", desc: "热度趋势 · 标签共现 · 双点分析" },
+          { key: "rankings" as const, label: " 榜单", desc: "逐级浏览各平台榜单" },
+          { key: "analysis" as const, label: " 分析", desc: "热度趋势 · 标签共现 · 双点分析" },
         ]).map(t => (
           <button
             key={t.key}

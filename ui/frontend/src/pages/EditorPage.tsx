@@ -114,7 +114,7 @@ const MIN_SAVE_CHARS = 50;
 /** Returns true if the user wants to save anyway, false to abort. */
 function confirmShortSave(chars: number): boolean {
   return window.confirm(
-    `⚠️ 内容只有 ${chars} 字 (< ${MIN_SAVE_CHARS} 字推荐下限)。\n\n` +
+    ` 内容只有 ${chars} 字 (< ${MIN_SAVE_CHARS} 字推荐下限)。\n\n` +
     `这是过去几次"text_versions 0 字符"灾难的根因。常见原因：\n` +
     `  • LLM 调用其实没返回内容\n` +
     `  • 粘贴到了错误的输入框\n` +
@@ -1308,7 +1308,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         }}
         aria-label="Open inspector drawer"
       >
-        🔍
+        
       </button>
 
       <EditorRightDrawer
@@ -1569,7 +1569,7 @@ function EventRow({ ev, on, onToggle }: {
   return (
     <div style={{ borderBottom: "1px solid var(--border)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
-        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--gold)", fontWeight: 700 }}>{on ? "✓" : ""}</span>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--gold)", fontWeight: 700 }}>{on ? "" : ""}</span>
         {ev.chapter && (
           <span style={{
             fontSize: 9, padding: "0 5px", flexShrink: 0, borderRadius: 3,
@@ -1618,7 +1618,7 @@ function PickRow({ label, sub, on, color, onClick }: {
       borderBottom: "1px solid var(--border)",
       background: on ? "var(--bg-surface)" : "transparent",
     }}>
-      <span style={{ width: 11, flexShrink: 0, color, fontWeight: 700 }}>{on ? "✓" : ""}</span>
+      <span style={{ width: 11, flexShrink: 0, color, fontWeight: 700 }}>{on ? "" : ""}</span>
       <span style={{
         flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
         fontWeight: on ? 600 : 400, color: on ? color : "var(--text-secondary)",
@@ -2558,7 +2558,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                               onMouseEnter={e => { e.currentTarget.style.borderColor = isContinue ? "var(--jade)" : "var(--accent)"; e.currentTarget.style.background = isContinue ? "rgba(76,175,80,0.15)" : "var(--accent-subtle)"; }}
                               onMouseLeave={e => { e.currentTarget.style.borderColor = isContinue ? "var(--jade)" : "var(--border)"; e.currentTarget.style.background = isContinue ? "rgba(76,175,80,0.08)" : "var(--bg-surface)"; }}
                             >
-                              {isContinue ? `✓ ${opt}` : opt}
+                              {isContinue ? ` ${opt}` : opt}
                             </button>
                           );
                         })}
@@ -2895,14 +2895,14 @@ function DiffView({ oldText, newText, onAccept, onCancel }: {
                   style={{ fontSize: 10, padding: "2px 10px", background: choices.get(hunk.id) === "old" ? "var(--error)" : undefined, border: choices.get(hunk.id) === "old" ? "none" : undefined, color: choices.get(hunk.id) === "old" ? "#fff" : undefined }}
                   onClick={() => toggle(hunk.id)}
                 >
-                  {choices.get(hunk.id) === "old" ? "✓ 保留原文" : "保留原文"}
+                  {choices.get(hunk.id) === "old" ? " 保留原文" : "保留原文"}
                 </button>
                 <button
                   className={choices.get(hunk.id) === "new" ? "btn-primary" : "btn"}
                   style={{ fontSize: 10, padding: "2px 10px", background: choices.get(hunk.id) === "new" ? "var(--jade)" : undefined, border: choices.get(hunk.id) === "new" ? "none" : undefined, color: choices.get(hunk.id) === "new" ? "#fff" : undefined }}
                   onClick={() => toggle(hunk.id)}
                 >
-                  {choices.get(hunk.id) === "new" ? "✓ 使用 AI" : "使用 AI"}
+                  {choices.get(hunk.id) === "new" ? " 使用 AI" : "使用 AI"}
                 </button>
               </div>
             )}

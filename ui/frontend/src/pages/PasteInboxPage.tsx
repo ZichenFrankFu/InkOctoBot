@@ -112,7 +112,7 @@ export default function PasteInboxPage() {
     <div className="page" style={{ padding: 16 }}>
       <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
         <div>
-          <h2 style={{ margin: 0 }}>📥 Manual Paste 收件箱</h2>
+          <h2 style={{ margin: 0 }}> Manual Paste 收件箱</h2>
           <p style={{ color: "var(--text-tertiary)", fontSize: 12, margin: "4px 0 0" }}>
             当 LLM 走 Manual 模式时，每次调用会在这里产生一个待粘贴的 token。
             从这里复制 prompt → 拿到网页 LLM 跑 → 把结果贴回提交，等待的 pipeline 继续。
@@ -189,7 +189,7 @@ export default function PasteInboxPage() {
                   Prompt 预览 ({detail.prompt.length + detail.system.length} 字)
                 </summary>
                 <div style={{ marginTop: 8 }}>
-                  <button className="btn-sm" onClick={copyPrompt}>📋 复制完整 prompt (含 system)</button>
+                  <button className="btn-sm" onClick={copyPrompt}> 复制完整 prompt (含 system)</button>
                   {detail.system && (
                     <details style={{ marginTop: 8 }}>
                       <summary style={{ fontSize: 12 }}>system prompt ({detail.system.length})</summary>
@@ -230,7 +230,7 @@ export default function PasteInboxPage() {
                     {pasteText.length} 字
                     {pasteText.length > 0 && pasteText.trim().length < 20 && (
                       <span style={{ color: "var(--danger)", marginLeft: 8 }}>
-                        ⚠ 看起来太短
+                         看起来太短
                       </span>
                     )}
                   </span>

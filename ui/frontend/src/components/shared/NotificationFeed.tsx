@@ -102,7 +102,7 @@ export default function NotificationFeed({
     <div style={{ padding: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <h3 style={{ margin: 0, fontSize: 14 }}>
-          🔔 通知 {unreadCount > 0 && <span style={{ color: "var(--danger)" }}>({unreadCount})</span>}
+           通知 {unreadCount > 0 && <span style={{ color: "var(--danger)" }}>({unreadCount})</span>}
         </h3>
         <button className="btn-sm" onClick={refresh} disabled={loading}>
           {loading ? "..." : "↻"}
@@ -151,7 +151,7 @@ export default function NotificationFeed({
                     style={{ fontSize: 10, padding: "1px 4px", marginLeft: 6 }}
                     title="标记完成"
                   >
-                    ✓
+                    
                   </button>
                 )}
               </div>

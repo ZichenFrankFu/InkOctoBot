@@ -113,7 +113,7 @@ export default function TruthReviewPage({ projectId, onOpenChapter }: Props) {
     <div className="page" style={{ padding: 16 }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div>
-          <h2 style={{ margin: 0 }}>⚖️ Truth State 审阅</h2>
+          <h2 style={{ margin: 0 }}> Truth State 审阅</h2>
           <p style={{ color: "var(--text-tertiary)", fontSize: 12, margin: "4px 0 0" }}>
             post-commit Truth Files settlement 检查每章是否与已建立的角色/世界状态矛盾。
             audit_failed 的章节需要你审阅并决定：回编辑器修改 / 覆盖通过 / 回退版本。

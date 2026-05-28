@@ -22,7 +22,7 @@ export default function InspirationSearchPage({ onNavigate }: Props) {
       onNavigate={onNavigate}
       initialTab="search"
       hideTabs={true}
-      pageTitle="🔍 灵感搜索（跨参考作品）"
+      pageTitle=" 灵感搜索（跨参考作品）"
       pageSubtitle="用自然语言在已索引的参考作品中找到相关段落、人物、设定"
     />
   );

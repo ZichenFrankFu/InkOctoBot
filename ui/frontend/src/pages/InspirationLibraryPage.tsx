@@ -20,7 +20,7 @@ export default function InspirationLibraryPage({ onNavigate }: Props) {
   return (
     <div className="page" style={{ padding: 16 }}>
       <header style={{ marginBottom: 12 }}>
-        <h2 style={{ margin: 0 }}>💡 灵感库</h2>
+        <h2 style={{ margin: 0 }}> 灵感库</h2>
         <p style={{ color: "var(--text-tertiary)", fontSize: 12, margin: "4px 0 0" }}>
           自由记录的创作灵感片段：场景、情节装置、人物设计等。带 embedding，
           可在生成时按章节内容相关性自动召回。

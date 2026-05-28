@@ -254,7 +254,7 @@ export default function UniversalLLMDialog({
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <PhaseBadge phase={phase} />
-            <button className="btn-sm" onClick={onClose} disabled={phase === "running"}>✕</button>
+            <button className="btn-sm" onClick={onClose} disabled={phase === "running"}></button>
           </div>
         </header>
 
@@ -271,12 +271,12 @@ export default function UniversalLLMDialog({
             display: "flex", flexDirection: "column", minHeight: 0,
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <strong style={{ fontSize: 13 }}>📋 Prompt 预览</strong>
+              <strong style={{ fontSize: 13 }}> Prompt 预览</strong>
               <div style={{ display: "flex", gap: 6 }}>
                 <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
                   {(prompt.length + (system?.length || 0))} 字
                 </span>
-                <button className="btn-sm" onClick={copyPrompt}>📋 复制</button>
+                <button className="btn-sm" onClick={copyPrompt}> 复制</button>
               </div>
             </div>
 
@@ -293,7 +293,7 @@ export default function UniversalLLMDialog({
                       color: l.present ? "var(--text-secondary)" : "var(--text-disabled)",
                       borderLeft: `2px solid ${l.present ? "var(--success)" : "var(--text-disabled)"}`,
                     }}>
-                      {l.present ? "✓" : "·"} {l.title}
+                      {l.present ? "" : "·"} {l.title}
                       {l.present && <span style={{ color: "var(--text-tertiary)", marginLeft: 6 }}>{l.chars}字</span>}
                     </div>
                   ))}
@@ -417,7 +417,7 @@ function PreviewPane({
           disabled={!hasInvokeApi}
           style={{ padding: "12px 16px", textAlign: "left" }}
         >
-          <div style={{ fontSize: 14, fontWeight: 600 }}>🚀 API 模式</div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}> API 模式</div>
           <div style={{ fontSize: 11, opacity: 0.85, marginTop: 4 }}>
             直接调当前 provider；运行中可中断 / resume
             {!hasInvokeApi && " · 此调用未提供 API 钩子"}
@@ -428,7 +428,7 @@ function PreviewPane({
           onClick={onUseManual}
           style={{ padding: "12px 16px", textAlign: "left" }}
         >
-          <div style={{ fontSize: 14, fontWeight: 600 }}>📋 Manual 粘贴</div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}> Manual 粘贴</div>
           <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
             复制 prompt 到网页 LLM 跑 → 拷回结果 → app 自动 parse
           </div>
@@ -463,7 +463,7 @@ function ManualPastePane({
 }) {
   return (
     <>
-      <h4 style={{ marginTop: 0 }}>📋 把 LLM 输出粘贴到这里</h4>
+      <h4 style={{ marginTop: 0 }}> 把 LLM 输出粘贴到这里</h4>
       <p style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
         先去左边「复制」prompt → 拿到网页 LLM 跑 → 把回复粘到下框。
       </p>
@@ -515,7 +515,7 @@ function ResultPane({
   return (
     <>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-        <h4 style={{ margin: 0 }}>✅ 结果就绪 ({source})</h4>
+        <h4 style={{ margin: 0 }}> 结果就绪 ({source})</h4>
         <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{text.length} 字</span>
       </div>
       <p style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
@@ -562,7 +562,7 @@ function ErrorPane({
 }: { msg: string; onRetry: () => void; onCancel: () => void }) {
   return (
     <div style={{ textAlign: "center", padding: 24 }}>
-      <div style={{ fontSize: 32 }}>⚠️</div>
+      <div style={{ fontSize: 32 }}></div>
       <h4>调用失败</h4>
       <pre style={{
         ...preStyle(), maxHeight: 220, textAlign: "left",

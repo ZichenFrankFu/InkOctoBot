@@ -111,7 +111,7 @@ export default function PromptInspector({
     <div style={{ padding: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
-          <h3 style={{ margin: 0, fontSize: 14 }}>📋 Prompt 透视</h3>
+          <h3 style={{ margin: 0, fontSize: 14 }}> Prompt 透视</h3>
           <p style={{ fontSize: 11, color: "var(--text-tertiary)", margin: "2px 0 0" }}>
             14 个 loader 的实际注入状态 · {prompt.length} 字总长
           </p>
@@ -120,7 +120,7 @@ export default function PromptInspector({
           <button className="btn-sm" onClick={fetch} disabled={loading}>
             {loading ? "..." : "刷新"}
           </button>
-          <button className="btn-sm" onClick={copyAll} disabled={!prompt}>📋 复制</button>
+          <button className="btn-sm" onClick={copyAll} disabled={!prompt}> 复制</button>
           <button className="btn-sm" onClick={() => setShowFull(s => !s)}>
             {showFull ? "收起" : "看完整"}
           </button>
@@ -145,7 +145,7 @@ export default function PromptInspector({
               }}
             >
               <summary style={{ cursor: present ? "pointer" : "default", color: present ? undefined : "var(--text-tertiary)" }}>
-                {present ? "✅" : "⏸"} <strong>{expected.title}</strong>
+                {present ? "" : ""} <strong>{expected.title}</strong>
                 <span style={{ color: "var(--text-tertiary)", marginLeft: 8, fontSize: 11 }}>
                   ({expected.source}) {present ? `· ${chars} 字` : "· 未注入"}
                 </span>

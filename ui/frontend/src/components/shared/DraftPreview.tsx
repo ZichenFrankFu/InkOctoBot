@@ -137,7 +137,7 @@ export default function DraftPreview({
         </div>
         <div style={{ fontSize: 12, color: tooShort ? "var(--danger)" : "var(--text-tertiary)" }}>
           {chars} / {targetChars} 字
-          {tooShort && <span> · ⚠️ 太短</span>}
+          {tooShort && <span> ·  太短</span>}
         </div>
       </div>
 
@@ -194,7 +194,7 @@ function ConfirmTooShort({
         style={{ padding: 20, maxWidth: 420, background: "var(--bg-surface)" }}
         onClick={e => e.stopPropagation()}
       >
-        <h3 style={{ marginTop: 0 }}>⚠️ 内容看起来是空的或很短</h3>
+        <h3 style={{ marginTop: 0 }}> 内容看起来是空的或很短</h3>
         <p>
           只有 <strong>{chars}</strong> 字（最小推荐 {minChars} 字）。
           这是过去几次"text_versions 0 字符"灾难的根因，绝大多数情况下是：

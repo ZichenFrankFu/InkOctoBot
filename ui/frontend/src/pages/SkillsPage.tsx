@@ -499,8 +499,8 @@ export default function SkillsPage({ projects, activeProject }: Props) {
           { key: "learning" as const, label: "自学习成果", count: learnedCount },
           { key: "knowledge" as const, label: "写作知识", count: knowledgeList.length },
           // Promoted into here from the removed 学习反馈 sidebar group:
-          { key: "preferences" as const, label: "📐 写作偏好", count: 0 },
-          { key: "domain" as const, label: "🧠 领域知识", count: 0 },
+          { key: "preferences" as const, label: " 写作偏好", count: 0 },
+          { key: "domain" as const, label: " 领域知识", count: 0 },
         ]).map(tab => (
           <button
             key={tab.key}

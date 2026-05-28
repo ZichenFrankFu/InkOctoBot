@@ -130,7 +130,7 @@ export default function PreferencesPage({ projectId }: Props) {
     <div className="page" style={{ padding: 16 }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div>
-          <h2 style={{ margin: 0 }}>📐 写作偏好（从你的编辑中学习）</h2>
+          <h2 style={{ margin: 0 }}> 写作偏好（从你的编辑中学习）</h2>
           <p style={{ color: "var(--text-tertiary)", fontSize: 12, margin: "4px 0 0" }}>
             每次你保存 ``user_edit`` 版本时，系统会捕获一条 observation。
             积累到阈值时（默认 5 章）批量提取偏好，未来生成会自动注入。
@@ -148,7 +148,7 @@ export default function PreferencesPage({ projectId }: Props) {
               <div style={{ fontSize: 13 }}>
                 <strong>下次批量学习: </strong>
                 {thresholdStatus.will_fire_on_next
-                  ? <span style={{ color: "var(--success)" }}>下次编辑保存时就会触发 ✓</span>
+                  ? <span style={{ color: "var(--success)" }}>下次编辑保存时就会触发 </span>
                   : <span>还差 <strong>{thresholdStatus.remaining}</strong> 章编辑保存</span>
                 }
                 <span style={{ color: "var(--text-tertiary)", marginLeft: 12 }}>
@@ -258,7 +258,7 @@ export default function PreferencesPage({ projectId }: Props) {
                     }}>
                       <td style={{ padding: "6px" }}>ch{o.chapter_num}</td>
                       <td style={{ padding: "6px" }}>
-                        {o.consumed ? "✓ 已消费" : "● 待批量"}
+                        {o.consumed ? " 已消费" : "● 待批量"}
                       </td>
                       <td style={{ padding: "6px", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {o.special_requirement || "（无）"}

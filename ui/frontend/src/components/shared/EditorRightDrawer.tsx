@@ -86,7 +86,7 @@ export default function EditorRightDrawer({
             style={{ padding: "2px 10px" }}
             aria-label="Close"
           >
-            ✕
+            
           </button>
         </header>
 
@@ -117,12 +117,12 @@ export default function EditorRightDrawer({
               </p>
               <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
                 {[
-                  { page: "preferences",     icon: "📐", label: "写作偏好", desc: "你被学到的风格 / 内容 / 节奏" },
-                  { page: "domain-learning", icon: "🧠", label: "领域知识", desc: "Gate 1 + Gate 2 编译流程" },
-                  { page: "truth-review",    icon: "⚖️", label: "Truth 审阅", desc: "audit_failed 章节" },
-                  { page: "paste-inbox",     icon: "📥", label: "粘贴收件箱", desc: "Manual mode 待处理 tokens" },
-                  { page: "skills",          icon: "⚙️", label: "智能体管理", desc: "skill_index" },
-                  { page: "settings",        icon: "☸",  label: "设置", desc: "阈值 / 模型 / Embedding" },
+                  { page: "preferences",     icon: "", label: "写作偏好", desc: "你被学到的风格 / 内容 / 节奏" },
+                  { page: "domain-learning", icon: "", label: "领域知识", desc: "Gate 1 + Gate 2 编译流程" },
+                  { page: "truth-review",    icon: "", label: "Truth 审阅", desc: "audit_failed 章节" },
+                  { page: "paste-inbox",     icon: "", label: "粘贴收件箱", desc: "Manual mode 待处理 tokens" },
+                  { page: "skills",          icon: "", label: "智能体管理", desc: "skill_index" },
+                  { page: "settings",        icon: "",  label: "设置", desc: "阈值 / 模型 / Embedding" },
                 ].map(l => (
                   <button
                     key={l.page}

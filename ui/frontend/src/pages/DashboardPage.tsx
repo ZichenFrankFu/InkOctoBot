@@ -78,6 +78,14 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
     ratedCount: number; byGenre: { genre: string; count: number }[];
   }>({ total: 0, topGenres: [], avgRating: 0, withFullText: 0, done: 0, withPlot: 0, withCharacters: 0, ratedCount: 0, byGenre: [] });
 
+  // 灵感数据库 overview (added per the latest UI request).
+  const [inspSummary, setInspSummary] = useState<{
+    total: number;
+    withEmbedding: number;
+    usedSomewhere: number;
+    byCategory: { category: string; count: number }[];
+  }>({ total: 0, withEmbedding: 0, usedSomewhere: 0, byCategory: [] });
+
   /* ── fetch project stats ── */
   useEffect(() => {
     // Word/chapter counts already arrive enriched on /api/data/projects,
@@ -121,8 +129,39 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
       }
     };
 
+    // 灵感数据库 stats (count + per-category + embedding coverage).
+    const loadInspSummary = async () => {
+      try {
+        const r = await apiGet<{ items: any[] }>("/api/references/inspirations");
+        const items = r.items || [];
+        const byCat: Record<string, number> = {};
+        let withEmbed = 0;
+        let usedAny = 0;
+        for (const it of items) {
+          const c = it.category || "other";
+          byCat[c] = (byCat[c] || 0) + 1;
+          if (it.embedding_text_hash) withEmbed++;
+          try {
+            const used = JSON.parse(it.used_in_chapters_json || "[]");
+            if (Array.isArray(used) && used.length > 0) usedAny++;
+          } catch { /* ignore */ }
+        }
+        setInspSummary({
+          total: items.length,
+          withEmbedding: withEmbed,
+          usedSomewhere: usedAny,
+          byCategory: Object.entries(byCat)
+            .map(([category, count]) => ({ category, count }))
+            .sort((a, b) => b.count - a.count),
+        });
+      } catch {
+        // endpoint not available — fail soft
+      }
+    };
+
     if (projects.length > 0) loadStats();
     loadRefSummary();
+    loadInspSummary();
   }, [projects]);
 
   /* ── fetch market data on platform change ── */
@@ -340,6 +379,55 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
             ) : (
               <div className="text-xs text-muted">暂无题材数据</div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ══ 灵感数据库 ══ */}
+      {inspSummary.total > 0 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3>灵感数据库</h3>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => onNavigate("inspiration-overview")}>
+              查看完整概览
+            </button>
+          </div>
+          <div className="card-body">
+            <div className="stats-grid" style={{ marginBottom: 18 }}>
+              {[
+                { value: inspSummary.total, label: "灵感总数" },
+                { value: inspSummary.withEmbedding, label: "已建 embedding" },
+                { value: inspSummary.usedSomewhere, label: "已被章节使用" },
+                { value: inspSummary.byCategory.length, label: "分类数" },
+              ].map((s) => (
+                <div className="stat-card" key={s.label}>
+                  <div className="stat-value">{s.value}</div>
+                  <div className="stat-label">{s.label}</div>
+                </div>
+              ))}
+            </div>
+            {inspSummary.byCategory.length > 0 && (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
+                  按类别分布
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {inspSummary.byCategory.slice(0, 12).map(g => (
+                    <div key={g.category} style={{
+                      padding: "5px 12px", borderRadius: 12,
+                      background: "var(--bg-surface-2)", fontSize: 12,
+                    }}>
+                      {g.category} <strong>{g.count}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button className="btn-primary" onClick={() => onNavigate("inspiration-library")}>
+                打开灵感库
+              </button>
+            </div>
           </div>
         </div>
       )}

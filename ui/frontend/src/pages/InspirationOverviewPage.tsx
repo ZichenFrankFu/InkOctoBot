@@ -70,7 +70,7 @@ export default function InspirationOverviewPage({ onNavigate }: Props) {
     <div className="page" style={{ padding: 16 }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div>
-          <h2 style={{ margin: 0 }}>💡 灵感数据库总览</h2>
+          <h2 style={{ margin: 0 }}> 灵感数据库总览</h2>
           <p style={{ color: "var(--text-tertiary)", fontSize: 12, margin: "4px 0 0" }}>
             跨项目共享的灵感片段库。在章节生成时会按相关性自动召回。
           </p>
@@ -112,10 +112,10 @@ export default function InspirationOverviewPage({ onNavigate }: Props) {
         <h3 style={{ marginTop: 0, fontSize: 14 }}>快速入口</h3>
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn primary" onClick={() => onNavigate?.("inspiration-library")}>
-            🗂 打开灵感库
+             打开灵感库
           </button>
           <button className="btn" onClick={() => onNavigate?.("inspiration-search")}>
-            🔍 跨作品灵感搜索
+             跨作品灵感搜索
           </button>
         </div>
       </div>

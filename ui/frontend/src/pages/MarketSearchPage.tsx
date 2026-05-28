@@ -125,45 +125,74 @@ export default function MarketSearchPage() {
   }, [chapterContent]);
 
   return (
-    <div style={{ padding: 16, height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <h2 style={{ margin: "0 0 4px", fontSize: 18 }}>市场数据库搜索</h2>
-      <p style={{ color: "var(--text-secondary)", fontSize: 12, marginTop: 0 }}>
-        全文搜索爬虫数据库（标题 / 作者 / 简介）→ 选中作品后查看其历史榜单 snapshot 与首章内容。
-      </p>
+    <div className="page-container" style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto", height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      {/* Header — same shape as other pages (page-header / page-header-row) */}
+      <div className="page-header" style={{ paddingBottom: 12 }}>
+        <div className="page-header-row">
+          <div>
+            <h2>市场作品搜索</h2>
+            <p>按标题 / 作者 / 简介关键词搜索市场数据库，选中后查看历史榜单 snapshot 与首章内容</p>
+          </div>
+        </div>
+      </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") doSearch(); }}
-          placeholder="输入标题 / 作者 / 关键词（如：诡秘 / 乌贼 / 修仙）"
-          style={{ flex: 1, padding: 6, fontSize: 14 }}
-        />
-        <select value={platform} onChange={(e) => setPlatform(e.target.value)} style={{ padding: 6 }}>
-          <option value="">所有平台</option>
-          <option value="qidian">起点</option>
-          <option value="fanqie">番茄</option>
-          <option value="zongheng">纵横</option>
-          <option value="17k">17K</option>
-        </select>
-        <button onClick={doSearch} disabled={searching || !query.trim()} style={{ padding: "6px 16px" }}>
-          {searching ? "搜索中…" : "搜索"}
-        </button>
+      {/* Search bar — promoted into a card matching other pages */}
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-body">
+          <div className="flex gap-8 items-center" style={{ flexWrap: "wrap" }}>
+            <input
+              className="input"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") doSearch(); }}
+              placeholder="输入标题 / 作者 / 关键词（如：诡秘 / 乌贼 / 修仙）"
+              style={{ flex: 1, minWidth: 280 }}
+            />
+            <label className="flex items-center gap-4" style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+              <span>平台</span>
+              <select
+                className="input"
+                value={platform}
+                onChange={(e) => setPlatform(e.target.value)}
+                style={{ width: 110 }}
+              >
+                <option value="">全部平台</option>
+                <option value="qidian">起点</option>
+                <option value="fanqie">番茄</option>
+                <option value="zongheng">纵横</option>
+                <option value="17k">17K</option>
+              </select>
+            </label>
+            <button
+              className="btn-primary"
+              onClick={doSearch}
+              disabled={searching || !query.trim()}
+            >
+              {searching ? "搜索中..." : "搜索"}
+            </button>
+          </div>
+          <div className="text-xs text-muted" style={{ marginTop: 8, lineHeight: 1.55 }}>
+            点击搜索结果中的任意作品，查看其历史 rank snapshot 与已爬取的首章正文。
+          </div>
+        </div>
       </div>
 
       {searchErr && (
-        <div style={{ color: "tomato", fontSize: 12, marginBottom: 8 }}>{searchErr}</div>
+        <div className="card" style={{ marginBottom: 8, borderColor: "var(--danger)" }}>
+          <div className="card-body" style={{ color: "var(--danger)", fontSize: 12 }}>{searchErr}</div>
+        </div>
       )}
 
-      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "320px 1fr", gap: 12, overflow: "hidden" }}>
-        {/* Hits list */}
-        <div style={{ border: "1px solid var(--border)", borderRadius: 4, overflow: "auto" }}>
-          <div style={{ padding: "6px 12px", background: "var(--surface-1)", fontSize: 12, fontWeight: "bold", borderBottom: "1px solid var(--border)" }}>
+      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "360px 1fr", gap: 14, overflow: "hidden", minHeight: 0 }}>
+        {/* Hits list — wrapped in a card to match other pages */}
+        <div className="card" style={{ padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          <div className="card-header" style={{ padding: "8px 14px", fontSize: 12, fontWeight: 600 }}>
             搜索结果 ({hits.length})
           </div>
+          <div style={{ flex: 1, overflowY: "auto" }}>
           {hits.length === 0 && (
-            <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>
-              {searching ? "搜索中…" : "输入关键词后回车，或选择平台筛选后再点搜索"}
+            <div style={{ padding: 20, color: "var(--text-tertiary)", fontSize: 12, textAlign: "center" }}>
+              {searching ? "搜索中..." : "输入关键词后回车，或选择平台筛选后再点搜索"}
             </div>
           )}
           {hits.map((h) => (
@@ -171,26 +200,45 @@ export default function MarketSearchPage() {
               key={h.novel_uid}
               onClick={() => selectNovel(h)}
               style={{
-                padding: 8, borderBottom: "1px solid var(--border)",
+                padding: "10px 14px", borderBottom: "1px solid var(--border)",
                 cursor: "pointer",
-                background: selected?.novel_uid === h.novel_uid ? "var(--surface-2)" : "transparent",
+                background: selected?.novel_uid === h.novel_uid
+                  ? "var(--accent-subtle, var(--bg-surface-2))"
+                  : "transparent",
+                borderLeft: selected?.novel_uid === h.novel_uid
+                  ? "3px solid var(--accent)"
+                  : "3px solid transparent",
+                transition: "background 0.12s",
+              }}
+              onMouseEnter={e => {
+                if (selected?.novel_uid !== h.novel_uid) {
+                  (e.currentTarget as HTMLDivElement).style.background = "var(--bg-surface-2)";
+                }
+              }}
+              onMouseLeave={e => {
+                if (selected?.novel_uid !== h.novel_uid) {
+                  (e.currentTarget as HTMLDivElement).style.background = "transparent";
+                }
               }}
             >
-              <div style={{ fontWeight: "bold", fontSize: 13 }}>{h.title}</div>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>{h.title}</div>
+              <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 4 }}>
                 {h.platform}{h.author ? ` · ${h.author}` : ""}
                 {h.main_category ? ` · ${h.main_category}` : ""}
               </div>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-                {h.total_words ? `${(h.total_words / 10000).toFixed(1)} 万字` : ""}
-                {h.status ? ` · ${h.status}` : ""}
-              </div>
+              {(h.total_words || h.status) && (
+                <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>
+                  {h.total_words ? `${(h.total_words / 10000).toFixed(1)} 万字` : ""}
+                  {h.status ? ` · ${h.status}` : ""}
+                </div>
+              )}
             </div>
           ))}
+          </div>
         </div>
 
         {/* Detail */}
-        <div style={{ border: "1px solid var(--border)", borderRadius: 4, overflow: "auto", padding: 12 }}>
+        <div className="card" style={{ padding: 16, overflow: "auto" }}>
           {!selected && (
             <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>
               从左侧选择一部作品查看其历史榜单与首章内容
