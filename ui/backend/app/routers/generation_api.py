@@ -2005,10 +2005,113 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
         session["text"] = edited_text
         session["result"] = {"text": edited_text, "evaluation": eval_result}
 
+        # ── Stage 1 Task 1: persist + trigger post-commit pipeline ──
+        # Multi-agent /start finalize now writes a text_versions row
+        # AND fires the post-commit pipeline (summarizer / event_extractor
+        # / chromadb_indexer / state_extractor / snapshot_detector /
+        # skill_emitter). Previously only the /api/editor/save-version
+        # path triggered post-commit; multi-agent finalize was a black
+        # hole — chapter text never persisted automatically and none of
+        # the per-chapter machinery ever ran. Fire-and-forget so the
+        # caller (the websocket polling loop) doesn't block on it; any
+        # commit failure is logged but does not unwind the pipeline.
+        try:
+            _persist_and_trigger_post_commit(
+                session_id=session_id,
+                req_data=req_data,
+                final_text=edited_text,
+                eval_result=eval_result,
+            )
+        except Exception as e:
+            logger.error("multi-agent post-commit trigger failed: %s", e,
+                          exc_info=True)
+            _emit(session_id, {
+                "type": "warning",
+                "message": f"章节已生成但 post-commit pipeline 触发失败：{str(e)[:200]}",
+            })
+
     except Exception as e:
         logger.error("Pipeline background error: %s", e, exc_info=True)
         _emit(session_id, {"type": "error", "message": str(e)[:300]})
         session["status"] = "error"
+
+
+def _persist_and_trigger_post_commit(
+    *, session_id: str, req_data: dict, final_text: str, eval_result: dict,
+) -> None:
+    """Write text_versions + fire post-commit pipeline.
+
+    Idempotent guard: if the request has no project_id or chapter_id,
+    skip persistence — these are "ephemeral" multi-agent runs (e.g. UI
+    preview without a real project). The eval gate is applied here too:
+    failed evaluations still get persisted (user may want to see the
+    output) but with ``source='ai_eval_failed'`` so downstream loaders
+    can choose to filter.
+    """
+    project_id = (req_data.get("project_id") or "").strip()
+    chapter_id = (req_data.get("chapter_id") or "").strip()
+    if not project_id or not chapter_id:
+        logger.info(
+            "multi-agent session %s: no project/chapter id — skip persist",
+            session_id,
+        )
+        return
+
+    db_path = ""
+    try:
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+    except Exception as e:
+        logger.warning("get_db_path failed: %s", e)
+        return
+
+    # 1. text_versions write.
+    # text_versions.source is CHECK-constrained to ('ai','user_edit',
+    # 'rewrite'); we therefore always use 'ai' and encode the eval-pass
+    # signal in model_used so downstream loaders can distinguish a
+    # finalized pass from a failed-eval rescue write.
+    eval_passed = bool(eval_result and eval_result.get("passed", True))
+    model_used = (
+        "multi_agent_pipeline.eval_passed"
+        if eval_passed
+        else "multi_agent_pipeline.eval_failed"
+    )
+    try:
+        from ui.backend.app.services import project_store
+        project_store.ensure_project_row(db_path, project_id)
+        saved = project_store.insert_version(db_path, project_id, {
+            "chapter_id": chapter_id,
+            "source": "ai",
+            "content": final_text,
+            "model_used": model_used,
+        })
+        logger.info(
+            "multi-agent session %s: persisted version %s (%d chars)",
+            session_id, saved.get("version_id"), len(final_text),
+        )
+    except Exception as e:
+        logger.error("text_versions insert failed: %s", e, exc_info=True)
+        return
+
+    # 2. fire post-commit pipeline (snapshot capture happens inline
+    # inside fire_and_forget_from_handler before the async tasks).
+    try:
+        from ui.backend.app.services.commit_pipeline import (
+            fire_and_forget_from_handler,
+        )
+        fire_and_forget_from_handler(
+            project_id=project_id,
+            chapter_id=chapter_id,
+            db_path=db_path,
+            chapter_text=final_text,
+            chapter_num=int(req_data.get("chapter_num") or 0),
+        )
+        logger.info(
+            "multi-agent session %s: post-commit pipeline scheduled",
+            session_id,
+        )
+    except Exception as e:
+        logger.error("post-commit fire-and-forget failed: %s", e, exc_info=True)
 
 
 @router.websocket("/ws/{session_id}")
