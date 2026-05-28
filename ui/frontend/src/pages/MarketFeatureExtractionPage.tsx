@@ -21,7 +21,7 @@ import { useToast } from "../components/shared/Toast";
 import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
 
 
-type ResultTab = "jobs" | "profiles" | "works" | "preview";
+type ResultTab = "jobs" | "profiles" | "loader" | "works" | "preview";
 
 
 interface Job {
@@ -432,6 +432,7 @@ export default function MarketFeatureExtractionPage() {
             {([
               { key: "jobs" as const,     label: `任务 (${jobs.length})` },
               { key: "profiles" as const, label: `平台 Profile (${platformProfiles.length})` },
+              { key: "loader" as const,   label: "Loader 注入预览" },
               { key: "works" as const,    label: `代表作 (${works.length})` },
               { key: "preview" as const,  label: selectedWork ? `预览: ${selectedWork.title || selectedWork.work_id.slice(0, 6)}` : "预览" },
             ]).map(t => (
@@ -458,6 +459,7 @@ export default function MarketFeatureExtractionPage() {
           <div style={{ padding: 14, minHeight: 380 }}>
             {tab === "jobs" && <JobsTab jobs={jobs} onCancel={cancelJob} />}
             {tab === "profiles" && <ProfilesTab profiles={platformProfiles} />}
+            {tab === "loader" && <LoaderPreviewTab platform={platform} category={category} profiles={platformProfiles} />}
             {tab === "works" && (
               <WorksTab
                 works={works}
@@ -725,6 +727,144 @@ function PreviewTab({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+
+function LoaderPreviewTab({
+  platform, category, profiles,
+}: { platform: string; category: string; profiles: PlatformProfile[] }) {
+  const [stats, setStats] = React.useState<any>(null);
+  const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!platform || !category) return;
+    setLoading(true);
+    apiGet<{ stats: any }>(
+      `/api/market-extractor/aggregated-stats?platform=${encodeURIComponent(platform)}&category=${encodeURIComponent(category)}`,
+    ).then(r => setStats(r.stats))
+     .catch(() => setStats(null))
+     .finally(() => setLoading(false));
+  }, [platform, category]);
+
+  const activeProfile = profiles[0] || null;
+  if (!platform || !category) {
+    return <Empty msg="先在左侧选定平台 + 榜单。" />;
+  }
+  if (loading) {
+    return <Empty msg="加载中..." />;
+  }
+  if (!activeProfile && !stats) {
+    return <Empty msg={`(${platform}×${category}) 还没有任何提取产物。先启动一次 API 模式或手动模式生成 profile。`} />;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <p style={{ fontSize: 12, color: "var(--text-tertiary)", margin: 0 }}>
+        以下两块就是生成章节时 <code>platform_market</code> 与 market overview 两个 loader
+        会读到并注入到 prompt 的全部内容。
+      </p>
+
+      {/* ── platform_market loader ── */}
+      <div className="card" style={{ padding: 14 }}>
+        <h3 style={{ marginTop: 0, fontSize: 13 }}>
+          platform_market loader
+          <span style={{ fontSize: 11, color: "var(--text-tertiary)", fontWeight: 400, marginLeft: 8 }}>
+            读取 platform_profiles.loader_payload （或 fallback 字段）
+          </span>
+        </h3>
+        {!activeProfile ? (
+          <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>没有可用的 active profile（可能 confidence_label='low' 被过滤）。</p>
+        ) : (
+          <div>
+            <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 8 }}>
+              profile_id={activeProfile.profile_id} · version={(activeProfile as any).profile_version || "—"}
+              · confidence={activeProfile.confidence_label || "—"}
+              · samples={activeProfile.source_works_count ?? "—"}
+              · 完成={activeProfile.extraction_completed_at || "—"}
+            </div>
+            {[
+              ["profile_summary",                 activeProfile.profile_summary],
+              ["style_baseline",                  activeProfile.style_baseline],
+              ["signature_devices_description",   activeProfile.signature_devices_description],
+              ["pacing_guidance",                 activeProfile.pacing_guidance],
+              ["recommended_openings_json",       (activeProfile as any).recommended_openings_json],
+              ["loader_payload (最终注入)",       (activeProfile as any).loader_payload],
+            ].map(([label, val]) => (val ? (
+              <details key={label as string} style={{ marginBottom: 6 }} open={label === "loader_payload (最终注入)"}>
+                <summary style={{ fontSize: 12, cursor: "pointer", color: "var(--text-secondary)" }}>{label}</summary>
+                <pre style={{
+                  margin: "4px 0 0", padding: 8, fontSize: 11,
+                  background: "var(--bg-surface-2)",
+                  borderRadius: 4, maxHeight: 220, overflow: "auto",
+                  whiteSpace: "pre-wrap", wordBreak: "break-word",
+                  fontFamily: "var(--font-mono)",
+                }}>{typeof val === "string" ? val : JSON.stringify(val, null, 2)}</pre>
+              </details>
+            ) : null))}
+          </div>
+        )}
+      </div>
+
+      {/* ── market_overview / category_aggregated_stats ── */}
+      <div className="card" style={{ padding: 14 }}>
+        <h3 style={{ marginTop: 0, fontSize: 13 }}>
+          market overview (category_aggregated_stats)
+          <span style={{ fontSize: 11, color: "var(--text-tertiary)", fontWeight: 400, marginLeft: 8 }}>
+            这一类别 / 平台的整体分布画像
+          </span>
+        </h3>
+        {!stats ? (
+          <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>
+            没有 category_aggregated_stats 行。该表在 phase 3 (aggregation) 完成时写入。
+          </p>
+        ) : (
+          <div>
+            <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 8 }}>
+              source_works_count={stats.source_works_count ?? "—"}
+              · first_breakthrough_chapter_median={stats.first_breakthrough_chapter_median ?? "—"}
+              · antagonist_first_chapter_median={stats.antagonist_first_chapter_median ?? "—"}
+              · first_face_slap_chapter_median={stats.first_face_slap_chapter_median ?? "—"}
+              · avg_neologisms_per_work={stats.avg_neologisms_per_work?.toFixed?.(2) ?? "—"}
+            </div>
+            {/* All json-distribution fields */}
+            {[
+              "opening_hook_type_distribution_json",
+              "protagonist_cheat_type_distribution_json",
+              "protagonist_agency_distribution_json",
+              "worldview_type_distribution_json",
+              "writing_style_distribution_json",
+              "emotional_tone_distribution_json",
+              "info_disclosure_distribution_json",
+              "chapter_word_count_stats_json",
+              "dialogue_ratio_stats_json",
+              "setting_word_ratio_stats_json",
+              "genre_vocabulary_top_json",
+              "neologism_type_distribution_json",
+              "chapter_end_hook_type_distribution_json",
+            ].map(field => {
+              const raw = stats[field];
+              if (!raw) return null;
+              let parsed: any = raw;
+              try { parsed = JSON.parse(raw); } catch { /* leave as string */ }
+              return (
+                <details key={field} style={{ marginBottom: 6 }}>
+                  <summary style={{ fontSize: 11, cursor: "pointer", color: "var(--text-secondary)" }}>
+                    {field}
+                  </summary>
+                  <pre style={{
+                    margin: "4px 0 0", padding: 8, fontSize: 10,
+                    background: "var(--bg-surface-2)",
+                    borderRadius: 4, maxHeight: 200, overflow: "auto",
+                    whiteSpace: "pre-wrap", wordBreak: "break-word",
+                    fontFamily: "var(--font-mono)",
+                  }}>{JSON.stringify(parsed, null, 2)}</pre>
+                </details>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

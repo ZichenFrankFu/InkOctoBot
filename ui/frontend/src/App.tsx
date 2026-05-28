@@ -76,7 +76,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   {
     section: "参考数据库",
     items: [
-      { key: "references-overview", icon: "▦", label: "数据库概览" },
+      { key: "references-overview", icon: "▦", label: "参考总览" },
       // 参考作品详情 → 参考作品特征提取（renamed for clarity）
       { key: "references",          icon: "⊞", label: "参考作品特征提取" },
       // 工具页内含: 参考作品搜索 / 作品对比 / 索引管理

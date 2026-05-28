@@ -82,7 +82,26 @@ export default function MarketSearchPage() {
       const r = await apiGet<{ items: SearchHit[] }>(
         `/api/db/search_novels?${params}`,
       );
-      setHits(r.items || []);
+      // Sort by relevance: exact-title > substring match in title >
+      // substring in author > everything else. Within each band, keep
+      // backend's tie order. Highest-confidence hits surface at top.
+      const ql = q.toLowerCase();
+      const rank = (h: SearchHit): number => {
+        const title = (h.title || "").toLowerCase();
+        const author = (h.author || "").toLowerCase();
+        if (title === ql) return 0;
+        if (title.startsWith(ql)) return 1;
+        if (title.includes(ql)) return 2;
+        if (author === ql) return 3;
+        if (author.includes(ql)) return 4;
+        return 5;
+      };
+      const items = (r.items || []).slice();
+      items.sort((a, b) => rank(a) - rank(b));
+      setHits(items);
+      // Reset the detail view — user clicks to expand the next hit.
+      setSelected(null);
+      setDetail(null);
     } catch (e: any) {
       setSearchErr(e.message || String(e));
     } finally {
@@ -183,7 +202,14 @@ export default function MarketSearchPage() {
         </div>
       )}
 
-      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "360px 1fr", gap: 14, overflow: "hidden", minHeight: 0 }}>
+      {/* The detail column collapses to 0 until the user picks a hit.
+          Hits list expands to the full width when nothing's selected
+          so initial search results breathe. */}
+      <div style={{
+        flex: 1, display: "grid",
+        gridTemplateColumns: selected ? "360px 1fr" : "1fr",
+        gap: 14, overflow: "hidden", minHeight: 0,
+      }}>
         {/* Hits list — wrapped in a card to match other pages */}
         <div className="card" style={{ padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
           <div className="card-header" style={{ padding: "8px 14px", fontSize: 12, fontWeight: 600 }}>
@@ -237,13 +263,10 @@ export default function MarketSearchPage() {
           </div>
         </div>
 
-        {/* Detail */}
+        {/* Detail — only render when a hit is selected; otherwise the
+            list takes the full width. */}
+        {selected && (
         <div className="card" style={{ padding: 16, overflow: "auto" }}>
-          {!selected && (
-            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-              从左侧选择一部作品查看其历史榜单与首章内容
-            </div>
-          )}
           {loadingDetail && <div>加载中…</div>}
           {detail && !loadingDetail && (
             <>
@@ -305,27 +328,39 @@ export default function MarketSearchPage() {
                         <th style={{ textAlign: "left", padding: "2px 6px" }}>平台</th>
                         <th style={{ textAlign: "left", padding: "2px 6px" }}>榜单</th>
                         <th style={{ textAlign: "right", padding: "2px 6px" }}>排名</th>
-                        <th style={{ textAlign: "right", padding: "2px 6px" }}>推荐</th>
-                        <th style={{ textAlign: "right", padding: "2px 6px" }}>阅读</th>
+                        <th style={{ textAlign: "right", padding: "2px 6px" }}>热度</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {detail.rank_history.map((r, i) => (
-                        <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                          <td style={{ padding: "2px 6px" }}>{r.snapshot_date}</td>
-                          <td style={{ padding: "2px 6px" }}>{r.platform}</td>
-                          <td style={{ padding: "2px 6px" }}>
-                            {r.rank_family}{r.rank_sub_cat ? ` · ${r.rank_sub_cat}` : ""}
-                          </td>
-                          <td style={{ padding: "2px 6px", textAlign: "right", fontWeight: "bold" }}>{r.rank}</td>
-                          <td style={{ padding: "2px 6px", textAlign: "right" }}>
-                            {r.total_recommend?.toLocaleString() || "-"}
-                          </td>
-                          <td style={{ padding: "2px 6px", textAlign: "right" }}>
-                            {r.reading_count?.toLocaleString() || "-"}
-                          </td>
-                        </tr>
-                      ))}
+                      {detail.rank_history.map((r, i) => {
+                        // Per-platform single hotness metric — 起点
+                        // uses 推荐票, 番茄 uses 阅读量; show whichever
+                        // applies to this row instead of both columns.
+                        const isQidian = r.platform === "qidian";
+                        const isFanqie = r.platform === "fanqie";
+                        const metric = isQidian
+                          ? { label: "推荐", value: r.total_recommend }
+                          : isFanqie
+                            ? { label: "阅读", value: r.reading_count }
+                            : { label: "热度", value: r.total_recommend ?? r.reading_count };
+                        return (
+                          <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                            <td style={{ padding: "2px 6px" }}>{r.snapshot_date}</td>
+                            <td style={{ padding: "2px 6px" }}>{r.platform}</td>
+                            <td style={{ padding: "2px 6px" }}>
+                              {r.rank_family}{r.rank_sub_cat ? ` · ${r.rank_sub_cat}` : ""}
+                            </td>
+                            <td style={{ padding: "2px 6px", textAlign: "right", fontWeight: "bold" }}>{r.rank}</td>
+                            <td style={{ padding: "2px 6px", textAlign: "right" }}
+                                title={metric.label}>
+                              {metric.value?.toLocaleString() || "-"}
+                              <span style={{ fontSize: 10, color: "var(--text-tertiary)", marginLeft: 4 }}>
+                                {metric.label}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -363,6 +398,7 @@ export default function MarketSearchPage() {
             </>
           )}
         </div>
+        )}
       </div>
     </div>
   );

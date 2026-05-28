@@ -4,6 +4,7 @@ import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { AppSettings } from "../api/types";
 import PromptPreview from "../components/reference/PromptPreview";
+import { getLang, setLang, useLang, t } from "../i18n";
 
 // Pipeline roles laid out in workflow order: 参考作品 → 开书 → 角色 & 世界书
 // → 正文创作 → 评估. Every group covers operations that run a built-in AI.
@@ -227,6 +228,9 @@ export default function SettingsPage() {
           </button>
         </div>
       </div>
+
+      {/* Language toggle — sticky at the top of every settings tab */}
+      <LanguageToggleSection />
 
       {/* Tab bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "var(--bg-secondary)", padding: 4, borderRadius: 10 }}>
@@ -1089,6 +1093,43 @@ function PromptsTab() {
           </div>
         ))
       )}
+    </div>
+  );
+}
+
+
+/* ── Language Toggle ───────────────────────────────────────────────
+ * Wired to the global i18n module. Defaults to Chinese; persists to
+ * localStorage. Per-name proper nouns (embedding / AI / API / etc.)
+ * are deliberately kept in their original casing across both langs.
+ */
+function LanguageToggleSection() {
+  const lang = useLang();
+  return (
+    <div className="card" style={{ marginBottom: 16, padding: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 14 }}>{t("语言") /* Language */}</h3>
+          <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--text-tertiary)" }}>
+            {lang === "zh"
+              ? "切换 UI 显示语言。专有名词（embedding / AI / API 等）在两种语言中保持原样。"
+              : "Switch UI display language. Proper nouns (embedding / AI / API etc.) keep their casing."}
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {([
+            { key: "zh" as const, label: "中文" },
+            { key: "en" as const, label: "English" },
+          ]).map(opt => (
+            <button
+              key={opt.key}
+              className={lang === opt.key ? "btn-primary" : "btn"}
+              style={{ fontSize: 13, padding: "4px 16px" }}
+              onClick={() => setLang(opt.key)}
+            >{opt.label}</button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

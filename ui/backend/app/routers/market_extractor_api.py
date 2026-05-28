@@ -97,6 +97,32 @@ def list_platforms() -> dict:
         return {"platforms": [], "warning": f"crawler db read failed: {e}"}
 
 
+@router.get("/aggregated-stats")
+def get_aggregated_stats(platform: str = Query(...), category: str = Query(...)) -> dict:
+    """Return the latest ``category_aggregated_stats`` row (or empty
+    fields when none). This is the data the prompt's
+    ``platform_market`` / 'market overview' loaders read at generation
+    time — exposing it here lets the UI show users exactly what would
+    be injected into a chapter prompt."""
+    import sqlite3 as _sqlite3
+    try:
+        with _sqlite3.connect(get_db_path()) as con:
+            con.row_factory = _sqlite3.Row
+            row = con.execute(
+                "SELECT * FROM category_aggregated_stats "
+                "WHERE platform = ? AND category = ? "
+                "ORDER BY aggregated_at DESC LIMIT 1",
+                (platform, category),
+            ).fetchone()
+    except _sqlite3.OperationalError:
+        return {"platform": platform, "category": category, "stats": None}
+    return {
+        "platform": platform,
+        "category": category,
+        "stats": dict(row) if row else None,
+    }
+
+
 @router.get("/categories")
 def list_categories(platform: str = Query("")) -> dict:
     """Surface 榜单 categories from the crawler DB."""
