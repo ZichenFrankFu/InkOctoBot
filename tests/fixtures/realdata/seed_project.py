@@ -263,6 +263,9 @@ def _insert_chapters(db_path: str) -> None:
 
     editor_doc = {
         "volumes": [{
+            # Frontend tree components key off various id fields
+            # depending on which screen — provide all the common ones.
+            "id":          f"{PROJECT_ID}_v1",
             "volume_id":   f"{PROJECT_ID}_v1",
             "order":       0,
             "title":       "第一卷",
@@ -286,11 +289,22 @@ def _insert_chapters(db_path: str) -> None:
                     "word_count":   0,
                     "time":         ch["time_label"],
                     "location":     ch["location"],
-                    "characters":   CHARACTER_NAMES,
+                    "characters":   list(CHARACTER_NAMES),
                     "pov_character": "林越",
                     "special_requirements": ch["special_requirements"],
+                    # Defensive defaults — the React editor touches
+                    # these arrays without nullish guards in several
+                    # places (referenced_events.length, etc.).
+                    "referenced_events":       [],
+                    "referenced_inspirations": [],
+                    "scenes":                  [],
+                    "scene_plans":             [],
+                    "beats":                   [],
+                    "tags":                    [],
+                    "skills":                  [],
+                    "rag_excludes":            [],
                     "on_stage_entities": {
-                        "characters":    CHARACTER_NAMES,
+                        "characters":    list(CHARACTER_NAMES),
                         "locations":     [],
                         "items":         [],
                         "organizations": [],
