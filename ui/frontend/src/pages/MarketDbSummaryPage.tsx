@@ -109,7 +109,7 @@ export default function MarketDbSummaryPage() {
         </div>
 
         <div className="card" style={{ padding: 14 }}>
-          <h3 style={{ marginTop: 0, fontSize: 14 }}>主类目分布 (top 15)</h3>
+          <h3 style={{ marginTop: 0, fontSize: 14 }}>主类目分布（前 15 项）</h3>
           {(data?.categories || []).length === 0 ? (
             <p style={{ color: "var(--text-tertiary)", fontSize: 12 }}>无数据</p>
           ) : (

@@ -12,8 +12,6 @@
  *    UniversalLLMDialog so the user copies the prompt, runs it in a
  *    browser LLM, pastes the result back; commit writes a
  *    platform_profiles row via /manual-submit.
- *  - Also folds in the AI 总结开篇技巧 surface that used to live in
- *    Rankings: a "AI 总结开篇技巧" panel below the launch console.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, apiDelete } from "../api/client";
@@ -106,6 +104,18 @@ const PHASE_LABEL_CN: Record<string, string> = {
   phase_5: "合成平台档案",
 };
 
+const CONFIDENCE_LABEL_CN: Record<string, string> = {
+  high:   "高",
+  medium: "中",
+  low:    "低",
+  manual: "手动",
+};
+
+function tConfidence(c?: string): string {
+  if (!c) return "—";
+  return CONFIDENCE_LABEL_CN[c] || c;
+}
+
 
 function isActive(state?: string): boolean {
   return !!state && (state.startsWith("running") || state === "queued");
@@ -135,10 +145,6 @@ export default function MarketFeatureExtractionPage() {
   const [manualOpen, setManualOpen] = useState(false);
   const [manualPrompt, setManualPrompt] = useState("");
 
-  // AI opening summary (moved from RankingsPage)
-  const [openingPrompt, setOpeningPrompt] = useState("");
-  const [openingDialogOpen, setOpeningDialogOpen] = useState(false);
-  const [openingSummary, setOpeningSummary] = useState("");
 
   // ── data load ──
 
@@ -333,19 +339,6 @@ export default function MarketFeatureExtractionPage() {
       setNeologisms([]);
     }
   }, [toast]);
-
-  const runOpeningSummary = useCallback(async () => {
-    try {
-      const r = await apiPost<{ prompt: string }>(
-        "/api/db/opening_ai_summary",
-        { platform: platform || undefined, prompt_only: true },
-      );
-      setOpeningPrompt(r.prompt || "");
-      setOpeningDialogOpen(true);
-    } catch (e: any) {
-      toast(`无法生成开篇分析 prompt: ${e.message}`, "error");
-    }
-  }, [platform, toast]);
 
   const platformProfiles = useMemo(() => {
     return profiles.filter(p =>
@@ -626,42 +619,6 @@ export default function MarketFeatureExtractionPage() {
       {/* 开篇章节分析 — moved from RankingsPage */}
       <OpeningAnalysisPanel platform={platform} />
 
-      {/* AI 总结开篇技巧 — moved from RankingsPage */}
-      <div className="card" style={{ marginTop: 16, borderTop: "3px solid var(--accent)" }}>
-        <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0, fontSize: 14 }}>AI 总结开篇技巧</h3>
-          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>基于已爬取的开篇章节正文</span>
-        </div>
-        <div className="card-body">
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              className="btn-primary"
-              onClick={runOpeningSummary}
-              style={{ padding: "8px 18px", borderRadius: 18, fontSize: 13 }}
-            >
-              生成 prompt 并打开对话框
-            </button>
-            {openingSummary && (
-              <button
-                className="btn"
-                onClick={() => setOpeningSummary("")}
-                style={{ padding: "8px 18px", borderRadius: 18, fontSize: 13 }}
-              >清空结果</button>
-            )}
-          </div>
-          {openingSummary && (
-            <div style={{
-              marginTop: 12, padding: 14,
-              background: "var(--bg-surface-2)",
-              border: "1px solid var(--border)",
-              borderLeft: "3px solid var(--accent)",
-              borderRadius: 6, fontSize: 13, lineHeight: 1.7,
-              whiteSpace: "pre-wrap",
-            }}>{openingSummary}</div>
-          )}
-        </div>
-      </div>
-
       </>)}
 
       {/* 网页版大模型手动粘贴弹窗 */}
@@ -674,20 +631,6 @@ export default function MarketFeatureExtractionPage() {
         onCommit={commitManual}
         minChars={80}
         initialMode="manual_only"
-      />
-
-      {/* AI 开篇总结对话框 */}
-      <UniversalLLMDialog
-        open={openingDialogOpen}
-        onClose={() => setOpeningDialogOpen(false)}
-        title="AI 总结开篇技巧"
-        description="对当前平台筛选下的开篇章节做综合分析。结果会显示在主面板的「AI 总结」框里。"
-        prompt={openingPrompt}
-        onCommit={async (p) => {
-          setOpeningSummary(p.text);
-          toast("已应用 AI 总结结果", "success");
-        }}
-        minChars={50}
       />
     </div>
   );
@@ -804,7 +747,7 @@ function ProfilesTab({ profiles }: { profiles: PlatformProfile[] }) {
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
             <strong>{tPlatform(p.platform)} · {p.category || "—"}</strong>
             <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-              {p.confidence_label && <>置信度 {p.confidence_label} · </>}
+              {p.confidence_label && <>置信度 {tConfidence(p.confidence_label)} · </>}
               样本 {p.source_works_count ?? "—"} · 更新 {p.extraction_completed_at || "—"}
             </span>
           </div>
@@ -983,7 +926,7 @@ function LoaderPreviewTab({
           <div>
             <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 8 }}>
               档案编号 {activeProfile.profile_id} · 版本 {(activeProfile as any).profile_version || "—"}
-              · 置信度 {activeProfile.confidence_label || "—"}
+              · 置信度 {tConfidence(activeProfile.confidence_label)}
               · 样本数 {activeProfile.source_works_count ?? "—"}
               · 完成于 {activeProfile.extraction_completed_at || "—"}
             </div>
