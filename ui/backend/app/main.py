@@ -118,6 +118,31 @@ app.include_router(dev_router, prefix="/api")
 app.include_router(debug_router)
 
 
+@app.on_event("startup")
+def _stage5_mark_interrupted_pipeline_sessions() -> None:
+    """Stage 5: on every boot, flip ``status='running'`` /
+    ``'paused_audit_review'`` rows in ``pipeline_sessions`` to
+    ``'interrupted'`` — the asyncio.Task that was driving them is
+    gone, the row stays for the history view."""
+    try:
+        from .services import pipeline_session_store
+        from .services.project_paths import get_db_path
+        db_path = get_db_path()
+        if not db_path:
+            return
+        n = pipeline_session_store.mark_running_as_interrupted(db_path)
+        if n:
+            import logging
+            logging.getLogger("inkoctobot.main").info(
+                "marked %d stale pipeline session(s) as interrupted", n,
+            )
+    except Exception:
+        import logging
+        logging.getLogger("inkoctobot.main").exception(
+            "stage 5 startup hook failed",
+        )
+
+
 @app.get("/health")
 def health():
     from .settings import settings as _s

@@ -797,3 +797,6 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
 
     from storage.llm_outputs_schema import ensure_llm_outputs_table
     ensure_llm_outputs_table(conn)
+
+    from storage.pipeline_session_schema import ensure_pipeline_session_table
+    ensure_pipeline_session_table(conn)

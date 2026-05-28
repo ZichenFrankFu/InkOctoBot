@@ -22,6 +22,43 @@ logger = logging.getLogger("inkoctobot.ui.backend.generation_api")
 _active_sessions: dict[str, dict[str, Any]] = {}
 
 
+# ─── Stage 5: pipeline session persistence ───────────────────────────
+# In-memory ``_active_sessions`` is still authoritative at runtime
+# because it owns the asyncio.Task / Event handles. After every state
+# transition we mirror the persistable subset to the ``pipeline_sessions``
+# table so a server restart loses only the live task, not the audit
+# trail.
+
+def _mirror_session_to_db(session_id: str) -> None:
+    """Mirror ``_active_sessions[session_id]`` to the pipeline_sessions
+    table. Best-effort: never raises (the store catches DB errors)."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        return
+    try:
+        from ui.backend.app.services import pipeline_session_store
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+        if not db_path:
+            return
+        req = session.get("request") or {}
+        error_msg = ""
+        # Last error event payload, if any, becomes error_message.
+        for ev in reversed(session.get("events") or []):
+            if isinstance(ev, dict) and ev.get("type") == "error":
+                error_msg = str(ev.get("message") or "")[:500]
+                break
+        pipeline_session_store.upsert_session(
+            db_path, session_id, session,
+            project_id=str(req.get("project_id") or ""),
+            chapter_id=str(req.get("chapter_id") or ""),
+            chapter_num=int(req.get("chapter_num") or 0),
+            error_message=error_msg,
+        )
+    except Exception as e:
+        logger.debug("session DB mirror failed for %s: %s", session_id, e)
+
+
 # ═══ Usage Tracking — moved to ui.backend.app.services.usage_tracker ═══
 # (with debounced writes; this file just exposes the HTTP endpoints).
 
@@ -405,17 +442,60 @@ async def start_generation(req: GenerateRequest):
         # (instead of grep-ing req_data['world_rules']).
         "chapter_context": chapter_context_obj,
     }
+    # Stage 5: mirror initial session state to DB before kicking off
+    # the background task — guarantees the row exists even if the task
+    # crashes during its first await.
+    _mirror_session_to_db(session_id)
     # Start pipeline as background task
     task = asyncio.create_task(_run_pipeline_background(session_id))
     _active_sessions[session_id]["task"] = task
     return {"status": "ok", "session_id": session_id}
 
 
+@router.get("/sessions")
+def list_persisted_sessions(
+    project_id: str = "", chapter_id: str = "",
+    status: str = "", limit: int = 50,
+):
+    """Stage 5: list session rows from the persistent ``pipeline_sessions``
+    table — newest first.
+
+    Use this for the History view. For *live* status of an actively
+    running session, prefer ``GET /status/{session_id}`` which reads
+    from ``_active_sessions`` (the in-memory authoritative source).
+    """
+    from ui.backend.app.services import pipeline_session_store
+    from ui.backend.app.services.project_paths import get_db_path
+    db_path = get_db_path()
+    rows = pipeline_session_store.list_sessions(
+        db_path, project_id=project_id, chapter_id=chapter_id,
+        status_filter=status, limit=limit,
+    )
+    return {"sessions": rows, "count": len(rows)}
+
+
 @router.get("/status/{session_id}")
 def get_session_status(session_id: str):
     session = _active_sessions.get(session_id)
     if not session:
-        raise HTTPException(404, "Session not found")
+        # Stage 5: fall back to persisted row before 404 — running
+        # sessions live in-memory, completed/interrupted ones live in DB.
+        from ui.backend.app.services import pipeline_session_store
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+        row = pipeline_session_store.get_session(db_path, session_id) if db_path else None
+        if not row:
+            raise HTTPException(404, "Session not found")
+        return {
+            "status": row["status"],
+            "current_step": row.get("current_step", ""),
+            "waiting_confirm": bool(row.get("waiting_confirm")),
+            "waiting_manual": bool(row.get("waiting_manual")),
+            "manual_step": row.get("manual_step", ""),
+            "events_count": len(row.get("events") or []),
+            "result": row.get("result"),
+            "persisted": True,
+        }
     return {
         "status": session["status"],
         "current_step": session.get("current_step", ""),
@@ -1010,6 +1090,8 @@ def _emit(session_id: str, event: dict):
     if session:
         event["ts"] = time.time()
         session["events"].append(event)
+        # Stage 5: mirror after each event so the DB log is in sync.
+        _mirror_session_to_db(session_id)
 
 
 def _format_scene_plan_readable(scene_plan: dict) -> str:
@@ -2062,6 +2144,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
         session["status"] = "complete"
         session["text"] = edited_text
         session["result"] = {"text": edited_text, "evaluation": eval_result}
+        _mirror_session_to_db(session_id)  # Stage 5: capture final state
 
         # ── Stage 1 Task 3 Phase 2: Truth Files settlement + audit gate ──
         # Before finalizing the chapter, run the settlement LLM call to
@@ -2094,6 +2177,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                     ),
                 })
                 session["status"] = "paused_audit_review"
+                _mirror_session_to_db(session_id)  # Stage 5
         except Exception as e:
             logger.error("settlement failed: %s", e, exc_info=True)
             _emit(session_id, {
@@ -2130,6 +2214,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
         logger.error("Pipeline background error: %s", e, exc_info=True)
         _emit(session_id, {"type": "error", "message": str(e)[:300]})
         session["status"] = "error"
+        _mirror_session_to_db(session_id)  # Stage 5
 
 
 async def _run_settlement_for_session(
