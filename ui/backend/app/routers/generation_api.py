@@ -1360,27 +1360,32 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             _existing_content = req_data.get("existing_content", "")
             if _existing_content:
                 _outline += f"\n\n[已有正文（请基于此续写下一部分）]\n{_existing_content[-1000:]}"
-            # Build character scope constraint to prevent memory leak
+            # Build character scope constraint to prevent memory leak.
+            # ``_runtime_constraints`` holds extras computed live (scope /
+            # aliases / hook / shuangdian / style) — kept separate from
+            # the legacy ``world_rules`` fold so the ChapterContext path
+            # can avoid duplicating worldbook/reference content (the cc
+            # accessors already route those into the ``world_rules`` field).
             _chapter_num = req_data.get("chapter_num", 1)
-            _scope_constraints = req_data.get("world_rules", "")
+            _runtime_constraints = ""
             if _chars:
                 _display_chars = [_aliases.get(c, c) for c in _chars]
-                _scope_constraints += (
+                _runtime_constraints += (
                     f"\n\n【严格限制】本章（第{_chapter_num}章）仅有以下角色出场：{', '.join(_display_chars)}。"
                     f"\n禁止引入或提及任何不在上述列表中的角色。"
                     f"\n禁止引用其他章节的剧情或角色。"
                     f"\n场景中的 characters 数组只能包含上述角色名。"
                 )
                 if _aliases:
-                    _scope_constraints += (
+                    _runtime_constraints += (
                         f"\n\n【隐藏身份】以下角色在本章中使用化名，禁止在正文中透露真实身份："
                     )
                     for _real, _alias in _aliases.items():
-                        _scope_constraints += f"\n  - 「{_alias}」（请始终使用此称呼，不要使用真名）"
+                        _runtime_constraints += f"\n  - 「{_alias}」（请始终使用此称呼，不要使用真名）"
 
             # D2: Inject chapter-end hook constraint (non-fatal)
             try:
-                _scope_constraints += _build_chapter_hook_constraint(_chapter_num)
+                _runtime_constraints += _build_chapter_hook_constraint(_chapter_num)
             except Exception:
                 pass
 
@@ -1388,9 +1393,12 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             try:
                 _shuangdian = _build_shuangdian_guidance(_chapter_num)
                 if _shuangdian:
-                    _scope_constraints += _shuangdian
+                    _runtime_constraints += _shuangdian
             except Exception:
                 pass
+
+            # Legacy fold = world_rules + runtime extras (used when cc is None).
+            _scope_constraints = req_data.get("world_rules", "") + _runtime_constraints
 
             # B2: Load unresolved foreshadowing for SceneDirector awareness (non-fatal)
             _memory_ctx = ""
@@ -1419,6 +1427,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             # Inject calibration style into constraints so Scene Director is aware
             _style_notes = req_data.get("style_notes", "")
             if _style_notes:
+                _runtime_constraints += f"\n\n【风格要求】{_style_notes}"
                 _scope_constraints += f"\n\n【风格要求】{_style_notes}"
 
             # Truncate constraints and memory context to prevent LLM overload
@@ -1434,14 +1443,65 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                 _memory_ctx = _memory_ctx[:_MAX_MEMORY_LEN]
 
             _emit(session_id, {"type": "progress_update", "step": "scene_director", "progress": 40, "detail": "AI 正在规划场景结构..."})
-            scenes = await director.plan_scenes(
-                chapter_outline=_outline,
-                chapter_num=_chapter_num,
-                memory_context=_memory_ctx,
-                world_rules="",
-                character_cards=_char_cards_str,
-                constraints=_scope_constraints,
-            )
+
+            # ── ChapterContext path (uses all 14 loaders) ──
+            # Falls back to the legacy req_data fold when build was
+            # skipped (e.g. on legacy projects with no loader data).
+            _cc = session.get("chapter_context")
+            if _cc is not None:
+                try:
+                    _sd_kwargs = _cc.to_scene_director_kwargs()
+                except Exception as _cc_err:
+                    logger.warning("ChapterContext.to_scene_director_kwargs failed: %s", _cc_err)
+                    _sd_kwargs = None
+            else:
+                _sd_kwargs = None
+
+            if _sd_kwargs is not None:
+                # _outline is the runtime-computed view (synopsis + location +
+                # time + existing_content) and is the chapter's authoritative
+                # outline — cc's chapter_outline (USR/loader) is supplementary
+                # and folded into constraints instead.
+                _cc_usr = (_sd_kwargs.get("chapter_outline") or "").strip()
+                _sd_kwargs["chapter_outline"] = _outline
+                # Memory: cc gives reader_memory + project_memory + (draft);
+                # runtime _memory_ctx has the live chapter buffer not in loaders.
+                _sd_kwargs["memory_context"] = "\n\n".join(filter(None, [
+                    _sd_kwargs.get("memory_context", ""),
+                    _memory_ctx,
+                ]))
+                # Constraints: cc gives foreshadowing+subplots (narrative);
+                # runtime gives scope/aliases/hook/shuangdian/style. Plus inject
+                # USR + user_preferences which previously never reached SD.
+                _extra_parts = []
+                if _cc_usr:
+                    _extra_parts.append(f"【本章特殊要求】\n{_cc_usr}")
+                _up = _cc.user_preferences_text()
+                if _up:
+                    _extra_parts.append(f"【用户偏好】\n{_up}")
+                _sd_kwargs["constraints"] = "\n\n".join(filter(None, [
+                    _sd_kwargs.get("constraints", ""),
+                    *_extra_parts,
+                    _runtime_constraints,
+                ]))
+                # character_cards fallback: cc may be empty if loader inactive
+                if not (_sd_kwargs.get("character_cards") or "").strip():
+                    _sd_kwargs["character_cards"] = _char_cards_str
+                # Truncate
+                if len(_sd_kwargs["constraints"]) > _MAX_CONSTRAINTS_LEN:
+                    _sd_kwargs["constraints"] = _sd_kwargs["constraints"][:_MAX_CONSTRAINTS_LEN]
+                if len(_sd_kwargs["memory_context"]) > _MAX_MEMORY_LEN:
+                    _sd_kwargs["memory_context"] = _sd_kwargs["memory_context"][:_MAX_MEMORY_LEN]
+                scenes = await director.plan_scenes(**_sd_kwargs)
+            else:
+                scenes = await director.plan_scenes(
+                    chapter_outline=_outline,
+                    chapter_num=_chapter_num,
+                    memory_context=_memory_ctx,
+                    world_rules="",
+                    character_cards=_char_cards_str,
+                    constraints=_scope_constraints,
+                )
             scene_result = scenes if isinstance(scenes, dict) else {"raw": str(scenes)}
             _emit(session_id, {"type": "progress_update", "step": "scene_director", "progress": 90, "detail": "解析场景计划..."})
         except Exception as e:
@@ -1866,9 +1926,17 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                 _extra_constraints.append(
                     f"【隐藏身份】以下角色在本章中使用化名，正文中只能使用化名：\n" + "\n".join(_alias_lines)
                 )
-            _combined_constraints = req_data.get("world_rules", "")
-            if _extra_constraints:
-                _combined_constraints += "\n" + "\n".join(_extra_constraints)
+            # Constraints (runtime-only when cc carries world_rules): in
+            # cc path we don't fold world_rules here because cc already
+            # routes worldbuilding into Writer's other fields. Legacy
+            # path keeps the old fold for compatibility.
+            _cc_for_writer = session.get("chapter_context")
+            if _cc_for_writer is not None:
+                _combined_constraints = "\n".join(_extra_constraints) if _extra_constraints else ""
+            else:
+                _combined_constraints = req_data.get("world_rules", "")
+                if _extra_constraints:
+                    _combined_constraints += "\n" + "\n".join(_extra_constraints)
 
             # A4: Load user style preferences from EditAnalyzer feedback loop
             _editor_db_path = _get_db_path()
@@ -1890,6 +1958,40 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             except Exception:
                 pass
 
+            # ── ChapterContext path: merge cc loaders with runtime values ──
+            _writer_kwargs = {
+                "performance_records": perf_list,
+                "narrator_text":       narrator_text,
+                "chapter_num":         req_data.get("chapter_num", 1),
+                "chapter_title":       req_data.get("chapter_title", ""),
+                "style_profile":       _style_profile,
+                "user_preferences":    _user_prefs,
+                "memory_context":      _editor_memory_ctx,
+                "constraints":         _combined_constraints,
+            }
+            if _cc_for_writer is not None:
+                try:
+                    _cc_writer_kw = _cc_for_writer.to_writer_assemble_kwargs()
+                except Exception as _cc_err:
+                    logger.warning("ChapterContext.to_writer_assemble_kwargs failed: %s", _cc_err)
+                    _cc_writer_kw = None
+                if _cc_writer_kw is not None:
+                    # cc loaders are MERGED with the runtime values (different
+                    # data sources): platform_directive + USR (loader) joins
+                    # _style_profile (style_notes + ref_style); user_preferences
+                    # loader joins _user_prefs (EditAnalyzer feedback); etc.
+                    def _merge(a: str, b: str) -> str:
+                        return "\n\n".join(p for p in (a, b) if (p or "").strip())
+                    _writer_kwargs["style_profile"]    = _merge(_cc_writer_kw["style_profile"],
+                                                                _writer_kwargs["style_profile"])
+                    _writer_kwargs["user_preferences"] = _merge(_cc_writer_kw["user_preferences"],
+                                                                _writer_kwargs["user_preferences"])
+                    _writer_kwargs["memory_context"]   = _merge(_cc_writer_kw["memory_context"],
+                                                                _writer_kwargs["memory_context"])
+                    # truth_bundle + narrative_instructions are pure cc output.
+                    _writer_kwargs["truth_bundle"]          = _cc_writer_kw["truth_bundle"]
+                    _writer_kwargs["narrative_instructions"] = _cc_writer_kw["narrative_instructions"]
+
             editor_prompt_sent = json.dumps({
                 "method": "Writer.assemble_chapter",
                 "performance_count": len(perf_list),
@@ -1897,20 +1999,12 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                 "narrator_length": len(narrator_text),
                 "style_notes": req_data.get("style_notes", "")[:200],
                 "has_existing_content": bool(_existing),
-                "has_user_preferences": bool(_user_prefs),
+                "has_user_preferences": bool(_writer_kwargs.get("user_preferences")),
                 "has_reference_style": bool(_ref_style),
+                "has_chapter_context": _cc_for_writer is not None,
             }, ensure_ascii=False, indent=2)
 
-            edited_text = await editor.assemble_chapter(
-                performance_records=perf_list,
-                narrator_text=narrator_text,
-                chapter_num=req_data.get("chapter_num", 1),
-                chapter_title=req_data.get("chapter_title", ""),
-                style_profile=_style_profile,
-                user_preferences=_user_prefs,
-                memory_context=_editor_memory_ctx,
-                constraints=_combined_constraints,
-            ) or full_text
+            edited_text = await editor.assemble_chapter(**_writer_kwargs) or full_text
             _emit(session_id, {
                 "type": "step_done", "step": "editor_writer",
                 "result": {"text": edited_text, "word_count": len(edited_text), "prompt_sent": editor_prompt_sent},

@@ -266,10 +266,10 @@ class TestCommit(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(n, 1)
 
 
-# ─────────── world_rules_text helper ───────────
+# ─────────── world_rules_legacy_text helper ───────────
 
 
-class TestWorldRulesText(unittest.TestCase):
+class TestWorldRulesLegacyText(unittest.TestCase):
 
     def test_assembles_loader_blocks_and_bundle(self) -> None:
         ctx = ChapterContext(
@@ -285,7 +285,7 @@ class TestWorldRulesText(unittest.TestCase):
                 "ledger_anchors":       [],
             },
         )
-        text = ctx.world_rules_text()
+        text = ctx.world_rules_legacy_text()
         self.assertIn("林天", text)
         self.assertIn("灵气复苏", text)
         self.assertIn("幽冥谷", text)
