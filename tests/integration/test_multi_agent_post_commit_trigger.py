@@ -113,7 +113,7 @@ class TestMultiAgentPostCommitTrigger(unittest.IsolatedAsyncioTestCase):
         from ui.backend.app.routers.generation_api import (
             _persist_and_trigger_post_commit,
         )
-        _persist_and_trigger_post_commit(
+        await _persist_and_trigger_post_commit(
             session_id="sess_test_xyz",
             req_data={
                 "project_id": "p1",
@@ -183,7 +183,7 @@ class TestMultiAgentPostCommitTrigger(unittest.IsolatedAsyncioTestCase):
         from ui.backend.app.services.commit_pipeline import task_registry
         task_registry.reset_for_tests()
 
-        _persist_and_trigger_post_commit(
+        await _persist_and_trigger_post_commit(
             session_id="sess_ephemeral",
             req_data={"project_id": "", "chapter_id": ""},
             final_text="text",
@@ -217,7 +217,7 @@ class TestMultiAgentPostCommitTrigger(unittest.IsolatedAsyncioTestCase):
             p.start()
             self._patches.append(p)
 
-        _persist_and_trigger_post_commit(
+        await _persist_and_trigger_post_commit(
             session_id="sess_failed",
             req_data={
                 "project_id": "p1", "chapter_id": "ch2", "chapter_num": 2,
