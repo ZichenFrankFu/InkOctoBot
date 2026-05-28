@@ -25,11 +25,18 @@ import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
 import DevConsolePage from "./pages/DevConsolePage";
 import MarketSearchPage from "./pages/MarketSearchPage";
+// P0 + P1: learning / paste / audit surfaces newly added — see
+// docs/UI_REDESIGN_SPEC.md.
+import PasteInboxPage from "./pages/PasteInboxPage";
+import DomainLearningPage from "./pages/DomainLearningPage";
+import PreferencesPage from "./pages/PreferencesPage";
+import TruthReviewPage from "./pages/TruthReviewPage";
 
 type Tab =
   | "dashboard" | "rankings" | "references" | "references-overview" | "references-search" | "analysis"
   | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
-  | "skills" | "settings" | "dev-console" | "market-search";
+  | "skills" | "settings" | "dev-console" | "market-search"
+  | "paste-inbox" | "domain-learning" | "preferences" | "truth-review";
 
 interface Project { id: string; name: string; genre?: string; word_count?: number; chapter_count?: number; }
 
@@ -64,6 +71,15 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "worldbook", icon: "⊕", label: "世界书" },
       { key: "editor", icon: "✎", label: "编辑器" },
       { key: "storyline", icon: "─", label: "剧情线" },
+    ],
+  },
+  {
+    section: "学习反馈",
+    items: [
+      { key: "preferences", icon: "△", label: "写作偏好" },
+      { key: "domain-learning", icon: "✦", label: "领域知识" },
+      { key: "truth-review", icon: "⚖", label: "Truth 审阅" },
+      { key: "paste-inbox", icon: "▽", label: "粘贴收件箱" },
     ],
   },
   {
@@ -227,6 +243,10 @@ function AppInner() {
         {tab === "settings" && <ErrorBoundary key="settings"><SettingsPage /></ErrorBoundary>}
         {tab === "market-search" && <ErrorBoundary key="market-search"><MarketSearchPage /></ErrorBoundary>}
         {tab === "dev-console" && <ErrorBoundary key="dev-console"><DevConsolePage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
+        {tab === "paste-inbox" && <ErrorBoundary key="paste-inbox"><PasteInboxPage /></ErrorBoundary>}
+        {tab === "domain-learning" && <ErrorBoundary key="domain-learning"><DomainLearningPage projectId={activeProject} /></ErrorBoundary>}
+        {tab === "preferences" && <ErrorBoundary key="preferences"><PreferencesPage projectId={activeProject} /></ErrorBoundary>}
+        {tab === "truth-review" && <ErrorBoundary key="truth-review"><TruthReviewPage projectId={activeProject} onOpenChapter={() => setTab("editor")} /></ErrorBoundary>}
       </main>
 
       <GlobalSearch
