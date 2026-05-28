@@ -30,7 +30,16 @@ type OpeningStats = {
 const platformLabel = (p: string) =>
   p === "qidian" ? "起点" : p === "fanqie" ? "番茄" : p || "未知";
 
-export default function RankingsPage() {
+/** When mounted inside MarketOverviewPage we want the parent's title
+ *  + tab strip, not Rankings' own header. The "AI 总结开篇技巧" panel
+ *  is also moved to MarketFeatureExtractionPage per the latest IA — so
+ *  hideOpeningAi suppresses it here too. */
+interface Props {
+  hideOwnHeader?: boolean;
+  hideOpeningAi?: boolean;
+}
+
+export default function RankingsPage({ hideOwnHeader = false, hideOpeningAi = false }: Props = {}) {
   const [platform, setPlatform] = useState<PlatformFilter>("");
   const [step, setStep] = useState<Step>("lists");
   const [loading, setLoading] = useState(false);
@@ -173,6 +182,7 @@ export default function RankingsPage() {
   return (
     <div className="page-container">
       {/* ══ Header ══ */}
+      {!hideOwnHeader && (
       <div className="page-header" style={{ marginBottom: 20 }}>
         <div className="page-header-row">
           <div>
@@ -194,6 +204,26 @@ export default function RankingsPage() {
           </div>
         </div>
       </div>
+      )}
+      {hideOwnHeader && (
+        /* In wrapped mode, the parent owns the page title; we still
+           need a platform filter, so render it as a slim secondary bar. */
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--border)" }}>
+          <div className="tab-bar">
+            {([["", "全部平台"], ["qidian", "起点"], ["fanqie", "番茄"]] as const).map(
+              ([val, label]) => (
+                <button
+                  key={val}
+                  className={`tab-item${platform === val ? " active" : ""}`}
+                  onClick={() => setPlatform(val as PlatformFilter)}
+                >
+                  {label}
+                </button>
+              ),
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ══ 开篇章节分析 ══ */}
       {openingStats?.available && openingStats.first_chapter && (
@@ -239,6 +269,7 @@ export default function RankingsPage() {
                   );
                 })}
               </div>
+              {!hideOpeningAi && (
               <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
                 <div className="label" style={{ marginBottom: 6 }}>AI 总结开篇技巧（基于开篇章节正文）</div>
                 <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px", marginBottom: 8 }}
@@ -267,6 +298,7 @@ export default function RankingsPage() {
                   resultPlaceholder="把网页版大模型返回的开篇分析粘贴到这里"
                 />
               </div>
+              )}
             </div>
           )}
         </div>

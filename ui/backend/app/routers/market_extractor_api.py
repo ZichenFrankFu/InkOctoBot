@@ -62,6 +62,170 @@ def get_job(job_id: str) -> dict:
     return job
 
 
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job_endpoint(job_id: str) -> dict:
+    """Cooperative cancel: state flipped to 'cancelled' so the running
+    pipeline bails at the next phase checkpoint."""
+    result = job_runner.cancel_job(get_db_path(), job_id)
+    if result is None:
+        raise HTTPException(404, f"job {job_id!r} not found")
+    return result
+
+
+@router.get("/platforms")
+def list_platforms() -> dict:
+    """Surface platforms the user actually has in the crawler DB."""
+    import os as _os, sqlite3 as _sqlite3
+    crawler_db_path = _os.path.join(
+        _os.path.dirname(get_db_path()), "InkOctoBot_Crawler.db",
+    )
+    if not _os.path.exists(crawler_db_path):
+        return {"platforms": [], "warning": "crawler DB not configured"}
+    try:
+        with _sqlite3.connect(crawler_db_path) as con:
+            con.row_factory = _sqlite3.Row
+            rows = con.execute(
+                "SELECT platform, COUNT(*) AS book_count "
+                "FROM novels GROUP BY platform "
+                "ORDER BY book_count DESC"
+            ).fetchall()
+        return {"platforms": [
+            {"key": r["platform"], "label": r["platform"], "book_count": r["book_count"]}
+            for r in rows if r["platform"]
+        ]}
+    except _sqlite3.OperationalError as e:
+        return {"platforms": [], "warning": f"crawler db read failed: {e}"}
+
+
+@router.get("/categories")
+def list_categories(platform: str = Query("")) -> dict:
+    """Surface 榜单 categories from the crawler DB."""
+    import os as _os, sqlite3 as _sqlite3
+    crawler_db_path = _os.path.join(
+        _os.path.dirname(get_db_path()), "InkOctoBot_Crawler.db",
+    )
+    if not _os.path.exists(crawler_db_path):
+        return {"categories": [], "warning": "crawler DB not configured"}
+    try:
+        with _sqlite3.connect(crawler_db_path) as con:
+            con.row_factory = _sqlite3.Row
+            if platform:
+                rows = con.execute(
+                    "SELECT rank_family, rank_sub_cat, COUNT(*) AS list_count "
+                    "FROM rank_lists WHERE platform = ? "
+                    "GROUP BY rank_family, rank_sub_cat "
+                    "ORDER BY list_count DESC",
+                    (platform,),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT rank_family, rank_sub_cat, COUNT(*) AS list_count "
+                    "FROM rank_lists "
+                    "GROUP BY rank_family, rank_sub_cat "
+                    "ORDER BY list_count DESC"
+                ).fetchall()
+        out = []
+        for r in rows:
+            fam = r["rank_family"] or "未知"
+            sub = r["rank_sub_cat"] or ""
+            label = f"{fam} · {sub}" if sub else fam
+            key = sub or fam
+            out.append({"key": key, "label": label,
+                        "rank_family": fam, "rank_sub_cat": sub,
+                        "list_count": r["list_count"]})
+        return {"categories": out}
+    except _sqlite3.OperationalError as e:
+        return {"categories": [], "warning": f"crawler db read failed: {e}"}
+
+
+@router.post("/manual-prompt")
+def build_manual_prompt(body: dict = Body(...)) -> dict:
+    """Assemble the LLM prompt for manual-mode usage. The user copies
+    the returned prompt into a browser LLM, pastes the response back
+    via /manual-submit."""
+    platform = (body.get("platform") or "").strip()
+    category = (body.get("category") or "").strip()
+    if not platform or not category:
+        raise HTTPException(400, "platform + category required")
+    works = representative_selector.list_selected(
+        get_db_path(), platform, category, include_holdout=False,
+    )
+    work_titles = [
+        (w.get("title") or w.get("source_db_novel_id") or w.get("work_id"))
+        for w in works[:10]
+    ]
+    prompt = (
+        f"请基于以下 ({platform} × {category}) 平台代表作，"
+        f"总结一份「平台风格基线 (platform directive)」。\n\n"
+        f"代表作清单 (top {len(work_titles)}):\n"
+        + "\n".join(f"  - {t}" for t in work_titles)
+        + "\n\n请输出 JSON：\n"
+        '{\n'
+        '  "profile_summary": "...",\n'
+        '  "style_baseline": "...",\n'
+        '  "signature_devices_description": "...",\n'
+        '  "pacing_guidance": "...",\n'
+        '  "recommended_openings": ["...", "..."]\n'
+        '}\n'
+    )
+    return {"prompt": prompt, "platform": platform, "category": category,
+            "work_count": len(works)}
+
+
+@router.post("/manual-submit")
+def submit_manual_extraction(body: dict = Body(...)) -> dict:
+    """Persist a manual-mode response as a new platform_profile row."""
+    import uuid as _uuid, json as _json, sqlite3 as _sqlite3
+    platform = (body.get("platform") or "").strip()
+    category = (body.get("category") or "").strip()
+    raw = (body.get("response_raw") or "").strip()
+    if not platform or not category or not raw:
+        raise HTTPException(400, "platform + category + response_raw required")
+    parsed: dict = {}
+    try:
+        t = raw
+        if t.startswith("```"):
+            t = t.lstrip("`")
+            if t.lower().startswith("json"):
+                t = t[4:]
+            t = t.strip()
+            if t.endswith("```"):
+                t = t[:-3].strip()
+        parsed = _json.loads(t)
+    except Exception:
+        i, j = raw.find("{"), raw.rfind("}")
+        if i >= 0 and j > i:
+            try:
+                parsed = _json.loads(raw[i:j + 1])
+            except Exception:
+                parsed = {}
+    profile_id = f"pp_manual_{_uuid.uuid4().hex[:10]}"
+    with _sqlite3.connect(get_db_path()) as con:
+        con.execute(
+            """INSERT INTO platform_profiles
+               (profile_id, platform, category, profile_version,
+                profile_summary, style_baseline, signature_devices_description,
+                pacing_guidance, recommended_openings_json,
+                loader_payload, confidence_label,
+                extraction_started_at, extraction_completed_at)
+               VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'manual',
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+            (
+                profile_id, platform, category,
+                parsed.get("profile_summary", ""),
+                parsed.get("style_baseline", ""),
+                parsed.get("signature_devices_description", ""),
+                parsed.get("pacing_guidance", ""),
+                _json.dumps(parsed.get("recommended_openings", []),
+                            ensure_ascii=False),
+                raw,
+            ),
+        )
+        con.commit()
+    return {"profile_id": profile_id, "platform": platform,
+            "category": category, "parsed_keys": list(parsed.keys())}
+
+
 # ─────────── representative works ───────────
 
 

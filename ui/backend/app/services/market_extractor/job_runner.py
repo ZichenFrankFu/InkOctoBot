@@ -77,6 +77,37 @@ def _get_job(db_path: str, job_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def cancel_job(db_path: str, job_id: str) -> dict | None:
+    """Flip a job to ``cancelled`` in the DB. The running phases
+    inspect the state at known checkpoints (``_check_cancelled``) and
+    raise so the executor stops cleanly. Already-completed work is
+    preserved — only the still-running phases short-circuit."""
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT state FROM platform_extraction_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        current = row["state"]
+        if current in ("completed", "failed", "cancelled"):
+            return {"job_id": job_id, "state": current, "noop": True}
+        con.execute(
+            "UPDATE platform_extraction_jobs "
+            "SET state = 'cancelled', completed_at = ? WHERE job_id = ?",
+            (_now(), job_id),
+        )
+        con.commit()
+    return {"job_id": job_id, "state": "cancelled"}
+
+
+def _check_cancelled(db_path: str, job_id: str) -> bool:
+    """Cheap checkpoint used between phases by ``run_job_async``."""
+    j = _get_job(db_path, job_id)
+    return bool(j and j.get("state") == "cancelled")
+
+
 # ─────────── pipeline phases ───────────
 
 
@@ -245,11 +276,25 @@ async def run_job_async(
         _insert_job(db_path, job_id, platform, category)
 
     try:
+        # Cooperative cancellation: after each major phase, check the
+        # DB state and bail if the user clicked Cancel.
         _phase_1(db_path, job_id, platform, category, crawler_db)
+        if _check_cancelled(db_path, job_id):
+            logger.info("job %s cancelled after phase 1", job_id)
+            return job_id
         await _phase_2(db_path, job_id, platform, category,
                         crawler_db or representative_selector._resolve_crawler_db())
+        if _check_cancelled(db_path, job_id):
+            logger.info("job %s cancelled after phase 2", job_id)
+            return job_id
         _phase_3(db_path, job_id, platform, category)
+        if _check_cancelled(db_path, job_id):
+            logger.info("job %s cancelled after phase 3", job_id)
+            return job_id
         synth_result = await _phase_4(db_path, job_id, platform, category)
+        if _check_cancelled(db_path, job_id):
+            logger.info("job %s cancelled after phase 4", job_id)
+            return job_id
         _phase_5(db_path, job_id, synth_result["profile_id"])
         _update_job(
             db_path, job_id,

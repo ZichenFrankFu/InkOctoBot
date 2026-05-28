@@ -260,10 +260,6 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
                   <div className="stat-value">{projects.length}</div>
                   <div className="stat-label">进行中项目</div>
                 </div>
-                <div className="stat-card">
-                  <div className="stat-value">{refSummary.total}</div>
-                  <div className="stat-label">参考作品</div>
-                </div>
               </div>
 
               {/* Recent projects */}
@@ -300,137 +296,11 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
                 ))}
               </div>
 
-              {/* Reference library preferences */}
-              {refSummary.total > 0 && (
-                <div style={{ padding: "12px 16px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)" }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>
-                    参考作品库 · 审美偏好
-                  </div>
-                  <div className="flex gap-8 items-center" style={{ flexWrap: "wrap" }}>
-                    {refSummary.topGenres.length > 0 && (
-                      <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
-                        {refSummary.topGenres.map(g => (
-                          <span key={g} className="tag category">{g}</span>
-                        ))}
-                      </div>
-                    )}
-                    {refSummary.avgRating > 0 && (
-                      <span style={{ fontSize: 12, color: "var(--gold)" }}>
-                        平均评分 {"★".repeat(Math.round(refSummary.avgRating))}{"☆".repeat(5 - Math.round(refSummary.avgRating))} ({refSummary.avgRating.toFixed(1)})
-                      </span>
-                    )}
-                    <span className="text-xs text-muted">
-                      共 {refSummary.total} 部作品
-                    </span>
-                  </div>
-                </div>
-              )}
+
             </>
           )}
         </div>
       </div>
-
-      {/* ══ 参考作品数据库 ══ */}
-      {refSummary.total > 0 && (
-        <div className="card" style={{ marginBottom: 24 }}>
-          <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <h3>参考作品数据库</h3>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => onNavigate("references-overview")}>
-              查看完整概览
-            </button>
-          </div>
-          <div className="card-body">
-            <div className="stats-grid" style={{ marginBottom: 18 }}>
-              {[
-                { value: refSummary.total, label: "作品总数" },
-                { value: refSummary.withFullText, label: "已上传正文" },
-                { value: refSummary.done, label: "已完成分析" },
-                { value: refSummary.withPlot, label: "已生成大纲" },
-                { value: refSummary.withCharacters, label: "已提取角色" },
-                { value: refSummary.avgRating > 0 ? refSummary.avgRating.toFixed(1) : "—", label: "平均评分" },
-              ].map((s) => (
-                <div className="stat-card" key={s.label}>
-                  <div className="stat-value">{s.value}</div>
-                  <div className="stat-label">{s.label}</div>
-                </div>
-              ))}
-            </div>
-            {refSummary.byGenre.length > 0 ? (
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
-                  题材分布
-                  <span className="text-xs text-muted" style={{ fontWeight: 400, marginLeft: 6 }}>
-                    {refSummary.byGenre.length} 个标签
-                  </span>
-                </div>
-                <div className="bar-chart">
-                  {refSummary.byGenre.slice(0, 12).map((g, idx) => (
-                    <div className="bar-row" key={g.genre}>
-                      <div className="bar-label">{g.genre}</div>
-                      <div className="bar-track">
-                        <div className={`bar-fill ${barColors[idx % barColors.length]}`} style={{ width: `${Math.max(4, (g.count / maxRefGenre) * 100)}%` }}>
-                          {g.count}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="text-xs text-muted">暂无题材数据</div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ══ 灵感数据库 ══ */}
-      {inspSummary.total > 0 && (
-        <div className="card" style={{ marginBottom: 24 }}>
-          <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <h3>灵感数据库</h3>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => onNavigate("inspiration-overview")}>
-              查看完整概览
-            </button>
-          </div>
-          <div className="card-body">
-            <div className="stats-grid" style={{ marginBottom: 18 }}>
-              {[
-                { value: inspSummary.total, label: "灵感总数" },
-                { value: inspSummary.withEmbedding, label: "已建 embedding" },
-                { value: inspSummary.usedSomewhere, label: "已被章节使用" },
-                { value: inspSummary.byCategory.length, label: "分类数" },
-              ].map((s) => (
-                <div className="stat-card" key={s.label}>
-                  <div className="stat-value">{s.value}</div>
-                  <div className="stat-label">{s.label}</div>
-                </div>
-              ))}
-            </div>
-            {inspSummary.byCategory.length > 0 && (
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
-                  按类别分布
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {inspSummary.byCategory.slice(0, 12).map(g => (
-                    <div key={g.category} style={{
-                      padding: "5px 12px", borderRadius: 12,
-                      background: "var(--bg-surface-2)", fontSize: 12,
-                    }}>
-                      {g.category} <strong>{g.count}</strong>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-              <button className="btn-primary" onClick={() => onNavigate("inspiration-library")}>
-                打开灵感库
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ══ 市场数据速览 ══ */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
@@ -589,6 +459,108 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
             </div>
           </div>
         </>
+      )}
+
+      {/* ══ 参考作品数据库 ══ */}
+      {refSummary.total > 0 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3>参考作品数据库</h3>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => onNavigate("references-overview")}>
+              查看完整概览
+            </button>
+          </div>
+          <div className="card-body">
+            <div className="stats-grid" style={{ marginBottom: 18 }}>
+              {[
+                { value: refSummary.total, label: "作品总数" },
+                { value: refSummary.withFullText, label: "已上传正文" },
+                { value: refSummary.done, label: "已完成分析" },
+                { value: refSummary.withPlot, label: "已生成大纲" },
+                { value: refSummary.withCharacters, label: "已提取角色" },
+                { value: refSummary.avgRating > 0 ? refSummary.avgRating.toFixed(1) : "—", label: "平均评分" },
+              ].map((s) => (
+                <div className="stat-card" key={s.label}>
+                  <div className="stat-value">{s.value}</div>
+                  <div className="stat-label">{s.label}</div>
+                </div>
+              ))}
+            </div>
+            {refSummary.byGenre.length > 0 ? (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
+                  题材分布
+                  <span className="text-xs text-muted" style={{ fontWeight: 400, marginLeft: 6 }}>
+                    {refSummary.byGenre.length} 个标签
+                  </span>
+                </div>
+                <div className="bar-chart">
+                  {refSummary.byGenre.slice(0, 12).map((g, idx) => (
+                    <div className="bar-row" key={g.genre}>
+                      <div className="bar-label">{g.genre}</div>
+                      <div className="bar-track">
+                        <div className={`bar-fill ${barColors[idx % barColors.length]}`} style={{ width: `${Math.max(4, (g.count / maxRefGenre) * 100)}%` }}>
+                          {g.count}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-muted">暂无题材数据</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ══ 灵感数据库 ══ */}
+      {inspSummary.total > 0 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3>灵感数据库</h3>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => onNavigate("inspiration-overview")}>
+              查看完整概览
+            </button>
+          </div>
+          <div className="card-body">
+            <div className="stats-grid" style={{ marginBottom: 18 }}>
+              {[
+                { value: inspSummary.total, label: "灵感总数" },
+                { value: inspSummary.withEmbedding, label: "已建 embedding" },
+                { value: inspSummary.usedSomewhere, label: "已被章节使用" },
+                { value: inspSummary.byCategory.length, label: "分类数" },
+              ].map((s) => (
+                <div className="stat-card" key={s.label}>
+                  <div className="stat-value">{s.value}</div>
+                  <div className="stat-label">{s.label}</div>
+                </div>
+              ))}
+            </div>
+            {inspSummary.byCategory.length > 0 && (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 8 }}>
+                  按类别分布
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {inspSummary.byCategory.slice(0, 12).map(g => (
+                    <div key={g.category} style={{
+                      padding: "5px 12px", borderRadius: 12,
+                      background: "var(--bg-surface-2)", fontSize: 12,
+                    }}>
+                      {g.category} <strong>{g.count}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button className="btn-primary" onClick={() => onNavigate("inspiration-library")}>
+                打开灵感库
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Side Panel */}

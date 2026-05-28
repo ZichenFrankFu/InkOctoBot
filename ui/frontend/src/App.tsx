@@ -267,7 +267,7 @@ function AppInner() {
         {tab === "references-search"   && <ErrorBoundary key="references-search"><ReferenceSearchPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
 
         {/* 灵感数据库 (NEW) */}
-        {tab === "inspiration-overview" && <ErrorBoundary key="inspiration-overview"><InspirationOverviewPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {tab === "inspiration-overview" && <ErrorBoundary key="inspiration-overview"><InspirationOverviewPage /></ErrorBoundary>}
         {tab === "inspiration-library"  && <ErrorBoundary key="inspiration-library"><InspirationLibraryPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {/* Legacy alias — old links to 灵感搜索 now land in the merged 灵感库 */}
         {tab === "inspiration-search"   && <ErrorBoundary key="inspiration-search"><InspirationLibraryPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}

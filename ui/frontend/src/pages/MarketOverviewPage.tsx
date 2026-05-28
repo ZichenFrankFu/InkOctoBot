@@ -1,10 +1,7 @@
 /**
- * MarketOverviewPage — wrapper that fulfills the user's request to
- * "merge 分析面板 into 市场总览" without rewriting either page.
- *
- * Tabs:
- *   - 榜单 (Rankings)
- *   - 分析 (AnalysisDashboard)
+ * MarketOverviewPage — title first, then tab strip, then body.
+ * Wraps Rankings + AnalysisDashboard so the user can swap between
+ * them inside the single "市场总览" nav entry.
  */
 import React, { useState } from "react";
 import RankingsPage from "./RankingsPage";
@@ -19,16 +16,26 @@ export default function MarketOverviewPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Tab bar */}
+      {/* Page header (title first) */}
+      <div className="page-header" style={{ padding: "16px 20px 6px" }}>
+        <div className="page-header-row">
+          <div>
+            <h2>市场总览</h2>
+            <p>逐级浏览各平台榜单 · 热度趋势 · 标签共现 · 双点分析</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Tab strip (after the title) */}
       <div style={{
         display: "flex", gap: 0,
         borderBottom: "1px solid var(--border)",
-        padding: "0 20px", paddingTop: 10,
+        padding: "0 20px",
         background: "var(--bg-surface)",
       }}>
         {([
-          { key: "rankings" as const, label: " 榜单", desc: "逐级浏览各平台榜单" },
-          { key: "analysis" as const, label: " 分析", desc: "热度趋势 · 标签共现 · 双点分析" },
+          { key: "rankings" as const, label: "榜单",   desc: "逐级浏览各平台榜单" },
+          { key: "analysis" as const, label: "分析面板", desc: "热度趋势 · 标签共现 · 双点分析" },
         ]).map(t => (
           <button
             key={t.key}
@@ -51,7 +58,7 @@ export default function MarketOverviewPage() {
 
       {/* Tab body */}
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-        {tab === "rankings" && <RankingsPage />}
+        {tab === "rankings" && <RankingsPage hideOwnHeader={true} hideOpeningAi={true} />}
         {tab === "analysis" && <AnalysisDashboardPage />}
       </div>
     </div>
