@@ -213,308 +213,348 @@ export default function MarketSearchPage() {
         </div>
       )}
 
-      {/* The detail column collapses to 0 until the user picks a hit.
-          Hits list expands to the full width when nothing's selected
-          so initial search results breathe. */}
-      <div style={{
-        flex: 1, display: "grid",
-        gridTemplateColumns: selected ? "360px 1fr" : "1fr",
-        gap: 14, overflow: "hidden", minHeight: 0,
-      }}>
-        {/* Hits list — wrapped in a card to match other pages */}
-        <div className="card" style={{ padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      {/* Hits list — always full-width. Clicking a row opens a
+          centered 「市场作品详情」 overlay (see below). */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+        <div className="card" style={{ padding: 0, overflow: "hidden", display: "flex", flexDirection: "column", flex: 1 }}>
           <div className="card-header" style={{ padding: "8px 14px", fontSize: 12, fontWeight: 600 }}>
             搜索结果 ({hits.length})
           </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
-          {hits.length === 0 && (
-            <div style={{ padding: 20, color: "var(--text-tertiary)", fontSize: 12, textAlign: "center" }}>
-              {searching ? "搜索中..." : "输入关键词后回车，或选择平台筛选后再点搜索"}
-            </div>
-          )}
-          {hits.map((h) => (
-            <div
-              key={h.novel_uid}
-              onClick={() => selectNovel(h)}
-              style={{
-                padding: "10px 14px", borderBottom: "1px solid var(--border)",
-                cursor: "pointer",
-                background: selected?.novel_uid === h.novel_uid
-                  ? "var(--accent-subtle, var(--bg-surface-2))"
-                  : "transparent",
-                borderLeft: selected?.novel_uid === h.novel_uid
-                  ? "3px solid var(--accent)"
-                  : "3px solid transparent",
-                transition: "background 0.12s",
-              }}
-              onMouseEnter={e => {
-                if (selected?.novel_uid !== h.novel_uid) {
-                  (e.currentTarget as HTMLDivElement).style.background = "var(--bg-surface-2)";
-                }
-              }}
-              onMouseLeave={e => {
-                if (selected?.novel_uid !== h.novel_uid) {
-                  (e.currentTarget as HTMLDivElement).style.background = "transparent";
-                }
-              }}
-            >
-              <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>{h.title}</div>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 4 }}>
-                {h.platform}{h.author ? ` · ${h.author}` : ""}
-                {h.main_category ? ` · ${h.main_category}` : ""}
+            {hits.length === 0 && (
+              <div style={{ padding: 20, color: "var(--text-tertiary)", fontSize: 12, textAlign: "center" }}>
+                {searching ? "搜索中..." : "输入关键词后回车，或选择平台筛选后再点搜索"}
               </div>
-              {(h.total_words || h.status) && (
-                <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>
-                  {h.total_words ? `${(h.total_words / 10000).toFixed(1)} 万字` : ""}
-                  {h.status ? ` · ${h.status}` : ""}
+            )}
+            {hits.map((h) => (
+              <div
+                key={h.novel_uid}
+                onClick={() => selectNovel(h)}
+                style={{
+                  padding: "10px 14px", borderBottom: "1px solid var(--border)",
+                  cursor: "pointer",
+                  transition: "background 0.12s",
+                }}
+                onMouseEnter={e => {
+                  (e.currentTarget as HTMLDivElement).style.background = "var(--bg-surface-2)";
+                }}
+                onMouseLeave={e => {
+                  (e.currentTarget as HTMLDivElement).style.background = "transparent";
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>{h.title}</div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 4 }}>
+                  {tPlatform(h.platform)}{h.author ? ` · ${h.author}` : ""}
+                  {h.main_category ? ` · ${h.main_category}` : ""}
                 </div>
-              )}
-            </div>
-          ))}
+                {(h.total_words || h.status) && (
+                  <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>
+                    {h.total_words ? `${(h.total_words / 10000).toFixed(1)} 万字` : ""}
+                    {h.status ? ` · ${h.status}` : ""}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
-
-        {/* Detail — only render when a hit is selected; otherwise the
-            list takes the full width. */}
-        {selected && (
-        <div className="card" style={{ padding: 16, overflow: "auto" }}>
-          {loadingDetail && <div>加载中…</div>}
-          {detail && !loadingDetail && (
-            <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-                <h3 style={{ margin: 0 }}>{detail.titles.find((t) => t.is_primary)?.title || selected?.title}</h3>
-                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                  <button
-                    className="btn"
-                    style={{ fontSize: 11, padding: "3px 10px" }}
-                    onClick={() => {
-                      const title = detail.titles.find(t => t.is_primary)?.title || selected?.title || "";
-                      setEditing({
-                        novel_uid: detail.novel.novel_uid,
-                        author: detail.novel.author || "",
-                        main_category: detail.novel.main_category || "",
-                        status: detail.novel.status || "ongoing",
-                        total_words: detail.novel.total_words || 0,
-                        url: (detail.novel as any).url || "",
-                        intro: detail.novel.intro || "",
-                        title,
-                      });
-                    }}
-                  >编辑</button>
-                  <button
-                    className="btn"
-                    style={{ fontSize: 11, padding: "3px 10px", color: "var(--danger)" }}
-                    onClick={async () => {
-                      const title = detail.titles.find(t => t.is_primary)?.title || "this work";
-                      if (!window.confirm(`确认删除「${title}」？\n会同时清掉它在 rank_entries / chapters / titles / tag_map 中的所有引用，不可恢复。`)) return;
-                      try {
-                        await apiDelete(`/api/db/novel/${detail.novel.novel_uid}`);
-                        toast("已删除", "success");
-                        setHits(prev => prev.filter(h => h.novel_uid !== detail.novel.novel_uid));
-                        setSelected(null);
-                        setDetail(null);
-                      } catch (e: any) {
-                        toast(`删除失败: ${e.message}`, "error");
-                      }
-                    }}
-                  >删除</button>
-                </div>
-              </div>
-              <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-secondary)" }}>
-                {tPlatform(detail.novel.platform || "")}{detail.novel.author ? ` · ${detail.novel.author}` : ""}
-                {detail.novel.main_category ? ` · ${detail.novel.main_category}` : ""}
-                {detail.novel.total_words ? ` · ${(detail.novel.total_words / 10000).toFixed(1)} 万字` : ""}
-              </div>
-
-              {detail.tags.length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  {detail.tags.map((t, i) => (
-                    <span key={i} style={{ display: "inline-block", padding: "2px 8px", margin: 2, background: "var(--surface-1)", borderRadius: 10, fontSize: 11 }}>
-                      {t.tag_name}
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              {detail.novel.intro && (
-                <details style={{ marginTop: 8 }}>
-                  <summary style={{ cursor: "pointer", fontSize: 12 }}>简介</summary>
-                  <div style={{ padding: 8, background: "var(--surface-1)", fontSize: 12, marginTop: 4 }}>
-                    {detail.novel.intro}
-                  </div>
-                </details>
-              )}
-
-              {detail.titles.length > 1 && (
-                <details style={{ marginTop: 8 }}>
-                  <summary style={{ cursor: "pointer", fontSize: 12 }}>历史标题 ({detail.titles.length})</summary>
-                  <ul style={{ marginTop: 4, fontSize: 11 }}>
-                    {detail.titles.map((t, i) => (
-                      <li key={i}>
-                        {t.title}
-                        {t.is_primary ? " (主)" : ""}
-                        {t.last_seen_date ? ` — ${t.last_seen_date}` : ""}
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-
-              {/* Rank snapshots */}
-              <h4 style={{ marginTop: 16, marginBottom: 4 }}>
-                历史榜单 Snapshot ({detail.rank_history.length})
-              </h4>
-              {detail.rank_history.length === 0 ? (
-                <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                  无榜单记录
-                </div>
-              ) : (
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr style={{ background: "var(--surface-1)" }}>
-                        <th style={{ textAlign: "left", padding: "2px 6px" }}>日期</th>
-                        <th style={{ textAlign: "left", padding: "2px 6px" }}>平台</th>
-                        <th style={{ textAlign: "left", padding: "2px 6px" }}>榜单</th>
-                        <th style={{ textAlign: "right", padding: "2px 6px" }}>排名</th>
-                        <th style={{ textAlign: "right", padding: "2px 6px" }}>热度</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {detail.rank_history.map((r, i) => {
-                        // Per-platform single hotness metric — 起点
-                        // uses 推荐票, 番茄 uses 阅读量; show whichever
-                        // applies to this row instead of both columns.
-                        const isQidian = r.platform === "qidian";
-                        const isFanqie = r.platform === "fanqie";
-                        const metric = isQidian
-                          ? { label: "推荐", value: r.total_recommend }
-                          : isFanqie
-                            ? { label: "阅读", value: r.reading_count }
-                            : { label: "热度", value: r.total_recommend ?? r.reading_count };
-                        return (
-                          <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                            <td style={{ padding: "2px 6px" }}>{r.snapshot_date}</td>
-                            <td style={{ padding: "2px 6px" }}>{r.platform}</td>
-                            <td style={{ padding: "2px 6px" }}>
-                              {r.rank_family}{r.rank_sub_cat ? ` · ${r.rank_sub_cat}` : ""}
-                            </td>
-                            <td style={{ padding: "2px 6px", textAlign: "right", fontWeight: "bold" }}>{r.rank}</td>
-                            <td style={{ padding: "2px 6px", textAlign: "right" }}
-                                title={metric.label}>
-                              {metric.value?.toLocaleString() || "-"}
-                              <span style={{ fontSize: 10, color: "var(--text-tertiary)", marginLeft: 4 }}>
-                                {metric.label}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Chapters */}
-              <h4 style={{ marginTop: 16, marginBottom: 4 }}>
-                已抓取章节 ({detail.chapters.length})
-              </h4>
-              {detail.chapters.length === 0 ? (
-                <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                  无章节内容
-                </div>
-              ) : (
-                detail.chapters.map((ch) => (
-                  <details
-                    key={ch.chapter_id}
-                    onToggle={(e) => {
-                      if ((e.target as HTMLDetailsElement).open) {
-                        loadChapter(ch.chapter_id);
-                      }
-                    }}
-                    style={{ marginBottom: 4, padding: 4, borderBottom: "1px solid var(--border)" }}
-                  >
-                    <summary style={{ cursor: "pointer", fontSize: 12 }}>
-                      第 {ch.chapter_num} 章 · {ch.chapter_title}
-                      {ch.word_count ? <span style={{ color: "var(--text-secondary)", marginLeft: 8 }}>({ch.word_count} 字)</span> : null}
-                    </summary>
-                    <div style={{ padding: 8, background: "var(--surface-1)", fontSize: 12, marginTop: 4, maxHeight: 400, overflow: "auto", whiteSpace: "pre-wrap" }}>
-                      {loadingChapter[ch.chapter_id] ? "加载中…" : (chapterContent[ch.chapter_id] || "（点击展开后加载）")}
-                    </div>
-                  </details>
-                ))
-              )}
-            </>
-          )}
-        </div>
-        )}
       </div>
 
-      {editing && (
-        <div onClick={() => setEditing(null)} style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
-          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100,
+      {/* ───────── 市场作品详情 — centered overlay modal ───────── */}
+      {selected && (
+        <div onClick={() => { setSelected(null); setDetail(null); setEditing(null); }} style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+          padding: 24,
         }}>
           <div className="card" onClick={e => e.stopPropagation()} style={{
-            width: "min(560px, 95vw)", maxHeight: "90vh", overflow: "auto",
-            background: "var(--bg-surface)", padding: 16,
+            width: "min(880px, 100%)", maxHeight: "90vh",
+            display: "flex", flexDirection: "column",
+            background: "var(--bg-surface)", padding: 0,
+            borderRadius: 8, overflow: "hidden",
           }}>
-            <h3 style={{ marginTop: 0 }}>编辑作品: {editing.title || editing.novel_uid}</h3>
-            <Field label="作者">
-              <input className="input" value={editing.author}
-                     onChange={e => setEditing({ ...editing, author: e.target.value })} />
-            </Field>
-            <Field label="主类目">
-              <input className="input" value={editing.main_category}
-                     onChange={e => setEditing({ ...editing, main_category: e.target.value })} />
-            </Field>
-            <Field label="字数">
-              <input className="input" type="number" value={editing.total_words}
-                     onChange={e => setEditing({ ...editing, total_words: parseInt(e.target.value) || 0 })} />
-            </Field>
-            <Field label="状态">
-              <select className="select" value={editing.status}
-                      onChange={e => setEditing({ ...editing, status: e.target.value })}>
-                <option value="ongoing">ongoing</option>
-                <option value="completed">completed</option>
-              </select>
-            </Field>
-            <Field label="URL">
-              <input className="input" value={editing.url}
-                     onChange={e => setEditing({ ...editing, url: e.target.value })} />
-            </Field>
-            <Field label="简介">
-              <textarea className="input" rows={5} value={editing.intro}
-                        onChange={e => setEditing({ ...editing, intro: e.target.value })} />
-            </Field>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
-              <button className="btn" onClick={() => setEditing(null)}>取消</button>
-              <button className="btn-primary" onClick={async () => {
-                try {
-                  await apiPut(`/api/db/novel/${editing.novel_uid}`, {
-                    author: editing.author,
-                    intro: editing.intro,
-                    main_category: editing.main_category,
-                    status: editing.status,
-                    total_words: editing.total_words,
-                    url: editing.url,
-                  });
-                  toast("已保存", "success");
-                  // Refresh the detail so the user sees the changes.
-                  if (selected) {
-                    const d = await apiGet<NovelDetail>(`/api/db/novel/${selected.novel_uid}`);
-                    setDetail(d);
-                  }
-                  setEditing(null);
-                } catch (e: any) {
-                  toast(`保存失败: ${e.message}`, "error");
-                }
-              }}>保存</button>
+            <div style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "12px 20px", borderBottom: "1px solid var(--border)",
+              background: "var(--bg-surface-2)",
+            }}>
+              <h3 style={{ margin: 0, fontSize: 15 }}>市场作品详情</h3>
+              <button
+                onClick={() => { setSelected(null); setDetail(null); setEditing(null); }}
+                style={{
+                  background: "none", border: "none", cursor: "pointer",
+                  fontSize: 18, color: "var(--text-secondary)", padding: "4px 10px",
+                }}>✕</button>
+            </div>
+
+            <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
+              {loadingDetail && <div style={{ padding: 20, textAlign: "center" }}>加载中…</div>}
+              {detail && !loadingDetail && !editing && (
+                <DetailView
+                  detail={detail}
+                  selected={selected}
+                  chapterContent={chapterContent}
+                  loadingChapter={loadingChapter}
+                  loadChapter={loadChapter}
+                  onEdit={() => {
+                    const title = detail.titles.find(t => t.is_primary)?.title || selected?.title || "";
+                    setEditing({
+                      novel_uid: detail.novel.novel_uid,
+                      author: detail.novel.author || "",
+                      main_category: detail.novel.main_category || "",
+                      status: detail.novel.status || "ongoing",
+                      total_words: detail.novel.total_words || 0,
+                      url: (detail.novel as any).url || "",
+                      intro: detail.novel.intro || "",
+                      title,
+                    });
+                  }}
+                  onDelete={async () => {
+                    const title = detail.titles.find(t => t.is_primary)?.title || "this work";
+                    if (!window.confirm(`确认删除「${title}」？\n会同时清掉它在 rank_entries / chapters / titles / tag_map 中的所有引用，不可恢复。`)) return;
+                    try {
+                      await apiDelete(`/api/db/novel/${detail.novel.novel_uid}`);
+                      toast("已删除", "success");
+                      setHits(prev => prev.filter(h => h.novel_uid !== detail.novel.novel_uid));
+                      setSelected(null);
+                      setDetail(null);
+                    } catch (e: any) {
+                      toast(`删除失败: ${e.message}`, "error");
+                    }
+                  }}
+                />
+              )}
+              {editing && (
+                <EditForm
+                  editing={editing}
+                  setEditing={setEditing}
+                  onCancel={() => setEditing(null)}
+                  onSave={async () => {
+                    try {
+                      await apiPut(`/api/db/novel/${editing.novel_uid}`, {
+                        author: editing.author,
+                        intro: editing.intro,
+                        main_category: editing.main_category,
+                        status: editing.status,
+                        total_words: editing.total_words,
+                        url: editing.url,
+                      });
+                      toast("已保存", "success");
+                      if (selected) {
+                        const d = await apiGet<NovelDetail>(`/api/db/novel/${selected.novel_uid}`);
+                        setDetail(d);
+                      }
+                      setEditing(null);
+                    } catch (e: any) {
+                      toast(`保存失败: ${e.message}`, "error");
+                    }
+                  }}
+                />
+              )}
             </div>
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+
+/* ── Inline detail view used inside the centered 市场作品详情 modal ── */
+function DetailView({
+  detail, selected, chapterContent, loadingChapter, loadChapter,
+  onEdit, onDelete,
+}: {
+  detail: NovelDetail;
+  selected: SearchHit | null;
+  chapterContent: Record<number, string>;
+  loadingChapter: Record<number, boolean>;
+  loadChapter: (id: number) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const primaryTitle = detail.titles.find((t) => t.is_primary)?.title || selected?.title;
+  return (
+    <>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 18, fontFamily: "var(--font-serif)" }}>{primaryTitle}</h3>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button className="btn" style={{ fontSize: 12, padding: "5px 14px", borderRadius: 14 }}
+                  onClick={onEdit}>编辑</button>
+          <button className="btn" style={{ fontSize: 12, padding: "5px 14px", borderRadius: 14, color: "var(--danger)" }}
+                  onClick={onDelete}>删除</button>
+        </div>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 12, color: "var(--text-secondary)" }}>
+        {tPlatform(detail.novel.platform || "")}{detail.novel.author ? ` · ${detail.novel.author}` : ""}
+        {detail.novel.main_category ? ` · ${detail.novel.main_category}` : ""}
+        {detail.novel.total_words ? ` · ${(detail.novel.total_words / 10000).toFixed(1)} 万字` : ""}
+      </div>
+
+      {detail.tags.length > 0 && (
+        <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {detail.tags.map((t, i) => (
+            <span key={i} style={{ display: "inline-block", padding: "2px 10px", background: "var(--bg-surface-2)", borderRadius: 10, fontSize: 11 }}>
+              {t.tag_name}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {detail.novel.intro && (
+        <details style={{ marginTop: 12 }}>
+          <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--text-secondary)" }}>简介</summary>
+          <div style={{ padding: 10, background: "var(--bg-surface-2)", fontSize: 12, marginTop: 6, borderRadius: 4, lineHeight: 1.6 }}>
+            {detail.novel.intro}
+          </div>
+        </details>
+      )}
+
+      {detail.titles.length > 1 && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--text-secondary)" }}>历史标题 ({detail.titles.length})</summary>
+          <ul style={{ marginTop: 6, fontSize: 11 }}>
+            {detail.titles.map((t, i) => (
+              <li key={i}>
+                {t.title}
+                {t.is_primary ? " (主)" : ""}
+                {t.last_seen_date ? ` — ${t.last_seen_date}` : ""}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      <h4 style={{ marginTop: 20, marginBottom: 6, fontSize: 13 }}>
+        历史榜单 Snapshot ({detail.rank_history.length})
+      </h4>
+      {detail.rank_history.length === 0 ? (
+        <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>无榜单记录</div>
+      ) : (
+        <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+          <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "var(--bg-surface-2)" }}>
+                <th style={{ textAlign: "left", padding: "4px 8px" }}>日期</th>
+                <th style={{ textAlign: "left", padding: "4px 8px" }}>平台</th>
+                <th style={{ textAlign: "left", padding: "4px 8px" }}>榜单</th>
+                <th style={{ textAlign: "right", padding: "4px 8px" }}>排名</th>
+                <th style={{ textAlign: "right", padding: "4px 8px" }}>热度</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.rank_history.map((r, i) => {
+                const isQidian = r.platform === "qidian";
+                const isFanqie = r.platform === "fanqie";
+                const metric = isQidian
+                  ? { label: "推荐", value: r.total_recommend }
+                  : isFanqie
+                    ? { label: "阅读", value: r.reading_count }
+                    : { label: "热度", value: r.total_recommend ?? r.reading_count };
+                return (
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                    <td style={{ padding: "4px 8px" }}>{r.snapshot_date}</td>
+                    <td style={{ padding: "4px 8px" }}>{tPlatform(r.platform)}</td>
+                    <td style={{ padding: "4px 8px" }}>
+                      {r.rank_family}{r.rank_sub_cat ? ` · ${r.rank_sub_cat}` : ""}
+                    </td>
+                    <td style={{ padding: "4px 8px", textAlign: "right", fontWeight: 700 }}>{r.rank}</td>
+                    <td style={{ padding: "4px 8px", textAlign: "right" }} title={metric.label}>
+                      {metric.value?.toLocaleString() || "—"}
+                      <span style={{ fontSize: 10, color: "var(--text-tertiary)", marginLeft: 4 }}>
+                        {metric.label}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <h4 style={{ marginTop: 20, marginBottom: 6, fontSize: 13 }}>
+        已抓取章节 ({detail.chapters.length})
+      </h4>
+      {detail.chapters.length === 0 ? (
+        <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>无章节内容</div>
+      ) : (
+        detail.chapters.map((ch) => (
+          <details
+            key={ch.chapter_id}
+            onToggle={(e) => {
+              if ((e.target as HTMLDetailsElement).open) {
+                loadChapter(ch.chapter_id);
+              }
+            }}
+            style={{ marginBottom: 4, padding: 4, borderBottom: "1px solid var(--border)" }}
+          >
+            <summary style={{ cursor: "pointer", fontSize: 12 }}>
+              第 {ch.chapter_num} 章 · {ch.chapter_title}
+              {ch.word_count ? <span style={{ color: "var(--text-secondary)", marginLeft: 8 }}>({ch.word_count} 字)</span> : null}
+            </summary>
+            <div style={{ padding: 10, background: "var(--bg-surface-2)", fontSize: 12, marginTop: 6, maxHeight: 400, overflow: "auto", whiteSpace: "pre-wrap", borderRadius: 4 }}>
+              {loadingChapter[ch.chapter_id] ? "加载中…" : (chapterContent[ch.chapter_id] || "（点击展开后加载）")}
+            </div>
+          </details>
+        ))
+      )}
+    </>
+  );
+}
+
+
+type EditState = {
+  novel_uid: number; author: string; main_category: string;
+  status: string; total_words: number; url: string; intro: string;
+  title: string;
+};
+
+
+function EditForm({
+  editing, setEditing, onCancel, onSave,
+}: {
+  editing: EditState;
+  setEditing: (e: EditState) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <>
+      <h3 style={{ marginTop: 0, fontSize: 16 }}>
+        编辑作品: <span style={{ color: "var(--text-secondary)", fontWeight: 400 }}>{editing.title || editing.novel_uid}</span>
+      </h3>
+      <Field label="作者">
+        <input className="input" value={editing.author}
+               onChange={e => setEditing({ ...editing, author: e.target.value })} />
+      </Field>
+      <Field label="主类目">
+        <input className="input" value={editing.main_category}
+               onChange={e => setEditing({ ...editing, main_category: e.target.value })} />
+      </Field>
+      <Field label="字数">
+        <input className="input" type="number" value={editing.total_words}
+               onChange={e => setEditing({ ...editing, total_words: parseInt(e.target.value) || 0 })} />
+      </Field>
+      <Field label="状态">
+        <select className="select" value={editing.status}
+                onChange={e => setEditing({ ...editing, status: e.target.value })}>
+          <option value="ongoing">ongoing</option>
+          <option value="completed">completed</option>
+        </select>
+      </Field>
+      <Field label="URL">
+        <input className="input" value={editing.url}
+               onChange={e => setEditing({ ...editing, url: e.target.value })} />
+      </Field>
+      <Field label="简介">
+        <textarea className="input" rows={5} value={editing.intro}
+                  onChange={e => setEditing({ ...editing, intro: e.target.value })} />
+      </Field>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+        <button className="btn" onClick={onCancel}>取消</button>
+        <button className="btn-primary" onClick={onSave}>保存</button>
+      </div>
+    </>
   );
 }
 

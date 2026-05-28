@@ -19,7 +19,7 @@ import CharacterManagerPage from "./pages/CharacterManagerPage";
 import WorldBookPage from "./pages/WorldBookPage";
 import StorylinePage from "./pages/StorylinePage";
 import SettingsPage from "./pages/SettingsPage";
-import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
+// AnalysisDashboardPage is now embedded inside MarketFeatureExtractionPage
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
@@ -259,7 +259,7 @@ function AppInner() {
         {tab === "market-features" && <ErrorBoundary key="market-features"><MarketFeatureExtractionPage /></ErrorBoundary>}
         {/* Legacy aliases — kept so deep-links / bookmarks still resolve */}
         {tab === "rankings" && <ErrorBoundary key="rankings"><MarketOverviewPage /></ErrorBoundary>}
-        {tab === "analysis" && <ErrorBoundary key="analysis"><MarketOverviewPage /></ErrorBoundary>}
+        {tab === "analysis" && <ErrorBoundary key="analysis"><MarketFeatureExtractionPage /></ErrorBoundary>}
 
         {/* 参考数据库 */}
         {tab === "references-overview" && <ErrorBoundary key="references-overview"><ReferenceOverviewPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}

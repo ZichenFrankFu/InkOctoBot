@@ -133,7 +133,7 @@ function sortBy<T>(arr: T[], key: string, dir: SortDir): T[] {
   });
 }
 
-export default function AnalysisDashboardPage() {
+export default function AnalysisDashboardPage({ hideOwnHeader = false }: { hideOwnHeader?: boolean } = {}) {
   const { toast } = useToast();
   const [mainTab, setMainTab] = useState<MainTab>("trends");
 
@@ -232,14 +232,16 @@ export default function AnalysisDashboardPage() {
   return (
     <div className="page-container">
       {/* Header */}
-      <div className="page-header" style={{ marginBottom: 20 }}>
-        <div className="page-header-row">
-          <div>
-            <h2>分析面板</h2>
-            <p>市场规模、标签热度、趋势分析与开书机会</p>
+      {!hideOwnHeader && (
+        <div className="page-header" style={{ marginBottom: 20 }}>
+          <div className="page-header-row">
+            <div>
+              <h2>分析面板</h2>
+              <p>市场规模、标签热度、趋势分析与开书机会</p>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* ═══════ TRENDS TAB ═══════ */}
       {mainTab === "trends" && (
@@ -301,6 +303,14 @@ export default function AnalysisDashboardPage() {
                 <span>{platformLabel(trendData.platform)}</span>
                 <span>{trendData.lookback || "全部"}</span>
               </div>
+
+              {/* ── Visualizations ── */}
+              <VisualizationPanel
+                tags={trendData.tag_rollup || []}
+                cats={trendData.cat_rollup || []}
+                pairs={trendData.pairs || []}
+                opportunities={trendData.opportunities || []}
+              />
 
               {/* Sub tab bar */}
               <div className="tab-bar" style={{ marginBottom: 24 }}>
@@ -494,6 +504,156 @@ export default function AnalysisDashboardPage() {
             <div className="empty-state"><div className="empty-icon">...</div><h4>准备就绪</h4><p>正在自动运行默认分析...</p></div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+
+/* ──────────────────────────────────────────────────────────────
+ *  VisualizationPanel — horizontal bar charts for the top-N
+ *  hot tags / categories / co-occurrence pairs / opportunities.
+ *  Reads directly from the same TrendResult that drives the
+ *  tables below, so no extra fetch is needed.
+ * ────────────────────────────────────────────────────────────── */
+function VisualizationPanel({
+  tags, cats, pairs, opportunities,
+}: {
+  tags: TagRollup[];
+  cats: CatRollup[];
+  pairs: TagPair[];
+  opportunities: Opportunity[];
+}) {
+  const topTags = [...tags]
+    .filter(t => t.avg_heat != null)
+    .sort((a, b) => (b.avg_heat || 0) - (a.avg_heat || 0))
+    .slice(0, 10);
+  const topCats = [...cats]
+    .filter(c => c.latest_count != null)
+    .sort((a, b) => (b.latest_count || 0) - (a.latest_count || 0))
+    .slice(0, 10);
+  const topPairs = [...pairs]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+  const topOpps = [...opportunities]
+    .sort((a, b) => b.opportunity_score - a.opportunity_score)
+    .slice(0, 8);
+
+  return (
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 14, marginBottom: 24,
+    }}>
+      <BarChart
+        title="标签热度 TOP10"
+        subtitle="按平均热度排序"
+        accent="var(--accent)"
+        rows={topTags.map(t => ({
+          label: t.tag,
+          tag: platformLabel(t.platform),
+          value: t.avg_heat || 0,
+          display: Math.round(t.avg_heat || 0).toLocaleString(),
+        }))}
+      />
+      <BarChart
+        title="类目数量 TOP10"
+        subtitle="按最新作品数排序"
+        accent="var(--jade)"
+        rows={topCats.map(c => ({
+          label: c.category,
+          tag: platformLabel(c.platform),
+          value: c.latest_count || 0,
+          display: String(c.latest_count || 0),
+        }))}
+      />
+      <BarChart
+        title="开书机会 TOP8"
+        subtitle="综合份额/热度增长 + 新书占比"
+        accent="var(--gold)"
+        rows={topOpps.map(o => ({
+          label: `${o.tag}`,
+          tag: `${platformLabel(o.platform)} · ${o.category}`,
+          value: o.opportunity_score,
+          display: o.opportunity_score.toFixed(2),
+        }))}
+      />
+      <BarChart
+        title="标签共现 TOP10"
+        subtitle="二元共现频次"
+        accent="var(--indigo)"
+        rows={topPairs.map(p => ({
+          label: `${p.tag_a} + ${p.tag_b}`,
+          tag: "",
+          value: p.count,
+          display: String(p.count),
+        }))}
+      />
+    </div>
+  );
+}
+
+
+function BarChart({
+  title, subtitle, accent, rows,
+}: {
+  title: string;
+  subtitle?: string;
+  accent: string;
+  rows: { label: string; tag: string; value: number; display: string }[];
+}) {
+  const max = Math.max(...rows.map(r => r.value), 1);
+  return (
+    <div className="card" style={{ padding: 14, borderTop: `3px solid ${accent}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 700 }}>{title}</h3>
+        {subtitle && <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{subtitle}</span>}
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ padding: 16, textAlign: "center", color: "var(--text-tertiary)", fontSize: 12 }}>
+          暂无数据
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {rows.map((r, i) => {
+            const pct = Math.max(2, Math.round((r.value / max) * 100));
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{
+                  width: 110, fontSize: 11, lineHeight: 1.3,
+                  color: "var(--text-secondary)",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  flexShrink: 0,
+                }} title={r.label}>{r.label}</span>
+                <div style={{
+                  flex: 1, height: 16,
+                  background: "var(--bg-surface-2)",
+                  borderRadius: 3, overflow: "hidden",
+                  position: "relative",
+                  minWidth: 40,
+                }}>
+                  <div style={{
+                    width: `${pct}%`, height: "100%",
+                    background: `linear-gradient(90deg, ${accent}, color-mix(in srgb, ${accent} 70%, transparent))`,
+                    transition: "width 0.4s ease-out",
+                  }} />
+                </div>
+                <span style={{
+                  width: 70, textAlign: "right",
+                  fontSize: 11, fontFamily: "var(--font-mono)",
+                  color: "var(--text-secondary)", flexShrink: 0,
+                }}>{r.display}</span>
+                {r.tag && (
+                  <span style={{
+                    width: 50, fontSize: 10, color: "var(--text-tertiary)",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }} title={r.tag}>{r.tag}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

@@ -19,10 +19,12 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
+import AnalysisDashboardPage from "./AnalysisDashboardPage";
 import { tPlatform } from "../i18n";
 
 
 type ResultTab = "jobs" | "profiles" | "loader" | "works" | "preview";
+type TopTab = "extract" | "analysis";
 
 
 interface Job {
@@ -106,6 +108,7 @@ export default function MarketFeatureExtractionPage() {
   const [neologisms, setNeologisms] = useState<any[]>([]);
 
   const [tab, setTab] = useState<ResultTab>("jobs");
+  const [topTab, setTopTab] = useState<TopTab>("extract");
   const [loading, setLoading] = useState(false);
 
   // Manual-mode dialog
@@ -333,17 +336,50 @@ export default function MarketFeatureExtractionPage() {
 
   return (
     <div className="page-container" style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto" }}>
-      <div className="page-header" style={{ paddingBottom: 12 }}>
+      <div className="page-header" style={{ paddingBottom: 8 }}>
         <div className="page-header-row">
           <div>
             <h2>市场特征提取</h2>
           </div>
-          <button className="btn" onClick={refreshAll} disabled={loading}>
-            {loading ? "刷新中..." : "刷新"}
-          </button>
+          {topTab === "extract" && (
+            <button className="btn" onClick={refreshAll} disabled={loading}>
+              {loading ? "刷新中..." : "刷新"}
+            </button>
+          )}
         </div>
       </div>
 
+      {/* ── Top-level tab strip: 特征提取 | 分析面板 ── */}
+      <div style={{
+        display: "flex", gap: 0,
+        borderBottom: "1px solid var(--border)",
+        marginBottom: 14,
+      }}>
+        {([
+          { key: "extract"  as const, label: "特征提取" },
+          { key: "analysis" as const, label: "分析面板" },
+        ]).map(opt => (
+          <button
+            key={opt.key}
+            onClick={() => setTopTab(opt.key)}
+            style={{
+              padding: "10px 20px",
+              fontSize: 13,
+              fontWeight: topTab === opt.key ? 700 : 400,
+              color: topTab === opt.key ? "var(--accent)" : "var(--text-secondary)",
+              background: "none",
+              border: "none",
+              borderBottom: topTab === opt.key ? "2px solid var(--accent)" : "2px solid transparent",
+              cursor: "pointer",
+              marginBottom: -1,
+            }}
+          >{opt.label}</button>
+        ))}
+      </div>
+
+      {topTab === "analysis" && <AnalysisDashboardPage hideOwnHeader />}
+
+      {topTab === "extract" && (<>
       <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 18, alignItems: "start" }}>
         {/* ════════════ LEFT: configurator + launch ════════════ */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -585,6 +621,8 @@ export default function MarketFeatureExtractionPage() {
           )}
         </div>
       </div>
+
+      </>)}
 
       {/* Manual-mode dialog */}
       <UniversalLLMDialog

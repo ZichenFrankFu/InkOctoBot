@@ -1,20 +1,20 @@
 /**
  * MarketOverviewPage — title in standard position, then a tab strip,
- * then the body. 3 tabs:
- *   - 数据库总览 (NEW, default): high-level summary + CRUD curation.
+ * then the body. 2 tabs:
+ *   - 数据库总览 (default): high-level summary + CRUD curation.
  *     Chapter / word-count drill-down is intentionally absent here —
  *     that's now 市场特征提取's territory.
- *   - 榜单: rank-list → snapshot → entries drill-down (existing).
- *   - 分析面板: trends / tags / co-occurrence (existing).
+ *   - 榜单: rank-list → snapshot → entries drill-down.
+ *
+ *  分析面板 was moved to 市场特征提取 → see MarketFeatureExtractionPage.
  */
 import React, { useState } from "react";
 import MarketDbSummaryPage from "./MarketDbSummaryPage";
 import RankingsPage from "./RankingsPage";
-import AnalysisDashboardPage from "./AnalysisDashboardPage";
 import { t } from "../i18n";
 
 
-type Tab = "summary" | "rankings" | "analysis";
+type Tab = "summary" | "rankings";
 
 
 export default function MarketOverviewPage() {
@@ -26,7 +26,7 @@ export default function MarketOverviewPage() {
         <div className="page-header-row">
           <div>
             <h2>{t("市场总览")}</h2>
-            <p>{t("数据库概览") + " · " + t("榜单") + " · " + t("分析面板")}</p>
+            <p>{t("数据库概览") + " · " + t("榜单")}</p>
           </div>
         </div>
       </div>
@@ -39,7 +39,6 @@ export default function MarketOverviewPage() {
         {([
           { key: "summary"  as const, label: t("数据库概览"), desc: "DB-level summary + curation" },
           { key: "rankings" as const, label: t("榜单"),       desc: "逐级浏览各平台榜单" },
-          { key: "analysis" as const, label: t("分析面板"),   desc: "热度趋势 · 标签共现 · 双点分析" },
         ]).map(opt => (
           <button
             key={opt.key}
@@ -63,7 +62,6 @@ export default function MarketOverviewPage() {
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", marginTop: 12 }}>
         {tab === "summary"  && <MarketDbSummaryPage />}
         {tab === "rankings" && <RankingsPage hideOwnHeader={true} hideOpeningAi={true} />}
-        {tab === "analysis" && <AnalysisDashboardPage />}
       </div>
     </div>
   );
