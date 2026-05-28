@@ -193,6 +193,33 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _purge_project(con: sqlite3.Connection) -> None:
+    """Wipe everything we're about to re-seed.
+
+    Without this, callers that ran the seed under an earlier version
+    (when entity IDs were random uuids) accumulate duplicates: stable
+    IDs added now ``REPLACE`` only the row they themselves wrote, not
+    the orphaned uuid-keyed rows from prior runs. The cleanest user-
+    facing answer is "this fixture owns rt_proj end-to-end", so we
+    drop every rt_proj row before re-inserting."""
+    for table in (
+        "characters",
+        "worldbook_entries",
+        "subplot_threads",
+        "chapters",
+        "project_blobs",
+        "user_style_preferences",
+        "edit_observations",
+        "domain_suggestions",
+    ):
+        try:
+            con.execute(f"DELETE FROM {table} WHERE project_id = ?",
+                        (PROJECT_ID,))
+        except sqlite3.Error:
+            # Table not present in this schema flavour — fine, skip.
+            pass
+
+
 def _insert_project(con: sqlite3.Connection) -> None:
     con.execute(
         """INSERT OR REPLACE INTO projects
@@ -358,6 +385,10 @@ def seed_project(db_path: str) -> dict[str, Any]:
     (``ensure_creation_tables``). Returns a dict the callers can
     feed back into other fixtures."""
     with sqlite3.connect(db_path) as con:
+        # Drop any prior rt_proj rows so re-running the seed across
+        # versions doesn't accumulate duplicates (a few earlier
+        # releases used random uuids for the per-row IDs).
+        _purge_project(con)
         _insert_project(con)
         _insert_characters(con)
         _insert_worldbook(con)

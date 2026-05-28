@@ -76,14 +76,40 @@ class TestSeedFixture(unittest.TestCase):
             )
 
     def test_repeated_seed_does_not_duplicate(self) -> None:
-        """Running --seed twice in a row must not double up rows.
-        Earlier the seed used fresh uuids per call, so INSERT OR
-        REPLACE never matched and every re-run added another copy of
-        every character / worldbook / subplot — which then showed up
-        as duplicates in the assembled prompt."""
+        """Running --seed must be fully idempotent, even across older
+        versions of the fixture that used random uuids (which a real
+        user's data_test/novels.db will carry as orphan rows). We
+        simulate that by inserting a few random-uuid rows under the
+        same project_id, then run seed and assert the right counts."""
         db, _ = _fresh_db_with_seed()
-        seed_project(db)  # second run
-        seed_project(db)  # third run
+
+        # Plant orphan duplicates the way old uuid-based seeds would.
+        # ``characters`` has UNIQUE(project_id, name) so it doesn't
+        # need this — its dup case is impossible. ``worldbook_entries``
+        # and ``subplot_threads`` don't, so they're the ones that
+        # actually accumulated duplicates in the real user's DB.
+        with sqlite3.connect(db) as con:
+            con.execute(
+                "INSERT INTO worldbook_entries (entry_id, project_id, "
+                "title, content) VALUES "
+                "('wb_orphan1', 'rt_proj', '启明号空间站', 'old copy 1'),"
+                "('wb_orphan2', 'rt_proj', '启明号空间站', 'old copy 2'),"
+                "('wb_orphan3', 'rt_proj', '曲率残响', 'old copy')"
+            )
+            try:
+                con.execute(
+                    "INSERT INTO subplot_threads (thread_id, project_id, "
+                    "name, description, start_chapter) VALUES "
+                    "('sp_orphan1', 'rt_proj', '结构危机', 'old', 1),"
+                    "('sp_orphan2', 'rt_proj', '结构危机', 'old', 1)"
+                )
+            except sqlite3.Error:
+                pass
+            con.commit()
+
+        seed_project(db)  # purge + reseed
+        seed_project(db)  # second run — still idempotent
+
         with sqlite3.connect(db) as con:
             con.row_factory = sqlite3.Row
             n_chars = con.execute(
@@ -101,12 +127,12 @@ class TestSeedFixture(unittest.TestCase):
             except sqlite3.OperationalError:
                 n_sub = 0
         self.assertEqual(n_chars, 2,
-                         "characters duplicated across seed runs")
+                         "characters: orphan uuid rows must be purged")
         self.assertEqual(n_wb, 2,
-                         "worldbook duplicated across seed runs")
+                         "worldbook: orphan uuid rows must be purged")
         if n_sub:
             self.assertEqual(n_sub, 1,
-                             "subplot duplicated across seed runs")
+                             "subplot must be exactly one row")
 
     def test_seed_populates_editor_blob_for_ui(self) -> None:
         """The UI editor page reads ``project_blobs(scope='editor')``;
