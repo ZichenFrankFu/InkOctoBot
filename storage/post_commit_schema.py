@@ -165,6 +165,27 @@ _DDL: tuple[str, ...] = (
         first_referenced_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
+
+    # ── v3.1 确认 gate (spec Post-Commit·机制3 + LLM交互·机制2):
+    #    when post_commit_require_confirmation is on, the merged
+    #    state extraction lands here as a proposal; the user applies
+    #    or discards it before anything touches the canonical tables. ──
+    """
+    CREATE TABLE IF NOT EXISTS pending_state_extractions (
+        proposal_id   TEXT PRIMARY KEY,
+        project_id    TEXT NOT NULL,
+        chapter_id    TEXT NOT NULL,
+        chapter_num   INTEGER NOT NULL,
+        parsed_json   TEXT NOT NULL,
+        llm_model     TEXT NOT NULL DEFAULT '',
+        status        TEXT NOT NULL DEFAULT 'pending'
+            CHECK (status IN ('pending','applied','discarded')),
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        resolved_at   TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_pending_extractions "
+    "ON pending_state_extractions(project_id, status)",
 )
 
 

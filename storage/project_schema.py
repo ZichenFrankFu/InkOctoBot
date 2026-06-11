@@ -179,12 +179,30 @@ CREATION_DDL = [
         observation_count INTEGER NOT NULL DEFAULT 0,
         examples_json TEXT NOT NULL DEFAULT '[]',
         is_confirmed INTEGER NOT NULL DEFAULT 0,
+        -- v3.1 自学习 (spec 4.1): 来源章节 + 来源类型
+        -- (edit_inference 手动修改推断 / special_requirements 特殊要求)
+        source_chapters_json TEXT NOT NULL DEFAULT '[]',
+        source_type TEXT NOT NULL DEFAULT 'edit_inference',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_prefs_project ON user_style_preferences(project_id, preference_type);",
+
+    # ── Preference learning runs (spec 用户偏好·机制2: 每 N 章批量) ──
+    """
+    CREATE TABLE IF NOT EXISTS preference_learning_runs (
+        run_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        chapters_covered_json TEXT NOT NULL DEFAULT '[]',
+        chapter_count_at_run INTEGER NOT NULL DEFAULT 0,
+        prefs_emitted INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_pref_runs_project ON preference_learning_runs(project_id, created_at);",
 
     # ── Constraint rules (persistent) ──
     """
@@ -692,6 +710,30 @@ def _ensure_episodic_events_pc_columns(conn: sqlite3.Connection) -> None:
             cur.execute(f"ALTER TABLE episodic_events ADD COLUMN {col} {ddl}")
 
 
+# v3.1 自学习 (spec 4.1): 来源章节 / 来源类型 columns on
+# user_style_preferences for DBs created before this release.
+_USER_PREFS_V31_COLUMNS = [
+    ("source_chapters_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("source_type",          "TEXT NOT NULL DEFAULT 'edit_inference'"),
+]
+
+
+def _ensure_user_prefs_v31_columns(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    try:
+        existing = {
+            row[1]
+            for row in cur.execute("PRAGMA table_info(user_style_preferences)")
+        }
+    except sqlite3.OperationalError:
+        return
+    for col, ddl in _USER_PREFS_V31_COLUMNS:
+        if col not in existing:
+            cur.execute(
+                f"ALTER TABLE user_style_preferences ADD COLUMN {col} {ddl}"
+            )
+
+
 def _ensure_chapter_summaries_v3_columns(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     try:
@@ -783,6 +825,7 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
     _ensure_projects_market_columns(conn)
     _ensure_chapter_summaries_v3_columns(conn)
     _ensure_episodic_events_pc_columns(conn)
+    _ensure_user_prefs_v31_columns(conn)
     _drop_v1_redundant_objects(conn)
     conn.commit()
 

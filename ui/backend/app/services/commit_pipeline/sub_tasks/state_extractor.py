@@ -55,14 +55,20 @@ _ALIAS_THRESHOLD     = 0.92    # auto-merge as alias
 _REVIEW_THRESHOLD    = 0.85    # send to review queue, don't auto-create
 
 
+# 状态合并抽取 (spec Post-Commit·机制1)：单次 LLM 调用一并产出
+# Storyland 事实 + 读者视角记忆 L4 标志性事件 + 故事线/伏笔节点标签。
 _SYSTEM = (
-    "你是小说世界状态提取助手。从一章正文里抽取本章发生的状态变更。\n"
+    "你是小说世界状态提取助手。从一章正文里抽取本章发生的状态变更、"
+    "标志性事件，以及伏笔与故事线的进度标签。\n"
     "输出 JSON：\n"
     "{\n"
     '  "state_deltas":   [{"subject":..., "subject_type":..., "predicate":..., "new_value":..., "trigger":...}],\n'
     '  "ledger_deltas":  [{"character":..., "category":..., "key":..., "delta":..., "trigger":...}],\n'
     '  "emotion_deltas": [{"character":..., "from_state":..., "to_state":..., "trigger":...}],\n'
-    '  "new_entities":   [{"name":..., "type":..., "aliases":[...]}]\n'
+    '  "new_entities":   [{"name":..., "type":..., "aliases":[...]}],\n'
+    '  "events":         [{"event_type":..., "description":..., "characters_involved":[...], "importance":...}],\n'
+    '  "hook_deltas":    [{"hook_id":..., "description":..., "action":..., "scale":...}],\n'
+    '  "subplot_updates":[{"thread_id":..., "name":..., "action":...}]\n'
     "}\n"
     "严格要求：\n"
     "1. predicate 只能从规范词表选：位于/在/持有/属于/状态/境界/情绪/关系/目标/信念/对象\n"
@@ -70,12 +76,23 @@ _SYSTEM = (
     "3. 如新提到的实体是已有实体的别名/简称，写在已有实体的 aliases 里，不要新建\n"
     "4. ledger.delta 是数字（+/-），代表本章变化量\n"
     "5. emotion 用简短词：平静/愤怒/恐惧/喜悦/悲伤/坚定/动摇/绝望/希望/...\n"
-    "6. 没有变更的字段输出空 list"
+    "6. events 最多 5 条，只挑真正影响后续剧情或人物状态的事件；"
+    "event_type 只能是 plot/character_change/revelation/relationship_change/world_change；"
+    "importance 只能是 A（强）/B（中）/C（弱）\n"
+    "7. hook_deltas 描述本章的伏笔动作：新埋设伏笔用 action=new（hook_id 为 null，"
+    "必须给 scale：boomerang 回旋镖（3章内回收）/event_clue 事件线索（20章内）/"
+    "grand_plan 大计划（100章内）/world_truth 世界真相（全书级））；"
+    "推进/回收已有伏笔用 action=mention/progress/resolve 并引用所给伏笔的 hook_id\n"
+    "8. subplot_updates 描述本章故事线进度：推进已有故事线用 action=advance + thread_id，"
+    "完结用 action=resolve\n"
+    "9. 没有变更的字段输出空 list"
 )
 
 _USER_TMPL = (
     "章节号：第 {chapter_num} 章\n"
-    "已有实体（仅参考，避免重复创建）：{existing}\n\n"
+    "已有实体（仅参考，避免重复创建）：{existing}\n"
+    "未回收伏笔（引用其 hook_id）：\n{open_hooks}\n"
+    "进行中故事线（引用其 thread_id）：\n{subplots}\n\n"
     "章节正文：\n{chapter_text}\n\n"
     "请输出 JSON。"
 )
@@ -87,23 +104,36 @@ _USER_TMPL = (
 async def _call_llm(
     chapter_text: str, chapter_num: int, existing_entities: list[str],
     *, project_id: str = "", chapter_id: str = "", db_path: str | None = None,
+    open_hooks: list[dict] | None = None,
+    active_subplots: list[dict] | None = None,
 ) -> tuple[dict, str]:
-    """Goes through LLMCallSite so auto/manual mode + audit are
-    uniform with the rest of the codebase."""
+    """Single merged extraction call (Post-Commit·机制1). Goes through
+    LLMCallSite so auto/manual mode + audit are uniform with the rest
+    of the codebase."""
     from llm.call_site import LLMCallSite
     from llm.router import ModelRouter
     cs = LLMCallSite(
         call_site_id="post_commit.state_extractor",
         primary_role="post_commit",
         parsed_target_table="truth_current_state",
-        default_max_tokens=2000, default_temperature=0.2,
+        default_max_tokens=3000, default_temperature=0.2,
     )
     existing_str = "、".join(existing_entities[:50]) if existing_entities else "（无）"
+    hooks_str = "\n".join(
+        f"- hook_id={h['hook_id']}: {h['description'][:80]}"
+        for h in (open_hooks or [])[:20]
+    ) or "（无）"
+    subplots_str = "\n".join(
+        f"- thread_id={s['thread_id']}: {s['name']} — {(s.get('description') or '')[:60]}"
+        for s in (active_subplots or [])[:15]
+    ) or "（无）"
     raw = await cs.invoke(
         prompt=_USER_TMPL.format(
             chapter_num=chapter_num,
             chapter_text=chapter_text[:8000],
             existing=existing_str,
+            open_hooks=hooks_str,
+            subplots=subplots_str,
         ),
         system=_SYSTEM,
         project_id=project_id, chapter_id=chapter_id, db_path=db_path,
@@ -506,6 +536,216 @@ def _merge_aliases(con, entity_id: str, new_aliases: list[str]) -> list[str]:
 # ─────────── main run ───────────
 
 
+def _list_open_hooks(db_path: str, project_id: str) -> list[dict]:
+    """Open hooks the LLM may reference for mention/progress/resolve."""
+    try:
+        with sqlite3.connect(db_path) as con:
+            rows = con.execute(
+                "SELECT hook_id, description FROM pending_hooks "
+                "WHERE project_id = ? AND status IN "
+                "('open','progressing','pressured','near_payoff') "
+                "AND COALESCE(user_marked_fully_resolved, 0) = 0 "
+                "ORDER BY origin_chapter",
+                (project_id,),
+            ).fetchall()
+        return [{"hook_id": r[0], "description": r[1]} for r in rows]
+    except sqlite3.OperationalError:
+        return []
+
+
+def _list_active_subplots(db_path: str, project_id: str) -> list[dict]:
+    try:
+        with sqlite3.connect(db_path) as con:
+            rows = con.execute(
+                "SELECT thread_id, name, description FROM subplot_threads "
+                "WHERE project_id = ? AND status NOT IN ('resolution','dormant') "
+                "ORDER BY start_chapter",
+                (project_id,),
+            ).fetchall()
+        return [
+            {"thread_id": r[0], "name": r[1], "description": r[2] or ""}
+            for r in rows
+        ]
+    except sqlite3.OperationalError:
+        return []
+
+
+def _normalize_events(events_raw: Any) -> list[dict]:
+    """Mirror event_extractor's normalization for the merged call."""
+    _allowed_types = ("plot", "character_change", "revelation",
+                      "relationship_change", "world_change")
+    out: list[dict] = []
+    if not isinstance(events_raw, list):
+        return out
+    for e in events_raw[:5]:
+        if not isinstance(e, dict):
+            continue
+        evt_type = str(e.get("event_type") or "plot").strip()
+        if evt_type not in _allowed_types:
+            evt_type = "plot"
+        importance = str(e.get("importance") or "B").strip().upper()
+        if importance not in ("A", "B", "C"):
+            importance = "B"
+        desc = str(e.get("description") or "").strip()[:500]
+        if not desc:
+            continue
+        chars = e.get("characters_involved") or e.get("characters") or []
+        if not isinstance(chars, list):
+            chars = []
+        out.append({
+            "event_type":  evt_type,
+            "description": desc,
+            "characters":  [str(c).strip() for c in chars if str(c).strip()],
+            "importance":  importance,
+        })
+    return out
+
+
+def _apply_hook_and_subplot_deltas(
+    db_path: str, project_id: str, chapter_num: int,
+    hooks_raw: Any, subplots_raw: Any,
+    known_hook_ids: set[str], known_thread_ids: set[str],
+) -> dict[str, int]:
+    """Route hook / subplot node tags through StorylandStateStore so
+    they get the canonical atomic apply (audit + idempotency +
+    pressure recompute). Returns applied counts."""
+    from knowledge.storyland_state.schemas import (
+        HookDelta, HookScale, StorylandStateDeltas, SubplotStatus,
+        SubplotUpdate,
+    )
+    from knowledge.storyland_state.store import StorylandStateStore
+
+    hook_deltas: list[HookDelta] = []
+    for h in (hooks_raw if isinstance(hooks_raw, list) else []):
+        if not isinstance(h, dict):
+            continue
+        action = str(h.get("action") or "").strip()
+        desc = str(h.get("description") or "").strip()
+        hook_id = (str(h.get("hook_id")).strip()
+                   if h.get("hook_id") not in (None, "", "null") else None)
+        if action == "new":
+            if not desc:
+                continue
+            scale_raw = str(h.get("scale") or "event_clue").strip()
+            try:
+                scale = HookScale(scale_raw)
+            except ValueError:
+                scale = HookScale.event_clue
+            hook_deltas.append(HookDelta(
+                description=desc, action="new", scale=scale,
+            ))
+        elif action in ("mention", "progress", "resolve", "abandon"):
+            if not hook_id or hook_id not in known_hook_ids:
+                continue   # hallucinated id — skip silently
+            hook_deltas.append(HookDelta(
+                hook_id=hook_id, description=desc or hook_id, action=action,
+            ))
+
+    subplot_updates: list[SubplotUpdate] = []
+    _status_after = {
+        "new":     SubplotStatus.setup,
+        "advance": SubplotStatus.building,
+        "climax":  SubplotStatus.climax,
+        "resolve": SubplotStatus.resolution,
+        "dormant": SubplotStatus.dormant,
+    }
+    for s in (subplots_raw if isinstance(subplots_raw, list) else []):
+        if not isinstance(s, dict):
+            continue
+        action = str(s.get("action") or "").strip()
+        if action not in _status_after:
+            continue
+        thread_id = (str(s.get("thread_id")).strip()
+                     if s.get("thread_id") not in (None, "", "null") else None)
+        name = str(s.get("name") or "").strip()
+        if action == "new":
+            if not name:
+                continue
+            thread_id = None
+        elif not thread_id or thread_id not in known_thread_ids:
+            continue
+        subplot_updates.append(SubplotUpdate(
+            thread_id=thread_id, name=name or (thread_id or ""),
+            action=action, status_after=_status_after[action],
+        ))
+
+    if not hook_deltas and not subplot_updates:
+        return {"hooks": 0, "subplots": 0}
+    store = StorylandStateStore(project_id, db_path=db_path)
+    result = store.apply_deltas(
+        StorylandStateDeltas(
+            chapter_num=chapter_num,
+            hook_deltas=hook_deltas,
+            subplot_updates=subplot_updates,
+        ),
+        allow_backfill=True,
+    )
+    counts = result.applied_counts or {}
+    return {
+        "hooks": counts.get("pending_hooks", 0),
+        "subplots": counts.get("subplot_threads", 0),
+    }
+
+
+def _require_confirmation() -> bool:
+    """spec Post-Commit·机制3 / LLM交互·机制2: with this settings
+    toggle on, extraction results become a pending proposal the user
+    must apply (or discard) before they reach the canonical tables.
+    Default off — direct-write + after-the-fact review remains the
+    transitional default until the editor's Post-Commit section ships."""
+    try:
+        import json as _json
+        from ui.backend.app.settings import settings as _s
+        path = _s.get_data_path("settings.json")
+        if path.exists():
+            blob = _json.loads(path.read_text("utf-8"))
+            return bool(blob.get("post_commit_require_confirmation"))
+    except Exception:
+        pass
+    return False
+
+
+def _store_proposal(
+    ctx: "SubTaskContext", chapter_num: int, parsed: dict, model_label: str,
+) -> str:
+    pid = f"psx_{uuid.uuid4().hex[:12]}"
+    with sqlite3.connect(ctx.db_path) as con:
+        # One pending proposal per chapter — replace an unresolved one.
+        con.execute(
+            "UPDATE pending_state_extractions SET status='discarded', "
+            "resolved_at=CURRENT_TIMESTAMP "
+            "WHERE project_id=? AND chapter_id=? AND status='pending'",
+            (ctx.project_id, ctx.chapter_id),
+        )
+        con.execute(
+            "INSERT INTO pending_state_extractions "
+            "(proposal_id, project_id, chapter_id, chapter_num, "
+            " parsed_json, llm_model) VALUES (?, ?, ?, ?, ?, ?)",
+            (pid, ctx.project_id, ctx.chapter_id, chapter_num,
+             json.dumps(parsed, ensure_ascii=False), model_label),
+        )
+        con.commit()
+    try:
+        from ui.backend.app.services.notifications import create_notification
+        create_notification(
+            ctx.db_path,
+            project_id=ctx.project_id,
+            chapter_id=ctx.chapter_id,
+            notification_type="state_extraction_pending",
+            severity="medium",
+            title="本章状态更新待确认",
+            description=(
+                "已从本章正文提取 Storyland 事实、标志性事件与伏笔/故事线"
+                "节点标签，需确认后才会入库。"
+            ),
+            action_label="去确认",
+            action_url=f"/chapters/{ctx.chapter_id}/review#pending",
+        )
+    except Exception as e:
+        logger.debug("pending-extraction notification skipped: %s", e)
+    return pid
+
+
 async def run(ctx: "SubTaskContext") -> dict[str, Any]:
     chapter_text = _resolve_chapter_text(ctx)
     if not chapter_text.strip():
@@ -513,17 +753,53 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
     chapter_num = _resolve_chapter_num(ctx)
     existing = _list_existing_entity_names(ctx.db_path, ctx.project_id)
     existing_names = [e["name"] for e in existing]
+    open_hooks = _list_open_hooks(ctx.db_path, ctx.project_id)
+    active_subplots = _list_active_subplots(ctx.db_path, ctx.project_id)
 
     parsed, model_label = await _call_llm(
         chapter_text, chapter_num, existing_names,
         project_id=ctx.project_id, chapter_id=ctx.chapter_id,
         db_path=ctx.db_path,
+        open_hooks=open_hooks, active_subplots=active_subplots,
     )
+
+    # ── 确认 gate (Post-Commit·机制3): stash as proposal, apply later ──
+    if _require_confirmation():
+        proposal_id = _store_proposal(ctx, chapter_num, parsed, model_label)
+        return {
+            "status": "pending_confirmation",
+            "proposal_id": proposal_id,
+            "llm_model": model_label,
+        }
+
+    return _apply_parsed(ctx, chapter_num, parsed, model_label,
+                         chapter_text=chapter_text,
+                         open_hooks=open_hooks,
+                         active_subplots=active_subplots)
+
+
+def _apply_parsed(
+    ctx: "SubTaskContext", chapter_num: int, parsed: dict, model_label: str,
+    *, chapter_text: str = "",
+    open_hooks: list[dict] | None = None,
+    active_subplots: list[dict] | None = None,
+) -> dict[str, Any]:
+    """Persist every product of the merged extraction call. Shared by
+    the direct-write path and the confirmation-gate apply endpoint."""
+    if open_hooks is None:
+        open_hooks = _list_open_hooks(ctx.db_path, ctx.project_id)
+    if active_subplots is None:
+        active_subplots = _list_active_subplots(ctx.db_path, ctx.project_id)
+    if not chapter_text:
+        chapter_text = _resolve_chapter_text(ctx)
 
     state_deltas    = parsed.get("state_deltas")    or []
     ledger_deltas   = parsed.get("ledger_deltas")   or []
     emotion_deltas  = parsed.get("emotion_deltas")  or []
     new_entities    = parsed.get("new_entities")    or []
+    events_raw      = parsed.get("events")          or []
+    hooks_raw       = parsed.get("hook_deltas")     or []
+    subplots_raw    = parsed.get("subplot_updates") or []
 
     state_out = _apply_state_deltas(
         ctx.db_path, ctx.project_id, chapter_num, state_deltas, model_label,
@@ -537,6 +813,23 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
     entity_out = _resolve_entities(
         ctx.db_path, ctx.project_id, ctx.chapter_id, chapter_num,
         new_entities, chapter_text,
+    )
+
+    # ── 合并产物：读者记忆 L4 标志性事件 (Post-Commit·机制1) ──
+    events = _normalize_events(events_raw)
+    event_ids: list[str] = []
+    if events:
+        from .event_extractor import _persist as _persist_events
+        event_ids = _persist_events(
+            ctx.db_path, ctx.project_id, chapter_num, events, model_label,
+        )
+
+    # ── 合并产物：伏笔 / 故事线节点标签 (Post-Commit·机制1) ──
+    hook_subplot_counts = _apply_hook_and_subplot_deltas(
+        ctx.db_path, ctx.project_id, chapter_num,
+        hooks_raw, subplots_raw,
+        known_hook_ids={h["hook_id"] for h in open_hooks},
+        known_thread_ids={s["thread_id"] for s in active_subplots},
     )
 
     # If any negative-balance warnings, create a medium-priority
@@ -563,7 +856,9 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
 
     # Medium-priority "please review" nudge if anything was auto-extracted.
     total = (len(state_out) + len(ledger_out) + len(emotion_out)
-             + len(entity_out["created"]) + len(entity_out["review_queue"]))
+             + len(entity_out["created"]) + len(entity_out["review_queue"])
+             + len(event_ids) + hook_subplot_counts["hooks"]
+             + hook_subplot_counts["subplots"])
     if total > 0:
         try:
             from ui.backend.app.services.notifications import create_notification
@@ -576,9 +871,11 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
                 title="本章自动提取了状态变更",
                 description=(
                     f"state×{len(state_out)} / ledger×{len(ledger_out)} / "
-                    f"emotion×{len(emotion_out)} / new entities×"
-                    f"{len(entity_out['created'])} / pending review×"
-                    f"{len(entity_out['review_queue'])}。建议审查。"
+                    f"emotion×{len(emotion_out)} / 事件×{len(event_ids)} / "
+                    f"伏笔节点×{hook_subplot_counts['hooks']} / "
+                    f"故事线节点×{hook_subplot_counts['subplots']} / "
+                    f"new entities×{len(entity_out['created'])} / "
+                    f"pending review×{len(entity_out['review_queue'])}。建议审查。"
                 ),
                 action_label="审查变更",
                 action_url=f"/chapters/{ctx.chapter_id}/review",
@@ -592,6 +889,9 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
         "state_changes":    len(state_out),
         "ledger_changes":   len(ledger_out),
         "emotion_changes":  len(emotion_out),
+        "events":           len(event_ids),
+        "hook_nodes":       hook_subplot_counts["hooks"],
+        "subplot_nodes":    hook_subplot_counts["subplots"],
         "entities_created": len(entity_out["created"]),
         "entities_merged":  len(entity_out["merged"]),
         "entities_review":  len(entity_out["review_queue"]),

@@ -90,9 +90,13 @@ class TestTaskIsolation(unittest.IsolatedAsyncioTestCase):
 
         rows = {r.task_type: r for r in task_registry.list_for_chapter(self.db, "ch1")}
         self.assertEqual(rows["chapter_summarizer"].state, "failed_needs_manual")
-        # Other 4 enabled tasks succeeded.
-        for t in ("event_extractor", "chromadb_indexer",
-                   "state_extractor", "snapshot_detector"):
+        # Every other default-enabled task succeeded. (event_extractor
+        # is default-disabled — its L4 events come from the
+        # state_extractor merged call per Post-Commit·机制1.)
+        others = {
+            t.task_type for t in sub_tasks.enabled_sub_tasks()
+        } - {"chapter_summarizer"}
+        for t in others:
             self.assertEqual(rows[t].state, "completed", t)
 
 

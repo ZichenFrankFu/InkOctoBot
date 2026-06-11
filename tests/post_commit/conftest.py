@@ -17,7 +17,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from ui.backend.app.services.commit_pipeline.sub_tasks import (
-    chromadb_indexer, event_extractor, state_extractor, summarizer,
+    chromadb_indexer, event_extractor, preference_analyzer, state_extractor,
+    summarizer,
 )
 
 
@@ -40,9 +41,13 @@ def _stub_subtask_llm_io(monkeypatch):
         return ({"state_deltas": [], "ledger_deltas": [],
                   "emotion_deltas": [], "new_entities": []}, "mock/m")
 
+    async def _prefs_stub(prompt, ctx):
+        return {"preferences": []}
+
     monkeypatch.setattr(summarizer, "_call_llm", _summary_stub)
     monkeypatch.setattr(event_extractor, "_call_llm", _events_stub)
     monkeypatch.setattr(state_extractor, "_call_llm", _state_stub)
+    monkeypatch.setattr(preference_analyzer, "_call_llm", _prefs_stub)
 
     # chromadb_indexer reaches for the EmbeddingService + VectorStore.
     # Replace both with no-ops so the framework tests don't pull torch

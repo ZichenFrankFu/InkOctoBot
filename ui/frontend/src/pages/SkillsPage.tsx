@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import type { SkillInfo, Project, WritingKnowledgeEntry } from "../api/types";
 import { useToast } from "../components/shared/Toast";
+import LearnedPreferencesPanel from "../components/skills/LearnedPreferencesPanel";
 
 const SECTION_COLORS: Record<string, string> = {
   feature_extraction: "var(--cyan)",
@@ -746,6 +747,9 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                   </div>
                 )}
               </div>
+
+              {/* ── 自学习偏好画像（章节修改差异）+ 确认 gate ── */}
+              <LearnedPreferencesPanel projectId={prefProject} />
 
               {/* ── Per-Project Preference Memories ── */}
               <div style={{ padding: "14px 16px" }}>
