@@ -141,6 +141,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [rewriteModel, setRewriteModel] = useState("default");
   const [pipelineSteps, setPipelineSteps] = useState<PipelineStatus[]>(PIPELINE_STEPS);
   const [generating, setGenerating] = useState(false);
+  const [pipelinePaused, setPipelinePaused] = useState(false);
   const [evalResult, setEvalResult] = useState<EvalResult | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(_savedEditorState?.chatMessages || []);
   const [chatInput, setChatInput] = useState(_savedEditorState?.chatInput || "");
@@ -849,6 +850,18 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
           onNavigate("settings");
         }
         break;
+      case "paused":
+        setPipelinePaused(true);
+        setChatMessages(prev => [...prev, {
+          agent: "System", content: "Pipeline 已暂停 — 已生成内容已保留，点击恢复继续。", status: "done", timestamp: Date.now(),
+        }]);
+        break;
+      case "resumed":
+        setPipelinePaused(false);
+        setChatMessages(prev => [...prev, {
+          agent: "System", content: "Pipeline 已恢复。", status: "done", timestamp: Date.now(),
+        }]);
+        break;
       case "error":
         setGenerating(false);
         setCurrentAgent(null);
@@ -1158,10 +1171,22 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     stopPolling();
     sessionStorage.removeItem(SESS_KEY);
     setGenerating(false);
+    setPipelinePaused(false);
     setWaitingForConfirm(false);
     setCurrentAgent(null);
     setChatMessages(prev => [...prev, { agent: "System", content: "Pipeline 已被手动终止。", status: "done", timestamp: Date.now(), _stopped: true } as any]);
   }, [SESS_KEY]);
+
+  // LLM交互·机制6: 暂停/恢复 — pipeline 在下一个步骤边界停住，
+  // 进行中的 LLM 调用先完成、结果保留。
+  const handlePauseResume = useCallback(() => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    const action = pipelinePaused ? "resume" : "pause";
+    apiPost(`/api/generation/${action}/${sid}`, {})
+      .then(() => setPipelinePaused(!pipelinePaused))
+      .catch((e) => toast(e.message || "操作失败", "error"));
+  }, [pipelinePaused]);
 
   const handleWriteToEditor = useCallback(() => {
     const text = generatedTextRef.current;
@@ -1441,6 +1466,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               }} />}
             {(aiTab === "single" || aiTab === "cluster") && <InspireTab mode={aiTab} steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
+              paused={pipelinePaused} onPauseResume={handlePauseResume} projectId={projectId} chapterId={activeChId}
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
               onFetchPrompt={fetchGenPrompt}
               onApplyPaste={applyPlainPaste}
@@ -2289,10 +2315,78 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
   );
 }
 
-function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
+// 生成前成本预估 (spec LLM调用·机制1): 本章预估 LLM 调用数与
+// token / USD，导演模式以场景数为主变量；超出单章成本上限时展示
+// 降级建议（导演转单 Agent / 跳过 LLM 评估层）。
+function CostEstimateBlock({ mode, projectId, chapterId }: {
+  mode: "single" | "cluster"; projectId?: string; chapterId?: string;
+}) {
+  const [est, setEst] = useState<any>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const apiMode = mode === "cluster" ? "director" : "single";
+    apiGet<any>(
+      `/api/generation/cost-estimate?mode=${apiMode}` +
+      (projectId ? `&project_id=${encodeURIComponent(projectId)}` : "") +
+      (chapterId ? `&chapter_id=${encodeURIComponent(chapterId)}` : ""),
+    ).then(r => { if (alive) setEst(r); }).catch(() => { if (alive) setEst(null); });
+    return () => { alive = false; };
+  }, [mode, projectId, chapterId]);
+
+  if (!est?.requested) return null;
+  const req = est.requested;
+  const eff = est.effective || req;
+  const degraded = eff.degraded;
+  const overCap = eff.over_cap;
+  const stepLabels: Record<string, string> = {
+    director_to_single: "导演模式降级为单 Agent",
+    skip_llm_eval: "跳过 LLM 评估层（确定性检测仍运行）",
+  };
+  return (
+    <div style={{
+      padding: "6px 10px", marginBottom: 6, borderRadius: 6, fontSize: 11,
+      background: "var(--bg-secondary)",
+      border: `1px solid ${overCap ? "var(--error)" : degraded ? "var(--gold)" : "var(--border-subtle)"}`,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+        onClick={() => setOpen(!open)}>
+        <span style={{ color: "var(--text-secondary)" }}>
+          本章预估：{req.llm_calls} 次 LLM 调用
+          {req.estimated_usd > 0 ? ` · 约 $${req.estimated_usd.toFixed(3)}` : ""}
+          {` · 输入约 ${Math.round(req.input_tokens / 1000)}K tokens`}
+        </span>
+        {degraded && (
+          <span style={{ color: overCap ? "var(--error)" : "var(--gold)", fontWeight: 600 }}>
+            {overCap ? "降级后仍超上限" : "已超上限，建议降级"}
+          </span>
+        )}
+        <span style={{ marginLeft: "auto", color: "var(--text-disabled)" }}>{open ? "收起" : "明细"}</span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 6, color: "var(--text-tertiary)" }}>
+          {est.cap_usd > 0 && <div>单章成本上限：${est.cap_usd}（设置页 chapter_cost_cap_usd）</div>}
+          {(eff.degradation_steps || []).map((s: string) => (
+            <div key={s} style={{ color: "var(--gold)" }}>降级建议：{stepLabels[s] || s}</div>
+          ))}
+          {(req.breakdown || []).map((b: any) => (
+            <div key={b.call} style={{ display: "flex", gap: 8 }}>
+              <span style={{ width: 120 }}>{b.call}</span>
+              <span>{b.input_tokens} in / {b.output_tokens} out</span>
+              {b.usd > 0 && <span>${b.usd.toFixed(4)}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
   mode: "single" | "cluster";
   steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
+  paused?: boolean; onPauseResume?: () => void; projectId?: string; chapterId?: string;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
   onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
   manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
@@ -2593,8 +2687,17 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
       {/* Stop / Control bar */}
       {generating && (
         <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+          {onPauseResume && (
+            <button className="btn" style={{
+              fontSize: 11, padding: "3px 10px", flex: 1,
+              color: paused ? "var(--jade)" : "var(--gold)",
+              borderColor: paused ? "var(--jade)" : "var(--gold)",
+            }} onClick={onPauseResume}>
+              {paused ? "恢复" : "暂停"}
+            </button>
+          )}
           <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)", borderColor: "var(--error)", flex: 1 }} onClick={onStopPipeline}>
-            ⏹ 终止 Pipeline
+            终止 Pipeline
           </button>
         </div>
       )}
@@ -2616,6 +2719,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
             onToggleRagItem={(k) => onToggleRagItem?.(k)}
             onRefresh={onRefreshManifest}
           />
+          <CostEstimateBlock mode={mode} projectId={projectId} chapterId={chapterId} />
           {mode === "single" ? (
             <>
               {onStartPlain && (

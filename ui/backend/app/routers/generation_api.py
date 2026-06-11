@@ -470,6 +470,10 @@ async def start_generation(req: GenerateRequest):
         "confirm_event": None,  # asyncio.Event for confirm signal
         "confirm_data": None,   # data from user confirm
         "task": None,           # background asyncio.Task
+        # LLM交互·机制6 暂停/恢复: set = running, cleared = paused.
+        # Checked at every step boundary via _pause_checkpoint.
+        "pause_event": _new_running_pause_event(),
+        "paused": False,
         # Stage 3 Task 3.4: ChapterContext object for agents that
         # want structured loader_blocks / truth_bundle access
         # (instead of grep-ing req_data['world_rules']).
@@ -533,6 +537,7 @@ def get_session_status(session_id: str):
         "status": session["status"],
         "current_step": session.get("current_step", ""),
         "waiting_confirm": session.get("waiting_confirm", False),
+        "paused": session.get("paused", False),
         "event_count": len(session.get("events", [])),
         "result": session.get("result"),
     }
@@ -588,6 +593,12 @@ async def stop_session(session_id: str):
     session = _active_sessions.get(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
+    # A paused session must be released first so the awaiting
+    # checkpoint can observe the abort instead of hanging forever.
+    ev = session.get("pause_event")
+    if ev is not None:
+        ev.set()
+    session["paused"] = False
     # Signal abort via confirm mechanism
     session["confirm_data"] = {"action": "abort"}
     evt = session.get("confirm_event")
@@ -600,6 +611,67 @@ async def stop_session(session_id: str):
     session["status"] = "complete"
     _emit(session_id, {"type": "complete", "text": session.get("text", ""), "aborted": True})
     return {"status": "ok", "message": "Pipeline stopped"}
+
+
+def _new_running_pause_event() -> asyncio.Event:
+    ev = asyncio.Event()
+    ev.set()    # running by default
+    return ev
+
+
+async def _pause_checkpoint(session_id: str) -> None:
+    """LLM交互·机制6: hold the pipeline at a step boundary while the
+    user has paused it. Emits paused/resumed events; partial results
+    stay in the session (失败措施·机制3)."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        return
+    ev = session.get("pause_event")
+    if ev is None or ev.is_set():
+        return
+    _emit(session_id, {
+        "type": "paused",
+        "step": session.get("current_step", ""),
+        "detail": "已暂停 — 已生成内容已保留，点击恢复继续",
+    })
+    await ev.wait()
+    if session.get("status") == "running":
+        _emit(session_id, {
+            "type": "resumed",
+            "step": session.get("current_step", ""),
+        })
+
+
+@router.post("/pause/{session_id}")
+async def pause_session(session_id: str):
+    """暂停 (LLM交互·机制6): the pipeline holds at the NEXT step
+    boundary — an in-flight LLM call finishes first, its result is
+    retained."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if session.get("status") != "running":
+        return {"status": "ok", "message": f"session is {session.get('status')}"}
+    ev = session.get("pause_event")
+    if ev is None:
+        ev = _new_running_pause_event()
+        session["pause_event"] = ev
+    ev.clear()
+    session["paused"] = True
+    return {"status": "ok", "paused": True}
+
+
+@router.post("/resume/{session_id}")
+async def resume_session(session_id: str):
+    """恢复 a paused pipeline session."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    ev = session.get("pause_event")
+    if ev is not None:
+        ev.set()
+    session["paused"] = False
+    return {"status": "ok", "paused": False}
 
 
 @router.post("/scene-plan")
@@ -1352,6 +1424,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
 
         # ── Step 1: Scene Director ──────────────────────────
         session["current_step"] = "scene_director"
+        await _pause_checkpoint(session_id)
         _emit(session_id, {
             "type": "step_start", "step": "scene_director",
             "label": "Scene Director", "detail": "正在拆分场景...",
@@ -1580,6 +1653,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
 
         # ── Step 2: Actor Agents (via SceneSimulator) ────────
         session["current_step"] = "actor_agents"
+        await _pause_checkpoint(session_id)
         characters = req_data.get("characters", [])
         scene_list = scene_result.get("scenes", []) if isinstance(scene_result, dict) else []
         num_scenes = len(scene_list) if scene_list else 1
@@ -1863,6 +1937,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
 
         # ── Step 3: Editor-Writer ───────────────────────────
         session["current_step"] = "editor_writer"
+        await _pause_checkpoint(session_id)
         _emit(session_id, {
             "type": "step_start", "step": "editor_writer",
             "label": "Editor-Writer", "detail": "正在进行文学风格化与润色...",
@@ -1998,6 +2073,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
 
         # ── Step 4: Evaluator ───────────────────────────────
         session["current_step"] = "evaluator"
+        await _pause_checkpoint(session_id)
         _emit(session_id, {
             "type": "step_start", "step": "evaluator",
             "label": "Evaluator", "detail": "正在评估质量...",
