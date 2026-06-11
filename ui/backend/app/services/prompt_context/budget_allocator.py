@@ -32,31 +32,42 @@ from .loader_protocol import LoaderPlan
 
 # Per-loader budget configuration. Keep this in lockstep with the
 # loader files themselves — each ``plan()`` reads from here.
+#
+# Values follow the spec's 预算画像表 (All_Function_Expected v3.1
+# § 3.3.6). Block-id ↔ spec-loader name mapping:
+#   platform_directive = platform_style (loader 2)
+#   subplots           = plotline       (loader 12)
+#   market_overview    = market_overview (loader 1, 开书助手 only)
 LOADER_BUDGETS: dict[str, dict[str, int]] = {
-    # tier 1 — must stay generous
-    "chapter_outline":            {"min":  800, "target": 1200, "max": 2000, "tier": 1},
+    # tier 1 — 核心
+    "chapter_outline":            {"min":  600, "target": 1200, "max": 1800, "tier": 1},
+    "user_special_requirements":  {"min":  300, "target":  600, "max": 1000, "tier": 1},
+    "character_cards":            {"min":  800, "target": 1800, "max": 2800, "tier": 1},
+    "storyland_state":            {"min":  800, "target": 2000, "max": 3000, "tier": 1},
     "current_chapter_draft":      {"min": 1500, "target": 4000, "max": 6000, "tier": 1},
-    "reader_memory":              {"min": 1500, "target": 4500, "max": 6500, "tier": 1},
-    "character_cards":            {"min":  800, "target": 1800, "max": 3000, "tier": 1},
-    # tier 2 — important
-    "storyland_state":            {"min":  500, "target": 2000, "max": 3000, "tier": 2},
-    "foreshadowing":              {"min":  300, "target":  800, "max": 1500, "tier": 2},
-    "subplots":                   {"min":  300, "target": 1200, "max": 2000, "tier": 2},
-    "skills":                     {"min":  500, "target": 2400, "max": 3500, "tier": 2},
-    # tier 3 — supplementary
-    "worldbook":                  {"min":  300, "target": 1600, "max": 2500, "tier": 3},
-    "reference":                  {"min":  400, "target": 2400, "max": 3500, "tier": 3},
-    "inspiration":                {"min":  150, "target":  800, "max": 1500, "tier": 3},
-    "user_special_requirements":  {"min":  100, "target":  600, "max": 1500, "tier": 3},
-    # tier 4 — system
-    "platform_directive":         {"min":   50, "target":  250, "max":  500, "tier": 4},
-    "user_preferences":           {"min":  100, "target":  500, "max":  800, "tier": 4},
+    # tier 2 — 重要
+    "reader_memory":              {"min": 1500, "target": 4500, "max": 6000, "tier": 2},
+    "worldbook":                  {"min":  600, "target": 1600, "max": 2400, "tier": 2},
+    "subplots":                   {"min":  500, "target": 1200, "max": 1800, "tier": 2},
+    "foreshadowing":              {"min":  300, "target":  800, "max": 1200, "tier": 2},
+    "skills":                     {"min":  800, "target": 2400, "max": 3600, "tier": 2},
+    # tier 3 — 补充
+    "reference":                  {"min":  800, "target": 2400, "max": 3600, "tier": 3},
+    "inspiration":                {"min":  200, "target":  600, "max":  900, "tier": 3},
+    "platform_directive":         {"min":  150, "target":  400, "max":  600, "tier": 3},
+    "user_preferences":           {"min":  200, "target":  500, "max":  800, "tier": 3},
+    # tier 4 — 系统
+    "market_overview":            {"min":  600, "target": 1500, "max": 2000, "tier": 4},
 }
 
 
-TOTAL_TARGET = sum(c["target"] for c in LOADER_BUDGETS.values())   # ≈ 24K
-TOTAL_MAXIMUM = sum(c["max"] for c in LOADER_BUDGETS.values())     # ≈ 39K
-TOTAL_MINIMUM = sum(c["min"] for c in LOADER_BUDGETS.values())     # ≈ 7K
+# Sums over the WHOLE table (incl. market_overview, which only the
+# 开书助手 profile activates). The per-agent default budget is computed
+# from its own profile in builder.py — the writer profile lands on the
+# spec's ≈24K total.
+TOTAL_TARGET = sum(c["target"] for c in LOADER_BUDGETS.values())
+TOTAL_MAXIMUM = sum(c["max"] for c in LOADER_BUDGETS.values())
+TOTAL_MINIMUM = sum(c["min"] for c in LOADER_BUDGETS.values())
 
 
 def _scale_with_caps(
@@ -109,9 +120,9 @@ def _tier_climb(
     out: dict[str, int] = {p.block_id: p.minimum for p in plans}
     remaining = total_budget - sum(out.values())
     if remaining <= 0:
-        # Even minimums exceed the budget — clip every loader to its
-        # share so the total fits. Tier 1 keeps full min; lower tiers
-        # get progressively trimmed.
+        # Degenerate case (spec 机制5): even the minimums exceed the
+        # budget — scale every loader's minimum by the same ratio;
+        # tier priority does not apply here.
         if total_budget <= 0:
             return {p.block_id: 0 for p in plans}
         scale = total_budget / max(1, sum(out.values()))

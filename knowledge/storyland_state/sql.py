@@ -54,19 +54,19 @@ LIMIT 1
 
 INSERT_HOOK = """
 INSERT INTO pending_hooks (
-    hook_id, project_id, description, status, importance,
+    hook_id, project_id, description, status, importance, scale,
     origin_chapter, expected_payoff_chapter,
     last_mention_chapter, last_advance_chapter,
     pressure_threshold,
     is_spoiler, revealed_to_chars_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 GET_HOOK = """
 SELECT hook_id, project_id, description, status, importance,
        origin_chapter, expected_payoff_chapter,
        last_mention_chapter, last_advance_chapter,
-       pressure_threshold
+       pressure_threshold, scale
 FROM pending_hooks WHERE hook_id = ?
 """
 
@@ -89,9 +89,11 @@ SET status = ?, updated_at = CURRENT_TIMESTAMP
 WHERE hook_id = ?
 """
 
-# Pressure scan: open|progressing hooks where the gap exceeds threshold.
+# Pressure scan: open|progressing hooks where the gap exceeds threshold
+# or the scale-derived payoff window has been reached (超期, 机制4).
 SCAN_FOR_PRESSURE = """
-SELECT hook_id, status, importance, last_advance_chapter, pressure_threshold
+SELECT hook_id, status, importance, last_advance_chapter, pressure_threshold,
+       scale, expected_payoff_chapter
 FROM pending_hooks
 WHERE project_id = ? AND status IN ('open','progressing')
 """

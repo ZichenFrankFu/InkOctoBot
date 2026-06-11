@@ -1138,7 +1138,8 @@ def list_foreshadowing_legacy(db_path: str, project_id: str) -> list[dict]:
         try:
             rows = con.execute(
                 "SELECT hook_id, description, origin_chapter, "
-                "expected_payoff_chapter, status, importance "
+                "expected_payoff_chapter, status, importance, "
+                "COALESCE(scale, 'event_clue') AS scale "
                 "FROM pending_hooks WHERE project_id = ? "
                 "AND COALESCE(user_marked_fully_resolved, 0) = 0 "
                 "ORDER BY origin_chapter",
@@ -1155,6 +1156,7 @@ def list_foreshadowing_legacy(db_path: str, project_id: str) -> list[dict]:
         "expected_payoff_chapter": r["expected_payoff_chapter"],
         "status": r["status"],
         "importance": r["importance"],
+        "scale": r["scale"],
     } for r in rows]
 
 

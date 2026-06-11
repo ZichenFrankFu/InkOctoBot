@@ -17,6 +17,7 @@ _TITLE = "关联伏笔（本章需埋设或回收的伏笔）"
 def plan(
     project_id: str, chapter_id: str = "",
     exclude: set | None = None,
+    chapter_num: int = 0,
 ) -> LoaderPlan | None:
     try:
         from ui.backend.app.services import project_store
@@ -34,6 +35,11 @@ def plan(
     if not active:
         return None
 
+    try:
+        from knowledge.storyland_state.schemas import HOOK_SCALE_LABELS
+    except Exception:
+        HOOK_SCALE_LABELS = {}
+
     lines: list[str] = []
     for f in active:
         title = (f.get("title") or "").strip()
@@ -41,10 +47,27 @@ def plan(
         if not title and not content:
             continue
         origin = f.get("origin_chapter")
-        head = f"【{title or '伏笔'}】"
+        scale = (f.get("scale") or "").strip()
+        scale_label = HOOK_SCALE_LABELS.get(scale, "")
+        meta: list[str] = []
+        if scale_label:
+            meta.append(scale_label)
         if origin:
-            head = f"{head}（第{origin}章埋设）"
-        lines.append(f"- {head}{content}".rstrip())
+            meta.append(f"第{origin}章埋设")
+        head = f"【{title or '伏笔'}】"
+        if meta:
+            head = f"{head}（{'，'.join(meta)}）"
+        # 机制4/机制7: 当前章号达到/超过预期回收章节 → 标注"应回收"
+        # （世界真相无预期回收章节，永不标注）。
+        expected = f.get("expected_payoff_chapter")
+        overdue = (
+            chapter_num > 0
+            and expected is not None
+            and scale != "world_truth"
+            and chapter_num >= int(expected)
+        )
+        tail = f"［应回收：预期第{expected}章前回收］" if overdue else ""
+        lines.append(f"- {head}{content}{tail}".rstrip())
     if not lines:
         return None
 
@@ -64,6 +87,6 @@ def plan(
     )
 
 
-def load(project_id: str, chapter_id: str = "") -> str:
-    p = plan(project_id, chapter_id)
+def load(project_id: str, chapter_id: str = "", chapter_num: int = 0) -> str:
+    p = plan(project_id, chapter_id, chapter_num=chapter_num)
     return p.render(p.target) if p else ""

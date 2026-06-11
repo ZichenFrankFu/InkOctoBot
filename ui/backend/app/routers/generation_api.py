@@ -291,6 +291,9 @@ class GenerateRequest(BaseModel):
     manual: bool = False
     # Per-item RAG de-selections the user unchecked ("block::id").
     rag_excludes: list[str] = []
+    # 决策采样器 seed（角色卡·机制5）：相同 seed 可稳定复刻各角色
+    # 行为倾向采样结果；留空则按 0 派生。
+    decision_seed: str = ""
 
 
 class RewriteRequest(BaseModel):
@@ -1656,6 +1659,9 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             # Build character cards from stored data (apply aliases for hidden identity)
             _aliases = req_data.get("character_aliases", {})
             character_cards: dict[str, str] = {}
+            # 决策采样器输入（Actor·机制1）：每角色的量化决策参数
+            # （损失厌恶 / 风险厌恶 / 冲动概率 / 社交频率），来自角色卡 layer_b。
+            character_params: dict[str, dict] = {}
             try:
                 from ui.backend.app.routers.json_storage_api import _list
                 all_chars = _list("characters")
@@ -1669,6 +1675,8 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                             if cd.get("background"): card_parts.append(f"背景: {cd['background']}")
                             if cd.get("speech_style"): card_parts.append(f"说话风格: {cd['speech_style']}")
                             if cd.get("role"): card_parts.append(f"角色定位: {cd['role']}")
+                            if isinstance(cd.get("layer_b"), dict):
+                                character_params[display_name] = cd["layer_b"]
                             break
                     if c_name != display_name:
                         card_parts.append(f"【隐藏身份】本章中以「{display_name}」出场，禁止使用真名「{c_name}」")
@@ -1679,13 +1687,14 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             _chapter_num = req_data.get("chapter_num", 1)
             _emit(session_id, {"type": "progress_update", "step": "actor_agents", "progress": 20, "detail": f"准备角色卡... ({len(characters)} 个角色)"})
 
+            _decision_seed = req_data.get("decision_seed") or None
             # Use simulate_chapter() to iterate through all scenes properly
             if scene_list:
                 actor_prompt_sent = (
                     f"SceneSimulator.simulate_chapter(\n"
                     f"  scenes={num_scenes},\n"
                     f"  characters={characters},\n"
-                    f"  mode='parallel'\n"
+                    f"  mode='ensemble'\n"
                     f")"
                 )
                 all_scene_results = await simulator.simulate_chapter(
@@ -1694,6 +1703,8 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                     chapter_num=_chapter_num,
                     style_profile=req_data.get("style_notes", ""),
                     constraints=req_data.get("world_rules", ""),
+                    decision_seed=_decision_seed,
+                    character_params=character_params,
                 )
             else:
                 # Fallback: single scene from top-level scene_result
@@ -1704,7 +1715,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                     f"SceneSimulator.simulate_scene(\n"
                     f"  scene_plan=...,\n"
                     f"  characters={characters},\n"
-                    f"  mode='parallel'\n"
+                    f"  mode='ensemble'\n"
                     f")"
                 )
                 single_result = await simulator.simulate_scene(
@@ -1713,7 +1724,8 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                     chapter_num=_chapter_num,
                     style_profile=req_data.get("style_notes", ""),
                     constraints=req_data.get("world_rules", ""),
-                    mode="parallel",
+                    decision_seed=_decision_seed,
+                    character_params=character_params,
                 )
                 all_scene_results = [single_result]
 

@@ -111,7 +111,7 @@ class MarketingAgent:
         comp = self.genre_competition(genre)
         tags = self.popular_tags(genre)
 
-        t_cn = {"rising": "📈上升", "declining": "📉下降", "stable": "➡️平稳"}
+        t_cn = {"rising": "上升", "declining": "下降", "stable": "平稳"}
         advices: list[dict] = [
             {"category": "热度", "severity": "info",
              "title": f"「{genre}」活跃作品 {heat['total_books']} 部"},

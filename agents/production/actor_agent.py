@@ -66,6 +66,101 @@ class ActorAgent(BaseAgent):
         )
         return resp.content
 
+    async def perform_scene(
+        self,
+        scene_plan: dict[str, Any],
+        character_cards: dict[str, str],
+        *,
+        behavior_directives: dict[str, str] | None = None,
+        knowledge_views: dict[str, str] | None = None,
+        previous_scene_text: str = "",
+        constraints: str = "",
+    ) -> str:
+        """One Actor call covering ALL on-stage characters (Actor·机制3).
+
+        ``behavior_directives`` come from the code-level decision
+        sampler (Actor·机制1/机制2) — the LLM dramatizes the given
+        tendencies into concrete acts and dialogue, it does not pick
+        the tendencies itself.
+        """
+        characters = scene_plan.get("characters", []) or []
+        directives = behavior_directives or {}
+        views = knowledge_views or {}
+
+        context_parts: list[str] = []
+        for name in characters:
+            card = (character_cards.get(name) or "").strip()
+            if card:
+                context_parts.append(f"[角色卡 — {name}]\n{card}")
+            view = (views.get(name) or "").strip()
+            if view:
+                context_parts.append(f"[{name} 的已知信息边界]\n{view}")
+        if previous_scene_text:
+            context_parts.append(f"[前序场景内容]\n{previous_scene_text}")
+
+        constraint_parts: list[str] = []
+        if constraints:
+            constraint_parts.append(constraints)
+        directive_lines = [directives[n] for n in characters if directives.get(n)]
+        if directive_lines:
+            constraint_parts.append(
+                "本场行为指令（由决策采样器给定，必须遵守，不得自行更改各角色的行为倾向）：\n"
+                + "\n".join(f"- {d}" for d in directive_lines)
+            )
+        instr_map = scene_plan.get("character_instructions", {}) or {}
+        for name in characters:
+            ins = instr_map.get(name) or {}
+            musts = ins.get("must", [])
+            must_nots = ins.get("must_not", [])
+            if musts:
+                constraint_parts.append(f"{name} 必须: " + "; ".join(musts))
+            if must_nots:
+                constraint_parts.append(f"{name} 禁止: " + "; ".join(must_nots))
+
+        parts = [
+            "你是本场戏的全体演员，需要同时扮演以下所有角色，并按场景节拍交织地输出他们的互动表演。",
+            f"\n场景: {scene_plan.get('summary', '')}",
+            f"地点: {scene_plan.get('location', '未知')}",
+            f"时间: {scene_plan.get('time', '')}",
+            f"出场角色: {', '.join(characters)}",
+        ]
+        for name in characters:
+            ins = instr_map.get(name) or {}
+            sub: list[str] = []
+            if ins.get("emotional_state"):
+                sub.append(f"情绪状态: {ins['emotional_state']}")
+            if ins.get("secret_goal"):
+                sub.append(f"秘密目标（不要直接说出）: {ins['secret_goal']}")
+            if sub:
+                parts.append(f"\n{name} — " + "；".join(sub))
+        beats = scene_plan.get("beats", [])
+        if beats:
+            parts.append("\n本场景节拍: " + " / ".join(beats))
+        parts.append("""
+请以剧本格式输出本场全部角色的表演，按节拍顺序推进：
+
+角色名
+（情绪/神态描写）
+动作描写。
+"台词对话内容。"
+（内心活动：该角色此刻的心理描写）
+
+要求：
+- 覆盖每个出场角色，戏份按其在本场的重要性分配
+- 严格遵守各角色的行为指令与知识边界，角色不得说出或利用其不应知道的信息
+- 台词用引号包裹，内心活动用括号标注
+- 角色之间的对话与动作要相互衔接、互相回应
+- 环境描写交给旁白，这里只写角色本身
+""")
+        resp = await self.invoke(
+            "\n".join(parts),
+            context="\n\n".join(context_parts),
+            constraints="\n".join(constraint_parts),
+            temperature=0.8,
+            max_tokens=4000,
+        )
+        return resp.content
+
     async def check_consistency(
         self,
         performance_text: str,

@@ -50,68 +50,67 @@ class SceneSimulator:
         chapter_num: int = 1,
         style_profile: str = "",
         constraints: str = "",
-        mode: str = "turn_based",
+        mode: str = "ensemble",
+        scene_index: int = 0,
+        decision_seed: int | str | None = None,
+        character_params: dict[str, dict] | None = None,
     ) -> dict[str, Any]:
         """
         Simulate a complete scene.
 
+        Default mode ``"ensemble"`` follows the spec (Actor·机制1-3):
+        the code-level DecisionSampler pre-samples each character's
+        behavior tendencies (seeded Bernoulli draws so users can replay
+        a result via ``decision_seed``), and ALL on-stage characters are
+        rendered in ONE Actor call. Legacy ``"turn_based"`` /
+        ``"parallel"`` modes (one call per character) are kept for
+        comparison and back-compat.
+
         Returns:
             {
-                "performances": {character_name: performance_text},
+                "performances": {character_name | "全体角色": text},
                 "narrator": narrator_text,
                 "combined": combined_performance_log,
+                "behavior_directives": {character_name: directive_text},
+                "decision_seeds": {character_name: int},
             }
         """
         characters = scene_plan.get("characters", [])
 
-        # Create actor instances with knowledge isolation + decision engine (B3)
-        actors: dict[str, ActorAgent] = {}
-        for char_name in characters:
-            knowledge_view = self.memory.get_context_for_actor(
-                char_name, chapter_num,
-                scene_context=scene_plan.get("summary", ""),
-                knowledge_boundary=scene_plan.get("character_instructions", {}).get(
-                    char_name, {},
-                ).get("knowledge_boundary"),
-            )
-
-            # B3: Integrate DecisionEngine for quantitative behavior guidance
-            decision_guidance = ""
-            try:
-                from knowledge.decision_engine import DecisionModel
-                char_instructions = scene_plan.get("character_instructions", {}).get(char_name, {})
-                decision_options = char_instructions.get("decision_options", [])
-                if decision_options:
-                    model = DecisionModel(character_name=char_name)
-                    decision_guidance = model.generate_guidance(
-                        scene_plan.get("summary", ""), decision_options,
-                    )
-                elif char_instructions.get("emotional_state") or char_instructions.get("secret_goal"):
-                    model = DecisionModel(character_name=char_name)
-                    other_chars = [c for c in characters if c != char_name]
-                    trust_info = [
-                        f"  对{other}的信任度: {model.get_trust(other):.0%}"
-                        for other in other_chars
-                    ]
-                    if trust_info:
-                        decision_guidance = f"[决策引擎 — {char_name}]\n" + "\n".join(trust_info)
-                        if model.should_act_impulsively():
-                            decision_guidance += "\n⚡ 当前情绪不稳定，可能做出冲动行为"
-            except Exception as de_err:
-                logger.debug("DecisionEngine skipped for %s: %s", char_name, de_err)
-
-            extra_context = knowledge_view
-            if decision_guidance:
-                extra_context += f"\n\n{decision_guidance}"
-
-            actors[char_name] = ActorAgent(
-                self.router,
-                character_name=char_name,
-                character_card=character_cards.get(char_name, ""),
+        # ── 决策采样器（代码采样，零 LLM；Actor·机制1） ──
+        directives: dict[str, str] = {}
+        seeds: dict[str, int] = {}
+        try:
+            from knowledge.decision_engine import DecisionSampler
+            sampler = DecisionSampler(
                 project_id=self.project_id,
-                event_bus=self.event_bus,
-                extra_system=extra_context,
+                chapter_num=chapter_num,
+                scene_index=scene_index,
+                base_seed=decision_seed,
             )
+            for name, d in sampler.sample_scene(
+                characters, character_params or {},
+            ).items():
+                directives[name] = d.to_text()
+                seeds[name] = d.seed
+        except Exception as ds_err:
+            logger.debug("DecisionSampler skipped: %s", ds_err)
+
+        # ── 每角色知识视图（知识隔离） ──
+        knowledge_views: dict[str, str] = {}
+        for char_name in characters:
+            try:
+                knowledge_views[char_name] = self.memory.get_context_for_actor(
+                    char_name, chapter_num,
+                    scene_context=scene_plan.get("summary", ""),
+                    knowledge_boundary=scene_plan.get(
+                        "character_instructions", {},
+                    ).get(char_name, {}).get("knowledge_boundary"),
+                )
+            except Exception as kv_err:
+                logger.debug("knowledge view skipped for %s: %s",
+                             char_name, kv_err)
+                knowledge_views[char_name] = ""
 
         # Generate narrator text
         narrator_instructions = scene_plan.get("narrator_instructions", "")
@@ -124,14 +123,33 @@ class SceneSimulator:
         )
 
         # Generate actor performances
-        if mode == "parallel":
-            performances = await self._simulate_parallel(
-                actors, scene_plan, constraints,
+        if mode == "ensemble":
+            ensemble_actor = ActorAgent(
+                self.router,
+                character_name="全体角色",
+                project_id=self.project_id,
+                event_bus=self.event_bus,
             )
+            ensemble_text = await ensemble_actor.perform_scene(
+                scene_plan, character_cards,
+                behavior_directives=directives,
+                knowledge_views=knowledge_views,
+                previous_scene_text=self.memory.immediate.get_context_text(),
+                constraints=constraints,
+            )
+            performances = {"全体角色": ensemble_text}
         else:
-            performances = await self._simulate_turn_based(
-                actors, scene_plan, constraints,
+            actors = self._build_individual_actors(
+                characters, character_cards, knowledge_views, directives,
             )
+            if mode == "parallel":
+                performances = await self._simulate_parallel(
+                    actors, scene_plan, constraints,
+                )
+            else:
+                performances = await self._simulate_turn_based(
+                    actors, scene_plan, constraints,
+                )
 
         # Combine into a single performance log
         combined = self._combine_performances(performances, narrator_text, scene_plan)
@@ -140,7 +158,33 @@ class SceneSimulator:
             "performances": performances,
             "narrator": narrator_text,
             "combined": combined,
+            "behavior_directives": directives,
+            "decision_seeds": seeds,
         }
+
+    def _build_individual_actors(
+        self,
+        characters: list[str],
+        character_cards: dict[str, str],
+        knowledge_views: dict[str, str],
+        directives: dict[str, str],
+    ) -> dict[str, ActorAgent]:
+        """Legacy per-character actor instances (turn_based / parallel)."""
+        actors: dict[str, ActorAgent] = {}
+        for char_name in characters:
+            extra_context = knowledge_views.get(char_name, "")
+            directive = directives.get(char_name, "")
+            if directive:
+                extra_context += f"\n\n[行为指令]\n{directive}"
+            actors[char_name] = ActorAgent(
+                self.router,
+                character_name=char_name,
+                character_card=character_cards.get(char_name, ""),
+                project_id=self.project_id,
+                event_bus=self.event_bus,
+                extra_system=extra_context,
+            )
+        return actors
 
     async def _simulate_turn_based(
         self, actors: dict[str, ActorAgent],
@@ -214,6 +258,9 @@ class SceneSimulator:
         chapter_num: int = 1,
         style_profile: str = "",
         constraints: str = "",
+        mode: str = "ensemble",
+        decision_seed: int | str | None = None,
+        character_params: dict[str, dict] | None = None,
     ) -> list[dict[str, Any]]:
         """Simulate all scenes in a chapter sequentially."""
         results = []
@@ -230,6 +277,10 @@ class SceneSimulator:
                 chapter_num=chapter_num,
                 style_profile=style_profile,
                 constraints=constraints,
+                mode=mode,
+                scene_index=i,
+                decision_seed=decision_seed,
+                character_params=character_params,
             )
             self.memory.update_scene_text(result["combined"])
             results.append(result)
