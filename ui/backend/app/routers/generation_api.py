@@ -335,6 +335,36 @@ def health():
     return {"status": "ok", "router": "generation"}
 
 
+@router.get("/cost-estimate")
+def cost_estimate(
+    project_id: str = "",
+    chapter_id: str = "",
+    mode: str = "single",
+    num_scenes: int = 3,
+):
+    """生成前成本预估 (spec LLM调用·机制1): 本章预估 LLM 调用数与
+    token / USD 成本（导演模式以场景数为主变量），含单章成本上限
+    与超限降级建议（导演转单 Agent → 跳过 LLM 评估层）。"""
+    if mode not in ("single", "director"):
+        raise HTTPException(400, "mode must be single/director")
+    context_tokens = 0
+    if project_id and chapter_id:
+        try:
+            from ._rag_context import build_generation_context
+            ctx = build_generation_context(
+                project_id, characters=[], chapter_id=chapter_id,
+            )
+            context_tokens = int(ctx.get("token_estimate") or 0)
+        except Exception as e:
+            logger.debug("cost-estimate context build skipped: %s", e)
+    from ui.backend.app.services.generation_cost import (
+        estimate_with_degradation,
+    )
+    return estimate_with_degradation(
+        mode, max(1, num_scenes), context_tokens,
+    )
+
+
 @router.post("/start")
 async def start_generation(req: GenerateRequest):
     session_id = f"gen_{uuid.uuid4().hex[:12]}"

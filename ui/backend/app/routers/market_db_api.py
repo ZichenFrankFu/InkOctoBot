@@ -399,3 +399,173 @@ def list_tables():
         return {"tables": []}
     with con:
         return {"tables": [r["name"] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]}
+
+
+# ──────────────────────────────────────────────────────────────
+# v3.1 UPDATE endpoints (spec 市场数据库·机制4/机制5)
+#
+# Users may READ & UPDATE market data (basic novel info + collected
+# chapter text) — never INSERT/DELETE, the market DB must keep
+# reflecting the real market. Concurrency with the external crawler
+# (失败措施·机制5): writes open the connection with a 30s
+# busy_timeout and BEGIN IMMEDIATE, so a user write QUEUES behind any
+# in-flight crawler transaction instead of failing; if the crawler
+# holds the lock longer than that we surface 423 (locked) so the UI
+# can tell the user to retry after the crawl finishes.
+# ──────────────────────────────────────────────────────────────
+
+
+_WRITE_BUSY_TIMEOUT_MS = 30_000
+
+# Whitelist of user-editable novels columns (机制5: only basic info).
+_NOVEL_EDITABLE = {
+    "author", "intro", "main_category", "status", "total_words",
+    "url", "created_date",
+}
+
+
+def _get_write_con() -> sqlite3.Connection | None:
+    from ..utils import resolve_crawler_db_path
+    db_path = resolve_crawler_db_path()
+    if not db_path or not Path(db_path).exists():
+        return None
+    con = sqlite3.connect(db_path, timeout=_WRITE_BUSY_TIMEOUT_MS / 1000)
+    con.row_factory = sqlite3.Row
+    con.execute(f"PRAGMA busy_timeout = {_WRITE_BUSY_TIMEOUT_MS}")
+    return con
+
+
+def _norm(s: str) -> str:
+    return "".join((s or "").lower().split())
+
+
+@router.put("/novel/{novel_uid}")
+def update_novel(novel_uid: int, body: dict = Body(...)):
+    """Update one novel's basic info / primary title / tags.
+
+    Accepted keys: title, author, intro, main_category, status,
+    total_words, url, created_date, tags (full replacement list).
+    Unknown keys are rejected so typos don't silently no-op.
+    """
+    unknown = set(body.keys()) - _NOVEL_EDITABLE - {"title", "tags"}
+    if unknown:
+        raise HTTPException(400, f"un-editable fields: {sorted(unknown)}")
+    if body.get("status") not in (None, "ongoing", "completed"):
+        raise HTTPException(400, "status must be ongoing/completed")
+
+    con = _get_write_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        exists = con.execute(
+            "SELECT 1 FROM novels WHERE novel_uid = ?", (novel_uid,),
+        ).fetchone()
+        if not exists:
+            con.rollback()
+            raise HTTPException(404, "novel not found")
+
+        sets, args = [], []
+        for col in _NOVEL_EDITABLE:
+            if col in body and body[col] is not None:
+                sets.append(f"{col} = ?")
+                args.append(body[col])
+                if col in ("author", "intro"):
+                    sets.append(f"{col}_norm = ?")
+                    args.append(_norm(str(body[col])))
+        if sets:
+            con.execute(
+                f"UPDATE novels SET {', '.join(sets)} WHERE novel_uid = ?",
+                (*args, novel_uid),
+            )
+
+        title = (body.get("title") or "").strip()
+        if title:
+            updated = con.execute(
+                "UPDATE novel_titles SET title = ?, title_norm = ? "
+                "WHERE novel_uid = ? AND is_primary = 1",
+                (title, _norm(title), novel_uid),
+            )
+            if updated.rowcount == 0:
+                con.execute(
+                    "INSERT INTO novel_titles (novel_uid, title, title_norm, "
+                    "is_primary, first_seen_date, last_seen_date) "
+                    "VALUES (?, ?, ?, 1, date('now'), date('now'))",
+                    (novel_uid, title, _norm(title)),
+                )
+
+        if isinstance(body.get("tags"), list):
+            con.execute(
+                "DELETE FROM novel_tag_map WHERE novel_uid = ?", (novel_uid,),
+            )
+            for tag in body["tags"]:
+                tag = str(tag).strip()
+                if not tag:
+                    continue
+                con.execute(
+                    "INSERT OR IGNORE INTO tags (tag_name, tag_norm) "
+                    "VALUES (?, ?)",
+                    (tag, _norm(tag)),
+                )
+                tag_id = con.execute(
+                    "SELECT tag_id FROM tags WHERE tag_norm = ?",
+                    (_norm(tag),),
+                ).fetchone()[0]
+                con.execute(
+                    "INSERT OR IGNORE INTO novel_tag_map (novel_uid, tag_id) "
+                    "VALUES (?, ?)",
+                    (novel_uid, tag_id),
+                )
+        con.commit()
+    except sqlite3.OperationalError as e:
+        con.rollback()
+        if "locked" in str(e).lower() or "busy" in str(e).lower():
+            raise HTTPException(
+                423, "市场数据库正被爬虫写入，已等待 30 秒仍未释放，请稍后重试",
+            )
+        raise HTTPException(500, f"update failed: {e}")
+    finally:
+        con.close()
+    return {"ok": True, "novel_uid": novel_uid}
+
+
+@router.put("/chapter/{chapter_id}")
+def update_chapter(chapter_id: int, body: dict = Body(...)):
+    """Update one collected chapter's title / content (机制5: UPDATE only)."""
+    title = body.get("chapter_title")
+    content = body.get("chapter_content")
+    if title is None and content is None:
+        raise HTTPException(400, "nothing to update")
+    con = _get_write_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        sets, args = [], []
+        if title is not None:
+            sets.append("chapter_title = ?")
+            args.append(str(title))
+        if content is not None:
+            sets.append("chapter_content = ?")
+            args.append(str(content))
+            sets.append("word_count = ?")
+            args.append(len(str(content)))
+        cur = con.execute(
+            f"UPDATE first_n_chapters SET {', '.join(sets)} "
+            f"WHERE chapter_id = ?",
+            (*args, chapter_id),
+        )
+        if cur.rowcount == 0:
+            con.rollback()
+            raise HTTPException(404, "chapter not found")
+        con.commit()
+    except sqlite3.OperationalError as e:
+        con.rollback()
+        if "locked" in str(e).lower() or "busy" in str(e).lower():
+            raise HTTPException(
+                423, "市场数据库正被爬虫写入，已等待 30 秒仍未释放，请稍后重试",
+            )
+        raise HTTPException(500, f"update failed: {e}")
+    finally:
+        con.close()
+    return {"ok": True, "chapter_id": chapter_id}

@@ -47,6 +47,7 @@ from .routers.commit_pipeline_api import router as commit_pipeline_router
 from .routers.notifications_api import router as notifications_router
 from .routers.preferences_api import router as preferences_router
 from .routers.rollback_api import router as rollback_router
+from .routers.genesis_api import router as genesis_router
 from .routers.state_review_api import router as state_review_router
 from .routers.historical_view_api import router as historical_view_router
 from .routers.validator_api import router as validator_router
@@ -108,6 +109,7 @@ app.include_router(commit_pipeline_router)  # /api/commit-pipeline
 app.include_router(notifications_router)  # /api/notifications
 app.include_router(preferences_router)  # /api/preferences (自学习偏好确认 gate)
 app.include_router(rollback_router)  # /api/rollback (事务性回溯)
+app.include_router(genesis_router)  # /api/genesis (Storyland 创世)
 app.include_router(state_review_router)  # /api/state-review + manual fallback CRUD
 app.include_router(historical_view_router)  # /api/historical-view
 app.include_router(validator_router)  # /api/validator
