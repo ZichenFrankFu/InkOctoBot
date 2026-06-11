@@ -39,6 +39,22 @@ def get_event_history(
     return {"events": bus.get_history(event_type=event_type, limit=limit)}
 
 
+@router.get("/log")
+def get_operation_log(
+    project_id: str = "",
+    event_type: str = "",
+    limit: int = Query(default=100, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    """持久化操作日志 (spec EventBus·机制3/机制4) — survives restarts,
+    unlike /history which reads the in-memory deque."""
+    from framework.event_log import query_log
+    return {"items": query_log(
+        project_id=project_id, event_type=event_type,
+        limit=limit, offset=offset,
+    )}
+
+
 @router.get("/suggestions")
 def get_pending_suggestions():
     bus = get_event_bus()

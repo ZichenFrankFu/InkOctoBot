@@ -86,14 +86,20 @@ def _pick_in_transition(
         if chapter_num in bound:
             if comp is None or chapter_num < int(comp):
                 return s, _EVENT
-    # Priority 3: chapter_num is within [min(bound), max(bound)] but
-    # not in the list (gap between beats).
+    # Priority 3: chapter_num is inside the transition window but not a
+    # beat chapter. spec 角色卡·机制1: 关键帧 N 与 N+1 之间都是过渡期 —
+    # the window runs from the first beat up to (and excluding) the
+    # completion chapter, so beats-to-completion chapters also count.
     for s in snapshots:
         bound = [int(c) for c in (s.get("bound_chapters") or [])]
-        if len(bound) < 2:
+        if not bound:
             continue
         comp = s.get("transition_complete_chapter")
         lo, hi = min(bound), max(bound)
+        if comp is not None:
+            hi = max(hi, int(comp) - 1)
+        elif len(bound) < 2:
+            continue   # single beat without completion → no window
         if lo <= chapter_num <= hi and chapter_num not in bound:
             if comp is None or chapter_num < int(comp):
                 return s, _GAP
@@ -114,20 +120,70 @@ def _previous_of(
     return None
 
 
+# 角色卡·机制2: 转变态 3 档位
+_STAGE_WAVERING = "wavering"   # 动摇 — 对关键帧 N 的怀疑
+_STAGE_PROBING = "probing"     # 试探 — 尝试关键帧 N+1 行为的效果
+_STAGE_LEANING = "leaning"     # 倾向 — 承认 N+1 更有用但尚未切换
+_VALID_STAGES = {_STAGE_WAVERING, _STAGE_PROBING, _STAGE_LEANING}
+
+STAGE_LABELS = {
+    _STAGE_WAVERING: "动摇",
+    _STAGE_PROBING:  "试探",
+    _STAGE_LEANING:  "倾向",
+}
+
+
+def _transition_stage(
+    snapshot: dict, chapter_num: int,
+) -> tuple[str, str]:
+    """(stage, source) for a chapter inside a transition window.
+
+    User-set per-chapter 档位 wins (``transition_stages``); otherwise
+    derive from progress through [window start, complete chapter]:
+    first third → 动摇, middle → 试探, final third → 倾向.
+    """
+    stages = snapshot.get("transition_stages") or {}
+    explicit = stages.get(str(chapter_num)) or stages.get(chapter_num)
+    if explicit in _VALID_STAGES:
+        return explicit, "user"
+
+    bound = [int(c) for c in (snapshot.get("bound_chapters") or [])]
+    comp = snapshot.get("transition_complete_chapter")
+    start = min(bound) if bound else chapter_num
+    end = int(comp) if comp is not None else (max(bound) if bound else chapter_num)
+    if end <= start:
+        return _STAGE_PROBING, "derived"
+    progress = (chapter_num - start) / (end - start)
+    if progress < 1 / 3:
+        return _STAGE_WAVERING, "derived"
+    if progress < 2 / 3:
+        return _STAGE_PROBING, "derived"
+    return _STAGE_LEANING, "derived"
+
+
 def resolve(
     db_path: str, character_id: str, chapter_num: int,
 ) -> dict[str, Any]:
     """Compute the snapshot view for ``character_id`` at ``chapter_num``.
 
-    See module docstring for the four-state contract.
+    See module docstring for the four-state contract. While in a
+    transition (event / gap), ``transition_stage`` carries the 3-档位
+    (动摇 / 试探 / 倾向, 角色卡·机制2) with ``transition_stage_source``
+    telling whether the user set it or it was derived from progress.
     """
     snaps = _snapshots_ordered(db_path, character_id)
     baseline = _pick_baseline(snaps, chapter_num)
     in_trans, status = _pick_in_transition(snaps, chapter_num)
     previous = _previous_of(snaps, in_trans)
-    return {
+    out: dict[str, Any] = {
         "baseline_snapshot":   baseline,
         "in_transition":       in_trans,
         "transition_status":   status,
         "previous_snapshot":   previous,
     }
+    if in_trans is not None and status in (_EVENT, _GAP):
+        stage, source = _transition_stage(in_trans, chapter_num)
+        out["transition_stage"] = stage
+        out["transition_stage_label"] = STAGE_LABELS[stage]
+        out["transition_stage_source"] = source
+    return out

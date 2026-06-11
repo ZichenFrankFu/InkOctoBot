@@ -101,6 +101,33 @@ def unbind_chapter(snapshot_id: str, body: dict = Body(...)):
     return out
 
 
+@router.post("/{snapshot_id}/set-stage")
+def set_transition_stage(snapshot_id: str, body: dict = Body(...)):
+    """设置某个角色故事线推进章节的转变档位 (角色卡·机制2)：
+    动摇 wavering / 试探 probing / 倾向 leaning；stage=null 清除该章
+    的显式设置（回到按进度推导）。"""
+    try:
+        chapter_num = int(body["chapter_num"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "chapter_num is required (int)")
+    stage = body.get("stage")
+    if stage is not None and stage not in ("wavering", "probing", "leaning"):
+        raise HTTPException(400, "stage must be wavering/probing/leaning or null")
+    snap = snapshot_store.get_snapshot(_db(), snapshot_id)
+    if snap is None:
+        raise HTTPException(404, f"snapshot {snapshot_id} not found")
+    stages = dict(snap.get("transition_stages") or {})
+    key = str(chapter_num)
+    if stage is None:
+        stages.pop(key, None)
+    else:
+        stages[key] = stage
+    out = snapshot_store.upsert_snapshot(_db(), {
+        **snap, "transition_stages": stages,
+    })
+    return out
+
+
 @router.post("/{snapshot_id}/mark-complete")
 def mark_complete(snapshot_id: str, body: dict = Body(...)):
     try:

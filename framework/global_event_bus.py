@@ -17,12 +17,21 @@ _lock = threading.Lock()
 
 
 def get_event_bus() -> EventBus:
-    """Return the process-global EventBus, creating it on first call."""
+    """Return the process-global EventBus, creating it on first call.
+
+    The persistent operation-log listener (spec EventBus·机制3) is
+    attached on first creation so every published event is mirrored
+    into the ``operation_log`` table for the log viewer + 回溯模式."""
     global _bus
     if _bus is None:
         with _lock:
             if _bus is None:
                 _bus = EventBus()
+                try:
+                    from framework.event_log import attach_to_bus
+                    attach_to_bus(_bus)
+                except Exception:
+                    pass
     return _bus
 
 

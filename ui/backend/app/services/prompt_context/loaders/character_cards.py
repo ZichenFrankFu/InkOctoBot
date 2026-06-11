@@ -201,6 +201,25 @@ def _render_stable(character: dict, baseline: dict | None) -> str:
     return "\n".join(lines)
 
 
+# 角色卡·机制2: 转变态 3 档位的提示词指导。
+_STAGE_GUIDANCE = {
+    "wavering": "动摇 — 对原有状态产生怀疑，但行为仍以旧状态为主，偶有迟疑",
+    "probing":  "试探 — 开始尝试新状态的行为方式，谨慎试水，结果不确定",
+    "leaning":  "倾向 — 不得不承认新状态更有用，行为多数已偏向新状态，"
+                "但尚未完全切换、关键时刻仍可能退回",
+}
+
+
+def _append_stage_line(lines: list[str], resolution: dict) -> None:
+    stage = resolution.get("transition_stage")
+    guidance = _STAGE_GUIDANCE.get(stage or "")
+    if not guidance:
+        return
+    src = "用户设定" if resolution.get("transition_stage_source") == "user" \
+        else "按进度推导"
+    lines.append(f"  转变档位（{src}）：{guidance}")
+
+
 def _render_transition_event(
     character: dict, resolution: dict, chapter_num: int,
 ) -> str:
@@ -217,6 +236,7 @@ def _render_transition_event(
     lines.append(f"  [正在转变]（从 {prev_label} 到 {target_label}）")
     if (in_trans.get("trigger_description") or "").strip():
         lines.append(f"  触发：{in_trans['trigger_description'].strip()}")
+    _append_stage_line(lines, resolution)
     lines.append("  本章是关键转变事件之一")
     bound = in_trans.get("bound_chapters") or []
     if bound:
@@ -258,6 +278,7 @@ def _render_transition_gap(
     target_label = f"Snapshot {in_trans.get('snapshot_order')}"
     lines.append("  [transition 间歇期]")
     lines.append(f"  正在从 {prev_label} 向 {target_label} 过渡")
+    _append_stage_line(lines, resolution)
     bound = in_trans.get("bound_chapters") or []
     if bound:
         lines.append(

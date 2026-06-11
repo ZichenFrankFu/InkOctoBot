@@ -190,6 +190,24 @@ CREATION_DDL = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_prefs_project ON user_style_preferences(project_id, preference_type);",
 
+    # ── Operation log (spec EventBus·机制3/机制4: 持久化日志，
+    #    可被日志查看器与回溯模式读取) ──
+    """
+    CREATE TABLE IF NOT EXISTS operation_log (
+        log_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT '',
+        project_id TEXT NOT NULL DEFAULT '',
+        data_json TEXT NOT NULL DEFAULT '{}',
+        event_ts REAL NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_oplog_project "
+    "ON operation_log(project_id, event_ts);",
+    "CREATE INDEX IF NOT EXISTS idx_oplog_type "
+    "ON operation_log(event_type, event_ts);",
+
     # ── Preference learning runs (spec 用户偏好·机制2: 每 N 章批量) ──
     """
     CREATE TABLE IF NOT EXISTS preference_learning_runs (
@@ -505,6 +523,9 @@ CREATION_DDL = [
         other_changes TEXT NOT NULL DEFAULT '',
         bound_chapters_json TEXT NOT NULL DEFAULT '[]',
         transition_complete_chapter INTEGER,
+        -- v3.1 角色卡·机制2: 转变态 3 档位（动摇 wavering / 试探 probing /
+        -- 倾向 leaning），按角色故事线推进章节逐章设置: {"<章号>": "档位"}
+        transition_stages_json TEXT NOT NULL DEFAULT '{}',
         bound_by TEXT NOT NULL DEFAULT 'user'
             CHECK (bound_by IN ('user','auto')),
         bound_at TIMESTAMP,
@@ -734,6 +755,23 @@ def _ensure_user_prefs_v31_columns(conn: sqlite3.Connection) -> None:
             )
 
 
+def _ensure_snapshot_v31_columns(conn: sqlite3.Connection) -> None:
+    """v3.1 角色卡·机制2: 转变态 3 档位 column for pre-existing DBs."""
+    cur = conn.cursor()
+    try:
+        existing = {
+            row[1]
+            for row in cur.execute("PRAGMA table_info(character_snapshots)")
+        }
+    except sqlite3.OperationalError:
+        return
+    if "transition_stages_json" not in existing:
+        cur.execute(
+            "ALTER TABLE character_snapshots ADD COLUMN "
+            "transition_stages_json TEXT NOT NULL DEFAULT '{}'"
+        )
+
+
 def _ensure_chapter_summaries_v3_columns(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     try:
@@ -826,6 +864,7 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
     _ensure_chapter_summaries_v3_columns(conn)
     _ensure_episodic_events_pc_columns(conn)
     _ensure_user_prefs_v31_columns(conn)
+    _ensure_snapshot_v31_columns(conn)
     _drop_v1_redundant_objects(conn)
     conn.commit()
 

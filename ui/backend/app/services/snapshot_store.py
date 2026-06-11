@@ -51,6 +51,8 @@ def _row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
         "other_changes":                r.get("other_changes") or "",
         "bound_chapters":               json.loads(r.get("bound_chapters_json") or "[]"),
         "transition_complete_chapter":  r.get("transition_complete_chapter"),
+        # 角色卡·机制2: {"<章号>": "wavering|probing|leaning"}
+        "transition_stages":            json.loads(r.get("transition_stages_json") or "{}"),
         "bound_by":                     r.get("bound_by") or "user",
         "bound_at":                     r.get("bound_at"),
         "created_at":                   r.get("created_at"),
@@ -143,6 +145,18 @@ def upsert_snapshot(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
                 f"snapshot_order {order} already exists for character {cid}"
             )
 
+        # 转变档位: omitted key on update keeps the stored value so an
+        # older client PUT doesn't wipe user-set 档位 (角色卡·机制2).
+        if "transition_stages" in body:
+            stages = body.get("transition_stages") or {}
+        elif existing is not None:
+            try:
+                stages = json.loads(existing["transition_stages_json"] or "{}")
+            except Exception:
+                stages = {}
+        else:
+            stages = {}
+
         params = (
             sid, cid, pid or (existing["project_id"] if existing else ""),
             order,
@@ -157,6 +171,7 @@ def upsert_snapshot(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
             body.get("other_changes") or "",
             json.dumps(body.get("bound_chapters") or [], ensure_ascii=False),
             body.get("transition_complete_chapter"),
+            json.dumps(stages, ensure_ascii=False),
             body.get("bound_by") or "user",
         )
         con.execute(
@@ -167,9 +182,9 @@ def upsert_snapshot(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
                    speech_style_override, alias,
                    layer_b_overrides_json, relations_overrides_json,
                    other_changes, bound_chapters_json,
-                   transition_complete_chapter, bound_by,
-                   created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   transition_complete_chapter, transition_stages_json,
+                   bound_by, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                ON CONFLICT(snapshot_id) DO UPDATE SET
                    character_id = excluded.character_id,
@@ -186,6 +201,7 @@ def upsert_snapshot(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
                    other_changes = excluded.other_changes,
                    bound_chapters_json = excluded.bound_chapters_json,
                    transition_complete_chapter = excluded.transition_complete_chapter,
+                   transition_stages_json = excluded.transition_stages_json,
                    bound_by = excluded.bound_by,
                    updated_at = CURRENT_TIMESTAMP""",
             params,
