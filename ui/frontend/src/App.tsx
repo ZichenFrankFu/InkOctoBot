@@ -18,6 +18,7 @@ import EditorPage from "./pages/EditorPage";
 import CharacterManagerPage from "./pages/CharacterManagerPage";
 import WorldBookPage from "./pages/WorldBookPage";
 import StorylinePage from "./pages/StorylinePage";
+import StorylandPage from "./pages/StorylandPage";
 import SettingsPage from "./pages/SettingsPage";
 import AnalysisDashboardPage from "./pages/AnalysisDashboardPage";
 import ProjectListPage from "./pages/ProjectListPage";
@@ -28,7 +29,7 @@ import MarketSearchPage from "./pages/MarketSearchPage";
 
 type Tab =
   | "dashboard" | "rankings" | "references" | "references-overview" | "references-search" | "analysis"
-  | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline"
+  | "projects" | "project-setup" | "editor" | "characters" | "worldbook" | "storyline" | "storyland"
   | "skills" | "settings" | "dev-console" | "market-search";
 
 interface Project { id: string; name: string; genre?: string; word_count?: number; chapter_count?: number; }
@@ -64,6 +65,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "worldbook", icon: "⊕", label: "世界书" },
       { key: "editor", icon: "✎", label: "编辑器" },
       { key: "storyline", icon: "─", label: "剧情线" },
+      { key: "storyland", icon: "◎", label: "故事中世界" },
     ],
   },
   {
@@ -223,6 +225,7 @@ function AppInner() {
         {tab === "characters" && <ErrorBoundary key="characters"><CharacterManagerPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
         {tab === "worldbook" && <ErrorBoundary key="worldbook"><WorldBookPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
         {tab === "storyline" && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
+        {tab === "storyland" && <ErrorBoundary key="storyland"><StorylandPage projectId={activeProject} /></ErrorBoundary>}
         {tab === "skills" && <ErrorBoundary key="skills"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
         {tab === "settings" && <ErrorBoundary key="settings"><SettingsPage /></ErrorBoundary>}
         {tab === "market-search" && <ErrorBoundary key="market-search"><MarketSearchPage /></ErrorBoundary>}
