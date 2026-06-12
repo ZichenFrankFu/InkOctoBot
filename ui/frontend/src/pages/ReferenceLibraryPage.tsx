@@ -22,6 +22,7 @@ import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import { useSegmentation } from "../components/reference/segmentationCache";
 import type { ChunkLoc } from "../components/reference/referenceMerge";
 import PreprocessPanel from "../components/reference/PreprocessPanel";
+import PureSettingPanel from "../components/reference/PureSettingPanel";
 import FilesPanel from "../components/reference/FilesPanel";
 import { splitGenres } from "../utils/genre";
 
@@ -92,6 +93,8 @@ export default function ReferenceLibraryPage() {
   const [nTitle, setNTitle] = useState("");
   const [nCreator, setNCreator] = useState("");
   const [nMedia, setNMedia] = useState<MediaType>("web_novel");
+  // spec 6.2: 添加时选结构类型 (叙事型 / 纯设定作品)
+  const [nStructure, setNStructure] = useState<"narrative" | "setting_collection">("narrative");
   const [nGenre, setNGenre] = useState("");
   const [nWhy, setNWhy] = useState("");
   const [nRating, setNRating] = useState(0);
@@ -173,7 +176,7 @@ export default function ReferenceLibraryPage() {
     if (!title || adding) return;
     setAdding(true);
     try {
-      await apiPost("/api/references/works", {
+      const created = await apiPost<any>("/api/references/works", {
         title,
         creator: nCreator.trim() || undefined,
         media_type: nMedia,
@@ -182,8 +185,13 @@ export default function ReferenceLibraryPage() {
         user_rating: nRating || undefined,
         source: "manual",
       });
+      if (nStructure === "setting_collection" && created?.ref_id) {
+        await apiPut(`/api/references/works/${created.ref_id}/pure-setting`,
+          { structure_type: "setting_collection" });
+      }
       setShowAddWork(false);
       setNTitle(""); setNCreator(""); setNGenre(""); setNWhy(""); setNRating(0);
+      setNStructure("narrative");
       load();
       toast(`已添加「${title}」`, "success");
     } catch (e: any) {
@@ -409,9 +417,12 @@ export default function ReferenceLibraryPage() {
                   </div>
                   <div className="flex items-center gap-6 text-xs" style={{ flexWrap: "wrap", marginBottom: 2 }}>
                     {w.creator && <span className="text-muted truncate" style={{ maxWidth: 100 }}>{w.creator}</span>}
+                    {(w as any).structure_type === "setting_collection" && (
+                      <span className="tag" style={{ fontSize: 9, padding: "0 5px", color: "var(--gold)", border: "1px solid var(--gold)", background: "transparent" }}>纯设定</span>
+                    )}
                     {w.user_rating ? <span style={{ color: "var(--gold)" }}>{stars(w.user_rating)}</span> : null}
                     <div style={{ flex: 1 }} />
-                    {statusBadge(w.preprocessing_status)}
+                    {(w as any).structure_type !== "setting_collection" && statusBadge(w.preprocessing_status)}
                   </div>
                   {splitGenres(w.genre).length > 0 && (
                     <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
@@ -542,6 +553,14 @@ export default function ReferenceLibraryPage() {
                     <div className="field" style={{ flex: 1 }}>
                       <label className="label">题材</label>
                       <input className="input" value={nGenre} onChange={e => setNGenre(e.target.value)} placeholder="仙侠 / 悬疑 / 科幻..." />
+                    </div>
+                    <div className="field" style={{ flex: 1 }}>
+                      <label className="label">结构类型</label>
+                      <select className="select w-full" value={nStructure}
+                        onChange={e => setNStructure(e.target.value as any)}>
+                        <option value="narrative">叙事型（有正文章节）</option>
+                        <option value="setting_collection">纯设定作品（SCP / 设定集）</option>
+                      </select>
                     </div>
                   </div>
                   <div className="field">
@@ -878,6 +897,8 @@ function WorkDetail({
   }, [plot]);
   const charCount = (chars || []).length;
   const settingsCount = (settings || []).length;
+  // 纯设定作品 (spec 2.2.2): 专属五 tab 面板，隐藏叙事型 tabs 与正文上传
+  const isPureSetting = (sel as any).structure_type === "setting_collection";
 
   const TABS: { key: WorkDetailTab; label: string; count?: number | string }[] = [
     { key: "files", label: "原始文件" },
@@ -914,6 +935,9 @@ function WorkDetail({
             background: "var(--bg-surface-2)",
             fontSize: 11, padding: "1px 8px",
           }}>{mediaLabel(sel.media_type)}</span>
+          {isPureSetting && (
+            <span className="tag" style={{ fontSize: 11, padding: "1px 8px", color: "var(--gold)", background: "var(--bg-surface-2)", border: "1px solid var(--gold)" }}>纯设定作品</span>
+          )}
           <span className="tag" style={{
             fontSize: 11, padding: "1px 8px",
             color: status.color,
@@ -922,7 +946,7 @@ function WorkDetail({
           }}>{status.label}</span>
           <div style={{ flex: 1 }} />
           <div className="flex gap-6" style={{ flexShrink: 0 }}>
-            {!sel.has_full_text && (
+            {!sel.has_full_text && !isPureSetting && (
               <button className="btn" onClick={onUpload}>上传正文</button>
             )}
             <button className="btn" style={{ color: "var(--error)" }} onClick={onDelete}>删除</button>
@@ -935,7 +959,8 @@ function WorkDetail({
           {sel.user_rating ? <span style={{ color: "var(--gold)" }}>· {stars(sel.user_rating)}</span> : null}
         </div>
 
-        {/* Horizontal tab bar */}
+        {/* Horizontal tab bar (叙事型专属) */}
+        {!isPureSetting && (
         <div className="flex" style={{ marginTop: 12, gap: 4, borderBottom: "1px solid var(--border)" }}>
           {TABS.map(t => (
             <button
@@ -967,10 +992,14 @@ function WorkDetail({
             </button>
           ))}
         </div>
+        )}
       </div>
 
-      {/* Tab content */}
-      {tab === "files" && (
+      {/* 纯设定作品面板 (五 tab: 快捷输入/设定/角色/特征提取/设定特征) */}
+      {isPureSetting && <PureSettingPanel refId={sel.ref_id} />}
+
+      {/* Tab content (叙事型) */}
+      {!isPureSetting && tab === "files" && (
         <div className="flex flex-col gap-12">
           <FilesPanel
             refId={sel.ref_id}
@@ -1079,7 +1108,7 @@ function WorkDetail({
         </div>
       )}
 
-      {tab === "preprocess" && (
+      {!isPureSetting && tab === "preprocess" && (
         <PreprocessPanel
           refId={sel.ref_id}
           hasFullText={Boolean(sel.has_full_text)}
@@ -1088,7 +1117,7 @@ function WorkDetail({
         />
       )}
 
-      {tab === "extract" && (
+      {!isPureSetting && tab === "extract" && (
         <UnifiedExtractionPanel
           refId={sel.ref_id}
           hasFullText={Boolean(sel.has_full_text)}
@@ -1106,7 +1135,7 @@ function WorkDetail({
 
       {/* The 剧情大纲 / 角色 / 设定 / 文本特征 tabs are整体浏览 — display
         * and CRUD only. Extraction happens once in the「特征提取」tab. */}
-      {tab === "plot" && (
+      {!isPureSetting && tab === "plot" && (
         <PlotOutlineEditor
           data={plot}
           onSave={d => onSaveAnalysisField("plot_outline_json", d)}
@@ -1115,7 +1144,7 @@ function WorkDetail({
         />
       )}
 
-      {tab === "characters" && (
+      {!isPureSetting && tab === "characters" && (
         <div className="flex flex-col gap-12">
           <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>
             角色列表
@@ -1129,7 +1158,7 @@ function WorkDetail({
         </div>
       )}
 
-      {tab === "settings" && (
+      {!isPureSetting && tab === "settings" && (
         <div className="flex flex-col gap-12">
           <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>
             设定列表
@@ -1142,7 +1171,7 @@ function WorkDetail({
         </div>
       )}
 
-      {tab === "features" && (
+      {!isPureSetting && tab === "features" && (
         <div className="flex flex-col gap-12">
           {/* 分段视图 / 全书视图 toggle — shown once chunks exist. */}
           {chunkList.length > 0 && (

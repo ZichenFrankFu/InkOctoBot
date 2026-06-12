@@ -4,6 +4,7 @@ import { useResizable } from "../hooks/useResizable";
 import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
+import SnapshotStageEditor from "../components/characters/SnapshotStageEditor";
 import type { Character, CharacterLayerB, CharacterRelationship, DynamicPropertySnapshot } from "../api/types";
 import { renderPrompt } from "../utils/promptTemplate";
 
@@ -952,6 +953,16 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   </div>
                 </div>
                 <div className="card-body">
+                    {/* 转变档位 (角色卡·机制2): 对接生成链路使用的 canonical
+                      * 快照表，过渡期各章可设 动摇/试探/倾向 */}
+                    {editing.id && (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>
+                          转变档位（动摇 / 试探 / 倾向）
+                        </div>
+                        <SnapshotStageEditor characterId={editing.id} characterName={editing.name} />
+                      </div>
+                    )}
                     <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
                       <button className="btn" style={{ fontSize: 11, padding: "4px 12px" }} onClick={addSnapshot}>
                         + 添加快照

@@ -37,6 +37,7 @@ from .inspirations import router as _inspirations_router
 from .links import router as _links_router
 from .patterns import router as _patterns_router
 from .prompts import router as _prompts_router
+from .pure_setting import router as _pure_setting_router
 from .stats import router as _stats_router
 from .web_search import router as _web_search_router
 from .works import router as _works_router
@@ -52,5 +53,6 @@ router.include_router(_stats_router)
 router.include_router(_index_router)
 router.include_router(_patterns_router)
 router.include_router(_prompts_router)
+router.include_router(_pure_setting_router)
 router.include_router(_analysis_writer_router)
 router.include_router(_web_search_router)

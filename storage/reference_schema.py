@@ -17,6 +17,12 @@ CREATE TABLE IF NOT EXISTS reference_works (
     extracted_characters_json TEXT, rhythm_template_json TEXT,
     plot_outline_json TEXT, segments_json TEXT, settings_json TEXT,
     rhythm_json TEXT, chapter_comments_json TEXT,
+    -- v3.1 纯设定作品 (spec 2.2.2): structure_type =
+    -- 'narrative' | 'setting_collection'；快捷输入原文 + 静态角色 +
+    -- 作品级设定特征（高概念/母题）
+    structure_type TEXT NOT NULL DEFAULT 'narrative',
+    quick_input_text TEXT, static_characters_json TEXT,
+    setting_features_json TEXT,
     serial_status TEXT CHECK (serial_status IN ('ongoing','completed','hiatus','unknown')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"""
@@ -133,6 +139,19 @@ def ensure_reference_tables(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE reference_works ADD COLUMN rhythm_json TEXT")
     if "chapter_comments_json" not in cols:
         conn.execute("ALTER TABLE reference_works ADD COLUMN chapter_comments_json TEXT")
+    # v3.1 纯设定作品 (spec 2.2.2): 无完整正文的众创/设定集作品
+    # (SCP、后室、战锤40K)。
+    if "structure_type" not in cols:
+        conn.execute(
+            "ALTER TABLE reference_works ADD COLUMN "
+            "structure_type TEXT NOT NULL DEFAULT 'narrative'"
+        )
+    if "quick_input_text" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN quick_input_text TEXT")
+    if "static_characters_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN static_characters_json TEXT")
+    if "setting_features_json" not in cols:
+        conn.execute("ALTER TABLE reference_works ADD COLUMN setting_features_json TEXT")
 
     # LOADER_SPEC Loader 3 (Batch 4): reference_chapters grows scene_type +
     # per-chunk embedding so the exemplars feature can pull scene-matched
