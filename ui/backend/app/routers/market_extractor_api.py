@@ -197,6 +197,54 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
     works = representative_selector.list_selected(
         get_db_path(), platform, category, include_holdout=False,
     )
+    # 真实数据选取机制: 池子为空时立即按 spec 机制1/机制2 从爬虫库
+    # 选取代表作（高weight榜单高rank + 随机新书榜），再读一次。
+    if not works:
+        try:
+            representative_selector.select(get_db_path(), platform, category)
+            works = representative_selector.list_selected(
+                get_db_path(), platform, category, include_holdout=False,
+            )
+        except Exception as _sel_err:
+            logger.debug("auto representative selection failed: %s", _sel_err)
+
+    # Hydrate pool rows with novel info from the crawler DB — the pool
+    # only stores ids/scores; the prompt needs 书名/作者/简介/标签.
+    try:
+        from ..utils import resolve_crawler_db_path as _rcdp
+        import sqlite3 as _sq
+        _cdb = _rcdp()
+        with _sq.connect(_cdb) as _con:
+            _con.row_factory = _sq.Row
+            for w in works:
+                nid = str(w.get("source_db_novel_id") or "")
+                if not nid:
+                    continue
+                row = _con.execute(
+                    "SELECT n.author, n.intro, n.main_category, n.total_words, "
+                    "       nt.title "
+                    "FROM novels n "
+                    "LEFT JOIN novel_titles nt ON nt.novel_uid = n.novel_uid "
+                    " AND nt.is_primary = 1 "
+                    "WHERE n.novel_uid = ?",
+                    (nid,),
+                ).fetchone()
+                if row:
+                    w.setdefault("title", row["title"])
+                    w.setdefault("author", row["author"])
+                    w.setdefault("intro", row["intro"])
+                    w.setdefault("main_category", row["main_category"])
+                    w.setdefault("total_words", row["total_words"])
+                tag_rows = _con.execute(
+                    "SELECT t.tag_name FROM tags t "
+                    "JOIN novel_tag_map m ON m.tag_id = t.tag_id "
+                    "WHERE m.novel_uid = ? LIMIT 6",
+                    (nid,),
+                ).fetchall()
+                if tag_rows:
+                    w.setdefault("tags", [r["tag_name"] for r in tag_rows])
+    except Exception as _hyd_err:
+        logger.debug("work hydration skipped: %s", _hyd_err)
 
     def _fmt_work(w: dict, i: int) -> str:
         title = w.get("title") or w.get("source_db_novel_id") or w.get("work_id") or "(无题)"
@@ -236,7 +284,7 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
         crawler_db = resolve_crawler_db_path()
         stat_rows: list[dict] = []
         excerpts: list[str] = []
-        for w in works[:8]:
+        for w in works[:10]:
             novel_id = str(w.get("source_db_novel_id") or "")
             if not novel_id:
                 continue
@@ -245,13 +293,19 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
             )
             for cn, text in chapters.items():
                 stat_rows.append({"chapter_num": cn, "text": text})
-            # 原文节选：top 3 部作品的首章片段
-            if len(excerpts) < 3 and chapters.get(1):
-                title = w.get("title") or novel_id
-                excerpt = chapters[1].strip()[:700]
+            # 原文节选（更长更全 — 单次 LLM context 内最优化判断材料）：
+            # top 5 部作品首章 ~1500 字；其中 top 2 再附第二章 ~600 字。
+            title = w.get("title") or novel_id
+            if len(excerpts) < 5 and chapters.get(1):
                 excerpts.append(
-                    f"### 《{title}》第一章节选\n{excerpt}……"
+                    f"### 《{title}》第一章节选\n"
+                    f"{chapters[1].strip()[:1500]}……"
                 )
+                if len(excerpts) <= 2 and chapters.get(2):
+                    excerpts.append(
+                        f"### 《{title}》第二章节选\n"
+                        f"{chapters[2].strip()[:600]}……"
+                    )
         if stat_rows:
             nlp_block = render_stats_for_prompt(
                 compute_opening_stats(stat_rows),

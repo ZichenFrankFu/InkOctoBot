@@ -152,12 +152,17 @@ export default function MarketFeatureExtractionPage() {
     }
   }, [platform, toast]);
 
+  // 竞态防护：仅接受最后一次请求的结果，避免早先发出的全平台请求
+  // 晚到后把当前平台的榜单覆盖成混合列表。
+  const catReqToken = React.useRef(0);
   const loadCategories = useCallback(async (pl: string) => {
+    const token = ++catReqToken.current;
     try {
       const params = pl ? `?platform=${encodeURIComponent(pl)}` : "";
       const r = await apiGet<{ categories: CategoryOption[] }>(
         `/api/market-extractor/categories${params}`,
       );
+      if (token !== catReqToken.current) return;   // stale response
       setCategories(r.categories || []);
       setSelectedCats(prev => {
         const valid = prev.filter(k => (r.categories || []).some(c => c.key === k));

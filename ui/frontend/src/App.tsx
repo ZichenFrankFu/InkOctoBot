@@ -24,7 +24,6 @@ import SettingsPage from "./pages/SettingsPage";
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
-import MarketSearchPage from "./pages/MarketSearchPage";
 // New IA per latest UI overhaul: 4 top-level groups
 // (市场 / 参考 / 灵感 / 创作), 学习反馈 absorbed into 智能体,
 // Truth 审阅 moved into 创作.
@@ -37,7 +36,7 @@ import InspirationLibraryPage from "./pages/InspirationLibraryPage";
 
 type Tab =
   // 市场数据库
-  | "market-overview" | "market-search" | "references" | "market-features"
+  | "market-overview" | "references" | "market-features"
   // 参考数据库 (references = 参考作品特征提取, references-search = 工具)
   | "references-overview" | "references-search"
   // 灵感数据库
@@ -68,7 +67,6 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "market-overview", icon: "≡", label: "市场总览" },
       // 市场特征提取 before 市场作品搜索 per latest UX call.
       { key: "market-features", icon: "△", label: "市场特征提取" },
-      { key: "market-search",   icon: "⌕", label: "市场作品搜索" },
     ],
   },
   {
@@ -250,7 +248,6 @@ function AppInner() {
 
         {/* 市场数据库 */}
         {tab === "market-overview" && <ErrorBoundary key="market-overview"><MarketOverviewPage /></ErrorBoundary>}
-        {tab === "market-search"   && <ErrorBoundary key="market-search"><MarketSearchPage /></ErrorBoundary>}
         {tab === "market-features" && <ErrorBoundary key="market-features"><MarketFeatureExtractionPage /></ErrorBoundary>}
         {/* Legacy aliases — kept so deep-links / bookmarks still resolve */}
         {tab === "rankings" && <ErrorBoundary key="rankings"><MarketOverviewPage /></ErrorBoundary>}

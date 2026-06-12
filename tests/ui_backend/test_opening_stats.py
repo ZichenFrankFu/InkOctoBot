@@ -135,3 +135,112 @@ class TestManualPromptInjection:
         # 分析维度要求: 生造词Step2 + 行文风格七组
         assert "生造词Step2" in prompt
         assert "钩子维度" in prompt and "节奏维度" in prompt
+
+
+class TestRealSelectionMechanism:
+    """真实数据选取 (spec 市场数据库特征提取·机制1/机制2)."""
+
+    @pytest.fixture
+    def env2(self, tmp_path: Path, monkeypatch):
+        crawler = tmp_path / "crawler2.db"
+        con = sqlite3.connect(str(crawler))
+        create_all(con)
+        # 3 novels on the 月票榜·玄幻 board + 1 novel only on 新书榜
+        for uid, title in ((1, "榜首之作"), (2, "第二名"), (3, "第三名"),
+                           (4, "新书黑马")):
+            con.execute(
+                "INSERT INTO novels (novel_uid, platform, platform_novel_id, "
+                "author, author_norm, intro, main_category, status, "
+                "total_words, url, created_date, last_seen_date) "
+                "VALUES (?, 'qidian', ?, '作者', '作者', '简介', '玄幻', "
+                "'ongoing', 500000, 'http://x', date('now'), date('now'))",
+                (uid, f"q{uid}"),
+            )
+            con.execute(
+                "INSERT INTO novel_titles (novel_uid, title, title_norm, "
+                "is_primary, first_seen_date, last_seen_date) "
+                "VALUES (?, ?, ?, 1, date('now'), date('now'))",
+                (uid, title, title),
+            )
+            con.execute(
+                "INSERT INTO first_n_chapters (novel_uid, chapter_num, "
+                "chapter_title, chapter_content, word_count, publish_date) "
+                "VALUES (?, 1, '第一章', ?, 100, date('now'))",
+                (uid, f"《{title}》的第一章正文。" * 30),
+            )
+        con.execute(
+            "INSERT INTO rank_lists (rank_list_id, platform, rank_family, "
+            "rank_sub_cat) VALUES (10, 'qidian', '月票榜', '玄幻')",
+        )
+        con.execute(
+            "INSERT INTO rank_lists (rank_list_id, platform, rank_family, "
+            "rank_sub_cat) VALUES (11, 'qidian', '新人签约新书榜', '玄幻')",
+        )
+        con.execute(
+            "INSERT INTO rank_snapshots (snapshot_id, rank_list_id, "
+            "snapshot_date, item_count) VALUES (100, 10, date('now'), 3)",
+        )
+        con.execute(
+            "INSERT INTO rank_snapshots (snapshot_id, rank_list_id, "
+            "snapshot_date, item_count) VALUES (101, 11, date('now'), 1)",
+        )
+        for uid, rank, rec in ((1, 1, 9000), (2, 2, 5000), (3, 3, 1000)):
+            con.execute(
+                "INSERT INTO rank_entries (snapshot_id, novel_uid, rank, "
+                "total_recommend) VALUES (100, ?, ?, ?)",
+                (uid, rank, rec),
+            )
+        con.execute(
+            "INSERT INTO rank_entries (snapshot_id, novel_uid, rank, "
+            "total_recommend) VALUES (101, 4, 1, 50)",
+        )
+        con.commit()
+        con.close()
+
+        proj = tmp_path / "project2.db"
+        pcon = sqlite3.connect(str(proj))
+        from storage.project_schema import ensure_creation_tables
+        ensure_creation_tables(pcon)
+        pcon.commit()
+        pcon.close()
+
+        monkeypatch.setattr(
+            "ui.backend.app.routers.market_extractor_api.get_db_path",
+            lambda: str(proj),
+        )
+        monkeypatch.setattr(
+            "ui.backend.app.utils.resolve_crawler_db_path",
+            lambda: str(crawler),
+        )
+        monkeypatch.setenv("WN_CRAWLER_DB", str(crawler))
+        from ui.backend.app.main import app
+        return TestClient(app), str(proj)
+
+    def test_board_selection_rank_heat_plus_newbook(self, env2) -> None:
+        from ui.backend.app.services.market_extractor import (
+            representative_selector as rs,
+        )
+        client, proj = env2
+        out = rs.select(proj, "qidian", "玄幻")
+        assert out["selected"] >= 4
+        rows = rs.list_selected(proj, "qidian", "玄幻", include_holdout=True)
+        by_id = {r["source_db_novel_id"]: r for r in rows}
+        # 机制1: 高 rank + 高热度 → 榜首分数最高
+        assert by_id["1"]["rank_score"] > by_id["3"]["rank_score"]
+        # 机制2: 新书榜作品被随机抽入（仅在新书榜出现的 uid=4）
+        assert "4" in by_id
+
+    def test_empty_pool_auto_selects_and_hydrates(self, env2) -> None:
+        """manual-prompt 在池子为空时自动运行真实选取，并用爬虫库
+        水合书名/作者 — 不再出现「暂无候选代表作」。"""
+        client, proj = env2
+        r = client.post("/api/market-extractor/manual-prompt",
+                        json={"platform": "qidian", "category": "玄幻"})
+        assert r.status_code == 200
+        prompt = r.json()["prompt"]
+        assert "暂无候选代表作" not in prompt
+        assert "暂无已采集的开篇章节" not in prompt
+        assert "暂无已采集的章节原文" not in prompt
+        assert "《榜首之作》" in prompt          # hydrated title
+        assert "榜首之作》的第一章正文" in prompt  # real excerpt
+        assert "章中位字数" in prompt             # real stats

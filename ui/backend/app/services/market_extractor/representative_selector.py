@@ -58,19 +58,118 @@ def _resolve_crawler_db() -> str:
     return str(repo_root / "data" / "InkOctoBot_Crawler.db")
 
 
-def _fetch_raw_candidates(
+def _fetch_board_candidates(
     crawler_db: str, platform: str, category: str,
 ) -> list[WorkCandidate]:
-    """Pull candidates from the crawler DB. Returns ``[]`` if the DB
-    is missing or the schema doesn't match the expected shape."""
-    if not Path(crawler_db).exists():
-        logger.warning("crawler DB not found at %s", crawler_db)
-        return []
+    """真实数据选取 (spec 市场数据库特征提取·机制1/机制2) against this
+    repo's market schema (storage/market_schema.py):
+
+    1. 高 weight 榜单 + 高 rank — every rank_list matching the selected
+       榜单 (``rank_sub_cat == category`` or ``rank_family == category``)
+       contributes its LATEST snapshot's entries, scored by rank
+       position + platform heat (起点 total_recommend / 番茄
+       reading_count).
+    2. 随机抽取新书榜作品 — a few random entries from the platform's
+       新书 boards join the pool regardless of heat.
+    """
+    out: dict[str, WorkCandidate] = {}
     try:
         with sqlite3.connect(crawler_db) as con:
             con.row_factory = sqlite3.Row
-            # Tolerant column lookup — crawler schema isn't pinned here;
-            # we accept any of several plausible names.
+
+            def _latest_entries(where: str, params: list) -> list[sqlite3.Row]:
+                return con.execute(
+                    f"""
+                    SELECT e.novel_uid, e.rank, e.total_recommend,
+                           e.reading_count,
+                           n.total_words, n.last_seen_date,
+                           l.rank_family, l.rank_sub_cat
+                    FROM rank_lists l
+                    JOIN rank_snapshots s ON s.rank_list_id = l.rank_list_id
+                     AND s.snapshot_date = (
+                         SELECT MAX(s2.snapshot_date) FROM rank_snapshots s2
+                         WHERE s2.rank_list_id = l.rank_list_id)
+                    JOIN rank_entries e ON e.snapshot_id = s.snapshot_id
+                    JOIN novels n ON n.novel_uid = e.novel_uid
+                    WHERE {where}
+                    ORDER BY e.rank ASC
+                    """,
+                    params,
+                ).fetchall()
+
+            # ① 所选榜单（高 weight + 高 rank）
+            board_rows = _latest_entries(
+                "l.platform = ? AND (l.rank_sub_cat = ? OR l.rank_family = ?)",
+                [platform, category, category],
+            )
+            heats = [
+                int(r["total_recommend"] or 0) + int(r["reading_count"] or 0)
+                for r in board_rows
+            ]
+            n_heat = _normalize(heats)
+            max_rank = max((int(r["rank"] or 1) for r in board_rows), default=1)
+            for i, r in enumerate(board_rows):
+                uid = str(r["novel_uid"])
+                rank_pos = 1.0 - (int(r["rank"] or 1) - 1) / max(1, max_rank)
+                score = 0.6 * rank_pos + 0.4 * n_heat[i]
+                cand = out.get(uid)
+                if cand is None or score > cand.rank_score:
+                    c = WorkCandidate(
+                        novel_id=uid, title="", platform=platform,
+                        category=category,
+                        collections=int(r["total_recommend"] or 0),
+                        comments=0,
+                        monthly_ticket=int(r["reading_count"] or 0),
+                        word_count=int(r["total_words"] or 0),
+                        last_updated_at=r["last_seen_date"],
+                    )
+                    c.rank_score = score
+                    out[uid] = c
+
+            # ② 机制2: 随机抽取该平台新书榜中的作品（不看热度）
+            new_rows = _latest_entries(
+                "l.platform = ? AND (l.rank_family LIKE '%新书%' "
+                "OR l.rank_sub_cat LIKE '%新书%')",
+                [platform],
+            )
+            rng = random.Random(f"{platform}:{category}")
+            pick = rng.sample(new_rows, min(5, len(new_rows))) if new_rows else []
+            for r in pick:
+                uid = str(r["novel_uid"])
+                if uid in out:
+                    continue
+                c = WorkCandidate(
+                    novel_id=uid, title="", platform=platform,
+                    category=category,
+                    collections=int(r["total_recommend"] or 0),
+                    comments=0,
+                    monthly_ticket=int(r["reading_count"] or 0),
+                    word_count=int(r["total_words"] or 0),
+                    last_updated_at=r["last_seen_date"],
+                )
+                c.rank_score = 0.35   # 新书随机样本：中低分入池
+                out[uid] = c
+    except sqlite3.OperationalError as e:
+        logger.warning("board-candidate query failed (%s)", e)
+        return []
+    return list(out.values())
+
+
+def _fetch_raw_candidates(
+    crawler_db: str, platform: str, category: str,
+) -> list[WorkCandidate]:
+    """Pull candidates from the crawler DB. Prefers the real board-based
+    selection (this repo's market schema); falls back to the legacy
+    standalone-crawler ``novels.category`` shape."""
+    if not Path(crawler_db).exists():
+        logger.warning("crawler DB not found at %s", crawler_db)
+        return []
+    board = _fetch_board_candidates(crawler_db, platform, category)
+    if board:
+        return board
+    try:
+        with sqlite3.connect(crawler_db) as con:
+            con.row_factory = sqlite3.Row
             rows = con.execute(
                 "SELECT * FROM novels WHERE platform = ? AND category = ?",
                 (platform, category),
@@ -206,8 +305,15 @@ def select(
     raw = _fetch_raw_candidates(
         crawler_db or _resolve_crawler_db(), platform, category,
     )
-    eligible = _filter_eligible(raw)
-    _score(eligible)
+    # Board-based candidates (real schema) arrive pre-scored by
+    # rank + heat and deliberately include random 新书 samples
+    # (机制2) — the legacy median/word-count filter and
+    # collections-weight rescoring would strip them, so skip both.
+    if raw and all(c.rank_score > 0 for c in raw):
+        eligible = list(raw)
+    else:
+        eligible = _filter_eligible(raw)
+        _score(eligible)
     eligible.sort(key=lambda c: c.rank_score, reverse=True)
     top = eligible[:top_k]
 

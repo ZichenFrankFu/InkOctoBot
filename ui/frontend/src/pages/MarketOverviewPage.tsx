@@ -11,10 +11,11 @@
 import React, { useState } from "react";
 import MarketDbSummaryPage from "./MarketDbSummaryPage";
 import RankingsPage from "./RankingsPage";
+import MarketSearchPage from "./MarketSearchPage";
 import { t } from "../i18n";
 
 
-type Tab = "summary" | "rankings";
+type Tab = "summary" | "rankings" | "search";
 
 
 export default function MarketOverviewPage() {
@@ -39,6 +40,7 @@ export default function MarketOverviewPage() {
         {([
           { key: "summary"  as const, label: t("数据库概览"), desc: "DB-level summary + curation" },
           { key: "rankings" as const, label: t("榜单"),       desc: "逐级浏览各平台榜单" },
+          { key: "search"   as const, label: t("作品搜索"),   desc: "按书名/作者/简介检索作品" },
         ]).map(opt => (
           <button
             key={opt.key}
@@ -62,6 +64,7 @@ export default function MarketOverviewPage() {
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", marginTop: 12 }}>
         {tab === "summary"  && <MarketDbSummaryPage />}
         {tab === "rankings" && <RankingsPage hideOwnHeader={true} hideOpeningAi={true} />}
+        {tab === "search"   && <MarketSearchPage embedded={true} />}
       </div>
     </div>
   );
