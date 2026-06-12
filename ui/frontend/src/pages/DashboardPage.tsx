@@ -1,21 +1,9 @@
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { apiGet } from "../api/client";
+import { swrHydrate, swrStore } from "../api/swr";
 import { useToast } from "../components/shared/Toast";
 import type { Novel } from "../api/types";
 import { splitGenres } from "../utils/genre";
-
-/* ── stale-while-revalidate: hydrate from sessionStorage instantly so
- *    the dashboard NEVER blocks on the network, then refresh in the
- *    background and re-render when fresh data lands. ── */
-function swrHydrate<T>(key: string): T | null {
-  try {
-    const raw = sessionStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : null;
-  } catch { return null; }
-}
-function swrStore(key: string, value: any) {
-  try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* quota */ }
-}
 
 /* ── local response types ── */
 interface Overview {

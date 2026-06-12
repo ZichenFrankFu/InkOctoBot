@@ -1,6 +1,13 @@
 """
 /api/analysis — Wraps TrendAnalyzer for interactive frontend.
 Handles import errors gracefully (analysis/ may not be installed).
+
+``/run`` is served through the persistent compute cache: the pandas
+pipeline takes seconds-to-minutes over a real crawler DB, and running
+it inside the request thread used to drain the anyio worker pool (the
+全站无限加载 bug). Responses are now instant — last finished result
+(with a ``stale`` flag when the DB changed) or ``{state:'computing'}``
+while a single background thread does the work.
 """
 from __future__ import annotations
 import sqlite3, sys, traceback, math
@@ -10,7 +17,9 @@ from typing import Any
 import numpy as np, pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 from ..settings import settings
-from ..utils import resolve_crawler_db_path
+from ..utils import resolve_crawler_db_path, crawler_db_version
+from ..services import compute_cache
+from ..services.project_paths import get_db_path as _project_db_path
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
@@ -55,17 +64,12 @@ def analysis_date_range():
     mn, mx = _db_date_range(db_path)
     return {"min_date": mn, "max_date": mx}
 
-@router.get("/run")
-def run_analysis(
-    platform: str = Query(default="both"),
-    lookback: str = Query(default="all"),
-    top_k: int = Query(default=20, ge=5, le=100),
-):
+def _compute_analysis(db_path: str, platform: str, lookback: str, top_k: int) -> dict:
+    """Heavy pandas pipeline — only ever runs on a compute_cache thread."""
     # Ensure repo root is importable
     root = str(settings.repo_root)
     if root not in sys.path: sys.path.insert(0, root)
 
-    db_path = resolve_crawler_db_path()
     start_date, end_date = _compute_window(db_path, lookback)
     if not start_date:
         return {"empty": True, "error": "no_data", "message": "数据库中暂无快照数据",
@@ -139,7 +143,43 @@ def run_analysis(
         }
     except ImportError as e:
         traceback.print_exc()
-        raise HTTPException(500, f"分析模块导入失败: {e}. 请确认 analysis/ 目录存在于项目根目录。")
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, f"分析运行失败: {e}")
+        raise RuntimeError(
+            f"分析模块导入失败: {e}. 请确认 analysis/ 目录存在于项目根目录。"
+        ) from e
+
+
+@router.get("/run")
+def run_analysis(
+    platform: str = Query(default="both"),
+    lookback: str = Query(default="all"),
+    top_k: int = Query(default=20, ge=5, le=100),
+    refresh: bool = Query(default=False),
+    cached_only: bool = Query(default=False),
+):
+    """Instant-response trend analysis.
+
+    Returns the compute_cache protocol envelope:
+    ``{state:'ready', payload, stale, computing, updated_at}`` /
+    ``{state:'computing'}`` / ``{state:'empty'}`` / ``{state:'error'}``.
+    The heavy pipeline never runs in the request thread.
+    """
+    crawler_db = resolve_crawler_db_path()
+    version = crawler_db_version()
+    if not version:
+        return {
+            "state": "ready", "stale": False, "computing": False,
+            "updated_at": None,
+            "payload": {"empty": True, "error": "no_data",
+                        "message": "未找到市场数据库文件",
+                        "tag_rollup": [], "cat_rollup": [], "opportunities": [],
+                        "new_entry": [], "pairs": [], "triples": [],
+                        "cross_platform": []},
+        }
+    return compute_cache.get_or_compute(
+        _project_db_path(),
+        f"analysis_run:{platform}:{lookback}:{top_k}",
+        version,
+        lambda: _compute_analysis(crawler_db, platform, lookback, top_k),
+        refresh=refresh,
+        cached_only=cached_only,
+    )

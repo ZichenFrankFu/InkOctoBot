@@ -199,9 +199,15 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
     )
     # 真实数据选取机制: 池子为空时立即按 spec 机制1/机制2 从爬虫库
     # 选取代表作（高weight榜单高rank + 随机新书榜），再读一次。
+    # crawler_db 必须显式传 canonical 路径 — 让 selector 自行解析时
+    # 它读到的可能是另一个（不存在的）文件 → 0 候选 → 「暂无」。
     if not works:
         try:
-            representative_selector.select(get_db_path(), platform, category)
+            from ..utils import resolve_crawler_db_path as _rcdp_sel
+            representative_selector.select(
+                get_db_path(), platform, category,
+                crawler_db=_rcdp_sel(),
+            )
             works = representative_selector.list_selected(
                 get_db_path(), platform, category, include_holdout=False,
             )

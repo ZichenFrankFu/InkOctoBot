@@ -8,6 +8,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet } from "../api/client";
+import { swrHydrate, swrStore } from "../api/swr";
 import { useToast } from "../components/shared/Toast";
 import { tPlatform, useLang } from "../i18n";
 
@@ -33,16 +34,23 @@ interface OverviewResp {
 export default function MarketDbSummaryPage() {
   const { toast } = useToast();
   useLang();  // re-render on language change
-  const [data, setData] = useState<OverviewResp | null>(null);
+  // 秒开: 同步水合上次概览快照，后台刷新（stale-while-revalidate）。
+  const [data, setData] = useState<OverviewResp | null>(
+    () => swrHydrate<OverviewResp>("market_overview_all"),
+  );
   const [loading, setLoading] = useState(false);
   const [platform, setPlatform] = useState("");
 
   const load = useCallback(async () => {
+    const swrKey = `market_overview_${platform || "all"}`;
+    const cached = swrHydrate<OverviewResp>(swrKey);
+    if (cached) setData(cached);
     setLoading(true);
     try {
       const qs = platform ? `?platform=${encodeURIComponent(platform)}` : "";
       const r = await apiGet<OverviewResp>(`/api/db/overview${qs}`);
       setData(r);
+      swrStore(swrKey, r);
     } catch (e: any) {
       toast(`加载失败: ${e.message}`, "error");
     } finally {

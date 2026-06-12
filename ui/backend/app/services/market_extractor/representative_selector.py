@@ -1,8 +1,10 @@
 """Phase 1: pick representative works per (platform, category).
 
-Reads from the crawler DB (path configurable via ``WN_CRAWLER_DB``;
-defaults to ``data/InkOctoBot_Crawler.db``), scores each novel,
-selects top 30, randomly tags 3 as holdout, persists into
+Reads from the crawler DB — callers should pass ``crawler_db``
+explicitly (the canonical ``resolve_crawler_db_path()``); otherwise
+``_resolve_crawler_db()`` falls back to WN_CRAWLER_DB env → canonical
+resolver → ``data/InkOctoBot_Crawler.db``. Scores each novel, selects
+top 30, randomly tags 10% as holdout, persists into
 ``representative_works_pool``.
 
 Tolerates a missing crawler DB: returns 0 selections rather than
@@ -49,11 +51,21 @@ class WorkCandidate:
 
 
 def _resolve_crawler_db() -> str:
-    """Crawler DB path. Honors ``WN_CRAWLER_DB`` env override; otherwise
-    looks in ``data/InkOctoBot_Crawler.db`` relative to the repo root."""
+    """Crawler DB path. Honors ``WN_CRAWLER_DB`` env override, then the
+    app-wide ``resolve_crawler_db_path()`` (Settings-page override /
+    test mode / paths.yaml) — the selector silently reading a DIFFERENT
+    file than every other market endpoint was the 「暂无候选代表作」
+    bug. Last resort: ``data/InkOctoBot_Crawler.db``."""
     env = os.environ.get("WN_CRAWLER_DB")
     if env:
         return env
+    try:
+        from ui.backend.app.utils import resolve_crawler_db_path
+        p = resolve_crawler_db_path()
+        if p:
+            return p
+    except Exception as e:
+        logger.debug("canonical crawler path resolution failed: %s", e)
     repo_root = Path(__file__).resolve().parents[5]
     return str(repo_root / "data" / "InkOctoBot_Crawler.db")
 

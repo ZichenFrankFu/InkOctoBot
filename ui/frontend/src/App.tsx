@@ -12,7 +12,6 @@ import DashboardPage from "./pages/DashboardPage";
 import RankingsPage from "./pages/RankingsPage";
 import ReferenceLibraryPage from "./pages/ReferenceLibraryPage";
 import ReferenceOverviewPage from "./pages/ReferenceOverviewPage";
-import ReferenceSearchPage from "./pages/ReferenceSearchPage";
 // TrendAnalysisPage merged into AnalysisDashboardPage
 import EditorPage from "./pages/EditorPage";
 import CharacterManagerPage from "./pages/CharacterManagerPage";
@@ -72,11 +71,10 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
   {
     section: "参考数据库",
     items: [
+      // 参考总览内含「数据库工具」subtab（搜索/对比/共通点学习/索引）
       { key: "references-overview", icon: "▦", label: "参考总览" },
       // 参考作品详情 → 参考作品特征提取（renamed for clarity）
       { key: "references",          icon: "⊞", label: "参考作品特征提取" },
-      // 工具页内含: 参考作品搜索 / 作品对比 / 索引管理
-      { key: "references-search",   icon: "⚒", label: "参考数据库工具" },
     ],
   },
   {
@@ -256,7 +254,8 @@ function AppInner() {
         {/* 参考数据库 */}
         {tab === "references-overview" && <ErrorBoundary key="references-overview"><ReferenceOverviewPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "references"          && <ErrorBoundary key="references"><ReferenceLibraryPage /></ErrorBoundary>}
-        {tab === "references-search"   && <ErrorBoundary key="references-search"><ReferenceSearchPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {/* Legacy alias — 参考数据库工具 merged into 参考总览 as the 数据库工具 subtab */}
+        {tab === "references-search"   && <ErrorBoundary key="references-search"><ReferenceOverviewPage initialTab="tools" onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
 
         {/* 灵感数据库 (NEW) */}
         {tab === "inspiration-overview" && <ErrorBoundary key="inspiration-overview"><InspirationOverviewPage /></ErrorBoundary>}

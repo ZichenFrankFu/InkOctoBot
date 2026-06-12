@@ -208,11 +208,14 @@ class TestRealSelectionMechanism:
             "ui.backend.app.routers.market_extractor_api.get_db_path",
             lambda: str(proj),
         )
+        # 只 patch canonical resolver — 不设 WN_CRAWLER_DB。验证
+        # selector / manual-prompt 真正走 resolve_crawler_db_path()
+        # （曾经 selector 自行解析出另一个路径 → 「暂无候选代表作」）。
         monkeypatch.setattr(
             "ui.backend.app.utils.resolve_crawler_db_path",
             lambda: str(crawler),
         )
-        monkeypatch.setenv("WN_CRAWLER_DB", str(crawler))
+        monkeypatch.delenv("WN_CRAWLER_DB", raising=False)
         from ui.backend.app.main import app
         return TestClient(app), str(proj)
 

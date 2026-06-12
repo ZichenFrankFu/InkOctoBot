@@ -298,16 +298,12 @@ def opening_analysis(platform: str | None = None):
     }
 
 
-@router.get("/opening_nlp_analysis")
-def opening_nlp_analysis(platform: str | None = None) -> dict:
+def _compute_opening_nlp(platform: str | None = None) -> dict:
     """Heuristic NLP analysis on the crawled first chapters.
 
-    Pure-Python regex / counting — no model inference, so it's cheap
-    enough to drive on user demand. Computes per-chapter dialogue
-    ratio, mean sentence length, first-sentence type, end-hook style,
-    and aggregates them into platform-level distributions. The frontend
-    panel calls this once (then caches by db-mtime) and exposes a
-    manual refresh button.
+    Counting + PMI over up to 600 chapters takes long enough that it
+    must NOT run in the request thread — it only ever executes on a
+    compute_cache background thread (see ``opening_nlp_analysis``).
     """
     import re
     con = _get_con()
@@ -452,6 +448,40 @@ def opening_nlp_analysis(platform: str | None = None) -> dict:
             "max": max(word_counts) if word_counts else 0,
         },
     }
+
+
+@router.get("/opening_nlp_analysis")
+def opening_nlp_analysis(
+    platform: str | None = None,
+    refresh: bool = Query(default=False),
+    cached_only: bool = Query(default=False),
+) -> dict:
+    """开篇章节NLP分析, served through the persistent compute cache.
+
+    Instant response: last finished result (``stale`` flag when the
+    crawler DB changed since) or ``{state:'computing'}``. ``cached_only``
+    is the 懒加载 path used on page mount — it never starts the heavy
+    job, only ``refresh`` (or a first poll without ``cached_only``) does.
+    """
+    from ..services import compute_cache
+    from ..services.project_paths import get_db_path
+    from ..utils import crawler_db_version
+
+    version = crawler_db_version()
+    if not version:
+        return {
+            "state": "ready", "stale": False, "computing": False,
+            "updated_at": None,
+            "payload": {"available": False, "reason": "crawler DB not configured"},
+        }
+    return compute_cache.get_or_compute(
+        get_db_path(),
+        f"opening_nlp:{platform or 'all'}",
+        version,
+        lambda: _compute_opening_nlp(platform),
+        refresh=refresh,
+        cached_only=cached_only,
+    )
 
 
 @router.post("/opening_ai_summary")

@@ -341,14 +341,20 @@ def cost_estimate(
     chapter_id: str = "",
     mode: str = "single",
     num_scenes: int = 3,
+    include_context: bool = False,
 ):
     """生成前成本预估 (spec LLM调用·机制1): 本章预估 LLM 调用数与
     token / USD 成本（导演模式以场景数为主变量），含单章成本上限
-    与超限降级建议（导演转单 Agent → 跳过 LLM 评估层）。"""
+    与超限降级建议（导演转单 Agent → 跳过 LLM 评估层）。
+
+    ``include_context`` 才会装配完整 RAG 上下文来精确计 token —
+    那条路径会加载 embedding 模型（秒级-分钟级），编辑器挂载时的
+    预估调用绝不能走它（曾是线程池耗尽 → 全站无限加载的元凶之一）。
+    默认用调用画像基数估算，毫秒级返回。"""
     if mode not in ("single", "director"):
         raise HTTPException(400, "mode must be single/director")
     context_tokens = 0
-    if project_id and chapter_id:
+    if include_context and project_id and chapter_id:
         try:
             from ._rag_context import build_generation_context
             ctx = build_generation_context(
