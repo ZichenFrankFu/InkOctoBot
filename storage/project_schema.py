@@ -473,10 +473,12 @@ CREATION_DDL = [
         skill_id TEXT PRIMARY KEY,
         display_name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
-        -- v3.1: 'knowledge' = 专业知识 skill (spec 4.2), DB-native
-        -- (no filesystem counterpart; survives registry sync).
+        -- v3.1: 'knowledge' = 专业知识 skill (spec 4.2);
+        -- 'self_learned' = 自学习 skill (多作品共通点, spec 参考库功能10).
+        -- Both are DB-native (no filesystem counterpart; survive
+        -- registry sync).
         kind TEXT NOT NULL DEFAULT 'builtin'
-            CHECK (kind IN ('builtin','learned','knowledge')),
+            CHECK (kind IN ('builtin','learned','knowledge','self_learned')),
         body_snippet TEXT NOT NULL DEFAULT '',
         embedding_json TEXT NOT NULL DEFAULT '[]',
         embedding_text_hash TEXT NOT NULL DEFAULT '',
@@ -696,7 +698,7 @@ def _ensure_skill_index_v2_columns(conn: sqlite3.Connection) -> None:
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='skill_index'",
     ).fetchone()
     create_sql = (row[0] or "") if row else ""
-    if "'knowledge'" not in create_sql and "knowledge" not in create_sql:
+    if "self_learned" not in create_sql:
         cur.execute("ALTER TABLE skill_index RENAME TO skill_index_v30")
         cur.execute(
             """CREATE TABLE skill_index (
@@ -704,7 +706,7 @@ def _ensure_skill_index_v2_columns(conn: sqlite3.Connection) -> None:
                    display_name TEXT NOT NULL,
                    description TEXT NOT NULL DEFAULT '',
                    kind TEXT NOT NULL DEFAULT 'builtin'
-                       CHECK (kind IN ('builtin','learned','knowledge')),
+                       CHECK (kind IN ('builtin','learned','knowledge','self_learned')),
                    body_snippet TEXT NOT NULL DEFAULT '',
                    embedding_json TEXT NOT NULL DEFAULT '[]',
                    embedding_text_hash TEXT NOT NULL DEFAULT '',

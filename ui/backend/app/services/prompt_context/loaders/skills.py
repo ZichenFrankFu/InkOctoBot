@@ -25,24 +25,100 @@ logger = logging.getLogger("inkoctobot.services.prompt_context.skills")
 
 _PER_SKILL_BODY_CHARS = 600
 
+# 机制7 注入压缩: 剥离示例 / 设计动机 / 元描述行，仅留规则与约束。
+# Heuristic line filters — a line that *starts* one of these blocks is
+# dropped along with fenced code (examples are usually fenced).
+_STRIP_LINE_PREFIXES = (
+    "示例", "例：", "例如", "比如", "样例", "Example", "e.g",
+    "设计动机", "动机：", "背景：", "说明：", "为什么", "解释：",
+)
+_KEEP_HINTS = ("要求", "规则", "约束", "禁止", "必须", "不要", "避免",
+               "应当", "需要", "确保", "-", "*", "1", "2", "3", "4",
+               "5", "6", "7", "8", "9")
 
-def _format_skill(skill: dict, *, source_label: str) -> str:
+
+def compress_for_injection(body: str, *, max_chars: int = _PER_SKILL_BODY_CHARS) -> str:
+    """机制7: compress a skill body to actionable rules for injection
+    mode — strip examples, motivation and meta narration; keep rule /
+    constraint lines."""
+    out: list[str] = []
+    in_fence = False
+    for line in (body or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue   # fenced blocks are examples — drop
+        if not stripped:
+            continue
+        if any(stripped.startswith(p) for p in _STRIP_LINE_PREFIXES):
+            continue
+        out.append(stripped)
+    compressed = "\n".join(out).strip()
+    if not compressed:
+        compressed = (body or "").strip()
+    return compressed[:max_chars]
+
+
+def _format_skill(skill: dict, *, source_label: str, compress: bool = True) -> str:
     head = f"**{skill.get('display_name') or skill['skill_id']}**"
     kind = skill.get("kind") or "builtin"
     head += f"（type: {kind}）"
     body = (skill.get("body_snippet") or skill.get("description") or "").strip()
     if not body:
         return head
-    body = body[:_PER_SKILL_BODY_CHARS]
+    body = compress_for_injection(body) if compress else body[:_PER_SKILL_BODY_CHARS]
     return f"{head}\n{body}"
+
+
+def _format_manifest_entry(skill: dict) -> str:
+    """Native-mode manifest line: name + one-line description only —
+    the model loads full content through its own skill mechanism."""
+    name = skill.get("display_name") or skill["skill_id"]
+    desc = (skill.get("description") or "").strip().splitlines()
+    first = desc[0][:80] if desc else ""
+    return f"- {name}" + (f"：{first}" if first else "")
 
 
 _BLOCK = "skills"
 
 
+def _native_mode_enabled() -> bool:
+    """机制6/机制8: native mount when the writer-role model supports a
+    native skill mechanism (capability flag via ModelRouter); else
+    injection mode."""
+    try:
+        from llm.router import ModelRouter
+        from llm.skill_capabilities import supports_native_skills
+        provider, model = ModelRouter().resolve_role("editor_writer")
+        return supports_native_skills(provider, model)
+    except Exception:
+        return False
+
+
 def _build(pinned: list[dict], recommended: list[dict]) -> tuple[str, str]:
-    """Return (title, body). Body is empty when both lists are empty."""
-    parts: list[str] = []
+    """Return (title, body). Body is empty when both lists are empty.
+
+    Two assembly modes (Skill类·机制6):
+    - native  — model mounts skills itself; emit a tiny manifest so the
+      prompt knows what's available without paying body chars
+    - injection — compressed rule bodies within the loader budget
+    """
+    total = len(pinned) + len(recommended)
+    if total == 0:
+        return f"创作技能（已加载 0 项）", ""
+
+    if _native_mode_enabled():
+        parts = ["（原生挂载模式：完整技能内容由模型按需读取，此处仅列清单）"]
+        for s in pinned:
+            parts.append(_format_manifest_entry(s) + "（用户选中）")
+        for s in recommended:
+            parts.append(_format_manifest_entry(s))
+        title = f"创作技能清单（原生挂载，{total} 项）"
+        return title, "\n".join(parts)
+
+    parts = []
     if pinned:
         parts.append(f"### 用户主动选中（{len(pinned)} 项）")
         for s in pinned:
@@ -55,7 +131,7 @@ def _build(pinned: list[dict], recommended: list[dict]) -> tuple[str, str]:
         for s in recommended:
             parts.append("")
             parts.append(_format_skill(s, source_label="auto"))
-    title = f"创作技能（已加载 {len(pinned) + len(recommended)} 项）"
+    title = f"创作技能（已加载 {total} 项）"
     return title, "\n".join(parts)
 
 

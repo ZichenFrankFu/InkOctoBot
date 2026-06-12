@@ -249,15 +249,16 @@ def sync_from_registry(db_path: str, *, force: bool = False) -> int:
         upsert_skill(db_path, entry)
         n += 1
     # Remove mirror rows that disappeared from disk. DB-native rows
-    # (kind='knowledge' — 专业知识 skill, spec 4.2) have no filesystem
-    # counterpart and must survive the reconcile.
+    # (kind='knowledge' 专业知识 spec 4.2 / kind='self_learned' 自学习
+    # 多作品共通点 spec 参考库功能10) have no filesystem counterpart and
+    # must survive the reconcile.
     with open_db(db_path) as con:
         rows = con.execute(
             "SELECT skill_id, kind FROM skill_index",
         ).fetchall()
         for r in rows:
             if r["skill_id"] not in desired_ids and \
-                    (r["kind"] or "") != "knowledge":
+                    (r["kind"] or "") not in ("knowledge", "self_learned"):
                 con.execute(
                     "DELETE FROM skill_index WHERE skill_id = ?",
                     (r["skill_id"],),
