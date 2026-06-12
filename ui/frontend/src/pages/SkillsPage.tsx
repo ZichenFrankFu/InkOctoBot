@@ -2,6 +2,10 @@ import React, { useEffect, useState, useCallback } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import type { SkillInfo, Project, WritingKnowledgeEntry } from "../api/types";
 import { useToast } from "../components/shared/Toast";
+// Two new tabs surface Part A (Edit Learning) + Part B (Domain Knowledge)
+// — replaced the standalone "学习反馈" sidebar group per the new IA.
+import PreferencesPage from "./PreferencesPage";
+import DomainLearningPage from "./DomainLearningPage";
 
 const SECTION_COLORS: Record<string, string> = {
   feature_extraction: "var(--cyan)",
@@ -94,7 +98,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   // Track deactivated state for learning log entries not in registry
   const [logDeactivated, setLogDeactivated] = useState<Set<string>>(new Set());
 
-  const [activeTab, setActiveTab] = useState<"agents" | "learning" | "knowledge">("agents");
+  const [activeTab, setActiveTab] = useState<"agents" | "learning" | "knowledge" | "preferences" | "domain">("agents");
   // Expanded section in the agents tab
   const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
 
@@ -494,6 +498,9 @@ export default function SkillsPage({ projects, activeProject }: Props) {
           { key: "agents" as const, label: "智能体 & Skills", count: sectionSkillTotal },
           { key: "learning" as const, label: "自学习成果", count: learnedCount },
           { key: "knowledge" as const, label: "写作知识", count: knowledgeList.length },
+          // Promoted into here from the removed 学习反馈 sidebar group:
+          { key: "preferences" as const, label: " 写作偏好", count: 0 },
+          { key: "domain" as const, label: " 领域知识", count: 0 },
         ]).map(tab => (
           <button
             key={tab.key}
@@ -986,6 +993,12 @@ export default function SkillsPage({ projects, activeProject }: Props) {
           )}
         </>
       )}
+
+      {/* ═══════════════════════ TAB: 写作偏好 (Part A) ═══════════════════════ */}
+      {activeTab === "preferences" && <PreferencesPage projectId={activeProject} />}
+
+      {/* ═══════════════════════ TAB: 领域知识 (Part B) ═══════════════════════ */}
+      {activeTab === "domain" && <DomainLearningPage projectId={activeProject} />}
     </div>
   );
 }

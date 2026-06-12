@@ -3,7 +3,6 @@ import { apiGet, apiPost } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { ReferenceWork } from "../api/types";
-import InspirationLibrary from "../components/InspirationLibrary";
 import CompareWorksPanel from "../components/CompareWorksPanel";
 
 interface SearchHit {
@@ -54,14 +53,27 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   error:   { label: "出错",   color: "var(--error)" },
 };
 
-interface Props { onNavigate?: (tab: string) => void; }
+type RsTab = "search" | "index" | "compare";
 
-export default function ReferenceSearchPage({ onNavigate }: Props) {
+interface Props {
+  onNavigate?: (tab: string) => void;
+  /** Force the page to open with a specific tab active. */
+  initialTab?: RsTab;
+  /** When true, render only the active tab's body — no tab bar.
+   *  Used by InspirationSearchPage / InspirationLibraryPage when they
+   *  mount this component to surface one capability per page. */
+  hideTabs?: boolean;
+  /** Replace the H1 title — lets the wrapper page brand the content. */
+  pageTitle?: string;
+  pageSubtitle?: string;
+}
+
+export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, pageTitle, pageSubtitle }: Props) {
   const { toast } = useToast();
   const { confirm } = useDialog();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [progressByRef, setProgressByRef] = useState<Record<string, IndexProgressRow[]>>({});
-  const [activeTab, setActiveTab] = useState<"search" | "library" | "index" | "compare">("search");
+  const [activeTab, setActiveTab] = useState<RsTab>(initialTab || "search");
 
   // Search state
   const [q, setQ] = useState("");
@@ -231,8 +243,8 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
       <div className="page-header" style={{ paddingBottom: 12 }}>
         <div className="page-header-row">
           <div>
-            <h2>灵感搜索</h2>
-            <p>自然语言跨作品检索 · 找到你想参考的作品段落、角色、设定</p>
+            <h2>{pageTitle || "参考数据库工具"}</h2>
+            <p>{pageSubtitle || "参考作品搜索 · 作品对比 · 索引管理"}</p>
           </div>
           <div className="flex gap-8">
             <button className="btn" onClick={refreshAll}>刷新</button>
@@ -241,10 +253,12 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
       </div>
 
       {/* Tabs */}
+      {!hideTabs && (
       <div className="flex" style={{ marginBottom: 12, gap: 4, borderBottom: "1px solid var(--border)" }}>
         {([
-          { key: "search"  as const, label: "灵感搜索" },
-          { key: "library" as const, label: "灵感库" },
+          // 灵感库 tab removed — promoted to a dedicated page in the
+          // 灵感数据库 nav group (see InspirationLibraryPage).
+          { key: "search"  as const, label: "参考作品搜索" },
           { key: "compare" as const, label: "作品对比" },
           { key: "index"   as const, label: `索引管理 · ${works.length} 部作品` },
         ]).map(t => (
@@ -264,6 +278,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
           >{t.label}</button>
         ))}
       </div>
+      )}
 
       {activeTab === "search" && (
         <>
@@ -352,16 +367,7 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
         </>
       )}
 
-      {activeTab === "library" && (
-        <InspirationLibrary onSearchWorks={(text) => {
-          // Cap the query — embedding models truncate long input anyway
-          // and an over-long URL query param is best avoided.
-          const query = text.trim().slice(0, 600);
-          setQ(query);
-          setActiveTab("search");
-          runSearch(query);
-        }} />
-      )}
+      {/* 灵感库 tab removed — see InspirationLibraryPage. */}
 
       {activeTab === "index" && (
         <>

@@ -30,7 +30,16 @@ type OpeningStats = {
 const platformLabel = (p: string) =>
   p === "qidian" ? "起点" : p === "fanqie" ? "番茄" : p || "未知";
 
-export default function RankingsPage() {
+/** When mounted inside MarketOverviewPage we want the parent's title
+ *  + tab strip, not Rankings' own header. The "AI 总结开篇技巧" panel
+ *  is also moved to MarketFeatureExtractionPage per the latest IA — so
+ *  hideOpeningAi suppresses it here too. */
+interface Props {
+  hideOwnHeader?: boolean;
+  hideOpeningAi?: boolean;
+}
+
+export default function RankingsPage({ hideOwnHeader = false, hideOpeningAi = false }: Props = {}) {
   const [platform, setPlatform] = useState<PlatformFilter>("");
   const [step, setStep] = useState<Step>("lists");
   const [loading, setLoading] = useState(false);
@@ -173,6 +182,7 @@ export default function RankingsPage() {
   return (
     <div className="page-container">
       {/* ══ Header ══ */}
+      {!hideOwnHeader && (
       <div className="page-header" style={{ marginBottom: 20 }}>
         <div className="page-header-row">
           <div>
@@ -194,9 +204,31 @@ export default function RankingsPage() {
           </div>
         </div>
       </div>
+      )}
+      {hideOwnHeader && (
+        /* In wrapped mode, the parent owns the page title; we still
+           need a platform filter, so render it as a slim secondary bar. */
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--border)" }}>
+          <div className="tab-bar">
+            {([["", "全部平台"], ["qidian", "起点"], ["fanqie", "番茄"]] as const).map(
+              ([val, label]) => (
+                <button
+                  key={val}
+                  className={`tab-item${platform === val ? " active" : ""}`}
+                  onClick={() => setPlatform(val as PlatformFilter)}
+                >
+                  {label}
+                </button>
+              ),
+            )}
+          </div>
+        </div>
+      )}
 
-      {/* ══ 开篇章节分析 ══ */}
-      {openingStats?.available && openingStats.first_chapter && (
+      {/* ══ 开篇章节分析 ══ — relocated to 市场特征提取 page.
+          Suppress here when ``hideOpeningAi`` is set (i.e. when this
+          page is mounted inside MarketOverviewPage). */}
+      {!hideOpeningAi && openingStats?.available && openingStats.first_chapter && (
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header" style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
             onClick={() => setOpeningOpen(o => !o)}>
@@ -239,6 +271,7 @@ export default function RankingsPage() {
                   );
                 })}
               </div>
+              {!hideOpeningAi && (
               <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
                 <div className="label" style={{ marginBottom: 6 }}>AI 总结开篇技巧（基于开篇章节正文）</div>
                 <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px", marginBottom: 8 }}
@@ -267,6 +300,7 @@ export default function RankingsPage() {
                   resultPlaceholder="把网页版大模型返回的开篇分析粘贴到这里"
                 />
               </div>
+              )}
             </div>
           )}
         </div>
@@ -288,12 +322,14 @@ export default function RankingsPage() {
               {step === "snapshots" ? (
                 <span>
                   {platformLabel(selectedList.platform)} · {selectedList.rank_family}
-                  {selectedList.rank_sub_cat && ` · ${selectedList.rank_sub_cat}`}
+                  {selectedList.rank_sub_cat && selectedList.rank_sub_cat !== selectedList.rank_family
+                    && ` · ${selectedList.rank_sub_cat}`}
                 </span>
               ) : (
                 <button onClick={goToSnapshots}>
                   {selectedList.rank_family}
-                  {selectedList.rank_sub_cat && ` · ${selectedList.rank_sub_cat}`}
+                  {selectedList.rank_sub_cat && selectedList.rank_sub_cat !== selectedList.rank_family
+                    && ` · ${selectedList.rank_sub_cat}`}
                 </button>
               )}
             </div>
@@ -335,45 +371,65 @@ export default function RankingsPage() {
               >
                 {Object.entries(groupedLists).map(([key, lists]) => {
                   const [plat, family] = key.split("|");
+                  // Collapse entries whose sub_cat duplicates the family
+                  // (e.g. "月票榜 / 月票榜") so the user doesn't see
+                  // the same name rendered twice.
+                  const distinct = lists.filter(
+                    (rl) => rl.rank_sub_cat && rl.rank_sub_cat !== family,
+                  );
+                  const familySelf = lists.find(
+                    (rl) => !rl.rank_sub_cat || rl.rank_sub_cat === family,
+                  );
+                  // If the group ONLY has a self-named entry (no real
+                  // sub-categories), make the card header itself the
+                  // clickable target — skip the redundant inner row.
+                  const headerOnly = distinct.length === 0 && !!familySelf;
                   return (
-                    <div className="card" key={key}>
+                    <div
+                      className="card"
+                      key={key}
+                      onClick={headerOnly ? () => selectList(familySelf!) : undefined}
+                      style={headerOnly ? { cursor: "pointer" } : undefined}
+                    >
                       <div className="card-header">
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <span className={`tag ${plat}`}>{platformLabel(plat)}</span>
                           <h3>{family}</h3>
                         </div>
                         <p style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
-                          {lists.length} 个子榜
+                          {headerOnly ? "无子榜" : `${distinct.length} 个子榜`}
                         </p>
                       </div>
-                      <div className="card-body" style={{ padding: "6px 10px" }}>
-                        {lists.map((rl) => (
-                          <div
-                            key={rl.rank_list_id}
-                            onClick={() => selectList(rl)}
-                            style={{
-                              padding: "10px 12px",
-                              borderRadius: "var(--radius-sm)",
-                              cursor: "pointer",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              transition: "background 0.15s",
-                            }}
-                            onMouseEnter={(e) =>
-                              (e.currentTarget.style.background = "var(--bg-surface-hover)")
-                            }
-                            onMouseLeave={(e) =>
-                              (e.currentTarget.style.background = "transparent")
-                            }
-                          >
-                            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                              {rl.rank_sub_cat || family}
-                            </span>
-                            <span style={{ fontSize: 16, color: "var(--text-disabled)" }}>›</span>
-                          </div>
-                        ))}
-                      </div>
+                      {!headerOnly && (
+                        <div className="card-body" style={{ padding: "6px 10px" }}>
+                          {distinct.map((rl) => (
+                            <div
+                              key={rl.rank_list_id}
+                              onClick={() => selectList(rl)}
+                              style={{
+                                padding: "10px 12px",
+                                borderRadius: "var(--radius-sm)",
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                transition: "background 0.15s",
+                              }}
+                              onMouseEnter={(e) =>
+                                (e.currentTarget.style.background = "var(--bg-surface-hover)")
+                              }
+                              onMouseLeave={(e) =>
+                                (e.currentTarget.style.background = "transparent")
+                              }
+                            >
+                              <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                                {rl.rank_sub_cat}
+                              </span>
+                              <span style={{ fontSize: 16, color: "var(--text-disabled)" }}>›</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -431,7 +487,8 @@ export default function RankingsPage() {
                 <div>
                   <h3>
                     {selectedList?.rank_family}
-                    {selectedList?.rank_sub_cat && ` · ${selectedList.rank_sub_cat}`}
+                    {selectedList?.rank_sub_cat && selectedList.rank_sub_cat !== selectedList.rank_family
+                      && ` · ${selectedList.rank_sub_cat}`}
                   </h3>
                   <p style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
                     {selectedSnapshot?.snapshot_date} · {entries.length} 部作品
@@ -658,7 +715,7 @@ function NovelPanel({ detail }: { detail: NovelDetail }) {
                     </td>
                     <td style={{ fontSize: 12 }}>
                       {h.rank_family}
-                      {h.rank_sub_cat && ` · ${h.rank_sub_cat}`}
+                      {h.rank_sub_cat && h.rank_sub_cat !== h.rank_family && ` · ${h.rank_sub_cat}`}
                     </td>
                     <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>
                       {h.rank}

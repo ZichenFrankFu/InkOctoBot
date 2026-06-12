@@ -62,6 +62,281 @@ def get_job(job_id: str) -> dict:
     return job
 
 
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job_endpoint(job_id: str) -> dict:
+    """Cooperative cancel: state flipped to 'cancelled' so the running
+    pipeline bails at the next phase checkpoint."""
+    result = job_runner.cancel_job(get_db_path(), job_id)
+    if result is None:
+        raise HTTPException(404, f"job {job_id!r} not found")
+    return result
+
+
+@router.delete("/jobs/{job_id}")
+def delete_job_endpoint(job_id: str) -> dict:
+    """Hard-delete a job row. Refuses while the job is actively running;
+    cancel + wait first. Already-written profiles / works are kept."""
+    result = job_runner.delete_job(get_db_path(), job_id)
+    if result is None:
+        raise HTTPException(404, f"job {job_id!r} not found")
+    if not result.get("deleted"):
+        raise HTTPException(
+            409,
+            result.get("reason") or "cannot delete a running job",
+        )
+    return result
+
+
+@router.get("/platforms")
+def list_platforms() -> dict:
+    """Distinct ``platform`` values from the crawler DB. Uses the
+    same path resolver as the rest of the market endpoints so the
+    user-configured market-DB path takes effect."""
+    import sqlite3 as _sqlite3
+    from pathlib import Path as _Path
+    from ui.backend.app.utils import resolve_crawler_db_path
+    crawler_db_path = resolve_crawler_db_path()
+    if not crawler_db_path or not _Path(crawler_db_path).exists():
+        return {"platforms": [], "warning": "crawler DB not configured"}
+    try:
+        with _sqlite3.connect(crawler_db_path) as con:
+            con.row_factory = _sqlite3.Row
+            rows = con.execute(
+                "SELECT platform, COUNT(*) AS book_count "
+                "FROM novels GROUP BY platform "
+                "ORDER BY book_count DESC"
+            ).fetchall()
+        return {"platforms": [
+            {"key": r["platform"], "label": r["platform"], "book_count": r["book_count"]}
+            for r in rows if r["platform"]
+        ]}
+    except _sqlite3.OperationalError as e:
+        return {"platforms": [], "warning": f"crawler db read failed: {e}"}
+
+
+@router.get("/aggregated-stats")
+def get_aggregated_stats(platform: str = Query(...), category: str = Query(...)) -> dict:
+    """Return the latest ``category_aggregated_stats`` row (or empty
+    fields when none). This is the data the prompt's
+    ``platform_market`` / 'market overview' loaders read at generation
+    time — exposing it here lets the UI show users exactly what would
+    be injected into a chapter prompt."""
+    import sqlite3 as _sqlite3
+    try:
+        with _sqlite3.connect(get_db_path()) as con:
+            con.row_factory = _sqlite3.Row
+            row = con.execute(
+                "SELECT * FROM category_aggregated_stats "
+                "WHERE platform = ? AND category = ? "
+                "ORDER BY aggregated_at DESC LIMIT 1",
+                (platform, category),
+            ).fetchone()
+    except _sqlite3.OperationalError:
+        return {"platform": platform, "category": category, "stats": None}
+    return {
+        "platform": platform,
+        "category": category,
+        "stats": dict(row) if row else None,
+    }
+
+
+@router.get("/categories")
+def list_categories(platform: str = Query("")) -> dict:
+    """Distinct rank_family × rank_sub_cat from the crawler DB."""
+    import sqlite3 as _sqlite3
+    from pathlib import Path as _Path
+    from ui.backend.app.utils import resolve_crawler_db_path
+    crawler_db_path = resolve_crawler_db_path()
+    if not crawler_db_path or not _Path(crawler_db_path).exists():
+        return {"categories": [], "warning": "crawler DB not configured"}
+    try:
+        with _sqlite3.connect(crawler_db_path) as con:
+            con.row_factory = _sqlite3.Row
+            if platform:
+                rows = con.execute(
+                    "SELECT rank_family, rank_sub_cat, COUNT(*) AS list_count "
+                    "FROM rank_lists WHERE platform = ? "
+                    "GROUP BY rank_family, rank_sub_cat "
+                    "ORDER BY list_count DESC",
+                    (platform,),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT rank_family, rank_sub_cat, COUNT(*) AS list_count "
+                    "FROM rank_lists "
+                    "GROUP BY rank_family, rank_sub_cat "
+                    "ORDER BY list_count DESC"
+                ).fetchall()
+        out = []
+        for r in rows:
+            fam = r["rank_family"] or "未知"
+            sub = r["rank_sub_cat"] or ""
+            label = f"{fam} · {sub}" if sub else fam
+            key = sub or fam
+            out.append({"key": key, "label": label,
+                        "rank_family": fam, "rank_sub_cat": sub,
+                        "list_count": r["list_count"]})
+        return {"categories": out}
+    except _sqlite3.OperationalError as e:
+        return {"categories": [], "warning": f"crawler db read failed: {e}"}
+
+
+@router.post("/manual-prompt")
+def build_manual_prompt(body: dict = Body(...)) -> dict:
+    """Assemble the LLM prompt for manual-mode usage. The user copies
+    the returned prompt into a browser LLM, pastes the response back
+    via /manual-submit. The resulting JSON must populate every column
+    that the platform_market loader reads — most importantly
+    ``loader_payload`` (the rendered directive that actually gets
+    injected into chapter prompts at generation time)."""
+    platform = (body.get("platform") or "").strip()
+    category = (body.get("category") or "").strip()
+    if not platform or not category:
+        raise HTTPException(400, "platform + category required")
+
+    works = representative_selector.list_selected(
+        get_db_path(), platform, category, include_holdout=False,
+    )
+
+    def _fmt_work(w: dict, i: int) -> str:
+        title = w.get("title") or w.get("source_db_novel_id") or w.get("work_id") or "(无题)"
+        author = w.get("author") or "—"
+        cat = w.get("main_category") or category
+        words = w.get("total_words")
+        words_disp = f"{round((words or 0) / 10000, 1)}万字" if words else "—"
+        tags = w.get("tags") or w.get("tag_list") or ""
+        if isinstance(tags, list):
+            tags = "、".join(tags[:6])
+        intro = (w.get("intro") or "").strip().replace("\n", " ")
+        if len(intro) > 140:
+            intro = intro[:140] + "……"
+        parts = [
+            f"{i}. 《{title}》",
+            f"   作者：{author} · 类目：{cat} · 体量：{words_disp}",
+        ]
+        if tags:
+            parts.append(f"   标签：{tags}")
+        if intro:
+            parts.append(f"   简介：{intro}")
+        return "\n".join(parts)
+
+    work_block = "\n".join(_fmt_work(w, i + 1) for i, w in enumerate(works[:12]))
+    if not work_block:
+        work_block = "（暂无候选代表作 — 请凭你对该榜单的常识答题。）"
+
+    prompt = (
+        f"# 任务：为「{platform} × {category}」生成一份完整的「平台风格基线档案 (platform profile)」\n\n"
+        "你是一名资深的网络文学市场分析师。下面给出该平台 × 榜单下的代表作清单 "
+        "（含作者、类目、体量、标签、简介），请综合分析后输出一份**结构化、可直接注入正文生成 prompt 的**平台风格档案。\n\n"
+        f"## 代表作清单（top {min(len(works), 12)} / 共 {len(works)} 部）\n\n"
+        f"{work_block}\n\n"
+        "## 输出要求\n\n"
+        "请严格输出**纯 JSON**（不要 markdown 围栏、不要前后多余文字），并包含以下 6 个字段；缺一不可：\n\n"
+        "```\n"
+        "{\n"
+        '  "profile_summary": "（200-400字）该平台 × 榜单的整体画像：主流题材脉络、受众偏好、'
+        '常见走向。不要罗列书名。",\n\n'
+        '  "style_baseline": {\n'
+        '    "narration_pov": "第三人称限知 / 第一人称 / 全知…（择一为主）",\n'
+        '    "tone": "热血 / 阴郁 / 轻松 / 冷峻…（2-3个关键词）",\n'
+        '    "language_register": "口语化 / 半文半白 / 网感强 / 正剧…",\n'
+        '    "sentence_rhythm": "短句为主 / 长短交错 / 偏长句…",\n'
+        '    "dialogue_ratio": "约X%（0-1之间的数）",\n'
+        '    "vocabulary_features": ["该题材高频词1", "高频词2", "高频词3"]\n'
+        '  },\n\n'
+        '  "signature_devices_description": "（200-400字）该榜单代表作反复使用的招牌叙事手法：'
+        '常见钩子、爽点机制、人设套路、伏笔结构、反转节奏等。请举具体手法名，不要泛泛而谈。",\n\n'
+        '  "pacing_guidance": {\n'
+        '    "first_chapter_words": "建议首章字数区间，如 2000-3000",\n'
+        '    "chapter_words": "常态章节字数区间，如 2500-3500",\n'
+        '    "first_hook_chapter": "首个爆点应在第几章前出现",\n'
+        '    "antagonist_intro_chapter": "首位反派应在第几章前出场",\n'
+        '    "first_face_slap_chapter": "首次打脸/反击应在第几章前到位",\n'
+        '    "info_release_strategy": "信息释放策略：一次性铺陈 / 逐步揭示 / 悬念驱动…"\n'
+        '  },\n\n'
+        '  "recommended_openings": [\n'
+        '    "开篇套路1（一句话描述）",\n'
+        '    "开篇套路2",\n'
+        '    "开篇套路3",\n'
+        '    "开篇套路4"\n'
+        '  ],\n\n'
+        '  "loader_payload": "★ 最关键字段 ★ 这是会被**逐字注入正文生成 prompt** 的'
+        '「平台风格基线」段落正文。要求：\\n'
+        '- 600-1200 字的中文段落（不是 JSON、不是 markdown 列表，是连贯成段的指令性正文）；\\n'
+        '- 第二人称对生成者说话，例如「在写本章时请注意…」「该平台读者偏好…」「叙述请保持…」；\\n'
+        '- 必须覆盖：题材定位、视角与人称、语言风格、句式节奏、对白比、首章/常态章字数、'
+        '钩子与爽点节奏、反派出场与首次反击的时机、信息释放策略、招牌叙事手法清单、'
+        '可借鉴的开篇套路；\\n'
+        '- 不要出现具体书名、作者名、品牌名；\\n'
+        '- 不要给出取名/起名建议；\\n'
+        '- 结尾给一句「写作时严格遵循以上风格基线，不要写成其他平台/榜单的风格」收束。"\n'
+        "}\n"
+        "```\n\n"
+        "## 校验清单\n"
+        "1. 所有 6 个字段都已填写，没有空字符串、没有占位符 (`...`)。\n"
+        "2. `style_baseline` 和 `pacing_guidance` 是 JSON 对象，不是字符串。\n"
+        "3. `recommended_openings` 至少 4 条。\n"
+        "4. `loader_payload` 长度 ≥ 600 字，是连续中文段落而非 JSON / 列表。\n"
+        "5. 整体只输出 JSON，前后不带任何说明文字。\n"
+    )
+    return {"prompt": prompt, "platform": platform, "category": category,
+            "work_count": len(works)}
+
+
+@router.post("/manual-submit")
+def submit_manual_extraction(body: dict = Body(...)) -> dict:
+    """Persist a manual-mode response as a new platform_profile row."""
+    import uuid as _uuid, json as _json, sqlite3 as _sqlite3
+    platform = (body.get("platform") or "").strip()
+    category = (body.get("category") or "").strip()
+    raw = (body.get("response_raw") or "").strip()
+    if not platform or not category or not raw:
+        raise HTTPException(400, "platform + category + response_raw required")
+    parsed: dict = {}
+    try:
+        t = raw
+        if t.startswith("```"):
+            t = t.lstrip("`")
+            if t.lower().startswith("json"):
+                t = t[4:]
+            t = t.strip()
+            if t.endswith("```"):
+                t = t[:-3].strip()
+        parsed = _json.loads(t)
+    except Exception:
+        i, j = raw.find("{"), raw.rfind("}")
+        if i >= 0 and j > i:
+            try:
+                parsed = _json.loads(raw[i:j + 1])
+            except Exception:
+                parsed = {}
+    profile_id = f"pp_manual_{_uuid.uuid4().hex[:10]}"
+    with _sqlite3.connect(get_db_path()) as con:
+        con.execute(
+            """INSERT INTO platform_profiles
+               (profile_id, platform, category, profile_version,
+                profile_summary, style_baseline, signature_devices_description,
+                pacing_guidance, recommended_openings_json,
+                loader_payload, confidence_label,
+                extraction_started_at, extraction_completed_at)
+               VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'manual',
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+            (
+                profile_id, platform, category,
+                parsed.get("profile_summary", ""),
+                parsed.get("style_baseline", ""),
+                parsed.get("signature_devices_description", ""),
+                parsed.get("pacing_guidance", ""),
+                _json.dumps(parsed.get("recommended_openings", []),
+                            ensure_ascii=False),
+                raw,
+            ),
+        )
+        con.commit()
+    return {"profile_id": profile_id, "platform": platform,
+            "category": category, "parsed_keys": list(parsed.keys())}
+
+
 # ─────────── representative works ───────────
 
 

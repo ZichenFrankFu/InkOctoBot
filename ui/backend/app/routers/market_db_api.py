@@ -3,6 +3,7 @@ import logging
 import sqlite3
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Body
+from pydantic import BaseModel
 from ..settings import settings
 from ..utils import load_repo_config, get_crawler_db_path
 
@@ -297,6 +298,150 @@ def opening_analysis(platform: str | None = None):
     }
 
 
+@router.get("/opening_nlp_analysis")
+def opening_nlp_analysis(platform: str | None = None) -> dict:
+    """Heuristic NLP analysis on the crawled first chapters.
+
+    Pure-Python regex / counting — no model inference, so it's cheap
+    enough to drive on user demand. Computes per-chapter dialogue
+    ratio, mean sentence length, first-sentence type, end-hook style,
+    and aggregates them into platform-level distributions. The frontend
+    panel calls this once (then caches by db-mtime) and exposes a
+    manual refresh button.
+    """
+    import re
+    con = _get_con()
+    if con is None:
+        return {"available": False, "reason": "crawler DB not configured"}
+    with con:
+        if not _table_exists(con, "first_n_chapters"):
+            return {"available": False, "reason": "no first_n_chapters table"}
+        frm = "first_n_chapters fc"
+        cond = " WHERE fc.chapter_num=1 AND fc.chapter_content IS NOT NULL AND length(fc.chapter_content) > 300"
+        params: list = []
+        if platform and _table_exists(con, "novels"):
+            frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
+            cond += " AND n.platform=?"
+            params.append(platform)
+        rows = con.execute(
+            f"SELECT fc.chapter_content cc, fc.word_count wc FROM {frm}{cond} LIMIT 200",
+            params,
+        ).fetchall()
+    if not rows:
+        return {"available": False, "reason": "no openings to analyze"}
+
+    # Quote chars used in mainland web fiction.
+    QUOTE_RE = re.compile(r"[「][^」]{1,400}[」]|[“][^”]{1,400}[”]|[\"][^\"]{1,400}[\"]")
+    SENT_SPLIT_RE = re.compile(r"[。！？!?…]+")
+
+    def first_sentence_type(text: str) -> str:
+        t = text.strip()[:300]
+        if not t:
+            return "未知"
+        # Pull the first sentence (up to the first 。！？).
+        m = SENT_SPLIT_RE.split(t, maxsplit=1)
+        first = (m[0] if m else t)[:160]
+        if QUOTE_RE.search(first):
+            return "对白开场"
+        if re.search(r"[挥砍劈刺撞冲扑奔跑跃飞掷炸轰击撕扯踢踹]", first):
+            return "动作开场"
+        if re.search(r"年|月|日|时|公元|纪元|世纪", first):
+            return "时间地点铺陈"
+        if re.search(r"我|他|她|它|此刻|忽然|突然", first):
+            return "人物心理/动作"
+        if re.search(r"在.+(里|中|上|下)|城|山|村|庙|殿|宫|林", first):
+            return "环境/世界观"
+        return "叙事铺陈"
+
+    def end_hook_type(text: str) -> str:
+        tail = text.strip()[-300:]
+        if not tail:
+            return "未知"
+        if QUOTE_RE.search(tail):
+            return "对白收尾"
+        if re.search(r"[？?]\s*$", tail):
+            return "悬疑提问"
+        if re.search(r"[！!]\s*$", tail):
+            return "冲突爆发"
+        if re.search(r"[…]{2,}\s*$|\.{3,}\s*$", tail):
+            return "悬念省略"
+        if re.search(r"看到|发现|出现|睁开|想起|意识到", tail[-100:]):
+            return "悬念揭示"
+        return "平稳过渡"
+
+    dialogue_ratios: list[float] = []
+    sentence_lengths: list[float] = []
+    first_types: dict[str, int] = {}
+    end_types: dict[str, int] = {}
+    word_counts: list[int] = []
+
+    for r in rows:
+        text = str(r["cc"] or "")
+        if not text:
+            continue
+        total_len = len(text)
+        word_counts.append(int(r["wc"] or total_len))
+        # dialogue ratio
+        dialogue_chars = sum(len(m.group(0)) for m in QUOTE_RE.finditer(text))
+        dialogue_ratios.append(round(dialogue_chars / total_len, 4) if total_len else 0)
+        # sentence lengths
+        sents = [s.strip() for s in SENT_SPLIT_RE.split(text) if s.strip()]
+        if sents:
+            sentence_lengths.append(sum(len(s) for s in sents) / len(sents))
+        # categorical
+        ft = first_sentence_type(text)
+        first_types[ft] = first_types.get(ft, 0) + 1
+        et = end_hook_type(text)
+        end_types[et] = end_types.get(et, 0) + 1
+
+    def _mean(xs: list[float]) -> float:
+        return round(sum(xs) / len(xs), 3) if xs else 0.0
+
+    def _hist(xs: list[float], buckets: list[tuple[str, float, float]]) -> dict:
+        out = {label: 0 for label, _, _ in buckets}
+        for x in xs:
+            for label, lo, hi in buckets:
+                if lo <= x < hi:
+                    out[label] += 1
+                    break
+        return out
+
+    return {
+        "available": True,
+        "platform": platform or "all",
+        "sample_count": len(rows),
+        "dialogue_ratio": {
+            "mean": _mean(dialogue_ratios),
+            "distribution": _hist(dialogue_ratios, [
+                ("0-10%", 0.0, 0.10),
+                ("10-25%", 0.10, 0.25),
+                ("25-40%", 0.25, 0.40),
+                (">=40%", 0.40, 9.99),
+            ]),
+        },
+        "sentence_length": {
+            "mean": _mean(sentence_lengths),
+            "distribution": _hist(sentence_lengths, [
+                ("≤15字", 0.0, 15.0),
+                ("15-25字", 15.0, 25.0),
+                ("25-40字", 25.0, 40.0),
+                (">40字", 40.0, 9999.0),
+            ]),
+        },
+        "first_sentence_types":
+            sorted([{"label": k, "count": v} for k, v in first_types.items()],
+                   key=lambda d: -d["count"]),
+        "end_hook_types":
+            sorted([{"label": k, "count": v} for k, v in end_types.items()],
+                   key=lambda d: -d["count"]),
+        "word_count_summary": {
+            "mean": int(sum(word_counts) / len(word_counts)) if word_counts else 0,
+            "min": min(word_counts) if word_counts else 0,
+            "max": max(word_counts) if word_counts else 0,
+        },
+    }
+
+
 @router.post("/opening_ai_summary")
 async def opening_ai_summary(body: dict = Body(...)):
     """AI analysis of the crawled opening-chapter content. ``prompt_only``
@@ -353,6 +498,134 @@ async def opening_ai_summary(body: dict = Body(...)):
     except Exception as e:
         raise HTTPException(502, f"AI 总结调用失败：{e}")
     return {"summary": str(summary or "").strip(), "sample_count": len(rows)}
+
+
+# ─────────── novel CRUD (manual correction surface) ───────────
+
+
+_EDITABLE_NOVEL_COLS = {
+    "author", "intro", "main_category", "status", "total_words", "url",
+}
+
+
+@router.put("/novel/{novel_uid}")
+def update_novel(novel_uid: int, body: dict = Body(...)):
+    """Editable subset of the novels row for manual correction. Only the
+    fields in ``_EDITABLE_NOVEL_COLS`` are accepted; everything else is
+    ignored to avoid the UI shaping crawler-derived identity columns."""
+    con = _get_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    patches = {k: v for k, v in body.items() if k in _EDITABLE_NOVEL_COLS}
+    if not patches:
+        raise HTTPException(400, f"no editable fields. allowed: {sorted(_EDITABLE_NOVEL_COLS)}")
+    with con:
+        row = con.execute(
+            "SELECT novel_uid FROM novels WHERE novel_uid=?",
+            (novel_uid,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "novel not found")
+        sets = ", ".join(f"{k}=?" for k in patches)
+        params = list(patches.values()) + [novel_uid]
+        con.execute(f"UPDATE novels SET {sets} WHERE novel_uid=?", params)
+        con.commit()
+        # Re-read so client sees the canonical post-patch row.
+        updated = dict(con.execute(
+            "SELECT * FROM novels WHERE novel_uid=?", (novel_uid,),
+        ).fetchone())
+    return {"novel": updated, "patched": list(patches.keys())}
+
+
+@router.delete("/novel/{novel_uid}")
+def delete_novel(novel_uid: int):
+    """Hard-delete a novel and all dependent crawler rows (titles, tags,
+    chapters, rank-entry rows). For the manual-correction surface — use
+    carefully."""
+    con = _get_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    with con:
+        row = con.execute(
+            "SELECT novel_uid FROM novels WHERE novel_uid=?",
+            (novel_uid,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "novel not found")
+        for stmt in [
+            "DELETE FROM rank_entries WHERE novel_uid=?",
+            "DELETE FROM novel_tag_map WHERE novel_uid=?",
+            "DELETE FROM novel_titles WHERE novel_uid=?",
+            "DELETE FROM first_n_chapters WHERE novel_uid=?",
+            "DELETE FROM novels WHERE novel_uid=?",
+        ]:
+            try:
+                con.execute(stmt, (novel_uid,))
+            except sqlite3.OperationalError:
+                pass
+        con.commit()
+    return {"ok": True, "novel_uid": novel_uid}
+
+
+class _NewNovelBody(BaseModel):
+    platform: str
+    platform_novel_id: str = ""
+    author: str = ""
+    main_category: str = ""
+    intro: str = ""
+    status: str = "ongoing"
+    total_words: int = 0
+    url: str = ""
+    title: str = ""
+
+
+@router.post("/novel")
+def create_novel(body: _NewNovelBody):
+    """Insert a manually-curated novel row + a primary title (the UI
+    needs a way to fix up the data set when a crawler missed something)."""
+    con = _get_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    if not body.platform.strip():
+        raise HTTPException(400, "platform required")
+    with con:
+        cur = con.execute(
+            """INSERT INTO novels
+               (platform, platform_novel_id, author, intro, main_category,
+                status, total_words, url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (body.platform.strip(), body.platform_novel_id.strip(),
+             body.author.strip(), body.intro.strip(),
+             body.main_category.strip(), body.status.strip(),
+             int(body.total_words or 0), body.url.strip()),
+        )
+        novel_uid = cur.lastrowid
+        if body.title.strip():
+            from datetime import date as _date
+            con.execute(
+                "INSERT INTO novel_titles (novel_uid, title, is_primary, "
+                "first_seen_date, last_seen_date) VALUES (?, ?, 1, ?, ?)",
+                (novel_uid, body.title.strip(),
+                 _date.today().isoformat(), _date.today().isoformat()),
+            )
+        con.commit()
+    return {"novel_uid": novel_uid}
+
+
+@router.get("/db-mtime")
+def db_mtime():
+    """Return the crawler DB's mtime so the UI can lazily skip
+    reloading the home-page summary when nothing has changed."""
+    from ..utils import resolve_crawler_db_path
+    db_path = resolve_crawler_db_path()
+    if not db_path or not Path(db_path).exists():
+        return {"mtime": 0, "exists": False}
+    try:
+        mtime = int(Path(db_path).stat().st_mtime)
+        size = Path(db_path).stat().st_size
+        return {"mtime": mtime, "size": size, "exists": True}
+    except OSError:
+        return {"mtime": 0, "exists": False}
 
 
 @router.get("/info")

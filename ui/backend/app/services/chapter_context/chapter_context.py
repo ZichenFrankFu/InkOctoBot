@@ -80,7 +80,10 @@ class ChapterContext(BaseModel):
     generation_mode: GenerationMode = "fresh"
 
     # ── 14 loader output ──
-    loader_blocks: dict[str, str] = Field(default_factory=dict)
+    # Values are normally pre-rendered strings (see prompt_context.builder),
+    # but accessors tolerate None / object-shaped values defensively, so the
+    # field is typed permissively here.
+    loader_blocks: dict[str, Any] = Field(default_factory=dict)
     sections: list[dict] = Field(default_factory=list)
     diagnostics: dict = Field(default_factory=dict)
 
@@ -297,22 +300,150 @@ class ChapterContext(BaseModel):
 
     # ───────────────────── helpers ─────────────────────
 
+    def _block_content(self, block_id: str) -> str:
+        """Safe read of a single loader block.
+
+        ``loader_blocks`` values are pre-rendered strings (see
+        ``prompt_context.builder``), so this is mostly a typed ``.get``
+        with strip + None tolerance. A fallback render path is kept so
+        non-string objects (e.g. a future LoaderPlan-shaped value) don't
+        explode the pipeline."""
+        val = self.loader_blocks.get(block_id)
+        if val is None:
+            return ""
+        if isinstance(val, str):
+            return val.strip()
+        try:
+            budget = getattr(val, "target", None) or getattr(val, "natural_length", 0)
+            return (val.render(budget) or "").strip()
+        except Exception:
+            return ""
+
     def world_rules_text(self) -> str:
-        """Concatenate the loader blocks + truth bundle for legacy
-        ``world_rules`` string consumers (multi-agent /start
-        currently injects this into req_data['world_rules'])."""
+        """worldbook (core) + reference + skills + inspiration —
+        the "what is true about this world" bundle for SceneDirector."""
+        parts = [
+            self._block_content("worldbook"),
+            self._block_content("reference"),
+            self._block_content("skills"),
+            self._block_content("inspiration"),
+        ]
+        return "\n\n".join(p for p in parts if p)
+
+    def memory_context_text(self) -> str:
+        """reader_memory (core) + project_memory + current_chapter_draft
+        (only in continue/rewrite modes)."""
+        parts = [
+            self._block_content("reader_memory"),
+            self._block_content("project_memory"),
+        ]
+        if self.generation_mode in ("continue", "rewrite_from", "modify_section"):
+            parts.append(self._block_content("current_chapter_draft"))
+        return "\n\n".join(p for p in parts if p)
+
+    def character_cards_text(self) -> str:
+        """character_cards block as-is."""
+        return self._block_content("character_cards")
+
+    def style_profile_text(self) -> str:
+        """platform_directive (market baseline, prepended) +
+        user_special_requirements."""
+        parts = [
+            self._block_content("platform_directive"),
+            self._block_content("user_special_requirements"),
+        ]
+        return "\n\n".join(p for p in parts if p)
+
+    def user_preferences_text(self) -> str:
+        """user_preferences block as-is."""
+        return self._block_content("user_preferences")
+
+    def narrative_instructions_text(self) -> str:
+        """foreshadowing + subplots — loader-side narrative guidance.
+        Truth-bundle ``pressured_hooks`` are handled separately."""
+        parts = [
+            self._block_content("foreshadowing"),
+            self._block_content("subplots"),
+        ]
+        return "\n\n".join(p for p in parts if p)
+
+    def truth_bundle_text(self) -> str:
+        """storyland_state loader + TruthFiles bundle merged.
+        truth_bundle (TFI) is authoritative; storyland_state loader is
+        supplemental and skipped if already represented."""
+        parts: list[str] = []
+        bundle = (self.truth_bundle.get("bundle_text") or "").strip() \
+            if self.truth_bundle else ""
+        if bundle:
+            parts.append(bundle)
+        sl = self._block_content("storyland_state")
+        if sl and sl not in (parts[0] if parts else ""):
+            parts.append(sl)
+        return "\n\n".join(p for p in parts if p)
+
+    def pressured_hooks_text(self) -> str:
+        """Pull pressured hooks from truth_bundle (TFI)."""
+        if not self.truth_bundle:
+            return ""
+        return (self.truth_bundle.get("pressured_hooks_text") or "").strip()
+
+    def _compose_constraints(self) -> str:
+        """SceneDirector has no narrative-instructions field, so we
+        feed foreshadowing/subplots into constraints."""
+        return self.narrative_instructions_text()
+
+    def to_scene_director_kwargs(self) -> dict:
+        """Assemble the full kwargs for ``SceneDirector.plan_scenes``.
+
+        ``chapter_outline`` prefers ``user_special_requirements`` (set
+        explicitly by the user for this chapter) and falls back to the
+        ``chapter_outline`` loader block."""
+        return {
+            "chapter_outline": (self.user_special_requirements
+                                or self._block_content("chapter_outline")),
+            "chapter_num": self.chapter_num,
+            "memory_context": self.memory_context_text(),
+            "world_rules": self.world_rules_text(),
+            "character_cards": self.character_cards_text(),
+            "constraints": self._compose_constraints(),
+        }
+
+    def to_writer_assemble_kwargs(self) -> dict:
+        """Assemble context kwargs for ``Writer.assemble_chapter``.
+
+        ``performance_records`` / ``narrator_text`` are runtime-produced
+        by the simulator and must be supplied by the caller — they are
+        deliberately NOT included here."""
+        ni = self.narrative_instructions_text()
+        ph = self.pressured_hooks_text()
+        if ph:
+            ni = "\n\n".join(p for p in (ni, "## 待推进伏笔\n" + ph) if p)
+        return {
+            "chapter_num": self.chapter_num,
+            "narrative_instructions": ni,
+            "style_profile": self.style_profile_text(),
+            "user_preferences": self.user_preferences_text(),
+            "memory_context": self.memory_context_text(),
+            "truth_bundle": self.truth_bundle_text(),
+        }
+
+    def world_rules_legacy_text(self) -> str:
+        """Legacy 6-block fold for callers that still want the old
+        single-string ``world_rules`` representation (used as fallback
+        when the structured accessors are not adopted yet)."""
         parts: list[str] = []
         for key in (
             "character_cards", "worldbook", "reference",
             "storyland_state", "reader_memory", "skills",
         ):
-            v = (self.loader_blocks.get(key) or "").strip()
+            v = self._block_content(key)
             if v:
                 parts.append(v)
-        bundle_text = (self.truth_bundle.get("bundle_text") or "").strip()
+        bundle_text = (self.truth_bundle.get("bundle_text") or "").strip() \
+            if self.truth_bundle else ""
         if bundle_text:
             parts.append(bundle_text)
-        pressured = (self.truth_bundle.get("pressured_hooks_text") or "").strip()
+        pressured = self.pressured_hooks_text()
         if pressured:
             parts.append(
                 "## 待推进伏笔（本章应继续推进）\n" + pressured

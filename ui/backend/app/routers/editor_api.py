@@ -78,6 +78,35 @@ async def save_version(req: SaveVersionRequest):
         db_path=get_db_path(),
         chapter_text=req.text,
     )
+
+    # Edit-learning capture (Part A). Best-effort; never breaks save.
+    # Only ``user_edit`` rows are learned-from; AI saves are ignored
+    # inside the helper. ``chapter_num`` is looked up from chapters
+    # to keep the API surface stable (callers don't pass it today).
+    try:
+        chapter_num = 0
+        try:
+            with __import__("sqlite3").connect(get_db_path()) as _con:
+                _row = _con.execute(
+                    "SELECT chapter_num FROM chapters WHERE chapter_id = ?",
+                    (req.chapter_id,),
+                ).fetchone()
+                if _row:
+                    chapter_num = int(_row[0] or 0)
+        except Exception:
+            pass
+        from agents.learning import maybe_capture_and_fire
+        maybe_capture_and_fire(
+            db_path=get_db_path(),
+            project_id=req.project_id,
+            chapter_id=req.chapter_id,
+            chapter_num=chapter_num,
+            source=req.source,
+            edited_text=req.text,
+        )
+    except Exception as e:
+        logger.debug("edit-learning capture skipped: %s", e)
+
     return {"status": "ok", "version": saved}
 
 

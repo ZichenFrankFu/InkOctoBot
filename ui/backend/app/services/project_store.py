@@ -654,7 +654,17 @@ def get_chat_history(db_path: str, project_id: str,
 
 def replace_chat_history(db_path: str, project_id: str, scope: str,
                          messages: list[dict]) -> None:
-    """Replace all messages in one project/scope. Matches the PUT semantics."""
+    """Replace all messages in one project/scope. Matches the PUT semantics.
+
+    ``message_id`` is a global PRIMARY KEY but the DELETE only clears
+    rows in this (project_id, scope) — the frontend often reuses the
+    same client-side msg id across scopes (e.g. the same outline chat
+    bubble feeds both ``outline_chat_<chapter>`` and ``pipeline_<chapter>``
+    scopes during a generation). Using plain INSERT would then trip
+    ``UNIQUE constraint failed: chat_messages.message_id`` on the
+    second scope's PUT. ``INSERT OR REPLACE`` upserts cleanly: the
+    scope's prior rows are already gone, and a cross-scope reuse just
+    moves the row to the current scope, which is the intent."""
     with open_db(db_path) as con:
         con.execute(
             "DELETE FROM chat_messages WHERE project_id = ? AND scope = ?",
@@ -670,7 +680,7 @@ def replace_chat_history(db_path: str, project_id: str, scope: str,
             meta = {k: v for k, v in msg.items()
                     if k not in {"id", "role", "content", "ts"}}
             con.execute(
-                """INSERT INTO chat_messages
+                """INSERT OR REPLACE INTO chat_messages
                    (message_id, project_id, scope, role, content,
                     meta_json, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
