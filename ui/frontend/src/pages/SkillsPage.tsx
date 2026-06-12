@@ -3,6 +3,7 @@ import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import type { SkillInfo, Project, WritingKnowledgeEntry } from "../api/types";
 import { useToast } from "../components/shared/Toast";
 import LearnedPreferencesPanel from "../components/skills/LearnedPreferencesPanel";
+import KnowledgeResearchPanel from "../components/skills/KnowledgeResearchPanel";
 
 const SECTION_COLORS: Record<string, string> = {
   feature_extraction: "var(--cyan)",
@@ -885,6 +886,8 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       {/* ═══════════════════════ TAB: Writing Knowledge ═══════════════════════ */}
       {activeTab === "knowledge" && (
         <>
+          {/* 专业知识自学习 (spec 4.2): 联网研究 → AI 编译知识 skill */}
+          <KnowledgeResearchPanel projectId={prefProject} />
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
             <input className="input" placeholder="搜索写作知识..." value={knSearch}
               onChange={e => setKnSearch(e.target.value)} style={{ maxWidth: 280 }} />

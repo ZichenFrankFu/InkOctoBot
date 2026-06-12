@@ -473,8 +473,10 @@ CREATION_DDL = [
         skill_id TEXT PRIMARY KEY,
         display_name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
+        -- v3.1: 'knowledge' = 专业知识 skill (spec 4.2), DB-native
+        -- (no filesystem counterpart; survives registry sync).
         kind TEXT NOT NULL DEFAULT 'builtin'
-            CHECK (kind IN ('builtin','learned')),
+            CHECK (kind IN ('builtin','learned','knowledge')),
         body_snippet TEXT NOT NULL DEFAULT '',
         embedding_json TEXT NOT NULL DEFAULT '[]',
         embedding_text_hash TEXT NOT NULL DEFAULT '',
@@ -671,6 +673,13 @@ def _ensure_skill_index_v2_columns(conn: sqlite3.Connection) -> None:
     EMBEDDING_SPEC Phase 2: every embedding-bearing table tracks the
     model that produced the stored vector so the loader can tell when
     a switch-model has invalidated the cache.
+
+    v3.1: pre-existing DBs carry a CHECK that only allows
+    builtin/learned — knowledge skills (spec 4.2) need 'knowledge'.
+    SQLite can't alter a CHECK, so detect the stale constraint via the
+    stored CREATE sql and rebuild the table in place (data preserved;
+    project_skill_pins has no FK on skill_index, only an app-level
+    join, so the rebuild is safe).
     """
     cur = conn.cursor()
     try:
@@ -681,6 +690,40 @@ def _ensure_skill_index_v2_columns(conn: sqlite3.Connection) -> None:
         cur.execute(
             "ALTER TABLE skill_index ADD COLUMN "
             "embedding_model_key TEXT NOT NULL DEFAULT ''"
+        )
+
+    row = cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='skill_index'",
+    ).fetchone()
+    create_sql = (row[0] or "") if row else ""
+    if "'knowledge'" not in create_sql and "knowledge" not in create_sql:
+        cur.execute("ALTER TABLE skill_index RENAME TO skill_index_v30")
+        cur.execute(
+            """CREATE TABLE skill_index (
+                   skill_id TEXT PRIMARY KEY,
+                   display_name TEXT NOT NULL,
+                   description TEXT NOT NULL DEFAULT '',
+                   kind TEXT NOT NULL DEFAULT 'builtin'
+                       CHECK (kind IN ('builtin','learned','knowledge')),
+                   body_snippet TEXT NOT NULL DEFAULT '',
+                   embedding_json TEXT NOT NULL DEFAULT '[]',
+                   embedding_text_hash TEXT NOT NULL DEFAULT '',
+                   embedding_model_key TEXT NOT NULL DEFAULT '',
+                   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+               )"""
+        )
+        cur.execute(
+            "INSERT INTO skill_index (skill_id, display_name, description, "
+            "kind, body_snippet, embedding_json, embedding_text_hash, "
+            "embedding_model_key, updated_at) "
+            "SELECT skill_id, display_name, description, kind, body_snippet, "
+            "embedding_json, embedding_text_hash, embedding_model_key, "
+            "updated_at FROM skill_index_v30"
+        )
+        cur.execute("DROP TABLE skill_index_v30")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_skill_index_kind "
+            "ON skill_index(kind)"
         )
 
 

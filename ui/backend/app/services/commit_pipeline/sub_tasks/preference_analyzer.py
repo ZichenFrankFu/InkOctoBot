@@ -40,16 +40,22 @@ _MAX_TEXT_PER_SIDE = 2200       # chars per draft/final excerpt
 
 _SYSTEM = (
     "你是写作偏好分析助手。对比同一章节的 AI 初稿与用户定稿，"
-    "并结合用户的本章特殊要求，归纳用户的写作偏好。\n"
+    "并结合用户的本章特殊要求，归纳用户的写作偏好；同时识别这批章节"
+    "涉及的专业领域。\n"
     "要求：\n"
     "1. 偏好分三类：style（风格）、content（内容）、pacing（节奏）\n"
     "2. 每条偏好为一句可执行的描述（如「对话多用短句，少用书面语」），"
     "不要复述原文\n"
     "3. 特殊要求中体现的偏好权重高于从修改差异推断的偏好\n"
     "4. 只总结有明确证据的偏好，没有就返回空数组\n"
-    "5. 输出 JSON：{\"preferences\": [{\"type\": \"style|content|pacing\", "
+    "5. professional_domains：列出正文明显涉及、写错会被读者识破的"
+    "专业领域（如 中医、法医、航海、刑侦），最多 3 个，"
+    "没有就返回空数组\n"
+    "6. 输出 JSON：{\"preferences\": [{\"type\": \"style|content|pacing\", "
     "\"description\": \"偏好描述\", \"source_chapters\": [章节号], "
-    "\"source_type\": \"edit_inference|special_requirements\"}]}"
+    "\"source_type\": \"edit_inference|special_requirements\"}], "
+    "\"professional_domains\": [{\"domain\": \"领域名\", "
+    "\"reason\": \"正文涉及点\"}]}"
 )
 
 
@@ -240,12 +246,17 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
 
     parsed = await _call_llm(_build_prompt(batch), ctx)
     prefs = parsed.get("preferences") or []
+    domains = parsed.get("professional_domains") or []
 
     with sqlite3.connect(ctx.db_path) as con:
         written = _upsert_preferences(con, ctx.project_id, prefs)
         con.commit()
     covered = [c["chapter_num"] for c in batch]
     _record_run(ctx, total, covered, written)
+
+    # 专业知识·机制1 + Post-Commit·机制4: 检测到专业领域 → 询问用户
+    # 是否触发联网研究（仅通知，研究由用户在自学习页主动确认发起）。
+    domains_notified = _notify_domains(ctx, domains, covered)
 
     if written:
         try:
@@ -271,8 +282,53 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
     return {
         "analyzed_chapters": covered,
         "prefs_emitted": written,
+        "domains_detected": domains_notified,
         "interval": interval,
     }
+
+
+def _notify_domains(
+    ctx: "SubTaskContext", domains: Any, covered: list[int],
+) -> list[str]:
+    """One notification per detected professional domain, asking the
+    user whether to research it (机制1: 由用户判断该领域准确性是否
+    重要，确认后才发起联网研究)."""
+    names: list[str] = []
+    if not isinstance(domains, list):
+        return names
+    try:
+        from ui.backend.app.services.notifications.service import (
+            create_notification,
+        )
+    except Exception:
+        return names
+    for d in domains[:3]:
+        if not isinstance(d, dict):
+            continue
+        domain = str(d.get("domain") or "").strip()
+        if not domain:
+            continue
+        reason = str(d.get("reason") or "").strip()
+        try:
+            create_notification(
+                ctx.db_path,
+                project_id=ctx.project_id,
+                notification_type="knowledge_research_suggested",
+                severity="low",
+                title=f"是否补充「{domain}」领域的专业知识？",
+                description=(
+                    f"第 {covered[0]}-{covered[-1]} 章涉及该领域"
+                    f"（{reason or '正文出现相关内容'}）。"
+                    "确认后将联网研究并编译为知识 skill，"
+                    "生成时按章节相关度自动注入。"
+                ),
+                action_label="去研究",
+                action_url=f"/skills?tab=knowledge&domain={domain}",
+            )
+            names.append(domain)
+        except Exception as e:
+            logger.debug("domain notification skipped: %s", e)
+    return names
 
 
 def _record_run(
