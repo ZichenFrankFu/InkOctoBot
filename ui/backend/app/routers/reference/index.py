@@ -36,30 +36,76 @@ def _indexer():
         raise HTTPException(500, f"索引器初始化失败：{e}")
 
 
+def _chapter_count(ref_id: str) -> int:
+    import sqlite3
+    from ._common import reference_db_path
+    try:
+        with sqlite3.connect(reference_db_path()) as con:
+            row = con.execute(
+                "SELECT COUNT(*) FROM reference_chapters WHERE ref_id = ?",
+                (ref_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+@router.get("/works/{ref_id}/index/estimate")
+def estimate_work_index(ref_id: str, include_l3: bool = False):
+    """性能预期·机制1: ETA before the indexing run, based on
+    same-hardware history of past runs (机制3)."""
+    if not db().get_work(ref_id):
+        raise HTTPException(404, "参考作品不存在")
+    chapters = max(1, _chapter_count(ref_id))
+    from ...services.duration_estimator import estimate as _estimate
+    from ...services.project_paths import get_db_path
+    task_type = "reference_index_l3" if include_l3 else "reference_index_l2"
+    return _estimate(get_db_path(), task_type, chapters)
+
+
 @router.post("/works/{ref_id}/index/run")
 async def run_work_index(ref_id: str, body: IndexRunRequest):
     """Build / refresh the vector index for one work.
 
     L1+L2 are cheap and finish in-line; L3 is heavier but resumable
     (progress is persisted to ``work_index_progress`` so the call can
-    be killed and restarted).
+    be killed and restarted). Finished runs feed the duration history
+    so future ETAs reflect real throughput (性能预期·机制3).
     """
     w = db().get_work(ref_id)
     if not w:
         raise HTTPException(404, "参考作品不存在")
     indexer = _indexer()
+    import time as _time
+    t0 = _time.monotonic()
     try:
         if body.level == "L1":
-            return await indexer.index_l1(ref_id)
-        if body.level == "L2":
-            return await indexer.index_l2(ref_id)
-        if body.level == "L3":
-            return await indexer.index_l3(ref_id)
-        return await indexer.index_all(ref_id, include_l3=body.include_l3)
+            result = await indexer.index_l1(ref_id)
+        elif body.level == "L2":
+            result = await indexer.index_l2(ref_id)
+        elif body.level == "L3":
+            result = await indexer.index_l3(ref_id)
+        else:
+            result = await indexer.index_all(ref_id, include_l3=body.include_l3)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, f"索引失败：{e}")
+    try:
+        from ...services.duration_estimator import record_duration
+        from ...services.project_paths import get_db_path
+        task_type = (
+            "reference_index_l3"
+            if body.level == "L3" or (body.level not in ("L1", "L2") and body.include_l3)
+            else "reference_index_l2"
+        )
+        record_duration(
+            get_db_path(), task_type, max(1, _chapter_count(ref_id)),
+            _time.monotonic() - t0,
+        )
+    except Exception:
+        pass
+    return result
 
 
 @router.get("/works/{ref_id}/index/progress")

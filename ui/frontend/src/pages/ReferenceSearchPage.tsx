@@ -4,7 +4,6 @@ import { useToast } from "../components/shared/Toast";
 import CommonPatternLearningPanel from "../components/reference/CommonPatternLearningPanel";
 import { useDialog } from "../components/shared/Dialog";
 import type { ReferenceWork } from "../api/types";
-import InspirationLibrary from "../components/InspirationLibrary";
 import CompareWorksPanel from "../components/CompareWorksPanel";
 
 interface SearchHit {
@@ -62,13 +61,27 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
   const { confirm } = useDialog();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
   const [progressByRef, setProgressByRef] = useState<Record<string, IndexProgressRow[]>>({});
-  const [activeTab, setActiveTab] = useState<"search" | "library" | "index" | "compare" | "learn">("search");
+  const [activeTab, setActiveTab] = useState<"search" | "index" | "compare" | "learn">("search");
 
   // Search state
   const [q, setQ] = useState("");
   const [k, setK] = useState(10);
   const [includeL3InSearch, setIncludeL3InSearch] = useState(false);
   const [hits, setHits] = useState<SearchHit[]>([]);
+
+  // 灵感管理页跳转过来时携带的检索词 (sessionStorage handover)。
+  useEffect(() => {
+    try {
+      const pending = sessionStorage.getItem("inspiration_search_query");
+      if (pending) {
+        sessionStorage.removeItem("inspiration_search_query");
+        const query = pending.trim().slice(0, 600);
+        setQ(query);
+        runSearch(query);
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [loading, setLoading] = useState(false);
   const [drillingRefId, setDrillingRefId] = useState<string | null>(null);
   const [drillHits, setDrillHits] = useState<SearchHit[]>([]);
@@ -158,6 +171,15 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
   const buildIndex = async (refId: string, includeL3: boolean) => {
     setIndexing(prev => ({ ...prev, [refId]: true }));
     try {
+      // 性能预期·机制1: 执行前给出预计耗时（同硬件历史优先）。
+      try {
+        const est = await apiGet<any>(
+          `/api/references/works/${refId}/index/estimate?include_l3=${includeL3}`);
+        if (est?.display) {
+          toast(`开始建立索引，预计耗时 ${est.display}` +
+            (est.basis === "history" ? `（按 ${est.samples} 次历史运行估算）` : "（默认估算）"), "info");
+        }
+      } catch {}
       const r = await apiPost<any>(
         `/api/references/works/${refId}/index/run`,
         { level: "all", include_l3: includeL3 },
@@ -245,7 +267,6 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
       <div className="flex" style={{ marginBottom: 12, gap: 4, borderBottom: "1px solid var(--border)" }}>
         {([
           { key: "search"  as const, label: "灵感搜索" },
-          { key: "library" as const, label: "灵感库" },
           { key: "compare" as const, label: "作品对比" },
           { key: "learn"   as const, label: "共通点学习" },
           { key: "index"   as const, label: `索引管理 · ${works.length} 部作品` },
@@ -352,17 +373,6 @@ export default function ReferenceSearchPage({ onNavigate }: Props) {
             </div>
           )}
         </>
-      )}
-
-      {activeTab === "library" && (
-        <InspirationLibrary onSearchWorks={(text) => {
-          // Cap the query — embedding models truncate long input anyway
-          // and an over-long URL query param is best avoided.
-          const query = text.trim().slice(0, 600);
-          setQ(query);
-          setActiveTab("search");
-          runSearch(query);
-        }} />
       )}
 
       {activeTab === "index" && (

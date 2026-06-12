@@ -38,6 +38,49 @@ class InspirationUpdate(BaseModel):
     tags: Optional[list[str]] = None
 
 
+@router.get("/inspirations/stats")
+def inspiration_stats(project_id: Optional[str] = Query(None)):
+    """灵感管理页面事实行 (spec 6.3): 总数 / 已生成 embedding 数 /
+    已被章节使用数 / 类别分布。"""
+    import json as _json
+    import sqlite3
+    from ._common import idea_db_path
+    with sqlite3.connect(idea_db_path()) as con:
+        con.row_factory = sqlite3.Row
+        try:
+            where = ""
+            args: tuple = ()
+            if project_id:
+                where = "WHERE project_id IS NULL OR project_id = ?"
+                args = (project_id,)
+            rows = con.execute(
+                f"SELECT category, embedding_json, used_in_chapters_json "
+                f"FROM inspirations {where}",
+                args,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {"total": 0, "embedded": 0, "used": 0, "by_category": {}}
+    total = len(rows)
+    embedded = 0
+    used = 0
+    by_category: dict[str, int] = {}
+    for r in rows:
+        try:
+            if _json.loads(r["embedding_json"] or "[]"):
+                embedded += 1
+        except Exception:
+            pass
+        try:
+            if _json.loads(r["used_in_chapters_json"] or "[]"):
+                used += 1
+        except Exception:
+            pass
+        cat = r["category"] or "other"
+        by_category[cat] = by_category.get(cat, 0) + 1
+    return {"total": total, "embedded": embedded, "used": used,
+            "by_category": by_category}
+
+
 @router.get("/inspirations")
 def list_inspirations(project_id: Optional[str] = Query(None)):
     """List inspirations newest-updated first.
