@@ -317,16 +317,18 @@ def opening_nlp_analysis(platform: str | None = None) -> dict:
         if not _table_exists(con, "first_n_chapters"):
             return {"available": False, "reason": "no first_n_chapters table"}
         frm = "first_n_chapters fc"
-        cond = " WHERE fc.chapter_num=1 AND fc.chapter_content IS NOT NULL AND length(fc.chapter_content) > 300"
+        cond = " WHERE fc.chapter_content IS NOT NULL AND length(fc.chapter_content) > 300"
         params: list = []
         if platform and _table_exists(con, "novels"):
             frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
             cond += " AND n.platform=?"
             params.append(platform)
-        rows = con.execute(
-            f"SELECT fc.chapter_content cc, fc.word_count wc FROM {frm}{cond} LIMIT 200",
+        all_rows = con.execute(
+            f"SELECT fc.chapter_num cn, fc.chapter_content cc, fc.word_count wc "
+            f"FROM {frm}{cond} ORDER BY fc.novel_uid, fc.chapter_num LIMIT 600",
             params,
         ).fetchall()
+        rows = [r for r in all_rows if int(r["cn"] or 0) == 1][:200]
     if not rows:
         return {"available": False, "reason": "no openings to analyze"}
 
@@ -406,10 +408,20 @@ def opening_nlp_analysis(platform: str | None = None) -> dict:
                     break
         return out
 
+    # spec 2.1.3.2 §1 开篇章节NLP分析 维度（首章/章均/中位字数、平均
+    # 句长、分类型标点密度、高频词、生造词Step1）— shared helper so the
+    # 启动提取 prompt injects the SAME numbers.
+    from ..services.market_extractor.opening_stats import compute_opening_stats
+    spec_stats = compute_opening_stats([
+        {"chapter_num": int(r["cn"] or 0), "text": str(r["cc"] or "")}
+        for r in all_rows
+    ])
+
     return {
         "available": True,
         "platform": platform or "all",
         "sample_count": len(rows),
+        "spec_stats": spec_stats,
         "dialogue_ratio": {
             "mean": _mean(dialogue_ratios),
             "distribution": _hist(dialogue_ratios, [

@@ -117,7 +117,9 @@ export default function MarketFeatureExtractionPage() {
   const [platforms, setPlatforms] = useState<PlatformOption[]>([]);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [platform, setPlatform] = useState("");
-  const [category, setCategory] = useState("");
+  // 榜单多选 (用户需求): selectedCats 为勾选集合；manual 模式聚焦第一项。
+  const [selectedCats, setSelectedCats] = useState<string[]>([]);
+  const category = selectedCats[0] || "";
   const [launching, setLaunching] = useState(false);
 
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -157,10 +159,11 @@ export default function MarketFeatureExtractionPage() {
         `/api/market-extractor/categories${params}`,
       );
       setCategories(r.categories || []);
-      if (r.categories && r.categories.length > 0
-          && !r.categories.some(c => c.key === category)) {
-        setCategory(r.categories[0].key);
-      }
+      setSelectedCats(prev => {
+        const valid = prev.filter(k => (r.categories || []).some(c => c.key === k));
+        if (valid.length > 0) return valid;
+        return r.categories && r.categories.length > 0 ? [r.categories[0].key] : [];
+      });
     } catch (e: any) {
       toast(`加载榜单失败: ${e.message}`, "error");
     }
@@ -211,29 +214,34 @@ export default function MarketFeatureExtractionPage() {
   // ── actions ──
 
   const launchJob = useCallback(async () => {
-    if (!platform || !category) {
-      toast("请先选择平台 + 榜单", "error");
+    if (!platform || selectedCats.length === 0) {
+      toast("请先选择平台 + 至少一个榜单", "error");
       return;
     }
     if (!window.confirm(
-      `准备启动 API 提取任务：\n平台: ${platform}\n榜单: ${category}\n\n` +
-      `会调用大模型抽取代表作的章节特征与新词，` +
+      `准备启动 API 提取任务：\n平台: ${platform}\n榜单 (${selectedCats.length} 个): ${selectedCats.join("、")}\n\n` +
+      `每个榜单一个任务，会调用大模型抽取代表作的章节特征与新词，` +
       `更新对应的平台风格档案。可能耗时数分钟。继续？`,
     )) return;
     setLaunching(true);
-    try {
-      const r = await apiPost<{ job_id: string; state: string }>(
-        "/api/market-extractor/jobs",
-        { platform, category },
-      );
-      toast(`任务已启动 (${r.job_id.slice(0, 8)}...)`, "success");
-      await refreshJobs();
-    } catch (e: any) {
-      toast(`启动失败: ${e.message}`, "error");
-    } finally {
-      setLaunching(false);
+    let ok = 0;
+    const failed: string[] = [];
+    for (const cat of selectedCats) {
+      try {
+        await apiPost<{ job_id: string; state: string }>(
+          "/api/market-extractor/jobs",
+          { platform, category: cat },
+        );
+        ok += 1;
+      } catch (e: any) {
+        failed.push(`${cat}: ${e.message}`);
+      }
     }
-  }, [platform, category, refreshJobs, toast]);
+    if (ok > 0) toast(`已启动 ${ok}/${selectedCats.length} 个提取任务`, "success");
+    if (failed.length > 0) toast(`未能启动: ${failed.join("; ")}`, "error");
+    await refreshJobs();
+    setLaunching(false);
+  }, [platform, selectedCats, refreshJobs, toast]);
 
   const cancelJob = useCallback(async (job_id: string) => {
     if (!window.confirm("取消运行中的任务？\n已完成的阶段会保留，但后续阶段会跳过。")) return;
@@ -262,6 +270,10 @@ export default function MarketFeatureExtractionPage() {
       toast("请先选择平台 + 榜单", "error");
       return;
     }
+    if (selectedCats.length > 1) {
+      toast("手动模式一次只处理一个榜单 — 请只保留一个勾选", "error");
+      return;
+    }
     try {
       const r = await apiPost<{ prompt: string }>(
         "/api/market-extractor/manual-prompt",
@@ -272,7 +284,7 @@ export default function MarketFeatureExtractionPage() {
     } catch (e: any) {
       toast(`生成 prompt 失败: ${e.message}`, "error");
     }
-  }, [platform, category, toast]);
+  }, [platform, category, selectedCats.length, toast]);
 
   const commitManual = useCallback(async (payload: { text: string }) => {
     const r = await apiPost<{ profile_id: string }>(
@@ -296,7 +308,7 @@ export default function MarketFeatureExtractionPage() {
     setLoading(false);
   }, [refreshJobs, refreshProfiles]);
 
-  const SELECTION_OK = !!platform && !!category;
+  const SELECTION_OK = !!platform && selectedCats.length > 0;
 
   return (
     <div className="page-container" style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto" }}>
@@ -395,7 +407,21 @@ export default function MarketFeatureExtractionPage() {
                 }}>2</span>
                 选择榜单
               </h3>
-              <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{categories.length} 个</span>
+              <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                已选 {selectedCats.length} / {categories.length} 个
+              </span>
+              <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
+                  disabled={categories.length === 0}
+                  onClick={() => setSelectedCats(categories.map(c => c.key))}>
+                  全选本平台
+                </button>
+                <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
+                  disabled={selectedCats.length === 0}
+                  onClick={() => setSelectedCats([])}>
+                  清空
+                </button>
+              </div>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 200, overflowY: "auto" }}>
               {categories.length === 0 ? (
@@ -405,10 +431,13 @@ export default function MarketFeatureExtractionPage() {
               ) : categories.map(c => (
                 <button
                   key={c.key}
-                  className={category === c.key ? "btn-primary" : "btn"}
+                  className={selectedCats.includes(c.key) ? "btn-primary" : "btn"}
                   style={{ fontSize: 11, padding: "4px 12px", borderRadius: 16 }}
-                  onClick={() => setCategory(c.key)}
-                  title={`${c.list_count} 个榜单`}
+                  onClick={() => setSelectedCats(prev =>
+                    prev.includes(c.key)
+                      ? prev.filter(k => k !== c.key)
+                      : [...prev, c.key])}
+                  title={`${c.list_count} 个榜单 · 点击切换勾选`}
                 >{c.label}</button>
               ))}
             </div>
@@ -438,7 +467,10 @@ export default function MarketFeatureExtractionPage() {
               }}>
                 <strong>{tPlatform(platform)}</strong>
                 <span style={{ color: "var(--text-tertiary)", margin: "0 6px" }}>×</span>
-                <strong>{category}</strong>
+                <strong>{selectedCats.join("、")}</strong>
+                <span style={{ color: "var(--text-tertiary)", marginLeft: 6 }}>
+                  （{selectedCats.length} 个榜单{selectedCats.length > 1 ? "，逐个建任务" : ""}）
+                </span>
               </div>
             )}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -781,6 +813,7 @@ function OpeningAnalysisPanel({ platform }: { platform: string }) {
 function NlpAnalysisSection({ platform }: { platform: string }) {
   type NlpData = {
     available: boolean; reason?: string; sample_count?: number;
+    spec_stats?: any;
     dialogue_ratio?: { mean: number; distribution: Record<string, number> };
     sentence_length?: { mean: number; distribution: Record<string, number> };
     first_sentence_types?: { label: string; count: number }[];
@@ -793,7 +826,7 @@ function NlpAnalysisSection({ platform }: { platform: string }) {
   const [hasRun, setHasRun] = React.useState(false);
   const [fromCache, setFromCache] = React.useState(false);
 
-  const cacheKey = `inkoctobot_nlp_opening_v1_${platform || "all"}`;
+  const cacheKey = `inkoctobot_nlp_opening_v2_${platform || "all"}`;
 
   const runAnalysis = React.useCallback(async (force: boolean) => {
     setLoading(true);
@@ -909,6 +942,50 @@ function NlpAnalysisSection({ platform }: { platform: string }) {
             entries={(data.end_hook_types || []).map(d => [d.label, d.count] as [string, number])}
             accent="var(--indigo)"
           />
+          {data.spec_stats?.available && (
+            <div style={{ gridColumn: "1 / -1", border: "1px solid var(--border-subtle, var(--border))", borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                规格维度统计（spec 2.1.3.2 · {data.spec_stats.chapters_analyzed} 章）
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.8 }}>
+                <div>
+                  首章字数均值 <strong>{data.spec_stats.first_chapter_words_avg ?? "—"}</strong>
+                  <span style={{ margin: "0 8px", color: "var(--text-tertiary)" }}>·</span>
+                  章平均字数 <strong>{data.spec_stats.chapter_words_avg}</strong>
+                  <span style={{ margin: "0 8px", color: "var(--text-tertiary)" }}>·</span>
+                  章中位字数 <strong>{data.spec_stats.chapter_words_median}</strong>
+                  <span style={{ margin: "0 8px", color: "var(--text-tertiary)" }}>·</span>
+                  平均句长 <strong>{data.spec_stats.avg_sentence_length ?? "—"} 字</strong>
+                </div>
+                <div>
+                  标点密度（次/千字）：
+                  {Object.entries(data.spec_stats.punctuation_density_per_1k || {}).map(([k, v]) => (
+                    <span key={k} style={{ marginRight: 10 }}>{k} <strong>{String(v)}</strong></span>
+                  ))}
+                </div>
+                {(data.spec_stats.top_words || []).length > 0 && (
+                  <div>
+                    高频词：
+                    {(data.spec_stats.top_words || []).slice(0, 15).map((w: any) => (
+                      <span key={w.word} className="tag" style={{ fontSize: 10, padding: "0 6px", marginRight: 4 }}>
+                        {w.word} {w.count}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {(data.spec_stats.neologism_step1 || []).length > 0 && (
+                  <div>
+                    生造词 Step1 候选（频率+凝合度初筛）：
+                    {(data.spec_stats.neologism_step1 || []).slice(0, 12).map((n: any) => (
+                      <span key={n.term} className="tag" style={{ fontSize: 10, padding: "0 6px", marginRight: 4, color: "var(--gold)" }}>
+                        {n.term} {n.count}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--text-tertiary)" }}>
             样本数 {data.sample_count} 章
             {data.word_count_summary ? ` · 字数 均值 ${data.word_count_summary.mean} / 最小 ${data.word_count_summary.min} / 最大 ${data.word_count_summary.max}` : ""}

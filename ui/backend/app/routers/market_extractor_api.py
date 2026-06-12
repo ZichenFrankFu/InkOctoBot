@@ -224,12 +224,63 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
     if not work_block:
         work_block = "（暂无候选代表作 — 请凭你对该榜单的常识答题。）"
 
+    # ── 真实数据注入 (spec 2.1.3.2): 开篇章节 NLP 统计 + 章节原文节选 ──
+    nlp_block = "（暂无已采集的开篇章节，无法计算统计）"
+    excerpt_block = "（暂无已采集的章节原文）"
+    try:
+        from ..utils import resolve_crawler_db_path
+        from ..services.market_extractor import chapter_fetcher
+        from ..services.market_extractor.opening_stats import (
+            compute_opening_stats, render_stats_for_prompt,
+        )
+        crawler_db = resolve_crawler_db_path()
+        stat_rows: list[dict] = []
+        excerpts: list[str] = []
+        for w in works[:8]:
+            novel_id = str(w.get("source_db_novel_id") or "")
+            if not novel_id:
+                continue
+            chapters = chapter_fetcher.fetch_first_n_chapters(
+                crawler_db, novel_id, n=5,
+            )
+            for cn, text in chapters.items():
+                stat_rows.append({"chapter_num": cn, "text": text})
+            # 原文节选：top 3 部作品的首章片段
+            if len(excerpts) < 3 and chapters.get(1):
+                title = w.get("title") or novel_id
+                excerpt = chapters[1].strip()[:700]
+                excerpts.append(
+                    f"### 《{title}》第一章节选\n{excerpt}……"
+                )
+        if stat_rows:
+            nlp_block = render_stats_for_prompt(
+                compute_opening_stats(stat_rows),
+            )
+        if excerpts:
+            excerpt_block = "\n\n".join(excerpts)
+    except Exception as _e:
+        logger.debug("manual-prompt real-data injection skipped: %s", _e)
+
     prompt = (
         f"# 任务：为「{platform} × {category}」生成一份完整的「平台风格基线档案 (platform profile)」\n\n"
-        "你是一名资深的网络文学市场分析师。下面给出该平台 × 榜单下的代表作清单 "
-        "（含作者、类目、体量、标签、简介），请综合分析后输出一份**结构化、可直接注入正文生成 prompt 的**平台风格档案。\n\n"
+        "你是一名资深的网络文学市场分析师。下面给出该平台 × 榜单下的代表作清单、"
+        "开篇章节的真实 NLP 统计、以及部分作品的章节原文节选，请综合分析后输出一份"
+        "**结构化、可直接注入正文生成 prompt 的**平台风格档案。\n\n"
         f"## 代表作清单（top {min(len(works), 12)} / 共 {len(works)} 部）\n\n"
         f"{work_block}\n\n"
+        "## 开篇章节分析（对已采集开篇章节的真实统计）\n\n"
+        f"{nlp_block}\n\n"
+        "## 章节原文节选（用于风格与生造词判断）\n\n"
+        f"{excerpt_block}\n\n"
+        "## 分析维度要求\n\n"
+        "请按以下维度组织你的分析（输出仍压缩为下方 JSON 的 6 个字段）：\n"
+        "1. 生造词Step2：从上面的生造词Step1候选与原文节选中复核真正的专有名词/"
+        "人名/地名，总结该榜单生造词的常见模式与常见字\n"
+        "2. 行文风格七组维度：主角维度（登场位置/形象/金手指/能动性/驱动力）、"
+        "社会维度（关系网络/配角群像）、世界维度（世界观类型/铺展策略/反差点）、"
+        "钩子维度（开篇钩子/早期爽点/章末钩子）、风格维度（写作风格关键词/情绪基调）、"
+        "信息维度（信息揭露策略/第一卷概念锁定）、节奏维度（节奏类型/前期节奏策略）\n"
+        "3. 所有结论须以上方真实统计与原文节选为依据，避免凭空泛谈\n\n"
         "## 输出要求\n\n"
         "请严格输出**纯 JSON**（不要 markdown 围栏、不要前后多余文字），并包含以下 6 个字段；缺一不可：\n\n"
         "```\n"

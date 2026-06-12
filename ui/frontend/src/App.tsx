@@ -24,13 +24,10 @@ import SettingsPage from "./pages/SettingsPage";
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
-import DevConsolePage from "./pages/DevConsolePage";
 import MarketSearchPage from "./pages/MarketSearchPage";
 // New IA per latest UI overhaul: 4 top-level groups
 // (市场 / 参考 / 灵感 / 创作), 学习反馈 absorbed into 智能体,
 // Truth 审阅 moved into 创作.
-import PasteInboxPage from "./pages/PasteInboxPage";
-import TruthReviewPage from "./pages/TruthReviewPage";
 import MarketOverviewPage from "./pages/MarketOverviewPage";
 import MarketFeatureExtractionPage from "./pages/MarketFeatureExtractionPage";
 import InspirationOverviewPage from "./pages/InspirationOverviewPage";
@@ -47,9 +44,9 @@ type Tab =
   | "inspiration-overview" | "inspiration-search" | "inspiration-library"
   // 创作
   | "projects" | "project-setup" | "editor" | "characters"
-  | "worldbook" | "storyline" | "storyland" | "truth-review"
+  | "worldbook" | "storyline" | "storyland"
   // 智能体与设置
-  | "skills" | "settings" | "dev-console" | "paste-inbox"
+  | "skills" | "settings"
   // legacy / dashboard
   | "dashboard" | "rankings" | "analysis"
   // legacy aliases kept for deep-links from the inspector drawer:
@@ -102,8 +99,6 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "editor",       icon: "✎", label: "编辑器" },
       { key: "storyline",    icon: "─", label: "剧情线" },
       { key: "storyland",    icon: "◎", label: "故事中世界" },
-      // Truth 审阅 is per-project, belongs to 创作 group
-      { key: "truth-review", icon: "⚖", label: "Truth 审阅" },
     ],
   },
   {
@@ -111,9 +106,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     items: [
       // 智能体 page now also hosts 写作偏好 + 领域知识 as tabs
       { key: "skills",       icon: "⚙", label: "智能体" },
-      { key: "paste-inbox",  icon: "▽", label: "粘贴收件箱" },
       { key: "settings",     icon: "☸", label: "设置" },
-      { key: "dev-console",  icon: "⚉", label: "开发者控制台" },
     ],
   },
 ];
@@ -282,13 +275,10 @@ function AppInner() {
         {tab === "worldbook"     && <ErrorBoundary key="worldbook"><WorldBookPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
         {tab === "storyline"     && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
         {tab === "storyland" && <ErrorBoundary key="storyland"><StorylandPage projectId={activeProject} /></ErrorBoundary>}
-        {tab === "truth-review"  && <ErrorBoundary key="truth-review"><TruthReviewPage projectId={activeProject} onOpenChapter={() => setTab("editor")} /></ErrorBoundary>}
 
         {/* 智能体与设置 */}
         {tab === "skills"      && <ErrorBoundary key="skills"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
-        {tab === "paste-inbox" && <ErrorBoundary key="paste-inbox"><PasteInboxPage /></ErrorBoundary>}
         {tab === "settings"    && <ErrorBoundary key="settings"><SettingsPage /></ErrorBoundary>}
-        {tab === "dev-console" && <ErrorBoundary key="dev-console"><DevConsolePage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
 
         {/* Legacy deep-link tab keys — route into the new IA where preferences / domain
             live as tabs inside SkillsPage. */}

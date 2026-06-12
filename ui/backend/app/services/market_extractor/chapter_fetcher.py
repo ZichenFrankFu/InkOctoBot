@@ -50,17 +50,40 @@ def clean_chapter_text(raw: str) -> str:
 def fetch_chapter(
     crawler_db: str, novel_id: str, chapter_num: int,
 ) -> str | None:
-    """Return cleaned chapter text or None if unavailable."""
+    """Return cleaned chapter text or None if unavailable.
+
+    Supports both crawler schemas: the standalone crawler project's
+    ``chapters (novel_id, chapter_num, content)`` and this repo's
+    ``first_n_chapters (novel_uid, chapter_num, chapter_content)``
+    (storage/market_schema.py) — the latter is what /api/db/* reads,
+    so the 启动提取 prompt injects the same opening text the UI shows.
+    """
     if not Path(crawler_db).exists():
         return None
+    row = None
     try:
         with sqlite3.connect(crawler_db) as con:
             con.row_factory = sqlite3.Row
-            row = con.execute(
-                "SELECT content FROM chapters "
-                "WHERE novel_id = ? AND chapter_num = ?",
-                (novel_id, chapter_num),
-            ).fetchone()
+            try:
+                row = con.execute(
+                    "SELECT content FROM chapters "
+                    "WHERE novel_id = ? AND chapter_num = ?",
+                    (novel_id, chapter_num),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                row = None
+            if not row or not row["content"]:
+                try:
+                    alt = con.execute(
+                        "SELECT chapter_content AS content "
+                        "FROM first_n_chapters "
+                        "WHERE novel_uid = ? AND chapter_num = ?",
+                        (novel_id, chapter_num),
+                    ).fetchone()
+                    if alt and alt["content"]:
+                        row = alt
+                except sqlite3.OperationalError:
+                    pass
     except sqlite3.OperationalError as e:
         logger.warning("crawler chapters schema mismatch: %s", e)
         return None
