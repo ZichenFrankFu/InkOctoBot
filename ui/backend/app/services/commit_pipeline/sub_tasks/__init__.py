@@ -125,6 +125,13 @@ _REGISTRY: tuple[SubTaskDef, ...] = (
         task_type="preference_analyzer",
         module=preference_analyzer,
         manual_action_url_template="/skills?tab=preferences",
+        # Part A (agents/learning edit_batch_extractor, observation +
+        # threshold driven, wired to the 写作偏好 UI) is the production
+        # preference writer after the main merge — this draft-vs-final
+        # batch analyzer stays available for manual runs via
+        # /api/preferences/learn but is off by default to avoid double
+        # LLM spend on the same chapters.
+        default_enabled=False,
         notification_title_failed="用户偏好学习失败",
         notification_description_failed=(
             "批量偏好学习多次重试失败（不影响主流程）。"

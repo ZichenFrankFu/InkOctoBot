@@ -28,6 +28,51 @@ async def run(project_id: str = Query(...)):
         raise HTTPException(500, f"genesis failed: {e}")
 
 
+@router.get("/prompt")
+def prompt(project_id: str = Query(...)):
+    """完整渲染的创世 prompt — 手动模式 (LLM交互·机制4) 的复制源，
+    与 API 模式发送的内容逐字一致。"""
+    from ui.backend.app.services.genesis import build_genesis_prompt
+    try:
+        user_prompt, system_prompt = build_genesis_prompt(_db_path(), project_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"prompt": user_prompt, "system": system_prompt}
+
+
+@router.post("/generate")
+async def generate(project_id: str = Query(...)):
+    """API 模式: ONE LLM call, returns the raw response text only —
+    入库统一走 /submit so both modes share one parsing/landing path."""
+    from ui.backend.app.services.genesis import generate_raw
+    try:
+        raw = await generate_raw(_db_path(), project_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"genesis generate failed: {e}")
+    return {"raw": raw}
+
+
+class SubmitRequest(BaseModel):
+    project_id: str
+    # API 模式的原始回复 or 手动模式从网页版粘贴回来的文本。
+    raw: str
+
+
+@router.post("/submit")
+def submit(req: SubmitRequest):
+    """双模式共用入库口 (LLM交互·机制4): 自动解析回复文本并存为
+    待审创世提案（仍需在审阅区确认后才写入 canonical 表）。"""
+    from ui.backend.app.services.genesis import submit_raw
+    if not req.raw.strip():
+        raise HTTPException(400, "回复文本为空")
+    try:
+        return submit_raw(_db_path(), req.project_id, req.raw)
+    except Exception as e:
+        raise HTTPException(422, f"解析失败，请检查粘贴内容是否完整: {e}")
+
+
 @router.get("/proposal")
 def proposal(project_id: str = Query(...)):
     from ui.backend.app.services.genesis import get_pending_genesis

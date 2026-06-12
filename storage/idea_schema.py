@@ -78,13 +78,24 @@ def _conn_path(conn: sqlite3.Connection) -> str:
 
 
 def ensure_idea_tables(conn: sqlite3.Connection) -> None:
-    """Create the inspirations table + indexes (idempotent)."""
+    """Create the inspirations table + indexes (idempotent).
+
+    Column migration must run BEFORE index creation, because
+    ``idx_inspirations_project`` references ``project_id`` — a column
+    that's only present on v3+ tables. On a pre-v3 DB the CREATE
+    TABLE is a no-op (table already exists without the column), so
+    the column has to be added before any index referencing it can
+    succeed."""
     path = _conn_path(conn)
     if path != ":memory:" and path in _ensured_paths:
         return
-    for ddl in ALL_DDL:
-        conn.executescript(ddl)
+    # 1. Create-if-missing (schema-fresh path).
+    conn.executescript(_INSPIRATIONS)
+    # 2. Add v3 columns to a pre-existing table — must run before
+    #    any index referencing them is built.
     _ensure_inspirations_v3_columns(conn)
+    # 3. Now the indexes can safely reference project_id.
+    conn.executescript(_INDEXES)
     conn.commit()
     if path != ":memory:":
         _ensured_paths.add(path)

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useToast } from "../components/shared/Toast";
+import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
 
 // 故事中世界（Storyland）页面 — spec 6.4.5 三 tab：
 // 1. Storyland 状态：创世入口/审阅区、实体管理、SPO 事实（时间线/按章节）
@@ -118,15 +119,29 @@ function StateTab({ projectId, toast }: { projectId: string; toast: (m: string, 
 
   useEffect(() => { reload(); }, [reload]);
 
-  const runGenesis = async () => {
+  // LLM交互·机制4: 创世支持 API 模式与手动模式（复制 prompt → 网页版
+  // → 粘贴回 → 自动解析存为待审提案），统一走 UniversalLLMDialog。
+  const [genesisDialogOpen, setGenesisDialogOpen] = useState(false);
+  const [genesisPrompt, setGenesisPrompt] = useState<{ prompt: string; system: string } | null>(null);
+
+  const openGenesisDialog = async () => {
     setGenesisRunning(true);
     try {
-      const r = await apiPost<GenesisProposal>(
-        `/api/genesis/run?project_id=${projectId}`, {}, { timeoutMs: 300000 });
-      setProposal(r);
-      toast("创世提案已生成，请在审阅区确认", "success");
-    } catch (e: any) { toast(e.message || "创世失败", "error"); }
+      const r = await apiGet<{ prompt: string; system: string }>(
+        `/api/genesis/prompt?project_id=${projectId}`);
+      setGenesisPrompt(r);
+      setGenesisDialogOpen(true);
+    } catch (e: any) { toast(e.message || "无法装配创世 prompt", "error"); }
     finally { setGenesisRunning(false); }
+  };
+
+  const commitGenesis = async (payload: { text: string }) => {
+    const r = await apiPost<GenesisProposal>("/api/genesis/submit", {
+      project_id: projectId, raw: payload.text,
+    });
+    setProposal(r);
+    setGenesisDialogOpen(false);
+    toast("创世提案已解析，请在审阅区确认", "success");
   };
 
   const applyGenesis = async () => {
@@ -171,12 +186,34 @@ function StateTab({ projectId, toast }: { projectId: string; toast: (m: string, 
 
   return (
     <div>
+      <UniversalLLMDialog
+        open={genesisDialogOpen}
+        onClose={() => setGenesisDialogOpen(false)}
+        title="Storyland 创世"
+        description="单次 LLM 调用按五步顺序补全舞台全貌；支持 API 调用或复制 prompt 到大模型网页版后粘贴回结果（自动解析为待审提案）。"
+        prompt={genesisPrompt?.prompt || ""}
+        system={genesisPrompt?.system || ""}
+        invokeApi={async (signal) => {
+          const resp = await fetch(
+            `/api/genesis/generate?project_id=${encodeURIComponent(projectId)}`,
+            { method: "POST", signal },
+          );
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({} as any));
+            throw new Error(err?.detail || `HTTP ${resp.status}`);
+          }
+          const data = await resp.json();
+          return data.raw || "";
+        }}
+        onCommit={commitGenesis}
+        minChars={20}
+      />
       <div style={sectionStyle}>
         <div style={h2Style}>
           创世（从角色卡 + 世界书生成舞台全貌）
           <button className="btn" style={{ fontSize: 11, padding: "3px 12px", marginLeft: "auto" }}
-            onClick={runGenesis} disabled={genesisRunning}>
-            {genesisRunning ? "生成中..." : proposal ? "重新创世" : "运行创世"}
+            onClick={openGenesisDialog} disabled={genesisRunning}>
+            {genesisRunning ? "准备中..." : proposal ? "重新创世" : "运行创世"}
           </button>
         </div>
         {!proposal && (

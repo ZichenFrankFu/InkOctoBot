@@ -162,13 +162,18 @@ def _normalize(parsed: dict) -> dict:
     return {"stage": stage, "entities": entities, "facts": facts}
 
 
-async def run_genesis(db_path: str, project_id: str) -> dict[str, Any]:
-    """One-shot genesis call → pending proposal for review. Returns
-    {proposal_id, stage, entities, facts}."""
+def build_genesis_prompt(db_path: str, project_id: str) -> tuple[str, str]:
+    """(user_prompt, system_prompt) — the exact text either execution
+    mode sends, so API / 手动模式 (LLM交互·机制4) stay byte-identical."""
     chars, wb = _gather_material(db_path, project_id)
     if chars.startswith("（无") and wb.startswith("（无"):
         raise ValueError("项目还没有角色卡或世界书条目，无法创世")
+    return _USER_TMPL.format(characters=chars, worldbook=wb), _SYSTEM
 
+
+async def generate_raw(db_path: str, project_id: str) -> str:
+    """API mode: ONE LLM call (Storyland·机制7), returns the raw text."""
+    prompt, system = build_genesis_prompt(db_path, project_id)
     from llm.call_site import LLMCallSite
     cs = LLMCallSite(
         call_site_id="storyland.genesis",
@@ -176,13 +181,18 @@ async def run_genesis(db_path: str, project_id: str) -> dict[str, Any]:
         parsed_target_table="truth_current_state",
         default_max_tokens=4000, default_temperature=0.4,
     )
-    raw = await cs.invoke(
-        prompt=_USER_TMPL.format(characters=chars, worldbook=wb),
-        system=_SYSTEM,
+    return await cs.invoke(
+        prompt=prompt, system=system,
         project_id=project_id, db_path=db_path,
     )
-    proposal = _normalize(_extract_json(raw))
 
+
+def submit_raw(db_path: str, project_id: str, raw: str) -> dict[str, Any]:
+    """Shared landing point for BOTH modes (LLM交互·机制4 手动模式:
+    用户粘贴网页版回复 → 自动解析并存为待审提案). Parses + normalizes
+    the response text and stores it as the pending genesis proposal —
+    审阅区确认后才入库 (机制6)."""
+    proposal = _normalize(_extract_json(raw))
     pid = f"gen_{uuid.uuid4().hex[:12]}"
     with sqlite3.connect(db_path) as con:
         con.execute(
@@ -201,6 +211,13 @@ async def run_genesis(db_path: str, project_id: str) -> dict[str, Any]:
         )
         con.commit()
     return {"proposal_id": pid, **proposal}
+
+
+async def run_genesis(db_path: str, project_id: str) -> dict[str, Any]:
+    """One-shot genesis call → pending proposal for review. Returns
+    {proposal_id, stage, entities, facts}."""
+    raw = await generate_raw(db_path, project_id)
+    return submit_raw(db_path, project_id, raw)
 
 
 def get_pending_genesis(db_path: str, project_id: str) -> dict[str, Any] | None:

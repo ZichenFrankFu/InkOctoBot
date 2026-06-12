@@ -4,6 +4,7 @@ import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { AppSettings } from "../api/types";
 import PromptPreview from "../components/reference/PromptPreview";
+import { getLang, setLang, useLang, t } from "../i18n";
 
 // Pipeline roles laid out in workflow order: 参考作品 → 开书 → 角色 & 世界书
 // → 正文创作 → 评估. Every group covers operations that run a built-in AI.
@@ -663,6 +664,9 @@ function SystemTab({
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, maxWidth: 800 }}>
+      {/* Language toggle (中文 / English) — system-level UI preference. */}
+      <LanguageToggleSection />
+
       {/* Crawler DB Path */}
       <div className="card" style={{ gridColumn: "1 / -1" }}>
         <div className="card-header"><h3>爬虫数据库路径</h3></div>
@@ -1089,6 +1093,36 @@ function PromptsTab() {
           </div>
         ))
       )}
+    </div>
+  );
+}
+
+
+/* ── Language Toggle ───────────────────────────────────────────────
+ * Wired to the global i18n module. Defaults to Chinese; persists to
+ * localStorage. Per-name proper nouns (embedding / AI / API / etc.)
+ * are deliberately kept in their original casing across both langs.
+ */
+function LanguageToggleSection() {
+  const lang = useLang();
+  return (
+    <div className="card" style={{ gridColumn: "1 / -1", padding: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <h3 style={{ margin: 0, fontSize: 14 }}>{t("语言")}</h3>
+        <div style={{ display: "flex", gap: 6 }}>
+          {([
+            { key: "zh" as const, label: "中文" },
+            { key: "en" as const, label: "English" },
+          ]).map(opt => (
+            <button
+              key={opt.key}
+              className={lang === opt.key ? "btn-primary" : "btn"}
+              style={{ fontSize: 13, padding: "4px 16px" }}
+              onClick={() => setLang(opt.key)}
+            >{opt.label}</button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

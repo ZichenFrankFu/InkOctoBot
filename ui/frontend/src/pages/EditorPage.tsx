@@ -11,6 +11,7 @@ import EvalReport from "../components/editor/EvalReport";
 import type { EvalReportData } from "../components/editor/EvalReport";
 import FollowUpQuestions from "../components/shared/FollowUpQuestions";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
+import EditorRightDrawer from "../components/shared/EditorRightDrawer";
 
 const vuid = () => `v_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -104,6 +105,24 @@ function formatSceneDirectorOutput(result: any): string {
   return output;
 }
 
+// MIN_SAVE_CHARS — physical guard against the "saved 0-char text_versions"
+// disaster the user hit (see docs/UI_REDESIGN_SPEC.md §3). If the editor
+// content is below this, save-paths confirm before writing. 50 chars is
+// well below any real chapter and well above any conceivable empty paste.
+const MIN_SAVE_CHARS = 50;
+
+/** Returns true if the user wants to save anyway, false to abort. */
+function confirmShortSave(chars: number): boolean {
+  return window.confirm(
+    ` 内容只有 ${chars} 字 (< ${MIN_SAVE_CHARS} 字推荐下限)。\n\n` +
+    `这是过去几次"text_versions 0 字符"灾难的根因。常见原因：\n` +
+    `  • LLM 调用其实没返回内容\n` +
+    `  • 粘贴到了错误的输入框\n` +
+    `  • 编辑器内容被清空后误点了保存\n\n` +
+    `仍然要保存吗？`
+  );
+}
+
 export default function EditorPage({ projectId, onNavigate }: { projectId: string; onNavigate?: (tab: string) => void }) {
   const { toast } = useToast();
   const [volumes, setVolumes] = useState<LocalVolume[]>([]);
@@ -111,6 +130,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [content, setContent] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
+  // Right-side inspector drawer (spec §5).
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Last successfully-persisted snapshot per chapter — lets the
   // auto-save skip no-op writes (e.g. right after a chapter switch).
@@ -298,7 +319,10 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     if (autoVersionTimer.current) clearTimeout(autoVersionTimer.current);
     autoVersionTimer.current = setTimeout(() => {
       if (content === lastAutoVersionContent.current) return;
-      if (content.trim().length < 10) return; // skip trivially short
+      // Skip when content is below the save-disaster floor — auto-save
+      // runs silently in the background so it can't even prompt the
+      // user; just never write below MIN_SAVE_CHARS.
+      if (content.trim().length < MIN_SAVE_CHARS) return;
       lastAutoVersionContent.current = content;
       const newVersion: TextVersion = {
         version_id: vuid(), chapter_id: activeChId,
@@ -1213,6 +1237,17 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       };
       setVersionHistory(prev => [...prev, prevVersion]);
     }
+    // Char-count guard before persisting an "AI version" — the
+    // recurring "saved 0 chars" path. Empty/short LLM output should
+    // not silently produce a text_versions row.
+    const finalChars = (finalText || "").trim().length;
+    if (finalChars < MIN_SAVE_CHARS) {
+      if (!confirmShortSave(finalChars)) {
+        toast("已取消保存（内容过短）", "error");
+        setMergePreview(null);
+        return;
+      }
+    }
     setContent(finalText);
     // Save AI version
     const aiVersion: TextVersion = {
@@ -1227,7 +1262,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }).catch((e) => toast(e.message || "操作失败", "error"));
     setMergePreview(null);
     setAiTab("eval");
-  }, [projectId, activeChId, content, versionHistory]);
+  }, [projectId, activeChId, content, versionHistory, toast]);
 
   // A4: EditAnalyzer feedback — when user edits AI-generated text and saves
   const editFeedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1283,6 +1318,38 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   return (
     <div className="page-full">
+      {/* Floating right-drawer trigger (spec §5: PromptInspector +
+          NotificationFeed + deep-links to the learning surfaces) */}
+      <button
+        onClick={() => setDrawerOpen(true)}
+        title="打开右侧 Inspector (Prompt 透视 / 通知 / 导航)"
+        style={{
+          position: "fixed", right: 16, top: 60, zIndex: 800,
+          width: 40, height: 40, borderRadius: "50%",
+          background: "var(--bg-surface)",
+          border: "1px solid var(--border)",
+          boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
+          fontSize: 18, cursor: "pointer",
+        }}
+        aria-label="Open inspector drawer"
+      >
+        
+      </button>
+
+      <EditorRightDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        projectId={projectId}
+        chapterId={activeChId}
+        chapterNum={(activeCh as any)?.order || (activeCh as any)?.chapter_num || 1}
+        synopsis={activeCh?.synopsis || ""}
+        characters={activeCh?.characters || []}
+        onNavigate={(page) => {
+          setDrawerOpen(false);
+          onNavigate?.(page);
+        }}
+      />
+
       <div className="editor-layout">
         {/* LEFT PANEL */}
         {leftPanelOpen ? (
@@ -1345,6 +1412,10 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                 onClick={() => {
                   // Save current state as a version
                   if (!activeChId || !content) return;
+                  // Char-count guard — prevents the 0-char text_versions
+                  // disaster (see MIN_SAVE_CHARS docstring above).
+                  const chars = content.trim().length;
+                  if (chars < MIN_SAVE_CHARS && !confirmShortSave(chars)) return;
                   const newVersion: TextVersion = {
                     version_id: vuid(), chapter_id: activeChId,
                     version: versionHistory.filter(v => v.chapter_id === activeChId).length + 1,
@@ -1524,7 +1595,7 @@ function EventRow({ ev, on, onToggle }: {
   return (
     <div style={{ borderBottom: "1px solid var(--border)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
-        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--gold)", fontWeight: 700 }}>{on ? "✓" : ""}</span>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--gold)", fontWeight: 700 }}>{on ? "" : ""}</span>
         {ev.chapter && (
           <span style={{
             fontSize: 9, padding: "0 5px", flexShrink: 0, borderRadius: 3,
@@ -1573,7 +1644,7 @@ function PickRow({ label, sub, on, color, onClick }: {
       borderBottom: "1px solid var(--border)",
       background: on ? "var(--bg-surface)" : "transparent",
     }}>
-      <span style={{ width: 11, flexShrink: 0, color, fontWeight: 700 }}>{on ? "✓" : ""}</span>
+      <span style={{ width: 11, flexShrink: 0, color, fontWeight: 700 }}>{on ? "" : ""}</span>
       <span style={{
         flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
         fontWeight: on ? 600 : 400, color: on ? color : "var(--text-secondary)",
@@ -2581,7 +2652,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                               onMouseEnter={e => { e.currentTarget.style.borderColor = isContinue ? "var(--jade)" : "var(--accent)"; e.currentTarget.style.background = isContinue ? "rgba(76,175,80,0.15)" : "var(--accent-subtle)"; }}
                               onMouseLeave={e => { e.currentTarget.style.borderColor = isContinue ? "var(--jade)" : "var(--border)"; e.currentTarget.style.background = isContinue ? "rgba(76,175,80,0.08)" : "var(--bg-surface)"; }}
                             >
-                              {isContinue ? `✓ ${opt}` : opt}
+                              {isContinue ? ` ${opt}` : opt}
                             </button>
                           );
                         })}
@@ -2928,14 +2999,14 @@ function DiffView({ oldText, newText, onAccept, onCancel }: {
                   style={{ fontSize: 10, padding: "2px 10px", background: choices.get(hunk.id) === "old" ? "var(--error)" : undefined, border: choices.get(hunk.id) === "old" ? "none" : undefined, color: choices.get(hunk.id) === "old" ? "#fff" : undefined }}
                   onClick={() => toggle(hunk.id)}
                 >
-                  {choices.get(hunk.id) === "old" ? "✓ 保留原文" : "保留原文"}
+                  {choices.get(hunk.id) === "old" ? " 保留原文" : "保留原文"}
                 </button>
                 <button
                   className={choices.get(hunk.id) === "new" ? "btn-primary" : "btn"}
                   style={{ fontSize: 10, padding: "2px 10px", background: choices.get(hunk.id) === "new" ? "var(--jade)" : undefined, border: choices.get(hunk.id) === "new" ? "none" : undefined, color: choices.get(hunk.id) === "new" ? "#fff" : undefined }}
                   onClick={() => toggle(hunk.id)}
                 >
-                  {choices.get(hunk.id) === "new" ? "✓ 使用 AI" : "使用 AI"}
+                  {choices.get(hunk.id) === "new" ? " 使用 AI" : "使用 AI"}
                 </button>
               </div>
             )}

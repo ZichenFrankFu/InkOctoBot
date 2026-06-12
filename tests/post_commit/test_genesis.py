@@ -193,3 +193,37 @@ class TestApply:
         genesis.apply_genesis(db, "p1", out["proposal_id"])
         with pytest.raises(ValueError):
             genesis.apply_genesis(db, "p1", out["proposal_id"])
+
+
+class TestManualMode:
+    """LLM交互·机制4: 创世手动模式 — prompt 预览与粘贴回提交共用
+    同一解析/入库口，与 API 模式逐字一致。"""
+
+    @pytest.mark.asyncio
+    async def test_prompt_preview_matches_material(self, db) -> None:
+        prompt, system = genesis.build_genesis_prompt(db, "p1")
+        assert "张远" in prompt and "临海城" in prompt
+        assert "步骤一" in system
+
+    @pytest.mark.asyncio
+    async def test_submit_pasted_reply_stores_proposal(self, db) -> None:
+        raw = json.dumps(_LLM_OUTPUT, ensure_ascii=False)
+        out = genesis.submit_raw(db, "p1", raw)
+        assert out["stage"] == "临海城"
+        assert genesis.get_pending_genesis(db, "p1")["proposal_id"] == out["proposal_id"]
+        # 入库仍需审阅确认 — canonical 表此时为空。
+        with sqlite3.connect(db) as con:
+            assert con.execute(
+                "SELECT COUNT(*) FROM storyland_entities "
+                "WHERE project_id='p1'").fetchone()[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_submit_garbage_raises(self, db) -> None:
+        with pytest.raises(Exception):
+            genesis.submit_raw(db, "p1", "这不是 JSON")
+
+    @pytest.mark.asyncio
+    async def test_fenced_paste_tolerated(self, db) -> None:
+        raw = "```json\n" + json.dumps(_LLM_OUTPUT, ensure_ascii=False) + "\n```"
+        out = genesis.submit_raw(db, "p1", raw)
+        assert out["stage"] == "临海城"

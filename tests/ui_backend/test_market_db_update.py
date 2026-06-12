@@ -54,6 +54,9 @@ class TestNovelUpdate:
             "tags": ["系统流", "热血"],
         })
         assert r.status_code == 200
+        body = r.json()
+        assert body["novel"]["author"] == "新作者"
+        assert "title" in body["patched"] and "tags" in body["patched"]
         with sqlite3.connect(db) as con:
             con.row_factory = sqlite3.Row
             n = con.execute("SELECT * FROM novels WHERE novel_uid=1").fetchone()
@@ -70,13 +73,19 @@ class TestNovelUpdate:
                 "WHERE m.novel_uid=1")}
             assert tags == {"系统流", "热血"}
 
-    def test_unknown_field_rejected(self, client) -> None:
+    def test_identity_fields_ignored(self, client, db) -> None:
+        """Crawler-derived identity columns can't be reshaped — unknown
+        keys are ignored; with nothing editable left the call is 400."""
         r = client.put("/api/db/novel/1", json={"platform": "fanqie"})
         assert r.status_code == 400
-
-    def test_invalid_status_rejected(self, client) -> None:
-        assert client.put(
-            "/api/db/novel/1", json={"status": "dead"}).status_code == 400
+        r2 = client.put("/api/db/novel/1",
+                        json={"platform": "fanqie", "author": "新作者"})
+        assert r2.status_code == 200
+        assert r2.json()["patched"] == ["author"]
+        with sqlite3.connect(db) as con:
+            plat, = con.execute(
+                "SELECT platform FROM novels WHERE novel_uid=1").fetchone()
+        assert plat == "qidian"
 
     def test_missing_novel_404(self, client) -> None:
         assert client.put(

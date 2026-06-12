@@ -927,3 +927,6 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
 
     from storage.pipeline_session_schema import ensure_pipeline_session_table
     ensure_pipeline_session_table(conn)
+
+    from storage.edit_learning_schema import ensure_edit_learning_tables
+    ensure_edit_learning_tables(conn)

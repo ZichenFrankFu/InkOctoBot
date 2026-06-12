@@ -509,7 +509,9 @@ function WorkCard({ w, onOpen }: {
         </div>
       )}
 
-      {/* Chapter / volume / word counts */}
+      {/* Chapter / volume / word counts — no more "已上传正文（尚未
+          分段）" branch per latest IA, kept "未上传正文" only as a
+          fallback when there is no text at all. */}
       <div className="text-xs text-muted" style={{ lineHeight: 1.5 }}>
         {ch.chapters > 0 ? (
           <>
@@ -517,16 +519,16 @@ function WorkCard({ w, onOpen }: {
             <span>{ch.chapters} {isEpisode ? "集" : "章"}</span>
             {ch.charCount > 0 && <span> · {fmtChars(ch.charCount)}</span>}
           </>
-        ) : hasText ? (
-          <span>已上传正文（尚未分段）</span>
-        ) : (
+        ) : !hasText ? (
           <span style={{ color: "var(--text-tertiary)", fontStyle: "italic" }}>未上传正文</span>
-        )}
+        ) : null}
       </div>
 
-      {/* Data completeness — 正文 flag + per-chapter feature progress */}
+      {/* Compact 正文+tag + single extraction progress. The earlier
+          per-feature bars (大纲/角色/设定/特征) all came from the
+          same per-chapter extraction job, so showing one progress
+          bar tells the same story without 4x visual weight. */}
       <div className="flex flex-col gap-5">
-        <div className="text-xs text-muted">数据完整度</div>
         <div className="flex items-center gap-8">
           <span className="text-xs text-muted" style={{ minWidth: 30 }}>正文</span>
           <span className="tag" style={{
@@ -536,10 +538,13 @@ function WorkCard({ w, onOpen }: {
             border: `1px solid ${hasText ? "var(--jade)" : "var(--border)"}`,
           }}>{hasText ? "已上传" : "未上传"}</span>
         </div>
-        <FeatureBar label="大纲" done={fp.events} total={fp.total} />
-        <FeatureBar label="角色" done={fp.characters} total={fp.total} />
-        <FeatureBar label="设定" done={fp.settings} total={fp.total} />
-        <FeatureBar label="特征" done={fp.style} total={fp.total} />
+        {fp.total > 0 && (
+          <FeatureBar
+            label="提取进度"
+            done={Math.min(fp.events, fp.characters, fp.settings, fp.style)}
+            total={fp.total}
+          />
+        )}
       </div>
 
       {/* Actions */}

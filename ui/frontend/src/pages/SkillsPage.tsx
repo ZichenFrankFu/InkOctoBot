@@ -2,8 +2,10 @@ import React, { useEffect, useState, useCallback } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import type { SkillInfo, Project, WritingKnowledgeEntry } from "../api/types";
 import { useToast } from "../components/shared/Toast";
-import LearnedPreferencesPanel from "../components/skills/LearnedPreferencesPanel";
-import KnowledgeResearchPanel from "../components/skills/KnowledgeResearchPanel";
+// Two new tabs surface Part A (Edit Learning) + Part B (Domain Knowledge)
+// — replaced the standalone "学习反馈" sidebar group per the new IA.
+import PreferencesPage from "./PreferencesPage";
+import DomainLearningPage from "./DomainLearningPage";
 
 const SECTION_COLORS: Record<string, string> = {
   feature_extraction: "var(--cyan)",
@@ -96,7 +98,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
   // Track deactivated state for learning log entries not in registry
   const [logDeactivated, setLogDeactivated] = useState<Set<string>>(new Set());
 
-  const [activeTab, setActiveTab] = useState<"agents" | "learning" | "knowledge">("agents");
+  const [activeTab, setActiveTab] = useState<"agents" | "learning" | "knowledge" | "preferences" | "domain">("agents");
   // Expanded section in the agents tab
   const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
 
@@ -496,6 +498,9 @@ export default function SkillsPage({ projects, activeProject }: Props) {
           { key: "agents" as const, label: "智能体 & Skills", count: sectionSkillTotal },
           { key: "learning" as const, label: "自学习成果", count: learnedCount },
           { key: "knowledge" as const, label: "写作知识", count: knowledgeList.length },
+          // Promoted into here from the removed 学习反馈 sidebar group:
+          { key: "preferences" as const, label: " 写作偏好", count: 0 },
+          { key: "domain" as const, label: " 领域知识", count: 0 },
         ]).map(tab => (
           <button
             key={tab.key}
@@ -749,9 +754,6 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                 )}
               </div>
 
-              {/* ── 自学习偏好画像（章节修改差异）+ 确认 gate ── */}
-              <LearnedPreferencesPanel projectId={prefProject} />
-
               {/* ── Per-Project Preference Memories ── */}
               <div style={{ padding: "14px 16px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
@@ -886,8 +888,6 @@ export default function SkillsPage({ projects, activeProject }: Props) {
       {/* ═══════════════════════ TAB: Writing Knowledge ═══════════════════════ */}
       {activeTab === "knowledge" && (
         <>
-          {/* 专业知识自学习 (spec 4.2): 联网研究 → AI 编译知识 skill */}
-          <KnowledgeResearchPanel projectId={prefProject} />
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
             <input className="input" placeholder="搜索写作知识..." value={knSearch}
               onChange={e => setKnSearch(e.target.value)} style={{ maxWidth: 280 }} />
@@ -993,6 +993,12 @@ export default function SkillsPage({ projects, activeProject }: Props) {
           )}
         </>
       )}
+
+      {/* ═══════════════════════ TAB: 写作偏好 (Part A) ═══════════════════════ */}
+      {activeTab === "preferences" && <PreferencesPage projectId={activeProject} />}
+
+      {/* ═══════════════════════ TAB: 领域知识 (Part B) ═══════════════════════ */}
+      {activeTab === "domain" && <DomainLearningPage projectId={activeProject} />}
     </div>
   );
 }
