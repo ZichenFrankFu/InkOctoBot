@@ -38,21 +38,25 @@ _STOPWORDS = set(
     "们与而被把那等中下大小多少又再还只如果因为所以可是但是什么这个那个"
 )
 
-# 常用词 / 通用叙事词 / 姓氏 现由可编辑的配置文件加载（resources/wordlists/
-# *.txt，见 wordlists.py），而非硬编码在此 — 用户可增删扩展。
+# 常用词 / 姓氏 / 音译字 现由可编辑的配置文件加载（resources/wordlists/*.txt，
+# 见 wordlists.py），数据来源可靠（HIT/Baidu 停用词表 + 百家姓/日文姓 + 新华社
+# 译音表），而非硬编码 — 用户可增删扩展。
 try:
     from . import wordlists as _wl
-    _COMMON_WORDS: frozenset[str] = _wl.load_stopwords()
-    _GENERIC_CONTENT: frozenset[str] = _wl.load_generic_content()
+    _COMMON_WORDS: frozenset[str] = _wl.load_common_words()
     _SURNAMES: frozenset[str] = _wl.load_surnames()
+    _TRANSLIT_CHARS: frozenset[str] = _wl.load_translit_chars()
 except Exception:  # pragma: no cover - resources always present
     _COMMON_WORDS = frozenset()
-    _GENERIC_CONTENT = frozenset()
     _SURNAMES = frozenset()
+    _TRANSLIT_CHARS = frozenset()
+
+# Strong name-ending characters (音译名 / 角色名常见尾字).
+_NAME_END_CHARS = set("丝娜莉娅妮克特斯尔薇露琳蒂娃曼茜黛缇媛婭菈珂")
 
 
 def _is_common(w: str) -> bool:
-    return w in _COMMON_WORDS or w in _GENERIC_CONTENT
+    return w in _COMMON_WORDS
 
 
 # Particles/demonstratives/interrogatives that never occur inside a Chinese
@@ -165,22 +169,48 @@ def _load_known_words() -> set[str]:
     return known
 
 
+def _looks_like_foreign_name(term: str) -> bool:
+    """Transliterated foreign name (英/日 音译) — e.g. 爱丽丝 / 艾莉丝 / 玛丽亚
+    / 杰克逊. A ≥3 字 word that is dominated by 音译字 or ends in a strong
+    name char, and isn't a common word."""
+    if len(term) < 3 or len(term) > 6 or _is_common(term):
+        return False
+    if not re.fullmatch(r"[一-鿿]+", term):
+        return False
+    tr = sum(1 for ch in term if ch in _TRANSLIT_CHARS)
+    if tr >= max(2, (len(term) + 1) // 2):
+        return True
+    # ends in a strong name char + at least one other 音译字 (爱丽丝: 丝 + 丽?)
+    if term[-1] in _NAME_END_CHARS and tr >= 1:
+        return True
+    return False
+
+
 def _looks_like_person_name(term: str, flag: str, freq: dict | None = None) -> bool:
     """Whether a token is a character name → excluded from 高频词 / 生造词.
 
-    A name's first char is a 百家姓 surname (config: surnames.txt). The
-    surname gate spares coinages jieba mis-tags as names (灵能 / 异能 — 灵 /
-    异 aren't surnames). Two triggers:
-      1. jieba directly tagged it 'nr*' (person name).
-      2. a surname-led 2-3 字 word jieba doesn't know (freq==0) — real words
-         like 王朝 / 李子 are in the dictionary (freq>0), coinages starting
-         with a surname char are vanishingly rare, so OOV ⇒ a name.
+    Three triggers:
+      1. Chinese name: first char is a 百家姓 surname (config: surnames.txt;
+         spares coinages jieba mis-tags as names — 灵能 / 异能, 灵/异 aren't
+         surnames) AND either jieba tagged it 'nr*' OR it's a surname-led 2-3
+         字 word jieba doesn't know (freq==0; real words like 王朝/李子 are in
+         the dict freq>0).
+      2. Japanese surname prefix (上杉 / 武田 …) in surnames.txt.
+      3. Transliterated foreign name (音译字, see _looks_like_foreign_name).
     """
-    if not (2 <= len(term) <= 4) or term[0] not in _SURNAMES:
-        return False
-    if flag.startswith("nr"):
+    # The whole token IS a surname (e.g. a standalone 上杉 / 欧阳 token).
+    if term in _SURNAMES:
         return True
-    if freq is not None and len(term) <= 3 and freq.get(term, 0) == 0:
+    if 2 <= len(term) <= 4 and term[0] in _SURNAMES:
+        if flag.startswith("nr"):
+            return True
+        if freq is not None and len(term) <= 3 and freq.get(term, 0) == 0:
+            return True
+    # Compound-surname prefix (上杉绘梨衣 → 上杉…).
+    for ln in (3, 2):
+        if len(term) >= ln + 1 and term[:ln] in _SURNAMES:
+            return True
+    if _looks_like_foreign_name(term):
         return True
     return False
 

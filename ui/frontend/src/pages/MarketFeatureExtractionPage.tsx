@@ -80,42 +80,10 @@ interface CategoryOption {
 
 // 起点分类体系：大分类（novel_types）与副分类（sub_to_main_map 的键）。
 // 起点用「大分类 / 副分类」而非「类目 / 标签」，两者集合互斥，用于去重
-// 与正确归类（起点没有番茄式的标签共现）。
-const QIDIAN_MAIN_CATS = new Set<string>([
-  "玄幻", "奇幻", "武侠", "仙侠", "都市", "现实", "军事", "历史",
-  "游戏", "体育", "科幻", "诸天无限", "悬疑", "轻小说", "短篇",
-]);
-const QIDIAN_SUB_CATS = new Set<string>([
-  "东方玄幻", "异世大陆", "高武世界", "王朝争霸",
-  "剑与魔法", "史诗奇幻", "神秘幻想", "现代魔法", "历史神话", "另类幻想",
-  "传统武侠", "武侠幻想", "国术无双", "古武未来", "武侠同人",
-  "修真文明", "幻想修仙", "现代修真", "神话修真", "古典仙侠",
-  "都市生活", "娱乐明星", "商战职场", "异术超能", "都市异能", "青春校园",
-  "架空历史", "两宋元明", "外国历史", "上古先秦", "秦汉三国", "两晋隋唐",
-  "五代十国", "清史民国", "历史传记", "民间传说",
-  "战争幻想", "谍战特工", "军旅生涯", "抗战烽火", "军事战争",
-  "悬疑侦探", "诡秘悬疑", "探险生存", "奇妙世界", "古今传奇",
-  "星际文明", "时空穿梭", "未来世界", "古武机甲", "超级科技", "进化变异", "末世危机",
-  "电子竞技", "虚拟网游", "游戏异界", "游戏系统", "游戏主播",
-  "体育赛事", "篮球运动", "足球运动",
-  "原生幻想", "衍生同人", "搞笑吐槽", "恋爱日常",
-]);
-// 副分类 → 大分类，用于开书机会标注「大分类·副分类」(如 轻小说·原生幻想)。
-const QIDIAN_SUB_TO_MAIN: Record<string, string> = {
-  东方玄幻: "玄幻", 异世大陆: "玄幻", 高武世界: "玄幻", 王朝争霸: "玄幻",
-  剑与魔法: "奇幻", 史诗奇幻: "奇幻", 神秘幻想: "奇幻", 现代魔法: "奇幻", 历史神话: "奇幻", 另类幻想: "奇幻",
-  传统武侠: "武侠", 武侠幻想: "武侠", 国术无双: "武侠", 古武未来: "武侠", 武侠同人: "武侠",
-  修真文明: "仙侠", 幻想修仙: "仙侠", 现代修真: "仙侠", 神话修真: "仙侠", 古典仙侠: "仙侠",
-  都市生活: "都市", 娱乐明星: "都市", 商战职场: "都市", 异术超能: "都市", 都市异能: "都市", 青春校园: "都市",
-  架空历史: "历史", 两宋元明: "历史", 外国历史: "历史", 上古先秦: "历史", 秦汉三国: "历史", 两晋隋唐: "历史",
-  五代十国: "历史", 清史民国: "历史", 历史传记: "历史", 民间传说: "历史",
-  战争幻想: "军事", 谍战特工: "军事", 军旅生涯: "军事", 抗战烽火: "军事", 军事战争: "军事",
-  悬疑侦探: "悬疑", 诡秘悬疑: "悬疑", 探险生存: "悬疑", 奇妙世界: "悬疑", 古今传奇: "悬疑",
-  星际文明: "科幻", 时空穿梭: "科幻", 未来世界: "科幻", 古武机甲: "科幻", 超级科技: "科幻", 进化变异: "科幻", 末世危机: "科幻",
-  电子竞技: "游戏", 虚拟网游: "游戏", 游戏异界: "游戏", 游戏系统: "游戏", 游戏主播: "游戏",
-  体育赛事: "体育", 篮球运动: "体育", 足球运动: "体育",
-  原生幻想: "轻小说", 衍生同人: "轻小说", 搞笑吐槽: "轻小说", 恋爱日常: "轻小说",
-};
+// 起点 大分类/副分类 taxonomy 与父级映射现由后端 config 维护
+// (resources/taxonomy/qidian.json)，经 /api/analysis/run 的 panel 字段下发：
+// 大分类/副分类已在后端按 taxonomy 过滤，副分类行带 ``parent`` 大分类。
+// 前端不再硬编码此表。
 
 const STATE_COLOR: Record<string, string> = {
   queued:           "var(--text-tertiary)",
@@ -1288,7 +1256,7 @@ interface MetricRow {
   total?: number; count_pct?: number;
   avg_heat?: number; heat_pct?: number;
   latest_share?: number; share_pct?: number;
-  new_count?: number;
+  new_count?: number; parent?: string;
 }
 
 /** One metric as its own small block: ranked list (top 10) with a bar +
@@ -1375,8 +1343,9 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
 
   // Panel rows are computed server-side directly from the DB (数量=库内
   // 小说数, 热度=该分类作品热度之和, 份额/趋势/新书 from snapshots).
-  const toRows = (items: any[], filterSet?: Set<string>): MetricRow[] => {
-    let rows = (items || []).map(it => ({
+  // 起点的 大分类/副分类 过滤 + 父级(parent) 已在后端按 taxonomy 完成。
+  const toRows = (items: any[]): MetricRow[] =>
+    (items || []).map(it => ({
       name: it.name,
       total: it.total,
       count_pct: it.count_pct,
@@ -1385,16 +1354,12 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
       latest_share: it.latest_share,
       share_pct: it.share_pct,
       new_count: it.new_count,
-    } as MetricRow & { new_count?: number }));
-    if (filterSet) {
-      const f = rows.filter(r => filterSet.has(r.name));
-      if (f.length) rows = f;   // fallback to unfiltered if taxonomy misses
-    }
-    return rows.sort((a, b) => (b.total || 0) - (a.total || 0));
-  };
+      parent: it.parent,
+    } as MetricRow & { new_count?: number; parent?: string }))
+    .sort((a, b) => (b.total || 0) - (a.total || 0));
 
-  let catRows = toRows(panel.categories, isQidian ? QIDIAN_MAIN_CATS : undefined);
-  let tagRows = toRows(panel.tags, isQidian ? QIDIAN_SUB_CATS : undefined);
+  let catRows = toRows(panel.categories);
+  let tagRows = toRows(panel.tags);
   // Cross-list dedupe: a 大分类/类目 name never repeats as a 副分类/标签.
   const catNameSet = new Set(catRows.map(r => r.name));
   tagRows = tagRows.filter(r => !catNameSet.has(r.name));
@@ -1413,8 +1378,10 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
   // 新书榜」(panel.new_count)。
   const oppBySub = (isQidian || !isQidian) && tagRows.length > 0;  // 两平台都用标签级
   const oppSource = oppBySub ? tagRows : (catRows.length ? catRows : tagRows);
+  const parentOf = (name: string) =>
+    (oppSource.find(r => r.name === name) as any)?.parent || "其他";
   const oppLabel = (name: string) =>
-    isQidian && oppBySub ? `${QIDIAN_SUB_TO_MAIN[name] || "其他"}·${name}` : name;
+    isQidian && oppBySub ? `${parentOf(name)}·${name}` : name;
   const oppNewTotal = oppSource.reduce((s, r) => s + ((r as any).new_count || 0), 0) || 1;
   const mk = (key: keyof MetricRow) => {
     const vals = oppSource.map(r => (r[key] as number) || 0);

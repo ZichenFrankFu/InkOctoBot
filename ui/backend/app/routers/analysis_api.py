@@ -64,19 +64,6 @@ def analysis_date_range():
     mn, mx = _db_date_range(db_path)
     return {"min_date": mn, "max_date": mx}
 
-def _linear_slope(ys: list[float]) -> float | None:
-    """Least-squares slope of ``ys`` against its index. None for <2 points."""
-    n = len(ys)
-    if n < 2:
-        return None
-    mx = (n - 1) / 2.0
-    my = sum(ys) / n
-    denom = sum((i - mx) ** 2 for i in range(n))
-    if denom == 0:
-        return None
-    return sum((i - mx) * (ys[i] - my) for i in range(n)) / denom
-
-
 def _basic_market_panel(db_path: str, platform: str,
                         start_date: str, end_date: str) -> dict:
     """Per-大分类(main_category) and per-副分类/标签(tag) panel computed
@@ -210,8 +197,29 @@ def _basic_market_panel(db_path: str, platform: str,
             })
         return items
 
-    out["categories"] = _build(cat_total, cat_heat, cat_nov, cat_new)
-    out["tags"] = _build(tag_total, tag_heat, tag_nov, tag_new)
+    cats = _build(cat_total, cat_heat, cat_nov, cat_new)
+    tags = _build(tag_total, tag_heat, tag_nov, tag_new)
+
+    # 起点: 按 taxonomy(config) 归类 — 大分类只留 novel_types，副分类只留
+    # 已知子类并附上父级 大分类（前端据此标注「大分类·副分类」，不再硬编码）。
+    if platform == "qidian":
+        try:
+            from ..services.market_extractor import taxonomy as _tax
+            main_set = _tax.qidian_main_set()
+            sub_to_main = _tax.qidian_sub_to_main()
+            mf = [c for c in cats if c["name"] in main_set]
+            sf = [t for t in tags if t["name"] in sub_to_main]
+            if mf:
+                cats = mf
+            if sf:
+                for t in sf:
+                    t["parent"] = sub_to_main.get(t["name"], "")
+                tags = sf
+        except Exception:
+            pass
+
+    out["categories"] = cats
+    out["tags"] = tags
     return out
 
 
@@ -332,10 +340,29 @@ def run_analysis(
         }
     return compute_cache.get_or_compute(
         _project_db_path(),
-        # v3: panel trends now percentage-change (count_pct/heat_pct/share_pct).
-        f"analysis_run_v3:{platform}:{lookback}:{top_k}",
+        # v4: qidian panel filtered/classified server-side (parent on tags).
+        f"analysis_run_v4:{platform}:{lookback}:{top_k}",
         version,
         lambda: _compute_analysis(crawler_db, platform, lookback, top_k),
         refresh=refresh,
         cached_only=cached_only,
     )
+
+
+@router.get("/cache/stats")
+def cache_stats():
+    """缓存清单（条目数、字节、最旧/最新、在算任务数）— 统一缓存管理面板。"""
+    return compute_cache.stats(_project_db_path())
+
+
+@router.post("/cache/clear")
+def cache_clear(prefix: str = Query(default="")):
+    """清空缓存（全部或按 key 前缀，如 analysis_run / opening_nlp）。"""
+    n = compute_cache.clear(_project_db_path(), prefix or None)
+    return {"cleared": n, "prefix": prefix or "ALL"}
+
+
+@router.post("/cache/evict-expired")
+def cache_evict_expired():
+    """手动触发 TTL 过期清理。"""
+    return {"evicted": compute_cache.evict_expired(_project_db_path())}

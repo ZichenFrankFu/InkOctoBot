@@ -4,10 +4,12 @@ Externalizes the static vocabularies that were hardcoded in
 ``opening_stats.py`` into editable resource files under
 ``resources/wordlists/`` so they're proper config, not code:
 
-- ``stopwords.txt``        常用词 / 停用词 — excluded from 高频词 / 生造词
-- ``surnames.txt``         百家姓 — drives person-name exclusion (jieba 'nr'
+- ``common_words.txt``     常用词 — excluded from 高频词 / 生造词. Sourced from
+                           哈工大 (HIT) + 百度 (Baidu) stopword lists + 通用叙事词.
+- ``surnames.txt``         百家姓 + 日文姓 — person-name exclusion (jieba 'nr'
                            + surname-first-char heuristic)
-- ``generic_content.txt``  通用叙事词 — no platform/genre signal
+- ``translit_chars.txt``   音译字 — foreign-name (Alice→爱丽丝/艾丽丝/艾莉丝)
+                           detection.
 
 Each loader returns a cached ``frozenset`` (loaded once per process).
 ``append_words`` lets callers extend a list at runtime (self-maintenance),
@@ -22,9 +24,9 @@ _ROOT = Path(__file__).resolve().parent / "resources" / "wordlists"
 
 # Public list names → file (also the allowed targets for append_words).
 _FILES = {
-    "stopwords": "stopwords.txt",
+    "common_words": "common_words.txt",
     "surnames": "surnames.txt",
-    "generic_content": "generic_content.txt",
+    "translit_chars": "translit_chars.txt",
 }
 
 
@@ -45,8 +47,8 @@ def _read(path: Path) -> set[str]:
 
 
 @lru_cache(maxsize=1)
-def load_stopwords() -> frozenset[str]:
-    return frozenset(_read(_ROOT / _FILES["stopwords"]))
+def load_common_words() -> frozenset[str]:
+    return frozenset(_read(_ROOT / _FILES["common_words"]))
 
 
 @lru_cache(maxsize=1)
@@ -55,14 +57,18 @@ def load_surnames() -> frozenset[str]:
 
 
 @lru_cache(maxsize=1)
-def load_generic_content() -> frozenset[str]:
-    return frozenset(_read(_ROOT / _FILES["generic_content"]))
+def load_translit_chars() -> frozenset[str]:
+    """音译字集合（单字）。"""
+    chars: set[str] = set()
+    for tok in _read(_ROOT / _FILES["translit_chars"]):
+        chars.update(tok)   # split multi-char tokens into individual chars
+    return frozenset(chars)
 
 
 _LOADERS = {
-    "stopwords": load_stopwords,
+    "common_words": load_common_words,
     "surnames": load_surnames,
-    "generic_content": load_generic_content,
+    "translit_chars": load_translit_chars,
 }
 
 

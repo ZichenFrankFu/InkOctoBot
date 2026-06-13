@@ -215,3 +215,54 @@ class TestWiredEndpoints:
         assert r.status_code == 200
         assert time.time() - t0 < 2.0
         assert r.json()["state"] in ("empty", "ready")
+
+
+class TestCacheManager:
+    """TTL auto-eviction + management API (cache 模块化管理)."""
+
+    def test_ttl_expired_entry_evicted_on_read(self, db):
+        _wait_ready(db, "k", "v1", lambda: {"n": 1})
+        # A tiny max_age makes the just-written entry already expired.
+        out = compute_cache.get_or_compute(
+            db, "k", "v1", lambda: {"n": 2}, cached_only=True, max_age=0.0001)
+        assert out["state"] == "empty"      # evicted, nothing to serve
+        assert compute_cache.stats(db)["entries"] == 0
+
+    def test_evict_expired_bulk(self, db):
+        _wait_ready(db, "a", "v1", lambda: {"n": 1})
+        _wait_ready(db, "b", "v1", lambda: {"n": 1})
+        assert compute_cache.stats(db)["entries"] == 2
+        assert compute_cache.evict_expired(db, max_age=0) == 2
+        assert compute_cache.stats(db)["entries"] == 0
+
+    def test_clear_by_prefix(self, db):
+        _wait_ready(db, "analysis_run:x", "v1", lambda: {"n": 1})
+        _wait_ready(db, "opening_nlp:x", "v1", lambda: {"n": 1})
+        assert compute_cache.clear(db, "analysis_run") == 1
+        st = compute_cache.stats(db)
+        assert st["entries"] == 1
+
+    def test_stats_shape(self, db):
+        _wait_ready(db, "k", "v1", lambda: {"hello": "世界"})
+        st = compute_cache.stats(db)
+        assert st["entries"] == 1
+        assert st["total_bytes"] > 0
+        assert st["oldest_age_s"] is not None
+        assert st["in_progress"] == 0
+
+
+class TestWordlistsConfig:
+    """Externalized word-list config loads from resource files."""
+
+    def test_loaders_nonempty(self):
+        from ui.backend.app.services.market_extractor import wordlists as wl
+        assert len(wl.load_common_words()) > 200      # HIT + Baidu merged
+        assert len(wl.load_surnames()) > 300          # 百家姓 + 日文姓
+        assert len(wl.load_translit_chars()) > 100    # 音译字
+        assert "怎么" in wl.load_common_words()
+        assert "韩" in wl.load_surnames()
+
+    def test_qidian_taxonomy_loads(self):
+        from ui.backend.app.services.market_extractor import taxonomy as tax
+        assert "玄幻" in tax.qidian_main_set()
+        assert tax.qidian_sub_to_main().get("原生幻想") == "轻小说"

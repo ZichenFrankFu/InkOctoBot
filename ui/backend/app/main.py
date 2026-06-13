@@ -159,6 +159,23 @@ def _stage5_mark_interrupted_pipeline_sessions() -> None:
         )
 
 
+@app.on_event("startup")
+def _start_compute_cache_sweeper() -> None:
+    """Start the cache-manager's background TTL sweeper so the
+    ``compute_cache`` table auto-evicts entries unused past the TTL."""
+    try:
+        from .services import compute_cache
+        from .services.project_paths import get_db_path
+        db_path = get_db_path()
+        if db_path:
+            compute_cache.start_sweeper(db_path)
+    except Exception:
+        import logging
+        logging.getLogger("inkoctobot.main").debug(
+            "compute_cache sweeper not started", exc_info=True,
+        )
+
+
 @app.get("/health")
 def health():
     from .settings import settings as _s
