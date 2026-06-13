@@ -38,18 +38,41 @@ _STOPWORDS = set(
     "们与而被把那等中下大小多少又再还只如果因为所以可是但是什么这个那个"
 )
 
-# 常用词 / 姓氏 / 音译字 现由可编辑的配置文件加载（resources/wordlists/*.txt，
-# 见 wordlists.py），数据来源可靠（HIT/Baidu 停用词表 + 百家姓/日文姓 + 新华社
-# 译音表），而非硬编码 — 用户可增删扩展。
+# 常用词 / 姓氏 / 音译字 现由可编辑、可热更新的配置文件加载（resources/
+# wordlists/*.txt + 用户 overlay，见 wordlists.py），数据来源可靠（HIT/Baidu
+# 停用词表 + 百家姓/日文姓 + 新华社译音表），而非硬编码。用户在「资源管理」
+# 里把某词归为人名/常用词后，reload_wordlists() 让本进程立即生效（再配合清理
+# opening_nlp 缓存触发重算）。
 try:
     from . import wordlists as _wl
-    _COMMON_WORDS: frozenset[str] = _wl.load_common_words()
-    _SURNAMES: frozenset[str] = _wl.load_surnames()
-    _TRANSLIT_CHARS: frozenset[str] = _wl.load_translit_chars()
-except Exception:  # pragma: no cover - resources always present
-    _COMMON_WORDS = frozenset()
-    _SURNAMES = frozenset()
-    _TRANSLIT_CHARS = frozenset()
+except Exception:  # pragma: no cover
+    _wl = None
+
+_COMMON_WORDS: frozenset[str] = frozenset()
+# Multi-char subset only: substring-rejecting a candidate on a *single-char*
+# common word (停用词表含「能 / 力 / 会 / 在」等单字)会误杀 灵能 / 异能 / 能力
+# 这类域内复合词 — 单字虚词另由 _HARD_REJECT_CHARS 把关。
+_COMMON_MULTI: frozenset[str] = frozenset()
+_SURNAMES: frozenset[str] = frozenset()
+_TRANSLIT_CHARS: frozenset[str] = frozenset()
+
+
+def reload_wordlists() -> None:
+    """Refresh the in-process 常用词/姓氏/音译字 sets from wordlists.py — called
+    after a 资源管理 add/remove so the next analysis re-filters with the edit."""
+    global _COMMON_WORDS, _COMMON_MULTI, _SURNAMES, _TRANSLIT_CHARS
+    if _wl is None:
+        return
+    try:
+        _COMMON_WORDS = _wl.load_common_words()
+        _COMMON_MULTI = frozenset(w for w in _COMMON_WORDS if len(w) >= 2)
+        _SURNAMES = _wl.load_surnames()
+        _TRANSLIT_CHARS = _wl.load_translit_chars()
+    except Exception:  # pragma: no cover - resources always present
+        pass
+
+
+reload_wordlists()
 
 # Strong name-ending characters (音译名 / 角色名常见尾字).
 _NAME_END_CHARS = set("丝娜莉娅妮克特斯尔薇露琳蒂娃曼茜黛缇媛婭菈珂")
@@ -81,7 +104,7 @@ def _is_content_phrase(term: str, max_len: int = 6) -> bool:
         return False
     if any(ch in _HARD_REJECT_CHARS for ch in term):
         return False
-    if any(cw in term for cw in _COMMON_WORDS):    # 自己怎么会 / 要进去吗
+    if any(cw in term for cw in _COMMON_MULTI):    # 自己怎么会 / 要进去吗
         return False
     # Func-char ratio is a glue heuristic for longer runs; a 2-3 字 domain
     # word (灵能 / 异能) with one borderline char must not be rejected.
@@ -231,11 +254,12 @@ def _extract_tokens(texts: list[str], freq: dict):
     (the cause of the「永远分析中」hang)."""
     token_counts: Counter = Counter()      # word -> count
     token_isname: dict[str, bool] = {}
+    token_pos: dict[str, str] = {}         # word -> jieba POS flag (first seen)
     bigram_counts: Counter = Counter()
     try:
         import jieba.posseg as _pseg
     except Exception:
-        return token_counts, token_isname, bigram_counts, False
+        return token_counts, token_isname, token_pos, bigram_counts, False
     for t in texts:
         prev: tuple[str, str] | None = None
         for tok in _pseg.cut(t):
@@ -245,6 +269,7 @@ def _extract_tokens(texts: list[str], freq: dict):
                 token_counts[w] += 1
                 if w not in token_isname:
                     token_isname[w] = _looks_like_person_name(w, flag, freq)
+                    token_pos[w] = flag
                 if prev is not None:
                     pw, pf = prev
                     merged = pw + w
@@ -260,19 +285,22 @@ def _extract_tokens(texts: list[str], freq: dict):
                 prev = (w, flag)
             else:
                 prev = None
-    return token_counts, token_isname, bigram_counts, True
+    return token_counts, token_isname, token_pos, bigram_counts, True
 
 
-def _top_words(token_counts: Counter, token_isname: dict, bigram_counts: Counter,
-               freq: dict, has_jieba: bool, texts: list[str],
-               k: int = 20) -> list[dict[str, Any]]:
+def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
+               bigram_counts: Counter, freq: dict, has_jieba: bool,
+               texts: list[str], k: int = 20) -> list[dict[str, Any]]:
     """高频词 — representative content keywords, mixed length, no person
     names. Ranked by frequency × keyness (down-weighting words common in
-    general Chinese) so 域内词 rise above generic ones."""
+    general Chinese) so 域内词 rise above generic ones. Restricted to
+    noun-class POS so everyday 副词/动词 (马上 'd' / 感觉 'v') never surface
+    as 高频词 — 高频词 应是内容名词，不是叙述虚词。"""
     counter: Counter = Counter()
     if has_jieba:
         for w, c in token_counts.items():
             if (not _is_common(w) and not token_isname.get(w)
+                    and _keep_noun(token_pos.get(w, ""))
                     and _is_content_phrase(w)):
                 counter[w] += c
         for m, c in bigram_counts.items():
@@ -343,15 +371,57 @@ def _neologism_step1(token_counts: Counter, token_isname: dict, bigram_counts: C
     )[:k]
     return [{"term": t, "count": cands[t]} for t in result]
 
+def _example_sentence(blob: str, word: str, width: int = 80) -> str:
+    """First sentence in ``blob`` containing ``word`` (含有高频词的一句话),
+    trimmed/centered on the word for display."""
+    for s in _SENT_SPLIT_RE.split(blob):
+        if word in s:
+            s = s.strip()
+            if len(s) <= width:
+                return s
+            idx = s.find(word)
+            start = max(0, idx - (width - len(word)) // 2)
+            end = min(len(s), start + width)
+            return ("…" if start > 0 else "") + s[start:end] + ("…" if end < len(s) else "")
+    return ""
+
+
+def _attach_examples(top_words: list[dict[str, Any]],
+                     owner_joined: dict[str, str], k: int = 3) -> None:
+    """For each 高频词, attach the top-``k`` works using it most + an example
+    sentence from each (点击高频词查看). Mutates ``top_words`` in place."""
+    if not owner_joined:
+        return
+    for item in top_words:
+        word = item.get("word") or ""
+        if not word:
+            continue
+        hits = [(title, blob.count(word), blob)
+                for title, blob in owner_joined.items() if word in blob]
+        hits.sort(key=lambda x: -x[1])
+        item["examples"] = [
+            {"title": title, "count": cnt, "sentence": _example_sentence(blob, word)}
+            for title, cnt, blob in hits[:k]
+        ]
+
+
 def compute_opening_stats(
     rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Spec-dimension stats over opening chapters.
 
-    ``rows``: [{"chapter_num": int, "text": str}] — every collected
-    opening chapter of the analyzed work set.
+    ``rows``: [{"chapter_num": int, "text": str, "title"?: str}] — every
+    collected opening chapter of the analyzed work set. ``title`` (作品名)
+    powers the「点击高频词→使用最多的 top3 作品+片段」drill-down.
     """
-    texts = [str(r.get("text") or "") for r in rows if r.get("text")]
+    texts: list[str] = []
+    owners: list[str] = []          # parallel 作品名 per text (for 高频词 examples)
+    for r in rows:
+        t = str(r.get("text") or "")
+        if not t:
+            continue
+        texts.append(t)
+        owners.append(str(r.get("title") or "").strip())
     if not texts:
         return {"available": False, "reason": "no chapter text"}
 
@@ -384,15 +454,20 @@ def compute_opening_stats(
     # both 高频词 and 生造词.
     _KW_CHAR_CAP = 120_000
     kw_texts: list[str] = []
+    owner_joined: dict[str, str] = {}   # 作品名 → 该作品参与分词的开篇文本
     acc = 0
-    for t in texts:
+    for t, owner in zip(texts, owners):
         kw_texts.append(t)
+        if owner:
+            owner_joined[owner] = owner_joined.get(owner, "") + t
         acc += len(t)
         if acc >= _KW_CHAR_CAP:
             break
     freq = _general_freq()
     known = _load_known_words()
-    tok_counts, tok_isname, bigrams, has_jieba = _extract_tokens(kw_texts, freq)
+    tok_counts, tok_isname, tok_pos, bigrams, has_jieba = _extract_tokens(kw_texts, freq)
+    top_words = _top_words(tok_counts, tok_isname, tok_pos, bigrams, freq, has_jieba, kw_texts)
+    _attach_examples(top_words, owner_joined)
 
     return {
         "available": True,
@@ -411,7 +486,7 @@ def compute_opening_stats(
         # 标点密度（次/千字）
         "punctuation_density_per_1k": punct_density,
         # 高频词 + 生造词 Step1（共用一次 jieba 分词结果）
-        "top_words": _top_words(tok_counts, tok_isname, bigrams, freq, has_jieba, kw_texts),
+        "top_words": top_words,
         "neologism_step1": _neologism_step1(tok_counts, tok_isname, bigrams, freq, known, has_jieba, kw_texts),
     }
 

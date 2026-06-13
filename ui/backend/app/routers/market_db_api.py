@@ -319,8 +319,16 @@ def _compute_opening_nlp(platform: str | None = None) -> dict:
             frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
             cond += " AND n.platform=?"
             params.append(platform)
+        # 作品名 (primary title) 随章节带出 → 支撑「点击高频词→使用最多的
+        # top3 作品 + 片段」的下钻。
+        has_titles = _table_exists(con, "novel_titles")
+        if has_titles:
+            frm += (" LEFT JOIN novel_titles nt ON nt.novel_uid=fc.novel_uid "
+                    "AND nt.is_primary=1")
+        title_expr = "nt.title" if has_titles else "NULL"
         all_rows = con.execute(
-            f"SELECT fc.chapter_num cn, fc.chapter_content cc, fc.word_count wc "
+            f"SELECT fc.chapter_num cn, fc.chapter_content cc, fc.word_count wc, "
+            f"fc.novel_uid uid, {title_expr} title "
             f"FROM {frm}{cond} ORDER BY fc.novel_uid, fc.chapter_num LIMIT 600",
             params,
         ).fetchall()
@@ -425,7 +433,8 @@ def _compute_opening_nlp(platform: str | None = None) -> dict:
     # 启动提取 prompt injects the SAME numbers.
     from ..services.market_extractor.opening_stats import compute_opening_stats
     spec_stats = compute_opening_stats([
-        {"chapter_num": int(r["cn"] or 0), "text": str(r["cc"] or "")}
+        {"chapter_num": int(r["cn"] or 0), "text": str(r["cc"] or ""),
+         "title": (r["title"] or f"作品#{r['uid']}")}
         for r in all_rows
     ])
 

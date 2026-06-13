@@ -23,7 +23,7 @@ import { tPlatform } from "../i18n";
 
 // 基础特征提取 (市场信息 + 开篇章节NLP维度) 在前；高级特征提取
 // (代表作选取 → 生造词Step2 + 行文风格七组 LLM 提取) 在后。
-type TopTab = "basic" | "advanced";
+type TopTab = "basic" | "advanced" | "resources";
 
 interface RepCandidate {
   work_id: string;
@@ -434,6 +434,7 @@ export default function MarketFeatureExtractionPage() {
         {([
           { key: "basic"    as const, label: "基础特征提取" },
           { key: "advanced" as const, label: "高级特征提取" },
+          { key: "resources" as const, label: "资源管理" },
         ]).map(opt => (
           <button
             key={opt.key}
@@ -454,6 +455,8 @@ export default function MarketFeatureExtractionPage() {
       </div>
 
       {topTab === "basic" && <BasicExtractionTab />}
+
+      {topTab === "resources" && <ResourceManagerTab />}
 
       {topTab === "advanced" && (<>
       <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 18, alignItems: "start" }}>
@@ -1225,7 +1228,141 @@ function BasicExtractionTab() {
       {hasMarket && <MarketInfoBlock market={market!} platform={platform} />}
 
       {/* 开篇章节NLP维度 (spec 2.1.3.2) */}
-      {hasNlp && <NlpDimsBlock nlp={nlp!} />}
+      {hasNlp && <NlpDimsBlock nlp={nlp!} onReload={() => load(true)} />}
+    </>
+  );
+}
+
+
+/** 资源管理 tab — 人名 / 常用词 资源的搜索 + CRUD（与基础/高级 tab 风格一致）。
+ *  归类自高频词的词、或用户手动新增的词，都进入对应 resource，后续基础特征
+ *  提取不再识别为高频词。所有调用统一走 /api/analysis/wordlist。 */
+function ResourceManagerTab() {
+  const { toast } = useToast();
+  type WLItem = { word: string; user: boolean };
+  type WLData = { total: number; items: WLItem[]; truncated: boolean; label: string; list: string };
+  const LISTS: { key: "surnames" | "common_words"; label: string }[] = [
+    { key: "surnames", label: "人名" },
+    { key: "common_words", label: "常用词" },
+  ];
+  const [list, setList] = React.useState<"surnames" | "common_words">("surnames");
+  const [q, setQ] = React.useState("");
+  const [data, setData] = React.useState<WLData | null>(null);
+  const [newWord, setNewWord] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  const reload = React.useCallback(async () => {
+    try {
+      const r = await apiGet<WLData>(`/api/analysis/wordlist?list=${list}&q=${encodeURIComponent(q)}`);
+      setData(r);
+    } catch (e: any) {
+      toast(`加载资源失败：${e.message}`, "error");
+    }
+  }, [list, q, toast]);
+
+  React.useEffect(() => {
+    const t = window.setTimeout(reload, 200);   // debounce 搜索
+    return () => window.clearTimeout(t);
+  }, [reload]);
+
+  const add = async (word: string) => {
+    const w = word.trim();
+    if (!w) return;
+    setBusy(true);
+    try {
+      const r = await apiPost<{ added: boolean }>("/api/analysis/wordlist/add", { list, word: w });
+      toast(r.added ? `已添加「${w}」` : `「${w}」已存在`, r.added ? "success" : "info");
+      setNewWord("");
+      reload();
+    } catch (e: any) {
+      toast(`添加失败：${e.message}`, "error");
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (word: string) => {
+    setBusy(true);
+    try {
+      await apiPost("/api/analysis/wordlist/remove", { list, word });
+      toast(`已删除「${word}」`, "success");
+      reload();
+    } catch (e: any) {
+      toast(`删除失败：${e.message}`, "error");
+    } finally { setBusy(false); }
+  };
+
+  const curLabel = LISTS.find(l => l.key === list)?.label || list;
+
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-body">
+          <div style={{ display: "flex", gap: 24, alignItems: "flex-start", flexWrap: "wrap" }}>
+            <div>
+              <label className="label" style={{ display: "block", marginBottom: 6 }}>资源类型</label>
+              <div style={{ display: "flex", gap: 6, minHeight: 32, alignItems: "center" }}>
+                {LISTS.map(l => (
+                  <button key={l.key}
+                    className={list === l.key ? "btn-primary" : "btn"}
+                    style={{ fontSize: 12, padding: "5px 14px", borderRadius: 20 }}
+                    onClick={() => { setList(l.key); setData(null); }}>{l.label}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <label className="label" style={{ display: "block", marginBottom: 6 }}>搜索</label>
+              <div style={{ minHeight: 32, display: "flex", alignItems: "center" }}>
+                <input className="input" value={q} onChange={e => setQ(e.target.value)}
+                  placeholder={`在${curLabel}中搜索…`}
+                  style={{ width: "100%", maxWidth: 320, padding: "6px 10px" }} />
+              </div>
+            </div>
+          </div>
+          {/* 新增 */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+            <input className="input" value={newWord} onChange={e => setNewWord(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") add(newWord); }}
+              placeholder={`新增${curLabel}…`}
+              style={{ width: 200, padding: "6px 10px" }} />
+            <button className="btn-primary" disabled={busy || !newWord.trim()}
+              onClick={() => add(newWord)} style={{ fontSize: 12, padding: "6px 16px" }}>添加</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0, fontSize: 14 }}>{curLabel}资源</h3>
+          {data && <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
+            共 {data.total} 条{data.truncated ? `（仅显示前 ${data.items.length} 条，请用搜索缩小范围）` : ""}
+          </span>}
+        </div>
+        <div className="card-body">
+          {!data ? <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>加载中…</div> :
+            data.items.length === 0 ? <Empty msg={q ? `没有匹配「${q}」的${curLabel}。` : `${curLabel}资源为空。`} /> : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {data.items.map(it => (
+                <span key={it.word} style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12,
+                  padding: "3px 6px 3px 10px", borderRadius: 4,
+                  border: `1px solid ${it.user ? "var(--accent)" : "var(--border)"}`,
+                  background: "var(--bg-surface)",
+                }} title={it.user ? "用户添加" : "内置词表"}>
+                  {it.word}
+                  <button onClick={() => remove(it.word)} disabled={busy}
+                    title="删除（不再识别为该资源）"
+                    style={{
+                      border: "none", background: "none", cursor: "pointer",
+                      color: "var(--text-tertiary)", fontSize: 14, lineHeight: 1, padding: 0,
+                    }}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 10 }}>
+            内置词表为只读基线（来自 哈工大/百度 停用词表 · 百家姓/日文姓 · 新华社译音表），删除内置词会写入隐藏覆盖、可随时重新添加恢复。
+          </div>
+        </div>
+      </div>
     </>
   );
 }
@@ -1236,7 +1373,7 @@ function TrendArrow({ v }: { v: number | null | undefined }) {
   if (v == null || isNaN(v)) return <span style={{ color: "var(--text-disabled)", fontSize: 11 }}>—</span>;
   const up = v > 0.0005, down = v < -0.0005;
   const color = up ? "var(--jade)" : down ? "var(--accent)" : "var(--text-tertiary)";
-  return <span className="font-mono" style={{ color, fontSize: 11 }}>{up ? "↑" : down ? "↓" : "→"} {(Math.abs(v) * 100).toFixed(1)}%</span>;
+  return <span className="font-mono" style={{ color, fontSize: 11, whiteSpace: "nowrap" }}>{up ? "↑" : down ? "↓" : "→"} {(Math.abs(v) * 100).toFixed(1)}%</span>;
 }
 
 const fmtNum = (v: number | null | undefined, d = 0) =>
@@ -1274,9 +1411,12 @@ function MetricMiniBlock({
     .sort((a, b) => ((b[valueKey] as number) || 0) - ((a[valueKey] as number) || 0))
     .slice(0, 10);
   const max = Math.max(1, ...sorted.map(r => (r[valueKey] as number) || 0));
+  // 市场份额展示为百分比（12.3%），不再用小数。
   const fmtVal = (v: any) =>
-    fmt === "big" ? fmtBig(v) : fmt === "share" ? fmtNum(v, 3) : fmtNum(v, 0);
-  const valW = fmt === "big" ? 56 : fmt === "share" ? 56 : 44;
+    fmt === "big" ? fmtBig(v)
+      : fmt === "share" ? (v == null || isNaN(v as number) ? "—" : (Number(v) * 100).toFixed(1) + "%")
+      : fmtNum(v, 0);
+  const valW = fmt === "big" ? 56 : fmt === "share" ? 52 : 44;
   return (
     <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
       <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{title}</div>
@@ -1287,9 +1427,10 @@ function MetricMiniBlock({
           {sorted.map((r, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
               <span style={{ width: 60, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flexShrink: 0 }} title={r.name}>{r.name}</span>
-              <div style={{ flex: 1, minWidth: 24 }}><MiniBar value={(r[valueKey] as number) || 0} max={max} color={color} /></div>
-              <span className="font-mono" style={{ width: valW, textAlign: "right", flexShrink: 0 }}>{fmtVal(r[valueKey])}</span>
-              {!hideTrend && <span style={{ width: 52, textAlign: "right", flexShrink: 0 }}><TrendArrow v={r[pctKey] as number} /></span>}
+              <div style={{ flex: 1, minWidth: 18 }}><MiniBar value={(r[valueKey] as number) || 0} max={max} color={color} /></div>
+              <span className="font-mono" style={{ minWidth: valW, textAlign: "right", flexShrink: 0, whiteSpace: "nowrap" }}>{fmtVal(r[valueKey])}</span>
+              {/* 趋势列按字符串自适应宽度 + 不换行：+1038.9% 这类长涨幅不再折成两行 */}
+              {!hideTrend && <span style={{ minWidth: 52, textAlign: "right", flexShrink: 0, whiteSpace: "nowrap" }}><TrendArrow v={r[pctKey] as number} /></span>}
             </div>
           ))}
         </div>
@@ -1463,9 +1604,86 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
 }
 
 
+/** 在片段里高亮高频词。 */
+function highlightWord(text: string, word: string): React.ReactNode {
+  if (!word || !text.includes(word)) return text;
+  const parts = text.split(word);
+  return parts.map((p, i) => (
+    <React.Fragment key={i}>
+      {p}
+      {i < parts.length - 1 && (
+        <span style={{ color: "var(--accent)", fontWeight: 600 }}>{word}</span>
+      )}
+    </React.Fragment>
+  ));
+}
+
+/** 单个高频词 chip：点击展开代表作品；悬停弹出「归为人名 / 常用词」。 */
+function HighFreqWord({ w, selected, busy, onSelect, onClassify }: {
+  w: any; selected: boolean; busy: boolean;
+  onSelect: () => void;
+  onClassify: (word: string, list: "surnames" | "common_words") => void;
+}) {
+  const [hover, setHover] = React.useState(false);
+  const miniBtn: React.CSSProperties = { fontSize: 10, padding: "2px 8px", whiteSpace: "nowrap" };
+  return (
+    <span
+      style={{ position: "relative", display: "inline-block" }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <button
+        onClick={onSelect}
+        title="点击查看使用最多的作品 · 悬停可归类"
+        style={{
+          fontSize: 11, padding: "3px 9px", borderRadius: 4, cursor: "pointer",
+          border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+          background: selected ? "var(--bg-surface-2)" : "var(--bg-surface)",
+          color: "var(--text-primary)", opacity: busy ? 0.5 : 1,
+        }}
+      >
+        {w.word}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{w.count}</span>
+      </button>
+      {hover && !busy && (
+        <div style={{
+          position: "absolute", top: "100%", left: 0, zIndex: 30, marginTop: 2,
+          display: "flex", gap: 4, padding: 4, whiteSpace: "nowrap",
+          background: "var(--bg-surface)", border: "1px solid var(--border)",
+          borderRadius: 6, boxShadow: "0 4px 14px rgba(0,0,0,0.22)",
+        }}>
+          <button className="btn" style={miniBtn}
+            onClick={(e) => { e.stopPropagation(); onClassify(w.word, "surnames"); }}>归为人名</button>
+          <button className="btn" style={miniBtn}
+            onClick={(e) => { e.stopPropagation(); onClassify(w.word, "common_words"); }}>归为常用词</button>
+        </div>
+      )}
+    </span>
+  );
+}
+
 /** 开篇章节NLP维度 (spec 2.1.3.2)：首章/章均/章中位字数、平均句长、
  *  分类型标点密度（可视化）、高频词、生造词Step1。 */
-function NlpDimsBlock({ nlp }: { nlp: any }) {
+function NlpDimsBlock({ nlp, onReload }: { nlp: any; onReload?: () => void }) {
+  const { toast } = useToast();
+  const [selWord, setSelWord] = React.useState<string | null>(null);
+  const [classifying, setClassifying] = React.useState<string | null>(null);
+
+  // 把某高频词归类为 人名 / 常用词 → 写入对应资源，后端清理缓存并重算，
+  // 该词在后续基础特征提取中不再出现为高频词。
+  const classify = async (word: string, list: "surnames" | "common_words") => {
+    setClassifying(word);
+    try {
+      await apiPost("/api/analysis/wordlist/add", { list, word });
+      toast(`已将「${word}」归为${list === "surnames" ? "人名" : "常用词"}，重新分析中…`, "success");
+      setSelWord(null);
+      onReload?.();
+    } catch (e: any) {
+      toast(`归类失败：${e.message}`, "error");
+    } finally {
+      setClassifying(null);
+    }
+  };
+
   const spec = nlp.spec_stats;
   if (!spec?.available) {
     return (
@@ -1502,7 +1720,6 @@ function NlpDimsBlock({ nlp }: { nlp: any }) {
               ))}
               <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
                 平均句长 <strong style={{ color: "var(--text-secondary)" }}>{spec.avg_sentence_length ?? "—"} 字</strong>
-                {nlp.word_count_summary ? ` · 首章字数范围 ${nlp.word_count_summary.min}–${nlp.word_count_summary.max}` : ""}
               </div>
             </div>
           </div>
@@ -1522,18 +1739,57 @@ function NlpDimsBlock({ nlp }: { nlp: any }) {
             )}
           </div>
         </div>
-        {/* 高频词（满宽） */}
+        {/* 高频词（满宽）— 点击查看使用最多的 top3 作品 + 片段；悬停可归类 */}
         <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>高频词</div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+            高频词
+            <span style={{ fontWeight: 400, fontSize: 10, color: "var(--text-tertiary)", marginLeft: 8 }}>
+              点击查看代表作品 · 悬停可归类为人名 / 常用词
+            </span>
+          </div>
           {(spec.top_words || []).length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {(spec.top_words || []).slice(0, 30).map((w: any) => (
-                <span key={w.word} className="tag" style={{ fontSize: 11, padding: "2px 8px" }}>
-                  {w.word}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{w.count}</span>
-                </span>
+                <HighFreqWord
+                  key={w.word}
+                  w={w}
+                  selected={selWord === w.word}
+                  busy={classifying === w.word}
+                  onSelect={() => setSelWord(prev => prev === w.word ? null : w.word)}
+                  onClassify={classify}
+                />
               ))}
             </div>
           )}
+          {selWord && (() => {
+            const sel = (spec.top_words || []).find((w: any) => w.word === selWord);
+            if (!sel) return null;
+            const examples = sel.examples || [];
+            return (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
+                <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>
+                  「{sel.word}」使用最多的作品（含该词的片段）
+                </div>
+                {examples.length === 0 ? (
+                  <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无可定位的作品片段。</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {examples.map((ex: any, i: number) => (
+                      <div key={i} style={{ fontSize: 11, lineHeight: 1.5 }}>
+                        <span style={{ fontWeight: 600 }}>{i + 1}.《{ex.title}》</span>
+                        <span style={{ color: "var(--accent)", marginLeft: 6 }}>×{ex.count}</span>
+                        {ex.sentence && (
+                          <div style={{ color: "var(--text-secondary)", marginTop: 2, paddingLeft: 16 }}>
+                            {highlightWord(ex.sentence, sel.word)}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </div>
     </div>

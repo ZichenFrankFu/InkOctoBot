@@ -15,7 +15,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 import numpy as np, pandas as pd
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from ..settings import settings
 from ..utils import resolve_crawler_db_path, crawler_db_version
 from ..services import compute_cache
@@ -63,6 +63,27 @@ def analysis_date_range():
     db_path = resolve_crawler_db_path()
     mn, mx = _db_date_range(db_path)
     return {"min_date": mn, "max_date": mx}
+
+def _window_pct(series: list[float]) -> float | None:
+    """窗口内百分比变化 = (晚期均值 − 早期均值) / 早期均值。
+
+    早期/晚期各取窗口 25% 的样本求均值（而非单点首尾），这样「全部数据」下
+    早期个别快照覆盖不全（作品采集少→热度/数量结构性偏低）不会把涨幅放大成
+    假高增长（武侠 +1038.9% 的根因）。短窗口退化为近似首尾对比。返回 None 表
+    示无基线（单点或全零）。"""
+    vals = [float(v) for v in series]
+    pos = [v for v in vals if v > 0]
+    if len(vals) < 2 or not pos:
+        return None
+    w = max(1, len(vals) // 4)
+    head = [v for v in vals[:w] if v > 0] or pos[:w]
+    tail = [v for v in vals[-w:] if v > 0] or pos[-w:]
+    first = sum(head) / len(head)
+    last = sum(tail) / len(tail)
+    if first <= 0:
+        return None
+    return (last - first) / first
+
 
 def _basic_market_panel(db_path: str, platform: str,
                         start_date: str, end_date: str) -> dict:
@@ -162,19 +183,6 @@ def _basic_market_panel(db_path: str, platform: str,
         for tg in tagmap.get(uid, []):
             tag_new[tg] += 1
 
-    def _pct(series: list[float]) -> float | None:
-        """Percentage change over the window: (last - first) / first. None
-        when there's no baseline (single point or zero start)."""
-        nz = [v for v in series if v != 0]
-        if len(series) < 2 or not nz:
-            return None
-        first, last = series[0], series[-1]
-        if first == 0:
-            first = nz[0]   # use first non-zero as the baseline
-        if first == 0:
-            return None
-        return (last - first) / first
-
     def _build(totals, date_heat, date_nov, new_counts):
         items = []
         for name, total in totals.items():
@@ -190,9 +198,9 @@ def _basic_market_panel(db_path: str, platform: str,
                 "avg_heat": round(heat_series[-1]) if heat_series else 0,
                 "latest_share": round(share_series[-1], 4) if share_series else 0.0,
                 # 趋势改为窗口内百分比变化（前端展示为 % 涨跌）。
-                "count_pct": _pct(count_series),
-                "heat_pct": _pct(heat_series),
-                "share_pct": _pct(share_series),
+                "count_pct": _window_pct(count_series),
+                "heat_pct": _window_pct(heat_series),
+                "share_pct": _window_pct(share_series),
                 "new_count": int(new_counts.get(name, 0)),
             })
         return items
@@ -366,3 +374,66 @@ def cache_clear(prefix: str = Query(default="")):
 def cache_evict_expired():
     """手动触发 TTL 过期清理。"""
     return {"evicted": compute_cache.evict_expired(_project_db_path())}
+
+
+# ── 词表资源管理 (人名 / 常用词) ── 「资源管理」tab CRUD + 高频词一键归类。
+# 所有调用统一走 wordlists.py（resources/wordlists/*.txt + 用户 overlay）。
+
+_WORDLIST_OK = {"surnames", "common_words"}
+
+
+def _wordlist_after_edit() -> None:
+    """Hot-reload the NLP 词表 and drop the opening-NLP cache so the next
+    基础特征提取 re-filters with the user's edit (无需改 crawler 数据版本)。"""
+    try:
+        from ..services.market_extractor import opening_stats as _os
+        _os.reload_wordlists()
+    except Exception:
+        pass
+    try:
+        compute_cache.clear(_project_db_path(), "opening_nlp")
+    except Exception:
+        pass
+
+
+@router.get("/wordlist")
+def wordlist_list(list: str = Query(...), q: str = Query(default="")):
+    """List 人名 / 常用词 资源（可搜索）。"""
+    from ..services.market_extractor import wordlists as _wl
+    if list not in _WORDLIST_OK:
+        raise HTTPException(400, f"unknown list: {list!r}")
+    data = _wl.list_words(list, q or None)
+    data["list"] = list
+    data["label"] = _wl.LIST_LABELS.get(list, list)
+    return data
+
+
+@router.post("/wordlist/add")
+def wordlist_add(body: dict = Body(...)):
+    """归类某词为 人名 / 常用词（高频词右键归类 或 资源管理新增）。归类后该
+    词在后续基础特征提取中不再被识别为高频词。"""
+    from ..services.market_extractor import wordlists as _wl
+    lst = (body.get("list") or "").strip()
+    word = (body.get("word") or "").strip()
+    if lst not in _WORDLIST_OK:
+        raise HTTPException(400, f"unknown list: {lst!r}")
+    if not word:
+        raise HTTPException(400, "word is required")
+    added = _wl.add_word(lst, word)
+    _wordlist_after_edit()
+    return {"ok": True, "added": added, "word": word, "list": lst}
+
+
+@router.post("/wordlist/remove")
+def wordlist_remove(body: dict = Body(...)):
+    """从 人名 / 常用词 资源删除某词。"""
+    from ..services.market_extractor import wordlists as _wl
+    lst = (body.get("list") or "").strip()
+    word = (body.get("word") or "").strip()
+    if lst not in _WORDLIST_OK:
+        raise HTTPException(400, f"unknown list: {lst!r}")
+    if not word:
+        raise HTTPException(400, "word is required")
+    removed = _wl.remove_word(lst, word)
+    _wordlist_after_edit()
+    return {"ok": True, "removed": removed, "word": word, "list": lst}
