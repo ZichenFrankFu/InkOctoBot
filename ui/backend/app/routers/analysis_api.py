@@ -175,6 +175,19 @@ def _basic_market_panel(db_path: str, platform: str,
         for tg in tagmap.get(uid, []):
             tag_new[tg] += 1
 
+    def _pct(series: list[float]) -> float | None:
+        """Percentage change over the window: (last - first) / first. None
+        when there's no baseline (single point or zero start)."""
+        nz = [v for v in series if v != 0]
+        if len(series) < 2 or not nz:
+            return None
+        first, last = series[0], series[-1]
+        if first == 0:
+            first = nz[0]   # use first non-zero as the baseline
+        if first == 0:
+            return None
+        return (last - first) / first
+
     def _build(totals, date_heat, date_nov, new_counts):
         items = []
         for name, total in totals.items():
@@ -189,9 +202,10 @@ def _basic_market_panel(db_path: str, platform: str,
                 "total": int(total),
                 "avg_heat": round(heat_series[-1]) if heat_series else 0,
                 "latest_share": round(share_series[-1], 4) if share_series else 0.0,
-                "count_slope": _linear_slope(count_series),
-                "heat_slope": _linear_slope(heat_series),
-                "share_slope": _linear_slope(share_series),
+                # 趋势改为窗口内百分比变化（前端展示为 % 涨跌）。
+                "count_pct": _pct(count_series),
+                "heat_pct": _pct(heat_series),
+                "share_pct": _pct(share_series),
                 "new_count": int(new_counts.get(name, 0)),
             })
         return items
@@ -318,8 +332,8 @@ def run_analysis(
         }
     return compute_cache.get_or_compute(
         _project_db_path(),
-        # v2: payload now carries the DB-computed `panel` (was `db_counts`).
-        f"analysis_run_v2:{platform}:{lookback}:{top_k}",
+        # v3: panel trends now percentage-change (count_pct/heat_pct/share_pct).
+        f"analysis_run_v3:{platform}:{lookback}:{top_k}",
         version,
         lambda: _compute_analysis(crawler_db, platform, lookback, top_k),
         refresh=refresh,

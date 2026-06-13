@@ -38,38 +38,17 @@ _STOPWORDS = set(
     "们与而被把那等中下大小多少又再还只如果因为所以可是但是什么这个那个"
 )
 
-# Multi-char everyday words. Without this blocklist 高频词 / 生造词
-# degrade into 自己 / 一个 / 没有 / 什么 / 怎么 / 可以 — high-frequency but
-# semantically empty function words. These are NEVER a content keyword or
-# a coined term, regardless of how often they appear.
-_COMMON_WORDS: frozenset[str] = frozenset("""
-自己 一个 没有 什么 这个 那个 怎么 可以 知道 现在 时候 这样 那样 起来 出来
-可能 已经 还是 因为 所以 但是 如果 这些 那些 我们 你们 他们 她们 它们
-一样 一直 一定 不过 不能 不是 这么 那么 突然 似乎 仿佛 觉得 看着 看到
-听到 想到 感觉 应该 只是 就是 还有 然后 这时 此时 这里 那里 一些 有些
-东西 事情 时间 地方 样子 一点 一切 所有 之后 之前 当然 也许 或许 终于
-竟然 居然 顿时 立刻 立即 马上 刚才 刚刚 周围 旁边 身边 心里 心中 眼中
-眼前 面前 身上 身后 头上 手中 不会 不要 不想 不敢 没想 想要 一声 看见
-听见 不过 这是 那是 一下 两人 这才 之类 之间 当中 当时 后来 后面 前面
-一旁 一行 众人 一群 几乎 完全 根本 简直 等等 大概 估计 反而 重新 继续
-开始 结束 一般 普通 时间 地方 问题 办法 方法 情况 样子 模样 声音 时刻
-两个 三个 几个 那种 这种 一种 自然 似的 一边 那边 这边 别人 大家 整个
-有人 没人 什么样 不停 不由 不禁 不住 一时 半天 一阵 片刻 随即 接着 于是
-而且 然而 不仅 甚至 反正 毕竟 何况 难道 无非 只有 只要 即使 哪怕 除非
-什么的 怎么样 为什么 怎么办 一会儿 这会儿 那会儿 不知道 没办法 没关系
-开始 结束 虽然 但是 然而 不过 而且 因此 于是 接着 随后 出现 发现 表示
-认为 觉得 决定 准备 继续 重新 保持 进行 成为 拥有 获得 需要 可能 必须
-应该 能够 无法 不能 不会 似乎 仿佛 居然 竟然 果然 当然 显然 难道 究竟
-那些 这些 任何 所有 整个 全部 部分 一些 许多 很多 不少 大量 无数 几个
-""".split())
-
-# Generic narration verbs/adverbs that jieba tags as nouns/verbs but carry
-# no platform-distinguishing signal.
-_GENERIC_CONTENT: frozenset[str] = frozenset("""
-说道 问道 喊道 笑道 答道 开口 摇头 点头 抬头 低头 转身 伸手 走来 走去
-站着 坐着 躺着 看了 听了 想了 笑了 叹了 时候 样子 声音 目光 眼睛 脸上
-笑容 神色 表情 动作 模样 心情 念头 脑海 脑中 不远处 远处 这一刻 一瞬间
-""".split())
+# 常用词 / 通用叙事词 / 姓氏 现由可编辑的配置文件加载（resources/wordlists/
+# *.txt，见 wordlists.py），而非硬编码在此 — 用户可增删扩展。
+try:
+    from . import wordlists as _wl
+    _COMMON_WORDS: frozenset[str] = _wl.load_stopwords()
+    _GENERIC_CONTENT: frozenset[str] = _wl.load_generic_content()
+    _SURNAMES: frozenset[str] = _wl.load_surnames()
+except Exception:  # pragma: no cover - resources always present
+    _COMMON_WORDS = frozenset()
+    _GENERIC_CONTENT = frozenset()
+    _SURNAMES = frozenset()
 
 
 def _is_common(w: str) -> bool:
@@ -186,20 +165,24 @@ def _load_known_words() -> set[str]:
     return known
 
 
-_SURNAMES = set(
-    "王李张刘陈杨黄赵吴周徐孙马朱胡郭何高林罗郑梁谢宋唐许韩冯邓曹彭曾"
-    "肖田董袁潘于蒋蔡余杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏"
-    "韦付方白邹孟熊秦邱江尹薛闫段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武戴"
-    "莫孔向汤"
-)
+def _looks_like_person_name(term: str, flag: str, freq: dict | None = None) -> bool:
+    """Whether a token is a character name → excluded from 高频词 / 生造词.
 
-
-def _looks_like_person_name(term: str, flag: str) -> bool:
-    """Heuristic: a jieba 'nr*'-tagged 2-4 字 term whose first char is a
-    common surname is a character name → excluded from 高频词 / 生造词. The
-    surname check spares coinages jieba mis-tags as names (灵能 / 异能 — 灵 /
-    异 are not surnames)."""
-    return flag.startswith("nr") and 2 <= len(term) <= 4 and term[0] in _SURNAMES
+    A name's first char is a 百家姓 surname (config: surnames.txt). The
+    surname gate spares coinages jieba mis-tags as names (灵能 / 异能 — 灵 /
+    异 aren't surnames). Two triggers:
+      1. jieba directly tagged it 'nr*' (person name).
+      2. a surname-led 2-3 字 word jieba doesn't know (freq==0) — real words
+         like 王朝 / 李子 are in the dictionary (freq>0), coinages starting
+         with a surname char are vanishingly rare, so OOV ⇒ a name.
+    """
+    if not (2 <= len(term) <= 4) or term[0] not in _SURNAMES:
+        return False
+    if flag.startswith("nr"):
+        return True
+    if freq is not None and len(term) <= 3 and freq.get(term, 0) == 0:
+        return True
+    return False
 
 
 def _keep_noun(flag: str) -> bool:
@@ -231,14 +214,18 @@ def _extract_tokens(texts: list[str], freq: dict):
             if cjk and len(w) <= 6:
                 token_counts[w] += 1
                 if w not in token_isname:
-                    token_isname[w] = _looks_like_person_name(w, flag)
+                    token_isname[w] = _looks_like_person_name(w, flag, freq)
                 if prev is not None:
                     pw, pf = prev
                     merged = pw + w
                     if (flag.startswith("n") and 3 <= len(merged) <= 6
                             and pf[:1] in ("n", "v", "a", "b", "z")
                             and freq.get(pw, 0) < 500
-                            and freq.get(merged, 0) == 0):
+                            and freq.get(merged, 0) == 0
+                            # don't glue a character name onto a noun
+                            # (孟浩 + 天赋 → 孟浩天赋)
+                            and not _looks_like_person_name(pw, pf, freq)
+                            and not _looks_like_person_name(merged, "n", freq)):
                         bigram_counts[merged] += 1
                 prev = (w, flag)
             else:

@@ -1183,7 +1183,7 @@ function BasicExtractionTab() {
           <div style={{ display: "flex", gap: 24, alignItems: "flex-start", flexWrap: "wrap" }}>
             <div>
               <label className="label" style={{ display: "block", marginBottom: 6 }}>平台</label>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", minHeight: 30, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", minHeight: 32, alignItems: "center" }}>
                 {platforms.length === 0 ? (
                   <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>未读到平台 — 检查 Settings → 市场数据库</span>
                 ) : platforms.map(p => (
@@ -1196,17 +1196,20 @@ function BasicExtractionTab() {
             </div>
             <div>
               <label className="label" style={{ display: "block", marginBottom: 6 }}>时间范围</label>
-              <div style={{ minHeight: 30, display: "flex", alignItems: "center" }}>
-                <select className="select" value={lookback} onChange={e => setLookback(e.target.value)} style={{ height: 30 }}>
+              <div style={{ minHeight: 32, display: "flex", alignItems: "center" }}>
+                <select className="select" value={lookback} onChange={e => setLookback(e.target.value)}
+                  style={{ minWidth: 130, padding: "6px 10px", lineHeight: 1.4 }}>
                   {LOOKBACKS.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
                 </select>
               </div>
             </div>
             <div style={{ marginLeft: "auto" }}>
               <label className="label" style={{ display: "block", marginBottom: 6, visibility: "hidden" }}>.</label>
-              <button className="btn-primary" onClick={() => load(true)} disabled={computing || !platform} style={{ height: 30 }}>
-                {computing ? "分析中..." : (hasAny ? "重新分析" : "运行分析")}
-              </button>
+              <div style={{ minHeight: 32, display: "flex", alignItems: "center" }}>
+                <button className="btn-primary" onClick={() => load(true)} disabled={computing || !platform}>
+                  {computing ? "分析中..." : (hasAny ? "重新分析" : "运行分析")}
+                </button>
+              </div>
             </div>
           </div>
           {/* 进度条 + 预计时间 */}
@@ -1260,39 +1263,52 @@ function BasicExtractionTab() {
 }
 
 
-/** 趋势箭头：正=升(jade)、负=降(accent)、零=平。 */
+/** 趋势箭头：窗口内百分比变化。正=升(jade)、负=降(accent)、零=平。 */
 function TrendArrow({ v }: { v: number | null | undefined }) {
   if (v == null || isNaN(v)) return <span style={{ color: "var(--text-disabled)", fontSize: 11 }}>—</span>;
-  const up = v > 0.0001, down = v < -0.0001;
+  const up = v > 0.0005, down = v < -0.0005;
   const color = up ? "var(--jade)" : down ? "var(--accent)" : "var(--text-tertiary)";
-  return <span className="font-mono" style={{ color, fontSize: 11 }}>{up ? "↑" : down ? "↓" : "→"} {Math.abs(v).toFixed(3)}</span>;
+  return <span className="font-mono" style={{ color, fontSize: 11 }}>{up ? "↑" : down ? "↓" : "→"} {(Math.abs(v) * 100).toFixed(1)}%</span>;
 }
 
 const fmtNum = (v: number | null | undefined, d = 0) =>
   v == null || isNaN(v as number) ? "—" : Number(v).toFixed(d);
 
+/** 大数缩写：12345 → 1.2万，1.2e8 → 1.2亿。用于热度列避免溢出错位。 */
+const fmtBig = (v: number | null | undefined) => {
+  if (v == null || isNaN(v as number)) return "—";
+  const n = Number(v);
+  if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(1) + "亿";
+  if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(1) + "万";
+  return String(Math.round(n));
+};
+
 interface MetricRow {
   name: string;
-  total?: number; count_slope?: number;
-  avg_heat?: number; heat_slope?: number;
-  latest_share?: number; share_slope?: number;
+  total?: number; count_pct?: number;
+  avg_heat?: number; heat_pct?: number;
+  latest_share?: number; share_pct?: number;
   new_count?: number;
 }
 
 /** One metric as its own small block: ranked list (top 10) with a bar +
- *  trend arrow. 数量 / 热度 / 份额 各自成块，避免用户在宽表里看混。 */
+ *  百分比趋势. 数量 / 热度 / 份额 各自成块。``fmt`` formats the value (热度
+ *  用万/亿缩写避免大数错位)。 */
 function MetricMiniBlock({
-  title, rows, valueKey, slopeKey, color, decimals = 0, hideSlope = false,
+  title, rows, valueKey, pctKey, color, fmt = "int", hideTrend = false,
 }: {
   title: string; rows: MetricRow[];
-  valueKey: keyof MetricRow; slopeKey: keyof MetricRow;
-  color: string; decimals?: number; hideSlope?: boolean;
+  valueKey: keyof MetricRow; pctKey: keyof MetricRow;
+  color: string; fmt?: "int" | "big" | "share"; hideTrend?: boolean;
 }) {
   const sorted = [...rows]
     .filter(r => (r[valueKey] as number) != null)
     .sort((a, b) => ((b[valueKey] as number) || 0) - ((a[valueKey] as number) || 0))
     .slice(0, 10);
   const max = Math.max(1, ...sorted.map(r => (r[valueKey] as number) || 0));
+  const fmtVal = (v: any) =>
+    fmt === "big" ? fmtBig(v) : fmt === "share" ? fmtNum(v, 3) : fmtNum(v, 0);
+  const valW = fmt === "big" ? 56 : fmt === "share" ? 56 : 44;
   return (
     <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
       <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{title}</div>
@@ -1302,10 +1318,10 @@ function MetricMiniBlock({
         <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
           {sorted.map((r, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-              <span style={{ width: 64, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={r.name}>{r.name}</span>
-              <div style={{ flex: 1, minWidth: 30 }}><MiniBar value={(r[valueKey] as number) || 0} max={max} color={color} /></div>
-              <span className="font-mono" style={{ width: 52, textAlign: "right" }}>{fmtNum(r[valueKey] as number, decimals)}</span>
-              {!hideSlope && <span style={{ width: 56, textAlign: "right" }}><TrendArrow v={r[slopeKey] as number} /></span>}
+              <span style={{ width: 60, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flexShrink: 0 }} title={r.name}>{r.name}</span>
+              <div style={{ flex: 1, minWidth: 24 }}><MiniBar value={(r[valueKey] as number) || 0} max={max} color={color} /></div>
+              <span className="font-mono" style={{ width: valW, textAlign: "right", flexShrink: 0 }}>{fmtVal(r[valueKey])}</span>
+              {!hideTrend && <span style={{ width: 52, textAlign: "right", flexShrink: 0 }}><TrendArrow v={r[pctKey] as number} /></span>}
             </div>
           ))}
         </div>
@@ -1363,11 +1379,11 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
     let rows = (items || []).map(it => ({
       name: it.name,
       total: it.total,
-      count_slope: it.count_slope,
+      count_pct: it.count_pct,
       avg_heat: it.avg_heat,
-      heat_slope: it.heat_slope,
+      heat_pct: it.heat_pct,
       latest_share: it.latest_share,
-      share_slope: it.share_slope,
+      share_pct: it.share_pct,
       new_count: it.new_count,
     } as MetricRow & { new_count?: number }));
     if (filterSet) {
@@ -1405,13 +1421,13 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
     const mx = Math.max(...vals, 1e-9), mn = Math.min(...vals, 0);
     return (v: number) => (mx > mn ? (v - mn) / (mx - mn) : 0);
   };
-  const nShareSlope = mk("share_slope"), nHeatSlope = mk("heat_slope");
+  const nSharePct = mk("share_pct"), nHeatPct = mk("heat_pct");
   const nShare = mk("latest_share"), nHeat = mk("avg_heat");
   const oppRows = oppSource.map(r => {
     const newShare = ((r as any).new_count || 0) / oppNewTotal;
     const growth = showShare
-      ? (nShareSlope(r.share_slope || 0) + nHeatSlope(r.heat_slope || 0)) / 2
-      : nHeatSlope(r.heat_slope || 0);
+      ? (nSharePct(r.share_pct || 0) + nHeatPct(r.heat_pct || 0)) / 2
+      : nHeatPct(r.heat_pct || 0);
     const base = showShare
       ? (nShare(r.latest_share || 0) + nHeat(r.avg_heat || 0)) / 2
       : nHeat(r.avg_heat || 0);
@@ -1428,17 +1444,17 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
         {/* 大分类 / 类目：数量·热度(·份额) 各自成块 */}
         <div style={{ fontSize: 13, fontWeight: 700, margin: "2px 0 8px" }}>{catLabel}</div>
         <div style={{ display: "grid", gridTemplateColumns: showShare ? "1fr 1fr 1fr" : "1fr 1fr", gap: 12, marginBottom: 16 }}>
-          <MetricMiniBlock title="数量" rows={catRows} valueKey="total" slopeKey="count_slope" color="var(--accent)" hideSlope={hideCatCountTrend} />
-          <MetricMiniBlock title="热度" rows={catRows} valueKey="avg_heat" slopeKey="heat_slope" color="var(--gold)" />
-          {showShare && <MetricMiniBlock title="市场份额" rows={catRows} valueKey="latest_share" slopeKey="share_slope" color="var(--jade)" decimals={3} />}
+          <MetricMiniBlock title="数量" rows={catRows} valueKey="total" pctKey="count_pct" color="var(--accent)" fmt="int" hideTrend={hideCatCountTrend} />
+          <MetricMiniBlock title="热度" rows={catRows} valueKey="avg_heat" pctKey="heat_pct" color="var(--gold)" fmt="big" />
+          {showShare && <MetricMiniBlock title="市场份额" rows={catRows} valueKey="latest_share" pctKey="share_pct" color="var(--jade)" fmt="share" />}
         </div>
 
         {/* 副分类 / 标签：数量·热度(·份额) 各自成块 */}
         <div style={{ fontSize: 13, fontWeight: 700, margin: "2px 0 8px" }}>{tagLabel}</div>
         <div style={{ display: "grid", gridTemplateColumns: showShare ? "1fr 1fr 1fr" : "1fr 1fr", gap: 12, marginBottom: 16 }}>
-          <MetricMiniBlock title="数量" rows={tagRows} valueKey="total" slopeKey="count_slope" color="var(--accent)" />
-          <MetricMiniBlock title="热度" rows={tagRows} valueKey="avg_heat" slopeKey="heat_slope" color="var(--gold)" />
-          {showShare && <MetricMiniBlock title="市场份额" rows={tagRows} valueKey="latest_share" slopeKey="share_slope" color="var(--jade)" decimals={3} />}
+          <MetricMiniBlock title="数量" rows={tagRows} valueKey="total" pctKey="count_pct" color="var(--accent)" fmt="int" />
+          <MetricMiniBlock title="热度" rows={tagRows} valueKey="avg_heat" pctKey="heat_pct" color="var(--gold)" fmt="big" />
+          {showShare && <MetricMiniBlock title="市场份额" rows={tagRows} valueKey="latest_share" pctKey="share_pct" color="var(--jade)" fmt="share" />}
         </div>
 
         {/* 开书机会 + （番茄）标签共现 */}
