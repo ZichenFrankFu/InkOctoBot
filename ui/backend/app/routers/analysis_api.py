@@ -64,52 +64,142 @@ def analysis_date_range():
     mn, mx = _db_date_range(db_path)
     return {"min_date": mn, "max_date": mx}
 
-def _db_category_tag_counts(db_path: str, platform: str,
-                            start_date: str, end_date: str) -> dict:
-    """Per-category / per-tag NOVEL counts straight from the novels table —
-    this is the real「数量」(how many novels in the DB belong to a
-    category), distinct from the rank-rollup appearance counts. Also
-    returns NEW-book counts (created within the window) so the UI can show
-    a cross-category new-book share that sums to 100%."""
-    out = {"cat_total": {}, "cat_new": {}, "tag_total": {}, "tag_new": {}}
+def _linear_slope(ys: list[float]) -> float | None:
+    """Least-squares slope of ``ys`` against its index. None for <2 points."""
+    n = len(ys)
+    if n < 2:
+        return None
+    mx = (n - 1) / 2.0
+    my = sum(ys) / n
+    denom = sum((i - mx) ** 2 for i in range(n))
+    if denom == 0:
+        return None
+    return sum((i - mx) * (ys[i] - my) for i in range(n)) / denom
+
+
+def _basic_market_panel(db_path: str, platform: str,
+                        start_date: str, end_date: str) -> dict:
+    """Per-大分类(main_category) and per-副分类/标签(tag) panel computed
+    DIRECTLY from the DB — robust to the market_analysis cat_u/tag_u
+    normalization that didn't match the stored names (the cause of 副分类
+    热度/份额 暂无 and trends showing 「-」).
+
+    Each item: name, total(库内小说数), heat(最新快照该分类下所有作品热度之
+    和), share(热度占比), count/heat/share 的时间斜率, new_count(出现在新书
+    榜的作品数 — 新书统一定义为「来自新书榜」)。
+    """
+    out: dict = {"categories": [], "tags": []}
     if not Path(db_path).exists():
         return out
     plat_ok = platform in ("qidian", "fanqie")
-    pw = " WHERE platform = ?" if plat_ok else ""
+    pcond = "l.platform = ? AND " if plat_ok else ""
     pp: list = [platform] if plat_ok else []
+    npp: list = [platform] if plat_ok else []
+    nfilter = " WHERE platform = ?" if plat_ok else ""
+    tfilter = " WHERE n.platform = ?" if plat_ok else ""
     try:
         con = sqlite3.connect(db_path)
+        # (date, novel) heat — one value per novel per day (recommend/reading).
+        rows = con.execute(
+            f"""SELECT s.snapshot_date AS d, e.novel_uid AS uid,
+                       MAX(COALESCE(e.total_recommend, e.reading_count, 0)) AS heat
+                FROM rank_entries e
+                JOIN rank_snapshots s ON s.snapshot_id = e.snapshot_id
+                JOIN rank_lists l ON l.rank_list_id = s.rank_list_id
+                WHERE {pcond} s.snapshot_date BETWEEN ? AND ?
+                GROUP BY s.snapshot_date, e.novel_uid""",
+            pp + [start_date, end_date],
+        ).fetchall()
+        catmap: dict[int, str] = {}
+        for uid, cat in con.execute(
+                f"SELECT novel_uid, main_category FROM novels{nfilter}", npp):
+            catmap[uid] = cat or ""
+        tagmap: dict[int, list[str]] = {}
+        for uid, tag in con.execute(
+                "SELECT m.novel_uid, t.tag_name FROM novel_tag_map m "
+                "JOIN tags t ON t.tag_id = m.tag_id "
+                f"JOIN novels n ON n.novel_uid = m.novel_uid{tfilter}", npp):
+            if tag:
+                tagmap.setdefault(uid, []).append(tag)
+        newset: set[int] = set()
+        for (uid,) in con.execute(
+                f"""SELECT DISTINCT e.novel_uid FROM rank_entries e
+                    JOIN rank_snapshots s ON s.snapshot_id = e.snapshot_id
+                    JOIN rank_lists l ON l.rank_list_id = s.rank_list_id
+                    WHERE {pcond} l.rank_family LIKE '%新书%'
+                      AND s.snapshot_date BETWEEN ? AND ?""",
+                pp + [start_date, end_date]):
+            newset.add(uid)
+        cat_total: dict[str, int] = {}
         for cat, c in con.execute(
-                f"SELECT main_category, COUNT(*) FROM novels{pw} "
-                f"GROUP BY main_category", pp):
+                f"SELECT main_category, COUNT(*) FROM novels{nfilter} "
+                "GROUP BY main_category", npp):
             if cat:
-                out["cat_total"][cat] = int(c)
-        nw = (pw + " AND" if pw else " WHERE") + " created_date >= ? AND created_date <= ?"
-        for cat, c in con.execute(
-                f"SELECT main_category, COUNT(*) FROM novels{nw} "
-                f"GROUP BY main_category", pp + [start_date, end_date]):
-            if cat:
-                out["cat_new"][cat] = int(c)
-        tw = " WHERE n.platform = ?" if plat_ok else ""
+                cat_total[cat] = int(c)
+        tag_total: dict[str, int] = {}
         for tag, c in con.execute(
                 "SELECT t.tag_name, COUNT(DISTINCT m.novel_uid) "
                 "FROM novel_tag_map m JOIN tags t ON t.tag_id = m.tag_id "
-                f"JOIN novels n ON n.novel_uid = m.novel_uid{tw} "
-                "GROUP BY t.tag_name", pp):
+                f"JOIN novels n ON n.novel_uid = m.novel_uid{tfilter} "
+                "GROUP BY t.tag_name", npp):
             if tag:
-                out["tag_total"][tag] = int(c)
-        tnw = (tw + " AND" if tw else " WHERE") + " n.created_date >= ? AND n.created_date <= ?"
-        for tag, c in con.execute(
-                "SELECT t.tag_name, COUNT(DISTINCT m.novel_uid) "
-                "FROM novel_tag_map m JOIN tags t ON t.tag_id = m.tag_id "
-                f"JOIN novels n ON n.novel_uid = m.novel_uid{tnw} "
-                "GROUP BY t.tag_name", pp + [start_date, end_date]):
-            if tag:
-                out["tag_new"][tag] = int(c)
+                tag_total[tag] = int(c)
         con.close()
     except sqlite3.OperationalError:
-        pass
+        return out
+
+    from collections import defaultdict
+    dates = sorted({r[0] for r in rows})
+    cat_heat: dict = defaultdict(lambda: defaultdict(float))
+    cat_nov: dict = defaultdict(lambda: defaultdict(set))
+    tag_heat: dict = defaultdict(lambda: defaultdict(float))
+    tag_nov: dict = defaultdict(lambda: defaultdict(set))
+    date_total: dict = defaultdict(float)
+    for d, uid, heat in rows:
+        heat = heat or 0
+        date_total[d] += heat
+        cat = catmap.get(uid, "")
+        if cat:
+            cat_heat[d][cat] += heat
+            cat_nov[d][cat].add(uid)
+        for tg in tagmap.get(uid, []):
+            tag_heat[d][tg] += heat
+            tag_nov[d][tg].add(uid)
+
+    cat_new: dict[str, int] = defaultdict(int)
+    tag_new: dict[str, int] = defaultdict(int)
+    for uid in newset:
+        cat = catmap.get(uid)
+        if cat:
+            cat_new[cat] += 1
+        for tg in tagmap.get(uid, []):
+            tag_new[tg] += 1
+
+    def _build(totals, date_heat, date_nov, new_counts):
+        items = []
+        for name, total in totals.items():
+            heat_series = [date_heat[d].get(name, 0.0) for d in dates]
+            count_series = [float(len(date_nov[d].get(name, ()))) for d in dates]
+            share_series = [
+                (date_heat[d].get(name, 0.0) / date_total[d]) if date_total[d] else 0.0
+                for d in dates
+            ]
+            items.append({
+                "name": name,
+                "total": int(total),
+                "avg_heat": round(heat_series[-1]) if heat_series else 0,
+                "latest_share": round(share_series[-1], 4) if share_series else 0.0,
+                "count_slope": _linear_slope(count_series),
+                "heat_slope": _linear_slope(heat_series),
+                "share_slope": _linear_slope(share_series),
+                "new_count": int(new_counts.get(name, 0)),
+            })
+        return items
+
+    out["categories"] = _build(cat_total, cat_heat, cat_nov, cat_new)
+    out["tags"] = _build(tag_total, tag_heat, tag_nov, tag_new)
     return out
+
 
 
 def _compute_analysis(db_path: str, platform: str, lookback: str, top_k: int) -> dict:
@@ -188,8 +278,9 @@ def _compute_analysis(db_path: str, platform: str, lookback: str, top_k: int) ->
             "pairs": _safe_records(pairs, 30),
             "triples": _safe_records(triples, 30),
             "cross_platform": cross_platform,
-            # 真实 DB 小说计数（数量 / 新书占比的数据源，区别于榜单出现计数）
-            "db_counts": _db_category_tag_counts(db_path, platform, start_date, end_date),
+            # 大分类/副分类面板：数量 + 热度 + 份额 + 各自趋势 + 新书数，
+            # 直接由 DB 计算（数量=库内小说数，热度=该分类作品热度之和）。
+            "panel": _basic_market_panel(db_path, platform, start_date, end_date),
         }
     except ImportError as e:
         traceback.print_exc()
@@ -227,7 +318,8 @@ def run_analysis(
         }
     return compute_cache.get_or_compute(
         _project_db_path(),
-        f"analysis_run:{platform}:{lookback}:{top_k}",
+        # v2: payload now carries the DB-computed `panel` (was `db_counts`).
+        f"analysis_run_v2:{platform}:{lookback}:{top_k}",
         version,
         lambda: _compute_analysis(crawler_db, platform, lookback, top_k),
         refresh=refresh,

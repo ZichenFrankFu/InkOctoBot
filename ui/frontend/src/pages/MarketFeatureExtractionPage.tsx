@@ -1150,6 +1150,25 @@ function BasicExtractionTab() {
   const hasNlp = !!nlp?.available;
   const hasAny = hasMarket || hasNlp;
 
+  // 分析进度条 + 预计时间：compute_cache 不报细粒度进度，用经过时间相对
+  // 一个估计值推进度。估计值随章节量略增（jieba 分词为主要耗时）。
+  const [elapsed, setElapsed] = React.useState(0);
+  const startRef = React.useRef<number | null>(null);
+  const estSec = Math.max(8, Math.min(45, Math.round((nlp?.total_chapters || 300) / 40)));
+  React.useEffect(() => {
+    if (computing) {
+      if (startRef.current == null) startRef.current = Date.now();
+      const id = window.setInterval(() => {
+        if (startRef.current != null) setElapsed((Date.now() - startRef.current) / 1000);
+      }, 250);
+      return () => window.clearInterval(id);
+    }
+    startRef.current = null;
+    setElapsed(0);
+  }, [computing]);
+  const progressPct = computing ? Math.min(95, (elapsed / estSec) * 100) : 0;
+  const etaSec = Math.max(0, Math.round(estSec - elapsed));
+
   const LOOKBACKS: { key: string; label: string }[] = [
     { key: "week", label: "最近7天" }, { key: "month", label: "最近30天" },
     { key: "quarter", label: "最近90天" }, { key: "year", label: "最近365天" },
@@ -1158,35 +1177,49 @@ function BasicExtractionTab() {
 
   return (
     <>
-      {/* Controls */}
+      {/* Controls — 平台 / 时间范围 标签对齐，去掉 Top K 显示 */}
       <div className="card" style={{ marginBottom: 14 }}>
-        <div className="card-body" style={{ display: "flex", gap: 20, alignItems: "flex-end", flexWrap: "wrap" }}>
-          <div className="field">
-            <label className="label">平台（单选，必选）</label>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {platforms.length === 0 ? (
-                <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>未读到平台 — 检查 Settings → 市场数据库</span>
-              ) : platforms.map(p => (
-                <button key={p.key}
-                  className={platform === p.key ? "btn-primary" : "btn"}
-                  style={{ fontSize: 12, padding: "5px 14px", borderRadius: 20 }}
-                  onClick={() => setPlatform(p.key)}>{tPlatform(p.key)}</button>
-              ))}
+        <div className="card-body">
+          <div style={{ display: "flex", gap: 24, alignItems: "flex-start", flexWrap: "wrap" }}>
+            <div>
+              <label className="label" style={{ display: "block", marginBottom: 6 }}>平台</label>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", minHeight: 30, alignItems: "center" }}>
+                {platforms.length === 0 ? (
+                  <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>未读到平台 — 检查 Settings → 市场数据库</span>
+                ) : platforms.map(p => (
+                  <button key={p.key}
+                    className={platform === p.key ? "btn-primary" : "btn"}
+                    style={{ fontSize: 12, padding: "5px 14px", borderRadius: 20 }}
+                    onClick={() => setPlatform(p.key)}>{tPlatform(p.key)}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="label" style={{ display: "block", marginBottom: 6 }}>时间范围</label>
+              <div style={{ minHeight: 30, display: "flex", alignItems: "center" }}>
+                <select className="select" value={lookback} onChange={e => setLookback(e.target.value)} style={{ height: 30 }}>
+                  {LOOKBACKS.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ marginLeft: "auto" }}>
+              <label className="label" style={{ display: "block", marginBottom: 6, visibility: "hidden" }}>.</label>
+              <button className="btn-primary" onClick={() => load(true)} disabled={computing || !platform} style={{ height: 30 }}>
+                {computing ? "分析中..." : (hasAny ? "重新分析" : "运行分析")}
+              </button>
             </div>
           </div>
-          <div className="field">
-            <label className="label">时间范围</label>
-            <select className="select" value={lookback} onChange={e => setLookback(e.target.value)}>
-              {LOOKBACKS.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label className="label">Top K</label>
-            <div style={{ fontSize: 13, fontWeight: 600, padding: "6px 0" }}>10（固定）</div>
-          </div>
-          <button className="btn-primary" onClick={() => load(true)} disabled={computing || !platform}>
-            {computing ? "分析中..." : (hasAny ? "重新分析" : "运行分析")}
-          </button>
+          {/* 进度条 + 预计时间 */}
+          {computing && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ width: `${progressPct}%`, height: "100%", background: "var(--accent)", transition: "width 0.25s linear" }} />
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+                分析中… 已用 {elapsed.toFixed(0)} 秒{etaSec > 0 ? ` · 预计还需约 ${etaSec} 秒` : " · 即将完成"}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1243,16 +1276,17 @@ interface MetricRow {
   total?: number; count_slope?: number;
   avg_heat?: number; heat_slope?: number;
   latest_share?: number; share_slope?: number;
+  new_count?: number;
 }
 
 /** One metric as its own small block: ranked list (top 10) with a bar +
  *  trend arrow. 数量 / 热度 / 份额 各自成块，避免用户在宽表里看混。 */
 function MetricMiniBlock({
-  title, rows, valueKey, slopeKey, color, decimals = 0,
+  title, rows, valueKey, slopeKey, color, decimals = 0, hideSlope = false,
 }: {
   title: string; rows: MetricRow[];
   valueKey: keyof MetricRow; slopeKey: keyof MetricRow;
-  color: string; decimals?: number;
+  color: string; decimals?: number; hideSlope?: boolean;
 }) {
   const sorted = [...rows]
     .filter(r => (r[valueKey] as number) != null)
@@ -1271,7 +1305,7 @@ function MetricMiniBlock({
               <span style={{ width: 64, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={r.name}>{r.name}</span>
               <div style={{ flex: 1, minWidth: 30 }}><MiniBar value={(r[valueKey] as number) || 0} max={max} color={color} /></div>
               <span className="font-mono" style={{ width: 52, textAlign: "right" }}>{fmtNum(r[valueKey] as number, decimals)}</span>
-              <span style={{ width: 56, textAlign: "right" }}><TrendArrow v={r[slopeKey] as number} /></span>
+              {!hideSlope && <span style={{ width: 56, textAlign: "right" }}><TrendArrow v={r[slopeKey] as number} /></span>}
             </div>
           ))}
         </div>
@@ -1321,43 +1355,30 @@ function CooccurTable({ pairs }: { pairs: any[] }) {
  *  综合「份额/热度增长 + 既有份额/热度 + 跨类目新书占比(和为100%)」。 */
 function MarketInfoBlock({ market, platform }: { market: any; platform: string }) {
   const isQidian = platform === "qidian";
-  const dbc = market.db_counts || {};
-  const catTotal: Record<string, number> = dbc.cat_total || {};
-  const tagTotal: Record<string, number> = dbc.tag_total || {};
-  const catNew: Record<string, number> = dbc.cat_new || {};
+  const panel = market.panel || { categories: [], tags: [] };
 
-  // Build enriched rows: DB novel count (数量) + rollup trends/heat/share.
-  const buildRows = (
-    counts: Record<string, number>, rollup: any[], nameKey: string,
-    filterSet?: Set<string>,
-  ): MetricRow[] => {
-    const rollMap = new Map<string, any>();
-    for (const r of rollup || []) if (r[nameKey]) {
-      const prev = rollMap.get(r[nameKey]);
-      if (!prev || (r.latest_count || 0) > (prev.latest_count || 0)) rollMap.set(r[nameKey], r);
+  // Panel rows are computed server-side directly from the DB (数量=库内
+  // 小说数, 热度=该分类作品热度之和, 份额/趋势/新书 from snapshots).
+  const toRows = (items: any[], filterSet?: Set<string>): MetricRow[] => {
+    let rows = (items || []).map(it => ({
+      name: it.name,
+      total: it.total,
+      count_slope: it.count_slope,
+      avg_heat: it.avg_heat,
+      heat_slope: it.heat_slope,
+      latest_share: it.latest_share,
+      share_slope: it.share_slope,
+      new_count: it.new_count,
+    } as MetricRow & { new_count?: number }));
+    if (filterSet) {
+      const f = rows.filter(r => filterSet.has(r.name));
+      if (f.length) rows = f;   // fallback to unfiltered if taxonomy misses
     }
-    let entries = Object.entries(counts || {});
-    if (filterSet) entries = entries.filter(([n]) => filterSet.has(n));
-    // Fallback when the DB has no per-name counts: use rollup appearance count.
-    if (entries.length === 0) {
-      const seen = new Set<string>();
-      for (const r of rollup || []) {
-        const n = r[nameKey];
-        if (n && !seen.has(n) && (!filterSet || filterSet.has(n))) { seen.add(n); entries.push([n, r.latest_count || 0]); }
-      }
-    }
-    return entries.map(([name, total]) => {
-      const r = rollMap.get(name) || {};
-      return {
-        name, total,
-        count_slope: r.count_slope, avg_heat: r.avg_heat, heat_slope: r.heat_slope,
-        latest_share: r.latest_share, share_slope: r.share_slope,
-      } as MetricRow;
-    }).sort((a, b) => (b.total || 0) - (a.total || 0));
+    return rows.sort((a, b) => (b.total || 0) - (a.total || 0));
   };
 
-  let catRows = buildRows(catTotal, market.cat_rollup, "category", isQidian ? QIDIAN_MAIN_CATS : undefined);
-  let tagRows = buildRows(tagTotal, market.tag_rollup, "tag", isQidian ? QIDIAN_SUB_CATS : undefined);
+  let catRows = toRows(panel.categories, isQidian ? QIDIAN_MAIN_CATS : undefined);
+  let tagRows = toRows(panel.tags, isQidian ? QIDIAN_SUB_CATS : undefined);
   // Cross-list dedupe: a 大分类/类目 name never repeats as a 副分类/标签.
   const catNameSet = new Set(catRows.map(r => r.name));
   tagRows = tagRows.filter(r => !catNameSet.has(r.name));
@@ -1366,20 +1387,19 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
 
   const catLabel = isQidian ? "大分类" : "类目";
   const tagLabel = isQidian ? "副分类" : "标签";
-  const showCooccur = !isQidian;   // 起点没有标签共现
-  // 番茄各榜单已按题材分类，市场份额恒为 1 且不变 → 不展示份额 block，
-  // 开书机会也不计入份额分量。
-  const showShare = !isQidian ? false : true;
-  // 起点: 开书机会细到「大分类·副分类」(如 轻小说·原生幻想)，用副分类数据
-  // + 副分类新书。番茄: 类目级。
-  const tagNew: Record<string, number> = dbc.tag_new || {};
-  const oppIsSub = isQidian && tagRows.length > 0;
-  const oppSource = oppIsSub ? tagRows : (catRows.length ? catRows : tagRows);
-  const oppNew = oppIsSub ? tagNew : catNew;
+  const showCooccur = !isQidian;     // 起点没有标签共现
+  // 番茄榜单已按题材分类：份额恒为 1 且不变 → 不展示份额 block；类目数量
+  // 也固定（每榜单前 30）→ 不展示数量趋势。
+  const showShare = isQidian;
+  const hideCatCountTrend = !isQidian;
+  // 开书机会：起点细到「大分类·副分类」(轻小说·原生幻想)；番茄改用标签
+  // （番茄每类目取固定数量新书，类目新书占比无意义）。新书统一为「来自
+  // 新书榜」(panel.new_count)。
+  const oppBySub = (isQidian || !isQidian) && tagRows.length > 0;  // 两平台都用标签级
+  const oppSource = oppBySub ? tagRows : (catRows.length ? catRows : tagRows);
   const oppLabel = (name: string) =>
-    oppIsSub ? `${QIDIAN_SUB_TO_MAIN[name] || "其他"}·${name}` : name;
-  // 新书占比分母取展示项之和 → 展示行新书占比合计 100%（用户心智模型）。
-  const oppNewTotal = oppSource.reduce((s, r) => s + (oppNew[r.name] || 0), 0) || 1;
+    isQidian && oppBySub ? `${QIDIAN_SUB_TO_MAIN[name] || "其他"}·${name}` : name;
+  const oppNewTotal = oppSource.reduce((s, r) => s + ((r as any).new_count || 0), 0) || 1;
   const mk = (key: keyof MetricRow) => {
     const vals = oppSource.map(r => (r[key] as number) || 0);
     const mx = Math.max(...vals, 1e-9), mn = Math.min(...vals, 0);
@@ -1388,8 +1408,7 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
   const nShareSlope = mk("share_slope"), nHeatSlope = mk("heat_slope");
   const nShare = mk("latest_share"), nHeat = mk("avg_heat");
   const oppRows = oppSource.map(r => {
-    const newShare = (oppNew[r.name] || 0) / oppNewTotal;
-    // 番茄份额恒定 → 仅用热度增长；起点用份额+热度增长。
+    const newShare = ((r as any).new_count || 0) / oppNewTotal;
     const growth = showShare
       ? (nShareSlope(r.share_slope || 0) + nHeatSlope(r.heat_slope || 0)) / 2
       : nHeatSlope(r.heat_slope || 0);
@@ -1400,7 +1419,7 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
     return { name: r.name, label: oppLabel(r.name), score, newShare };
   }).sort((a, b) => b.score - a.score).slice(0, 10);
   const oppMax = Math.max(1e-9, ...oppRows.map(o => o.score));
-  const oppColLabel = oppIsSub ? "大分类·副分类" : catLabel;
+  const oppColLabel = isQidian ? "大分类·副分类" : "标签";
 
   return (
     <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--indigo)" }}>
@@ -1409,7 +1428,7 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
         {/* 大分类 / 类目：数量·热度(·份额) 各自成块 */}
         <div style={{ fontSize: 13, fontWeight: 700, margin: "2px 0 8px" }}>{catLabel}</div>
         <div style={{ display: "grid", gridTemplateColumns: showShare ? "1fr 1fr 1fr" : "1fr 1fr", gap: 12, marginBottom: 16 }}>
-          <MetricMiniBlock title="数量" rows={catRows} valueKey="total" slopeKey="count_slope" color="var(--accent)" />
+          <MetricMiniBlock title="数量" rows={catRows} valueKey="total" slopeKey="count_slope" color="var(--accent)" hideSlope={hideCatCountTrend} />
           <MetricMiniBlock title="热度" rows={catRows} valueKey="avg_heat" slopeKey="heat_slope" color="var(--gold)" />
           {showShare && <MetricMiniBlock title="市场份额" rows={catRows} valueKey="latest_share" slopeKey="share_slope" color="var(--jade)" decimals={3} />}
         </div>
@@ -1425,9 +1444,7 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
         {/* 开书机会 + （番茄）标签共现 */}
         <div style={{ display: "grid", gridTemplateColumns: showCooccur ? "1fr 1fr" : "1fr", gap: 12 }}>
           <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
-              开书机会（{showShare ? "份额/热度增长 + 既有份额/热度" : "热度增长 + 既有热度"} + 新书占比 加权）
-            </div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>开书机会</div>
             {oppRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
               <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
                 <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
@@ -1452,7 +1469,7 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
               </table>
             )}
             <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 6 }}>
-              新书占比为跨{oppColLabel}分布，总和 100%。
+              机会指数 = 0.4 × {showShare ? "(份额增长+热度增长)" : "热度增长"} + 0.3 × 新书占比 + 0.3 × {showShare ? "(既有份额+热度)" : "既有热度"}；新书来源于新书榜，新书占比为跨{oppColLabel}分布、总和 100%。
             </div>
           </div>
           {showCooccur && <CooccurTable pairs={market.pairs} />}
@@ -1488,7 +1505,7 @@ function NlpDimsBlock({ nlp }: { nlp: any }) {
     <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--jade)" }}>
       <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>开篇章节 NLP 维度</h3></div>
       <div className="card-body">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
           {/* 字数 */}
           <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>字数维度</div>
@@ -1521,32 +1538,19 @@ function NlpDimsBlock({ nlp }: { nlp: any }) {
               </div>
             )}
           </div>
-          {/* 高频词 */}
-          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>高频词</div>
-            {(spec.top_words || []).length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                {(spec.top_words || []).slice(0, 20).map((w: any) => (
-                  <span key={w.word} className="tag" style={{ fontSize: 11, padding: "2px 8px" }}>
-                    {w.word}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{w.count}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-          {/* 生造词Step1 */}
-          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>生造词 Step1 候选</div>
-            {(spec.neologism_step1 || []).length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                {(spec.neologism_step1 || []).slice(0, 18).map((n: any) => (
-                  <span key={n.term} className="tag" style={{ fontSize: 11, padding: "2px 8px", color: "var(--gold)" }}>
-                    {n.term}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{n.count}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
+        </div>
+        {/* 高频词（满宽） */}
+        <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>高频词</div>
+          {(spec.top_words || []).length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {(spec.top_words || []).slice(0, 30).map((w: any) => (
+                <span key={w.word} className="tag" style={{ fontSize: 11, padding: "2px 8px" }}>
+                  {w.word}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{w.count}</span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
