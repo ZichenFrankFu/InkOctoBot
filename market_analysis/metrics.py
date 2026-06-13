@@ -216,6 +216,17 @@ def compute_timewindow_rollup(weekly: pd.DataFrame, cfg: MetricConfig) -> pd.Dat
         on=keys, how="left"
     )
 
+    # 数量维度（spec 2.1.3.2 市场信息·数量）：窗口内最近一周的 unique
+    # 作品数 + 窗口均值，供 UI 的「数量 / 数量变化趋势」列使用。
+    cnt = (
+        d.sort_values("week")
+        .groupby(keys, dropna=False)
+        .agg(latest_count=("book_count", "last"),
+             mean_count=("book_count", "mean"))
+        .reset_index()
+    )
+    roll = roll.merge(cnt, on=keys, how="left")
+
     # safe/chance heuristic
     def stage_row(row):
         days_seen = row["days_seen"]
@@ -312,6 +323,17 @@ def compute_timewindow_category_rollup(weekly_cat: pd.DataFrame, cfg: MetricConf
         d.groupby(keys, dropna=False).apply(slope_of("book_count")).reset_index(name="count_slope"),
         on=keys, how="left"
     )
+
+    # 数量维度（spec 2.1.3.2 市场信息·数量）：窗口内最近一周该类目的
+    # unique 作品数 + 窗口均值，供 UI 的「数量 / 数量变化趋势」列使用。
+    cnt = (
+        d.sort_values("week")
+        .groupby(keys, dropna=False)
+        .agg(latest_count=("book_count", "last"),
+             mean_count=("book_count", "mean"))
+        .reset_index()
+    )
+    roll = roll.merge(cnt, on=keys, how="left")
     return roll
 
 

@@ -136,13 +136,31 @@ def _check_cancelled(db_path: str, job_id: str) -> bool:
 
 def _phase_1(
     db_path: str, job_id: str, platform: str, category: str,
-    crawler_db: str | None,
+    crawler_db: str | None, work_ids: list[str] | None = None,
 ) -> dict:
     _update_job(db_path, job_id, state="running_phase_1",
                  progress_phase="phase_1", progress_pct=5)
-    return representative_selector.select(
+    result = representative_selector.select(
         db_path, platform, category, crawler_db=crawler_db,
     )
+    # User-curated subset (高级特征提取页的勾选): keep only the chosen
+    # works selected_for_extraction so phase 2 processes exactly them.
+    if work_ids:
+        keep = set(work_ids)
+        with sqlite3.connect(db_path) as con:
+            con.execute(
+                "UPDATE representative_works_pool "
+                "SET selected_for_extraction = 0 "
+                "WHERE platform = ? AND category = ?",
+                (platform, category),
+            )
+            con.executemany(
+                "UPDATE representative_works_pool "
+                "SET selected_for_extraction = 1 WHERE work_id = ?",
+                [(w,) for w in keep],
+            )
+            con.commit()
+    return result
 
 
 async def _phase_2_for_work(
@@ -290,6 +308,7 @@ def _phase_5(
 async def run_job_async(
     db_path: str, platform: str, category: str,
     *, crawler_db: str | None = None, job_id: str | None = None,
+    work_ids: list[str] | None = None,
 ) -> str:
     """Run the full pipeline. Returns the job_id (created or supplied).
     Honors per-phase failures: marks job state ``failed`` and creates a
@@ -301,7 +320,7 @@ async def run_job_async(
     try:
         # Cooperative cancellation: after each major phase, check the
         # DB state and bail if the user clicked Cancel.
-        _phase_1(db_path, job_id, platform, category, crawler_db)
+        _phase_1(db_path, job_id, platform, category, crawler_db, work_ids)
         if _check_cancelled(db_path, job_id):
             logger.info("job %s cancelled after phase 1", job_id)
             return job_id
@@ -352,7 +371,7 @@ async def run_job_async(
 
 def run_job_in_background(
     db_path: str, platform: str, category: str,
-    *, crawler_db: str | None = None,
+    *, crawler_db: str | None = None, work_ids: list[str] | None = None,
 ) -> str:
     """Spawn the pipeline in a daemon thread with its own event loop.
     Returns the job_id immediately."""
@@ -363,7 +382,7 @@ def run_job_in_background(
         try:
             asyncio.run(run_job_async(
                 db_path, platform, category,
-                crawler_db=crawler_db, job_id=job_id,
+                crawler_db=crawler_db, job_id=job_id, work_ids=work_ids,
             ))
         except Exception:
             pass  # already persisted in job row

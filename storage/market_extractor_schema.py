@@ -252,6 +252,10 @@ _DDL: tuple[str, ...] = (
         loader_payload                   TEXT,
         loader_token_estimate            INTEGER,
         holdout_similarity_score         REAL,
+        -- spec 2.1.3.2 高级特征提取：行文风格七组 (A1-G2) 结构化结果
+        -- 与生造词 Step2（专有名词/人名/地名常见模式与常见字）。
+        style_dimensions_json            TEXT,
+        neologism_step2_json             TEXT,
         confidence_label                 TEXT,
         valid_from                       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         valid_until                      TIMESTAMP,
@@ -294,9 +298,25 @@ _DDL: tuple[str, ...] = (
 )
 
 
+# Columns added after the table first shipped — ALTER in for existing DBs.
+_PLATFORM_PROFILE_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("style_dimensions_json", "TEXT"),
+    ("neologism_step2_json", "TEXT"),
+)
+
+
 def ensure_market_extractor_tables(conn: sqlite3.Connection) -> None:
     """Create all 7 market-extractor tables + indexes. Idempotent."""
     cur = conn.cursor()
     for ddl in _DDL:
         cur.execute(ddl)
+    # Idempotent column adds for DBs created before these columns existed.
+    existing = {
+        r[1] for r in cur.execute("PRAGMA table_info(platform_profiles)").fetchall()
+    }
+    for col, coltype in _PLATFORM_PROFILE_MIGRATIONS:
+        if col not in existing:
+            cur.execute(
+                f"ALTER TABLE platform_profiles ADD COLUMN {col} {coltype}"
+            )
     conn.commit()

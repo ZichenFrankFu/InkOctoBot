@@ -91,6 +91,7 @@ type Phase =
   | "preview"            // pre-call: user inspects prompt, picks mode
   | "running"            // API call in flight
   | "manual_pending"     // user is supposed to paste content
+  | "committing"         // manual_only: parsing + persisting the paste
   | "result"             // we have a response, user reviews/edits
   | "error";             // last call errored
 
@@ -188,29 +189,10 @@ export default function UniversalLLMDialog({
     setErrorMsg("");
   }, []);
 
-  const submitManual = useCallback(() => {
-    const txt = pasteBuf.trim();
-    if (txt.length < 10) {
-      toast("粘贴的内容看起来太短", "error");
-      return;
-    }
-    setResponseText(txt);
-    if (parseResponse) {
-      try { setParsed(parseResponse(txt)); } catch { setParsed(undefined); }
-    }
-    setPhase("result");
-  }, [pasteBuf, parseResponse, toast]);
-
-  const copyPrompt = useCallback(() => {
-    const full = system ? `${system}\n\n${prompt}` : prompt;
-    navigator.clipboard.writeText(full).then(
-      () => toast(`已复制 ${full.length} 字`, "success"),
-      () => toast("复制失败，请手动选中", "error"),
-    );
-  }, [prompt, system, toast]);
-
-  const commit = useCallback(async () => {
-    const finalText = responseText.trim();
+  // Shared commit path so manual_only can submit straight from paste
+  // without a redundant result-preview step.
+  const doCommit = useCallback(async (text: string, parsedVal: any) => {
+    const finalText = text.trim();
     if (finalText.length < minChars) {
       if (!window.confirm(
         `内容只有 ${finalText.length} 字 (< ${minChars} 推荐下限)。\n` +
@@ -222,7 +204,7 @@ export default function UniversalLLMDialog({
       await onCommit({
         text: finalText,
         source: mode === "api" ? "api" : "manual_paste",
-        parsed,
+        parsed: parsedVal,
         prompt,
         system,
       });
@@ -233,7 +215,41 @@ export default function UniversalLLMDialog({
     } finally {
       setCommitting(false);
     }
-  }, [responseText, minChars, onCommit, mode, parsed, prompt, system, onClose]);
+  }, [minChars, onCommit, mode, prompt, system, onClose]);
+
+  const submitManual = useCallback(() => {
+    const txt = pasteBuf.trim();
+    if (txt.length < 10) {
+      toast("粘贴的内容看起来太短", "error");
+      return;
+    }
+    let parsedVal: any = undefined;
+    if (parseResponse) {
+      try { parsedVal = parseResponse(txt); } catch { parsedVal = undefined; }
+    }
+    setResponseText(txt);
+    setParsed(parsedVal);
+    if (initialMode === "manual_only") {
+      // No review step — parse + persist immediately (spec: 去掉预览).
+      setPhase("committing");
+      void doCommit(txt, parsedVal);
+    } else {
+      setPhase("result");
+    }
+  }, [pasteBuf, parseResponse, toast, initialMode, doCommit]);
+
+  const copyPrompt = useCallback(() => {
+    const full = system ? `${system}\n\n${prompt}` : prompt;
+    navigator.clipboard.writeText(full).then(
+      () => toast(`已复制 ${full.length} 字`, "success"),
+      () => toast("复制失败，请手动选中", "error"),
+    );
+  }, [prompt, system, toast]);
+
+  const commit = useCallback(
+    () => doCommit(responseText, parsed),
+    [doCommit, responseText, parsed],
+  );
 
   // ── render ──
 
@@ -274,7 +290,7 @@ export default function UniversalLLMDialog({
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <PhaseBadge phase={phase} />
-            <button className="btn-sm" onClick={onClose} disabled={phase === "running"}></button>
+            <button className="btn-sm" onClick={onClose} disabled={phase === "running" || phase === "committing"}></button>
           </div>
         </header>
 
@@ -383,7 +399,18 @@ export default function UniversalLLMDialog({
                 onSubmit={submitManual}
                 onCancel={initialMode === "manual_only" ? onClose : () => setPhase("preview")}
                 cancelLabel={initialMode === "manual_only" ? "关闭" : "取消"}
+                submitLabel={initialMode === "manual_only" ? "提交并解析" : "提交粘贴"}
               />
+            )}
+
+            {phase === "committing" && (
+              <div style={{ textAlign: "center", padding: 40 }}>
+                <div style={{ fontSize: 28, marginBottom: 16 }}>⏳</div>
+                <h4>正在解析并写入...</h4>
+                <p style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
+                  正在解析大模型返回的内容并保存到数据库。
+                </p>
+              </div>
             )}
 
             {phase === "result" && (
@@ -401,8 +428,18 @@ export default function UniversalLLMDialog({
             {phase === "error" && (
               <ErrorPane
                 msg={errorMsg}
-                onRetry={mode === "api" ? resume : () => setPhase("preview")}
-                onCancel={() => setPhase("preview")}
+                onRetry={
+                  initialMode === "manual_only"
+                    ? () => setPhase("manual_pending")
+                    : mode === "api" ? resume : () => setPhase("preview")
+                }
+                onCancel={
+                  initialMode === "manual_only"
+                    ? () => setPhase("manual_pending")
+                    : () => setPhase("preview")
+                }
+                retryLabel={initialMode === "manual_only" ? "返回粘贴" : "续跑 / 重试"}
+                cancelLabel={initialMode === "manual_only" ? "返回粘贴" : "关闭"}
               />
             )}
           </div>
@@ -431,6 +468,7 @@ function PhaseBadge({ phase }: { phase: Phase }) {
     preview:        { label: "预览",   color: "var(--text-tertiary)" },
     running:        { label: "运行中", color: "var(--accent)" },
     manual_pending: { label: "等待粘贴", color: "var(--gold)" },
+    committing:     { label: "处理中", color: "var(--accent)" },
     result:         { label: "已就绪", color: "var(--success)" },
     error:          { label: "错误",   color: "var(--danger)" },
   };
@@ -500,11 +538,11 @@ function RunningPane({ onAbort }: { onAbort: () => void }) {
 
 
 function ManualPastePane({
-  pasteBuf, setPasteBuf, onSubmit, onCancel, cancelLabel,
+  pasteBuf, setPasteBuf, onSubmit, onCancel, cancelLabel, submitLabel,
 }: {
   pasteBuf: string; setPasteBuf: (v: string) => void;
   onSubmit: () => void; onCancel: () => void;
-  cancelLabel?: string;
+  cancelLabel?: string; submitLabel?: string;
 }) {
   return (
     <>
@@ -540,7 +578,7 @@ function ManualPastePane({
             onClick={onSubmit}
             disabled={pasteBuf.trim().length < 10}
           >
-            提交粘贴
+            {submitLabel || "提交粘贴"}
           </button>
         </div>
       </div>
@@ -609,8 +647,11 @@ function ResultPane({
 
 
 function ErrorPane({
-  msg, onRetry, onCancel,
-}: { msg: string; onRetry: () => void; onCancel: () => void }) {
+  msg, onRetry, onCancel, retryLabel, cancelLabel,
+}: {
+  msg: string; onRetry: () => void; onCancel: () => void;
+  retryLabel?: string; cancelLabel?: string;
+}) {
   return (
     <div style={{ textAlign: "center", padding: 24 }}>
       <div style={{ fontSize: 32 }}></div>
@@ -620,8 +661,8 @@ function ErrorPane({
         background: "var(--bg-warn-subtle, var(--bg-surface-2))",
       }}>{msg}</pre>
       <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 16 }}>
-        <button className="btn" onClick={onCancel}>关闭</button>
-        <button className="btn primary" onClick={onRetry}>续跑 / 重试</button>
+        <button className="btn" onClick={onCancel}>{cancelLabel || "关闭"}</button>
+        <button className="btn primary" onClick={onRetry}>{retryLabel || "续跑 / 重试"}</button>
       </div>
     </div>
   );

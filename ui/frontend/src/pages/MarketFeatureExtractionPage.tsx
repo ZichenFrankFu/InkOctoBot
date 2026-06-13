@@ -18,11 +18,26 @@ import { apiGet, apiPost, apiDelete } from "../api/client";
 import { swrHydrate, swrStore, pollCompute, PollController } from "../api/swr";
 import { useToast } from "../components/shared/Toast";
 import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
-import AnalysisDashboardPage from "./AnalysisDashboardPage";
 import { tPlatform } from "../i18n";
 
 
-type TopTab = "extract" | "analysis";
+// 基础特征提取 (市场信息 + 开篇章节NLP维度) 在前；高级特征提取
+// (代表作选取 → 生造词Step2 + 行文风格七组 LLM 提取) 在后。
+type TopTab = "basic" | "advanced";
+
+interface RepCandidate {
+  work_id: string;
+  source_db_novel_id?: string;
+  title: string;
+  author: string;
+  category?: string;
+  total_words?: number;
+  tags?: string[];
+  rank_score?: number;
+  is_holdout?: number;
+  excerpt: string;
+  has_chapters: boolean;
+}
 
 
 interface Job {
@@ -135,12 +150,41 @@ export default function MarketFeatureExtractionPage() {
     () => swrHydrate<PlatformProfile[]>("mfe_profiles") || [],
   );
 
-  const [topTab, setTopTab] = useState<TopTab>("extract");
+  const [topTab, setTopTab] = useState<TopTab>("basic");
   const [loading, setLoading] = useState(false);
 
   // Manual-mode dialog
   const [manualOpen, setManualOpen] = useState(false);
   const [manualPrompt, setManualPrompt] = useState("");
+
+  // 高级特征提取：自动选出的代表作候选 + 用户勾选集合（select/deselect）。
+  const [candidates, setCandidates] = useState<RepCandidate[]>([]);
+  const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
+  const [candLoading, setCandLoading] = useState(false);
+  const candReqToken = React.useRef(0);
+
+  const loadCandidates = useCallback(async (pl: string, cat: string) => {
+    if (!pl || !cat) { setCandidates([]); setSelectedWorkIds([]); return; }
+    const token = ++candReqToken.current;
+    setCandLoading(true);
+    try {
+      const r = await apiGet<{ candidates: RepCandidate[] }>(
+        `/api/market-extractor/representative-candidates?platform=${encodeURIComponent(pl)}&category=${encodeURIComponent(cat)}`,
+      );
+      if (token !== candReqToken.current) return;
+      const list = r.candidates || [];
+      setCandidates(list);
+      // Default: all selected.
+      setSelectedWorkIds(list.map(c => c.work_id));
+    } catch (e: any) {
+      if (token === candReqToken.current) {
+        toast(`加载代表作候选失败: ${e.message}`, "error");
+        setCandidates([]); setSelectedWorkIds([]);
+      }
+    } finally {
+      if (token === candReqToken.current) setCandLoading(false);
+    }
+  }, [toast]);
 
 
   // ── data load ──
@@ -233,6 +277,14 @@ export default function MarketFeatureExtractionPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [platform]);
 
+  // 高级特征提取：平台 / 首个勾选榜单变化时，拉取自动选出的代表作候选。
+  useEffect(() => {
+    if (topTab === "advanced" && platform && category) {
+      loadCandidates(platform, category);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topTab, platform, category]);
+
   useEffect(() => {
     const active = jobs.some(j => isActive(j.state));
     if (!active) return;
@@ -247,9 +299,14 @@ export default function MarketFeatureExtractionPage() {
       toast("请先选择平台 + 至少一个榜单", "error");
       return;
     }
+    if (selectedWorkIds.length === 0) {
+      toast("请至少勾选一部代表作", "error");
+      return;
+    }
     if (!window.confirm(
-      `准备启动 API 提取任务：\n平台: ${platform}\n榜单 (${selectedCats.length} 个): ${selectedCats.join("、")}\n\n` +
-      `每个榜单一个任务，会调用大模型抽取代表作的章节特征与新词，` +
+      `准备启动 API 提取任务：\n平台: ${platform}\n榜单 (${selectedCats.length} 个): ${selectedCats.join("、")}\n` +
+      `代表作: 已勾选 ${selectedWorkIds.length} 部\n\n` +
+      `每个榜单一个任务，会调用大模型对勾选的代表作做生造词Step2 + 行文风格七组抽取，` +
       `更新对应的平台风格档案。可能耗时数分钟。继续？`,
     )) return;
     setLaunching(true);
@@ -259,7 +316,10 @@ export default function MarketFeatureExtractionPage() {
       try {
         await apiPost<{ job_id: string; state: string }>(
           "/api/market-extractor/jobs",
-          { platform, category: cat },
+          // selected work_ids only apply to the matching category's pool;
+          // for other selected 榜单 the backend re-selects + uses all.
+          { platform, category: cat,
+            work_ids: cat === category ? selectedWorkIds : undefined },
         );
         ok += 1;
       } catch (e: any) {
@@ -270,7 +330,7 @@ export default function MarketFeatureExtractionPage() {
     if (failed.length > 0) toast(`未能启动: ${failed.join("; ")}`, "error");
     await refreshJobs();
     setLaunching(false);
-  }, [platform, selectedCats, refreshJobs, toast]);
+  }, [platform, category, selectedCats, selectedWorkIds, refreshJobs, toast]);
 
   const cancelJob = useCallback(async (job_id: string) => {
     if (!window.confirm("取消运行中的任务？\n已完成的阶段会保留，但后续阶段会跳过。")) return;
@@ -303,17 +363,21 @@ export default function MarketFeatureExtractionPage() {
       toast("手动模式一次只处理一个榜单 — 请只保留一个勾选", "error");
       return;
     }
+    if (selectedWorkIds.length === 0) {
+      toast("请至少勾选一部代表作", "error");
+      return;
+    }
     try {
       const r = await apiPost<{ prompt: string }>(
         "/api/market-extractor/manual-prompt",
-        { platform, category },
+        { platform, category, work_ids: selectedWorkIds },
       );
       setManualPrompt(r.prompt || "");
       setManualOpen(true);
     } catch (e: any) {
       toast(`生成 prompt 失败: ${e.message}`, "error");
     }
-  }, [platform, category, selectedCats.length, toast]);
+  }, [platform, category, selectedCats.length, selectedWorkIds, toast]);
 
   const commitManual = useCallback(async (payload: { text: string }) => {
     const r = await apiPost<{ profile_id: string }>(
@@ -346,7 +410,7 @@ export default function MarketFeatureExtractionPage() {
           <div>
             <h2>市场特征提取</h2>
           </div>
-          {topTab === "extract" && (
+          {topTab === "advanced" && (
             <button className="btn" onClick={refreshAll} disabled={loading}>
               {loading ? "刷新中..." : "刷新"}
             </button>
@@ -354,15 +418,15 @@ export default function MarketFeatureExtractionPage() {
         </div>
       </div>
 
-      {/* ── Top-level tab strip: 特征提取 | 分析面板 ── */}
+      {/* ── Top-level tab strip: 基础特征提取 | 高级特征提取 ── */}
       <div style={{
         display: "flex", gap: 0,
         borderBottom: "1px solid var(--border)",
         marginBottom: 14,
       }}>
         {([
-          { key: "extract"  as const, label: "特征提取" },
-          { key: "analysis" as const, label: "分析面板" },
+          { key: "basic"    as const, label: "基础特征提取" },
+          { key: "advanced" as const, label: "高级特征提取" },
         ]).map(opt => (
           <button
             key={opt.key}
@@ -382,9 +446,9 @@ export default function MarketFeatureExtractionPage() {
         ))}
       </div>
 
-      {topTab === "analysis" && <AnalysisDashboardPage hideOwnHeader />}
+      {topTab === "basic" && <BasicExtractionTab />}
 
-      {topTab === "extract" && (<>
+      {topTab === "advanced" && (<>
       <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 18, alignItems: "start" }}>
         {/* ════════════ LEFT: configurator + launch ════════════ */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -500,6 +564,11 @@ export default function MarketFeatureExtractionPage() {
                 <span style={{ color: "var(--text-tertiary)", marginLeft: 6 }}>
                   （{selectedCats.length} 个榜单{selectedCats.length > 1 ? "，逐个建任务" : ""}）
                 </span>
+                <div style={{ marginTop: 6, color: "var(--text-tertiary)" }}>
+                  代表作：已勾选 <strong style={{ color: "var(--jade)" }}>{selectedWorkIds.length}</strong>
+                  {candidates.length > 0 ? ` / ${candidates.length}` : ""} 部
+                  （在下方「代表作选取」中调整）
+                </div>
               </div>
             )}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -558,13 +627,24 @@ export default function MarketFeatureExtractionPage() {
         </div>
       </div>
 
-      {/* 开篇章节NLP分析 — spec 2.1.3.2 全部市场信息 + 开篇 NLP 维度。
-          懒加载：进页只读缓存（秒开），保留上次运行结果；数据更新时
-          提示用户重新分析。 */}
-      <OpeningNlpAnalysisSection platform={platform} />
+      {/* 代表作选取 — InkOctoBot 自动选出代表作 + 前2章「开头+结尾」节选，
+          用户可手动 select/deselect，再据勾选生成 prompt / 调 API。 */}
+      <RepWorksSelector
+        platform={platform}
+        category={category}
+        candidates={candidates}
+        loading={candLoading}
+        selected={selectedWorkIds}
+        onToggle={(id) => setSelectedWorkIds(prev =>
+          prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])}
+        onSelectAll={() => setSelectedWorkIds(candidates.map(c => c.work_id))}
+        onClear={() => setSelectedWorkIds([])}
+        onReload={() => loadCandidates(platform, category)}
+      />
 
-      {/* 平台风格档案 — 独立 section */}
-      <PlatformProfileSection profiles={platformProfiles} platform={platform} category={category} />
+      {/* 提取结果 — 当前平台风格档案（含生造词Step2 + 行文风格七组） */}
+      <ExtractionResultSection
+        profiles={platformProfiles} platform={platform} category={category} />
 
       </>)}
 
@@ -722,36 +802,109 @@ function ProfilesTab({ profiles }: { profiles: PlatformProfile[] }) {
 }
 
 
-/**
- * PlatformProfileSection — full-width card under 开篇章节分析 that
- * shows the saved platform-style profile (was 平台风格档案 tab) and
- * an expandable header so the user can see when it was last updated.
- */
-function PlatformProfileSection({
-  profiles, platform, category,
-}: { profiles: PlatformProfile[]; platform: string; category: string }) {
-  const top = profiles[0] || null;
+/** Horizontal mini-bar for inline visualization in dense tables. */
+function MiniBar({ value, max, color }: { value: number; max: number; color: string }) {
+  const pct = max > 0 ? Math.max(2, Math.min(100, (value / max) * 100)) : 0;
   return (
-    <div className="card" style={{ marginTop: 16, borderTop: "3px solid var(--jade)" }}>
-      <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h3 style={{ margin: 0, fontSize: 14 }}>平台风格档案</h3>
-        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-          {top
-            ? `${tPlatform(top.platform)} · ${top.category || "—"} · 更新于 ${top.extraction_completed_at || "—"}`
-            : (platform && category
-                ? `${tPlatform(platform)} × ${category} 暂无档案`
-                : "请在左上选定平台与榜单")}
-        </span>
+    <div style={{ height: 6, background: "var(--bg-surface-2)", borderRadius: 3, overflow: "hidden", minWidth: 40 }}>
+      <div style={{ width: `${pct}%`, height: "100%", background: color }} />
+    </div>
+  );
+}
+
+
+/**
+ * RepWorksSelector — 高级特征提取 第一步：展示 InkOctoBot 自动选出的
+ * 代表作 + 每部前2章「开头+结尾」节选，用户可手动 select/deselect，
+ * 再据勾选生成 prompt / 调 API（见 Step 3 的两个按钮）。
+ */
+function RepWorksSelector({
+  platform, category, candidates, loading, selected,
+  onToggle, onSelectAll, onClear, onReload,
+}: {
+  platform: string; category: string;
+  candidates: RepCandidate[]; loading: boolean; selected: string[];
+  onToggle: (id: string) => void; onSelectAll: () => void;
+  onClear: () => void; onReload: () => void;
+}) {
+  const [openExcerpt, setOpenExcerpt] = React.useState<Record<string, boolean>>({});
+  return (
+    <div className="card" style={{ marginTop: 16, borderTop: "3px solid var(--accent)" }}>
+      <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 14 }}>代表作选取</h3>
+          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+            自动选出的代表作 + 前2章「开头+结尾」节选 · 勾选后用于生成 prompt / 调用 API
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+            已勾选 {selected.length} / {candidates.length}
+          </span>
+          <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
+            disabled={candidates.length === 0} onClick={onSelectAll}>全选</button>
+          <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
+            disabled={selected.length === 0} onClick={onClear}>清空</button>
+          <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
+            disabled={loading || !platform || !category} onClick={onReload}>
+            {loading ? "加载中..." : "重新选取"}
+          </button>
+        </div>
       </div>
       <div className="card-body" style={{ padding: 14 }}>
-        {profiles.length === 0 ? (
-          <Empty msg={
-            platform && category
-              ? `(${tPlatform(platform)}×${category}) 暂无平台档案。先用上方的「使用大模型 API 提取」或「使用大模型网页版提取」生成档案。`
-              : "请在上方选定平台与榜单，再启动一次提取以生成档案。"
-          } />
+        {!platform || !category ? (
+          <Empty msg="请在上方选定平台与单个榜单，InkOctoBot 会自动选出代表作。" />
+        ) : loading && candidates.length === 0 ? (
+          <Empty msg="正在选取代表作并读取前2章节选…" />
+        ) : candidates.length === 0 ? (
+          <Empty msg="未选到代表作 — 请确认该平台/榜单已采集作品与章节（Settings → 市场数据库）。" />
         ) : (
-          <ProfilesTab profiles={profiles} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {candidates.map(c => {
+              const on = selected.includes(c.work_id);
+              const words = c.total_words ? `${(c.total_words / 10000).toFixed(1)}万字` : "—";
+              const expanded = !!openExcerpt[c.work_id];
+              return (
+                <div key={c.work_id} style={{
+                  border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                  borderRadius: 6, padding: "8px 10px",
+                  background: on ? "var(--accent-subtle, var(--bg-surface))" : "var(--bg-surface)",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <input type="checkbox" checked={on} onChange={() => onToggle(c.work_id)}
+                      style={{ width: 16, height: 16, cursor: "pointer" }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>
+                        《{c.title}》
+                        {c.is_holdout ? (
+                          <span className="tag" style={{ fontSize: 9, marginLeft: 6, color: "var(--gold)" }}>holdout</span>
+                        ) : null}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                        {c.author} · {c.category || category} · {words}
+                        {(c.tags && c.tags.length) ? ` · ${c.tags.slice(0, 5).join("、")}` : ""}
+                        {!c.has_chapters ? " · （暂无章节节选）" : ""}
+                      </div>
+                    </div>
+                    {c.has_chapters && (
+                      <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
+                        onClick={() => setOpenExcerpt(p => ({ ...p, [c.work_id]: !expanded }))}>
+                        {expanded ? "收起节选" : "查看节选"}
+                      </button>
+                    )}
+                  </div>
+                  {expanded && c.excerpt && (
+                    <pre style={{
+                      margin: "8px 0 0", padding: 8, fontSize: 11,
+                      background: "var(--bg-surface-2)", borderRadius: 4,
+                      maxHeight: 240, overflow: "auto", whiteSpace: "pre-wrap",
+                      wordBreak: "break-word", fontFamily: "var(--font-mono)",
+                    }}>{c.excerpt}</pre>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>
@@ -760,30 +913,100 @@ function PlatformProfileSection({
 
 
 /**
- * OpeningNlpAnalysisSection — 开篇章节NLP分析 (replaces the old
- * 开篇章节分析 section). One card carrying ALL spec-2.1.3.2 数据维度:
- *
- *  市场信息: 数量 + 数量变化趋势、热度 + 热度变化趋势、市场份额 +
- *  份额变化趋势（类目级 + 标签级）、开书机会、标签共现 — read from
- *  the cached /api/analysis/run result.
- *
- *  开篇章节NLP分析: 首章/章均/章中位字数、平均句长、分类型标点密度、
- *  高频词、生造词Step1 + 启发式分布（对白比/句长/首句类型/章末钩子）
- *  — read from the cached /api/db/opening_nlp_analysis result.
- *
- * 懒加载 (spec UI设计·机制4): mount 只发 cached_only 读（毫秒级），
- * 展示上一次运行完的结果；从不在挂载时启动重计算。爬虫库更新后
- * 服务器返回 stale 标记 → 显示「数据已更新」提醒，由用户点
- * 重新分析；重算在后台单飞线程进行，页面立即可用。
+ * ExtractionResultSection — 高级特征提取 的「提取结果」：当前平台风格
+ * 档案（综述/风格基线/招牌手法/节奏指南）+ 生造词Step2 + 行文风格
+ * 七组 (A1-G2) 的结构化结果。
  */
-function OpeningNlpAnalysisSection({ platform }: { platform: string }) {
+function ExtractionResultSection({
+  profiles, platform, category,
+}: { profiles: PlatformProfile[]; platform: string; category: string }) {
+  const top = (profiles[0] || null) as any;
+  const styleDims = parseMaybeJson(top?.style_dimensions_json);
+  const neo = parseMaybeJson(top?.neologism_step2_json);
+  return (
+    <div className="card" style={{ marginTop: 16, borderTop: "3px solid var(--jade)" }}>
+      <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h3 style={{ margin: 0, fontSize: 14 }}>提取结果（平台风格档案）</h3>
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+          {top
+            ? `${tPlatform(top.platform)} · ${top.category || "—"} · 更新于 ${top.extraction_completed_at || "—"}`
+            : (platform && category
+                ? `${tPlatform(platform)} × ${category} 暂无结果`
+                : "请在左上选定平台与榜单")}
+        </span>
+      </div>
+      <div className="card-body" style={{ padding: 14 }}>
+        {profiles.length === 0 ? (
+          <Empty msg={
+            platform && category
+              ? `(${tPlatform(platform)}×${category}) 暂无提取结果。先勾选代表作，再用「使用大模型 API 提取」或「使用大模型网页版提取」生成。`
+              : "请在上方选定平台与榜单，勾选代表作后启动一次提取以生成结果。"
+          } />
+        ) : (
+          <>
+            {(neo || styleDims) && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
+                {neo && (
+                  <details open style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "8px 10px", background: "var(--bg-surface-2)" }}>
+                    <summary style={{ fontSize: 12, fontWeight: 600, cursor: "pointer" }}>生造词 Step2（专有名词 / 人名 / 地名 + 常见模式与常见字）</summary>
+                    <div style={{ fontSize: 11, lineHeight: 1.9, marginTop: 6 }}>
+                      {neo.proper_nouns?.length ? <div>专有名词：{neo.proper_nouns.join("、")}</div> : null}
+                      {neo.person_names?.length ? <div>人名：{neo.person_names.join("、")}</div> : null}
+                      {neo.place_names?.length ? <div>地名：{neo.place_names.join("、")}</div> : null}
+                      {neo.naming_patterns ? <div>常见模式：{neo.naming_patterns}</div> : null}
+                      {neo.common_chars?.length ? <div>常见字：{neo.common_chars.join("、")}</div> : null}
+                    </div>
+                  </details>
+                )}
+                {styleDims && (
+                  <details style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "8px 10px", background: "var(--bg-surface-2)" }}>
+                    <summary style={{ fontSize: 12, fontWeight: 600, cursor: "pointer" }}>行文风格七组（A 主角 / B 社会 / C 世界 / D 钩子 / E 风格 / F 信息 / G 节奏）</summary>
+                    <div style={{ fontSize: 11, lineHeight: 1.8, marginTop: 6 }}>
+                      {Object.entries(styleDims).map(([group, fields]) => (
+                        <div key={group} style={{ marginBottom: 6 }}>
+                          <strong>{group}</strong>
+                          {fields && typeof fields === "object" ? (
+                            <div style={{ paddingLeft: 10 }}>
+                              {Object.entries(fields as Record<string, any>).map(([k, v]) => (
+                                <div key={k}><span style={{ color: "var(--text-tertiary)" }}>{k}：</span>{String(v)}</div>
+                              ))}
+                            </div>
+                          ) : <span> {String(fields)}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+            )}
+            <ProfilesTab profiles={profiles} />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+function parseMaybeJson(s: any): any {
+  if (!s) return null;
+  if (typeof s === "object") return s;
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+
+/**
+ * BasicExtractionTab — 基础特征提取 (spec 2.1.3.2 市场信息 + 开篇章节
+ * NLP维度). Single-platform required, time-range selectable, TOP K fixed
+ * at 10. All dimensions are visualized. Served through the server
+ * compute-cache (秒开 + 懒加载): mount reads cached_only, refresh forces
+ * a background recompute, the DB-changed stale flag prompts re-run.
+ */
+function BasicExtractionTab() {
+  const { toast } = useToast();
   type NlpPayload = {
     available: boolean; reason?: string; sample_count?: number;
     spec_stats?: any;
-    dialogue_ratio?: { mean: number; distribution: Record<string, number> };
-    sentence_length?: { mean: number; distribution: Record<string, number> };
-    first_sentence_types?: { label: string; count: number }[];
-    end_hook_types?: { label: string; count: number }[];
     word_count_summary?: { mean: number; min: number; max: number };
   };
   type MarketPayload = {
@@ -792,22 +1015,43 @@ function OpeningNlpAnalysisSection({ platform }: { platform: string }) {
     opportunities?: any[]; pairs?: any[];
   };
 
-  // /api/analysis/run only understands qidian / fanqie / both.
-  const marketPlatform = platform === "qidian" || platform === "fanqie" ? platform : "both";
-  const nlpKey = `mfe_nlp_${platform || "all"}`;
-  const marketKey = `mfe_market_${marketPlatform}`;
+  const TOP_K = 10;   // 固定 TOP 10 (用户需求)
+  const [platforms, setPlatforms] = React.useState<PlatformOption[]>(
+    () => swrHydrate<PlatformOption[]>("mfe_platforms") || [],
+  );
+  // 用户必须选择单一平台进行分析 (用户需求)。
+  const [platform, setPlatform] = React.useState<string>(
+    () => (swrHydrate<PlatformOption[]>("mfe_platforms") || [])[0]?.key || "",
+  );
+  const [lookback, setLookback] = React.useState("all");
 
   const [nlp, setNlp] = React.useState<NlpPayload | null>(null);
   const [market, setMarket] = React.useState<MarketPayload | null>(null);
   const [stale, setStale] = React.useState(false);
-  // 两个数据源（NLP / 市场信息）各自的后台计算状态 — 共用一个标志会
-  // 在先完成的一方把「分析中」提前清掉。
   const [nlpBusy, setNlpBusy] = React.useState(false);
   const [marketBusy, setMarketBusy] = React.useState(false);
   const computing = nlpBusy || marketBusy;
-  const [everRun, setEverRun] = React.useState(true);   // false → 显示「尚未运行」
+  const [everRun, setEverRun] = React.useState(true);
   const [err, setErr] = React.useState("");
   const pollsRef = React.useRef<PollController[]>([]);
+
+  const nlpKey = `mfe_basic_nlp_${platform}`;
+  const marketKey = `mfe_basic_market_${platform}_${lookback}`;
+
+  React.useEffect(() => {
+    let alive = true;
+    apiGet<{ platforms: PlatformOption[] }>("/api/market-extractor/platforms")
+      .then(r => {
+        if (!alive) return;
+        const list = r.platforms || [];
+        setPlatforms(list);
+        swrStore("mfe_platforms", list);
+        if (list.length > 0 && !platform) setPlatform(list[0].key);
+      })
+      .catch(() => { /* keep hydrated list */ });
+    return () => { alive = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const stopPolls = () => {
     pollsRef.current.forEach(p => p.cancel());
@@ -815,12 +1059,12 @@ function OpeningNlpAnalysisSection({ platform }: { platform: string }) {
   };
 
   const load = React.useCallback((refresh: boolean) => {
+    if (!platform) return;
     stopPolls();
     setErr("");
     if (refresh) { setNlpBusy(true); setMarketBusy(true); setEverRun(true); }
     let emptyCount = 0;
-    const nq = new URLSearchParams();
-    if (platform) nq.set("platform", platform);
+    const nq = new URLSearchParams({ platform });
     if (refresh) nq.set("refresh", "true"); else nq.set("cached_only", "true");
     pollsRef.current.push(pollCompute<NlpPayload>(
       `/api/db/opening_nlp_analysis?${nq}`,
@@ -828,15 +1072,14 @@ function OpeningNlpAnalysisSection({ platform }: { platform: string }) {
         onReady: (payload, env) => {
           setNlp(payload); swrStore(nlpKey, payload);
           setStale(s => s || !!env.stale);
-          setNlpBusy(!!env.computing);
-          setEverRun(true);
+          setNlpBusy(!!env.computing); setEverRun(true);
         },
         onEmpty: () => { setNlpBusy(false); emptyCount += 1; if (emptyCount >= 2) setEverRun(false); },
         onComputing: () => setNlpBusy(true),
         onError: (m) => { setErr(m); setNlpBusy(false); },
       },
     ));
-    const mq = new URLSearchParams({ platform: marketPlatform });
+    const mq = new URLSearchParams({ platform, lookback, top_k: String(TOP_K) });
     if (refresh) mq.set("refresh", "true"); else mq.set("cached_only", "true");
     pollsRef.current.push(pollCompute<MarketPayload>(
       `/api/analysis/run?${mq}`,
@@ -844,8 +1087,7 @@ function OpeningNlpAnalysisSection({ platform }: { platform: string }) {
         onReady: (payload, env) => {
           setMarket(payload); swrStore(marketKey, payload);
           setStale(s => s || !!env.stale);
-          setMarketBusy(!!env.computing);
-          setEverRun(true);
+          setMarketBusy(!!env.computing); setEverRun(true);
         },
         onEmpty: () => { setMarketBusy(false); emptyCount += 1; if (emptyCount >= 2) setEverRun(false); },
         onComputing: () => setMarketBusy(true),
@@ -853,307 +1095,342 @@ function OpeningNlpAnalysisSection({ platform }: { platform: string }) {
       },
     ));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platform, marketPlatform, nlpKey, marketKey]);
+  }, [platform, lookback, nlpKey, marketKey]);
 
   React.useEffect(() => {
-    // 秒开: 同步水合上次会话的结果，再用 cached_only 读校验。
     setNlp(swrHydrate<NlpPayload>(nlpKey));
     setMarket(swrHydrate<MarketPayload>(marketKey));
     setStale(false);
     load(false);
     return stopPolls;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platform]);
+  }, [platform, lookback]);
 
-  const hasAny = !!(nlp?.available || (market && !market.empty));
-  const spec = nlp?.spec_stats;
+  const hasMarket = !!(market && !market.empty);
+  const hasNlp = !!nlp?.available;
+  const hasAny = hasMarket || hasNlp;
 
-  const slope = (v: number | null | undefined) => {
-    if (v == null || isNaN(v)) return <span style={{ color: "var(--text-disabled)" }}>—</span>;
-    const up = v > 0.0001, down = v < -0.0001;
-    const color = up ? "var(--jade)" : down ? "var(--accent)" : "var(--text-tertiary)";
-    return (
-      <span className="font-mono" style={{ color, fontSize: 11 }}>
-        {up ? "↑" : down ? "↓" : "→"} {Math.abs(v).toFixed(4)}
-      </span>
-    );
-  };
-  const num = (v: number | null | undefined, d = 0) =>
-    v == null || isNaN(v as number) ? "—" : Number(v).toFixed(d);
-
-  const catRows = (market?.cat_rollup || []).slice(0, 10);
-  const tagRows = (market?.tag_rollup || []).slice(0, 10);
-  const oppRows = (market?.opportunities || []).slice(0, 8);
-  const pairRows = (market?.pairs || []).slice(0, 12);
+  const LOOKBACKS: { key: string; label: string }[] = [
+    { key: "week", label: "最近7天" }, { key: "month", label: "最近30天" },
+    { key: "quarter", label: "最近90天" }, { key: "year", label: "最近365天" },
+    { key: "all", label: "全部数据" },
+  ];
 
   return (
-    <div className="card" style={{ marginTop: 16, borderTop: "3px solid var(--indigo)" }}>
-      <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: 14 }}>开篇章节NLP分析</h3>
-          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-            市场信息（数量/热度/份额及趋势 · 开书机会 · 标签共现）+ 开篇 NLP 维度 · 懒加载，保留上次结果
-          </span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {computing && (
-            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>后台分析中，完成后自动更新…</span>
-          )}
-          <button
-            className="btn"
-            onClick={() => load(true)}
-            disabled={computing}
-            style={{ fontSize: 12, padding: "5px 14px", borderRadius: 14 }}
-          >
+    <>
+      {/* Controls */}
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-body" style={{ display: "flex", gap: 20, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div className="field">
+            <label className="label">平台（单选，必选）</label>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {platforms.length === 0 ? (
+                <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>未读到平台 — 检查 Settings → 市场数据库</span>
+              ) : platforms.map(p => (
+                <button key={p.key}
+                  className={platform === p.key ? "btn-primary" : "btn"}
+                  style={{ fontSize: 12, padding: "5px 14px", borderRadius: 20 }}
+                  onClick={() => setPlatform(p.key)}>{tPlatform(p.key)}</button>
+              ))}
+            </div>
+          </div>
+          <div className="field">
+            <label className="label">时间范围</label>
+            <select className="select" value={lookback} onChange={e => setLookback(e.target.value)}>
+              {LOOKBACKS.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label className="label">Top K</label>
+            <div style={{ fontSize: 13, fontWeight: 600, padding: "6px 0" }}>10（固定）</div>
+          </div>
+          <button className="btn-primary" onClick={() => load(true)} disabled={computing || !platform}>
             {computing ? "分析中..." : (hasAny ? "重新分析" : "运行分析")}
           </button>
         </div>
       </div>
-      <div className="card-body">
-        {stale && !computing && (
-          <div style={{
-            padding: "8px 12px", marginBottom: 12, borderRadius: 6,
-            background: "var(--gold-subtle, var(--bg-surface-2))",
-            borderLeft: "3px solid var(--gold)",
-            fontSize: 12, color: "var(--text-secondary)",
-            display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-          }}>
-            市场数据已更新 — 以下为上一次分析的结果。
-            <button className="btn" style={{ fontSize: 11, padding: "3px 12px" }} onClick={() => load(true)}>
-              重新分析
-            </button>
+
+      {/* 提取结果 概览 banner */}
+      <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--jade)" }}>
+        <div className="card-body" style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+          <strong style={{ fontSize: 13 }}>提取结果</strong>
+          <span style={{ marginLeft: 10 }}>
+            {hasAny ? (
+              <>
+                平台 <strong>{tPlatform(platform)}</strong>
+                {market?.start_date ? ` · 区间 ${market.start_date} ~ ${market.end_date}` : ""}
+                {hasMarket ? ` · 类目 ${(market!.cat_rollup || []).length} · 标签 ${(market!.tag_rollup || []).length} · 开书机会 ${(market!.opportunities || []).length} · 标签共现 ${(market!.pairs || []).length}` : " · 市场信息暂无"}
+                {hasNlp ? ` · 开篇NLP样本 ${nlp!.sample_count} 章` : " · 开篇NLP暂无"}
+                {computing ? " · 后台分析中…" : ""}
+              </>
+            ) : (computing ? "正在后台计算市场信息与开篇 NLP 统计…" : "尚未运行分析，点击右上「运行分析」。")}
+          </span>
+        </div>
+      </div>
+
+      {stale && !computing && (
+        <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--gold)" }}>
+          <div className="card-body" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 12 }}>
+            市场数据已更新 — 当前展示上一次分析结果。
+            <button className="btn" style={{ fontSize: 11, padding: "3px 12px" }} onClick={() => load(true)}>重新分析</button>
           </div>
-        )}
-        {err && (
-          <div style={{ fontSize: 12, color: "var(--danger)", marginBottom: 8 }}>分析失败：{err}</div>
-        )}
-        {!hasAny && !computing && (
-          <Empty msg={everRun
-            ? "暂无可分析数据 — 请确认市场数据库路径（Settings → 市场数据库）。"
-            : "尚未运行分析。点击右上「运行分析」启动 — 首次需要在后台计算，完成后结果持久保留，下次进入页面即时展示。"} />
-        )}
-        {!hasAny && computing && (
-          <Empty msg="正在后台计算市场信息与开篇 NLP 统计 — 可以离开此页面，结果会保留。" />
-        )}
+        </div>
+      )}
+      {err && <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--danger)" }}><div className="card-body" style={{ fontSize: 12, color: "var(--danger)" }}>分析失败：{err}</div></div>}
 
-        {market && !market.empty && (
-          <>
-            <div style={{ fontSize: 13, fontWeight: 700, margin: "4px 0 8px" }}>
-              市场信息
-              <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 8 }}>
-                {market.start_date} ~ {market.end_date} · {tPlatform(marketPlatform)}
-              </span>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-              <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10, overflowX: "auto" }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>类目：数量 / 热度 / 份额 及变化趋势</div>
-                {catRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-                  <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
-                    <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
-                      <th style={{ padding: "3px 6px" }}>类目</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>数量</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>数量趋势</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>热度</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>热度趋势</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>份额</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>份额趋势</th>
-                    </tr></thead>
-                    <tbody>
-                      {catRows.map((r: any, i: number) => (
-                        <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
-                          <td style={{ padding: "3px 6px" }}>{r.category}{r.platform && marketPlatform === "both" ? ` (${tPlatform(r.platform)})` : ""}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{num(r.latest_count)}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.count_slope)}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{num(r.avg_heat)}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.heat_slope)}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{num(r.latest_share, 3)}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.share_slope)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-              <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10, overflowX: "auto" }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>标签：数量 / 热度 / 份额 及变化趋势</div>
-                {tagRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-                  <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
-                    <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
-                      <th style={{ padding: "3px 6px" }}>标签</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>数量</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>热度</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>热度趋势</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>份额</th>
-                      <th style={{ padding: "3px 6px", textAlign: "right" }}>份额趋势</th>
-                    </tr></thead>
-                    <tbody>
-                      {tagRows.map((r: any, i: number) => (
-                        <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
-                          <td style={{ padding: "3px 6px" }}>{r.tag}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{num(r.latest_count)}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{num(r.avg_heat)}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.heat_slope)}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{num(r.latest_share, 3)}</td>
-                          <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.share_slope)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-              <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>开书机会（份额上升 × 热度上升 × 新书占比）</div>
-                {oppRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {oppRows.map((o: any, i: number) => (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
-                        <span className="tag category" style={{ fontSize: 10 }}>{o.category}</span>
-                        <span className="tag" style={{ fontSize: 10 }}>{o.tag}</span>
-                        <span style={{ marginLeft: "auto", color: "var(--text-tertiary)" }}>
-                          新书占比 {o.new_entry_ratio != null ? `${Math.round(o.new_entry_ratio * 100)}%` : "—"}
-                        </span>
-                        <span className="font-mono" style={{ color: "var(--jade)", fontWeight: 600 }}>
-                          {num(o.opportunity_score, 3)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>标签共现（高频组合）</div>
-                {pairRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {pairRows.map((p: any, i: number) => (
-                      <span key={i} className="tag" style={{ fontSize: 10, padding: "2px 8px" }}>
-                        {p.tag_a} × {p.tag_b}
-                        <span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{p.count}</span>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </>
-        )}
+      {!hasAny && !computing && (
+        <Empty msg={everRun
+          ? "暂无可分析数据 — 请确认已选平台且市场数据库路径正确（Settings → 市场数据库）。"
+          : "尚未运行分析。点击右上「运行分析」启动 — 首次需后台计算，完成后结果持久保留，下次进入秒开。"} />
+      )}
+      {!hasAny && computing && <Empty msg="正在后台计算 — 可离开此页面，结果会保留。" />}
 
-        {nlp?.available && (
-          <>
-            <div style={{ fontSize: 13, fontWeight: 700, margin: "4px 0 8px" }}>
-              开篇章节 NLP 维度
-              <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 8 }}>
-                样本 {nlp.sample_count} 章 · 启发式统计，无需大模型
-              </span>
-            </div>
-            {spec?.available && (
-              <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", marginBottom: 12, background: "var(--bg-surface)" }}>
-                <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.9 }}>
-                  <div>
-                    首章字数均值 <strong>{spec.first_chapter_words_avg ?? "—"}</strong>
-                    <span style={{ margin: "0 8px", color: "var(--text-tertiary)" }}>·</span>
-                    章平均字数 <strong>{spec.chapter_words_avg}</strong>
-                    <span style={{ margin: "0 8px", color: "var(--text-tertiary)" }}>·</span>
-                    章中位字数 <strong>{spec.chapter_words_median}</strong>
-                    <span style={{ margin: "0 8px", color: "var(--text-tertiary)" }}>·</span>
-                    平均句长 <strong>{spec.avg_sentence_length ?? "—"} 字</strong>
-                    {nlp.word_count_summary && (
-                      <>
-                        <span style={{ margin: "0 8px", color: "var(--text-tertiary)" }}>·</span>
-                        首章字数范围 <strong>{nlp.word_count_summary.min}–{nlp.word_count_summary.max}</strong>
-                      </>
-                    )}
+      {/* 市场信息 (spec 2.1.3.2 全部维度，可视化) */}
+      {hasMarket && <MarketInfoBlock market={market!} platform={platform} />}
+
+      {/* 开篇章节NLP维度 (spec 2.1.3.2) */}
+      {hasNlp && <NlpDimsBlock nlp={nlp!} />}
+    </>
+  );
+}
+
+
+/** 市场信息可视化：类目 / 标签（数量·热度·份额 及各自趋势，带 mini-bar）
+ *  + 开书机会 + 标签共现。 */
+function MarketInfoBlock({ market, platform }: { market: any; platform: string }) {
+  const slope = (v: number | null | undefined) => {
+    if (v == null || isNaN(v)) return <span style={{ color: "var(--text-disabled)" }}>—</span>;
+    const up = v > 0.0001, down = v < -0.0001;
+    const color = up ? "var(--jade)" : down ? "var(--accent)" : "var(--text-tertiary)";
+    return <span className="font-mono" style={{ color, fontSize: 11 }}>{up ? "↑" : down ? "↓" : "→"} {Math.abs(v).toFixed(4)}</span>;
+  };
+  const num = (v: number | null | undefined, d = 0) =>
+    v == null || isNaN(v as number) ? "—" : Number(v).toFixed(d);
+
+  const catRows = (market.cat_rollup || []).slice(0, 10);
+  const tagRows = (market.tag_rollup || []).slice(0, 10);
+  const oppRows = (market.opportunities || []).slice(0, 10);
+  const pairRows = (market.pairs || []).slice(0, 14);
+  const catMaxCount = Math.max(1, ...catRows.map((r: any) => r.latest_count || 0));
+  const catMaxHeat = Math.max(1, ...catRows.map((r: any) => r.avg_heat || 0));
+  const tagMaxCount = Math.max(1, ...tagRows.map((r: any) => r.latest_count || 0));
+  const tagMaxHeat = Math.max(1, ...tagRows.map((r: any) => r.avg_heat || 0));
+  const oppMax = Math.max(1, ...oppRows.map((o: any) => o.opportunity_score || 0));
+
+  return (
+    <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--indigo)" }}>
+      <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>市场信息
+        <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 8 }}>
+          数量 · 数量趋势 · 热度 · 热度趋势 · 市场份额 · 份额趋势 · 开书机会 · 标签共现
+        </span></h3></div>
+      <div className="card-body">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+          {/* 类目 */}
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10, overflowX: "auto" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>类目 TOP10：数量 / 热度 / 份额 及变化趋势</div>
+            {catRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
+              <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+                <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
+                  <th style={{ padding: "3px 6px" }}>类目</th>
+                  <th style={{ padding: "3px 6px" }}>数量</th>
+                  <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
+                  <th style={{ padding: "3px 6px" }}>热度</th>
+                  <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
+                  <th style={{ padding: "3px 6px", textAlign: "right" }}>份额</th>
+                  <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
+                </tr></thead>
+                <tbody>
+                  {catRows.map((r: any, i: number) => (
+                    <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={{ padding: "3px 6px" }}>{r.category}</td>
+                      <td style={{ padding: "3px 6px", minWidth: 70 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <span className="font-mono" style={{ minWidth: 22 }}>{num(r.latest_count)}</span>
+                          <MiniBar value={r.latest_count || 0} max={catMaxCount} color="var(--accent)" />
+                        </div>
+                      </td>
+                      <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.count_slope)}</td>
+                      <td style={{ padding: "3px 6px", minWidth: 70 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <span className="font-mono" style={{ minWidth: 28 }}>{num(r.avg_heat)}</span>
+                          <MiniBar value={r.avg_heat || 0} max={catMaxHeat} color="var(--gold)" />
+                        </div>
+                      </td>
+                      <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.heat_slope)}</td>
+                      <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{num(r.latest_share, 3)}</td>
+                      <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.share_slope)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          {/* 标签 */}
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10, overflowX: "auto" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>标签 TOP10：数量 / 热度 / 份额 及变化趋势</div>
+            {tagRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
+              <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+                <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
+                  <th style={{ padding: "3px 6px" }}>标签</th>
+                  <th style={{ padding: "3px 6px" }}>数量</th>
+                  <th style={{ padding: "3px 6px" }}>热度</th>
+                  <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
+                  <th style={{ padding: "3px 6px", textAlign: "right" }}>份额</th>
+                  <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
+                </tr></thead>
+                <tbody>
+                  {tagRows.map((r: any, i: number) => (
+                    <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={{ padding: "3px 6px" }}>{r.tag}</td>
+                      <td style={{ padding: "3px 6px", minWidth: 70 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <span className="font-mono" style={{ minWidth: 22 }}>{num(r.latest_count)}</span>
+                          <MiniBar value={r.latest_count || 0} max={tagMaxCount} color="var(--accent)" />
+                        </div>
+                      </td>
+                      <td style={{ padding: "3px 6px", minWidth: 70 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <span className="font-mono" style={{ minWidth: 28 }}>{num(r.avg_heat)}</span>
+                          <MiniBar value={r.avg_heat || 0} max={tagMaxHeat} color="var(--gold)" />
+                        </div>
+                      </td>
+                      <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.heat_slope)}</td>
+                      <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{num(r.latest_share, 3)}</td>
+                      <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.share_slope)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          {/* 开书机会 */}
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>开书机会（份额↑ × 热度↑ × 新书占比）</div>
+            {oppRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {oppRows.map((o: any, i: number) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+                    <span className="tag category" style={{ fontSize: 10 }}>{o.category}</span>
+                    <span className="tag" style={{ fontSize: 10 }}>{o.tag}</span>
+                    <span style={{ marginLeft: "auto", color: "var(--text-tertiary)", whiteSpace: "nowrap" }}>
+                      新书 {o.new_entry_ratio != null ? `${Math.round(o.new_entry_ratio * 100)}%` : "—"}
+                    </span>
+                    <div style={{ width: 60 }}><MiniBar value={o.opportunity_score || 0} max={oppMax} color="var(--jade)" /></div>
+                    <span className="font-mono" style={{ color: "var(--jade)", fontWeight: 600, minWidth: 34, textAlign: "right" }}>{num(o.opportunity_score, 3)}</span>
                   </div>
-                  <div>
-                    标点密度（次/千字）：
-                    {Object.entries(spec.punctuation_density_per_1k || {}).map(([k, v]) => (
-                      <span key={k} style={{ marginRight: 10 }}>{k} <strong>{String(v)}</strong></span>
-                    ))}
-                  </div>
-                  {(spec.top_words || []).length > 0 && (
-                    <div>
-                      高频词：
-                      {(spec.top_words || []).slice(0, 15).map((w: any) => (
-                        <span key={w.word} className="tag" style={{ fontSize: 10, padding: "0 6px", marginRight: 4 }}>
-                          {w.word} {w.count}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {(spec.neologism_step1 || []).length > 0 && (
-                    <div>
-                      生造词 Step1 候选（频率+凝合度初筛）：
-                      {(spec.neologism_step1 || []).slice(0, 12).map((n: any) => (
-                        <span key={n.term} className="tag" style={{ fontSize: 10, padding: "0 6px", marginRight: 4, color: "var(--gold)" }}>
-                          {n.term} {n.count}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                ))}
               </div>
             )}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-              <NlpHistCard
-                title={`对白占比分布（均值 ${nlp.dialogue_ratio ? Math.round(nlp.dialogue_ratio.mean * 100) : 0}%）`}
-                entries={Object.entries(nlp.dialogue_ratio?.distribution || {})}
-                accent="var(--accent)"
-              />
-              <NlpHistCard
-                title={`平均句长分布（均值 ${nlp.sentence_length?.mean.toFixed(1) || 0} 字）`}
-                entries={Object.entries(nlp.sentence_length?.distribution || {})}
-                accent="var(--gold)"
-              />
-              <NlpHistCard
-                title="首句类型分布"
-                entries={(nlp.first_sentence_types || []).map(d => [d.label, d.count] as [string, number])}
-                accent="var(--jade)"
-              />
-              <NlpHistCard
-                title="章末钩子类型分布"
-                entries={(nlp.end_hook_types || []).map(d => [d.label, d.count] as [string, number])}
-                accent="var(--indigo)"
-              />
-            </div>
-          </>
-        )}
+          </div>
+          {/* 标签共现 */}
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>标签共现（高频组合）</div>
+            {pairRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {pairRows.map((p: any, i: number) => (
+                  <span key={i} className="tag" style={{ fontSize: 10, padding: "2px 8px" }}>
+                    {p.tag_a} × {p.tag_b}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{p.count}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
 
-function NlpHistCard({
-  title, entries, accent,
-}: { title: string; entries: [string, number][]; accent: string }) {
-  const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
+/** 开篇章节NLP维度 (spec 2.1.3.2)：首章/章均/章中位字数、平均句长、
+ *  分类型标点密度（可视化）、高频词、生造词Step1。 */
+function NlpDimsBlock({ nlp }: { nlp: any }) {
+  const spec = nlp.spec_stats;
+  if (!spec?.available) {
+    return (
+      <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--jade)" }}>
+        <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>开篇章节 NLP 维度</h3></div>
+        <div className="card-body"><div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>暂无开篇章节统计数据。</div></div>
+      </div>
+    );
+  }
+  const wordStats: [string, number | null][] = [
+    ["首章字数（均值）", spec.first_chapter_words_avg],
+    ["章平均字数", spec.chapter_words_avg],
+    ["章中位字数", spec.chapter_words_median],
+  ];
+  const wordMax = Math.max(1, ...wordStats.map(([, v]) => v || 0));
+  const punct = (spec.punctuation_density_per_1k || {}) as Record<string, number>;
+  const punctMax = Math.max(1, ...Object.values(punct).map(v => Number(v) || 0));
+
   return (
-    <div style={{
-      background: "var(--bg-surface)",
-      padding: 10,
-      borderRadius: 4,
-      border: "1px solid var(--border)",
-    }}>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{title}</div>
-      {entries.length === 0 ? (
-        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {entries.map(([label, n]) => {
-            const pct = Math.round((n / total) * 100);
-            return (
-              <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ width: 96, fontSize: 11, color: "var(--text-secondary)" }}>{label}</span>
-                <div style={{ flex: 1, height: 10, background: "var(--bg-surface-2)", borderRadius: 2, overflow: "hidden" }}>
-                  <div style={{ width: `${pct}%`, height: "100%", background: accent }} />
+    <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--jade)" }}>
+      <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>开篇章节 NLP 维度
+        <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 8 }}>
+          样本 {nlp.sample_count} 章 · 字数 / 句长 / 标点密度 / 高频词 / 生造词Step1 · 启发式，无需大模型
+        </span></h3></div>
+      <div className="card-body">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          {/* 字数 */}
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>字数维度</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {wordStats.map(([label, v]) => (
+                <div key={label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 110, fontSize: 11, color: "var(--text-secondary)" }}>{label}</span>
+                  <div style={{ flex: 1 }}><MiniBar value={v || 0} max={wordMax} color="var(--accent)" /></div>
+                  <span className="font-mono" style={{ width: 56, textAlign: "right", fontSize: 11 }}>{v ?? "—"}</span>
                 </div>
-                <span style={{ width: 56, textAlign: "right", fontSize: 10, fontFamily: "var(--font-mono)" }}>
-                  {n}（{pct}%）
-                </span>
+              ))}
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                平均句长 <strong style={{ color: "var(--text-secondary)" }}>{spec.avg_sentence_length ?? "—"} 字</strong>
+                {nlp.word_count_summary ? ` · 首章字数范围 ${nlp.word_count_summary.min}–${nlp.word_count_summary.max}` : ""}
               </div>
-            );
-          })}
+            </div>
+          </div>
+          {/* 标点密度 */}
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>标点符号密度（次/千字）</div>
+            {Object.keys(punct).length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {Object.entries(punct).map(([k, v]) => (
+                  <div key={k} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ width: 48, fontSize: 11, color: "var(--text-secondary)" }}>{k}</span>
+                    <div style={{ flex: 1 }}><MiniBar value={Number(v) || 0} max={punctMax} color="var(--indigo)" /></div>
+                    <span className="font-mono" style={{ width: 48, textAlign: "right", fontSize: 11 }}>{String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {/* 高频词 */}
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>高频词</div>
+            {(spec.top_words || []).length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {(spec.top_words || []).slice(0, 20).map((w: any) => (
+                  <span key={w.word} className="tag" style={{ fontSize: 11, padding: "2px 8px" }}>
+                    {w.word}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{w.count}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          {/* 生造词Step1 */}
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>生造词 Step1 候选（频率 + PMI 凝合度初筛）</div>
+            {(spec.neologism_step1 || []).length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {(spec.neologism_step1 || []).slice(0, 18).map((n: any) => (
+                  <span key={n.term} className="tag" style={{ fontSize: 11, padding: "2px 8px", color: "var(--gold)" }}>
+                    {n.term}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{n.count}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

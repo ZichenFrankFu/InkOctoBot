@@ -124,17 +124,22 @@ class TestManualPromptInjection:
                      json={"platform": "qidian", "category": "玄幻"})
         assert r.status_code == 200
         prompt = r.json()["prompt"]
-        # spec-2.1.3.2 维度 section
-        assert "开篇章节分析" in prompt
+        # spec-2.1.3.2 真实统计 (render_stats_for_prompt 注入)
         assert "章中位字数" in prompt
         assert "标点密度" in prompt
         assert "生造词Step1" in prompt
-        # 真实章节原文节选
+        # 真实章节原文节选（前2章 开头+结尾）
         assert "章节原文节选" in prompt
         assert "陈玄" in prompt          # actual chapter text reached the prompt
-        # 分析维度要求: 生造词Step2 + 行文风格七组
+        # 高级特征提取 schema: 生造词Step2 + 行文风格七组 (A1-G2)
         assert "生造词Step2" in prompt
-        assert "钩子维度" in prompt and "节奏维度" in prompt
+        assert "neologism_step2" in prompt
+        assert "style_dimensions" in prompt
+        # 七组都在 schema 里 (A 主角 … G 节奏)
+        for marker in ("A1_appearance", "B1_network", "C1_type",
+                       "D1_opening_hook", "E1_writing_style",
+                       "F1_disclosure", "G1_rhythm"):
+            assert marker in prompt, marker
 
 
 class TestRealSelectionMechanism:
