@@ -19,6 +19,8 @@ interface OverviewResp {
   snapshot_count: number;
   chapter_count: number;
   recent_snapshots: Array<{
+    snapshot_id: number;
+    rank_list_id: number;
     snapshot_date: string;
     item_count: number;
     platform: string;
@@ -31,7 +33,12 @@ interface OverviewResp {
 }
 
 
-export default function MarketDbSummaryPage() {
+interface RankSnapshotTarget {
+  rank_list_id: number; snapshot_id: number; snapshot_date?: string;
+  item_count?: number; platform?: string; rank_family?: string; rank_sub_cat?: string;
+}
+
+export default function MarketDbSummaryPage({ onOpenSnapshot }: { onOpenSnapshot?: (t: RankSnapshotTarget) => void } = {}) {
   const { toast } = useToast();
   useLang();  // re-render on language change
   // 秒开: 同步水合上次概览快照，后台刷新（stale-while-revalidate）。
@@ -138,20 +145,42 @@ export default function MarketDbSummaryPage() {
                 <th style={{ padding: "4px 6px" }}>平台</th>
                 <th style={{ padding: "4px 6px" }}>榜单</th>
                 <th style={{ padding: "4px 6px", textAlign: "right" }}>条目数</th>
+                <th style={{ width: 28 }}></th>
               </tr>
             </thead>
             <tbody>
-              {data!.recent_snapshots.map((s, i) => (
-                <tr key={`${s.snapshot_date}-${i}`} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ padding: "4px 6px" }}>{s.snapshot_date}</td>
-                  <td style={{ padding: "4px 6px" }}>{tPlatform(s.platform)}</td>
-                  <td style={{ padding: "4px 6px" }}>
-                    {s.rank_family}
-                    {s.rank_sub_cat && s.rank_sub_cat !== s.rank_family ? ` · ${s.rank_sub_cat}` : ""}
-                  </td>
-                  <td style={{ padding: "4px 6px", textAlign: "right" }}>{s.item_count}</td>
-                </tr>
-              ))}
+              {data!.recent_snapshots.map((s, i) => {
+                const clickable = !!onOpenSnapshot && s.rank_list_id != null && s.snapshot_id != null;
+                return (
+                  <tr
+                    key={`${s.snapshot_id ?? s.snapshot_date}-${i}`}
+                    onClick={clickable ? () => onOpenSnapshot!({
+                      rank_list_id: s.rank_list_id, snapshot_id: s.snapshot_id,
+                      snapshot_date: s.snapshot_date, item_count: s.item_count,
+                      platform: s.platform, rank_family: s.rank_family,
+                      rank_sub_cat: s.rank_sub_cat,
+                    }) : undefined}
+                    style={{
+                      borderTop: "1px solid var(--border)",
+                      cursor: clickable ? "pointer" : "default",
+                    }}
+                    onMouseEnter={clickable ? (e) => (e.currentTarget.style.background = "var(--bg-surface-hover, var(--bg-surface-2))") : undefined}
+                    onMouseLeave={clickable ? (e) => (e.currentTarget.style.background = "transparent") : undefined}
+                    title={clickable ? "查看该快照详情" : undefined}
+                  >
+                    <td style={{ padding: "4px 6px" }}>{s.snapshot_date}</td>
+                    <td style={{ padding: "4px 6px" }}>{tPlatform(s.platform)}</td>
+                    <td style={{ padding: "4px 6px" }}>
+                      {s.rank_family}
+                      {s.rank_sub_cat && s.rank_sub_cat !== s.rank_family ? ` · ${s.rank_sub_cat}` : ""}
+                    </td>
+                    <td style={{ padding: "4px 6px", textAlign: "right" }}>{s.item_count}</td>
+                    <td style={{ padding: "4px 6px", textAlign: "center", color: "var(--text-disabled)" }}>
+                      {clickable ? "›" : ""}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}

@@ -198,8 +198,13 @@ def _load_rep_works(
     if not works:
         try:
             from ..utils import resolve_crawler_db_path as _rcdp_sel
+            import zlib as _zlib
+            # Stable seed → reproducible holdout/selection across repeated
+            # clicks (spec 机制5) instead of a different work set each time.
+            _seed = _zlib.crc32(f"{platform}:{category}".encode("utf-8"))
             representative_selector.select(
-                get_db_path(), platform, category, crawler_db=_rcdp_sel(),
+                get_db_path(), platform, category,
+                crawler_db=_rcdp_sel(), seed=_seed,
             )
             works = representative_selector.list_selected(
                 get_db_path(), platform, category, include_holdout=False,

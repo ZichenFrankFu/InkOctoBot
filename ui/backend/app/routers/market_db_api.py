@@ -46,7 +46,7 @@ def overview(platform: str | None = None):
         rank_list_count = con.execute(f"SELECT COUNT(*) AS c FROM rank_lists{' WHERE platform=?' if platform else ''}", pp).fetchone()["c"]
         snapshot_count = con.execute("SELECT COUNT(*) AS c FROM rank_snapshots" + (" WHERE rank_list_id IN (SELECT rank_list_id FROM rank_lists WHERE platform=?)" if platform else ""), pp).fetchone()["c"]
         chapter_count = con.execute("SELECT COUNT(*) AS c FROM first_n_chapters" + (" WHERE novel_uid IN (SELECT novel_uid FROM novels WHERE platform=?)" if platform else ""), pp).fetchone()["c"]
-        recent_sql = "SELECT s.snapshot_id,s.snapshot_date,s.item_count,l.platform,l.rank_family,l.rank_sub_cat FROM rank_snapshots s JOIN rank_lists l ON l.rank_list_id=s.rank_list_id" + (" WHERE l.platform=?" if platform else "") + " ORDER BY s.snapshot_date DESC LIMIT 20"
+        recent_sql = "SELECT s.snapshot_id,s.rank_list_id,s.snapshot_date,s.item_count,l.platform,l.rank_family,l.rank_sub_cat FROM rank_snapshots s JOIN rank_lists l ON l.rank_list_id=s.rank_list_id" + (" WHERE l.platform=?" if platform else "") + " ORDER BY s.snapshot_date DESC LIMIT 20"
         recent = con.execute(recent_sql, pp).fetchall()
         pb = con.execute("SELECT platform, COUNT(*) AS count FROM novels GROUP BY platform").fetchall()
         cat_sql = "SELECT n.main_category, COUNT(*) AS count FROM novels n" + (" WHERE n.platform=?" if platform else "") + " GROUP BY n.main_category ORDER BY count DESC LIMIT 15"
@@ -325,8 +325,24 @@ def _compute_opening_nlp(platform: str | None = None) -> dict:
             params,
         ).fetchall()
         rows = [r for r in all_rows if int(r["cn"] or 0) == 1][:200]
+        # Accurate corpus totals (not capped by the LIMIT above) for the
+        # 基础特征提取 概览行：涉及多少 unique 小说、共多少章。
+        cnt_frm = "first_n_chapters fc"
+        cnt_cond = ""
+        cnt_params: list = []
+        if platform and _table_exists(con, "novels"):
+            cnt_frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
+            cnt_cond = " WHERE n.platform=?"
+            cnt_params = [platform]
+        totals = con.execute(
+            f"SELECT COUNT(DISTINCT fc.novel_uid) AS nv, COUNT(*) AS ch "
+            f"FROM {cnt_frm}{cnt_cond}", cnt_params,
+        ).fetchone()
+        unique_novels = int(totals["nv"] or 0)
+        total_chapters = int(totals["ch"] or 0)
     if not rows:
-        return {"available": False, "reason": "no openings to analyze"}
+        return {"available": False, "reason": "no openings to analyze",
+                "unique_novels": unique_novels, "total_chapters": total_chapters}
 
     # Quote chars used in mainland web fiction.
     QUOTE_RE = re.compile(r"[「][^」]{1,400}[」]|[“][^”]{1,400}[”]|[\"][^\"]{1,400}[\"]")
@@ -417,6 +433,8 @@ def _compute_opening_nlp(platform: str | None = None) -> dict:
         "available": True,
         "platform": platform or "all",
         "sample_count": len(rows),
+        "unique_novels": unique_novels,
+        "total_chapters": total_chapters,
         "spec_stats": spec_stats,
         "dialogue_ratio": {
             "mean": _mean(dialogue_ratios),

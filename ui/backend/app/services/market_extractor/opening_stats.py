@@ -39,21 +39,24 @@ _STOPWORDS = set(
 )
 
 # Multi-char everyday words. Without this blocklist 高频词 / 生造词
-# degrade into 自己 / 一个 / 没有 / 什么 — high-frequency but semantically
-# empty function words. These are the words to NEVER surface as a content
-# keyword or a coined term, regardless of how often they appear.
+# degrade into 自己 / 一个 / 没有 / 什么 / 怎么 / 可以 — high-frequency but
+# semantically empty function words. These are NEVER a content keyword or
+# a coined term, regardless of how often they appear.
 _COMMON_WORDS: frozenset[str] = frozenset("""
-自己 一个 没有 什么 这个 那个 怎么 知道 现在 时候 这样 那样 起来 出来
+自己 一个 没有 什么 这个 那个 怎么 可以 知道 现在 时候 这样 那样 起来 出来
 可能 已经 还是 因为 所以 但是 如果 这些 那些 我们 你们 他们 她们 它们
 一样 一直 一定 不过 不能 不是 这么 那么 突然 似乎 仿佛 觉得 看着 看到
 听到 想到 感觉 应该 只是 就是 还有 然后 这时 此时 这里 那里 一些 有些
 东西 事情 时间 地方 样子 一点 一切 所有 之后 之前 当然 也许 或许 终于
 竟然 居然 顿时 立刻 立即 马上 刚才 刚刚 周围 旁边 身边 心里 心中 眼中
-眼前 面前 身上 身后 头上 手中 不会 不要 不想 不敢 没想 想要 一声
+眼前 面前 身上 身后 头上 手中 不会 不要 不想 不敢 没想 想要 一声 看见
+听见 不过 这是 那是 一下 两人 这才 之类 之间 当中 当时 后来 后面 前面
+一旁 一行 众人 一群 几乎 完全 根本 简直 等等 大概 估计 反而 重新 继续
+开始 结束 一般 普通 时间 地方 问题 办法 方法 情况 样子 模样 声音 时刻
 两个 三个 几个 那种 这种 一种 自然 似的 一边 那边 这边 别人 大家 整个
 有人 没人 什么样 不停 不由 不禁 不住 一时 半天 一阵 片刻 随即 接着 于是
 而且 然而 不仅 甚至 反正 毕竟 何况 难道 无非 只有 只要 即使 哪怕 除非
-什么的 怎么样 为什么 怎么办 一会儿 这会儿 那会儿
+什么的 怎么样 为什么 怎么办 一会儿 这会儿 那会儿 不知道 没办法 没关系
 """.split())
 
 # Generic narration verbs/adverbs that jieba tags as nouns/verbs but carry
@@ -61,6 +64,7 @@ _COMMON_WORDS: frozenset[str] = frozenset("""
 _GENERIC_CONTENT: frozenset[str] = frozenset("""
 说道 问道 喊道 笑道 答道 开口 摇头 点头 抬头 低头 转身 伸手 走来 走去
 站着 坐着 躺着 看了 听了 想了 笑了 叹了 时候 样子 声音 目光 眼睛 脸上
+笑容 神色 表情 动作 模样 心情 念头 脑海 脑中 不远处 远处 这一刻 一瞬间
 """.split())
 
 
@@ -71,15 +75,80 @@ def _is_common(w: str) -> bool:
 # jieba POS tags worth keeping as content keywords: nouns, proper nouns
 # (person/place/org/other), idioms. Everything else (pronouns, adverbs,
 # particles, generic verbs) is dropped.
-_KEEP_POS_PREFIX = ("n", "nr", "ns", "nt", "nz", "nl", "ng")
+_KEEP_POS_PREFIX = ("n", "nr", "ns", "nt", "nz", "nl", "ng", "i")
+
+# Particles/demonstratives/interrogatives that never occur inside a Chinese
+# proper noun — their presence means the candidate is a prose fragment
+# (前的青云宗 / 道这意味 / 手里的玄) rather than a real word/coined term.
+_HARD_REJECT_CHARS = set("的了着过吗呢吧么哦啊呀嘛又再就才将这那什怎谁")
+# Pronouns / common verb-adverb chars: tolerated singly but a high ratio
+# signals ordinary prose, not a content phrase.
+_SOFT_FUNC_CHARS = set("会在是有和就不都也很把被让从向往要去到我你他她它"
+                       "们这那怎什没看说想又再还只能可如果因所以但必须前后")
+
+
+def _is_content_phrase(term: str, max_len: int = 6) -> bool:
+    """A multi-char run that reads like a real word / proper noun rather
+    than a prose fragment or everyday function word."""
+    if not (2 <= len(term) <= max_len):
+        return False
+    if not re.fullmatch(r"[一-鿿]+", term):
+        return False
+    if _is_common(term):
+        return False
+    if any(ch in _HARD_REJECT_CHARS for ch in term):
+        return False
+    if any(cw in term for cw in _COMMON_WORDS):    # 自己怎么会 / 要进去吗
+        return False
+    if sum(1 for ch in term if ch in _SOFT_FUNC_CHARS) / len(term) > 0.34:
+        return False
+    if all(ch in _STOPWORDS for ch in term):
+        return False
+    return True
+
+
+def _multichar_pool(joined: str) -> set[str]:
+    """Recall multi-char phrase candidates (2-6 字) via PMI 凝合度 + 后缀
+    模式 + jieba unknown-word discovery — surfaces longer terms that plain
+    jieba segmentation breaks apart (青云宗, 玄天剑, 宗门大比)."""
+    pool: set[str] = set()
+    try:
+        from .neologism_extractor import (
+            _char_pattern_match, _ngram_pmi, _recall_via_jieba,
+        )
+        pool |= _ngram_pmi(joined)
+        pool |= _char_pattern_match(joined)
+        pool |= {w for w in _recall_via_jieba(joined) if len(w) >= 2}
+    except Exception:
+        pass
+    return pool
+
+
+def _dedup_substrings(cands: Counter) -> list[str]:
+    """Drop a fragment when a longer candidate contains it and occurs about
+    as often (李慕白 → drop 慕白/李慕; 宗门大比 → drop 宗门大/大比). Keeps
+    the longest coherent term, preferring length then frequency."""
+    ordered = sorted(cands, key=lambda t: (-len(t), -cands[t]))
+    kept: list[str] = []
+    for term in ordered:
+        covered = any(
+            term != longer and term in longer and cands[longer] >= cands[term] * 0.6
+            for longer in kept
+        )
+        if not covered:
+            kept.append(term)
+    return kept
 
 
 def _top_words(texts: list[str], k: int = 20) -> list[dict[str, Any]]:
-    """高频词 — content keywords only. Uses jieba POS to keep nouns /
-    proper nouns and drops pronouns, adverbs and everyday function words
-    (otherwise 自己 / 一个 / 没有 dominate)."""
+    """高频词 — content keywords, mixed length. jieba POS keeps nouns /
+    proper nouns; PMI / 后缀 phrase recall adds the longer multi-char terms
+    jieba breaks apart, so the result is not capped at 2-字 words. Common
+    function words (自己 / 怎么 / 可以 …) are excluded."""
+    joined = "\n".join(texts)
     counter: Counter = Counter()
-    used_pos = False
+
+    # 1. jieba content words (accurate token frequency).
     try:
         import jieba.posseg as _pseg
         for t in texts:
@@ -89,41 +158,49 @@ def _top_words(texts: list[str], k: int = 20) -> list[dict[str, Any]]:
                         and flag.startswith(_KEEP_POS_PREFIX)
                         and not _is_common(w)):
                     counter[w] += 1
-        used_pos = True
     except Exception:
-        used_pos = False
-    if not used_pos or not counter:
-        # Fallback: plain jieba.cut with the blocklist, then bigrams.
         try:
             import jieba
             for t in texts:
                 for w in jieba.cut(t):
                     if (len(w) >= 2 and re.fullmatch(r"[一-鿿]+", w)
-                            and w not in _STOPWORDS and not _is_common(w)):
+                            and not _is_common(w) and w not in _STOPWORDS):
                         counter[w] += 1
         except Exception:
-            for t in texts:
-                chars = re.sub(r"[^一-鿿]", "", t)
-                for i in range(len(chars) - 1):
-                    bg = chars[i:i + 2]
-                    if (bg[0] not in _STOPWORDS and bg[1] not in _STOPWORDS
-                            and not _is_common(bg)):
-                        counter[bg] += 1
-    return [{"word": w, "count": c} for w, c in counter.most_common(k)]
+            chars = re.sub(r"[^一-鿿]", "", joined)
+            for i in range(len(chars) - 1):
+                bg = chars[i:i + 2]
+                if (bg[0] not in _STOPWORDS and bg[1] not in _STOPWORDS
+                        and not _is_common(bg)):
+                    counter[bg] += 1
+
+    # 2. Longer multi-char phrases jieba misses (proper nouns / coined
+    #    terms). Count overlapping occurrences in the corpus.
+    for term in _multichar_pool(joined):
+        if len(term) >= 3 and _is_content_phrase(term):
+            n = joined.count(term)
+            if n >= 2:
+                counter[term] = max(counter.get(term, 0), n)
+
+    if not counter:
+        return []
+    kept = set(_dedup_substrings(counter))
+    # Rank by frequency with a mild length boost so 3-4 字 content words
+    # aren't always buried under 2-字 words.
+    ranked = sorted(
+        (t for t in counter if t in kept),
+        key=lambda t: counter[t] * (1.0 + 0.12 * (len(t) - 2)),
+        reverse=True,
+    )
+    return [{"word": t, "count": counter[t]} for t in ranked[:k]]
 
 
 def _neologism_step1(texts: list[str], k: int = 15) -> list[dict[str, Any]]:
     """生造词 Step1 初筛 — 频率 + PMI 凝合度 + 后缀模式 (机制3)。
 
-    复用 neologism_extractor 的 recall 路径，再用通用词 / 成语 / 网络
-    流行语 / 古典词词典与常用词黑名单过滤，确保候选是「疑似新造专有
-    名词」而非 自己 / 什么 这类常用词。"""
-    try:
-        from .neologism_extractor import (
-            _char_pattern_match, _ngram_pmi, _recall_via_jieba,
-        )
-    except Exception:
-        return []
+    用通用词 / 成语 / 网络流行语 / 古典词词典与常用词黑名单过滤，确保
+    候选是「疑似新造专有名词」（可较长）而非 自己 / 怎么 / 可以 这类常用
+    词，且不限于两字。"""
     # Reference dictionaries of *known* words — anything in them is NOT a
     # coined term.
     known: set[str] = set()
@@ -137,60 +214,18 @@ def _neologism_step1(texts: list[str], k: int = 15) -> list[dict[str, Any]]:
     except Exception:
         pass
 
-    # Particles/structural chars that never occur inside a Chinese proper
-    # noun — their presence means the candidate is a prose fragment
-    # (前的青云宗 / 手里的玄 / 的钟声响) rather than a coined term.
-    _HARD_REJECT_CHARS = set("的了着过吗呢吧么哦啊呀嘛")
-    # Pronouns / common verb-adverb chars: tolerated singly but a high
-    # ratio signals ordinary prose.
-    _SOFT_FUNC_CHARS = set("会在是有和就不都也很把被让从向往要去到我你他她它"
-                           "们这那怎什没看说想又再还只能可如果因所以但必须前后")
-
-    def _looks_coined(term: str) -> bool:
-        if len(term) < 2 or len(term) > 6:
-            return False
-        if not re.fullmatch(r"[一-鿿]+", term):
-            return False
-        if _is_common(term) or term in known:
-            return False
-        if any(ch in _HARD_REJECT_CHARS for ch in term):
-            return False
-        # Contains an everyday word as a chunk (自己怎么会 / 要进去吗).
-        if any(cw in term for cw in _COMMON_WORDS):
-            return False
-        soft = sum(1 for ch in term if ch in _SOFT_FUNC_CHARS) / len(term)
-        if soft > 0.34:
-            return False
-        if all(ch in _STOPWORDS for ch in term):
-            return False
-        return True
-
-    cands: Counter = Counter()
     joined = "\n".join(texts)
-    pool: set[str] = set()
-    pool |= _ngram_pmi(joined)
-    pool |= _char_pattern_match(joined)
-    pool |= {w for w in _recall_via_jieba(joined) if len(w) >= 3}
-    for term in pool:
-        if not _looks_coined(term):
+    cands: Counter = Counter()
+    for term in _multichar_pool(joined):
+        if not _is_content_phrase(term) or term in known:
             continue
         n = joined.count(term)
         if n >= 2:
             cands[term] = n
 
-    # Substring dedup: drop a fragment when a longer candidate contains it
-    # and occurs about as often (李慕白 present → drop 慕白 / 李慕; 宗门大比
-    # present → drop 宗门大 / 大比). Keeps the longest coherent coined term.
-    ordered = sorted(cands, key=lambda t: (-len(t), -cands[t]))
-    kept: list[str] = []
-    for term in ordered:
-        covered = any(
-            term != longer and term in longer and cands[longer] >= cands[term] * 0.6
-            for longer in kept
-        )
-        if not covered:
-            kept.append(term)
-    result = sorted(kept, key=lambda t: -cands[t])[:k]
+    kept = _dedup_substrings(cands)
+    result = sorted(kept, key=lambda t: cands[t] * (1.0 + 0.1 * (len(t) - 2)),
+                    reverse=True)[:k]
     return [{"term": t, "count": cands[t]} for t in result]
 
 

@@ -78,6 +78,29 @@ interface CategoryOption {
 }
 
 
+// 起点分类体系：大分类（novel_types）与副分类（sub_to_main_map 的键）。
+// 起点用「大分类 / 副分类」而非「类目 / 标签」，两者集合互斥，用于去重
+// 与正确归类（起点没有番茄式的标签共现）。
+const QIDIAN_MAIN_CATS = new Set<string>([
+  "玄幻", "奇幻", "武侠", "仙侠", "都市", "现实", "军事", "历史",
+  "游戏", "体育", "科幻", "诸天无限", "悬疑", "轻小说", "短篇",
+]);
+const QIDIAN_SUB_CATS = new Set<string>([
+  "东方玄幻", "异世大陆", "高武世界", "王朝争霸",
+  "剑与魔法", "史诗奇幻", "神秘幻想", "现代魔法", "历史神话", "另类幻想",
+  "传统武侠", "武侠幻想", "国术无双", "古武未来", "武侠同人",
+  "修真文明", "幻想修仙", "现代修真", "神话修真", "古典仙侠",
+  "都市生活", "娱乐明星", "商战职场", "异术超能", "都市异能", "青春校园",
+  "架空历史", "两宋元明", "外国历史", "上古先秦", "秦汉三国", "两晋隋唐",
+  "五代十国", "清史民国", "历史传记", "民间传说",
+  "战争幻想", "谍战特工", "军旅生涯", "抗战烽火", "军事战争",
+  "悬疑侦探", "诡秘悬疑", "探险生存", "奇妙世界", "古今传奇",
+  "星际文明", "时空穿梭", "未来世界", "古武机甲", "超级科技", "进化变异", "末世危机",
+  "电子竞技", "虚拟网游", "游戏异界", "游戏系统", "游戏主播",
+  "体育赛事", "篮球运动", "足球运动",
+  "原生幻想", "衍生同人", "搞笑吐槽", "恋爱日常",
+]);
+
 const STATE_COLOR: Record<string, string> = {
   queued:           "var(--text-tertiary)",
   running_phase_1:  "var(--accent)",
@@ -1006,6 +1029,7 @@ function BasicExtractionTab() {
   const { toast } = useToast();
   type NlpPayload = {
     available: boolean; reason?: string; sample_count?: number;
+    unique_novels?: number; total_chapters?: number;
     spec_stats?: any;
     word_count_summary?: { mean: number; min: number; max: number };
   };
@@ -1150,23 +1174,15 @@ function BasicExtractionTab() {
         </div>
       </div>
 
-      {/* 提取结果 概览 banner */}
-      <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--jade)" }}>
-        <div className="card-body" style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-          <strong style={{ fontSize: 13 }}>提取结果</strong>
-          <span style={{ marginLeft: 10 }}>
-            {hasAny ? (
-              <>
-                平台 <strong>{tPlatform(platform)}</strong>
-                {market?.start_date ? ` · 区间 ${market.start_date} ~ ${market.end_date}` : ""}
-                {hasMarket ? ` · 类目 ${(market!.cat_rollup || []).length} · 标签 ${(market!.tag_rollup || []).length} · 开书机会 ${(market!.opportunities || []).length} · 标签共现 ${(market!.pairs || []).length}` : " · 市场信息暂无"}
-                {hasNlp ? ` · 开篇NLP样本 ${nlp!.sample_count} 章` : " · 开篇NLP暂无"}
-                {computing ? " · 后台分析中…" : ""}
-              </>
-            ) : (computing ? "正在后台计算市场信息与开篇 NLP 统计…" : "尚未运行分析，点击右上「运行分析」。")}
-          </span>
+      {/* 分析范围概览：涉及多少 unique 小说 · 共多少章 · 时间区间 */}
+      {hasAny && (
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", margin: "0 0 14px", fontSize: 12, color: "var(--text-secondary)" }}>
+          <span>涉及小说 <strong style={{ color: "var(--text-primary)" }}>{nlp?.unique_novels ?? "—"}</strong> 部</span>
+          <span>共 <strong style={{ color: "var(--text-primary)" }}>{nlp?.total_chapters ?? "—"}</strong> 章</span>
+          <span>时间区间 <strong style={{ color: "var(--text-primary)" }}>{market?.start_date ? `${market.start_date} ~ ${market.end_date}` : "—"}</strong></span>
+          {computing && <span style={{ color: "var(--text-tertiary)" }}>后台分析中…</span>}
         </div>
-      </div>
+      )}
 
       {stale && !computing && (
         <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--gold)" }}>
@@ -1207,8 +1223,40 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
   const num = (v: number | null | undefined, d = 0) =>
     v == null || isNaN(v as number) ? "—" : Number(v).toFixed(d);
 
-  const catRows = (market.cat_rollup || []).slice(0, 10);
-  const tagRows = (market.tag_rollup || []).slice(0, 10);
+  const isQidian = platform === "qidian";
+  // Dedupe across rank boards: the same 类目/标签 appears once per board in
+  // the rollup; keep the highest-count row per name so the table has no
+  // within-list duplicates.
+  const dedupeByName = (rows: any[], key: string) => {
+    const m = new Map<string, any>();
+    for (const r of rows || []) {
+      const name = r[key];
+      if (!name) continue;
+      const prev = m.get(name);
+      if (!prev || (r.latest_count || 0) > (prev.latest_count || 0)) m.set(name, r);
+    }
+    return [...m.values()].sort((a, b) => (b.latest_count || 0) - (a.latest_count || 0));
+  };
+  let catAll = dedupeByName(market.cat_rollup || [], "category");
+  let tagAll = dedupeByName(market.tag_rollup || [], "tag");
+  if (isQidian) {
+    // 起点: 类目=大分类, 标签=副分类。按权威集合归类（集合互斥 → 两表
+    // 不重复）；若过滤后为空则回退到去重后的原始列表，避免空表。
+    const mainF = catAll.filter(r => QIDIAN_MAIN_CATS.has(r.category));
+    const subF = tagAll.filter(r => QIDIAN_SUB_CATS.has(r.tag));
+    if (mainF.length) catAll = mainF;
+    if (subF.length) tagAll = subF;
+  }
+  // Cross-list dedupe: a name shown as 类目/大分类 is removed from 标签/副分类.
+  const catNameSet = new Set(catAll.map(r => r.category));
+  tagAll = tagAll.filter(r => !catNameSet.has(r.tag));
+
+  const catLabel = isQidian ? "大分类" : "类目";
+  const tagLabel = isQidian ? "副分类" : "标签";
+  const showCooccur = !isQidian;   // 起点没有标签共现
+
+  const catRows = catAll.slice(0, 10);
+  const tagRows = tagAll.slice(0, 10);
   const oppRows = (market.opportunities || []).slice(0, 10);
   const pairRows = (market.pairs || []).slice(0, 14);
   const catMaxCount = Math.max(1, ...catRows.map((r: any) => r.latest_count || 0));
@@ -1219,19 +1267,16 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
 
   return (
     <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--indigo)" }}>
-      <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>市场信息
-        <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 8 }}>
-          数量 · 数量趋势 · 热度 · 热度趋势 · 市场份额 · 份额趋势 · 开书机会 · 标签共现
-        </span></h3></div>
+      <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>市场信息</h3></div>
       <div className="card-body">
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
           {/* 类目 */}
           <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10, overflowX: "auto" }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>类目 TOP10：数量 / 热度 / 份额 及变化趋势</div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{catLabel} TOP10：数量 / 热度 / 份额 及变化趋势</div>
             {catRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
               <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
                 <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
-                  <th style={{ padding: "3px 6px" }}>类目</th>
+                  <th style={{ padding: "3px 6px" }}>{catLabel}</th>
                   <th style={{ padding: "3px 6px" }}>数量</th>
                   <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
                   <th style={{ padding: "3px 6px" }}>热度</th>
@@ -1267,11 +1312,11 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
           </div>
           {/* 标签 */}
           <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10, overflowX: "auto" }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>标签 TOP10：数量 / 热度 / 份额 及变化趋势</div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{tagLabel} TOP10：数量 / 热度 / 份额 及变化趋势</div>
             {tagRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
               <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
                 <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
-                  <th style={{ padding: "3px 6px" }}>标签</th>
+                  <th style={{ padding: "3px 6px" }}>{tagLabel}</th>
                   <th style={{ padding: "3px 6px" }}>数量</th>
                   <th style={{ padding: "3px 6px" }}>热度</th>
                   <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
@@ -1322,19 +1367,21 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
               </div>
             )}
           </div>
-          {/* 标签共现 */}
-          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>标签共现（高频组合）</div>
-            {pairRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {pairRows.map((p: any, i: number) => (
-                  <span key={i} className="tag" style={{ fontSize: 10, padding: "2px 8px" }}>
-                    {p.tag_a} × {p.tag_b}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{p.count}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
+          {/* 标签共现（起点无此维度，隐藏） */}
+          {showCooccur && (
+            <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>标签共现（高频组合）</div>
+              {pairRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {pairRows.map((p: any, i: number) => (
+                    <span key={i} className="tag" style={{ fontSize: 10, padding: "2px 8px" }}>
+                      {p.tag_a} × {p.tag_b}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{p.count}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1365,10 +1412,7 @@ function NlpDimsBlock({ nlp }: { nlp: any }) {
 
   return (
     <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--jade)" }}>
-      <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>开篇章节 NLP 维度
-        <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 8 }}>
-          样本 {nlp.sample_count} 章 · 字数 / 句长 / 标点密度 / 高频词 / 生造词Step1 · 启发式，无需大模型
-        </span></h3></div>
+      <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>开篇章节 NLP 维度</h3></div>
       <div className="card-body">
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
           {/* 字数 */}

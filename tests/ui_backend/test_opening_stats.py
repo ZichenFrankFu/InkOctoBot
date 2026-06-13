@@ -249,6 +249,9 @@ class TestRealSelectionMechanism:
         assert "暂无候选代表作" not in prompt
         assert "暂无已采集的开篇章节" not in prompt
         assert "暂无已采集的章节原文" not in prompt
-        assert "《榜首之作》" in prompt          # hydrated title
-        assert "榜首之作》的第一章正文" in prompt  # real excerpt
+        # At least one hydrated title + its real excerpt reached the prompt
+        # (which specific work is held out is seeded/stable but not asserted).
+        titles = ["榜首之作", "第二名", "第三名", "新书黑马"]
+        assert any(f"《{t}》" in prompt for t in titles)
+        assert any(f"{t}》的第一章正文" in prompt for t in titles)
         assert "章中位字数" in prompt             # real stats
