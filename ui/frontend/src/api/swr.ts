@@ -72,6 +72,11 @@ export function pollCompute<T>(
 ): PollController {
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // Safety cap: never poll forever. If a background compute is wedged
+  // ("computing" never clears), give up after this long and surface the
+  // last result we have rather than spinning「分析中」indefinitely.
+  const startedAt = Date.now();
+  const MAX_POLL_MS = 4 * 60 * 1000;
 
   const plainUrl = (() => {
     try {
@@ -84,17 +89,20 @@ export function pollCompute<T>(
     }
   })();
 
+  const expired = () => Date.now() - startedAt > MAX_POLL_MS;
+
   const tick = (target: string) => {
     apiGet<ComputeEnvelope<T>>(target)
       .then((env) => {
         if (cancelled) return;
         if (env.state === "ready") {
           handlers.onReady(env.payload as T, env);
-          if (env.computing) {
+          if (env.computing && !expired()) {
             timer = setTimeout(() => tick(plainUrl), intervalMs);
           }
         } else if (env.state === "computing") {
           handlers.onComputing?.();
+          if (expired()) { handlers.onError?.("分析超时，请重试"); return; }
           timer = setTimeout(() => tick(plainUrl), intervalMs);
         } else if (env.state === "empty") {
           handlers.onEmpty?.();

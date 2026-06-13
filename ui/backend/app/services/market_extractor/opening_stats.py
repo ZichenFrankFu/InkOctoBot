@@ -76,11 +76,6 @@ def _is_common(w: str) -> bool:
     return w in _COMMON_WORDS or w in _GENERIC_CONTENT
 
 
-# jieba POS tags worth keeping as content keywords: nouns, proper nouns
-# (person/place/org/other), idioms. Everything else (pronouns, adverbs,
-# particles, generic verbs) is dropped.
-_KEEP_POS_PREFIX = ("n", "nr", "ns", "nt", "nz", "nl", "ng", "i")
-
 # Particles/demonstratives/interrogatives that never occur inside a Chinese
 # proper noun — their presence means the candidate is a prose fragment
 # (前的青云宗 / 道这意味 / 手里的玄) rather than a real word/coined term.
@@ -191,45 +186,90 @@ def _load_known_words() -> set[str]:
     return known
 
 
-def _top_words(texts: list[str], k: int = 20) -> list[dict[str, Any]]:
-    """高频词 — representative content keywords, mixed length. jieba POS
-    keeps nouns / proper nouns; PMI / 后缀 recall adds longer terms jieba
-    breaks apart. Ranked by frequency × a keyness weight (down-weighting
-    words common in general Chinese) so 域内词 surface above generic ones."""
-    joined = "\n".join(texts)
-    freq = _general_freq()
-    counter: Counter = Counter()
+_SURNAMES = set(
+    "王李张刘陈杨黄赵吴周徐孙马朱胡郭何高林罗郑梁谢宋唐许韩冯邓曹彭曾"
+    "肖田董袁潘于蒋蔡余杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏"
+    "韦付方白邹孟熊秦邱江尹薛闫段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武戴"
+    "莫孔向汤"
+)
 
+
+def _looks_like_person_name(term: str, flag: str) -> bool:
+    """Heuristic: a jieba 'nr*'-tagged 2-4 字 term whose first char is a
+    common surname is a character name → excluded from 高频词 / 生造词. The
+    surname check spares coinages jieba mis-tags as names (灵能 / 异能 — 灵 /
+    异 are not surnames)."""
+    return flag.startswith("nr") and 2 <= len(term) <= 4 and term[0] in _SURNAMES
+
+
+def _keep_noun(flag: str) -> bool:
+    """Noun-class POS, EXCLUDING pure person-name tags handled separately —
+    we keep 'nr' here (jieba over-tags coinages as nr) and filter actual
+    names via the surname heuristic instead."""
+    return flag.startswith("n") or flag in ("l", "j")
+
+
+def _extract_tokens(texts: list[str], freq: dict):
+    """ONE jieba.posseg pass over the (already corpus-capped) texts →
+    noun-token frequencies (keyed by word, carrying a name flag) and clean
+    (modifier+noun) bigram frequencies for split-compound recovery. Doing
+    this once — and never calling ``str.count`` per candidate — is what
+    keeps the opening-NLP compute from blowing up to O(candidates×corpus)
+    (the cause of the「永远分析中」hang)."""
+    token_counts: Counter = Counter()      # word -> count
+    token_isname: dict[str, bool] = {}
+    bigram_counts: Counter = Counter()
     try:
         import jieba.posseg as _pseg
-        for t in texts:
-            for tok in _pseg.cut(t):
-                w, flag = tok.word, tok.flag
-                if (len(w) >= 2 and re.fullmatch(r"[一-鿿]+", w)
-                        and flag.startswith(_KEEP_POS_PREFIX)
-                        and not _is_common(w)):
-                    counter[w] += 1
     except Exception:
-        try:
-            import jieba
-            for t in texts:
-                for w in jieba.cut(t):
-                    if (len(w) >= 2 and re.fullmatch(r"[一-鿿]+", w)
-                            and not _is_common(w) and w not in _STOPWORDS):
-                        counter[w] += 1
-        except Exception:
-            chars = re.sub(r"[^一-鿿]", "", joined)
-            for i in range(len(chars) - 1):
-                bg = chars[i:i + 2]
-                if (bg[0] not in _STOPWORDS and bg[1] not in _STOPWORDS
-                        and not _is_common(bg)):
-                    counter[bg] += 1
+        return token_counts, token_isname, bigram_counts, False
+    for t in texts:
+        prev: tuple[str, str] | None = None
+        for tok in _pseg.cut(t):
+            w, flag = tok.word, tok.flag
+            cjk = len(w) >= 2 and bool(re.fullmatch(r"[一-鿿]+", w))
+            if cjk and len(w) <= 6:
+                token_counts[w] += 1
+                if w not in token_isname:
+                    token_isname[w] = _looks_like_person_name(w, flag)
+                if prev is not None:
+                    pw, pf = prev
+                    merged = pw + w
+                    if (flag.startswith("n") and 3 <= len(merged) <= 6
+                            and pf[:1] in ("n", "v", "a", "b", "z")
+                            and freq.get(pw, 0) < 500
+                            and freq.get(merged, 0) == 0):
+                        bigram_counts[merged] += 1
+                prev = (w, flag)
+            else:
+                prev = None
+    return token_counts, token_isname, bigram_counts, True
 
-    for term in _multichar_pool(joined, pmi=not freq):
-        if len(term) >= 3 and _is_content_phrase(term):
-            n = joined.count(term)
-            if n >= 2:
-                counter[term] = max(counter.get(term, 0), n)
+
+def _top_words(token_counts: Counter, token_isname: dict, bigram_counts: Counter,
+               freq: dict, has_jieba: bool, texts: list[str],
+               k: int = 20) -> list[dict[str, Any]]:
+    """高频词 — representative content keywords, mixed length, no person
+    names. Ranked by frequency × keyness (down-weighting words common in
+    general Chinese) so 域内词 rise above generic ones."""
+    counter: Counter = Counter()
+    if has_jieba:
+        for w, c in token_counts.items():
+            if (not _is_common(w) and not token_isname.get(w)
+                    and _is_content_phrase(w)):
+                counter[w] += c
+        for m, c in bigram_counts.items():
+            if c >= 2 and not _is_common(m) and _is_content_phrase(m):
+                counter[m] = max(counter.get(m, 0), c)
+    else:
+        # No jieba: light char-bigram fallback on the capped corpus.
+        joined = "\n".join(texts)
+        chars = re.sub(r"[^一-鿿]", "", joined)
+        for i in range(len(chars) - 1):
+            bg = chars[i:i + 2]
+            if (bg[0] not in _STOPWORDS and bg[1] not in _STOPWORDS
+                    and not _is_common(bg)):
+                counter[bg] += 1
 
     if not counter:
         return []
@@ -242,70 +282,39 @@ def _top_words(texts: list[str], k: int = 20) -> list[dict[str, Any]]:
     return [{"word": t, "count": counter[t]} for t in ranked[:k]]
 
 
-# Open-class POS tags that can carry a coined noun (including HMM-guessed
-# new words). Verbs (开始), conjunctions (虽然), adverbs, particles are NOT
-# here — that single filter removes most everyday-word false positives.
-_COINABLE_POS = ("n", "nz", "nr", "ns", "nt", "nrt", "nrfg", "l", "j")
-
-
-def _neologism_step1(texts: list[str], k: int = 15) -> list[dict[str, Any]]:
-    """生造词 Step1 初筛 — 目标是「域内新造名词」(超凡能力 / 灵能 / 异能 /
-    天赋 / 序列 …) 而非常用词 (开始 / 虽然)。综合三重信号，而非只靠频率/PMI:
-
-    1. 词性: 仅取名词类 (jieba POS)，直接排除动词/连词/副词等常用词。
-    2. 未登录 (OOV): jieba 词典里没有、但语料里反复出现的多字词，多为
-       作者自造的复合专名 (超凡能力)。
-    3. keyness: 用 jieba 通用词频做基线，语料频次高而通用频次低者得分
-       高 — 把「序列」「天赋」这类常用字面、域内高频的词顶上来。
-    """
-    known = _load_known_words()
-    joined = "\n".join(texts)
-    freq = _general_freq()
+def _neologism_step1(token_counts: Counter, token_isname: dict, bigram_counts: Counter,
+                     freq: dict, known: set, has_jieba: bool, texts: list[str],
+                     k: int = 15) -> list[dict[str, Any]]:
+    """生造词 Step1 初筛 — 域内新造名词 (超凡能力 / 灵能 / 异能 / 天赋 /
+    序列…)，排除人名与常用词。三重信号: 名词词性 + 未登录(OOV) + keyness。"""
+    # A coinage is a noun rare in GENERAL Chinese but frequent here — this
+    # threshold keeps OOV words (灵能=0) AND real words used as genre terms
+    # (序列=803 / 天赋=813 / 异能=26) while excluding everyday nouns
+    # (世界≈34k / 能力≈19k).
+    _RARE_GENERAL = 3000
     cands: Counter = Counter()
-    has_jieba = False
-
-    try:
-        import jieba.posseg as _pseg
-        has_jieba = True
-        bigrams: Counter = Counter()
-        for t in texts:
-            prev: tuple[str, str] | None = None
-            for tok in _pseg.cut(t):
-                w, flag = tok.word, tok.flag
-                cjk = bool(re.fullmatch(r"[一-鿿]+", w))
-                if (cjk and 2 <= len(w) <= 6 and flag.startswith(_COINABLE_POS)
-                        and _is_content_phrase(w) and w not in known):
-                    cands[w] += 1
-                # Adjacent (modifier + noun-head) → OOV compound coinage,
-                # respecting word boundaries (超凡 + 能力 = 超凡能力). Far
-                # cleaner than char-level PMI which glues across words.
-                if prev is not None and cjk:
-                    pw, pf = prev
-                    merged = pw + w
-                    if (flag.startswith("n") and 3 <= len(merged) <= 6
-                            and pf[:1] in ("n", "v", "a", "b", "z")
-                            and freq.get(pw, 0) < 500          # uncommon modifier = coinage signal
-                            and freq.get(merged, 0) == 0
-                            and _is_content_phrase(merged) and merged not in known):
-                        bigrams[merged] += 1
-                prev = (w, flag) if cjk else None
-        for m, c in bigrams.items():
-            if c >= 2:
+    if has_jieba:
+        for w, c in token_counts.items():
+            if (freq.get(w, 0) < _RARE_GENERAL and not token_isname.get(w)
+                    and not _is_common(w) and w not in known
+                    and _is_content_phrase(w)):
+                cands[w] += c
+        # Split-compound coinages (超凡 + 能力) — OOV merged form.
+        for m, c in bigram_counts.items():
+            if (c >= 2 and m not in known and not _is_common(m)
+                    and _is_content_phrase(m)):
                 cands[m] = max(cands.get(m, 0), c)
-    except Exception:
-        has_jieba = False
-
-    # OOV single words / suffix-pattern coinages jieba keeps as tokens; only
-    # those ABSENT from the general dictionary are coinages. Skip the noisy
-    # char-PMI recall when jieba word boundaries are available.
-    for term in _multichar_pool(joined, pmi=not has_jieba):
-        if not _is_content_phrase(term) or term in known:
-            continue
-        if has_jieba and freq.get(term, 0) > 0:
-            continue
-        n = joined.count(term)
-        if n >= 2 and term not in cands:
-            cands[term] = n
+    else:
+        # No jieba: suffix-pattern + PMI recall on the capped corpus.
+        joined = "\n".join(texts)
+        for term in _multichar_pool(joined, pmi=True):
+            if not _is_content_phrase(term) or term in known:
+                continue
+            if term[0] in _SURNAMES and len(term) <= 4:   # drop names
+                continue
+            n = joined.count(term)
+            if n >= 2:
+                cands[term] = n
 
     if not cands:
         return []
@@ -316,7 +325,6 @@ def _neologism_step1(texts: list[str], k: int = 15) -> list[dict[str, Any]]:
         reverse=True,
     )[:k]
     return [{"term": t, "count": cands[t]} for t in result]
-
 
 def compute_opening_stats(
     rows: list[dict[str, Any]],
@@ -353,6 +361,22 @@ def compute_opening_stats(
         for label in _PUNCT_CLASSES
     }
 
+    # Keyword/neologism extraction runs jieba — cap the corpus so the
+    # compute stays fast (representative on a sample; the spec 字数/句长/
+    # 标点 counts above already use the full corpus). ONE jieba pass feeds
+    # both 高频词 and 生造词.
+    _KW_CHAR_CAP = 120_000
+    kw_texts: list[str] = []
+    acc = 0
+    for t in texts:
+        kw_texts.append(t)
+        acc += len(t)
+        if acc >= _KW_CHAR_CAP:
+            break
+    freq = _general_freq()
+    known = _load_known_words()
+    tok_counts, tok_isname, bigrams, has_jieba = _extract_tokens(kw_texts, freq)
+
     return {
         "available": True,
         "chapters_analyzed": len(texts),
@@ -369,9 +393,9 @@ def compute_opening_stats(
         ),
         # 标点密度（次/千字）
         "punctuation_density_per_1k": punct_density,
-        # 高频词 + 生造词 Step1
-        "top_words": _top_words(texts),
-        "neologism_step1": _neologism_step1(texts),
+        # 高频词 + 生造词 Step1（共用一次 jieba 分词结果）
+        "top_words": _top_words(tok_counts, tok_isname, bigrams, freq, has_jieba, kw_texts),
+        "neologism_step1": _neologism_step1(tok_counts, tok_isname, bigrams, freq, known, has_jieba, kw_texts),
     }
 
 

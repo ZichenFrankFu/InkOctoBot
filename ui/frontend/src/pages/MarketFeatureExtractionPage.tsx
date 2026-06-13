@@ -100,6 +100,22 @@ const QIDIAN_SUB_CATS = new Set<string>([
   "体育赛事", "篮球运动", "足球运动",
   "原生幻想", "衍生同人", "搞笑吐槽", "恋爱日常",
 ]);
+// 副分类 → 大分类，用于开书机会标注「大分类·副分类」(如 轻小说·原生幻想)。
+const QIDIAN_SUB_TO_MAIN: Record<string, string> = {
+  东方玄幻: "玄幻", 异世大陆: "玄幻", 高武世界: "玄幻", 王朝争霸: "玄幻",
+  剑与魔法: "奇幻", 史诗奇幻: "奇幻", 神秘幻想: "奇幻", 现代魔法: "奇幻", 历史神话: "奇幻", 另类幻想: "奇幻",
+  传统武侠: "武侠", 武侠幻想: "武侠", 国术无双: "武侠", 古武未来: "武侠", 武侠同人: "武侠",
+  修真文明: "仙侠", 幻想修仙: "仙侠", 现代修真: "仙侠", 神话修真: "仙侠", 古典仙侠: "仙侠",
+  都市生活: "都市", 娱乐明星: "都市", 商战职场: "都市", 异术超能: "都市", 都市异能: "都市", 青春校园: "都市",
+  架空历史: "历史", 两宋元明: "历史", 外国历史: "历史", 上古先秦: "历史", 秦汉三国: "历史", 两晋隋唐: "历史",
+  五代十国: "历史", 清史民国: "历史", 历史传记: "历史", 民间传说: "历史",
+  战争幻想: "军事", 谍战特工: "军事", 军旅生涯: "军事", 抗战烽火: "军事", 军事战争: "军事",
+  悬疑侦探: "悬疑", 诡秘悬疑: "悬疑", 探险生存: "悬疑", 奇妙世界: "悬疑", 古今传奇: "悬疑",
+  星际文明: "科幻", 时空穿梭: "科幻", 未来世界: "科幻", 古武机甲: "科幻", 超级科技: "科幻", 进化变异: "科幻", 末世危机: "科幻",
+  电子竞技: "游戏", 虚拟网游: "游戏", 游戏异界: "游戏", 游戏系统: "游戏", 游戏主播: "游戏",
+  体育赛事: "体育", 篮球运动: "体育", 足球运动: "体育",
+  原生幻想: "轻小说", 衍生同人: "轻小说", 搞笑吐槽: "轻小说", 恋爱日常: "轻小说",
+};
 
 const STATE_COLOR: Record<string, string> = {
   queued:           "var(--text-tertiary)",
@@ -1351,14 +1367,19 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
   const catLabel = isQidian ? "大分类" : "类目";
   const tagLabel = isQidian ? "副分类" : "标签";
   const showCooccur = !isQidian;   // 起点没有标签共现
-
-  // 开书机会（类目级）：归一化各分量后加权。新书占比 = 该类目新书 / 全部
-  // 新书（跨类目，和为 100%），不再是类目内比例（解决 军事100% 武侠89% 的
-  // 疑惑）。同时纳入既有份额与热度，而非只看趋势。
-  const oppSource = catRows.length ? catRows : tagRows;
-  // Denominator over the displayed categories so the shown 新书占比 sum to
-  // exactly 100% (the user's mental model), not a within-category ratio.
-  const catNewTotal = oppSource.reduce((s, r) => s + (catNew[r.name] || 0), 0) || 1;
+  // 番茄各榜单已按题材分类，市场份额恒为 1 且不变 → 不展示份额 block，
+  // 开书机会也不计入份额分量。
+  const showShare = !isQidian ? false : true;
+  // 起点: 开书机会细到「大分类·副分类」(如 轻小说·原生幻想)，用副分类数据
+  // + 副分类新书。番茄: 类目级。
+  const tagNew: Record<string, number> = dbc.tag_new || {};
+  const oppIsSub = isQidian && tagRows.length > 0;
+  const oppSource = oppIsSub ? tagRows : (catRows.length ? catRows : tagRows);
+  const oppNew = oppIsSub ? tagNew : catNew;
+  const oppLabel = (name: string) =>
+    oppIsSub ? `${QIDIAN_SUB_TO_MAIN[name] || "其他"}·${name}` : name;
+  // 新书占比分母取展示项之和 → 展示行新书占比合计 100%（用户心智模型）。
+  const oppNewTotal = oppSource.reduce((s, r) => s + (oppNew[r.name] || 0), 0) || 1;
   const mk = (key: keyof MetricRow) => {
     const vals = oppSource.map(r => (r[key] as number) || 0);
     const mx = Math.max(...vals, 1e-9), mn = Math.min(...vals, 0);
@@ -1367,51 +1388,57 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
   const nShareSlope = mk("share_slope"), nHeatSlope = mk("heat_slope");
   const nShare = mk("latest_share"), nHeat = mk("avg_heat");
   const oppRows = oppSource.map(r => {
-    const newShare = (catNew[r.name] || 0) / catNewTotal;
-    const growth = (nShareSlope(r.share_slope || 0) + nHeatSlope(r.heat_slope || 0)) / 2;
-    const base = (nShare(r.latest_share || 0) + nHeat(r.avg_heat || 0)) / 2;
+    const newShare = (oppNew[r.name] || 0) / oppNewTotal;
+    // 番茄份额恒定 → 仅用热度增长；起点用份额+热度增长。
+    const growth = showShare
+      ? (nShareSlope(r.share_slope || 0) + nHeatSlope(r.heat_slope || 0)) / 2
+      : nHeatSlope(r.heat_slope || 0);
+    const base = showShare
+      ? (nShare(r.latest_share || 0) + nHeat(r.avg_heat || 0)) / 2
+      : nHeat(r.avg_heat || 0);
     const score = 0.4 * growth + 0.3 * newShare + 0.3 * base;
-    return { name: r.name, score, newShare };
+    return { name: r.name, label: oppLabel(r.name), score, newShare };
   }).sort((a, b) => b.score - a.score).slice(0, 10);
   const oppMax = Math.max(1e-9, ...oppRows.map(o => o.score));
+  const oppColLabel = oppIsSub ? "大分类·副分类" : catLabel;
 
   return (
     <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--indigo)" }}>
       <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>市场信息</h3></div>
       <div className="card-body">
-        {/* 大分类 / 类目：数量·热度·份额 各自成块 */}
+        {/* 大分类 / 类目：数量·热度(·份额) 各自成块 */}
         <div style={{ fontSize: 13, fontWeight: 700, margin: "2px 0 8px" }}>{catLabel}</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: showShare ? "1fr 1fr 1fr" : "1fr 1fr", gap: 12, marginBottom: 16 }}>
           <MetricMiniBlock title="数量" rows={catRows} valueKey="total" slopeKey="count_slope" color="var(--accent)" />
           <MetricMiniBlock title="热度" rows={catRows} valueKey="avg_heat" slopeKey="heat_slope" color="var(--gold)" />
-          <MetricMiniBlock title="市场份额" rows={catRows} valueKey="latest_share" slopeKey="share_slope" color="var(--jade)" decimals={3} />
+          {showShare && <MetricMiniBlock title="市场份额" rows={catRows} valueKey="latest_share" slopeKey="share_slope" color="var(--jade)" decimals={3} />}
         </div>
 
-        {/* 副分类 / 标签：数量·热度·份额 各自成块 */}
+        {/* 副分类 / 标签：数量·热度(·份额) 各自成块 */}
         <div style={{ fontSize: 13, fontWeight: 700, margin: "2px 0 8px" }}>{tagLabel}</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: showShare ? "1fr 1fr 1fr" : "1fr 1fr", gap: 12, marginBottom: 16 }}>
           <MetricMiniBlock title="数量" rows={tagRows} valueKey="total" slopeKey="count_slope" color="var(--accent)" />
           <MetricMiniBlock title="热度" rows={tagRows} valueKey="avg_heat" slopeKey="heat_slope" color="var(--gold)" />
-          <MetricMiniBlock title="市场份额" rows={tagRows} valueKey="latest_share" slopeKey="share_slope" color="var(--jade)" decimals={3} />
+          {showShare && <MetricMiniBlock title="市场份额" rows={tagRows} valueKey="latest_share" slopeKey="share_slope" color="var(--jade)" decimals={3} />}
         </div>
 
         {/* 开书机会 + （番茄）标签共现 */}
         <div style={{ display: "grid", gridTemplateColumns: showCooccur ? "1fr 1fr" : "1fr", gap: 12 }}>
           <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
-              开书机会（份额/热度增长 + 既有份额/热度 + 新书占比 加权）
+              开书机会（{showShare ? "份额/热度增长 + 既有份额/热度" : "热度增长 + 既有热度"} + 新书占比 加权）
             </div>
             {oppRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
               <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
                 <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
-                  <th style={{ padding: "3px 6px" }}>{catLabel}</th>
+                  <th style={{ padding: "3px 6px" }}>{oppColLabel}</th>
                   <th style={{ padding: "3px 6px" }}>机会指数</th>
                   <th style={{ padding: "3px 6px", textAlign: "right" }}>新书占比</th>
                 </tr></thead>
                 <tbody>
                   {oppRows.map((o, i) => (
                     <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
-                      <td style={{ padding: "3px 6px" }}>{o.name}</td>
+                      <td style={{ padding: "3px 6px" }}>{o.label}</td>
                       <td style={{ padding: "3px 6px", minWidth: 90 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                           <div style={{ flex: 1 }}><MiniBar value={o.score} max={oppMax} color="var(--jade)" /></div>
@@ -1425,7 +1452,7 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
               </table>
             )}
             <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 6 }}>
-              新书占比为跨{catLabel}分布，总和 100%。
+              新书占比为跨{oppColLabel}分布，总和 100%。
             </div>
           </div>
           {showCooccur && <CooccurTable pairs={market.pairs} />}
