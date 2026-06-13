@@ -64,6 +64,54 @@ def analysis_date_range():
     mn, mx = _db_date_range(db_path)
     return {"min_date": mn, "max_date": mx}
 
+def _db_category_tag_counts(db_path: str, platform: str,
+                            start_date: str, end_date: str) -> dict:
+    """Per-category / per-tag NOVEL counts straight from the novels table —
+    this is the real「数量」(how many novels in the DB belong to a
+    category), distinct from the rank-rollup appearance counts. Also
+    returns NEW-book counts (created within the window) so the UI can show
+    a cross-category new-book share that sums to 100%."""
+    out = {"cat_total": {}, "cat_new": {}, "tag_total": {}, "tag_new": {}}
+    if not Path(db_path).exists():
+        return out
+    plat_ok = platform in ("qidian", "fanqie")
+    pw = " WHERE platform = ?" if plat_ok else ""
+    pp: list = [platform] if plat_ok else []
+    try:
+        con = sqlite3.connect(db_path)
+        for cat, c in con.execute(
+                f"SELECT main_category, COUNT(*) FROM novels{pw} "
+                f"GROUP BY main_category", pp):
+            if cat:
+                out["cat_total"][cat] = int(c)
+        nw = (pw + " AND" if pw else " WHERE") + " created_date >= ? AND created_date <= ?"
+        for cat, c in con.execute(
+                f"SELECT main_category, COUNT(*) FROM novels{nw} "
+                f"GROUP BY main_category", pp + [start_date, end_date]):
+            if cat:
+                out["cat_new"][cat] = int(c)
+        tw = " WHERE n.platform = ?" if plat_ok else ""
+        for tag, c in con.execute(
+                "SELECT t.tag_name, COUNT(DISTINCT m.novel_uid) "
+                "FROM novel_tag_map m JOIN tags t ON t.tag_id = m.tag_id "
+                f"JOIN novels n ON n.novel_uid = m.novel_uid{tw} "
+                "GROUP BY t.tag_name", pp):
+            if tag:
+                out["tag_total"][tag] = int(c)
+        tnw = (tw + " AND" if tw else " WHERE") + " n.created_date >= ? AND n.created_date <= ?"
+        for tag, c in con.execute(
+                "SELECT t.tag_name, COUNT(DISTINCT m.novel_uid) "
+                "FROM novel_tag_map m JOIN tags t ON t.tag_id = m.tag_id "
+                f"JOIN novels n ON n.novel_uid = m.novel_uid{tnw} "
+                "GROUP BY t.tag_name", pp + [start_date, end_date]):
+            if tag:
+                out["tag_new"][tag] = int(c)
+        con.close()
+    except sqlite3.OperationalError:
+        pass
+    return out
+
+
 def _compute_analysis(db_path: str, platform: str, lookback: str, top_k: int) -> dict:
     """Heavy pandas pipeline — only ever runs on a compute_cache thread."""
     # Ensure repo root is importable
@@ -140,6 +188,8 @@ def _compute_analysis(db_path: str, platform: str, lookback: str, top_k: int) ->
             "pairs": _safe_records(pairs, 30),
             "triples": _safe_records(triples, 30),
             "cross_platform": cross_platform,
+            # 真实 DB 小说计数（数量 / 新书占比的数据源，区别于榜单出现计数）
+            "db_counts": _db_category_tag_counts(db_path, platform, start_date, end_date),
         }
     except ImportError as e:
         traceback.print_exc()

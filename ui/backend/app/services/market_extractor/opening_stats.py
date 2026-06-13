@@ -57,6 +57,10 @@ _COMMON_WORDS: frozenset[str] = frozenset("""
 有人 没人 什么样 不停 不由 不禁 不住 一时 半天 一阵 片刻 随即 接着 于是
 而且 然而 不仅 甚至 反正 毕竟 何况 难道 无非 只有 只要 即使 哪怕 除非
 什么的 怎么样 为什么 怎么办 一会儿 这会儿 那会儿 不知道 没办法 没关系
+开始 结束 虽然 但是 然而 不过 而且 因此 于是 接着 随后 出现 发现 表示
+认为 觉得 决定 准备 继续 重新 保持 进行 成为 拥有 获得 需要 可能 必须
+应该 能够 无法 不能 不会 似乎 仿佛 居然 竟然 果然 当然 显然 难道 究竟
+那些 这些 任何 所有 整个 全部 部分 一些 许多 很多 不少 大量 无数 几个
 """.split())
 
 # Generic narration verbs/adverbs that jieba tags as nouns/verbs but carry
@@ -80,11 +84,12 @@ _KEEP_POS_PREFIX = ("n", "nr", "ns", "nt", "nz", "nl", "ng", "i")
 # Particles/demonstratives/interrogatives that never occur inside a Chinese
 # proper noun — their presence means the candidate is a prose fragment
 # (前的青云宗 / 道这意味 / 手里的玄) rather than a real word/coined term.
-_HARD_REJECT_CHARS = set("的了着过吗呢吧么哦啊呀嘛又再就才将这那什怎谁")
+_HARD_REJECT_CHARS = set("的了着过吗呢吧么哦啊呀嘛又再就才将这那什怎谁和与或及我你他她它")
 # Pronouns / common verb-adverb chars: tolerated singly but a high ratio
-# signals ordinary prose, not a content phrase.
-_SOFT_FUNC_CHARS = set("会在是有和就不都也很把被让从向往要去到我你他她它"
-                       "们这那怎什没看说想又再还只能可如果因所以但必须前后")
+# signals ordinary prose, not a content phrase. NOTE: 能 / 力 are content
+# chars in domain coinages (灵能 / 异能 / 能力 / 威力) and must NOT be here.
+_SOFT_FUNC_CHARS = set("会在是有就都也很把被让从向往要去"
+                       "们没看说想还只如果因所以但必须")
 
 
 def _is_content_phrase(term: str, max_len: int = 6) -> bool:
@@ -100,23 +105,28 @@ def _is_content_phrase(term: str, max_len: int = 6) -> bool:
         return False
     if any(cw in term for cw in _COMMON_WORDS):    # 自己怎么会 / 要进去吗
         return False
-    if sum(1 for ch in term if ch in _SOFT_FUNC_CHARS) / len(term) > 0.34:
+    # Func-char ratio is a glue heuristic for longer runs; a 2-3 字 domain
+    # word (灵能 / 异能) with one borderline char must not be rejected.
+    if len(term) >= 4 and sum(1 for ch in term if ch in _SOFT_FUNC_CHARS) / len(term) > 0.34:
         return False
     if all(ch in _STOPWORDS for ch in term):
         return False
     return True
 
 
-def _multichar_pool(joined: str) -> set[str]:
-    """Recall multi-char phrase candidates (2-6 字) via PMI 凝合度 + 后缀
-    模式 + jieba unknown-word discovery — surfaces longer terms that plain
-    jieba segmentation breaks apart (青云宗, 玄天剑, 宗门大比)."""
+def _multichar_pool(joined: str, pmi: bool = True) -> set[str]:
+    """Recall multi-char phrase candidates (2-6 字) via 后缀模式 + jieba
+    unknown-word discovery, optionally char-level PMI 凝合度. PMI is the
+    only recall when jieba is unavailable, but it glues adjacent words
+    (凡者都拥) — so callers that have jieba word boundaries pass
+    ``pmi=False`` for cleaner candidates (青云宗, 玄天剑, 超凡能力)."""
     pool: set[str] = set()
     try:
         from .neologism_extractor import (
             _char_pattern_match, _ngram_pmi, _recall_via_jieba,
         )
-        pool |= _ngram_pmi(joined)
+        if pmi:
+            pool |= _ngram_pmi(joined)
         pool |= _char_pattern_match(joined)
         pool |= {w for w in _recall_via_jieba(joined) if len(w) >= 2}
     except Exception:
@@ -140,15 +150,56 @@ def _dedup_substrings(cands: Counter) -> list[str]:
     return kept
 
 
+_JIEBA_FREQ: dict | None = None
+
+
+def _general_freq() -> dict:
+    """jieba's loaded dictionary frequencies — a proxy for how common a
+    word is in *general* Chinese. A word that is frequent in our corpus
+    but rare/absent in general Chinese is a domain coinage (keyness)."""
+    global _JIEBA_FREQ
+    if _JIEBA_FREQ is not None:
+        return _JIEBA_FREQ
+    try:
+        import jieba
+        jieba.initialize()
+        _JIEBA_FREQ = dict(jieba.dt.FREQ)
+    except Exception:
+        _JIEBA_FREQ = {}
+    return _JIEBA_FREQ
+
+
+def _rarity(term: str, freq: dict, divisor: float = 100.0) -> float:
+    """Weight in (0,1]: ~1.0 for words absent/rare in general Chinese
+    (coinages), small for everyday high-frequency words."""
+    import math
+    gf = freq.get(term, 0)
+    return 1.0 / (1.0 + math.log10(1.0 + gf / divisor))
+
+
+def _load_known_words() -> set[str]:
+    known: set[str] = set()
+    try:
+        from .dictionaries import (
+            load_classical_words, load_idioms, load_internet_slang,
+        )
+        known |= set(load_classical_words())
+        known |= set(load_idioms())
+        known |= set(load_internet_slang())
+    except Exception:
+        pass
+    return known
+
+
 def _top_words(texts: list[str], k: int = 20) -> list[dict[str, Any]]:
-    """高频词 — content keywords, mixed length. jieba POS keeps nouns /
-    proper nouns; PMI / 后缀 phrase recall adds the longer multi-char terms
-    jieba breaks apart, so the result is not capped at 2-字 words. Common
-    function words (自己 / 怎么 / 可以 …) are excluded."""
+    """高频词 — representative content keywords, mixed length. jieba POS
+    keeps nouns / proper nouns; PMI / 后缀 recall adds longer terms jieba
+    breaks apart. Ranked by frequency × a keyness weight (down-weighting
+    words common in general Chinese) so 域内词 surface above generic ones."""
     joined = "\n".join(texts)
+    freq = _general_freq()
     counter: Counter = Counter()
 
-    # 1. jieba content words (accurate token frequency).
     try:
         import jieba.posseg as _pseg
         for t in texts:
@@ -174,9 +225,7 @@ def _top_words(texts: list[str], k: int = 20) -> list[dict[str, Any]]:
                         and not _is_common(bg)):
                     counter[bg] += 1
 
-    # 2. Longer multi-char phrases jieba misses (proper nouns / coined
-    #    terms). Count overlapping occurrences in the corpus.
-    for term in _multichar_pool(joined):
+    for term in _multichar_pool(joined, pmi=not freq):
         if len(term) >= 3 and _is_content_phrase(term):
             n = joined.count(term)
             if n >= 2:
@@ -185,47 +234,87 @@ def _top_words(texts: list[str], k: int = 20) -> list[dict[str, Any]]:
     if not counter:
         return []
     kept = set(_dedup_substrings(counter))
-    # Rank by frequency with a mild length boost so 3-4 字 content words
-    # aren't always buried under 2-字 words.
     ranked = sorted(
         (t for t in counter if t in kept),
-        key=lambda t: counter[t] * (1.0 + 0.12 * (len(t) - 2)),
+        key=lambda t: counter[t] * _rarity(t, freq, 1000.0) * (1.0 + 0.12 * (len(t) - 2)),
         reverse=True,
     )
     return [{"word": t, "count": counter[t]} for t in ranked[:k]]
 
 
+# Open-class POS tags that can carry a coined noun (including HMM-guessed
+# new words). Verbs (开始), conjunctions (虽然), adverbs, particles are NOT
+# here — that single filter removes most everyday-word false positives.
+_COINABLE_POS = ("n", "nz", "nr", "ns", "nt", "nrt", "nrfg", "l", "j")
+
+
 def _neologism_step1(texts: list[str], k: int = 15) -> list[dict[str, Any]]:
-    """生造词 Step1 初筛 — 频率 + PMI 凝合度 + 后缀模式 (机制3)。
+    """生造词 Step1 初筛 — 目标是「域内新造名词」(超凡能力 / 灵能 / 异能 /
+    天赋 / 序列 …) 而非常用词 (开始 / 虽然)。综合三重信号，而非只靠频率/PMI:
 
-    用通用词 / 成语 / 网络流行语 / 古典词词典与常用词黑名单过滤，确保
-    候选是「疑似新造专有名词」（可较长）而非 自己 / 怎么 / 可以 这类常用
-    词，且不限于两字。"""
-    # Reference dictionaries of *known* words — anything in them is NOT a
-    # coined term.
-    known: set[str] = set()
-    try:
-        from .dictionaries import (
-            load_classical_words, load_idioms, load_internet_slang,
-        )
-        known |= set(load_classical_words())
-        known |= set(load_idioms())
-        known |= set(load_internet_slang())
-    except Exception:
-        pass
-
+    1. 词性: 仅取名词类 (jieba POS)，直接排除动词/连词/副词等常用词。
+    2. 未登录 (OOV): jieba 词典里没有、但语料里反复出现的多字词，多为
+       作者自造的复合专名 (超凡能力)。
+    3. keyness: 用 jieba 通用词频做基线，语料频次高而通用频次低者得分
+       高 — 把「序列」「天赋」这类常用字面、域内高频的词顶上来。
+    """
+    known = _load_known_words()
     joined = "\n".join(texts)
+    freq = _general_freq()
     cands: Counter = Counter()
-    for term in _multichar_pool(joined):
+    has_jieba = False
+
+    try:
+        import jieba.posseg as _pseg
+        has_jieba = True
+        bigrams: Counter = Counter()
+        for t in texts:
+            prev: tuple[str, str] | None = None
+            for tok in _pseg.cut(t):
+                w, flag = tok.word, tok.flag
+                cjk = bool(re.fullmatch(r"[一-鿿]+", w))
+                if (cjk and 2 <= len(w) <= 6 and flag.startswith(_COINABLE_POS)
+                        and _is_content_phrase(w) and w not in known):
+                    cands[w] += 1
+                # Adjacent (modifier + noun-head) → OOV compound coinage,
+                # respecting word boundaries (超凡 + 能力 = 超凡能力). Far
+                # cleaner than char-level PMI which glues across words.
+                if prev is not None and cjk:
+                    pw, pf = prev
+                    merged = pw + w
+                    if (flag.startswith("n") and 3 <= len(merged) <= 6
+                            and pf[:1] in ("n", "v", "a", "b", "z")
+                            and freq.get(pw, 0) < 500          # uncommon modifier = coinage signal
+                            and freq.get(merged, 0) == 0
+                            and _is_content_phrase(merged) and merged not in known):
+                        bigrams[merged] += 1
+                prev = (w, flag) if cjk else None
+        for m, c in bigrams.items():
+            if c >= 2:
+                cands[m] = max(cands.get(m, 0), c)
+    except Exception:
+        has_jieba = False
+
+    # OOV single words / suffix-pattern coinages jieba keeps as tokens; only
+    # those ABSENT from the general dictionary are coinages. Skip the noisy
+    # char-PMI recall when jieba word boundaries are available.
+    for term in _multichar_pool(joined, pmi=not has_jieba):
         if not _is_content_phrase(term) or term in known:
             continue
+        if has_jieba and freq.get(term, 0) > 0:
+            continue
         n = joined.count(term)
-        if n >= 2:
+        if n >= 2 and term not in cands:
             cands[term] = n
 
+    if not cands:
+        return []
     kept = _dedup_substrings(cands)
-    result = sorted(kept, key=lambda t: cands[t] * (1.0 + 0.1 * (len(t) - 2)),
-                    reverse=True)[:k]
+    result = sorted(
+        kept,
+        key=lambda t: cands[t] * _rarity(t, freq, 100.0) * (1.0 + 0.1 * (len(t) - 2)),
+        reverse=True,
+    )[:k]
     return [{"term": t, "count": cands[t]} for t in result]
 
 

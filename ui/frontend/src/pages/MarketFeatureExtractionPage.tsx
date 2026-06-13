@@ -1211,177 +1211,224 @@ function BasicExtractionTab() {
 }
 
 
-/** 市场信息可视化：类目 / 标签（数量·热度·份额 及各自趋势，带 mini-bar）
- *  + 开书机会 + 标签共现。 */
-function MarketInfoBlock({ market, platform }: { market: any; platform: string }) {
-  const slope = (v: number | null | undefined) => {
-    if (v == null || isNaN(v)) return <span style={{ color: "var(--text-disabled)" }}>—</span>;
-    const up = v > 0.0001, down = v < -0.0001;
-    const color = up ? "var(--jade)" : down ? "var(--accent)" : "var(--text-tertiary)";
-    return <span className="font-mono" style={{ color, fontSize: 11 }}>{up ? "↑" : down ? "↓" : "→"} {Math.abs(v).toFixed(4)}</span>;
-  };
-  const num = (v: number | null | undefined, d = 0) =>
-    v == null || isNaN(v as number) ? "—" : Number(v).toFixed(d);
+/** 趋势箭头：正=升(jade)、负=降(accent)、零=平。 */
+function TrendArrow({ v }: { v: number | null | undefined }) {
+  if (v == null || isNaN(v)) return <span style={{ color: "var(--text-disabled)", fontSize: 11 }}>—</span>;
+  const up = v > 0.0001, down = v < -0.0001;
+  const color = up ? "var(--jade)" : down ? "var(--accent)" : "var(--text-tertiary)";
+  return <span className="font-mono" style={{ color, fontSize: 11 }}>{up ? "↑" : down ? "↓" : "→"} {Math.abs(v).toFixed(3)}</span>;
+}
 
+const fmtNum = (v: number | null | undefined, d = 0) =>
+  v == null || isNaN(v as number) ? "—" : Number(v).toFixed(d);
+
+interface MetricRow {
+  name: string;
+  total?: number; count_slope?: number;
+  avg_heat?: number; heat_slope?: number;
+  latest_share?: number; share_slope?: number;
+}
+
+/** One metric as its own small block: ranked list (top 10) with a bar +
+ *  trend arrow. 数量 / 热度 / 份额 各自成块，避免用户在宽表里看混。 */
+function MetricMiniBlock({
+  title, rows, valueKey, slopeKey, color, decimals = 0,
+}: {
+  title: string; rows: MetricRow[];
+  valueKey: keyof MetricRow; slopeKey: keyof MetricRow;
+  color: string; decimals?: number;
+}) {
+  const sorted = [...rows]
+    .filter(r => (r[valueKey] as number) != null)
+    .sort((a, b) => ((b[valueKey] as number) || 0) - ((a[valueKey] as number) || 0))
+    .slice(0, 10);
+  const max = Math.max(1, ...sorted.map(r => (r[valueKey] as number) || 0));
+  return (
+    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{title}</div>
+      {sorted.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          {sorted.map((r, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+              <span style={{ width: 64, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={r.name}>{r.name}</span>
+              <div style={{ flex: 1, minWidth: 30 }}><MiniBar value={(r[valueKey] as number) || 0} max={max} color={color} /></div>
+              <span className="font-mono" style={{ width: 52, textAlign: "right" }}>{fmtNum(r[valueKey] as number, decimals)}</span>
+              <span style={{ width: 56, textAlign: "right" }}><TrendArrow v={r[slopeKey] as number} /></span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 标签共现表格 + 可视化（番茄）。 */
+function CooccurTable({ pairs }: { pairs: any[] }) {
+  const rows = (pairs || []).slice(0, 12);
+  const max = Math.max(1, ...rows.map((p: any) => p.count || 0));
+  return (
+    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>标签共现（高频组合）</div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div>
+      ) : (
+        <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+          <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
+            <th style={{ padding: "3px 6px" }}>标签 A</th>
+            <th style={{ padding: "3px 6px" }}>标签 B</th>
+            <th style={{ padding: "3px 6px" }}>共现次数</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((p: any, i: number) => (
+              <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                <td style={{ padding: "3px 6px" }}><span className="tag" style={{ fontSize: 10 }}>{p.tag_a}</span></td>
+                <td style={{ padding: "3px 6px" }}><span className="tag" style={{ fontSize: 10 }}>{p.tag_b}</span></td>
+                <td style={{ padding: "3px 6px", minWidth: 90 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ flex: 1 }}><MiniBar value={p.count || 0} max={max} color="var(--indigo)" /></div>
+                    <span className="font-mono" style={{ minWidth: 24, textAlign: "right" }}>{p.count}</span>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+/** 市场信息可视化：spec 2.1.3.2 全部维度。数量取自数据库真实小说计数，
+ *  热度/份额及各自趋势取自榜单分析；数量/热度/份额各自成块。开书机会
+ *  综合「份额/热度增长 + 既有份额/热度 + 跨类目新书占比(和为100%)」。 */
+function MarketInfoBlock({ market, platform }: { market: any; platform: string }) {
   const isQidian = platform === "qidian";
-  // Dedupe across rank boards: the same 类目/标签 appears once per board in
-  // the rollup; keep the highest-count row per name so the table has no
-  // within-list duplicates.
-  const dedupeByName = (rows: any[], key: string) => {
-    const m = new Map<string, any>();
-    for (const r of rows || []) {
-      const name = r[key];
-      if (!name) continue;
-      const prev = m.get(name);
-      if (!prev || (r.latest_count || 0) > (prev.latest_count || 0)) m.set(name, r);
+  const dbc = market.db_counts || {};
+  const catTotal: Record<string, number> = dbc.cat_total || {};
+  const tagTotal: Record<string, number> = dbc.tag_total || {};
+  const catNew: Record<string, number> = dbc.cat_new || {};
+
+  // Build enriched rows: DB novel count (数量) + rollup trends/heat/share.
+  const buildRows = (
+    counts: Record<string, number>, rollup: any[], nameKey: string,
+    filterSet?: Set<string>,
+  ): MetricRow[] => {
+    const rollMap = new Map<string, any>();
+    for (const r of rollup || []) if (r[nameKey]) {
+      const prev = rollMap.get(r[nameKey]);
+      if (!prev || (r.latest_count || 0) > (prev.latest_count || 0)) rollMap.set(r[nameKey], r);
     }
-    return [...m.values()].sort((a, b) => (b.latest_count || 0) - (a.latest_count || 0));
+    let entries = Object.entries(counts || {});
+    if (filterSet) entries = entries.filter(([n]) => filterSet.has(n));
+    // Fallback when the DB has no per-name counts: use rollup appearance count.
+    if (entries.length === 0) {
+      const seen = new Set<string>();
+      for (const r of rollup || []) {
+        const n = r[nameKey];
+        if (n && !seen.has(n) && (!filterSet || filterSet.has(n))) { seen.add(n); entries.push([n, r.latest_count || 0]); }
+      }
+    }
+    return entries.map(([name, total]) => {
+      const r = rollMap.get(name) || {};
+      return {
+        name, total,
+        count_slope: r.count_slope, avg_heat: r.avg_heat, heat_slope: r.heat_slope,
+        latest_share: r.latest_share, share_slope: r.share_slope,
+      } as MetricRow;
+    }).sort((a, b) => (b.total || 0) - (a.total || 0));
   };
-  let catAll = dedupeByName(market.cat_rollup || [], "category");
-  let tagAll = dedupeByName(market.tag_rollup || [], "tag");
-  if (isQidian) {
-    // 起点: 类目=大分类, 标签=副分类。按权威集合归类（集合互斥 → 两表
-    // 不重复）；若过滤后为空则回退到去重后的原始列表，避免空表。
-    const mainF = catAll.filter(r => QIDIAN_MAIN_CATS.has(r.category));
-    const subF = tagAll.filter(r => QIDIAN_SUB_CATS.has(r.tag));
-    if (mainF.length) catAll = mainF;
-    if (subF.length) tagAll = subF;
-  }
-  // Cross-list dedupe: a name shown as 类目/大分类 is removed from 标签/副分类.
-  const catNameSet = new Set(catAll.map(r => r.category));
-  tagAll = tagAll.filter(r => !catNameSet.has(r.tag));
+
+  let catRows = buildRows(catTotal, market.cat_rollup, "category", isQidian ? QIDIAN_MAIN_CATS : undefined);
+  let tagRows = buildRows(tagTotal, market.tag_rollup, "tag", isQidian ? QIDIAN_SUB_CATS : undefined);
+  // Cross-list dedupe: a 大分类/类目 name never repeats as a 副分类/标签.
+  const catNameSet = new Set(catRows.map(r => r.name));
+  tagRows = tagRows.filter(r => !catNameSet.has(r.name));
+  catRows = catRows.slice(0, 10);
+  tagRows = tagRows.slice(0, 10);
 
   const catLabel = isQidian ? "大分类" : "类目";
   const tagLabel = isQidian ? "副分类" : "标签";
   const showCooccur = !isQidian;   // 起点没有标签共现
 
-  const catRows = catAll.slice(0, 10);
-  const tagRows = tagAll.slice(0, 10);
-  const oppRows = (market.opportunities || []).slice(0, 10);
-  const pairRows = (market.pairs || []).slice(0, 14);
-  const catMaxCount = Math.max(1, ...catRows.map((r: any) => r.latest_count || 0));
-  const catMaxHeat = Math.max(1, ...catRows.map((r: any) => r.avg_heat || 0));
-  const tagMaxCount = Math.max(1, ...tagRows.map((r: any) => r.latest_count || 0));
-  const tagMaxHeat = Math.max(1, ...tagRows.map((r: any) => r.avg_heat || 0));
-  const oppMax = Math.max(1, ...oppRows.map((o: any) => o.opportunity_score || 0));
+  // 开书机会（类目级）：归一化各分量后加权。新书占比 = 该类目新书 / 全部
+  // 新书（跨类目，和为 100%），不再是类目内比例（解决 军事100% 武侠89% 的
+  // 疑惑）。同时纳入既有份额与热度，而非只看趋势。
+  const oppSource = catRows.length ? catRows : tagRows;
+  // Denominator over the displayed categories so the shown 新书占比 sum to
+  // exactly 100% (the user's mental model), not a within-category ratio.
+  const catNewTotal = oppSource.reduce((s, r) => s + (catNew[r.name] || 0), 0) || 1;
+  const mk = (key: keyof MetricRow) => {
+    const vals = oppSource.map(r => (r[key] as number) || 0);
+    const mx = Math.max(...vals, 1e-9), mn = Math.min(...vals, 0);
+    return (v: number) => (mx > mn ? (v - mn) / (mx - mn) : 0);
+  };
+  const nShareSlope = mk("share_slope"), nHeatSlope = mk("heat_slope");
+  const nShare = mk("latest_share"), nHeat = mk("avg_heat");
+  const oppRows = oppSource.map(r => {
+    const newShare = (catNew[r.name] || 0) / catNewTotal;
+    const growth = (nShareSlope(r.share_slope || 0) + nHeatSlope(r.heat_slope || 0)) / 2;
+    const base = (nShare(r.latest_share || 0) + nHeat(r.avg_heat || 0)) / 2;
+    const score = 0.4 * growth + 0.3 * newShare + 0.3 * base;
+    return { name: r.name, score, newShare };
+  }).sort((a, b) => b.score - a.score).slice(0, 10);
+  const oppMax = Math.max(1e-9, ...oppRows.map(o => o.score));
 
   return (
     <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--indigo)" }}>
       <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>市场信息</h3></div>
       <div className="card-body">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-          {/* 类目 */}
-          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10, overflowX: "auto" }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{catLabel} TOP10：数量 / 热度 / 份额 及变化趋势</div>
-            {catRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
+        {/* 大分类 / 类目：数量·热度·份额 各自成块 */}
+        <div style={{ fontSize: 13, fontWeight: 700, margin: "2px 0 8px" }}>{catLabel}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+          <MetricMiniBlock title="数量" rows={catRows} valueKey="total" slopeKey="count_slope" color="var(--accent)" />
+          <MetricMiniBlock title="热度" rows={catRows} valueKey="avg_heat" slopeKey="heat_slope" color="var(--gold)" />
+          <MetricMiniBlock title="市场份额" rows={catRows} valueKey="latest_share" slopeKey="share_slope" color="var(--jade)" decimals={3} />
+        </div>
+
+        {/* 副分类 / 标签：数量·热度·份额 各自成块 */}
+        <div style={{ fontSize: 13, fontWeight: 700, margin: "2px 0 8px" }}>{tagLabel}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+          <MetricMiniBlock title="数量" rows={tagRows} valueKey="total" slopeKey="count_slope" color="var(--accent)" />
+          <MetricMiniBlock title="热度" rows={tagRows} valueKey="avg_heat" slopeKey="heat_slope" color="var(--gold)" />
+          <MetricMiniBlock title="市场份额" rows={tagRows} valueKey="latest_share" slopeKey="share_slope" color="var(--jade)" decimals={3} />
+        </div>
+
+        {/* 开书机会 + （番茄）标签共现 */}
+        <div style={{ display: "grid", gridTemplateColumns: showCooccur ? "1fr 1fr" : "1fr", gap: 12 }}>
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+              开书机会（份额/热度增长 + 既有份额/热度 + 新书占比 加权）
+            </div>
+            {oppRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
               <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
                 <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
                   <th style={{ padding: "3px 6px" }}>{catLabel}</th>
-                  <th style={{ padding: "3px 6px" }}>数量</th>
-                  <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
-                  <th style={{ padding: "3px 6px" }}>热度</th>
-                  <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
-                  <th style={{ padding: "3px 6px", textAlign: "right" }}>份额</th>
-                  <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
+                  <th style={{ padding: "3px 6px" }}>机会指数</th>
+                  <th style={{ padding: "3px 6px", textAlign: "right" }}>新书占比</th>
                 </tr></thead>
                 <tbody>
-                  {catRows.map((r: any, i: number) => (
+                  {oppRows.map((o, i) => (
                     <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
-                      <td style={{ padding: "3px 6px" }}>{r.category}</td>
-                      <td style={{ padding: "3px 6px", minWidth: 70 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                          <span className="font-mono" style={{ minWidth: 22 }}>{num(r.latest_count)}</span>
-                          <MiniBar value={r.latest_count || 0} max={catMaxCount} color="var(--accent)" />
+                      <td style={{ padding: "3px 6px" }}>{o.name}</td>
+                      <td style={{ padding: "3px 6px", minWidth: 90 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ flex: 1 }}><MiniBar value={o.score} max={oppMax} color="var(--jade)" /></div>
+                          <span className="font-mono" style={{ minWidth: 34, textAlign: "right", color: "var(--jade)", fontWeight: 600 }}>{(o.score * 100).toFixed(0)}</span>
                         </div>
                       </td>
-                      <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.count_slope)}</td>
-                      <td style={{ padding: "3px 6px", minWidth: 70 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                          <span className="font-mono" style={{ minWidth: 28 }}>{num(r.avg_heat)}</span>
-                          <MiniBar value={r.avg_heat || 0} max={catMaxHeat} color="var(--gold)" />
-                        </div>
-                      </td>
-                      <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.heat_slope)}</td>
-                      <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{num(r.latest_share, 3)}</td>
-                      <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.share_slope)}</td>
+                      <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{(o.newShare * 100).toFixed(1)}%</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
-          </div>
-          {/* 标签 */}
-          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10, overflowX: "auto" }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{tagLabel} TOP10：数量 / 热度 / 份额 及变化趋势</div>
-            {tagRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-              <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
-                <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left" }}>
-                  <th style={{ padding: "3px 6px" }}>{tagLabel}</th>
-                  <th style={{ padding: "3px 6px" }}>数量</th>
-                  <th style={{ padding: "3px 6px" }}>热度</th>
-                  <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
-                  <th style={{ padding: "3px 6px", textAlign: "right" }}>份额</th>
-                  <th style={{ padding: "3px 6px", textAlign: "right" }}>趋势</th>
-                </tr></thead>
-                <tbody>
-                  {tagRows.map((r: any, i: number) => (
-                    <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
-                      <td style={{ padding: "3px 6px" }}>{r.tag}</td>
-                      <td style={{ padding: "3px 6px", minWidth: 70 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                          <span className="font-mono" style={{ minWidth: 22 }}>{num(r.latest_count)}</span>
-                          <MiniBar value={r.latest_count || 0} max={tagMaxCount} color="var(--accent)" />
-                        </div>
-                      </td>
-                      <td style={{ padding: "3px 6px", minWidth: 70 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                          <span className="font-mono" style={{ minWidth: 28 }}>{num(r.avg_heat)}</span>
-                          <MiniBar value={r.avg_heat || 0} max={tagMaxHeat} color="var(--gold)" />
-                        </div>
-                      </td>
-                      <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.heat_slope)}</td>
-                      <td style={{ padding: "3px 6px", textAlign: "right" }} className="font-mono">{num(r.latest_share, 3)}</td>
-                      <td style={{ padding: "3px 6px", textAlign: "right" }}>{slope(r.share_slope)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-          {/* 开书机会 */}
-          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>开书机会（份额↑ × 热度↑ × 新书占比）</div>
-            {oppRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                {oppRows.map((o: any, i: number) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
-                    <span className="tag category" style={{ fontSize: 10 }}>{o.category}</span>
-                    <span className="tag" style={{ fontSize: 10 }}>{o.tag}</span>
-                    <span style={{ marginLeft: "auto", color: "var(--text-tertiary)", whiteSpace: "nowrap" }}>
-                      新书 {o.new_entry_ratio != null ? `${Math.round(o.new_entry_ratio * 100)}%` : "—"}
-                    </span>
-                    <div style={{ width: 60 }}><MiniBar value={o.opportunity_score || 0} max={oppMax} color="var(--jade)" /></div>
-                    <span className="font-mono" style={{ color: "var(--jade)", fontWeight: 600, minWidth: 34, textAlign: "right" }}>{num(o.opportunity_score, 3)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          {/* 标签共现（起点无此维度，隐藏） */}
-          {showCooccur && (
-            <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>标签共现（高频组合）</div>
-              {pairRows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {pairRows.map((p: any, i: number) => (
-                    <span key={i} className="tag" style={{ fontSize: 10, padding: "2px 8px" }}>
-                      {p.tag_a} × {p.tag_b}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{p.count}</span>
-                    </span>
-                  ))}
-                </div>
-              )}
+            <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 6 }}>
+              新书占比为跨{catLabel}分布，总和 100%。
             </div>
-          )}
+          </div>
+          {showCooccur && <CooccurTable pairs={market.pairs} />}
         </div>
       </div>
     </div>
@@ -1462,7 +1509,7 @@ function NlpDimsBlock({ nlp }: { nlp: any }) {
           </div>
           {/* 生造词Step1 */}
           <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>生造词 Step1 候选（频率 + PMI 凝合度初筛）</div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>生造词 Step1 候选</div>
             {(spec.neologism_step1 || []).length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                 {(spec.neologism_step1 || []).slice(0, 18).map((n: any) => (
