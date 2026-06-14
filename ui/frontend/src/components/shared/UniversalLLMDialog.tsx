@@ -439,7 +439,7 @@ export default function UniversalLLMDialog({
                     : () => setPhase("preview")
                 }
                 retryLabel={initialMode === "manual_only" ? "返回粘贴" : "续跑 / 重试"}
-                cancelLabel={initialMode === "manual_only" ? "返回粘贴" : "关闭"}
+                cancelLabel={initialMode === "manual_only" ? undefined : "关闭"}
               />
             )}
           </div>
@@ -661,7 +661,7 @@ function ErrorPane({
         background: "var(--bg-warn-subtle, var(--bg-surface-2))",
       }}>{msg}</pre>
       <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 16 }}>
-        <button className="btn" onClick={onCancel}>{cancelLabel || "关闭"}</button>
+        {cancelLabel && <button className="btn" onClick={onCancel}>{cancelLabel}</button>}
         <button className="btn primary" onClick={onRetry}>{retryLabel || "续跑 / 重试"}</button>
       </div>
     </div>

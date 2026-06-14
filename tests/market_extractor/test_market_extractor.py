@@ -574,5 +574,41 @@ class TestJobRunner(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(job["created_profile_id"])
 
 
+class TestManualSubmit(unittest.TestCase):
+    """整平台手动提交（category 留空）— 修复 'platform + category + response_raw
+    required' 调用失败。"""
+
+    def _client(self, db):
+        from fastapi.testclient import TestClient
+        from ui.backend.app.main import app
+        return TestClient(app)
+
+    def test_empty_category_accepted(self) -> None:
+        db = _fresh_db()
+        with mock.patch(
+            "ui.backend.app.services.project_paths.get_db_path",
+            return_value=db,
+        ):
+            r = self._client(db).post(
+                "/api/market-extractor/manual-submit",
+                json={"platform": "qidian", "category": "",
+                      "response_raw": '{"loader_payload":"起点玄幻：短句节奏。"}'},
+            )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["category"], "")
+
+    def test_missing_platform_or_raw_still_400(self) -> None:
+        db = _fresh_db()
+        with mock.patch(
+            "ui.backend.app.services.project_paths.get_db_path",
+            return_value=db,
+        ):
+            c = self._client(db)
+            self.assertEqual(c.post("/api/market-extractor/manual-submit",
+                                    json={"platform": "", "response_raw": "x"}).status_code, 400)
+            self.assertEqual(c.post("/api/market-extractor/manual-submit",
+                                    json={"platform": "qidian", "response_raw": ""}).status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

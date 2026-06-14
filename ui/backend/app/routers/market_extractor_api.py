@@ -567,8 +567,8 @@ def submit_manual_extraction(body: dict = Body(...)) -> dict:
     platform = (body.get("platform") or "").strip()
     category = (body.get("category") or "").strip()
     raw = (body.get("response_raw") or "").strip()
-    if not platform or not category or not raw:
-        raise HTTPException(400, "platform + category + response_raw required")
+    if not platform or not raw:        # category 留空＝整平台（用户只选平台）
+        raise HTTPException(400, "platform + response_raw required")
     parsed: dict = {}
     try:
         t = raw
