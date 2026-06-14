@@ -80,19 +80,22 @@ class TestWordlistGroupingIO:
 
 
 class TestNamesOverview:
-    def test_overview_by_country_and_kind(self, wl):
-        ov = wl.names_overview()
-        assert ov["countries"] == ["中文", "日本", "西方"]
-        cn = ov["data"]["中文"]
-        assert any(i["word"] == "李" for i in cn["surnames"])      # 姓
-        assert any(i["word"] == "翠翠" for i in cn["given"])        # 名
-        assert any(i["word"] == "史密斯" for i in ov["data"]["西方"]["surnames"])
-        assert any(i["word"] == "杰克" for i in ov["data"]["西方"]["given"])
+    def test_sections_by_country_and_kind(self, wl):
+        secs = {s["key"]: s for s in wl.names_overview()["sections"]}
+        assert {"中文·姓氏", "中文·名字", "日本·姓氏", "日本·名字", "西方"} <= set(secs)
+        assert any(i["word"] == "李" for i in secs["中文·姓氏"]["items"])
+        assert any(i["word"] == "翠翠" for i in secs["中文·名字"]["items"])
+        # 西方 不分姓名，合并 surnames + given
+        west = [i["word"] for i in secs["西方"]["items"]]
+        assert "史密斯" in west and "杰克" in west
+        # 每个 section 自带 addList/addGroup
+        assert secs["中文·姓氏"]["addList"] == "surnames"
+        assert secs["中文·姓氏"]["addGroup"] == "中文"
 
-    def test_user_added_lands_in_user_bucket(self, wl):
-        wl.add_word("given_names", "测试用户名")
-        ov = wl.names_overview()
-        assert any(i["word"] == "测试用户名" for i in ov["user_added"]["given"])
+    def test_country_tagged_add_lands_in_section(self, wl):
+        wl.add_word("surnames", "霍格姓", "中文")
+        secs = {s["key"]: s for s in wl.names_overview()["sections"]}
+        assert any(i["word"] == "霍格姓" and i["user"] for i in secs["中文·姓氏"]["items"])
 
     def test_names_endpoint(self, tmp_path, monkeypatch):
         monkeypatch.setenv("INKOCTOBOT_WORDLIST_DIR", str(tmp_path / "wl"))
@@ -102,8 +105,11 @@ class TestNamesOverview:
         c = TestClient(app)
         r = c.get("/api/analysis/wordlist/names")
         assert r.status_code == 200
-        body = r.json()
-        assert "中文" in body["data"] and "given" in body["data"]["中文"]
+        keys = {s["key"] for s in r.json()["sections"]}
+        assert "中文·姓氏" in keys and "西方" in keys
+        # add with group via endpoint
+        assert c.post("/api/analysis/wordlist/add",
+                      json={"list": "given_names", "word": "测名", "group": "日本"}).json()["added"]
 
 
 class TestWordlistGroupedAPI:

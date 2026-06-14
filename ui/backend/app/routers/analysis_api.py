@@ -454,7 +454,8 @@ def wordlist_import(body: dict = Body(...)):
     content = body.get("content") or ""
     if lst not in _WORDLIST_OK:
         raise HTTPException(400, f"unknown list: {lst!r}")
-    added = _wl.import_text(lst, content)
+    group = (body.get("group") or "").strip() or None
+    added = _wl.import_text(lst, content, group)
     _wordlist_after_edit()
     return {"ok": True, "added": added, "list": lst}
 
@@ -470,7 +471,8 @@ def wordlist_add(body: dict = Body(...)):
         raise HTTPException(400, f"unknown list: {lst!r}")
     if not word:
         raise HTTPException(400, "word is required")
-    added = _wl.add_word(lst, word)
+    group = (body.get("group") or "").strip() or None   # 国别：中文/日本/西方
+    added = _wl.add_word(lst, word, group)
     _wordlist_after_edit()
     return {"ok": True, "added": added, "word": word, "list": lst}
 

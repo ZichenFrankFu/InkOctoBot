@@ -480,7 +480,7 @@ def _example_sentence(blob: str, word: str, width: int = 80) -> str:
 
 
 def _attach_examples(top_words: list[dict[str, Any]],
-                     owner_joined: dict[str, str], k: int = 3) -> None:
+                     owner_joined: dict[str, str], k: int = 5) -> None:
     """For each 高频词, attach the top-``k`` works using it most + an example
     sentence from each (点击高频词查看). Mutates ``top_words`` in place."""
     if not owner_joined:

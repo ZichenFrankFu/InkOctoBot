@@ -764,10 +764,10 @@ function ExtractionResultSection({
   return (
     <div className="card" style={{ marginTop: 16, borderTop: "3px solid var(--indigo)" }}>
       <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-        <h3 style={{ margin: 0, fontSize: 14 }}>提取结果（平台风格档案）</h3>
+        <h3 style={{ margin: 0, fontSize: 14 }}>平台风格档案</h3>
         <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
           {top
-            ? `${tPlatform(top.platform)}（整平台）· ${top.confidence_label ? `置信度 ${tConfidence(top.confidence_label)} · ` : ""}样本 ${top.source_works_count ?? "—"} · 更新于 ${top.extraction_completed_at || "—"}`
+            ? `${tPlatform(top.platform)} · 更新于 ${top.extraction_completed_at || "—"}`
             : (platform ? `${tPlatform(platform)} 暂无结果` : "请选定平台")}
         </span>
       </div>
@@ -1065,11 +1065,11 @@ function BasicExtractionTab() {
 /** 资源管理 tab — 人名（按国家分组、可折叠）/ 常用词 的搜索、CRUD、导入导出
  *  (统一 txt)。归类自高频词或手动新增的词都进入对应 resource，后续基础特征
  *  提取不再识别为高频词。所有调用统一走 /api/analysis/wordlist。 */
-type WLItem = { word: string; user: boolean };
+type WLItem = { word: string; user: boolean; list?: string };
 
-/** 词条 chip 网格 + 删除。 */
+/** 词条 chip 网格 + 删除（每项可自带 list 以便定位删除）。 */
 function WordChips({ items, list, busy, onRemove, emptyMsg }: {
-  items: WLItem[]; list: string; busy: boolean;
+  items: WLItem[]; list?: string; busy: boolean;
   onRemove: (word: string, list: string) => void; emptyMsg?: string;
 }) {
   if (!items.length) return <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{emptyMsg || "暂无"}</div>;
@@ -1083,7 +1083,7 @@ function WordChips({ items, list, busy, onRemove, emptyMsg }: {
           background: "var(--bg-surface)",
         }} title={it.user ? "用户添加" : "内置"}>
           {it.word}
-          <button onClick={() => onRemove(it.word, list)} disabled={busy}
+          <button onClick={() => onRemove(it.word, it.list || list || "common_words")} disabled={busy}
             style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
         </span>
       ))}
@@ -1091,50 +1091,61 @@ function WordChips({ items, list, busy, onRemove, emptyMsg }: {
   );
 }
 
-/** 国家 section（中文/日本/西方/用户添加）— 标题旁带 姓氏/名字 切换。 */
-function NameCountrySection({ title, surnames, given, busy, onRemove }: {
-  title: string; surnames: WLItem[]; given: WLItem[];
-  busy: boolean; onRemove: (word: string, list: string) => void;
+type NameSec = { key: string; title: string; addList: string | null; addGroup: string | null; items: WLItem[] };
+
+/** 人名 section（中文·姓氏 / 西方 …）— 可收起展开，section 内自带添加按钮。 */
+function NameSection({ section, busy, onAdd, onRemove }: {
+  section: NameSec; busy: boolean;
+  onAdd: (list: string, group: string | null, word: string) => void;
+  onRemove: (word: string, list: string) => void;
 }) {
-  const [kind, setKind] = React.useState<"surnames" | "given">("surnames");
-  const items = kind === "surnames" ? surnames : given;
+  const [collapsed, setCollapsed] = React.useState(false);
+  const [val, setVal] = React.useState("");
+  const submit = () => { const w = val.trim(); if (w && section.addList) { onAdd(section.addList, section.addGroup, w); setVal(""); } };
   return (
     <div className="card">
-      <div className="card-header" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <h3 style={{ margin: 0, fontSize: 14 }}>{title}</h3>
-        <div style={{ display: "flex", gap: 4, padding: 3, borderRadius: 8, background: "var(--bg-surface-2)" }}>
-          {([["surnames", "姓氏"], ["given", "名字"]] as const).map(([k, lbl]) => (
-            <button key={k} onClick={() => setKind(k)} style={{
-              fontSize: 11, padding: "2px 14px", borderRadius: 6, cursor: "pointer", border: "none",
-              background: kind === k ? "var(--accent)" : "transparent",
-              color: kind === k ? "white" : "var(--text-secondary)", fontWeight: kind === k ? 600 : 400,
-            }}>{lbl}</button>
-          ))}
+      <div className="card-header" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button onClick={() => setCollapsed(c => !c)} style={{
+          border: "none", background: "none", cursor: "pointer", display: "flex",
+          alignItems: "center", gap: 8, padding: 0, color: "var(--text-primary)",
+        }}>
+          <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>{collapsed ? "▸" : "▾"}</span>
+          <h3 style={{ margin: 0, fontSize: 14 }}>{section.title}</h3>
+          <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)" }}>{section.items.length}</span>
+        </button>
+        {section.addList && (
+          <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+            <input className="input" value={val} onChange={e => setVal(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") submit(); }}
+              placeholder="新增…" style={{ width: 120, padding: "5px 10px", fontSize: 12 }} />
+            <button className="btn-primary" disabled={busy || !val.trim()}
+              onClick={submit} style={{ fontSize: 11, padding: "5px 12px" }}>添加</button>
+          </div>
+        )}
+      </div>
+      {!collapsed && (
+        <div className="card-body">
+          <WordChips items={section.items} busy={busy} onRemove={onRemove} />
         </div>
-        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-tertiary)" }}>{items.length} 条</span>
-      </div>
-      <div className="card-body">
-        <WordChips items={items} list={kind === "surnames" ? "surnames" : "given_names"}
-          busy={busy} onRemove={onRemove} />
-      </div>
+      )}
     </div>
   );
 }
 
-/** 资源管理 tab — 人名（中文/日本/西方 三国 section，各自切换 姓氏/名字）/ 常用词。 */
+/** 资源管理 tab — 人名（中文·姓氏/名字、日本·姓氏/名字、西方）各 section 自带
+ *  添加 + 收起展开；常用词分组列表。 */
 function ResourceManagerTab() {
   const { toast } = useToast();
   type WLGroup = { group: string; items: WLItem[] };
   type CommonData = { total: number; groups: WLGroup[] };
-  type Kind2 = { surnames: WLItem[]; given: WLItem[] };
-  type NamesData = { countries: string[]; data: Record<string, Kind2>; user_added: Kind2 };
+  type NamesData = { sections: NameSec[] };
 
   const [topCat, setTopCat] = React.useState<"names" | "common">("names");
   const [q, setQ] = React.useState("");
   const [names, setNames] = React.useState<NamesData | null>(null);
   const [common, setCommon] = React.useState<CommonData | null>(null);
-  const [addKind, setAddKind] = React.useState<"surnames" | "given_names">("surnames");
-  const [newWord, setNewWord] = React.useState("");
+  const [newWord, setNewWord] = React.useState("");   // 常用词的顶部新增
+  const [ioList, setIoList] = React.useState<"surnames" | "given_names">("surnames");
   const [busy, setBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -1153,15 +1164,11 @@ function ResourceManagerTab() {
     return () => window.clearTimeout(t);
   }, [reload]);
 
-  const addList = topCat === "common" ? "common_words" : addKind;
-  const add = async () => {
-    const w = newWord.trim();
-    if (!w) return;
+  const addWord = async (list: string, group: string | null, word: string) => {
     setBusy(true);
     try {
-      const r = await apiPost<{ added: boolean }>("/api/analysis/wordlist/add", { list: addList, word: w });
-      toast(r.added ? `已添加「${w}」` : `「${w}」已存在`, r.added ? "success" : "info");
-      setNewWord("");
+      const r = await apiPost<{ added: boolean }>("/api/analysis/wordlist/add", { list, word, group });
+      toast(r.added ? `已添加「${word}」` : `「${word}」已存在`, r.added ? "success" : "info");
       reload();
     } catch (e: any) { toast(`添加失败：${e.message}`, "error"); }
     finally { setBusy(false); }
@@ -1172,11 +1179,12 @@ function ResourceManagerTab() {
     catch (e: any) { toast(`删除失败：${e.message}`, "error"); }
     finally { setBusy(false); }
   };
+  const importList = topCat === "common" ? "common_words" : ioList;
   const doImport = async (file: File) => {
     setBusy(true);
     try {
       const content = await file.text();
-      const r = await apiPost<{ added: number }>("/api/analysis/wordlist/import", { list: addList, content });
+      const r = await apiPost<{ added: number }>("/api/analysis/wordlist/import", { list: importList, content });
       toast(`已导入 ${r.added} 个新词`, "success");
       reload();
     } catch (e: any) { toast(`导入失败：${e.message}`, "error"); }
@@ -1185,8 +1193,7 @@ function ResourceManagerTab() {
   const doExport = async (list: string) => {
     try {
       const res = await fetch(`/api/analysis/wordlist/export?list=${list}`);
-      const text = await res.text();
-      const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+      const url = URL.createObjectURL(new Blob([await res.text()], { type: "text/plain;charset=utf-8" }));
       const a = document.createElement("a");
       a.href = url; a.download = `${list}.txt`;
       document.body.appendChild(a); a.click();
@@ -1194,54 +1201,43 @@ function ResourceManagerTab() {
     } catch (e: any) { toast(`导出失败：${e.message}`, "error"); }
   };
 
-  const addKindLabel = addKind === "surnames" ? "姓" : "名";
-  const hasUser = !!names && (names.user_added.surnames.length > 0 || names.user_added.given.length > 0);
-
   return (
     <>
       <div className="card" style={{ marginBottom: 14 }}>
-        <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {/* 资源类型 + 搜索 */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ display: "flex", gap: 6 }}>
-              {([["names", "人名"], ["common", "常用词"]] as const).map(([k, lbl]) => (
-                <button key={k} className={topCat === k ? "btn-primary" : "btn"}
-                  style={{ fontSize: 12, padding: "5px 16px", borderRadius: 20 }}
-                  onClick={() => setTopCat(k)}>{lbl}</button>
-              ))}
-            </div>
-            <input className="input" value={q} onChange={e => setQ(e.target.value)}
-              placeholder="搜索…" style={{ flex: 1, minWidth: 160, maxWidth: 300, padding: "7px 12px" }} />
+        <div className="card-body" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {([["names", "人名"], ["common", "常用词"]] as const).map(([k, lbl]) => (
+              <button key={k} className={topCat === k ? "btn-primary" : "btn"}
+                style={{ fontSize: 12, padding: "5px 16px", borderRadius: 20 }}
+                onClick={() => setTopCat(k)}>{lbl}</button>
+            ))}
           </div>
-          {/* 新增 + 导入导出 */}
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            {topCat === "names" && (
-              <div style={{ display: "flex", gap: 4, padding: 3, borderRadius: 8, background: "var(--bg-surface-2)" }}>
-                {([["surnames", "姓"], ["given_names", "名"]] as const).map(([k, lbl]) => (
-                  <button key={k} onClick={() => setAddKind(k)} style={{
-                    fontSize: 11, padding: "3px 14px", borderRadius: 6, cursor: "pointer", border: "none",
-                    background: addKind === k ? "var(--accent)" : "transparent",
-                    color: addKind === k ? "white" : "var(--text-secondary)", fontWeight: addKind === k ? 600 : 400,
-                  }}>{lbl}</button>
-                ))}
-              </div>
-            )}
-            <input className="input" value={newWord} onChange={e => setNewWord(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") add(); }}
-              placeholder={topCat === "names" ? `新增${addKindLabel}` : "新增常用词"}
-              style={{ width: 160, padding: "7px 12px" }} />
-            <button className="btn-primary" disabled={busy || !newWord.trim()}
-              onClick={add} style={{ fontSize: 12, padding: "7px 18px" }}>添加</button>
-            <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-              <button className="btn" style={{ fontSize: 12, padding: "6px 14px" }}
-                disabled={busy} onClick={() => fileRef.current?.click()}>
-                导入{topCat === "names" ? addKindLabel : ""} txt
-              </button>
-              <button className="btn" style={{ fontSize: 12, padding: "6px 14px" }}
-                onClick={() => doExport(addList)}>导出 txt</button>
-              <input ref={fileRef} type="file" accept=".txt,text/plain" style={{ display: "none" }}
-                onChange={e => { const f = e.target.files?.[0]; if (f) doImport(f); }} />
+          <input className="input" value={q} onChange={e => setQ(e.target.value)}
+            placeholder="搜索…" style={{ flex: 1, minWidth: 150, maxWidth: 280, padding: "7px 12px" }} />
+          {topCat === "common" && (
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input className="input" value={newWord} onChange={e => setNewWord(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && newWord.trim()) { addWord("common_words", null, newWord.trim()); setNewWord(""); } }}
+                placeholder="新增常用词" style={{ width: 140, padding: "7px 12px" }} />
+              <button className="btn-primary" disabled={busy || !newWord.trim()}
+                onClick={() => { addWord("common_words", null, newWord.trim()); setNewWord(""); }}
+                style={{ fontSize: 12, padding: "7px 16px" }}>添加</button>
             </div>
+          )}
+          <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+            {topCat === "names" && (
+              <select className="select" value={ioList} onChange={e => setIoList(e.target.value as any)}
+                style={{ fontSize: 12, padding: "5px 8px" }}>
+                <option value="surnames">姓</option>
+                <option value="given_names">名</option>
+              </select>
+            )}
+            <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
+              disabled={busy} onClick={() => fileRef.current?.click()}>导入 txt</button>
+            <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
+              onClick={() => doExport(importList)}>导出 txt</button>
+            <input ref={fileRef} type="file" accept=".txt,text/plain" style={{ display: "none" }}
+              onChange={e => { const f = e.target.files?.[0]; if (f) doImport(f); }} />
           </div>
         </div>
       </div>
@@ -1249,16 +1245,9 @@ function ResourceManagerTab() {
       {topCat === "names" ? (
         !names ? <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>加载中…</div> : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {names.countries.map(country => (
-              <NameCountrySection key={country} title={country}
-                surnames={names.data[country].surnames} given={names.data[country].given}
-                busy={busy} onRemove={remove} />
+            {names.sections.map(sec => (
+              <NameSection key={sec.key} section={sec} busy={busy} onAdd={addWord} onRemove={remove} />
             ))}
-            {hasUser && (
-              <NameCountrySection title="用户添加"
-                surnames={names.user_added.surnames} given={names.user_added.given}
-                busy={busy} onRemove={remove} />
-            )}
           </div>
         )
       ) : (

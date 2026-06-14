@@ -273,7 +273,7 @@ def _first2_excerpt(chapters: dict[int, str], head: int = 600, tail: int = 400) 
     for cn in (1, 2):
         body = chapters.get(cn)
         if body:
-            out.append(f"〖第{cn}章 开头+结尾〗\n{_head_tail(body, head, tail)}")
+            out.append(f"[第{cn}章 开头+结尾]\n{_head_tail(body, head, tail)}")
     return "\n\n".join(out)
 
 
@@ -405,17 +405,19 @@ _ADVANCED_SCHEMA_SPEC = (
     '    "first_face_slap_chapter": "首次反击章", "info_release_strategy": "信息释放策略"\n'
     "  },\n"
     '  "recommended_openings": ["开篇套路1","开篇套路2","开篇套路3","开篇套路4"],\n'
-    '  "loader_payload": "★最关键★ 600-1200字、会被逐字注入正文生成prompt的中文段落正文：'
+    '  "loader_payload": "最关键字段：600-1200字、会被逐字注入正文生成prompt的中文段落正文：'
     '第二人称对生成者说话，覆盖题材定位/视角人称/语言风格/句式节奏/对白比/字数/钩子爽点节奏/'
     '反派与首次反击时机/信息释放策略/招牌手法清单/可借鉴开篇套路；不出现书名作者名、不给起名建议；'
-    '结尾以「写作时严格遵循以上风格基线」收束。"\n'
+    '结尾以[写作时严格遵循以上风格基线]收束。"\n'
     "}\n"
     "```\n\n"
     "## 要求\n"
     "1. 所有结论须以上方真实统计与原文节选为依据，避免凭空泛谈。\n"
     "2. style_dimensions 的七组(A-G)与 neologism_step2 必须填写，是 JSON 对象。\n"
     "3. loader_payload 长度 ≥ 600 字，是连续中文段落而非 JSON/列表。\n"
-    "4. 整体只输出 JSON，前后不带任何说明文字。\n"
+    "4. 如果你具备联网搜索能力，请在网络中检索这些作品与该平台题材的公开信息，"
+    "作为上方所给信息的补充，并确保所输出的信息真实可靠、不编造。\n"
+    "5. 整体只输出 JSON，前后不带任何说明文字。\n"
 )
 
 
@@ -448,8 +450,6 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
         if isinstance(tags, list):
             tags = "、".join(tags[:6])
         intro = (w.get("intro") or "").strip().replace("\n", " ")
-        if len(intro) > 140:
-            intro = intro[:140] + "……"
         parts = [
             f"{i}. 《{title}》",
             f"   作者：{author} · 类目：{cat} · 体量：{words_disp}",
@@ -500,14 +500,40 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
     except Exception as _e:
         logger.debug("manual-prompt real-data injection skipped: %s", _e)
 
+    # 平台高频词同步：读取「基础特征提取」(opening_nlp) 已缓存的结果 —— 用户每次在
+    # 基础tab点「重新分析」即刷新该缓存，这里读出注入，确保 prompt 高频词与页面一致。
+    keyword_block = ""
+    try:
+        from ..services import compute_cache
+        from ..services.project_paths import get_db_path as _gdp
+        from ..utils import crawler_db_version as _cdv
+        env = compute_cache.get_or_compute(
+            _gdp(), f"opening_nlp:{platform}", _cdv() or "x",
+            lambda: {}, cached_only=True,
+        )
+        if env.get("state") == "ready" and isinstance(env.get("payload"), dict):
+            tw = ((env["payload"].get("spec_stats") or {}).get("top_words")) or []
+            kws = "、".join(
+                f"{w.get('word')}({w.get('count')})"
+                for w in tw[:40] if w.get("word")
+            )
+            if kws:
+                keyword_block = (
+                    "## 平台高频词（来自基础特征提取，跨多部作品统计，须作为风格基线的重要依据）\n\n"
+                    + kws + "\n\n"
+                )
+    except Exception:
+        pass
+
     prompt = (
-        f"# 任务：为「{scope_cn}」做高级特征提取（生造词Step2 + 行文风格七组）\n\n"
+        f"# 任务：为[{scope_cn}]做高级特征提取（生造词Step2 + 行文风格七组）\n\n"
         f"你是一名资深的网络文学市场分析师。下面给出{plat_cn}平台多维度精选的代表作"
         "清单（覆盖总排行最高、上榜最稳定、热度最高、新书等不同类型，以代表整个平台"
-        "风格）、开篇章节的真实 NLP 统计、以及各作品前 2 章「开头+结尾」的原文节选。"
-        "请综合分析后，按下列全部维度输出**结构化 JSON**。\n\n"
+        "风格）、开篇章节的真实 NLP 统计、以及各作品前 2 章[开头+结尾]的原文节选。"
+        "请综合分析后，按下列全部维度输出结构化 JSON。\n\n"
         f"## 代表作清单（已选 {len(works)} 部，全部纳入分析）\n\n"
         f"{work_block}\n\n"
+        f"{keyword_block}"
         "## 开篇章节真实统计（脚本计算，含生造词Step1候选）\n\n"
         f"{nlp_block}\n\n"
         "## 章节原文节选（各作品前2章 开头+结尾，用于风格与生造词判断）\n\n"
