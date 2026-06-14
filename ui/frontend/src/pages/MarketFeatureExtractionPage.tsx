@@ -14,7 +14,7 @@
  *    platform_profiles row via /manual-submit.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost, apiDelete } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { swrHydrate, swrStore, pollCompute, PollController } from "../api/swr";
 import { useToast } from "../components/shared/Toast";
 import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
@@ -34,6 +34,7 @@ interface RepCandidate {
   total_words?: number;
   tags?: string[];
   rank_score?: number;
+  reason?: string;
   is_holdout?: number;
   excerpt: string;
   has_chapters: boolean;
@@ -71,11 +72,6 @@ interface PlatformProfile {
 
 
 interface PlatformOption { key: string; label: string; book_count: number; }
-interface CategoryOption {
-  key: string; label: string;
-  rank_family: string; rank_sub_cat: string;
-  list_count: number;
-}
 
 
 // 起点分类体系：大分类（novel_types）与副分类（sub_to_main_map 的键）。
@@ -141,13 +137,9 @@ export default function MarketFeatureExtractionPage() {
   const [platforms, setPlatforms] = useState<PlatformOption[]>(
     () => swrHydrate<PlatformOption[]>("mfe_platforms") || [],
   );
-  const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [platform, setPlatform] = useState(
     () => (swrHydrate<PlatformOption[]>("mfe_platforms") || [])[0]?.key || "",
   );
-  // 榜单多选 (用户需求): selectedCats 为勾选集合；manual 模式聚焦第一项。
-  const [selectedCats, setSelectedCats] = useState<string[]>([]);
-  const category = selectedCats[0] || "";
   const [launching, setLaunching] = useState(false);
 
   const [jobs, setJobs] = useState<Job[]>(
@@ -171,7 +163,7 @@ export default function MarketFeatureExtractionPage() {
   const candReqToken = React.useRef(0);
 
   const loadCandidates = useCallback(async (pl: string, cat: string) => {
-    if (!pl || !cat) { setCandidates([]); setSelectedWorkIds([]); return; }
+    if (!pl) { setCandidates([]); setSelectedWorkIds([]); return; }
     const token = ++candReqToken.current;
     setCandLoading(true);
     try {
@@ -214,37 +206,6 @@ export default function MarketFeatureExtractionPage() {
     }
   }, [platform, toast]);
 
-  // 竞态防护：仅接受最后一次请求的结果，避免早先发出的全平台请求
-  // 晚到后把当前平台的榜单覆盖成混合列表。
-  const catReqToken = React.useRef(0);
-  const loadCategories = useCallback(async (pl: string) => {
-    const token = ++catReqToken.current;
-    // 秒开: 先用该平台上次的榜单列表渲染，后台拉新覆盖。
-    const cachedCats = swrHydrate<CategoryOption[]>(`mfe_cats_${pl}`);
-    if (cachedCats && cachedCats.length > 0) {
-      setCategories(cachedCats);
-      setSelectedCats(prev => {
-        const valid = prev.filter(k => cachedCats.some(c => c.key === k));
-        return valid.length > 0 ? valid : [cachedCats[0].key];
-      });
-    }
-    try {
-      const params = pl ? `?platform=${encodeURIComponent(pl)}` : "";
-      const r = await apiGet<{ categories: CategoryOption[] }>(
-        `/api/market-extractor/categories${params}`,
-      );
-      if (token !== catReqToken.current) return;   // stale response
-      setCategories(r.categories || []);
-      swrStore(`mfe_cats_${pl}`, r.categories || []);
-      setSelectedCats(prev => {
-        const valid = prev.filter(k => (r.categories || []).some(c => c.key === k));
-        if (valid.length > 0) return valid;
-        return r.categories && r.categories.length > 0 ? [r.categories[0].key] : [];
-      });
-    } catch (e: any) {
-      toast(`加载榜单失败: ${e.message}`, "error");
-    }
-  }, [category, toast]);
 
   const refreshJobs = useCallback(async () => {
     try {
@@ -277,20 +238,13 @@ export default function MarketFeatureExtractionPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 高级特征提取：平台变化时，拉取整平台多维度代表作候选（不再单选榜单）。
   useEffect(() => {
-    if (platform) {
-      loadCategories(platform);
+    if (topTab === "advanced" && platform) {
+      loadCandidates(platform, "");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platform]);
-
-  // 高级特征提取：平台 / 首个勾选榜单变化时，拉取自动选出的代表作候选。
-  useEffect(() => {
-    if (topTab === "advanced" && platform && category) {
-      loadCandidates(platform, category);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topTab, platform, category]);
+  }, [topTab, platform]);
 
   useEffect(() => {
     const active = jobs.some(j => isActive(j.state));
@@ -302,8 +256,8 @@ export default function MarketFeatureExtractionPage() {
   // ── actions ──
 
   const launchJob = useCallback(async () => {
-    if (!platform || selectedCats.length === 0) {
-      toast("请先选择平台 + 至少一个榜单", "error");
+    if (!platform) {
+      toast("请先选择平台", "error");
       return;
     }
     if (selectedWorkIds.length === 0) {
@@ -311,63 +265,28 @@ export default function MarketFeatureExtractionPage() {
       return;
     }
     if (!window.confirm(
-      `准备启动 API 提取任务：\n平台: ${platform}\n榜单 (${selectedCats.length} 个): ${selectedCats.join("、")}\n` +
-      `代表作: 已勾选 ${selectedWorkIds.length} 部\n\n` +
-      `每个榜单一个任务，会调用大模型对勾选的代表作做生造词Step2 + 行文风格七组抽取，` +
-      `更新对应的平台风格档案。可能耗时数分钟。继续？`,
+      `准备启动 API 提取任务：\n平台：${tPlatform(platform)}（整平台）\n` +
+      `代表作：已勾选 ${selectedWorkIds.length} 部\n\n` +
+      `将调用大模型对勾选的代表作做生造词Step2 + 行文风格七组抽取，更新该平台` +
+      `风格档案。可能耗时数分钟。继续？`,
     )) return;
     setLaunching(true);
-    let ok = 0;
-    const failed: string[] = [];
-    for (const cat of selectedCats) {
-      try {
-        await apiPost<{ job_id: string; state: string }>(
-          "/api/market-extractor/jobs",
-          // selected work_ids only apply to the matching category's pool;
-          // for other selected 榜单 the backend re-selects + uses all.
-          { platform, category: cat,
-            work_ids: cat === category ? selectedWorkIds : undefined },
-        );
-        ok += 1;
-      } catch (e: any) {
-        failed.push(`${cat}: ${e.message}`);
-      }
+    try {
+      await apiPost<{ job_id: string; state: string }>(
+        "/api/market-extractor/jobs",
+        { platform, category: "", work_ids: selectedWorkIds },
+      );
+      toast("已启动平台提取任务", "success");
+    } catch (e: any) {
+      toast(`启动失败：${e.message}`, "error");
     }
-    if (ok > 0) toast(`已启动 ${ok}/${selectedCats.length} 个提取任务`, "success");
-    if (failed.length > 0) toast(`未能启动: ${failed.join("; ")}`, "error");
     await refreshJobs();
     setLaunching(false);
-  }, [platform, category, selectedCats, selectedWorkIds, refreshJobs, toast]);
-
-  const cancelJob = useCallback(async (job_id: string) => {
-    if (!window.confirm("取消运行中的任务？\n已完成的阶段会保留，但后续阶段会跳过。")) return;
-    try {
-      await apiPost(`/api/market-extractor/jobs/${job_id}/cancel`, {});
-      toast("已请求取消", "success");
-      refreshJobs();
-    } catch (e: any) {
-      toast(`取消失败: ${e.message}`, "error");
-    }
-  }, [refreshJobs, toast]);
-
-  const deleteJob = useCallback(async (job_id: string) => {
-    if (!window.confirm("从任务列表中永久删除该任务？\n仅删除任务行本身，已写入的平台档案 / 代表作不受影响。")) return;
-    try {
-      await apiDelete(`/api/market-extractor/jobs/${job_id}`);
-      toast("任务已删除", "success");
-      refreshJobs();
-    } catch (e: any) {
-      toast(`删除失败: ${e.message}`, "error");
-    }
-  }, [refreshJobs, toast]);
+  }, [platform, selectedWorkIds, refreshJobs, toast]);
 
   const startManualMode = useCallback(async () => {
-    if (!platform || !category) {
-      toast("请先选择平台 + 榜单", "error");
-      return;
-    }
-    if (selectedCats.length > 1) {
-      toast("手动模式一次只处理一个榜单 — 请只保留一个勾选", "error");
+    if (!platform) {
+      toast("请先选择平台", "error");
       return;
     }
     if (selectedWorkIds.length === 0) {
@@ -377,30 +296,27 @@ export default function MarketFeatureExtractionPage() {
     try {
       const r = await apiPost<{ prompt: string }>(
         "/api/market-extractor/manual-prompt",
-        { platform, category, work_ids: selectedWorkIds },
+        { platform, category: "", work_ids: selectedWorkIds },
       );
       setManualPrompt(r.prompt || "");
       setManualOpen(true);
     } catch (e: any) {
       toast(`生成 prompt 失败: ${e.message}`, "error");
     }
-  }, [platform, category, selectedCats.length, selectedWorkIds, toast]);
+  }, [platform, selectedWorkIds, toast]);
 
   const commitManual = useCallback(async (payload: { text: string }) => {
     const r = await apiPost<{ profile_id: string }>(
       "/api/market-extractor/manual-submit",
-      { platform, category, response_raw: payload.text },
+      { platform, category: "", response_raw: payload.text },
     );
     toast(`平台档案已写入 (${r.profile_id})`, "success");
     refreshProfiles();
-  }, [platform, category, refreshProfiles, toast]);
+  }, [platform, refreshProfiles, toast]);
 
   const platformProfiles = useMemo(() => {
-    return profiles.filter(p =>
-      (!platform || p.platform === platform)
-      && (!category || p.category === category),
-    );
-  }, [profiles, platform, category]);
+    return profiles.filter(p => !platform || p.platform === platform);
+  }, [profiles, platform]);
 
   const refreshAll = useCallback(async () => {
     setLoading(true);
@@ -408,7 +324,7 @@ export default function MarketFeatureExtractionPage() {
     setLoading(false);
   }, [refreshJobs, refreshProfiles]);
 
-  const SELECTION_OK = !!platform && selectedCats.length > 0;
+  const SELECTION_OK = !!platform;
 
   return (
     <div className="page-container" style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto" }}>
@@ -459,314 +375,94 @@ export default function MarketFeatureExtractionPage() {
       {topTab === "resources" && <ResourceManagerTab />}
 
       {topTab === "advanced" && (<>
-      <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 18, alignItems: "start" }}>
-        {/* ════════════ LEFT: configurator + launch ════════════ */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
-          {/* Step 1 — platform */}
-          <div className="card" style={{ padding: 16, borderTop: "3px solid var(--accent)" }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
-              <h3 style={{ margin: 0, fontSize: 14 }}>
-                <span style={{
-                  display: "inline-block", width: 22, height: 22, borderRadius: "50%",
-                  background: "var(--accent)", color: "white", fontSize: 12, fontWeight: 700,
-                  textAlign: "center", lineHeight: "22px", marginRight: 8,
-                }}>1</span>
-                选择平台
-              </h3>
-              <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{platforms.length} 个</span>
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 120, overflowY: "auto" }}>
-              {platforms.length === 0 ? (
-                <span style={{ fontSize: 12, color: "var(--text-tertiary)", padding: 8 }}>
-                  未读到平台 — 检查 Settings → 市场数据库路径
-                </span>
-              ) : platforms.map(p => (
-                <button
-                  key={p.key}
-                  className={platform === p.key ? "btn-primary" : "btn"}
-                  style={{ fontSize: 12, padding: "5px 14px", borderRadius: 20 }}
-                  onClick={() => setPlatform(p.key)}
-                  title={`${p.book_count} 本作品`}
-                >{tPlatform(p.key)}</button>
-              ))}
-            </div>
-          </div>
-
-          {/* Step 2 — category */}
-          <div className="card" style={{
-            padding: 16,
-            borderTop: `3px solid ${platform ? "var(--gold)" : "var(--border)"}`,
-            opacity: platform ? 1 : 0.5,
-            transition: "opacity 0.18s",
-          }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
-              <h3 style={{ margin: 0, fontSize: 14 }}>
-                <span style={{
-                  display: "inline-block", width: 22, height: 22, borderRadius: "50%",
-                  background: platform ? "var(--gold)" : "var(--text-disabled)",
-                  color: "white", fontSize: 12, fontWeight: 700,
-                  textAlign: "center", lineHeight: "22px", marginRight: 8,
-                }}>2</span>
-                选择榜单
-              </h3>
-              <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                已选 {selectedCats.length} / {categories.length} 个
-              </span>
-              <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
-                  disabled={categories.length === 0}
-                  onClick={() => setSelectedCats(categories.map(c => c.key))}>
-                  全选本平台
-                </button>
-                <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
-                  disabled={selectedCats.length === 0}
-                  onClick={() => setSelectedCats([])}>
-                  清空
-                </button>
-              </div>
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 200, overflowY: "auto" }}>
-              {categories.length === 0 ? (
-                <span style={{ fontSize: 12, color: "var(--text-tertiary)", padding: 8 }}>
-                  {platform ? "该平台还没有榜单数据" : "先选定平台"}
-                </span>
-              ) : categories.map(c => (
-                <button
-                  key={c.key}
-                  className={selectedCats.includes(c.key) ? "btn-primary" : "btn"}
-                  style={{ fontSize: 11, padding: "4px 12px", borderRadius: 16 }}
-                  onClick={() => setSelectedCats(prev =>
-                    prev.includes(c.key)
-                      ? prev.filter(k => k !== c.key)
-                      : [...prev, c.key])}
-                  title={`${c.list_count} 个榜单 · 点击切换勾选`}
-                >{c.label}</button>
-              ))}
-            </div>
-          </div>
-
-          {/* Step 3 — launch */}
-          <div className="card" style={{
-            padding: 16,
-            borderTop: `3px solid ${SELECTION_OK ? "var(--jade)" : "var(--border)"}`,
-            opacity: SELECTION_OK ? 1 : 0.5,
-            transition: "opacity 0.18s",
-          }}>
-            <h3 style={{ margin: "0 0 12px", fontSize: 14 }}>
+        {/* Step 1 — 选择平台（整平台，不再单选榜单） */}
+        <div className="card" style={{ padding: 16, borderTop: "3px solid var(--accent)", marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
+            <h3 style={{ margin: 0, fontSize: 14 }}>
               <span style={{
                 display: "inline-block", width: 22, height: 22, borderRadius: "50%",
-                background: SELECTION_OK ? "var(--jade)" : "var(--text-disabled)",
-                color: "white", fontSize: 12, fontWeight: 700,
+                background: "var(--accent)", color: "white", fontSize: 12, fontWeight: 700,
                 textAlign: "center", lineHeight: "22px", marginRight: 8,
-              }}>3</span>
-              启动提取
+              }}>1</span>
+              选择平台
             </h3>
-            {SELECTION_OK && (
-              <div style={{
-                padding: 10, marginBottom: 12,
-                background: "var(--bg-surface-2)", borderRadius: 6,
-                fontSize: 12, color: "var(--text-secondary)",
-              }}>
-                <strong>{tPlatform(platform)}</strong>
-                <span style={{ color: "var(--text-tertiary)", margin: "0 6px" }}>×</span>
-                <strong>{selectedCats.join("、")}</strong>
-                <span style={{ color: "var(--text-tertiary)", marginLeft: 6 }}>
-                  （{selectedCats.length} 个榜单{selectedCats.length > 1 ? "，逐个建任务" : ""}）
-                </span>
-                <div style={{ marginTop: 6, color: "var(--text-tertiary)" }}>
-                  代表作：已勾选 <strong style={{ color: "var(--jade)" }}>{selectedWorkIds.length}</strong>
-                  {candidates.length > 0 ? ` / ${candidates.length}` : ""} 部
-                  （在下方「代表作选取」中调整）
-                </div>
-              </div>
-            )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{platforms.length} 个</span>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {platforms.length === 0 ? (
+              <span style={{ fontSize: 12, color: "var(--text-tertiary)", padding: 8 }}>
+                未读到平台 — 检查 Settings → 市场数据库路径
+              </span>
+            ) : platforms.map(p => (
               <button
-                className="btn-primary"
-                onClick={launchJob}
-                disabled={launching || !SELECTION_OK}
-                style={{
-                  width: "100%", padding: "10px 0",
-                  fontSize: 13, fontWeight: 600,
-                  textAlign: "center",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}
-              >
-                {launching ? "启动中..." : "使用大模型 API 提取"}
-              </button>
-              <button
-                className="btn"
-                onClick={startManualMode}
-                disabled={!SELECTION_OK}
-                style={{
-                  width: "100%", padding: "10px 0", fontSize: 13,
-                  textAlign: "center",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}
-              >
-                使用大模型网页版提取
-              </button>
-            </div>
+                key={p.key}
+                className={platform === p.key ? "btn-primary" : "btn"}
+                style={{ fontSize: 12, padding: "5px 14px", borderRadius: 20 }}
+                onClick={() => setPlatform(p.key)}
+                title={`${p.book_count} 本作品`}
+              >{tPlatform(p.key)}</button>
+            ))}
           </div>
         </div>
 
-        {/* RIGHT — 提取记录 (just one section, no tabs) */}
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{
-            padding: "10px 14px",
-            borderBottom: "1px solid var(--border)",
-            background: "var(--bg-surface-2)",
-            display: "flex", alignItems: "baseline", justifyContent: "space-between",
-          }}>
-            <h3 style={{ margin: 0, fontSize: 13 }}>
-              提取记录
-              <span style={{
-                display: "inline-block", minWidth: 18, padding: "1px 7px",
-                borderRadius: 9, background: "var(--accent)", color: "white",
-                fontSize: 10, fontWeight: 600, marginLeft: 8,
-              }}>{jobs.length}</span>
-            </h3>
-            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-              提醒：以下任务的「结束」时间即对应平台档案的最近更新时间
-            </span>
-          </div>
-          <div style={{ padding: 14, minHeight: 420, background: "var(--bg-surface)" }}>
-            <JobsTab jobs={jobs} onCancel={cancelJob} onDelete={deleteJob} />
+        {/* Step 2 — 代表作选取（整平台多维度，用户选完平台后挑选） */}
+        <RepWorksSelector
+          platform={platform}
+          category=""
+          candidates={candidates}
+          loading={candLoading}
+          selected={selectedWorkIds}
+          onToggle={(id) => setSelectedWorkIds(prev =>
+            prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])}
+          onSelectAll={() => setSelectedWorkIds(candidates.map(c => c.work_id))}
+          onClear={() => setSelectedWorkIds([])}
+          onReload={() => loadCandidates(platform, "")}
+        />
+
+        {/* Step 3 — 启动提取 */}
+        <div className="card" style={{
+          padding: 16, marginTop: 16,
+          borderTop: `3px solid ${SELECTION_OK ? "var(--jade)" : "var(--border)"}`,
+          opacity: SELECTION_OK ? 1 : 0.5, transition: "opacity 0.18s",
+        }}>
+          <h3 style={{ margin: "0 0 12px", fontSize: 14 }}>
+            <span style={{
+              display: "inline-block", width: 22, height: 22, borderRadius: "50%",
+              background: SELECTION_OK ? "var(--jade)" : "var(--text-disabled)",
+              color: "white", fontSize: 12, fontWeight: 700,
+              textAlign: "center", lineHeight: "22px", marginRight: 8,
+            }}>3</span>
+            启动提取
+          </h3>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button className="btn-primary" onClick={launchJob}
+              disabled={launching || !SELECTION_OK || selectedWorkIds.length === 0}
+              style={{ padding: "10px 24px", fontSize: 13, fontWeight: 600 }}>
+              {launching ? "启动中..." : "使用大模型 API 提取"}
+            </button>
+            <button className="btn" onClick={startManualMode}
+              disabled={!SELECTION_OK || selectedWorkIds.length === 0}
+              style={{ padding: "10px 24px", fontSize: 13 }}>
+              使用大模型网页版提取
+            </button>
           </div>
         </div>
-      </div>
 
-      {/* 代表作选取 — InkOctoBot 自动选出代表作 + 前2章「开头+结尾」节选，
-          用户可手动 select/deselect，再据勾选生成 prompt / 调 API。 */}
-      <RepWorksSelector
-        platform={platform}
-        category={category}
-        candidates={candidates}
-        loading={candLoading}
-        selected={selectedWorkIds}
-        onToggle={(id) => setSelectedWorkIds(prev =>
-          prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])}
-        onSelectAll={() => setSelectedWorkIds(candidates.map(c => c.work_id))}
-        onClear={() => setSelectedWorkIds([])}
-        onReload={() => loadCandidates(platform, category)}
-      />
-
-      {/* 提取结果 — 当前平台风格档案（含生造词Step2 + 行文风格七组） */}
-      <ExtractionResultSection
-        profiles={platformProfiles} platform={platform} category={category} />
-
+        {/* 提取结果 — 当前平台风格档案（含生造词Step2 + 行文风格七组） */}
+        <ExtractionResultSection
+          profiles={platformProfiles} platform={platform} category="" />
       </>)}
 
       {/* 网页版大模型手动粘贴弹窗 */}
       <UniversalLLMDialog
         open={manualOpen}
         onClose={() => setManualOpen(false)}
-        title={`网页版大模型提取: ${tPlatform(platform)} × ${category}`}
-        description="复制左侧提示词到网页版大模型运行，将完整回复粘回右侧；提交后写入平台档案表。"
+        title={`网页版大模型提取：${tPlatform(platform)}`}
         prompt={manualPrompt}
         onCommit={commitManual}
         minChars={80}
         initialMode="manual_only"
       />
-    </div>
-  );
-}
-
-
-function JobsTab({
-  jobs, onCancel, onDelete,
-}: { jobs: Job[]; onCancel: (id: string) => void; onDelete: (id: string) => void }) {
-  if (jobs.length === 0) {
-    return <Empty msg="还没有任何任务。在左侧选好平台 + 榜单后点「使用大模型 API 提取」或「使用大模型网页版提取」。" />;
-  }
-  return (
-    <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
-      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
-        <thead>
-          <tr style={{
-            color: "var(--text-tertiary)", textAlign: "left",
-            background: "var(--bg-surface-2)",
-            fontSize: 11, letterSpacing: 0.5,
-          }}>
-            <th style={{ padding: "8px 10px" }}>任务编号</th>
-            <th style={{ padding: "8px 10px" }}>平台</th>
-            <th style={{ padding: "8px 10px" }}>榜单</th>
-            <th style={{ padding: "8px 10px" }}>状态</th>
-            <th style={{ padding: "8px 10px" }}>进度</th>
-            <th style={{ padding: "8px 10px" }}>开始</th>
-            <th style={{ padding: "8px 10px" }}>结束</th>
-            <th style={{ padding: "8px 10px", textAlign: "right" }}>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {jobs.map(j => {
-            const pct = typeof j.progress_pct === "number" ? Math.round(j.progress_pct) : null;
-            const stateColor = STATE_COLOR[j.state || ""] || "var(--text-secondary)";
-            const stateLabel = STATE_LABEL_CN[j.state || ""] || j.state || "—";
-            const phaseLabel = j.progress_phase ? (PHASE_LABEL_CN[j.progress_phase] || j.progress_phase) : "";
-            return (
-              <tr key={j.job_id} style={{ borderTop: "1px solid var(--border)" }}>
-                <td style={{ padding: "8px 10px" }}>
-                  <code style={{ fontSize: 11, color: "var(--text-secondary)" }}>{j.job_id.slice(0, 10)}</code>
-                </td>
-                <td style={{ padding: "8px 10px" }}>{j.platform ? tPlatform(j.platform) : "—"}</td>
-                <td style={{ padding: "8px 10px" }}>{j.category || "—"}</td>
-                <td style={{ padding: "8px 10px" }}>
-                  <span style={{
-                    display: "inline-block",
-                    padding: "2px 8px",
-                    borderRadius: 10,
-                    background: `color-mix(in srgb, ${stateColor} 14%, transparent)`,
-                    color: stateColor,
-                    fontSize: 11,
-                    fontWeight: 600,
-                  }}>{stateLabel}</span>
-                  {phaseLabel && j.state?.startsWith("running") && (
-                    <span style={{ color: "var(--text-tertiary)", marginLeft: 6, fontSize: 11 }}>
-                      {phaseLabel}
-                    </span>
-                  )}
-                </td>
-                <td style={{ padding: "8px 10px", minWidth: 90 }}>
-                  {pct !== null ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <div style={{
-                        flex: 1, height: 6,
-                        background: "var(--bg-surface-2)",
-                        borderRadius: 3, overflow: "hidden", minWidth: 50,
-                      }}>
-                        <div style={{
-                          width: `${pct}%`, height: "100%",
-                          background: stateColor, transition: "width 0.3s",
-                        }} />
-                      </div>
-                      <span style={{ fontSize: 11, fontFamily: "var(--font-mono)" }}>{pct}%</span>
-                    </div>
-                  ) : "—"}
-                </td>
-                <td style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)" }}>{j.started_at || "—"}</td>
-                <td style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)" }}>{j.completed_at || "—"}</td>
-                <td style={{ padding: "8px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
-                  {isActive(j.state) ? (
-                    <button className="btn"
-                            style={{ fontSize: 11, padding: "3px 12px", borderRadius: 12 }}
-                            onClick={() => onCancel(j.job_id)}>
-                      取消
-                    </button>
-                  ) : (
-                    <button className="btn"
-                            style={{ fontSize: 11, padding: "3px 12px", borderRadius: 12, color: "var(--danger)" }}
-                            onClick={() => onDelete(j.job_id)}>
-                      删除
-                    </button>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
     </div>
   );
 }
@@ -841,12 +537,7 @@ function RepWorksSelector({
   return (
     <div className="card" style={{ marginTop: 16, borderTop: "3px solid var(--accent)" }}>
       <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: 14 }}>代表作选取</h3>
-          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-            自动选出的代表作 + 前2章「开头+结尾」节选 · 勾选后用于生成 prompt / 调用 API
-          </span>
-        </div>
+        <h3 style={{ margin: 0, fontSize: 14 }}>代表作选取</h3>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
             已勾选 {selected.length} / {candidates.length}
@@ -856,18 +547,18 @@ function RepWorksSelector({
           <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
             disabled={selected.length === 0} onClick={onClear}>清空</button>
           <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
-            disabled={loading || !platform || !category} onClick={onReload}>
+            disabled={loading || !platform} onClick={onReload}>
             {loading ? "加载中..." : "重新选取"}
           </button>
         </div>
       </div>
       <div className="card-body" style={{ padding: 14 }}>
-        {!platform || !category ? (
-          <Empty msg="请在上方选定平台与单个榜单，InkOctoBot 会自动选出代表作。" />
+        {!platform ? (
+          <Empty msg="请在上方选定平台，InkOctoBot 会自动选出整平台多维度代表作。" />
         ) : loading && candidates.length === 0 ? (
           <Empty msg="正在选取代表作并读取前2章节选…" />
         ) : candidates.length === 0 ? (
-          <Empty msg="未选到代表作 — 请确认该平台/榜单已采集作品与章节（Settings → 市场数据库）。" />
+          <Empty msg="未选到代表作 — 请确认该平台已采集作品与章节（Settings → 市场数据库）。" />
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {candidates.map(c => {
@@ -884,16 +575,18 @@ function RepWorksSelector({
                     <input type="checkbox" checked={on} onChange={() => onToggle(c.work_id)}
                       style={{ width: 16, height: 16, cursor: "pointer" }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         《{c.title}》
+                        {c.reason ? (
+                          <span style={{ fontSize: 9, padding: "1px 7px", borderRadius: 9, background: "var(--bg-surface-2)", color: "var(--accent)", fontWeight: 600 }}>{c.reason}</span>
+                        ) : null}
                         {c.is_holdout ? (
-                          <span className="tag" style={{ fontSize: 9, marginLeft: 6, color: "var(--gold)" }}>holdout</span>
+                          <span className="tag" style={{ fontSize: 9, color: "var(--gold)" }}>holdout</span>
                         ) : null}
                       </div>
                       <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                        {c.author} · {c.category || category} · {words}
+                        {c.author}{c.category && c.category !== "—" ? ` · ${c.category}` : ""} · {words}
                         {(c.tags && c.tags.length) ? ` · ${c.tags.slice(0, 5).join("、")}` : ""}
-                        {!c.has_chapters ? " · （暂无章节节选）" : ""}
                       </div>
                     </div>
                     {c.has_chapters && (
@@ -939,19 +632,15 @@ function ExtractionResultSection({
         <h3 style={{ margin: 0, fontSize: 14 }}>提取结果（平台风格档案）</h3>
         <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
           {top
-            ? `${tPlatform(top.platform)} · ${top.category || "—"} · 更新于 ${top.extraction_completed_at || "—"}`
-            : (platform && category
-                ? `${tPlatform(platform)} × ${category} 暂无结果`
-                : "请在左上选定平台与榜单")}
+            ? `${tPlatform(top.platform)}${top.category ? ` · ${top.category}` : "（整平台）"} · 更新于 ${top.extraction_completed_at || "—"}`
+            : (platform ? `${tPlatform(platform)} 暂无结果` : "请选定平台")}
         </span>
       </div>
       <div className="card-body" style={{ padding: 14 }}>
         {profiles.length === 0 ? (
-          <Empty msg={
-            platform && category
-              ? `(${tPlatform(platform)}×${category}) 暂无提取结果。先勾选代表作，再用「使用大模型 API 提取」或「使用大模型网页版提取」生成。`
-              : "请在上方选定平台与榜单，勾选代表作后启动一次提取以生成结果。"
-          } />
+          <Empty msg={platform
+            ? `${tPlatform(platform)} 暂无提取结果。`
+            : "请选定平台。"} />
         ) : (
           <>
             {(neo || styleDims) && (
@@ -1044,6 +733,7 @@ function BasicExtractionTab() {
   const computing = nlpBusy || marketBusy;
   const [everRun, setEverRun] = React.useState(true);
   const [err, setErr] = React.useState("");
+  const [libDirty, setLibDirty] = React.useState(false);   // 词库被归类修改、待重算
   const pollsRef = React.useRef<PollController[]>([]);
 
   const nlpKey = `mfe_basic_nlp_${platform}`;
@@ -1215,6 +905,15 @@ function BasicExtractionTab() {
           </div>
         </div>
       )}
+      {libDirty && !computing && (
+        <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--accent)" }}>
+          <div className="card-body" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 12 }}>
+            词库已变更（人名 / 常用词），需要重新分析后生效。
+            <button className="btn-primary" style={{ fontSize: 11, padding: "3px 12px" }}
+              onClick={() => { setLibDirty(false); load(true); }}>重新分析</button>
+          </div>
+        </div>
+      )}
       {err && <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--danger)" }}><div className="card-body" style={{ fontSize: 12, color: "var(--danger)" }}>分析失败：{err}</div></div>}
 
       {!hasAny && !computing && (
@@ -1227,20 +926,21 @@ function BasicExtractionTab() {
       {/* 市场信息 (spec 2.1.3.2 全部维度，可视化) */}
       {hasMarket && <MarketInfoBlock market={market!} platform={platform} />}
 
-      {/* 开篇章节NLP维度 (spec 2.1.3.2) */}
-      {hasNlp && <NlpDimsBlock nlp={nlp!} onReload={() => load(true)} />}
+      {/* 开篇章节NLP维度 */}
+      {hasNlp && <NlpDimsBlock nlp={nlp!} onDirty={() => setLibDirty(true)} />}
     </>
   );
 }
 
 
-/** 资源管理 tab — 人名 / 常用词 资源的搜索 + CRUD（与基础/高级 tab 风格一致）。
- *  归类自高频词的词、或用户手动新增的词，都进入对应 resource，后续基础特征
+/** 资源管理 tab — 人名（按国家分组、可折叠）/ 常用词 的搜索、CRUD、导入导出
+ *  (统一 txt)。归类自高频词或手动新增的词都进入对应 resource，后续基础特征
  *  提取不再识别为高频词。所有调用统一走 /api/analysis/wordlist。 */
 function ResourceManagerTab() {
   const { toast } = useToast();
   type WLItem = { word: string; user: boolean };
-  type WLData = { total: number; items: WLItem[]; truncated: boolean; label: string; list: string };
+  type WLGroup = { group: string; items: WLItem[] };
+  type WLData = { total: number; groups: WLGroup[]; label: string; list: string };
   const LISTS: { key: "surnames" | "common_words"; label: string }[] = [
     { key: "surnames", label: "人名" },
     { key: "common_words", label: "常用词" },
@@ -1250,10 +950,12 @@ function ResourceManagerTab() {
   const [data, setData] = React.useState<WLData | null>(null);
   const [newWord, setNewWord] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>({});
+  const fileRef = React.useRef<HTMLInputElement>(null);
 
   const reload = React.useCallback(async () => {
     try {
-      const r = await apiGet<WLData>(`/api/analysis/wordlist?list=${list}&q=${encodeURIComponent(q)}`);
+      const r = await apiGet<WLData>(`/api/analysis/wordlist/grouped?list=${list}&q=${encodeURIComponent(q)}`);
       setData(r);
     } catch (e: any) {
       toast(`加载资源失败：${e.message}`, "error");
@@ -1283,11 +985,40 @@ function ResourceManagerTab() {
     setBusy(true);
     try {
       await apiPost("/api/analysis/wordlist/remove", { list, word });
-      toast(`已删除「${word}」`, "success");
       reload();
     } catch (e: any) {
       toast(`删除失败：${e.message}`, "error");
     } finally { setBusy(false); }
+  };
+
+  const doImport = async (file: File) => {
+    setBusy(true);
+    try {
+      const content = await file.text();
+      const r = await apiPost<{ added: number }>("/api/analysis/wordlist/import", { list, content });
+      toast(`已导入 ${r.added} 个新词`, "success");
+      reload();
+    } catch (e: any) {
+      toast(`导入失败：${e.message}`, "error");
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const doExport = async () => {
+    try {
+      const res = await fetch(`/api/analysis/wordlist/export?list=${list}`);
+      const text = await res.text();
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${list}.txt`;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    } catch (e: any) {
+      toast(`导出失败：${e.message}`, "error");
+    }
   };
 
   const curLabel = LISTS.find(l => l.key === list)?.label || list;
@@ -1296,10 +1027,10 @@ function ResourceManagerTab() {
     <>
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-body">
-          <div style={{ display: "flex", gap: 24, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 24, alignItems: "flex-end", flexWrap: "wrap" }}>
             <div>
               <label className="label" style={{ display: "block", marginBottom: 6 }}>资源类型</label>
-              <div style={{ display: "flex", gap: 6, minHeight: 32, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 6 }}>
                 {LISTS.map(l => (
                   <button key={l.key}
                     className={list === l.key ? "btn-primary" : "btn"}
@@ -1308,13 +1039,19 @@ function ResourceManagerTab() {
                 ))}
               </div>
             </div>
-            <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ flex: 1, minWidth: 180 }}>
               <label className="label" style={{ display: "block", marginBottom: 6 }}>搜索</label>
-              <div style={{ minHeight: 32, display: "flex", alignItems: "center" }}>
-                <input className="input" value={q} onChange={e => setQ(e.target.value)}
-                  placeholder={`在${curLabel}中搜索…`}
-                  style={{ width: "100%", maxWidth: 320, padding: "6px 10px" }} />
-              </div>
+              <input className="input" value={q} onChange={e => setQ(e.target.value)}
+                placeholder={`在${curLabel}中搜索…`}
+                style={{ width: "100%", maxWidth: 320, padding: "6px 10px" }} />
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn" style={{ fontSize: 12, padding: "6px 14px" }}
+                disabled={busy} onClick={() => fileRef.current?.click()}>导入 txt</button>
+              <button className="btn" style={{ fontSize: 12, padding: "6px 14px" }}
+                onClick={doExport}>导出 txt</button>
+              <input ref={fileRef} type="file" accept=".txt,text/plain" style={{ display: "none" }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) doImport(f); }} />
             </div>
           </div>
           {/* 新增 */}
@@ -1332,35 +1069,51 @@ function ResourceManagerTab() {
       <div className="card">
         <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0, fontSize: 14 }}>{curLabel}资源</h3>
-          {data && <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
-            共 {data.total} 条{data.truncated ? `（仅显示前 ${data.items.length} 条，请用搜索缩小范围）` : ""}
-          </span>}
+          {data && <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>共 {data.total} 条</span>}
         </div>
         <div className="card-body">
           {!data ? <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>加载中…</div> :
-            data.items.length === 0 ? <Empty msg={q ? `没有匹配「${q}」的${curLabel}。` : `${curLabel}资源为空。`} /> : (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {data.items.map(it => (
-                <span key={it.word} style={{
-                  display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12,
-                  padding: "3px 6px 3px 10px", borderRadius: 4,
-                  border: `1px solid ${it.user ? "var(--accent)" : "var(--border)"}`,
-                  background: "var(--bg-surface)",
-                }} title={it.user ? "用户添加" : "内置词表"}>
-                  {it.word}
-                  <button onClick={() => remove(it.word)} disabled={busy}
-                    title="删除（不再识别为该资源）"
-                    style={{
-                      border: "none", background: "none", cursor: "pointer",
-                      color: "var(--text-tertiary)", fontSize: 14, lineHeight: 1, padding: 0,
-                    }}>×</button>
-                </span>
-              ))}
+            data.total === 0 ? <Empty msg={q ? `没有匹配「${q}」的${curLabel}。` : `${curLabel}资源为空。`} /> : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {data.groups.map(grp => {
+                const isCol = !!collapsed[grp.group];
+                return (
+                  <div key={grp.group} style={{ border: "1px solid var(--border)", borderRadius: 6 }}>
+                    <button onClick={() => setCollapsed(p => ({ ...p, [grp.group]: !isCol }))}
+                      style={{
+                        width: "100%", display: "flex", alignItems: "center", gap: 8,
+                        padding: "8px 12px", background: "var(--bg-surface-2)", border: "none",
+                        cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--text-primary)",
+                        borderRadius: 6,
+                      }}>
+                      <span>{isCol ? "▸" : "▾"}</span>
+                      <span>{grp.group}</span>
+                      <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>{grp.items.length}</span>
+                    </button>
+                    {!isCol && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: 10 }}>
+                        {grp.items.map(it => (
+                          <span key={it.word} style={{
+                            display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12,
+                            padding: "3px 6px 3px 10px", borderRadius: 4,
+                            border: `1px solid ${it.user ? "var(--accent)" : "var(--border)"}`,
+                            background: "var(--bg-surface)",
+                          }} title={it.user ? "用户添加" : "内置"}>
+                            {it.word}
+                            <button onClick={() => remove(it.word)} disabled={busy}
+                              style={{
+                                border: "none", background: "none", cursor: "pointer",
+                                color: "var(--text-tertiary)", fontSize: 14, lineHeight: 1, padding: 0,
+                              }}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
-          <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 10 }}>
-            内置词表为只读基线（来自 哈工大/百度 停用词表 · 百家姓/日文姓 · 新华社译音表），删除内置词会写入隐藏覆盖、可随时重新添加恢复。
-          </div>
         </div>
       </div>
     </>
@@ -1592,9 +1345,6 @@ function MarketInfoBlock({ market, platform }: { market: any; platform: string }
                 </tbody>
               </table>
             )}
-            <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 6 }}>
-              机会指数 = 0.4 × {showShare ? "(份额增长+热度增长)" : "热度增长"} + 0.3 × 新书占比 + 0.3 × {showShare ? "(既有份额+热度)" : "既有热度"}；新书来源于新书榜，新书占比为跨{oppColLabel}分布、总和 100%。
-            </div>
           </div>
           {showCooccur && <CooccurTable pairs={market.pairs} />}
         </div>
@@ -1618,65 +1368,40 @@ function highlightWord(text: string, word: string): React.ReactNode {
   ));
 }
 
-/** 单个高频词 chip：点击展开代表作品；悬停弹出「归为人名 / 常用词」。 */
-function HighFreqWord({ w, selected, busy, onSelect, onClassify }: {
-  w: any; selected: boolean; busy: boolean;
-  onSelect: () => void;
-  onClassify: (word: string, list: "surnames" | "common_words") => void;
+/** 单个高频词 chip：点击展开「使用最多的作品」+ 归类按钮。 */
+function HighFreqWord({ w, selected, busy, onSelect }: {
+  w: any; selected: boolean; busy: boolean; onSelect: () => void;
 }) {
-  const [hover, setHover] = React.useState(false);
-  const miniBtn: React.CSSProperties = { fontSize: 10, padding: "2px 8px", whiteSpace: "nowrap" };
   return (
-    <span
-      style={{ position: "relative", display: "inline-block" }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+    <button
+      onClick={onSelect}
+      style={{
+        fontSize: 11, padding: "3px 9px", borderRadius: 4, cursor: "pointer",
+        border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+        background: selected ? "var(--bg-surface-2)" : "var(--bg-surface)",
+        color: "var(--text-primary)", opacity: busy ? 0.5 : 1,
+      }}
     >
-      <button
-        onClick={onSelect}
-        title="点击查看使用最多的作品 · 悬停可归类"
-        style={{
-          fontSize: 11, padding: "3px 9px", borderRadius: 4, cursor: "pointer",
-          border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
-          background: selected ? "var(--bg-surface-2)" : "var(--bg-surface)",
-          color: "var(--text-primary)", opacity: busy ? 0.5 : 1,
-        }}
-      >
-        {w.word}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{w.count}</span>
-      </button>
-      {hover && !busy && (
-        <div style={{
-          position: "absolute", top: "100%", left: 0, zIndex: 30, marginTop: 2,
-          display: "flex", gap: 4, padding: 4, whiteSpace: "nowrap",
-          background: "var(--bg-surface)", border: "1px solid var(--border)",
-          borderRadius: 6, boxShadow: "0 4px 14px rgba(0,0,0,0.22)",
-        }}>
-          <button className="btn" style={miniBtn}
-            onClick={(e) => { e.stopPropagation(); onClassify(w.word, "surnames"); }}>归为人名</button>
-          <button className="btn" style={miniBtn}
-            onClick={(e) => { e.stopPropagation(); onClassify(w.word, "common_words"); }}>归为常用词</button>
-        </div>
-      )}
-    </span>
+      {w.word}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{w.count}</span>
+    </button>
   );
 }
 
-/** 开篇章节NLP维度 (spec 2.1.3.2)：首章/章均/章中位字数、平均句长、
- *  分类型标点密度（可视化）、高频词、生造词Step1。 */
-function NlpDimsBlock({ nlp, onReload }: { nlp: any; onReload?: () => void }) {
+/** 开篇章节NLP维度：首章/章均/章中位字数、平均句长、分类型标点密度、高频词。 */
+function NlpDimsBlock({ nlp, onDirty }: { nlp: any; onDirty?: () => void }) {
   const { toast } = useToast();
   const [selWord, setSelWord] = React.useState<string | null>(null);
   const [classifying, setClassifying] = React.useState<string | null>(null);
 
-  // 把某高频词归类为 人名 / 常用词 → 写入对应资源，后端清理缓存并重算，
-  // 该词在后续基础特征提取中不再出现为高频词。
+  // 归类某高频词为 人名 / 常用词 → 写入资源；不立即重算，仅标记「词库已变更」，
+  // 由用户用顶部的「重新分析」按钮统一触发（避免每归类一个就重算一次）。
   const classify = async (word: string, list: "surnames" | "common_words") => {
     setClassifying(word);
     try {
       await apiPost("/api/analysis/wordlist/add", { list, word });
-      toast(`已将「${word}」归为${list === "surnames" ? "人名" : "常用词"}，重新分析中…`, "success");
+      toast(`已将「${word}」归为${list === "surnames" ? "人名" : "常用词"}`, "success");
       setSelWord(null);
-      onReload?.();
+      onDirty?.();
     } catch (e: any) {
       toast(`归类失败：${e.message}`, "error");
     } finally {
@@ -1739,24 +1464,18 @@ function NlpDimsBlock({ nlp, onReload }: { nlp: any; onReload?: () => void }) {
             )}
           </div>
         </div>
-        {/* 高频词（满宽）— 点击查看使用最多的 top3 作品 + 片段；悬停可归类 */}
+        {/* 高频词（满宽）— 点击展开「使用最多的作品」+ 归类按钮 */}
         <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
-            高频词
-            <span style={{ fontWeight: 400, fontSize: 10, color: "var(--text-tertiary)", marginLeft: 8 }}>
-              点击查看代表作品 · 悬停可归类为人名 / 常用词
-            </span>
-          </div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>高频词</div>
           {(spec.top_words || []).length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div> : (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {(spec.top_words || []).slice(0, 30).map((w: any) => (
+              {(spec.top_words || []).slice(0, 40).map((w: any) => (
                 <HighFreqWord
                   key={w.word}
                   w={w}
                   selected={selWord === w.word}
                   busy={classifying === w.word}
                   onSelect={() => setSelWord(prev => prev === w.word ? null : w.word)}
-                  onClassify={classify}
                 />
               ))}
             </div>
@@ -1765,10 +1484,17 @@ function NlpDimsBlock({ nlp, onReload }: { nlp: any; onReload?: () => void }) {
             const sel = (spec.top_words || []).find((w: any) => w.word === selWord);
             if (!sel) return null;
             const examples = sel.examples || [];
+            const busy = classifying === sel.word;
             return (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
-                <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>
-                  「{sel.word}」使用最多的作品（含该词的片段）
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600 }}>「{sel.word}」使用最多的作品</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button className="btn" disabled={busy} style={{ fontSize: 10, padding: "3px 10px" }}
+                      onClick={() => classify(sel.word, "surnames")}>归为人名</button>
+                    <button className="btn" disabled={busy} style={{ fontSize: 10, padding: "3px 10px" }}
+                      onClick={() => classify(sel.word, "common_words")}>归为常用词</button>
+                  </div>
                 </div>
                 {examples.length === 0 ? (
                   <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无可定位的作品片段。</div>

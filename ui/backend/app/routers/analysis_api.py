@@ -408,6 +408,44 @@ def wordlist_list(list: str = Query(...), q: str = Query(default="")):
     return data
 
 
+@router.get("/wordlist/grouped")
+def wordlist_grouped(list: str = Query(...), q: str = Query(default="")):
+    """分组列出资源（人名按国家分组 + 用户添加），供折叠展示。"""
+    from ..services.market_extractor import wordlists as _wl
+    if list not in _WORDLIST_OK:
+        raise HTTPException(400, f"unknown list: {list!r}")
+    data = _wl.list_grouped(list, q or None)
+    data["label"] = _wl.LIST_LABELS.get(list, list)
+    return data
+
+
+@router.get("/wordlist/export")
+def wordlist_export(list: str = Query(...)):
+    """导出资源为 txt（每行一个词）。"""
+    from fastapi.responses import PlainTextResponse
+    from ..services.market_extractor import wordlists as _wl
+    if list not in _WORDLIST_OK:
+        raise HTTPException(400, f"unknown list: {list!r}")
+    fname = f"{list}.txt"
+    return PlainTextResponse(
+        _wl.export_text(list),
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.post("/wordlist/import")
+def wordlist_import(body: dict = Body(...)):
+    """从 txt 内容批量导入资源（统一 txt 文档）。"""
+    from ..services.market_extractor import wordlists as _wl
+    lst = (body.get("list") or "").strip()
+    content = body.get("content") or ""
+    if lst not in _WORDLIST_OK:
+        raise HTTPException(400, f"unknown list: {lst!r}")
+    added = _wl.import_text(lst, content)
+    _wordlist_after_edit()
+    return {"ok": True, "added": added, "list": lst}
+
+
 @router.post("/wordlist/add")
 def wordlist_add(body: dict = Body(...)):
     """归类某词为 人名 / 常用词（高频词右键归类 或 资源管理新增）。归类后该

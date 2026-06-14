@@ -29,7 +29,8 @@ _DDL: tuple[str, ...] = (
         selected_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         selected_for_extraction    INTEGER NOT NULL DEFAULT 1,
         selection_round            INTEGER DEFAULT 1,
-        is_holdout                 INTEGER NOT NULL DEFAULT 0
+        is_holdout                 INTEGER NOT NULL DEFAULT 0,
+        selection_reason           TEXT DEFAULT ''
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_rwp_platform_cat "
@@ -303,6 +304,9 @@ _PLATFORM_PROFILE_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("style_dimensions_json", "TEXT"),
     ("neologism_step2_json", "TEXT"),
 )
+_REP_POOL_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("selection_reason", "TEXT DEFAULT ''"),
+)
 
 
 def ensure_market_extractor_tables(conn: sqlite3.Connection) -> None:
@@ -311,12 +315,12 @@ def ensure_market_extractor_tables(conn: sqlite3.Connection) -> None:
     for ddl in _DDL:
         cur.execute(ddl)
     # Idempotent column adds for DBs created before these columns existed.
-    existing = {
-        r[1] for r in cur.execute("PRAGMA table_info(platform_profiles)").fetchall()
-    }
-    for col, coltype in _PLATFORM_PROFILE_MIGRATIONS:
-        if col not in existing:
-            cur.execute(
-                f"ALTER TABLE platform_profiles ADD COLUMN {col} {coltype}"
-            )
+    def _migrate(table: str, migrations: tuple[tuple[str, str], ...]) -> None:
+        cols = {r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+        for col, coltype in migrations:
+            if col not in cols:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+
+    _migrate("platform_profiles", _PLATFORM_PROFILE_MIGRATIONS)
+    _migrate("representative_works_pool", _REP_POOL_MIGRATIONS)
     conn.commit()

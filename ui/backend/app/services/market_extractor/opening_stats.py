@@ -255,13 +255,15 @@ def _extract_tokens(texts: list[str], freq: dict):
     token_counts: Counter = Counter()      # word -> count
     token_isname: dict[str, bool] = {}
     token_pos: dict[str, str] = {}         # word -> jieba POS flag (first seen)
+    name_context: Counter = Counter()      # word -> times it directly followed a 姓氏
     bigram_counts: Counter = Counter()
     try:
         import jieba.posseg as _pseg
     except Exception:
-        return token_counts, token_isname, token_pos, bigram_counts, False
+        return token_counts, token_isname, token_pos, name_context, bigram_counts, False
     for t in texts:
         prev: tuple[str, str] | None = None
+        prev_surname = False                # 上一个 token 是否为姓氏（含单字姓）
         for tok in _pseg.cut(t):
             w, flag = tok.word, tok.flag
             cjk = len(w) >= 2 and bool(re.fullmatch(r"[一-鿿]+", w))
@@ -270,6 +272,11 @@ def _extract_tokens(texts: list[str], freq: dict):
                 if w not in token_isname:
                     token_isname[w] = _looks_like_person_name(w, flag, freq)
                     token_pos[w] = flag
+                # 名字片段检测：jieba 把「李三江」切成 李(nr) + 三江(ns) 时，三江
+                # 紧跟姓氏 token — 计入 name-context（单字姓走 else 分支不进 prev，
+                # 故需独立追踪），后续据比例从高频词剔除（避免人名残片泄漏）。
+                if prev_surname:
+                    name_context[w] += 1
                 if prev is not None:
                     pw, pf = prev
                     merged = pw + w
@@ -285,20 +292,26 @@ def _extract_tokens(texts: list[str], freq: dict):
                 prev = (w, flag)
             else:
                 prev = None
-    return token_counts, token_isname, token_pos, bigram_counts, True
+            prev_surname = (len(w) == 1 and w in _SURNAMES) or flag.startswith("nr")
+    return token_counts, token_isname, token_pos, name_context, bigram_counts, True
 
 
 def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
-               bigram_counts: Counter, freq: dict, has_jieba: bool,
-               texts: list[str], k: int = 20) -> list[dict[str, Any]]:
-    """高频词 — representative content keywords, mixed length, no person
-    names. Ranked by frequency × keyness (down-weighting words common in
-    general Chinese) so 域内词 rise above generic ones. Restricted to
-    noun-class POS so everyday 副词/动词 (马上 'd' / 感觉 'v') never surface
-    as 高频词 — 高频词 应是内容名词，不是叙述虚词。"""
+               name_context: Counter, bigram_counts: Counter, freq: dict,
+               has_jieba: bool, texts: list[str],
+               owner_blobs: list[str] | None = None,
+               k: int = 40) -> list[dict[str, Any]]:
+    """高频词 — content keywords that characterize the WHOLE platform, not a
+    single book. Restricted to noun-class POS (everyday 副词/动词 like 马上/
+    感觉 never surface); 人名残片 (三江 in 李三江) dropped via name-context;
+    ranked by 跨作品广度 (用该词的作品数) × 频次 × keyness so a word many works
+    share rises above one book's pet word（单作品高频往后排/不展示）。"""
     counter: Counter = Counter()
     if has_jieba:
         for w, c in token_counts.items():
+            # 残片人名：该词多数出现紧跟姓氏 → 视为人名片段，剔除。
+            if name_context.get(w, 0) >= max(1, 0.5 * c):
+                continue
             if (not _is_common(w) and not token_isname.get(w)
                     and _keep_noun(token_pos.get(w, ""))
                     and _is_content_phrase(w)):
@@ -319,12 +332,21 @@ def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
     if not counter:
         return []
     kept = set(_dedup_substrings(counter))
-    ranked = sorted(
-        (t for t in counter if t in kept),
-        key=lambda t: counter[t] * _rarity(t, freq, 1000.0) * (1.0 + 0.12 * (len(t) - 2)),
-        reverse=True,
-    )
-    return [{"word": t, "count": counter[t]} for t in ranked[:k]]
+
+    # 跨作品广度 (document frequency): 用该词的不同作品数。多作品共用 → 代表
+    # 平台特征；只在单一作品高频 → 大幅降权。
+    blobs = owner_blobs or []
+    n_works = max(1, len(blobs))
+    df = {t: sum(1 for b in blobs if t in b) for t in kept} if blobs else {}
+
+    def _score(t: str) -> float:
+        breadth = (0.2 + 0.8 * (df.get(t, 1) / n_works)) if blobs else 1.0
+        return (counter[t] * _rarity(t, freq, 1000.0)
+                * (1.0 + 0.12 * (len(t) - 2)) * breadth)
+
+    ranked = sorted((t for t in counter if t in kept), key=_score, reverse=True)
+    return [{"word": t, "count": counter[t],
+             "work_count": int(df.get(t, 0))} for t in ranked[:k]]
 
 
 def _neologism_step1(token_counts: Counter, token_isname: dict, bigram_counts: Counter,
@@ -465,8 +487,10 @@ def compute_opening_stats(
             break
     freq = _general_freq()
     known = _load_known_words()
-    tok_counts, tok_isname, tok_pos, bigrams, has_jieba = _extract_tokens(kw_texts, freq)
-    top_words = _top_words(tok_counts, tok_isname, tok_pos, bigrams, freq, has_jieba, kw_texts)
+    tok_counts, tok_isname, tok_pos, name_ctx, bigrams, has_jieba = _extract_tokens(kw_texts, freq)
+    owner_blobs = list(owner_joined.values())
+    top_words = _top_words(tok_counts, tok_isname, tok_pos, name_ctx, bigrams,
+                           freq, has_jieba, kw_texts, owner_blobs=owner_blobs)
     _attach_examples(top_words, owner_joined)
 
     return {

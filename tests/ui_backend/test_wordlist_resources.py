@@ -55,6 +55,50 @@ class TestWordlistOverlay:
             wl.add_word("nope", "x")
 
 
+class TestWordlistGroupingIO:
+    def test_surnames_grouped_by_country(self, wl):
+        g = wl.list_grouped("surnames")
+        groups = {x["group"]: x["items"] for x in g["groups"]}
+        assert "中国" in groups and "日本" in groups
+        assert any(it["word"] == "李" for it in groups["中国"])
+        assert any(it["word"] == "上杉" for it in groups["日本"])
+
+    def test_user_added_lands_in_own_group(self, wl):
+        wl.add_word("surnames", "霍格沃茨姓")
+        groups = {x["group"]: x["items"] for x in wl.list_grouped("surnames")["groups"]}
+        assert "用户添加" in groups
+        assert any(it["word"] == "霍格沃茨姓" and it["user"] for it in groups["用户添加"])
+
+    def test_export_import_roundtrip(self, wl):
+        wl.add_word("common_words", "唯一导出词")
+        text = wl.export_text("common_words")
+        assert "唯一导出词" in text
+        # import into surnames a small txt with comments
+        added = wl.import_text("surnames", "甲姓 乙姓\n# 注释行\n丙姓")
+        assert added == 3
+        assert "甲姓" in wl.load_surnames() and "丙姓" in wl.load_surnames()
+
+
+class TestWordlistGroupedAPI:
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("INKOCTOBOT_WORDLIST_DIR", str(tmp_path / "wl"))
+        from ui.backend.app.services.market_extractor import wordlists as _wl
+        _wl._invalidate()
+        from ui.backend.app.main import app
+        return TestClient(app)
+
+    def test_grouped_export_import_endpoints(self, client):
+        g = client.get("/api/analysis/wordlist/grouped", params={"list": "surnames"})
+        assert g.status_code == 200
+        assert any(grp["group"] == "日本" for grp in g.json()["groups"])
+        ex = client.get("/api/analysis/wordlist/export", params={"list": "surnames"})
+        assert ex.status_code == 200 and "李" in ex.text
+        imp = client.post("/api/analysis/wordlist/import",
+                          json={"list": "common_words", "content": "导入词甲 导入词乙"})
+        assert imp.json()["added"] == 2
+
+
 class TestWordlistAPI:
     @pytest.fixture
     def client(self, tmp_path, monkeypatch):

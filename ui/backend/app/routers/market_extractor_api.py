@@ -34,6 +34,14 @@ router = APIRouter(prefix="/api/market-extractor", tags=["market-extractor"])
 profiles_router = APIRouter(prefix="/api/platform-profiles", tags=["platform-profiles"])
 
 
+# 平台 key → 中文名（prompt / 展示用，app 内显式组装，绝不出现 spec/英文 key）。
+_PLATFORM_CN = {"qidian": "起点", "fanqie": "番茄", "both": "全平台"}
+
+
+def _platform_cn(platform: str) -> str:
+    return _PLATFORM_CN.get((platform or "").strip(), (platform or "").strip() or "全平台")
+
+
 # ─────────── jobs ───────────
 
 
@@ -45,8 +53,8 @@ def create_job(body: dict = Body(...)) -> dict:
     work_ids = body.get("work_ids") or None
     if isinstance(work_ids, list):
         work_ids = [str(x) for x in work_ids] or None
-    if not platform or not category:
-        raise HTTPException(400, "platform + category required")
+    if not platform:                       # category 留空＝整平台（用户只选平台）
+        raise HTTPException(400, "platform required")
     job_id = job_runner.run_job_in_background(
         get_db_path(), platform, category, crawler_db=crawler_db,
         work_ids=work_ids,
@@ -272,10 +280,11 @@ def _first2_excerpt(chapters: dict[int, str], head: int = 600, tail: int = 400) 
 @router.get("/representative-candidates")
 def representative_candidates(
     platform: str = Query(...),
-    category: str = Query(...),
+    category: str = Query(default=""),
 ) -> dict:
-    """自动选出的代表作 + 每部前2章「开头+结尾」节选，供高级特征提取页
-    展示并让用户手动 select/deselect，再据勾选生成 prompt / 调 API。"""
+    """整平台多维度代表作（总排行最高 / 上榜最多 / 热度最高 / 新书抽样）+ 每部
+    前2章「开头+结尾」节选，供高级特征提取页展示并让用户 select/deselect，再据
+    勾选生成 prompt / 调 API。``category`` 留空＝整平台（用户只选平台）。"""
     works = _load_rep_works(platform, category)
     out: list[dict] = []
     try:
@@ -294,10 +303,11 @@ def representative_candidates(
                 "source_db_novel_id": nid,
                 "title": w.get("title") or nid or "(无题)",
                 "author": w.get("author") or "—",
-                "category": w.get("main_category") or category,
+                "category": w.get("main_category") or category or "—",
                 "total_words": w.get("total_words"),
                 "tags": tags if isinstance(tags, list) else [],
                 "rank_score": w.get("rank_score"),
+                "reason": w.get("selection_reason") or "",
                 "is_holdout": w.get("is_holdout"),
                 "excerpt": _first2_excerpt(chapters),
                 "has_chapters": bool(chapters),
@@ -309,8 +319,9 @@ def representative_candidates(
                 "work_id": w.get("work_id"),
                 "title": w.get("title") or "(无题)",
                 "author": w.get("author") or "—",
-                "category": w.get("main_category") or category,
+                "category": w.get("main_category") or category or "—",
                 "tags": w.get("tags") if isinstance(w.get("tags"), list) else [],
+                "reason": w.get("selection_reason") or "",
                 "excerpt": "", "has_chapters": False,
             })
     return {"platform": platform, "category": category, "candidates": out}
@@ -416,13 +427,15 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
     高级特征提取 schema: 生造词Step2 + 行文风格七组 (A1-G2), plus the
     platform-profile injection payload the loader reads."""
     platform = (body.get("platform") or "").strip()
-    category = (body.get("category") or "").strip()
+    category = (body.get("category") or "").strip()   # 留空＝整平台
     work_ids = body.get("work_ids") or None
     if isinstance(work_ids, list):
         work_ids = [str(x) for x in work_ids] or None
-    if not platform or not category:
-        raise HTTPException(400, "platform + category required")
+    if not platform:
+        raise HTTPException(400, "platform required")
 
+    plat_cn = _platform_cn(platform)
+    scope_cn = f"{plat_cn}" + (f" · {category}" if category else "（整平台）")
     works = _load_rep_works(platform, category, work_ids)
 
     def _fmt_work(w: dict, i: int) -> str:
@@ -471,9 +484,9 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
             chapters = chapter_fetcher.fetch_first_n_chapters(
                 crawler_db, novel_id, n=5,
             )
-            for cn, text in chapters.items():
-                stat_rows.append({"chapter_num": cn, "text": text})
             title = w.get("title") or novel_id
+            for cn, text in chapters.items():
+                stat_rows.append({"chapter_num": cn, "text": text, "title": title})
             block = _first2_excerpt(chapters, head=600, tail=400)
             if block and len(excerpts) < 8:
                 excerpts.append(f"### 《{title}》\n{block}")
@@ -487,10 +500,11 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
         logger.debug("manual-prompt real-data injection skipped: %s", _e)
 
     prompt = (
-        f"# 任务：为「{platform} × {category}」做高级特征提取（生造词Step2 + 行文风格七组）\n\n"
-        "你是一名资深的网络文学市场分析师。下面给出该平台 × 榜单下的代表作清单、"
-        "开篇章节的真实 NLP 统计、以及各作品前 2 章「开头+结尾」的原文节选。"
-        "请综合分析后，按 spec 2.1.3.2 的全部维度输出**结构化 JSON**。\n\n"
+        f"# 任务：为「{scope_cn}」做高级特征提取（生造词Step2 + 行文风格七组）\n\n"
+        f"你是一名资深的网络文学市场分析师。下面给出{plat_cn}平台多维度精选的代表作"
+        "清单（覆盖总排行最高、上榜最稳定、热度最高、新书等不同类型，以代表整个平台"
+        "风格）、开篇章节的真实 NLP 统计、以及各作品前 2 章「开头+结尾」的原文节选。"
+        "请综合分析后，按下列全部维度输出**结构化 JSON**。\n\n"
         f"## 代表作清单（top {min(len(works), 12)} / 共 {len(works)} 部）\n\n"
         f"{work_block}\n\n"
         "## 开篇章节真实统计（脚本计算，含生造词Step1候选）\n\n"

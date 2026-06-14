@@ -24,6 +24,7 @@ Effective list = (bundled ∪ adds) − removes. Each loader returns a cached
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -195,3 +196,77 @@ def list_words(list_name: str, q: str | None = None, limit: int = 1000) -> dict:
     total = len(words)
     items = [{"word": w, "user": w in adds} for w in words[:limit]]
     return {"total": total, "items": items, "truncated": total > limit}
+
+
+def _grouped_bundled(list_name: str) -> dict[str, str]:
+    """word → group, parsed from ``# @group:<名称>`` markers in the bundled
+    file (人名按国家分组：中国 / 日本…）. Words before any marker → 内置。"""
+    fname = _FILES.get(list_name)
+    if not fname:
+        return {}
+    p = _ROOT / fname
+    if not p.exists():
+        return {}
+    word_group: dict[str, str] = {}
+    cur = "内置"
+    for line in p.read_text("utf-8").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            m = re.search(r"@group:\s*(\S+)", s)
+            if m:
+                cur = m.group(1)
+            continue
+        for tok in s.replace("，", " ").replace(",", " ").split():
+            tok = tok.strip()
+            if tok and not tok.startswith("#"):
+                word_group.setdefault(tok, cur)
+    return word_group
+
+
+_GROUP_ORDER = ("中国", "日本", "用户添加", "内置", "其他")
+
+
+def list_grouped(list_name: str, q: str | None = None) -> dict:
+    """Effective list grouped (人名按国家分组 + 用户添加)，供资源管理 tab 折叠
+    展示。Returns ``{list, groups:[{group, items:[{word,user}]}], total}``."""
+    if list_name not in _FILES:
+        raise ValueError(f"unknown word list: {list_name!r}")
+    eff = _effective(list_name)
+    adds = _overlay(list_name, "add")
+    word_group = _grouped_bundled(list_name)
+    q = (q or "").strip()
+    buckets: dict[str, list[dict]] = {}
+    for w in sorted(eff):
+        if q and q not in w:
+            continue
+        g = word_group.get(w) or ("用户添加" if w in adds else "内置")
+        buckets.setdefault(g, []).append({"word": w, "user": w in adds})
+    ordered = [g for g in _GROUP_ORDER if g in buckets]
+    ordered += [g for g in buckets if g not in _GROUP_ORDER]
+    groups = [{"group": g, "items": buckets[g]} for g in ordered]
+    return {"list": list_name, "groups": groups,
+            "total": sum(len(b) for b in buckets.values())}
+
+
+def export_text(list_name: str) -> str:
+    """Effective list as a plain-text doc (one word per line) for 导出。"""
+    if list_name not in _FILES:
+        raise ValueError(f"unknown word list: {list_name!r}")
+    return "\n".join(sorted(_effective(list_name))) + "\n"
+
+
+def import_text(list_name: str, content: str) -> int:
+    """Add every whitespace/comma-separated token from an uploaded txt
+    (导入). Comment (#) lines ignored. Returns how many were newly added."""
+    words: list[str] = []
+    for line in (content or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        for tok in s.replace("，", " ").replace(",", " ").split():
+            tok = tok.strip()
+            if tok and not tok.startswith("#"):
+                words.append(tok)
+    return append_words(list_name, words)

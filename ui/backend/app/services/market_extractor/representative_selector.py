@@ -48,6 +48,7 @@ class WorkCandidate:
     word_count: int
     last_updated_at: str | None
     rank_score: float = 0.0
+    selection_reason: str = ""
 
 
 def _resolve_crawler_db() -> str:
@@ -164,6 +165,94 @@ def _fetch_board_candidates(
     except sqlite3.OperationalError as e:
         logger.warning("board-candidate query failed (%s)", e)
         return []
+    return list(out.values())
+
+
+def _fetch_platform_candidates(
+    crawler_db: str, platform: str, seed: int | None = None,
+) -> list[WorkCandidate]:
+    """整平台代表作（不限单一榜单）— 用不同维度的优秀作品共同展现平台风格：
+    总排行最高（常居榜前列）/ 上榜次数最多（发挥稳定）/ 热度最高 / 新书榜随机
+    抽样。非新书榜优先（机制4 起点榜单顺序：先主榜再新书）。每部带 reason。"""
+    try:
+        with sqlite3.connect(crawler_db) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                """
+                SELECT e.novel_uid, e.rank, e.total_recommend, e.reading_count,
+                       n.total_words, n.last_seen_date,
+                       (l.rank_family LIKE '%新书%'
+                        OR l.rank_sub_cat LIKE '%新书%') AS is_new
+                FROM rank_lists l
+                JOIN rank_snapshots s ON s.rank_list_id = l.rank_list_id
+                 AND s.snapshot_date = (
+                     SELECT MAX(s2.snapshot_date) FROM rank_snapshots s2
+                     WHERE s2.rank_list_id = l.rank_list_id)
+                JOIN rank_entries e ON e.snapshot_id = s.snapshot_id
+                JOIN novels n ON n.novel_uid = e.novel_uid
+                WHERE l.platform = ?
+                """,
+                [platform],
+            ).fetchall()
+    except sqlite3.OperationalError as e:
+        logger.warning("platform-candidate query failed (%s)", e)
+        return []
+    if not rows:
+        return []
+
+    agg: dict[str, dict] = {}
+    for r in rows:
+        uid = str(r["novel_uid"])
+        heat = int(r["total_recommend"] or 0) + int(r["reading_count"] or 0)
+        rk = int(r["rank"] or 9999)
+        is_new = bool(r["is_new"])
+        a = agg.get(uid)
+        if a is None:
+            a = {"best_rank": rk, "appearances": 0, "max_heat": heat,
+                 "words": int(r["total_words"] or 0),
+                 "last": r["last_seen_date"], "in_new": False, "in_main": False}
+            agg[uid] = a
+        a["appearances"] += 1
+        a["best_rank"] = min(a["best_rank"], rk)
+        a["max_heat"] = max(a["max_heat"], heat)
+        a["in_new"] = a["in_new"] or is_new
+        a["in_main"] = a["in_main"] or (not is_new)
+
+    out: dict[str, WorkCandidate] = {}
+
+    def _add(uid: str, reason: str, score: float) -> None:
+        if uid in out:
+            return
+        a = agg[uid]
+        c = WorkCandidate(
+            novel_id=uid, title="", platform=platform, category="",
+            collections=0, comments=0, monthly_ticket=a["max_heat"],
+            word_count=a["words"], last_updated_at=a["last"],
+        )
+        c.rank_score = score
+        c.selection_reason = reason
+        out[uid] = c
+
+    uids = list(agg.keys())
+    main = [u for u in uids if agg[u]["in_main"]]
+    new = [u for u in uids if agg[u]["in_new"]]
+    max_app = max((agg[u]["appearances"] for u in uids), default=1)
+    max_heat = max((agg[u]["max_heat"] for u in uids), default=1) or 1
+    PER = 8
+    # ① 总排行最高（主榜 best_rank 最小）
+    for u in sorted(main, key=lambda u: agg[u]["best_rank"])[:PER]:
+        _add(u, "总排行最高", 0.90 + 0.10 * (1.0 - min(agg[u]["best_rank"], 100) / 100.0))
+    # ② 上榜次数最多（发挥稳定）
+    for u in sorted(main or uids, key=lambda u: -agg[u]["appearances"])[:PER]:
+        _add(u, "上榜最多·稳定", 0.70 + 0.10 * (agg[u]["appearances"] / max_app))
+    # ③ 热度最高
+    for u in sorted(uids, key=lambda u: -agg[u]["max_heat"])[:PER]:
+        _add(u, "热度最高", 0.55 + 0.10 * (agg[u]["max_heat"] / max_heat))
+    # ④ 新书榜随机抽样（不看热度，覆盖新生力量）
+    if new:
+        rng = random.Random(seed if seed is not None else f"{platform}:new")
+        for u in rng.sample(new, min(PER, len(new))):
+            _add(u, "新书榜抽样", 0.40)
     return list(out.values())
 
 
@@ -289,12 +378,14 @@ def _persist(
                 "(work_id, platform, category, source_db_novel_id, "
                 " rank_score, collection_count, comment_count, "
                 " monthly_ticket, word_count, last_updated_at, "
-                " selected_for_extraction, selection_round, is_holdout) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                " selected_for_extraction, selection_round, is_holdout, "
+                " selection_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
                 (wid, c.platform, c.category, c.novel_id,
                  c.rank_score, c.collections, c.comments,
                  c.monthly_ticket, c.word_count, c.last_updated_at,
-                 selection_round, 1 if c.novel_id in holdout_ids else 0),
+                 selection_round, 1 if c.novel_id in holdout_ids else 0,
+                 c.selection_reason),
             )
             work_ids.append(wid)
         con.commit()
@@ -314,28 +405,33 @@ def select(
     Returns a summary dict:
         {selected: N, holdout: M, work_ids: [...], crawler_db: path}
     """
-    raw = _fetch_raw_candidates(
-        crawler_db or _resolve_crawler_db(), platform, category,
-    )
-    # Board-based candidates (real schema) arrive pre-scored by
-    # rank + heat and deliberately include random 新书 samples
-    # (机制2) — the legacy median/word-count filter and
-    # collections-weight rescoring would strip them, so skip both.
-    if raw and all(c.rank_score > 0 for c in raw):
-        eligible = list(raw)
-    else:
-        eligible = _filter_eligible(raw)
-        _score(eligible)
-    eligible.sort(key=lambda c: c.rank_score, reverse=True)
-    top = eligible[:top_k]
-
-    # Holdout: 10% randomly sampled from the top set.
-    holdout_n = max(1, int(len(top) * _HOLDOUT_FRACTION)) if top else 0
-    rng = random.Random(seed)
+    cdb = crawler_db or _resolve_crawler_db()
     holdout_ids: set[str] = set()
-    if top:
-        for c in rng.sample(top, min(holdout_n, len(top))):
-            holdout_ids.add(c.novel_id)
+    if not category:
+        # 整平台多维度代表作（用户只选平台，不再单选榜单）— 已按维度精选并
+        # 预打分，跳过 median/词数过滤；不留 holdout，让多样集全部可选。
+        top = _fetch_platform_candidates(cdb, platform, seed=seed)
+        top.sort(key=lambda c: c.rank_score, reverse=True)
+    else:
+        raw = _fetch_raw_candidates(cdb, platform, category)
+        # Board-based candidates (real schema) arrive pre-scored by
+        # rank + heat and deliberately include random 新书 samples
+        # (机制2) — the legacy median/word-count filter and
+        # collections-weight rescoring would strip them, so skip both.
+        if raw and all(c.rank_score > 0 for c in raw):
+            eligible = list(raw)
+        else:
+            eligible = _filter_eligible(raw)
+            _score(eligible)
+        eligible.sort(key=lambda c: c.rank_score, reverse=True)
+        top = eligible[:top_k]
+
+        # Holdout: 10% randomly sampled from the top set.
+        holdout_n = max(1, int(len(top) * _HOLDOUT_FRACTION)) if top else 0
+        rng = random.Random(seed)
+        if top:
+            for c in rng.sample(top, min(holdout_n, len(top))):
+                holdout_ids.add(c.novel_id)
 
     work_ids = _persist(db_path, top, holdout_ids, selection_round)
     return {
