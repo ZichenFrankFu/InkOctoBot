@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet } from "../api/client";
+import { swrHydrate, swrStore } from "../api/swr";
 import type { ReferenceWork, MediaType } from "../api/types";
 import { splitGenres } from "../utils/genre";
+import ReferenceSearchPage from "./ReferenceSearchPage";
 
 const MEDIA_TYPES: { value: MediaType; label: string; color: string }[] = [
   { value: "web_novel", label: "网文", color: "var(--accent)" },
@@ -102,11 +104,18 @@ function readFeatureProgress(w: ReferenceWork): FeatureProgress {
 interface Props {
   onNavigate?: (tab: string) => void;
   onSelectWork?: (refId: string) => void;
+  /** Open directly on a subtab — "tools" hosts 参考数据库工具. */
+  initialTab?: "overview" | "tools";
 }
 
-export default function ReferenceOverviewPage({ onNavigate }: Props) {
-  const [works, setWorks] = useState<ReferenceWork[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function ReferenceOverviewPage({ onNavigate, initialTab }: Props) {
+  // 参考数据库工具 merged in as a subtab (用户需求 #3).
+  const [subTab, setSubTab] = useState<"overview" | "tools">(initialTab || "overview");
+  // 秒开: 同步水合上次作品列表，后台刷新（stale-while-revalidate）。
+  const [works, setWorks] = useState<ReferenceWork[]>(
+    () => swrHydrate<ReferenceWork[]>("ref_overview_works") || [],
+  );
+  const [loading, setLoading] = useState(works.length === 0);
   const [genreFilter, setGenreFilter] = useState<string>("");
   const [genreOpen, setGenreOpen] = useState<boolean>(true);
 
@@ -117,6 +126,7 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
         "/api/references/works?limit=500"
       );
       setWorks(r.items || []);
+      swrStore("ref_overview_works", r.items || []);
     } catch (e) {
       console.error(e);
     }
@@ -171,19 +181,51 @@ export default function ReferenceOverviewPage({ onNavigate }: Props) {
     // imposes height: 100% + flex column which clipped long content at
     // the viewport edge regardless of inline overflow overrides.
     <div style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto" }}>
-      <div className="page-header" style={{ paddingBottom: 12 }}>
+      <div className="page-header" style={{ paddingBottom: 8 }}>
         <div className="page-header-row">
           <div>
-            <h2>数据库概览</h2>
+            <h2>参考总览</h2>
             <p>参考作品数据库的全局视图 · 共 {stats.total} 部作品</p>
           </div>
-          <div className="flex gap-8">
-            <button className="btn" onClick={load}>刷新</button>
-          </div>
+          {subTab === "overview" && (
+            <div className="flex gap-8">
+              <button className="btn" onClick={load}>刷新</button>
+            </div>
+          )}
         </div>
       </div>
 
-      {loading && stats.total === 0 ? (
+      {/* Subtab strip: 总览 | 数据库工具 (搜索/对比/共通点学习/索引) */}
+      <div style={{
+        display: "flex", gap: 0,
+        borderBottom: "1px solid var(--border)",
+        marginBottom: 14,
+      }}>
+        {([
+          { key: "overview" as const, label: "总览" },
+          { key: "tools"    as const, label: "数据库工具" },
+        ]).map(opt => (
+          <button
+            key={opt.key}
+            onClick={() => setSubTab(opt.key)}
+            style={{
+              padding: "10px 20px",
+              fontSize: 13,
+              fontWeight: subTab === opt.key ? 700 : 400,
+              color: subTab === opt.key ? "var(--accent)" : "var(--text-secondary)",
+              background: "none",
+              border: "none",
+              borderBottom: subTab === opt.key ? "2px solid var(--accent)" : "2px solid transparent",
+              cursor: "pointer",
+              marginBottom: -1,
+            }}
+          >{opt.label}</button>
+        ))}
+      </div>
+
+      {subTab === "tools" ? (
+        <ReferenceSearchPage embedded onNavigate={onNavigate} />
+      ) : loading && stats.total === 0 ? (
         <div className="empty-state" style={{ paddingTop: 60 }}><p>加载中...</p></div>
       ) : stats.total === 0 ? (
         <div className="empty-state" style={{ paddingTop: 60 }}>

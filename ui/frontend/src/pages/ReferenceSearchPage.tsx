@@ -4,6 +4,7 @@ import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { ReferenceWork } from "../api/types";
 import CompareWorksPanel from "../components/CompareWorksPanel";
+import CommonPatternLearningPanel from "../components/reference/CommonPatternLearningPanel";
 
 interface SearchHit {
   id: string;
@@ -53,7 +54,7 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   error:   { label: "出错",   color: "var(--error)" },
 };
 
-type RsTab = "search" | "index" | "compare";
+type RsTab = "search" | "index" | "compare" | "learn";
 
 interface Props {
   onNavigate?: (tab: string) => void;
@@ -66,9 +67,12 @@ interface Props {
   /** Replace the H1 title — lets the wrapper page brand the content. */
   pageTitle?: string;
   pageSubtitle?: string;
+  /** Hosted as a subtab inside 参考总览: drop the page header and
+   *  outer padding, keep the internal tool tabs. */
+  embedded?: boolean;
 }
 
-export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, pageTitle, pageSubtitle }: Props) {
+export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, pageTitle, pageSubtitle, embedded }: Props) {
   const { toast } = useToast();
   const { confirm } = useDialog();
   const [works, setWorks] = useState<ReferenceWork[]>([]);
@@ -169,6 +173,15 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
   const buildIndex = async (refId: string, includeL3: boolean) => {
     setIndexing(prev => ({ ...prev, [refId]: true }));
     try {
+      // 性能预期·机制1: 执行前给出预计耗时（同硬件历史优先）。
+      try {
+        const est = await apiGet<any>(
+          `/api/references/works/${refId}/index/estimate?include_l3=${includeL3}`);
+        if (est?.display) {
+          toast(`开始建立索引，预计耗时 ${est.display}` +
+            (est.basis === "history" ? `（按 ${est.samples} 次历史运行估算）` : "（默认估算）"), "info");
+        }
+      } catch {}
       const r = await apiPost<any>(
         `/api/references/works/${refId}/index/run`,
         { level: "all", include_l3: includeL3 },
@@ -239,27 +252,30 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
   };
 
   return (
-    <div style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto" }}>
-      <div className="page-header" style={{ paddingBottom: 12 }}>
-        <div className="page-header-row">
-          <div>
-            <h2>{pageTitle || "参考数据库工具"}</h2>
-            <p>{pageSubtitle || "参考作品搜索 · 作品对比 · 索引管理"}</p>
-          </div>
-          <div className="flex gap-8">
-            <button className="btn" onClick={refreshAll}>刷新</button>
+    <div style={embedded ? {} : { padding: "16px 20px", maxWidth: 1400, margin: "0 auto" }}>
+      {!embedded && (
+        <div className="page-header" style={{ paddingBottom: 12 }}>
+          <div className="page-header-row">
+            <div>
+              <h2>{pageTitle || "参考数据库工具"}</h2>
+              <p>{pageSubtitle || "参考作品搜索 · 作品对比 · 索引管理"}</p>
+            </div>
+            <div className="flex gap-8">
+              <button className="btn" onClick={refreshAll}>刷新</button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Tabs */}
       {!hideTabs && (
-      <div className="flex" style={{ marginBottom: 12, gap: 4, borderBottom: "1px solid var(--border)" }}>
+      <div className="flex" style={{ marginBottom: 12, gap: 4, borderBottom: "1px solid var(--border)", alignItems: "center" }}>
         {([
           // 灵感库 tab removed — promoted to a dedicated page in the
           // 灵感数据库 nav group (see InspirationLibraryPage).
           { key: "search"  as const, label: "参考作品搜索" },
           { key: "compare" as const, label: "作品对比" },
+          { key: "learn"   as const, label: "共通点学习" },
           { key: "index"   as const, label: `索引管理 · ${works.length} 部作品` },
         ]).map(t => (
           <button
@@ -277,6 +293,11 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
             }}
           >{t.label}</button>
         ))}
+        {embedded && (
+          <button className="btn" style={{ marginLeft: "auto", fontSize: 11, padding: "3px 12px" }} onClick={refreshAll}>
+            刷新
+          </button>
+        )}
       </div>
       )}
 
@@ -432,6 +453,7 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
       )}
 
       {activeTab === "compare" && <CompareWorksPanel />}
+      {activeTab === "learn" && <CommonPatternLearningPanel works={works} />}
     </div>
   );
 }

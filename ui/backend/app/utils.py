@@ -105,6 +105,23 @@ def resolve_crawler_db_path() -> str:
         log.debug("crawler_db paths.yaml resolution failed: %s", e)
         return str(_s.repo_root / "data" / "InkOctoBot_Crawler.db")
 
+
+def crawler_db_version() -> str:
+    """Version key for cached market computations: crawler DB mtime+size.
+
+    Empty string means "no crawler DB" — callers short-circuit with an
+    empty payload instead of starting a doomed compute job.
+    """
+    import os
+
+    path = resolve_crawler_db_path()
+    try:
+        st = os.stat(path)
+        return f"{st.st_mtime_ns}.{st.st_size}"
+    except OSError:
+        return ""
+
+
 def get_rank_keys(repo_cfg) -> Dict[str, list[str]]:
     websites = getattr(repo_cfg, "WEBSITES", None) or {}
     res: Dict[str, list[str]] = {}

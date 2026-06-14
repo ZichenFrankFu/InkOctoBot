@@ -39,6 +39,32 @@ class HookImportance(str, Enum):
     C = "C"
 
 
+class HookScale(str, Enum):
+    """伏笔规模 (spec 故事线·机制4) — determines the expected payoff
+    window: 回旋镖 ≤3 章 / 事件线索 ≤20 章 / 大计划 ≤100 章 /
+    世界真相 无窗口（不超期）."""
+    boomerang   = "boomerang"     # 回旋镖
+    event_clue  = "event_clue"    # 事件线索
+    grand_plan  = "grand_plan"    # 大计划
+    world_truth = "world_truth"   # 世界真相
+
+
+# Expected payoff window in chapters per scale; None = never overdue.
+HOOK_SCALE_WINDOWS: dict[str, int | None] = {
+    HookScale.boomerang.value:   3,
+    HookScale.event_clue.value:  20,
+    HookScale.grand_plan.value:  100,
+    HookScale.world_truth.value: None,
+}
+
+HOOK_SCALE_LABELS: dict[str, str] = {
+    HookScale.boomerang.value:   "回旋镖",
+    HookScale.event_clue.value:  "事件线索",
+    HookScale.grand_plan.value:  "大计划",
+    HookScale.world_truth.value: "世界真相",
+}
+
+
 class SubplotStatus(str, Enum):
     setup      = "setup"
     building   = "building"
@@ -107,6 +133,9 @@ class HookDelta(BaseModel):
     description: str
     action: Literal["new", "mention", "progress", "resolve", "abandon"]
     importance: HookImportance = HookImportance.B
+    # 伏笔规模 — drives the payoff window when expected_payoff_chapter
+    # is not given (spec 故事线·机制4).
+    scale: HookScale = HookScale.event_clue
     expected_payoff_chapter: int | None = None
     evidence: str = ""
     # A1 (InkOS) — spoiler filter. Defaults preserve previous shape.

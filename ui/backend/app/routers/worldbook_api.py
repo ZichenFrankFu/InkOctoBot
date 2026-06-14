@@ -50,9 +50,22 @@ async def consistency_check(req: ConsistencyRequest):
         from llm.call_site import with_audit_and_manual_mode
         router_inst = _build_router(req.provider, req.model)
 
+        # spec 世界书功能: 结果需要看到 条目A与条目B、其中冲突的内容、
+        # 修改建议 — 要求结构化 JSON 输出。
         system_prompt = (
-            "你是一个世界观一致性检查专家。仔细检查以下世界书条目是否存在内部矛盾或逻辑冲突。"
-            "列出所有发现的问题，每条一行。如果没有矛盾，请说明设定一致性良好。"
+            "你是一个世界观一致性检查专家。仔细检查以下世界书条目两两之间"
+            "是否存在矛盾或逻辑冲突。\n"
+            "输出 JSON：\n"
+            "{\"conflicts\": [{\"entry_a\": \"条目A标题\", "
+            "\"entry_b\": \"条目B标题\", "
+            "\"conflict\": \"冲突的具体内容\", "
+            "\"suggestion\": \"修改建议\"}]}\n"
+            "要求：\n"
+            "1. entry_a / entry_b 必须使用条目的原标题\n"
+            "2. conflict 要引用双方冲突的原文表述\n"
+            "3. suggestion 给出可执行的修改方案（改哪一条、怎么改）\n"
+            "4. 没有矛盾时输出 {\"conflicts\": []}\n"
+            "5. 禁止使用 emoji"
         )
         user_prompt = f"请检查以下世界书条目的一致性：\n\n{text}"
 
@@ -78,19 +91,59 @@ async def consistency_check(req: ConsistencyRequest):
             provider_override=req.provider, model_override=req.model,
         )
         content = content.strip()
-        issues = []
-        for line in content.split("\n"):
-            line = line.strip()
-            if line and not line.startswith("没有") and not line.startswith("未发现") and not line.startswith("设定一致"):
-                # Remove leading number/bullet
-                cleaned = line.lstrip("0123456789.-）)、· ")
-                if cleaned:
-                    issues.append(cleaned)
 
+        # Structured conflicts (spec shape). Fallback: legacy line split
+        # when the model didn't return parseable JSON.
+        conflicts: list[dict] = []
+        try:
+            import json as _json
+            import re as _re
+            s = content
+            if s.startswith("```"):
+                s = _re.sub(r"^```(?:json)?\s*", "", s)
+                s = _re.sub(r"\s*```$", "", s)
+            m = _re.search(r"\{.*\}", s, flags=_re.DOTALL)
+            if m:
+                raw_conflicts = _json.loads(m.group(0)).get("conflicts") or []
+                for c in raw_conflicts:
+                    if not isinstance(c, dict):
+                        continue
+                    conflict_text = str(c.get("conflict") or "").strip()
+                    if not conflict_text:
+                        continue
+                    conflicts.append({
+                        "entry_a": str(c.get("entry_a") or "").strip(),
+                        "entry_b": str(c.get("entry_b") or "").strip(),
+                        "conflict": conflict_text,
+                        "suggestion": str(c.get("suggestion") or "").strip(),
+                    })
+        except Exception:
+            conflicts = []
+
+        issues = [
+            f"{c['entry_a']} × {c['entry_b']}：{c['conflict']}"
+            for c in conflicts
+        ]
+        if not conflicts:
+            # Legacy free-text fallback parse.
+            for line in content.split("\n"):
+                line = line.strip()
+                if line and not line.startswith("没有") and not line.startswith("未发现") \
+                        and not line.startswith("设定一致") and not line.startswith("{") \
+                        and not line.startswith("}") and "conflicts" not in line:
+                    cleaned = line.lstrip("0123456789.-）)、· ")
+                    if cleaned and cleaned not in ("[", "]", "```", "```json"):
+                        issues.append(cleaned)
+
+        result_text = (
+            "未发现明显矛盾，世界观设定一致性良好。" if not issues
+            else f"发现 {len(issues)} 处潜在冲突，详见列表。"
+        )
         return {
             "status": "ok",
-            "result": content,
-            "issues": issues if issues else [],
+            "result": result_text,
+            "issues": issues,
+            "conflicts": conflicts,
         }
     except Exception as e:
         logger.error("Consistency check error: %s", e)

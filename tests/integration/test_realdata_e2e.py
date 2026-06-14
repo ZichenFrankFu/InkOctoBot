@@ -353,15 +353,15 @@ class TestEditLearningClosedLoop(unittest.TestCase):
         ``load_user_style_preferences`` helper (which the Writer's
         ``user_preferences`` block reads through) must surface the
         learned preference text."""
-        # Bypass the LLM and seed a pref directly to keep the assertion
-        # focused on the loader → prompt path.
+        # Bypass the LLM and seed a CONFIRMED pref directly (用户偏好·机制4:
+        # 入库确认后才注入) to keep the assertion on the loader → prompt path.
         with sqlite3.connect(self.db) as con:
             con.execute(
                 """INSERT INTO user_style_preferences
                    (pref_id, project_id, preference_type, description,
-                    confidence, observation_count)
+                    confidence, observation_count, is_confirmed)
                    VALUES ('prf_e2e', 'rt_proj', 'style',
-                           '偏好航天技术细节真实感', 0.45, 2)""",
+                           '偏好航天技术细节真实感', 0.45, 2, 1)""",
             )
             con.commit()
         from ui.backend.app.services.style_preferences import (

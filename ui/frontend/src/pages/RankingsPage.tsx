@@ -34,12 +34,25 @@ const platformLabel = (p: string) =>
  *  + tab strip, not Rankings' own header. The "AI 总结开篇技巧" panel
  *  is also moved to MarketFeatureExtractionPage per the latest IA — so
  *  hideOpeningAi suppresses it here too. */
+/** Deep-link target: jump straight to a snapshot's entries (used by the
+ *  市场总览 概览 tab 「最近快照」 rows). */
+export interface RankSnapshotTarget {
+  rank_list_id: number;
+  snapshot_id: number;
+  snapshot_date?: string;
+  item_count?: number;
+  platform?: string;
+  rank_family?: string;
+  rank_sub_cat?: string;
+}
+
 interface Props {
   hideOwnHeader?: boolean;
   hideOpeningAi?: boolean;
+  initialTarget?: RankSnapshotTarget | null;
 }
 
-export default function RankingsPage({ hideOwnHeader = false, hideOpeningAi = false }: Props = {}) {
+export default function RankingsPage({ hideOwnHeader = false, hideOpeningAi = false, initialTarget = null }: Props = {}) {
   const [platform, setPlatform] = useState<PlatformFilter>("");
   const [step, setStep] = useState<Step>("lists");
   const [loading, setLoading] = useState(false);
@@ -153,6 +166,43 @@ export default function RankingsPage({ hideOwnHeader = false, hideOpeningAi = fa
       setPanelLoading(false);
     }
   }, []);
+
+  /* ── deep-link: jump directly to a snapshot's entries ── */
+  const consumedTarget = React.useRef<number | null>(null);
+  const drillToTarget = useCallback(async (t: RankSnapshotTarget) => {
+    const list = {
+      rank_list_id: t.rank_list_id, platform: t.platform,
+      rank_family: t.rank_family, rank_sub_cat: t.rank_sub_cat,
+    } as RankList;
+    setSelectedList(list);
+    setSelectedSnapshot({
+      snapshot_id: t.snapshot_id, snapshot_date: t.snapshot_date,
+      item_count: t.item_count, rank_list_id: t.rank_list_id,
+    } as RankSnapshot);
+    setStep("entries");
+    setLoading(true);
+    // Load sibling snapshots so the breadcrumb back-nav works.
+    apiGet<{ rows: RankSnapshot[] }>(`/api/db/snapshots?rank_list_id=${t.rank_list_id}`)
+      .then(r => setSnapshots(Array.isArray(r.rows) ? r.rows : []))
+      .catch(() => { /* breadcrumb-only, non-fatal */ });
+    try {
+      const r = await apiGet<{ rows: RankEntry[] }>(`/api/db/entries?snapshot_id=${t.snapshot_id}`);
+      setEntries(Array.isArray(r.rows) ? r.rows : []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Declared AFTER the platform-load effect so its synchronous step="lists"
+  // reset is overridden by step="entries" on first mount.
+  useEffect(() => {
+    if (!initialTarget) return;
+    if (consumedTarget.current === initialTarget.snapshot_id) return;
+    consumedTarget.current = initialTarget.snapshot_id;
+    drillToTarget(initialTarget);
+  }, [initialTarget, drillToTarget]);
 
   /* ── breadcrumb navigation ── */
   const goToLists = () => {

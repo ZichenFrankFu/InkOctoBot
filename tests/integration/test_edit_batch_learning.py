@@ -321,15 +321,16 @@ class TestLearnedPrefReachesGeneration(unittest.TestCase):
 
     def test_learned_pref_reaches_next_generation_prompt(self) -> None:
         db = _fresh_db()
-        # Seed a confidence-≥0.3 preference directly (mirrors what the
-        # batch extractor would produce after one or two batches).
+        # Seed a USER-CONFIRMED preference directly (mirrors batch
+        # extraction followed by the 确认 action — spec 用户偏好·机制4:
+        # only confirmed preferences are injected into prompts).
         with sqlite3.connect(db) as con:
             con.execute(
                 """INSERT INTO user_style_preferences
                    (pref_id, project_id, preference_type, description,
-                    confidence, observation_count)
+                    confidence, observation_count, is_confirmed)
                    VALUES ('prf_test1', 'p1', 'style',
-                           '偏好克制叙述', 0.45, 2)""",
+                           '偏好克制叙述', 0.45, 2, 1)""",
             )
             con.commit()
 

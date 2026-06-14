@@ -186,12 +186,20 @@ export default function WorldBookPage({ projectId, projects }: Props) {
     setCheckMessage(null);
     try {
       const entries = items.map((e: any) => `[${catLabel(e.category, customCategories)}] ${e.title}: ${e.content || ""}`).join("\n");
-      const resp = await apiPost<{ result: string; issues?: any[] }>("/api/worldbook/consistency-check", {
+      const resp = await apiPost<{ result: string; issues?: any[]; conflicts?: any[] }>("/api/worldbook/consistency-check", {
         project_id: projectId,
         entries_text: entries,
       });
-      if (resp.issues && resp.issues.length > 0) {
-        // Parse issues into table format
+      // 结构化结果优先（spec: 条目A × 条目B + 冲突内容 + 修改建议）
+      if (resp.conflicts && resp.conflicts.length > 0) {
+        setCheckIssues(resp.conflicts.map((c: any) => ({
+          entry1: c.entry_a || "",
+          entry2: c.entry_b || "",
+          conflict: c.conflict || "",
+          suggestion: c.suggestion || "",
+        })));
+      } else if (resp.issues && resp.issues.length > 0) {
+        // Legacy free-text fallback
         const parsed: ConsistencyIssue[] = resp.issues.map((issue: any) => {
           if (typeof issue === "string") {
             return { entry1: "", entry2: "", conflict: issue, suggestion: "" };

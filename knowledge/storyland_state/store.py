@@ -258,13 +258,23 @@ class StorylandStateStore:
             if h.action == "new":
                 hook_id = hook_id or _new_id()
                 threshold = self._pressure_threshold(h.importance.value)
+                # 机制4: 预期回收章节默认 = 埋设章 + 规模窗口；用户/LLM
+                # 显式给出的 expected_payoff_chapter 优先；世界真相无窗口。
+                from .schemas import HOOK_SCALE_WINDOWS
+                scale = getattr(h, "scale", None)
+                scale_value = scale.value if scale is not None else "event_clue"
+                expected = h.expected_payoff_chapter
+                if expected is None:
+                    window = HOOK_SCALE_WINDOWS.get(scale_value)
+                    if window is not None:
+                        expected = deltas.chapter_num + window
                 import json as _json
                 conn.execute(
                     Q.INSERT_HOOK,
                     (
                         hook_id, self.project_id, h.description, "open",
-                        h.importance.value, deltas.chapter_num,
-                        h.expected_payoff_chapter, deltas.chapter_num,
+                        h.importance.value, scale_value, deltas.chapter_num,
+                        expected, deltas.chapter_num,
                         deltas.chapter_num, threshold,
                         1 if h.is_spoiler else 0,
                         _json.dumps(list(h.revealed_to_chars), ensure_ascii=False),
@@ -441,14 +451,24 @@ class StorylandStateStore:
         rows = conn.execute(
             Q.SCAN_FOR_PRESSURE, (self.project_id,),
         ).fetchall()
-        for hook_id, status, importance, last_advance, threshold in rows:
+        for (hook_id, status, importance, last_advance, threshold,
+             scale, expected_payoff) in rows:
             effective_threshold = (
                 self._pressure_threshold(importance)
                 if threshold is None
                 else threshold
             )
             last = last_advance if last_advance is not None else 0
-            if current_chapter - last >= effective_threshold:
+            stale = current_chapter - last >= effective_threshold
+            # 机制4: 超期 = 当前章号超过预期回收章节（世界真相
+            # expected_payoff 为 NULL，永不超期）。到达预期章节当章
+            # 仅由 loader 标注"应回收"（机制7），不在此翻转状态。
+            overdue = (
+                expected_payoff is not None
+                and scale != "world_truth"
+                and current_chapter > expected_payoff
+            )
+            if stale or overdue:
                 conn.execute(
                     Q.UPDATE_HOOK_STATUS,
                     (HookStatus.pressured.value, hook_id),

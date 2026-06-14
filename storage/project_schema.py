@@ -179,12 +179,48 @@ CREATION_DDL = [
         observation_count INTEGER NOT NULL DEFAULT 0,
         examples_json TEXT NOT NULL DEFAULT '[]',
         is_confirmed INTEGER NOT NULL DEFAULT 0,
+        -- v3.1 自学习 (spec 4.1): 来源章节 + 来源类型
+        -- (edit_inference 手动修改推断 / special_requirements 特殊要求)
+        source_chapters_json TEXT NOT NULL DEFAULT '[]',
+        source_type TEXT NOT NULL DEFAULT 'edit_inference',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_prefs_project ON user_style_preferences(project_id, preference_type);",
+
+    # ── Operation log (spec EventBus·机制3/机制4: 持久化日志，
+    #    可被日志查看器与回溯模式读取) ──
+    """
+    CREATE TABLE IF NOT EXISTS operation_log (
+        log_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT '',
+        project_id TEXT NOT NULL DEFAULT '',
+        data_json TEXT NOT NULL DEFAULT '{}',
+        event_ts REAL NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_oplog_project "
+    "ON operation_log(project_id, event_ts);",
+    "CREATE INDEX IF NOT EXISTS idx_oplog_type "
+    "ON operation_log(event_type, event_ts);",
+
+    # ── Preference learning runs (spec 用户偏好·机制2: 每 N 章批量) ──
+    """
+    CREATE TABLE IF NOT EXISTS preference_learning_runs (
+        run_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        chapters_covered_json TEXT NOT NULL DEFAULT '[]',
+        chapter_count_at_run INTEGER NOT NULL DEFAULT 0,
+        prefs_emitted INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_pref_runs_project ON preference_learning_runs(project_id, created_at);",
 
     # ── Constraint rules (persistent) ──
     """
@@ -437,8 +473,12 @@ CREATION_DDL = [
         skill_id TEXT PRIMARY KEY,
         display_name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
+        -- v3.1: 'knowledge' = 专业知识 skill (spec 4.2);
+        -- 'self_learned' = 自学习 skill (多作品共通点, spec 参考库功能10).
+        -- Both are DB-native (no filesystem counterpart; survive
+        -- registry sync).
         kind TEXT NOT NULL DEFAULT 'builtin'
-            CHECK (kind IN ('builtin','learned')),
+            CHECK (kind IN ('builtin','learned','knowledge','self_learned')),
         body_snippet TEXT NOT NULL DEFAULT '',
         embedding_json TEXT NOT NULL DEFAULT '[]',
         embedding_text_hash TEXT NOT NULL DEFAULT '',
@@ -487,6 +527,9 @@ CREATION_DDL = [
         other_changes TEXT NOT NULL DEFAULT '',
         bound_chapters_json TEXT NOT NULL DEFAULT '[]',
         transition_complete_chapter INTEGER,
+        -- v3.1 角色卡·机制2: 转变态 3 档位（动摇 wavering / 试探 probing /
+        -- 倾向 leaning），按角色故事线推进章节逐章设置: {"<章号>": "档位"}
+        transition_stages_json TEXT NOT NULL DEFAULT '{}',
         bound_by TEXT NOT NULL DEFAULT 'user'
             CHECK (bound_by IN ('user','auto')),
         bound_at TIMESTAMP,
@@ -632,6 +675,13 @@ def _ensure_skill_index_v2_columns(conn: sqlite3.Connection) -> None:
     EMBEDDING_SPEC Phase 2: every embedding-bearing table tracks the
     model that produced the stored vector so the loader can tell when
     a switch-model has invalidated the cache.
+
+    v3.1: pre-existing DBs carry a CHECK that only allows
+    builtin/learned — knowledge skills (spec 4.2) need 'knowledge'.
+    SQLite can't alter a CHECK, so detect the stale constraint via the
+    stored CREATE sql and rebuild the table in place (data preserved;
+    project_skill_pins has no FK on skill_index, only an app-level
+    join, so the rebuild is safe).
     """
     cur = conn.cursor()
     try:
@@ -642,6 +692,40 @@ def _ensure_skill_index_v2_columns(conn: sqlite3.Connection) -> None:
         cur.execute(
             "ALTER TABLE skill_index ADD COLUMN "
             "embedding_model_key TEXT NOT NULL DEFAULT ''"
+        )
+
+    row = cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='skill_index'",
+    ).fetchone()
+    create_sql = (row[0] or "") if row else ""
+    if "self_learned" not in create_sql:
+        cur.execute("ALTER TABLE skill_index RENAME TO skill_index_v30")
+        cur.execute(
+            """CREATE TABLE skill_index (
+                   skill_id TEXT PRIMARY KEY,
+                   display_name TEXT NOT NULL,
+                   description TEXT NOT NULL DEFAULT '',
+                   kind TEXT NOT NULL DEFAULT 'builtin'
+                       CHECK (kind IN ('builtin','learned','knowledge','self_learned')),
+                   body_snippet TEXT NOT NULL DEFAULT '',
+                   embedding_json TEXT NOT NULL DEFAULT '[]',
+                   embedding_text_hash TEXT NOT NULL DEFAULT '',
+                   embedding_model_key TEXT NOT NULL DEFAULT '',
+                   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+               )"""
+        )
+        cur.execute(
+            "INSERT INTO skill_index (skill_id, display_name, description, "
+            "kind, body_snippet, embedding_json, embedding_text_hash, "
+            "embedding_model_key, updated_at) "
+            "SELECT skill_id, display_name, description, kind, body_snippet, "
+            "embedding_json, embedding_text_hash, embedding_model_key, "
+            "updated_at FROM skill_index_v30"
+        )
+        cur.execute("DROP TABLE skill_index_v30")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_skill_index_kind "
+            "ON skill_index(kind)"
         )
 
 
@@ -690,6 +774,47 @@ def _ensure_episodic_events_pc_columns(conn: sqlite3.Connection) -> None:
     for col, ddl in _EPISODIC_EVENTS_PC_COLUMNS:
         if col not in existing:
             cur.execute(f"ALTER TABLE episodic_events ADD COLUMN {col} {ddl}")
+
+
+# v3.1 自学习 (spec 4.1): 来源章节 / 来源类型 columns on
+# user_style_preferences for DBs created before this release.
+_USER_PREFS_V31_COLUMNS = [
+    ("source_chapters_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("source_type",          "TEXT NOT NULL DEFAULT 'edit_inference'"),
+]
+
+
+def _ensure_user_prefs_v31_columns(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    try:
+        existing = {
+            row[1]
+            for row in cur.execute("PRAGMA table_info(user_style_preferences)")
+        }
+    except sqlite3.OperationalError:
+        return
+    for col, ddl in _USER_PREFS_V31_COLUMNS:
+        if col not in existing:
+            cur.execute(
+                f"ALTER TABLE user_style_preferences ADD COLUMN {col} {ddl}"
+            )
+
+
+def _ensure_snapshot_v31_columns(conn: sqlite3.Connection) -> None:
+    """v3.1 角色卡·机制2: 转变态 3 档位 column for pre-existing DBs."""
+    cur = conn.cursor()
+    try:
+        existing = {
+            row[1]
+            for row in cur.execute("PRAGMA table_info(character_snapshots)")
+        }
+    except sqlite3.OperationalError:
+        return
+    if "transition_stages_json" not in existing:
+        cur.execute(
+            "ALTER TABLE character_snapshots ADD COLUMN "
+            "transition_stages_json TEXT NOT NULL DEFAULT '{}'"
+        )
 
 
 def _ensure_chapter_summaries_v3_columns(conn: sqlite3.Connection) -> None:
@@ -783,6 +908,8 @@ def ensure_creation_tables(conn: sqlite3.Connection) -> None:
     _ensure_projects_market_columns(conn)
     _ensure_chapter_summaries_v3_columns(conn)
     _ensure_episodic_events_pc_columns(conn)
+    _ensure_user_prefs_v31_columns(conn)
+    _ensure_snapshot_v31_columns(conn)
     _drop_v1_redundant_objects(conn)
     conn.commit()
 

@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useCallback } from "react";
-import { apiGet } from "../api/client";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useToast } from "../components/shared/Toast";
+import { swrHydrate, swrStore, pollCompute, PollController } from "../api/swr";
 
 /* ── trend analysis types ── */
 interface TrendResult {
@@ -141,11 +141,15 @@ export default function AnalysisDashboardPage({ hideOwnHeader = false }: { hideO
   const [trendPlatform, setTrendPlatform] = useState("both");
   const [lookback, setLookback] = useState("all");
   const [topK, setTopK] = useState(20);
-  const [trendData, setTrendData] = useState<TrendResult | null>(null);
+  const [trendData, setTrendData] = useState<TrendResult | null>(
+    () => swrHydrate<TrendResult>("analysis_both_all_20"),
+  );
   const [loadingTrend, setLoadingTrend] = useState(false);
+  const [trendStale, setTrendStale] = useState(false);
+  const [trendComputing, setTrendComputing] = useState(false);
   const [trendError, setTrendError] = useState("");
   const [subTab, setSubTab] = useState<SubTab>("tags");
-  const [autoRan, setAutoRan] = useState(false);
+  const pollRef = useRef<PollController | null>(null);
 
   /* sort states */
   const [tagSort, setTagSort] = useState<SortConfig>({ key: "avg_heat", dir: "desc" });
@@ -158,68 +162,63 @@ export default function AnalysisDashboardPage({ hideOwnHeader = false }: { hideO
     setter(prev => prev.key === field ? { key: field, dir: prev.dir === "asc" ? "desc" : "asc" } : { key: field, dir: "desc" });
   };
 
-  /* ── Auto-run trend analysis on mount, but skip when the
-   *    crawler DB hasn't changed since the cached result. ── */
-  useEffect(() => {
-    if (autoRan) return;
-    setAutoRan(true);
-    (async () => {
-      try {
-        const m = await apiGet<{ mtime: number; size?: number; exists: boolean }>(
-          "/api/db/db-mtime",
-        );
-        const cacheKey = `inkoctobot_analysis_cache_v1_${trendPlatform}_${lookback}_${topK}`;
-        const mtimeKey = m.exists ? `${m.mtime}.${m.size ?? 0}` : "";
-        if (mtimeKey) {
-          const raw = sessionStorage.getItem(cacheKey);
-          if (raw) {
-            const c = JSON.parse(raw);
-            if (c.mtimeKey === mtimeKey && c.data) {
-              setTrendData(c.data);
-              return;
-            }
-          }
-        }
-        runTrendAnalysis(mtimeKey, cacheKey);
-      } catch {
-        runTrendAnalysis();
-      }
-    })();
-  }, []);
-
-  /* ── Run trend analysis (GET /api/analysis/run) ── */
-  const runTrendAnalysis = useCallback((mtimeKey?: string, cacheKey?: string) => {
-    setLoadingTrend(true);
+  /* ── Trend analysis via the server compute cache.
+   *
+   * 服务器响应永远是即时的：上次完成的结果（带 stale 标记）或
+   * computing。重计算只在后台单飞线程上跑 — 不再占请求线程
+   * （曾导致全站无限加载）。stale 时只提示「数据已更新」，由用户
+   * 决定何时重新分析。── */
+  const runTrendAnalysis = useCallback((refresh: boolean) => {
+    pollRef.current?.cancel();
     setTrendError("");
+    if (refresh) setTrendComputing(true);
+    const swrKey = `analysis_${trendPlatform}_${lookback}_${topK}`;
     const params = new URLSearchParams({
       platform: trendPlatform,
       lookback,
       top_k: String(topK),
     });
-    apiGet<TrendResult>(`/api/analysis/run?${params}`)
-      .then(res => {
-        if (res.error) {
-          setTrendError(res.message || res.error);
-          setTrendData(null);
-        } else {
-          setTrendData(res);
-          if (mtimeKey && cacheKey) {
-            try {
-              sessionStorage.setItem(cacheKey, JSON.stringify({
-                mtimeKey, data: res,
-              }));
-            } catch { /* ignore quota */ }
+    if (refresh) params.set("refresh", "true");
+    pollRef.current = pollCompute<TrendResult>(
+      `/api/analysis/run?${params}`,
+      {
+        onReady: (payload, env) => {
+          if (payload.error && payload.error !== "no_data") {
+            setTrendError(payload.message || payload.error);
+          } else {
+            setTrendData(payload);
+            swrStore(swrKey, payload);
           }
-        }
-      })
-      .catch(e => {
-        const msg = e?.message || String(e);
-        setTrendError(msg);
-        setTrendData(null);
-        toast(msg || "分析失败", "error");
-      })
-      .finally(() => setLoadingTrend(false));
-  }, [trendPlatform, lookback, topK, toast]);
+          setTrendStale(!!env.stale);
+          setTrendComputing(!!env.computing);
+          setLoadingTrend(false);
+        },
+        onComputing: () => {
+          setTrendComputing(true);
+          setLoadingTrend(prev => prev || !trendData);
+        },
+        onError: (msg) => {
+          setTrendError(msg);
+          setTrendComputing(false);
+          setLoadingTrend(false);
+          toast(msg || "分析失败", "error");
+        },
+      },
+    );
+  }, [trendPlatform, lookback, topK, toast, trendData]);
+
+  /* Mount / param change: hydrate last result instantly, then ask the
+   * server (plain read — first-ever visit auto-starts the compute). */
+  useEffect(() => {
+    const cached = swrHydrate<TrendResult>(
+      `analysis_${trendPlatform}_${lookback}_${topK}`,
+    );
+    if (cached) setTrendData(cached);
+    else if (!trendData) setLoadingTrend(true);
+    runTrendAnalysis(false);
+    return () => pollRef.current?.cancel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trendPlatform, lookback, topK]);
 
   const trendSubTabs: { key: SubTab; label: string; show?: boolean }[] = [
     { key: "tags", label: "标签趋势" },
@@ -274,12 +273,29 @@ export default function AnalysisDashboardPage({ hideOwnHeader = false }: { hideO
                     {[10, 15, 20, 30, 50].map(k => <option key={k} value={k}>{k}</option>)}
                   </select>
                 </div>
-                <button className="btn-primary" onClick={() => runTrendAnalysis()} disabled={loadingTrend}>
-                  {loadingTrend ? "分析中..." : "重新分析"}
+                <button className="btn-primary" onClick={() => runTrendAnalysis(true)} disabled={trendComputing}>
+                  {trendComputing ? "后台分析中..." : "重新分析"}
                 </button>
               </div>
             </div>
           </div>
+
+          {/* 数据已更新 banner (stale-while-revalidate, 用户决定何时重算) */}
+          {trendStale && !trendComputing && (
+            <div className="card" style={{ marginBottom: 20, borderLeft: "3px solid var(--gold)" }}>
+              <div className="card-body" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                  市场数据已更新 — 当前展示的是上一次分析的结果。
+                </span>
+                <button className="btn-secondary" onClick={() => runTrendAnalysis(true)}>重新分析</button>
+              </div>
+            </div>
+          )}
+          {trendComputing && trendData && (
+            <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginBottom: 12 }}>
+              后台正在重新分析，完成后自动更新…
+            </div>
+          )}
 
           {/* Error */}
           {trendError && (
@@ -292,11 +308,11 @@ export default function AnalysisDashboardPage({ hideOwnHeader = false }: { hideO
             </div>
           )}
 
-          {/* Loading */}
-          {loadingTrend && <div className="loading"><div className="loading-spinner" />正在运行趋势分析...</div>}
+          {/* Loading — only when there is nothing cached to show */}
+          {loadingTrend && !trendData && <div className="loading"><div className="loading-spinner" />正在运行趋势分析（首次需要计算，之后秒开）...</div>}
 
           {/* Results */}
-          {!loadingTrend && trendData && !trendData.empty && (
+          {trendData && !trendData.empty && (
             <>
               <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginBottom: 16, display: "flex", gap: 16 }}>
                 <span>{trendData.start_date} ~ {trendData.end_date}</span>

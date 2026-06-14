@@ -34,6 +34,7 @@ from .loaders import (
     current_chapter_draft,
     foreshadowing,
     inspiration,
+    market_overview as market_overview_loader,
     platform_market,
     reader_memory as reader_memory_loader,
     reference as reference_loader,
@@ -67,6 +68,7 @@ _SECTION_GROUPS: dict[str, str] = {
     # system — directives & cross-chapter writing preferences
     "platform_directive":         "system",
     "user_preferences":           "system",
+    "market_overview":            "system",
     # context — background grounding (RAG-style)
     "worldbook":                  "context",
     "reference":                  "context",
@@ -84,6 +86,42 @@ _SECTION_GROUPS: dict[str, str] = {
 }
 
 
+# Per-agent loader profiles (spec § 3.3.5 "被Agent使用" + Builder·机制1).
+# Each agent only assembles the loaders listed for it; loaders outside
+# the profile neither run nor take part in budget allocation
+# (Loader预算分配·机制6). Block-id ↔ spec name mapping:
+# platform_directive = platform_style, subplots = plotline.
+AGENT_LOADER_PROFILES: dict[str, tuple[str, ...]] = {
+    # 单 Agent / 导演模式末步整合 — 14 loaders, target sum ≈ 24K
+    "writer": (
+        "platform_directive", "reference", "inspiration", "character_cards",
+        "worldbook", "chapter_outline", "reader_memory",
+        "current_chapter_draft", "storyland_state", "foreshadowing",
+        "subplots", "user_preferences", "user_special_requirements", "skills",
+    ),
+    # 导演模式第一步分镜
+    "scene_director": (
+        "inspiration", "character_cards", "worldbook", "chapter_outline",
+        "reader_memory", "storyland_state", "foreshadowing", "subplots",
+        "user_special_requirements", "skills",
+    ),
+    # 演员 — 行为指令与分镜由 pipeline 直接传入，非 loader
+    "actor": ("character_cards",),
+    # 开书助手
+    "book_opening": ("market_overview", "platform_directive", "reference"),
+}
+
+
+def agent_default_budget(agent: str | None) -> int:
+    """Sum of target budgets for the agent's profile loaders."""
+    profile = AGENT_LOADER_PROFILES.get(agent or "writer")
+    if not profile:
+        return TOTAL_TARGET
+    return sum(
+        LOADER_BUDGETS[b]["target"] for b in profile if b in LOADER_BUDGETS
+    )
+
+
 # Ordered list of (block_id, plan_callable). Plan callables take
 # ``(ctx_state)`` and return a ``LoaderPlan | None``. Builder runs each,
 # allocates, then renders.
@@ -96,6 +134,9 @@ def _plan_callables(
 ) -> list[tuple[str, Any]]:
     """Return [(block_id, plan_callable)] in declaration order."""
     return [
+        ("market_overview", lambda: market_overview_loader.plan(
+            project_id, exclude=excl.get("market_overview"),
+        )),
         ("platform_directive", lambda: platform_market.plan(
             project_id, exclude=excl.get("platform"),
         )),
@@ -122,6 +163,7 @@ def _plan_callables(
         )),
         ("foreshadowing", lambda: foreshadowing.plan(
             project_id, chapter_id, exclude=excl.get("foreshadowing"),
+            chapter_num=chapter_num,
         )),
         ("inspiration", lambda: inspiration.plan(
             project_id, chapter_synopsis, on_stage_characters,
@@ -170,6 +212,7 @@ def build_generation_context(
     revision_anchor: dict | None = None,
     linked_inspiration_ids: list[str] | None = None,
     total_budget: int | None = None,
+    agent: str | None = None,
 ) -> dict:
     """Assemble the RAG context for a chapter-generation call.
 
@@ -178,6 +221,10 @@ def build_generation_context(
     self-contained ``\\n\\n## 标题\\n...`` string ready to splice into
     the ``generation.single_agent`` template. ``rag_excludes`` carries
     the user's per-item de-selections (``"block::id"``).
+
+    ``agent`` selects a loader profile (``AGENT_LOADER_PROFILES``);
+    loaders outside the profile are skipped entirely and don't take
+    part in budget allocation. Default profile is ``"writer"``.
 
     Three-stage pipeline:
       1. **Plan**: each loader does its DB / embedding queries, returns
@@ -222,6 +269,13 @@ def build_generation_context(
         linked_inspiration_ids=linked_inspiration_ids,
     )
 
+    # Per-agent loader profile (Builder·机制1): only the agent's loaders
+    # run; the rest are dropped before planning so they don't consume
+    # budget (Loader预算分配·机制6).
+    profile = AGENT_LOADER_PROFILES.get(agent or "writer")
+    if profile is not None:
+        callables = [(bid, fn) for bid, fn in callables if bid in profile]
+
     plans: list[LoaderPlan] = []
     plan_ms: dict[str, float] = {}
     inactive: list[str] = []
@@ -244,7 +298,9 @@ def build_generation_context(
             plans.append(p)
 
     # ── Phase 2: allocate ───────────────────────────────────────
-    allocations = allocate(plans, total_budget=total_budget or TOTAL_TARGET)
+    allocations = allocate(
+        plans, total_budget=total_budget or agent_default_budget(agent),
+    )
 
     # ── Phase 3: render ─────────────────────────────────────────
     blocks: dict[str, str] = {bid: "" for bid, _ in callables}
@@ -337,6 +393,7 @@ def build_generation_context(
         "sections":       sections,
         "token_estimate": total_tokens,
         "diagnostics": {
+            "agent": agent or "writer",
             "total": {
                 "chars":            total_chars,
                 "tokens":           total_tokens,

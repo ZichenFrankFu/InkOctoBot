@@ -12,24 +12,20 @@ import DashboardPage from "./pages/DashboardPage";
 import RankingsPage from "./pages/RankingsPage";
 import ReferenceLibraryPage from "./pages/ReferenceLibraryPage";
 import ReferenceOverviewPage from "./pages/ReferenceOverviewPage";
-import ReferenceSearchPage from "./pages/ReferenceSearchPage";
 // TrendAnalysisPage merged into AnalysisDashboardPage
 import EditorPage from "./pages/EditorPage";
 import CharacterManagerPage from "./pages/CharacterManagerPage";
 import WorldBookPage from "./pages/WorldBookPage";
 import StorylinePage from "./pages/StorylinePage";
+import StorylandPage from "./pages/StorylandPage";
 import SettingsPage from "./pages/SettingsPage";
 // AnalysisDashboardPage is now embedded inside MarketFeatureExtractionPage
 import ProjectListPage from "./pages/ProjectListPage";
 import ProjectSetupPage from "./pages/ProjectSetupPage";
 import SkillsPage from "./pages/SkillsPage";
-import DevConsolePage from "./pages/DevConsolePage";
-import MarketSearchPage from "./pages/MarketSearchPage";
 // New IA per latest UI overhaul: 4 top-level groups
 // (市场 / 参考 / 灵感 / 创作), 学习反馈 absorbed into 智能体,
 // Truth 审阅 moved into 创作.
-import PasteInboxPage from "./pages/PasteInboxPage";
-import TruthReviewPage from "./pages/TruthReviewPage";
 import MarketOverviewPage from "./pages/MarketOverviewPage";
 import MarketFeatureExtractionPage from "./pages/MarketFeatureExtractionPage";
 import InspirationOverviewPage from "./pages/InspirationOverviewPage";
@@ -39,16 +35,16 @@ import InspirationLibraryPage from "./pages/InspirationLibraryPage";
 
 type Tab =
   // 市场数据库
-  | "market-overview" | "market-search" | "references" | "market-features"
+  | "market-overview" | "references" | "market-features"
   // 参考数据库 (references = 参考作品特征提取, references-search = 工具)
   | "references-overview" | "references-search"
   // 灵感数据库
   | "inspiration-overview" | "inspiration-search" | "inspiration-library"
   // 创作
   | "projects" | "project-setup" | "editor" | "characters"
-  | "worldbook" | "storyline" | "truth-review"
+  | "worldbook" | "storyline" | "storyland"
   // 智能体与设置
-  | "skills" | "settings" | "dev-console" | "paste-inbox"
+  | "skills" | "settings"
   // legacy / dashboard
   | "dashboard" | "rankings" | "analysis"
   // legacy aliases kept for deep-links from the inspector drawer:
@@ -70,17 +66,15 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "market-overview", icon: "≡", label: "市场总览" },
       // 市场特征提取 before 市场作品搜索 per latest UX call.
       { key: "market-features", icon: "△", label: "市场特征提取" },
-      { key: "market-search",   icon: "⌕", label: "市场作品搜索" },
     ],
   },
   {
     section: "参考数据库",
     items: [
+      // 参考总览内含「数据库工具」subtab（搜索/对比/共通点学习/索引）
       { key: "references-overview", icon: "▦", label: "参考总览" },
       // 参考作品详情 → 参考作品特征提取（renamed for clarity）
       { key: "references",          icon: "⊞", label: "参考作品特征提取" },
-      // 工具页内含: 参考作品搜索 / 作品对比 / 索引管理
-      { key: "references-search",   icon: "⚒", label: "参考数据库工具" },
     ],
   },
   {
@@ -100,8 +94,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "worldbook",    icon: "⊕", label: "世界书" },
       { key: "editor",       icon: "✎", label: "编辑器" },
       { key: "storyline",    icon: "─", label: "剧情线" },
-      // Truth 审阅 is per-project, belongs to 创作 group
-      { key: "truth-review", icon: "⚖", label: "Truth 审阅" },
+      { key: "storyland",    icon: "◎", label: "故事中世界" },
     ],
   },
   {
@@ -109,9 +102,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     items: [
       // 智能体 page now also hosts 写作偏好 + 领域知识 as tabs
       { key: "skills",       icon: "⚙", label: "智能体" },
-      { key: "paste-inbox",  icon: "▽", label: "粘贴收件箱" },
       { key: "settings",     icon: "☸", label: "设置" },
-      { key: "dev-console",  icon: "⚉", label: "开发者控制台" },
     ],
   },
 ];
@@ -255,7 +246,6 @@ function AppInner() {
 
         {/* 市场数据库 */}
         {tab === "market-overview" && <ErrorBoundary key="market-overview"><MarketOverviewPage /></ErrorBoundary>}
-        {tab === "market-search"   && <ErrorBoundary key="market-search"><MarketSearchPage /></ErrorBoundary>}
         {tab === "market-features" && <ErrorBoundary key="market-features"><MarketFeatureExtractionPage /></ErrorBoundary>}
         {/* Legacy aliases — kept so deep-links / bookmarks still resolve */}
         {tab === "rankings" && <ErrorBoundary key="rankings"><MarketOverviewPage /></ErrorBoundary>}
@@ -264,7 +254,8 @@ function AppInner() {
         {/* 参考数据库 */}
         {tab === "references-overview" && <ErrorBoundary key="references-overview"><ReferenceOverviewPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "references"          && <ErrorBoundary key="references"><ReferenceLibraryPage /></ErrorBoundary>}
-        {tab === "references-search"   && <ErrorBoundary key="references-search"><ReferenceSearchPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {/* Legacy alias — 参考数据库工具 merged into 参考总览 as the 数据库工具 subtab */}
+        {tab === "references-search"   && <ErrorBoundary key="references-search"><ReferenceOverviewPage initialTab="tools" onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
 
         {/* 灵感数据库 (NEW) */}
         {tab === "inspiration-overview" && <ErrorBoundary key="inspiration-overview"><InspirationOverviewPage /></ErrorBoundary>}
@@ -279,13 +270,11 @@ function AppInner() {
         {tab === "characters"    && <ErrorBoundary key="characters"><CharacterManagerPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
         {tab === "worldbook"     && <ErrorBoundary key="worldbook"><WorldBookPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
         {tab === "storyline"     && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
-        {tab === "truth-review"  && <ErrorBoundary key="truth-review"><TruthReviewPage projectId={activeProject} onOpenChapter={() => setTab("editor")} /></ErrorBoundary>}
+        {tab === "storyland" && <ErrorBoundary key="storyland"><StorylandPage projectId={activeProject} /></ErrorBoundary>}
 
         {/* 智能体与设置 */}
         {tab === "skills"      && <ErrorBoundary key="skills"><SkillsPage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
-        {tab === "paste-inbox" && <ErrorBoundary key="paste-inbox"><PasteInboxPage /></ErrorBoundary>}
         {tab === "settings"    && <ErrorBoundary key="settings"><SettingsPage /></ErrorBoundary>}
-        {tab === "dev-console" && <ErrorBoundary key="dev-console"><DevConsolePage projects={projects} activeProject={activeProject} /></ErrorBoundary>}
 
         {/* Legacy deep-link tab keys — route into the new IA where preferences / domain
             live as tabs inside SkillsPage. */}

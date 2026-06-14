@@ -16,8 +16,13 @@ def load_user_style_preferences(project_id: str, db_path: str) -> str:
     """Load accumulated user style preferences from the EditAnalyzer feedback loop.
 
     Returns a markdown-style block ready to inject into a prompt, or "" when
-    there's nothing useful yet (confidence < 0.3). All DB / parsing errors
-    degrade gracefully to "" so generation never breaks on a feedback hiccup.
+    there's nothing useful yet. All DB / parsing errors degrade gracefully
+    to "" so generation never breaks on a feedback hiccup.
+
+    Only CONFIRMED preferences are injected (用户偏好·机制4 +
+    LLM交互·机制2): preferences learned by the preference_analyzer land
+    as ``is_confirmed=0`` pending rows and stay out of prompts until
+    the user approves them.
     """
     try:
         with sqlite3.connect(db_path) as conn:
@@ -25,7 +30,7 @@ def load_user_style_preferences(project_id: str, db_path: str) -> str:
             rows = conn.execute(
                 """SELECT preference_type, description, confidence
                    FROM user_style_preferences
-                   WHERE project_id=? AND confidence>=0.3
+                   WHERE project_id=? AND is_confirmed=1
                    ORDER BY confidence DESC LIMIT 20""",
                 (project_id,),
             ).fetchall()

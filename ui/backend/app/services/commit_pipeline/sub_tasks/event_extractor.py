@@ -113,9 +113,19 @@ def _persist(
     db_path: str, project_id: str, chapter_num: int,
     events: list[dict], llm_model: str,
 ) -> list[str]:
-    """INSERT every event row; return generated event_ids."""
+    """INSERT every event row; return generated event_ids.
+
+    Idempotent re-extract: prior ``llm_auto`` rows for this chapter are
+    replaced so a retry / re-run never duplicates L4 events. User-made
+    rows (``generated_by != 'llm_auto'``) are left untouched."""
     ids: list[str] = []
     with sqlite3.connect(db_path) as con:
+        con.execute(
+            "DELETE FROM episodic_events "
+            "WHERE project_id = ? AND chapter_num = ? "
+            "AND generated_by = 'llm_auto'",
+            (project_id, chapter_num),
+        )
         for i, e in enumerate(events):
             eid = f"ev_{uuid.uuid4().hex[:12]}"
             con.execute(

@@ -586,6 +586,19 @@ def _run_task(task: ReindexTask, db_path: str | None = None) -> None:
         task.state = "completed"
         task.completed_at = _now()
         task.updated_at = task.completed_at
+        # 性能预期·机制3: record the finished run so future ETAs use
+        # real same-hardware throughput. Never breaks the task.
+        try:
+            from ui.backend.app.services.duration_estimator import (
+                record_duration,
+            )
+            items = sum(tp.current for tp in task.tables.values())
+            record_duration(
+                path, "embedding_batch_reindex", items,
+                task.completed_at - (task.started_at or task.completed_at),
+            )
+        except Exception as e:
+            logger.debug("duration record skipped: %s", e)
     except Exception as e:
         logger.exception("reindex task %s failed", task.task_id)
         task.state = "failed"

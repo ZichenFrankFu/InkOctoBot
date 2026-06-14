@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { apiGet } from "../api/client";
+import { swrHydrate, swrStore } from "../api/swr";
 import { useToast } from "../components/shared/Toast";
 import type { Novel } from "../api/types";
 import { splitGenres } from "../utils/genre";
@@ -100,6 +101,8 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
 
     // Reference-DB overview — a tiny aggregate endpoint, not the full works list.
     const loadRefSummary = async () => {
+      const cached = swrHydrate<any>("dash_ref_summary_v1");
+      if (cached) setRefSummary(cached);
       try {
         const r = await apiGet<{
           total: number; with_full_text: number; done: number;
@@ -113,7 +116,7 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
         const byGenre = Object.entries(genreMap)
           .sort((a, b) => b[1] - a[1])
           .map(([genre, count]) => ({ genre, count }));
-        setRefSummary({
+        const next = {
           total: r.total || 0,
           topGenres: byGenre.slice(0, 5).map(g => g.genre),
           avgRating: r.avg_rating || 0,
@@ -123,37 +126,35 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
           withCharacters: r.with_characters || 0,
           ratedCount: r.rated_count || 0,
           byGenre,
-        });
+        };
+        setRefSummary(next);
+        swrStore("dash_ref_summary_v1", next);
       } catch {
         // reference db might not exist yet
       }
     };
 
-    // 灵感数据库 stats (count + per-category + embedding coverage).
+    // 灵感数据库 stats — the lightweight aggregate endpoint (spec 6.3
+    // 事实行: 总数 / 已生成 embedding / 已被章节使用 / 类别分布)，
+    // 不再拉取全部灵感正文。
     const loadInspSummary = async () => {
+      const cached = swrHydrate<any>("dash_insp_summary_v1");
+      if (cached) setInspSummary(cached);
       try {
-        const r = await apiGet<{ items: any[] }>("/api/references/inspirations");
-        const items = r.items || [];
-        const byCat: Record<string, number> = {};
-        let withEmbed = 0;
-        let usedAny = 0;
-        for (const it of items) {
-          const c = it.category || "other";
-          byCat[c] = (byCat[c] || 0) + 1;
-          if (it.embedding_text_hash) withEmbed++;
-          try {
-            const used = JSON.parse(it.used_in_chapters_json || "[]");
-            if (Array.isArray(used) && used.length > 0) usedAny++;
-          } catch { /* ignore */ }
-        }
-        setInspSummary({
-          total: items.length,
-          withEmbedding: withEmbed,
-          usedSomewhere: usedAny,
-          byCategory: Object.entries(byCat)
-            .map(([category, count]) => ({ category, count }))
+        const r = await apiGet<{
+          total: number; embedded: number; used: number;
+          by_category: Record<string, number>;
+        }>("/api/references/inspirations/stats");
+        const next = {
+          total: r.total || 0,
+          withEmbedding: r.embedded || 0,
+          usedSomewhere: r.used || 0,
+          byCategory: Object.entries(r.by_category || {})
+            .map(([category, count]) => ({ category, count: count as number }))
             .sort((a, b) => b.count - a.count),
-        });
+        };
+        setInspSummary(next);
+        swrStore("dash_insp_summary_v1", next);
       } catch {
         // endpoint not available — fail soft
       }
@@ -177,7 +178,22 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
     const qs = platform ? `?platform=${platform}` : "";
 
     (async () => {
-      // 1. cheap mtime check
+      const cacheKey = "inkoctobot_market_preview_v1";
+      // 0. cache-first：命中即立刻渲染（不等任何网络往返），后台再
+      //    校验 mtime——用户打开首页不应有可感知的等待。
+      let cachedEntry: any = null;
+      try {
+        const raw = sessionStorage.getItem(cacheKey);
+        if (raw) cachedEntry = JSON.parse(raw);
+      } catch { /* ignore parse errors */ }
+      if (cachedEntry && cachedEntry.platform === platform && !cancelled) {
+        setOverview(cachedEntry.overview);
+        setHighFreq(cachedEntry.highFreq || []);
+        setHotTags(cachedEntry.hotTags || []);
+        setLoading(false);
+      }
+
+      // 1. cheap mtime check (background) — unchanged DB → keep cache.
       let mtimeKey = "";
       try {
         const m = await apiGet<{ mtime: number; size?: number; exists: boolean }>(
@@ -186,23 +202,9 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
         if (m.exists) mtimeKey = `${m.mtime}.${m.size ?? 0}.${platform}`;
       } catch { /* fall through to full load */ }
 
-      const cacheKey = "inkoctobot_market_preview_v1";
-      if (mtimeKey) {
-        try {
-          const raw = sessionStorage.getItem(cacheKey);
-          if (raw) {
-            const cached = JSON.parse(raw);
-            if (cached.mtimeKey === mtimeKey) {
-              if (!cancelled) {
-                setOverview(cached.overview);
-                setHighFreq(cached.highFreq || []);
-                setHotTags(cached.hotTags || []);
-                setLoading(false);
-              }
-              return;
-            }
-          }
-        } catch { /* ignore parse errors */ }
+      if (mtimeKey && cachedEntry && cachedEntry.mtimeKey === mtimeKey) {
+        if (!cancelled) setLoading(false);
+        return;   // cache is current — nothing to refetch
       }
 
       try {
@@ -221,7 +223,7 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
         if (mtimeKey) {
           try {
             sessionStorage.setItem(cacheKey, JSON.stringify({
-              mtimeKey, overview, highFreq, hotTags,
+              mtimeKey, platform, overview, highFreq, hotTags,
             }));
           } catch { /* sessionStorage quota — skip cache */ }
         }

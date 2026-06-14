@@ -51,6 +51,94 @@ def _new_log_id() -> str:
     return f"sl_{uuid.uuid4().hex[:12]}"
 
 
+# ─────────── 确认 gate: pending state-extraction proposals ───────────
+# spec Post-Commit·机制3 + LLM交互·机制2: when
+# ``post_commit_require_confirmation`` is on, the merged extraction is
+# stashed as a proposal; these endpoints are the user's apply/discard.
+
+
+@router.get("/state-review/{chapter_id}/pending")
+def list_pending_extractions(chapter_id: str) -> dict:
+    with sqlite3.connect(get_db_path()) as con:
+        con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute(
+                "SELECT proposal_id, project_id, chapter_id, chapter_num, "
+                "parsed_json, llm_model, status, created_at "
+                "FROM pending_state_extractions "
+                "WHERE chapter_id = ? AND status = 'pending' "
+                "ORDER BY created_at DESC",
+                (chapter_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {"items": []}
+    items = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["parsed"] = json.loads(d.pop("parsed_json") or "{}")
+        except Exception:
+            d["parsed"] = {}
+        items.append(d)
+    return {"items": items}
+
+
+@router.post("/state-review/proposals/{proposal_id}/apply")
+async def apply_pending_extraction(proposal_id: str) -> dict:
+    """User confirmed — persist every product of the merged extraction
+    through the same apply path the direct-write mode uses."""
+    db_path = get_db_path()
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT * FROM pending_state_extractions WHERE proposal_id = ?",
+            (proposal_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "proposal not found")
+    if row["status"] != "pending":
+        raise HTTPException(409, f"proposal already {row['status']}")
+    try:
+        parsed = json.loads(row["parsed_json"] or "{}")
+    except Exception:
+        raise HTTPException(500, "stored proposal is not valid JSON")
+
+    from ..services.commit_pipeline.sub_tasks import SubTaskContext
+    from ..services.commit_pipeline.sub_tasks.state_extractor import (
+        _apply_parsed,
+    )
+    ctx = SubTaskContext(
+        project_id=row["project_id"], chapter_id=row["chapter_id"],
+        db_path=db_path, chapter_num=row["chapter_num"],
+    )
+    result = _apply_parsed(
+        ctx, row["chapter_num"], parsed, row["llm_model"] or "",
+    )
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE pending_state_extractions SET status='applied', "
+            "resolved_at=CURRENT_TIMESTAMP WHERE proposal_id = ?",
+            (proposal_id,),
+        )
+        con.commit()
+    return {"ok": True, "proposal_id": proposal_id, **result}
+
+
+@router.post("/state-review/proposals/{proposal_id}/discard")
+def discard_pending_extraction(proposal_id: str) -> dict:
+    with sqlite3.connect(get_db_path()) as con:
+        cur = con.execute(
+            "UPDATE pending_state_extractions SET status='discarded', "
+            "resolved_at=CURRENT_TIMESTAMP "
+            "WHERE proposal_id = ? AND status = 'pending'",
+            (proposal_id,),
+        )
+        con.commit()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "no pending proposal with that id")
+    return {"ok": True, "proposal_id": proposal_id, "status": "discarded"}
+
+
 # ─────────── Tab 1: state changes ───────────
 
 

@@ -7,6 +7,7 @@
  * inspiration's text as the query (handled by the parent page). */
 import React, { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
+import { swrHydrate, swrStore } from "../api/swr";
 import { useToast } from "./shared/Toast";
 import { useDialog } from "./shared/Dialog";
 
@@ -39,7 +40,10 @@ export default function InspirationLibrary({ onSearchWorks }: {
 }) {
   const { toast } = useToast();
   const { confirm } = useDialog();
-  const [items, setItems] = useState<Inspiration[]>([]);
+  // 秒开: 同步水合上次列表，后台刷新（stale-while-revalidate）。
+  const [items, setItems] = useState<Inspiration[]>(
+    () => swrHydrate<Inspiration[]>("insp_library_items") || [],
+  );
   const [loading, setLoading] = useState(false);
   const [catFilter, setCatFilter] = useState("");
   // Text search filter — kept lightweight (no server round-trip, no
@@ -55,6 +59,7 @@ export default function InspirationLibrary({ onSearchWorks }: {
     try {
       const r = await apiGet<{ items: Inspiration[] }>("/api/references/inspirations");
       setItems(r.items || []);
+      swrStore("insp_library_items", r.items || []);
     } catch (e: any) {
       toast(e?.message || "加载灵感库失败", "error");
     } finally { setLoading(false); }
@@ -183,7 +188,7 @@ export default function InspirationLibrary({ onSearchWorks }: {
         </div>
       )}
 
-      {loading ? (
+      {loading && items.length === 0 ? (
         <div className="empty-state" style={{ paddingTop: 40 }}><p>加载中...</p></div>
       ) : shown.length === 0 ? (
         <div className="empty-state" style={{ paddingTop: 40 }}>

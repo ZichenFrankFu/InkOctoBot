@@ -18,7 +18,7 @@ from types import ModuleType
 from typing import Any, Awaitable
 
 from . import (
-    chromadb_indexer, event_extractor, skill_emitter,
+    chromadb_indexer, event_extractor, preference_analyzer, skill_emitter,
     snapshot_detector, state_extractor, summarizer,
 )
 
@@ -71,6 +71,11 @@ _REGISTRY: tuple[SubTaskDef, ...] = (
         task_type="event_extractor",
         module=event_extractor,
         manual_action_url_template="/chapters/{chapter_id}/edit-events",
+        # spec Post-Commit·机制1: L4 标志性事件由 state_extractor 的
+        # 单次合并抽取调用产出 — standalone extractor stays available
+        # for manual re-runs but is no longer part of the default
+        # pipeline (would double the LLM calls + duplicate events).
+        default_enabled=False,
         notification_title_failed="关键事件提取失败",
         notification_description_failed=(
             "本章关键事件提取多次重试失败。事件用于 Reader Memory L4，"
@@ -114,6 +119,23 @@ _REGISTRY: tuple[SubTaskDef, ...] = (
         notification_title_failed="技能学习失败",
         notification_description_failed=(
             "本章 skill_emitter 失败（不影响主流程）。可手动创建技能。"
+        ),
+    ),
+    SubTaskDef(
+        task_type="preference_analyzer",
+        module=preference_analyzer,
+        manual_action_url_template="/skills?tab=preferences",
+        # Part A (agents/learning edit_batch_extractor, observation +
+        # threshold driven, wired to the 写作偏好 UI) is the production
+        # preference writer after the main merge — this draft-vs-final
+        # batch analyzer stays available for manual runs via
+        # /api/preferences/learn but is off by default to avoid double
+        # LLM spend on the same chapters.
+        default_enabled=False,
+        notification_title_failed="用户偏好学习失败",
+        notification_description_failed=(
+            "批量偏好学习多次重试失败（不影响主流程）。"
+            "可稍后到自学习成果页手动触发。"
         ),
     ),
 )

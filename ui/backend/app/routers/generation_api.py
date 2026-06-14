@@ -291,6 +291,9 @@ class GenerateRequest(BaseModel):
     manual: bool = False
     # Per-item RAG de-selections the user unchecked ("block::id").
     rag_excludes: list[str] = []
+    # 决策采样器 seed（角色卡·机制5）：相同 seed 可稳定复刻各角色
+    # 行为倾向采样结果；留空则按 0 派生。
+    decision_seed: str = ""
 
 
 class RewriteRequest(BaseModel):
@@ -330,6 +333,42 @@ from ui.backend.app.services import (
 @router.get("/health")
 def health():
     return {"status": "ok", "router": "generation"}
+
+
+@router.get("/cost-estimate")
+def cost_estimate(
+    project_id: str = "",
+    chapter_id: str = "",
+    mode: str = "single",
+    num_scenes: int = 3,
+    include_context: bool = False,
+):
+    """生成前成本预估 (spec LLM调用·机制1): 本章预估 LLM 调用数与
+    token / USD 成本（导演模式以场景数为主变量），含单章成本上限
+    与超限降级建议（导演转单 Agent → 跳过 LLM 评估层）。
+
+    ``include_context`` 才会装配完整 RAG 上下文来精确计 token —
+    那条路径会加载 embedding 模型（秒级-分钟级），编辑器挂载时的
+    预估调用绝不能走它（曾是线程池耗尽 → 全站无限加载的元凶之一）。
+    默认用调用画像基数估算，毫秒级返回。"""
+    if mode not in ("single", "director"):
+        raise HTTPException(400, "mode must be single/director")
+    context_tokens = 0
+    if include_context and project_id and chapter_id:
+        try:
+            from ._rag_context import build_generation_context
+            ctx = build_generation_context(
+                project_id, characters=[], chapter_id=chapter_id,
+            )
+            context_tokens = int(ctx.get("token_estimate") or 0)
+        except Exception as e:
+            logger.debug("cost-estimate context build skipped: %s", e)
+    from ui.backend.app.services.generation_cost import (
+        estimate_with_degradation,
+    )
+    return estimate_with_degradation(
+        mode, max(1, num_scenes), context_tokens,
+    )
 
 
 @router.post("/start")
@@ -437,6 +476,10 @@ async def start_generation(req: GenerateRequest):
         "confirm_event": None,  # asyncio.Event for confirm signal
         "confirm_data": None,   # data from user confirm
         "task": None,           # background asyncio.Task
+        # LLM交互·机制6 暂停/恢复: set = running, cleared = paused.
+        # Checked at every step boundary via _pause_checkpoint.
+        "pause_event": _new_running_pause_event(),
+        "paused": False,
         # Stage 3 Task 3.4: ChapterContext object for agents that
         # want structured loader_blocks / truth_bundle access
         # (instead of grep-ing req_data['world_rules']).
@@ -500,6 +543,7 @@ def get_session_status(session_id: str):
         "status": session["status"],
         "current_step": session.get("current_step", ""),
         "waiting_confirm": session.get("waiting_confirm", False),
+        "paused": session.get("paused", False),
         "event_count": len(session.get("events", [])),
         "result": session.get("result"),
     }
@@ -555,6 +599,12 @@ async def stop_session(session_id: str):
     session = _active_sessions.get(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
+    # A paused session must be released first so the awaiting
+    # checkpoint can observe the abort instead of hanging forever.
+    ev = session.get("pause_event")
+    if ev is not None:
+        ev.set()
+    session["paused"] = False
     # Signal abort via confirm mechanism
     session["confirm_data"] = {"action": "abort"}
     evt = session.get("confirm_event")
@@ -567,6 +617,67 @@ async def stop_session(session_id: str):
     session["status"] = "complete"
     _emit(session_id, {"type": "complete", "text": session.get("text", ""), "aborted": True})
     return {"status": "ok", "message": "Pipeline stopped"}
+
+
+def _new_running_pause_event() -> asyncio.Event:
+    ev = asyncio.Event()
+    ev.set()    # running by default
+    return ev
+
+
+async def _pause_checkpoint(session_id: str) -> None:
+    """LLM交互·机制6: hold the pipeline at a step boundary while the
+    user has paused it. Emits paused/resumed events; partial results
+    stay in the session (失败措施·机制3)."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        return
+    ev = session.get("pause_event")
+    if ev is None or ev.is_set():
+        return
+    _emit(session_id, {
+        "type": "paused",
+        "step": session.get("current_step", ""),
+        "detail": "已暂停 — 已生成内容已保留，点击恢复继续",
+    })
+    await ev.wait()
+    if session.get("status") == "running":
+        _emit(session_id, {
+            "type": "resumed",
+            "step": session.get("current_step", ""),
+        })
+
+
+@router.post("/pause/{session_id}")
+async def pause_session(session_id: str):
+    """暂停 (LLM交互·机制6): the pipeline holds at the NEXT step
+    boundary — an in-flight LLM call finishes first, its result is
+    retained."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if session.get("status") != "running":
+        return {"status": "ok", "message": f"session is {session.get('status')}"}
+    ev = session.get("pause_event")
+    if ev is None:
+        ev = _new_running_pause_event()
+        session["pause_event"] = ev
+    ev.clear()
+    session["paused"] = True
+    return {"status": "ok", "paused": True}
+
+
+@router.post("/resume/{session_id}")
+async def resume_session(session_id: str):
+    """恢复 a paused pipeline session."""
+    session = _active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    ev = session.get("pause_event")
+    if ev is not None:
+        ev.set()
+    session["paused"] = False
+    return {"status": "ok", "paused": False}
 
 
 @router.post("/scene-plan")
@@ -1324,6 +1435,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
 
         # ── Step 1: Scene Director ──────────────────────────
         session["current_step"] = "scene_director"
+        await _pause_checkpoint(session_id)
         _emit(session_id, {
             "type": "step_start", "step": "scene_director",
             "label": "Scene Director", "detail": "正在拆分场景...",
@@ -1612,6 +1724,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
 
         # ── Step 2: Actor Agents (via SceneSimulator) ────────
         session["current_step"] = "actor_agents"
+        await _pause_checkpoint(session_id)
         characters = req_data.get("characters", [])
         scene_list = scene_result.get("scenes", []) if isinstance(scene_result, dict) else []
         num_scenes = len(scene_list) if scene_list else 1
@@ -1721,6 +1834,9 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             # Build character cards from stored data (apply aliases for hidden identity)
             _aliases = req_data.get("character_aliases", {})
             character_cards: dict[str, str] = {}
+            # 决策采样器输入（Actor·机制1）：每角色的量化决策参数
+            # （损失厌恶 / 风险厌恶 / 冲动概率 / 社交频率），来自角色卡 layer_b。
+            character_params: dict[str, dict] = {}
             try:
                 from ui.backend.app.routers.json_storage_api import _list
                 all_chars = _list("characters")
@@ -1734,6 +1850,8 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                             if cd.get("background"): card_parts.append(f"背景: {cd['background']}")
                             if cd.get("speech_style"): card_parts.append(f"说话风格: {cd['speech_style']}")
                             if cd.get("role"): card_parts.append(f"角色定位: {cd['role']}")
+                            if isinstance(cd.get("layer_b"), dict):
+                                character_params[display_name] = cd["layer_b"]
                             break
                     if c_name != display_name:
                         card_parts.append(f"【隐藏身份】本章中以「{display_name}」出场，禁止使用真名「{c_name}」")
@@ -1744,13 +1862,14 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
             _chapter_num = req_data.get("chapter_num", 1)
             _emit(session_id, {"type": "progress_update", "step": "actor_agents", "progress": 20, "detail": f"准备角色卡... ({len(characters)} 个角色)"})
 
+            _decision_seed = req_data.get("decision_seed") or None
             # Use simulate_chapter() to iterate through all scenes properly
             if scene_list:
                 actor_prompt_sent = (
                     f"SceneSimulator.simulate_chapter(\n"
                     f"  scenes={num_scenes},\n"
                     f"  characters={characters},\n"
-                    f"  mode='parallel'\n"
+                    f"  mode='ensemble'\n"
                     f")"
                 )
                 all_scene_results = await simulator.simulate_chapter(
@@ -1759,6 +1878,8 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                     chapter_num=_chapter_num,
                     style_profile=req_data.get("style_notes", ""),
                     constraints=req_data.get("world_rules", ""),
+                    decision_seed=_decision_seed,
+                    character_params=character_params,
                 )
             else:
                 # Fallback: single scene from top-level scene_result
@@ -1769,7 +1890,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                     f"SceneSimulator.simulate_scene(\n"
                     f"  scene_plan=...,\n"
                     f"  characters={characters},\n"
-                    f"  mode='parallel'\n"
+                    f"  mode='ensemble'\n"
                     f")"
                 )
                 single_result = await simulator.simulate_scene(
@@ -1778,7 +1899,8 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
                     chapter_num=_chapter_num,
                     style_profile=req_data.get("style_notes", ""),
                     constraints=req_data.get("world_rules", ""),
-                    mode="parallel",
+                    decision_seed=_decision_seed,
+                    character_params=character_params,
                 )
                 all_scene_results = [single_result]
 
@@ -1886,6 +2008,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
 
         # ── Step 3: Editor-Writer ───────────────────────────
         session["current_step"] = "editor_writer"
+        await _pause_checkpoint(session_id)
         _emit(session_id, {
             "type": "step_start", "step": "editor_writer",
             "label": "Editor-Writer", "detail": "正在进行文学风格化与润色...",
@@ -2055,6 +2178,7 @@ async def _run_pipeline_inner(session_id: str, session: dict, req_data: dict) ->
 
         # ── Step 4: Evaluator ───────────────────────────────
         session["current_step"] = "evaluator"
+        await _pause_checkpoint(session_id)
         _emit(session_id, {
             "type": "step_start", "step": "evaluator",
             "label": "Evaluator", "detail": "正在评估质量...",

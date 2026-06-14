@@ -29,7 +29,8 @@ _DDL: tuple[str, ...] = (
         selected_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         selected_for_extraction    INTEGER NOT NULL DEFAULT 1,
         selection_round            INTEGER DEFAULT 1,
-        is_holdout                 INTEGER NOT NULL DEFAULT 0
+        is_holdout                 INTEGER NOT NULL DEFAULT 0,
+        selection_reason           TEXT DEFAULT ''
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_rwp_platform_cat "
@@ -252,6 +253,10 @@ _DDL: tuple[str, ...] = (
         loader_payload                   TEXT,
         loader_token_estimate            INTEGER,
         holdout_similarity_score         REAL,
+        -- spec 2.1.3.2 高级特征提取：行文风格七组 (A1-G2) 结构化结果
+        -- 与生造词 Step2（专有名词/人名/地名常见模式与常见字）。
+        style_dimensions_json            TEXT,
+        neologism_step2_json             TEXT,
         confidence_label                 TEXT,
         valid_from                       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         valid_until                      TIMESTAMP,
@@ -294,9 +299,28 @@ _DDL: tuple[str, ...] = (
 )
 
 
+# Columns added after the table first shipped — ALTER in for existing DBs.
+_PLATFORM_PROFILE_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("style_dimensions_json", "TEXT"),
+    ("neologism_step2_json", "TEXT"),
+)
+_REP_POOL_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("selection_reason", "TEXT DEFAULT ''"),
+)
+
+
 def ensure_market_extractor_tables(conn: sqlite3.Connection) -> None:
     """Create all 7 market-extractor tables + indexes. Idempotent."""
     cur = conn.cursor()
     for ddl in _DDL:
         cur.execute(ddl)
+    # Idempotent column adds for DBs created before these columns existed.
+    def _migrate(table: str, migrations: tuple[tuple[str, str], ...]) -> None:
+        cols = {r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+        for col, coltype in migrations:
+            if col not in cols:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+
+    _migrate("platform_profiles", _PLATFORM_PROFILE_MIGRATIONS)
+    _migrate("representative_works_pool", _REP_POOL_MIGRATIONS)
     conn.commit()

@@ -9,6 +9,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet } from "../api/client";
+import { swrHydrate, swrStore } from "../api/swr";
 import { useToast } from "../components/shared/Toast";
 import { t, tInspirationCategory, useLang } from "../i18n";
 
@@ -33,7 +34,10 @@ interface UsageEntry {
 export default function InspirationOverviewPage() {
   const { toast } = useToast();
   useLang();  // re-render on language change
-  const [items, setItems] = useState<Inspiration[]>([]);
+  // 秒开: 同步水合上次列表快照，后台刷新（stale-while-revalidate）。
+  const [items, setItems] = useState<Inspiration[]>(
+    () => swrHydrate<Inspiration[]>("insp_overview_items") || [],
+  );
   const [loading, setLoading] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -41,6 +45,7 @@ export default function InspirationOverviewPage() {
     try {
       const r = await apiGet<{ items: Inspiration[] }>("/api/references/inspirations");
       setItems(r.items || []);
+      swrStore("insp_overview_items", r.items || []);
     } catch (e: any) {
       toast(`加载失败: ${e.message}`, "error");
     } finally {

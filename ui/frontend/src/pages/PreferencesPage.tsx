@@ -111,6 +111,17 @@ export default function PreferencesPage({ projectId }: Props) {
     }
   }, [thresholdEdit, refresh, toast]);
 
+  // 用户偏好·机制4: 确认 gate — 只有 is_confirmed=1 的偏好才会被
+  // user_preferences loader 注入生成 prompt。
+  const togglePrefConfirm = useCallback(async (pref_id: string, confirmed: boolean) => {
+    try {
+      await apiPost(`/api/preferences/${pref_id}/${confirmed ? "unconfirm" : "confirm"}`, {});
+      await refresh();
+    } catch (e: any) {
+      toast(`失败: ${e.message}`, "error");
+    }
+  }, [refresh, toast]);
+
   const deletePref = useCallback(async (pref_id: string) => {
     if (!window.confirm("删除这条偏好？")) return;
     try {
@@ -213,10 +224,25 @@ export default function PreferencesPage({ projectId }: Props) {
                         <span>· obs {p.observation_count}</span>
                       </div>
                     </div>
+                    <span style={{
+                      fontSize: 9, padding: "1px 6px", borderRadius: 8, marginLeft: 8, flexShrink: 0,
+                      background: (p as any).is_confirmed ? "var(--success-subtle, rgba(45,140,90,0.12))" : "var(--bg-surface-2)",
+                      color: (p as any).is_confirmed ? "var(--success, var(--jade))" : "var(--text-tertiary)",
+                    }}>
+                      {(p as any).is_confirmed ? "已确认·注入中" : "待确认"}
+                    </span>
+                    <button
+                      className="btn-sm"
+                      onClick={() => togglePrefConfirm(p.pref_id, !!(p as any).is_confirmed)}
+                      style={{ marginLeft: 6, fontSize: 10, padding: "1px 8px" }}
+                      title="确认后该偏好才会注入后续章节生成（机制4）"
+                    >
+                      {(p as any).is_confirmed ? "取消确认" : "确认"}
+                    </button>
                     <button
                       className="btn-sm danger"
                       onClick={() => deletePref(p.pref_id)}
-                      style={{ marginLeft: 8, fontSize: 10, padding: "1px 6px" }}
+                      style={{ marginLeft: 6, fontSize: 10, padding: "1px 6px" }}
                       title="删除该偏好"
                     >
                       ×

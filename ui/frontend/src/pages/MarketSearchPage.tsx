@@ -55,7 +55,7 @@ interface NovelDetail {
   chapters: ChapterMeta[];
 }
 
-export default function MarketSearchPage() {
+export default function MarketSearchPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { toast } = useToast();
   useLang();
   const [query, setQuery] = useState("");
@@ -155,9 +155,11 @@ export default function MarketSearchPage() {
   }, [chapterContent]);
 
   return (
-    <div className="page-container" style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto", height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      {/* Header — same shape as other pages (page-header / page-header-row) */}
-      <div className="page-header" style={{ paddingBottom: 12 }}>
+    <div className={embedded ? undefined : "page-container"} style={embedded
+      ? { paddingTop: 12, height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }
+      : { padding: "16px 20px", maxWidth: 1400, margin: "0 auto", height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      {/* Header — hidden when embedded as a 市场总览 tab */}
+      <div className="page-header" style={{ paddingBottom: 12, display: embedded ? "none" : undefined }}>
         <div className="page-header-row">
           <div>
             <h2>市场作品搜索</h2>

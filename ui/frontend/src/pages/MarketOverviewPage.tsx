@@ -10,15 +10,22 @@
  */
 import React, { useState } from "react";
 import MarketDbSummaryPage from "./MarketDbSummaryPage";
-import RankingsPage from "./RankingsPage";
+import RankingsPage, { RankSnapshotTarget } from "./RankingsPage";
+import MarketSearchPage from "./MarketSearchPage";
 import { t } from "../i18n";
 
 
-type Tab = "summary" | "rankings";
+type Tab = "summary" | "rankings" | "search";
 
 
 export default function MarketOverviewPage() {
   const [tab, setTab] = useState<Tab>("summary");
+  // 概览 tab 的「最近快照」点击后跳转到 榜单 tab 的该快照详情。
+  const [rankTarget, setRankTarget] = useState<RankSnapshotTarget | null>(null);
+  const openSnapshot = (target: RankSnapshotTarget) => {
+    setRankTarget(target);
+    setTab("rankings");
+  };
 
   return (
     <div className="page-container" style={{ padding: "16px 20px", maxWidth: 1400, margin: "0 auto", display: "flex", flexDirection: "column", height: "100%" }}>
@@ -39,6 +46,7 @@ export default function MarketOverviewPage() {
         {([
           { key: "summary"  as const, label: t("数据库概览"), desc: "DB-level summary + curation" },
           { key: "rankings" as const, label: t("榜单"),       desc: "逐级浏览各平台榜单" },
+          { key: "search"   as const, label: t("作品搜索"),   desc: "按书名/作者/简介检索作品" },
         ]).map(opt => (
           <button
             key={opt.key}
@@ -60,8 +68,9 @@ export default function MarketOverviewPage() {
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", marginTop: 12 }}>
-        {tab === "summary"  && <MarketDbSummaryPage />}
-        {tab === "rankings" && <RankingsPage hideOwnHeader={true} hideOpeningAi={true} />}
+        {tab === "summary"  && <MarketDbSummaryPage onOpenSnapshot={openSnapshot} />}
+        {tab === "rankings" && <RankingsPage hideOwnHeader={true} hideOpeningAi={true} initialTarget={rankTarget} />}
+        {tab === "search"   && <MarketSearchPage embedded={true} />}
       </div>
     </div>
   );

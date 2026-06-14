@@ -72,6 +72,10 @@ TRUTH_DDL = [
         status TEXT NOT NULL DEFAULT 'open'
             CHECK(status IN ('open','progressing','pressured','near_payoff','resolved','abandoned')),
         importance TEXT NOT NULL DEFAULT 'B' CHECK(importance IN ('A','B','C')),
+        -- 伏笔规模 (spec 故事线·机制4): 回旋镖(≤3章) / 事件线索(≤20章) /
+        -- 大计划(≤100章) / 世界真相(不超期)
+        scale TEXT NOT NULL DEFAULT 'event_clue'
+            CHECK(scale IN ('boomerang','event_clue','grand_plan','world_truth')),
         origin_chapter INTEGER NOT NULL,
         expected_payoff_chapter INTEGER,
         last_mention_chapter INTEGER,
@@ -212,6 +216,14 @@ def ensure_truth_tables(conn: sqlite3.Connection) -> None:
             cur.execute(
                 "ALTER TABLE pending_hooks ADD COLUMN "
                 "user_resolve_notes TEXT NOT NULL DEFAULT ''"
+            )
+        # v3.1 ALTER: 伏笔规模 (spec 故事线·机制4). SQLite can't add a
+        # CHECK via ALTER — values are constrained at the schema layer
+        # (knowledge.storyland_state.schemas.HookScale) instead.
+        if "scale" not in cols:
+            cur.execute(
+                "ALTER TABLE pending_hooks ADD COLUMN "
+                "scale TEXT NOT NULL DEFAULT 'event_clue'"
             )
     except sqlite3.OperationalError:
         # Table missing → CREATE above already handles it; ignore.

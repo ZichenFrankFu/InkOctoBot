@@ -46,7 +46,7 @@ def overview(platform: str | None = None):
         rank_list_count = con.execute(f"SELECT COUNT(*) AS c FROM rank_lists{' WHERE platform=?' if platform else ''}", pp).fetchone()["c"]
         snapshot_count = con.execute("SELECT COUNT(*) AS c FROM rank_snapshots" + (" WHERE rank_list_id IN (SELECT rank_list_id FROM rank_lists WHERE platform=?)" if platform else ""), pp).fetchone()["c"]
         chapter_count = con.execute("SELECT COUNT(*) AS c FROM first_n_chapters" + (" WHERE novel_uid IN (SELECT novel_uid FROM novels WHERE platform=?)" if platform else ""), pp).fetchone()["c"]
-        recent_sql = "SELECT s.snapshot_id,s.snapshot_date,s.item_count,l.platform,l.rank_family,l.rank_sub_cat FROM rank_snapshots s JOIN rank_lists l ON l.rank_list_id=s.rank_list_id" + (" WHERE l.platform=?" if platform else "") + " ORDER BY s.snapshot_date DESC LIMIT 20"
+        recent_sql = "SELECT s.snapshot_id,s.rank_list_id,s.snapshot_date,s.item_count,l.platform,l.rank_family,l.rank_sub_cat FROM rank_snapshots s JOIN rank_lists l ON l.rank_list_id=s.rank_list_id" + (" WHERE l.platform=?" if platform else "") + " ORDER BY s.snapshot_date DESC LIMIT 20"
         recent = con.execute(recent_sql, pp).fetchall()
         pb = con.execute("SELECT platform, COUNT(*) AS count FROM novels GROUP BY platform").fetchall()
         cat_sql = "SELECT n.main_category, COUNT(*) AS count FROM novels n" + (" WHERE n.platform=?" if platform else "") + " GROUP BY n.main_category ORDER BY count DESC LIMIT 15"
@@ -298,16 +298,12 @@ def opening_analysis(platform: str | None = None):
     }
 
 
-@router.get("/opening_nlp_analysis")
-def opening_nlp_analysis(platform: str | None = None) -> dict:
+def _compute_opening_nlp(platform: str | None = None) -> dict:
     """Heuristic NLP analysis on the crawled first chapters.
 
-    Pure-Python regex / counting — no model inference, so it's cheap
-    enough to drive on user demand. Computes per-chapter dialogue
-    ratio, mean sentence length, first-sentence type, end-hook style,
-    and aggregates them into platform-level distributions. The frontend
-    panel calls this once (then caches by db-mtime) and exposes a
-    manual refresh button.
+    Counting + PMI over up to 600 chapters takes long enough that it
+    must NOT run in the request thread — it only ever executes on a
+    compute_cache background thread (see ``opening_nlp_analysis``).
     """
     import re
     con = _get_con()
@@ -317,18 +313,44 @@ def opening_nlp_analysis(platform: str | None = None) -> dict:
         if not _table_exists(con, "first_n_chapters"):
             return {"available": False, "reason": "no first_n_chapters table"}
         frm = "first_n_chapters fc"
-        cond = " WHERE fc.chapter_num=1 AND fc.chapter_content IS NOT NULL AND length(fc.chapter_content) > 300"
+        cond = " WHERE fc.chapter_content IS NOT NULL AND length(fc.chapter_content) > 300"
         params: list = []
         if platform and _table_exists(con, "novels"):
             frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
             cond += " AND n.platform=?"
             params.append(platform)
-        rows = con.execute(
-            f"SELECT fc.chapter_content cc, fc.word_count wc FROM {frm}{cond} LIMIT 200",
+        # 作品名 (primary title) 随章节带出 → 支撑「点击高频词→使用最多的
+        # top3 作品 + 片段」的下钻。
+        has_titles = _table_exists(con, "novel_titles")
+        if has_titles:
+            frm += (" LEFT JOIN novel_titles nt ON nt.novel_uid=fc.novel_uid "
+                    "AND nt.is_primary=1")
+        title_expr = "nt.title" if has_titles else "NULL"
+        all_rows = con.execute(
+            f"SELECT fc.chapter_num cn, fc.chapter_content cc, fc.word_count wc, "
+            f"fc.novel_uid uid, {title_expr} title "
+            f"FROM {frm}{cond} ORDER BY fc.novel_uid, fc.chapter_num LIMIT 600",
             params,
         ).fetchall()
+        rows = [r for r in all_rows if int(r["cn"] or 0) == 1][:200]
+        # Accurate corpus totals (not capped by the LIMIT above) for the
+        # 基础特征提取 概览行：涉及多少 unique 小说、共多少章。
+        cnt_frm = "first_n_chapters fc"
+        cnt_cond = ""
+        cnt_params: list = []
+        if platform and _table_exists(con, "novels"):
+            cnt_frm += " JOIN novels n ON n.novel_uid=fc.novel_uid"
+            cnt_cond = " WHERE n.platform=?"
+            cnt_params = [platform]
+        totals = con.execute(
+            f"SELECT COUNT(DISTINCT fc.novel_uid) AS nv, COUNT(*) AS ch "
+            f"FROM {cnt_frm}{cnt_cond}", cnt_params,
+        ).fetchone()
+        unique_novels = int(totals["nv"] or 0)
+        total_chapters = int(totals["ch"] or 0)
     if not rows:
-        return {"available": False, "reason": "no openings to analyze"}
+        return {"available": False, "reason": "no openings to analyze",
+                "unique_novels": unique_novels, "total_chapters": total_chapters}
 
     # Quote chars used in mainland web fiction.
     QUOTE_RE = re.compile(r"[「][^」]{1,400}[」]|[“][^”]{1,400}[”]|[\"][^\"]{1,400}[\"]")
@@ -406,10 +428,23 @@ def opening_nlp_analysis(platform: str | None = None) -> dict:
                     break
         return out
 
+    # spec 2.1.3.2 §1 开篇章节NLP分析 维度（首章/章均/中位字数、平均
+    # 句长、分类型标点密度、高频词、生造词Step1）— shared helper so the
+    # 启动提取 prompt injects the SAME numbers.
+    from ..services.market_extractor.opening_stats import compute_opening_stats
+    spec_stats = compute_opening_stats([
+        {"chapter_num": int(r["cn"] or 0), "text": str(r["cc"] or ""),
+         "title": (r["title"] or f"作品#{r['uid']}")}
+        for r in all_rows
+    ])
+
     return {
         "available": True,
         "platform": platform or "all",
         "sample_count": len(rows),
+        "unique_novels": unique_novels,
+        "total_chapters": total_chapters,
+        "spec_stats": spec_stats,
         "dialogue_ratio": {
             "mean": _mean(dialogue_ratios),
             "distribution": _hist(dialogue_ratios, [
@@ -440,6 +475,40 @@ def opening_nlp_analysis(platform: str | None = None) -> dict:
             "max": max(word_counts) if word_counts else 0,
         },
     }
+
+
+@router.get("/opening_nlp_analysis")
+def opening_nlp_analysis(
+    platform: str | None = None,
+    refresh: bool = Query(default=False),
+    cached_only: bool = Query(default=False),
+) -> dict:
+    """开篇章节NLP分析, served through the persistent compute cache.
+
+    Instant response: last finished result (``stale`` flag when the
+    crawler DB changed since) or ``{state:'computing'}``. ``cached_only``
+    is the 懒加载 path used on page mount — it never starts the heavy
+    job, only ``refresh`` (or a first poll without ``cached_only``) does.
+    """
+    from ..services import compute_cache
+    from ..services.project_paths import get_db_path
+    from ..utils import crawler_db_version
+
+    version = crawler_db_version()
+    if not version:
+        return {
+            "state": "ready", "stale": False, "computing": False,
+            "updated_at": None,
+            "payload": {"available": False, "reason": "crawler DB not configured"},
+        }
+    return compute_cache.get_or_compute(
+        get_db_path(),
+        f"opening_nlp:{platform or 'all'}",
+        version,
+        lambda: _compute_opening_nlp(platform),
+        refresh=refresh,
+        cached_only=cached_only,
+    )
 
 
 @router.post("/opening_ai_summary")
@@ -511,29 +580,88 @@ _EDITABLE_NOVEL_COLS = {
 @router.put("/novel/{novel_uid}")
 def update_novel(novel_uid: int, body: dict = Body(...)):
     """Editable subset of the novels row for manual correction. Only the
-    fields in ``_EDITABLE_NOVEL_COLS`` are accepted; everything else is
-    ignored to avoid the UI shaping crawler-derived identity columns."""
-    con = _get_con()
+    fields in ``_EDITABLE_NOVEL_COLS`` are accepted (plus ``title`` —
+    primary novel_titles row — and ``tags`` as a full replacement
+    list); everything else is ignored to avoid the UI shaping
+    crawler-derived identity columns.
+
+    Crawler concurrency (spec 市场数据库·机制4): the write connection
+    queues behind an in-flight crawler transaction via busy_timeout +
+    BEGIN IMMEDIATE; a still-held lock surfaces as 423."""
+    patches = {k: v for k, v in body.items() if k in _EDITABLE_NOVEL_COLS}
+    title = (body.get("title") or "").strip() if "title" in body else ""
+    tags = body.get("tags") if isinstance(body.get("tags"), list) else None
+    if not patches and not title and tags is None:
+        raise HTTPException(
+            400,
+            f"no editable fields. allowed: {sorted(_EDITABLE_NOVEL_COLS)} + title/tags",
+        )
+    con = _get_write_con()
     if con is None:
         raise HTTPException(404, "Crawler DB not available")
-    patches = {k: v for k, v in body.items() if k in _EDITABLE_NOVEL_COLS}
-    if not patches:
-        raise HTTPException(400, f"no editable fields. allowed: {sorted(_EDITABLE_NOVEL_COLS)}")
-    with con:
+    try:
+        con.execute("BEGIN IMMEDIATE")
         row = con.execute(
             "SELECT novel_uid FROM novels WHERE novel_uid=?",
             (novel_uid,),
         ).fetchone()
         if row is None:
+            con.rollback()
             raise HTTPException(404, "novel not found")
-        sets = ", ".join(f"{k}=?" for k in patches)
-        params = list(patches.values()) + [novel_uid]
-        con.execute(f"UPDATE novels SET {sets} WHERE novel_uid=?", params)
+        if patches:
+            sets = ", ".join(f"{k}=?" for k in patches)
+            params = list(patches.values()) + [novel_uid]
+            con.execute(f"UPDATE novels SET {sets} WHERE novel_uid=?", params)
+        if title:
+            updated_title = con.execute(
+                "UPDATE novel_titles SET title = ?, title_norm = ? "
+                "WHERE novel_uid = ? AND is_primary = 1",
+                (title, _norm(title), novel_uid),
+            )
+            if updated_title.rowcount == 0:
+                con.execute(
+                    "INSERT INTO novel_titles (novel_uid, title, title_norm, "
+                    "is_primary, first_seen_date, last_seen_date) "
+                    "VALUES (?, ?, ?, 1, date('now'), date('now'))",
+                    (novel_uid, title, _norm(title)),
+                )
+            patches["title"] = title
+        if tags is not None:
+            con.execute(
+                "DELETE FROM novel_tag_map WHERE novel_uid = ?", (novel_uid,),
+            )
+            for tag in tags:
+                tag = str(tag).strip()
+                if not tag:
+                    continue
+                con.execute(
+                    "INSERT OR IGNORE INTO tags (tag_name, tag_norm) "
+                    "VALUES (?, ?)",
+                    (tag, _norm(tag)),
+                )
+                tag_id = con.execute(
+                    "SELECT tag_id FROM tags WHERE tag_norm = ?",
+                    (_norm(tag),),
+                ).fetchone()[0]
+                con.execute(
+                    "INSERT OR IGNORE INTO novel_tag_map (novel_uid, tag_id) "
+                    "VALUES (?, ?)",
+                    (novel_uid, tag_id),
+                )
+            patches["tags"] = tags
         con.commit()
-        # Re-read so client sees the canonical post-patch row.
         updated = dict(con.execute(
             "SELECT * FROM novels WHERE novel_uid=?", (novel_uid,),
         ).fetchone())
+    except sqlite3.OperationalError as e:
+        con.rollback()
+        if "locked" in str(e).lower() or "busy" in str(e).lower():
+            raise HTTPException(
+                423, "市场数据库正被爬虫写入，已等待 30 秒仍未释放，请稍后重试",
+            )
+        raise HTTPException(500, f"update failed: {e}")
+    finally:
+        con.close()
     return {"novel": updated, "patched": list(patches.keys())}
 
 
@@ -672,3 +800,83 @@ def list_tables():
         return {"tables": []}
     with con:
         return {"tables": [r["name"] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]}
+
+
+# ──────────────────────────────────────────────────────────────
+# v3.1 UPDATE endpoints (spec 市场数据库·机制4/机制5)
+#
+# Users may READ & UPDATE market data (basic novel info + collected
+# chapter text) — never INSERT/DELETE, the market DB must keep
+# reflecting the real market. Concurrency with the external crawler
+# (失败措施·机制5): writes open the connection with a 30s
+# busy_timeout and BEGIN IMMEDIATE, so a user write QUEUES behind any
+# in-flight crawler transaction instead of failing; if the crawler
+# holds the lock longer than that we surface 423 (locked) so the UI
+# can tell the user to retry after the crawl finishes.
+# ──────────────────────────────────────────────────────────────
+
+
+_WRITE_BUSY_TIMEOUT_MS = 30_000
+
+# Whitelist of user-editable novels columns (机制5: only basic info).
+_NOVEL_EDITABLE = {
+    "author", "intro", "main_category", "status", "total_words",
+    "url", "created_date",
+}
+
+
+def _get_write_con() -> sqlite3.Connection | None:
+    from ..utils import resolve_crawler_db_path
+    db_path = resolve_crawler_db_path()
+    if not db_path or not Path(db_path).exists():
+        return None
+    con = sqlite3.connect(db_path, timeout=_WRITE_BUSY_TIMEOUT_MS / 1000)
+    con.row_factory = sqlite3.Row
+    con.execute(f"PRAGMA busy_timeout = {_WRITE_BUSY_TIMEOUT_MS}")
+    return con
+
+
+def _norm(s: str) -> str:
+    return "".join((s or "").lower().split())
+
+
+@router.put("/chapter/{chapter_id}")
+def update_chapter(chapter_id: int, body: dict = Body(...)):
+    """Update one collected chapter's title / content (机制5: UPDATE only)."""
+    title = body.get("chapter_title")
+    content = body.get("chapter_content")
+    if title is None and content is None:
+        raise HTTPException(400, "nothing to update")
+    con = _get_write_con()
+    if con is None:
+        raise HTTPException(404, "Crawler DB not available")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        sets, args = [], []
+        if title is not None:
+            sets.append("chapter_title = ?")
+            args.append(str(title))
+        if content is not None:
+            sets.append("chapter_content = ?")
+            args.append(str(content))
+            sets.append("word_count = ?")
+            args.append(len(str(content)))
+        cur = con.execute(
+            f"UPDATE first_n_chapters SET {', '.join(sets)} "
+            f"WHERE chapter_id = ?",
+            (*args, chapter_id),
+        )
+        if cur.rowcount == 0:
+            con.rollback()
+            raise HTTPException(404, "chapter not found")
+        con.commit()
+    except sqlite3.OperationalError as e:
+        con.rollback()
+        if "locked" in str(e).lower() or "busy" in str(e).lower():
+            raise HTTPException(
+                423, "市场数据库正被爬虫写入，已等待 30 秒仍未释放，请稍后重试",
+            )
+        raise HTTPException(500, f"update failed: {e}")
+    finally:
+        con.close()
+    return {"ok": True, "chapter_id": chapter_id}
