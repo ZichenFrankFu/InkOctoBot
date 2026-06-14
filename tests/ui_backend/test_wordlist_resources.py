@@ -112,7 +112,7 @@ class TestWordlistAPI:
 
     def test_list_add_remove_roundtrip(self, client):
         r = client.get("/api/analysis/wordlist", params={"list": "surnames"})
-        assert r.status_code == 200 and r.json()["label"] == "人名"
+        assert r.status_code == 200 and r.json()["label"] == "姓"
         assert client.post("/api/analysis/wordlist/add",
                            json={"list": "surnames", "word": "霍格"}).json()["added"]
         r2 = client.get("/api/analysis/wordlist",
@@ -127,6 +127,35 @@ class TestWordlistAPI:
                            json={"list": "x", "word": "a"}).status_code == 400
         assert client.post("/api/analysis/wordlist/add",
                            json={"list": "surnames", "word": ""}).status_code == 400
+
+
+class TestGivenNames:
+    def test_given_names_loaded_with_western(self, wl):
+        gn = wl.load_given_names()
+        assert len(gn) > 50
+        assert "翠翠" in gn        # 中文叠字名
+        assert "杰克" in gn        # 西方名
+        assert "乌里扬" in gn      # 用户场景里的外国名
+
+    def test_given_name_excluded_from_top_words(self):
+        # 资源命中路径（无需 jieba）：在 given_names 里的词不进高频词。
+        from ui.backend.app.services.market_extractor import opening_stats as os_
+        os_.reload_wordlists()
+        rows = [{"chapter_num": 1, "text": "翠翠走来翠翠走去，翠翠很开心。" * 30, "title": "x"}]
+        st = os_.compute_opening_stats(rows)
+        words = [w["word"] for w in st["top_words"]]
+        assert "翠翠" not in words
+
+    def test_classify_given_name_via_api(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("INKOCTOBOT_WORDLIST_DIR", str(tmp_path / "wl"))
+        from ui.backend.app.services.market_extractor import wordlists as _wl
+        _wl._invalidate()
+        from ui.backend.app.main import app
+        c = TestClient(app)
+        r = c.post("/api/analysis/wordlist/add",
+                   json={"list": "given_names", "word": "某角色名"})
+        assert r.status_code == 200 and r.json()["added"]
+        assert "某角色名" in _wl.load_given_names()
 
 
 class TestOpeningStatsExamples:

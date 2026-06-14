@@ -54,25 +54,57 @@ _COMMON_WORDS: frozenset[str] = frozenset()
 # 这类域内复合词 — 单字虚词另由 _HARD_REJECT_CHARS 把关。
 _COMMON_MULTI: frozenset[str] = frozenset()
 _SURNAMES: frozenset[str] = frozenset()
+_GIVEN_NAMES: frozenset[str] = frozenset()
 _TRANSLIT_CHARS: frozenset[str] = frozenset()
+_NAME_DICT_LOADED = False
 
 
 def reload_wordlists() -> None:
-    """Refresh the in-process 常用词/姓氏/音译字 sets from wordlists.py — called
+    """Refresh the in-process 常用词/姓/名/音译字 sets from wordlists.py — called
     after a 资源管理 add/remove so the next analysis re-filters with the edit."""
-    global _COMMON_WORDS, _COMMON_MULTI, _SURNAMES, _TRANSLIT_CHARS
+    global _COMMON_WORDS, _COMMON_MULTI, _SURNAMES, _GIVEN_NAMES
+    global _TRANSLIT_CHARS, _NAME_DICT_LOADED
     if _wl is None:
         return
     try:
         _COMMON_WORDS = _wl.load_common_words()
         _COMMON_MULTI = frozenset(w for w in _COMMON_WORDS if len(w) >= 2)
         _SURNAMES = _wl.load_surnames()
+        _GIVEN_NAMES = _wl.load_given_names()
         _TRANSLIT_CHARS = _wl.load_translit_chars()
+        _NAME_DICT_LOADED = False     # re-feed jieba userdict on next pass
     except Exception:  # pragma: no cover - resources always present
         pass
 
 
 reload_wordlists()
+
+# jieba POS tags that denote a person / place name. A token carrying one of
+# these that is *single-work* (low cross-work breadth) is almost certainly a
+# character/place name (李翠翠→翠翠 'nr' / 乌里扬→乌里 'ns'), as opposed to a
+# domain coinage jieba over-tags 'nr' (灵能/异能), which spans MANY works.
+_NAME_POS = frozenset({"nr", "nrfg", "nrt", "nrj", "ns"})
+
+
+def _ensure_name_userdict() -> None:
+    """Feed multi-char 姓(复姓/日文姓) + 名 into jieba's dict tagged 'nr' so it
+    segments full names whole (修复 乌里扬→乌里+扬 的错误切分) and tags them as
+    names — letting the resource authoritatively exclude them from 高频词。"""
+    global _NAME_DICT_LOADED
+    if _NAME_DICT_LOADED:
+        return
+    try:
+        import jieba
+        jieba.initialize()
+        for w in _GIVEN_NAMES:
+            if len(w) >= 2:
+                jieba.add_word(w, tag="nr")
+        for w in _SURNAMES:
+            if len(w) >= 2:        # 复姓/日文姓（单字姓不进，否则每个 李/王 都成名）
+                jieba.add_word(w, tag="nr")
+        _NAME_DICT_LOADED = True
+    except Exception:  # pragma: no cover - jieba absent in CI
+        pass
 
 # Strong name-ending characters (音译名 / 角色名常见尾字).
 _NAME_END_CHARS = set("丝娜莉娅妮克特斯尔薇露琳蒂娃曼茜黛缇媛婭菈珂")
@@ -261,6 +293,7 @@ def _extract_tokens(texts: list[str], freq: dict):
         import jieba.posseg as _pseg
     except Exception:
         return token_counts, token_isname, token_pos, name_context, bigram_counts, False
+    _ensure_name_userdict()   # 多字姓名注入词典 → 整体切分并标注 nr
     for t in texts:
         prev: tuple[str, str] | None = None
         prev_surname = False                # 上一个 token 是否为姓氏（含单字姓）
@@ -303,17 +336,17 @@ def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
                k: int = 40) -> list[dict[str, Any]]:
     """高频词 — content keywords that characterize the WHOLE platform, not a
     single book. Restricted to noun-class POS (everyday 副词/动词 like 马上/
-    感觉 never surface); 人名残片 (三江 in 李三江) dropped via name-context;
-    ranked by 跨作品广度 (用该词的作品数) × 频次 × keyness so a word many works
-    share rises above one book's pet word（单作品高频往后排/不展示）。"""
+    感觉 never surface); 人名 dropped via 姓/名资源 + jieba 命名实体 + 跨作品
+    广度（角色名只在一部书出现 → 单作品；域内造词 灵能 跨多部书）; ranked by
+    跨作品广度 × 频次 × keyness so a word many works share beats one book's
+    pet word（单作品高频往后排/不展示）。"""
+    blobs = owner_blobs or []
+    n_works = max(1, len(blobs))
+
     counter: Counter = Counter()
     if has_jieba:
         for w, c in token_counts.items():
-            # 残片人名：该词多数出现紧跟姓氏 → 视为人名片段，剔除。
-            if name_context.get(w, 0) >= max(1, 0.5 * c):
-                continue
-            if (not _is_common(w) and not token_isname.get(w)
-                    and _keep_noun(token_pos.get(w, ""))
+            if (not _is_common(w) and _keep_noun(token_pos.get(w, ""))
                     and _is_content_phrase(w)):
                 counter[w] += c
         for m, c in bigram_counts.items():
@@ -331,15 +364,40 @@ def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
 
     if not counter:
         return []
+
+    # 跨作品广度 (document frequency): 用该词的不同作品数。
+    df = {t: (sum(1 for b in blobs if t in b) if blobs else 1) for t in counter}
+
+    def _is_name(w: str) -> bool:
+        # 1) 资源命中：姓 / 名（含西方名，可由「资源管理」扩展，已注入 jieba 词典）
+        if w in _SURNAMES or w in _GIVEN_NAMES:
+            return True
+        # 2) 姓氏起首 / 复姓前缀 / 音译外国名（既有启发式）
+        if token_isname.get(w) or _looks_like_person_name(w, token_pos.get(w, ""), freq):
+            return True
+        flag = token_pos.get(w, "")
+        # 3) 叠字名（翠翠/婷婷）— AA 且名词类
+        if len(w) == 2 and w[0] == w[1] and flag.startswith("n"):
+            return True
+        # 4) jieba 标注为人名/地名 且 仅出现在单一作品 → 角色/地名（域内造词如
+        #    灵能 跨多部书 df 较大，得以保留）
+        if flag in _NAME_POS and df.get(w, 1) <= 1:
+            return True
+        # 5) 多数出现紧跟姓氏（李三江→三江）
+        if name_context.get(w, 0) >= max(1, 0.5 * counter[w]):
+            return True
+        return False
+
+    for w in list(counter):
+        if _is_name(w):
+            del counter[w]
+    if not counter:
+        return []
+
     kept = set(_dedup_substrings(counter))
 
-    # 跨作品广度 (document frequency): 用该词的不同作品数。多作品共用 → 代表
-    # 平台特征；只在单一作品高频 → 大幅降权。
-    blobs = owner_blobs or []
-    n_works = max(1, len(blobs))
-    df = {t: sum(1 for b in blobs if t in b) for t in kept} if blobs else {}
-
     def _score(t: str) -> float:
+        # 多作品共用 → 代表平台特征；只在单一作品高频 → 大幅降权。
         breadth = (0.2 + 0.8 * (df.get(t, 1) / n_works)) if blobs else 1.0
         return (counter[t] * _rarity(t, freq, 1000.0)
                 * (1.0 + 0.12 * (len(t) - 2)) * breadth)

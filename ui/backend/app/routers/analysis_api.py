@@ -64,6 +64,12 @@ def analysis_date_range():
     mn, mx = _db_date_range(db_path)
     return {"min_date": mn, "max_date": mx}
 
+
+@router.get("/crawler-version")
+def analysis_crawler_version():
+    """市场数据库版本指纹（mtime+size）— 前端轮询，变化即自动刷新。"""
+    return {"version": crawler_db_version() or ""}
+
 def _window_pct(series: list[float]) -> float | None:
     """窗口内百分比变化 = (晚期均值 − 早期均值) / 早期均值。
 
@@ -379,7 +385,7 @@ def cache_evict_expired():
 # ── 词表资源管理 (人名 / 常用词) ── 「资源管理」tab CRUD + 高频词一键归类。
 # 所有调用统一走 wordlists.py（resources/wordlists/*.txt + 用户 overlay）。
 
-_WORDLIST_OK = {"surnames", "common_words"}
+_WORDLIST_OK = {"surnames", "given_names", "common_words"}
 
 
 def _wordlist_after_edit() -> None:

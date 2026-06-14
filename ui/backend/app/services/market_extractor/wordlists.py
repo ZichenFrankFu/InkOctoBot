@@ -34,13 +34,15 @@ _ROOT = Path(__file__).resolve().parent / "resources" / "wordlists"
 _FILES = {
     "common_words": "common_words.txt",
     "surnames": "surnames.txt",
+    "given_names": "given_names.txt",
     "translit_chars": "translit_chars.txt",
 }
 
 # Human labels for the API / UI (资源管理 tab) and the targets a user may CRUD.
 LIST_LABELS = {
     "common_words": "常用词",
-    "surnames": "人名",
+    "surnames": "姓",
+    "given_names": "名",
 }
 
 
@@ -107,6 +109,11 @@ def load_common_words() -> frozenset[str]:
 
 def load_surnames() -> frozenset[str]:
     return _effective("surnames")
+
+
+def load_given_names() -> frozenset[str]:
+    """名（given names）— 中文/西方/日文，含用户 overlay。"""
+    return _effective("given_names")
 
 
 def load_translit_chars() -> frozenset[str]:

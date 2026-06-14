@@ -29,8 +29,9 @@ def dbs(tmp_path):
         VALUES (1,1,date('now')),(2,2,date('now'));
         """
     )
-    # novels 1-6 on the main board (rank 1..6); novels 7-9 ONLY on the 新书榜.
-    for uid in range(1, 10):
+    # novels 1-13 on the main board (rank 1..13, heat 高→低); novels 14-16
+    # ONLY on the 新书榜（低热度，新生力量）。配额 3+7+3+3=16 故 13 主榜 + 3 新书。
+    for uid in range(1, 17):
         con.execute(
             "INSERT INTO novels(novel_uid,platform,platform_novel_id,author,"
             "author_norm,intro,main_category,status,total_words,url,"
@@ -39,17 +40,17 @@ def dbs(tmp_path):
             (uid, "qidian", f"q{uid}", "作者", "作者", "简介", "玄幻",
              "ongoing", 300000, "http://x"),
         )
-        if uid <= 6:
+        if uid <= 13:
             con.execute(
                 "INSERT INTO rank_entries(snapshot_id,novel_uid,rank,"
                 "total_recommend,reading_count) VALUES (1,?,?,?,0)",
-                (uid, uid, 1000 * (7 - uid)),
+                (uid, uid, 1000 * (14 - uid)),
             )
         else:
             con.execute(
                 "INSERT INTO rank_entries(snapshot_id,novel_uid,rank,"
                 "total_recommend,reading_count) VALUES (2,?,?,?,0)",
-                (uid, uid - 6, 40),
+                (uid, uid - 13, 40),   # novel_uid=14..16, rank=1..3, 低热度
             )
     con.commit()
     con.close()

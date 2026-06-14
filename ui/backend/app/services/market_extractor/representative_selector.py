@@ -168,29 +168,50 @@ def _fetch_board_candidates(
     return list(out.values())
 
 
+# 整平台代表作的四个维度配额（共 16 部，去重后近似）。
+_PICK_TOP_RANK = 3     # 横跨所有榜单、总是处于榜单前列
+_PICK_TOP_HEAT = 7     # 热度最高
+_PICK_TOP_STABLE = 3   # 上榜次数最多（发挥最稳定）
+_PICK_TOP_NEW = 3      # 各新书榜抽样
+
+
 def _fetch_platform_candidates(
     crawler_db: str, platform: str, seed: int | None = None,
 ) -> list[WorkCandidate]:
-    """整平台代表作（不限单一榜单）— 用不同维度的优秀作品共同展现平台风格：
-    总排行最高（常居榜前列）/ 上榜次数最多（发挥稳定）/ 热度最高 / 新书榜随机
-    抽样。非新书榜优先（机制4 起点榜单顺序：先主榜再新书）。每部带 reason。"""
+    """整平台代表作（不限单一榜单）— 四个不同维度共同展现平台风格，跨桶去重：
+
+    · 总排行最高（3）：横跨多个榜单、平均名次最靠前（持续居于榜单前列）
+    · 热度最高（7）
+    · 上榜最多·稳定（3）：历史上榜次数最多（覆盖所有快照，发挥稳定）
+    · 新书榜抽样（3）：仅出现在新书榜的作品随机抽取
+
+    指标取自全部快照（非仅最新），avg_recip = 平均 1/名次 衡量「总是靠前」，
+    coverage = 上过的不同榜单数衡量「横跨榜单」。非新书榜优先（先填主榜维度）。"""
     try:
         with sqlite3.connect(crawler_db) as con:
             con.row_factory = sqlite3.Row
             rows = con.execute(
                 """
-                SELECT e.novel_uid, e.rank, e.total_recommend, e.reading_count,
-                       n.total_words, n.last_seen_date,
-                       (l.rank_family LIKE '%新书%'
-                        OR l.rank_sub_cat LIKE '%新书%') AS is_new
-                FROM rank_lists l
-                JOIN rank_snapshots s ON s.rank_list_id = l.rank_list_id
-                 AND s.snapshot_date = (
-                     SELECT MAX(s2.snapshot_date) FROM rank_snapshots s2
-                     WHERE s2.rank_list_id = l.rank_list_id)
-                JOIN rank_entries e ON e.snapshot_id = s.snapshot_id
+                SELECT e.novel_uid AS uid,
+                       COUNT(*) AS appearances,
+                       COUNT(DISTINCT l.rank_list_id) AS coverage,
+                       AVG(1.0 / e.rank) AS avg_recip,
+                       MAX(COALESCE(e.total_recommend,0)
+                           + COALESCE(e.reading_count,0)) AS max_heat,
+                       MAX(n.total_words) AS words,
+                       MAX(n.last_seen_date) AS last,
+                       MAX(CASE WHEN l.rank_family LIKE '%新书%'
+                                  OR l.rank_sub_cat LIKE '%新书%'
+                                THEN 1 ELSE 0 END) AS in_new,
+                       MAX(CASE WHEN l.rank_family LIKE '%新书%'
+                                  OR l.rank_sub_cat LIKE '%新书%'
+                                THEN 0 ELSE 1 END) AS in_main
+                FROM rank_entries e
+                JOIN rank_snapshots s ON s.snapshot_id = e.snapshot_id
+                JOIN rank_lists l ON l.rank_list_id = s.rank_list_id
                 JOIN novels n ON n.novel_uid = e.novel_uid
                 WHERE l.platform = ?
+                GROUP BY e.novel_uid
                 """,
                 [platform],
             ).fetchall()
@@ -200,24 +221,7 @@ def _fetch_platform_candidates(
     if not rows:
         return []
 
-    agg: dict[str, dict] = {}
-    for r in rows:
-        uid = str(r["novel_uid"])
-        heat = int(r["total_recommend"] or 0) + int(r["reading_count"] or 0)
-        rk = int(r["rank"] or 9999)
-        is_new = bool(r["is_new"])
-        a = agg.get(uid)
-        if a is None:
-            a = {"best_rank": rk, "appearances": 0, "max_heat": heat,
-                 "words": int(r["total_words"] or 0),
-                 "last": r["last_seen_date"], "in_new": False, "in_main": False}
-            agg[uid] = a
-        a["appearances"] += 1
-        a["best_rank"] = min(a["best_rank"], rk)
-        a["max_heat"] = max(a["max_heat"], heat)
-        a["in_new"] = a["in_new"] or is_new
-        a["in_main"] = a["in_main"] or (not is_new)
-
+    agg = {str(r["uid"]): dict(r) for r in rows}
     out: dict[str, WorkCandidate] = {}
 
     def _add(uid: str, reason: str, score: float) -> None:
@@ -226,8 +230,8 @@ def _fetch_platform_candidates(
         a = agg[uid]
         c = WorkCandidate(
             novel_id=uid, title="", platform=platform, category="",
-            collections=0, comments=0, monthly_ticket=a["max_heat"],
-            word_count=a["words"], last_updated_at=a["last"],
+            collections=0, comments=0, monthly_ticket=int(a["max_heat"] or 0),
+            word_count=int(a["words"] or 0), last_updated_at=a["last"],
         )
         c.rank_score = score
         c.selection_reason = reason
@@ -235,24 +239,38 @@ def _fetch_platform_candidates(
 
     uids = list(agg.keys())
     main = [u for u in uids if agg[u]["in_main"]]
-    new = [u for u in uids if agg[u]["in_new"]]
-    max_app = max((agg[u]["appearances"] for u in uids), default=1)
-    max_heat = max((agg[u]["max_heat"] for u in uids), default=1) or 1
-    PER = 8
-    # ① 总排行最高（主榜 best_rank 最小）
-    for u in sorted(main, key=lambda u: agg[u]["best_rank"])[:PER]:
-        _add(u, "总排行最高", 0.90 + 0.10 * (1.0 - min(agg[u]["best_rank"], 100) / 100.0))
-    # ② 上榜次数最多（发挥稳定）
-    for u in sorted(main or uids, key=lambda u: -agg[u]["appearances"])[:PER]:
-        _add(u, "上榜最多·稳定", 0.70 + 0.10 * (agg[u]["appearances"] / max_app))
-    # ③ 热度最高
-    for u in sorted(uids, key=lambda u: -agg[u]["max_heat"])[:PER]:
-        _add(u, "热度最高", 0.55 + 0.10 * (agg[u]["max_heat"] / max_heat))
-    # ④ 新书榜随机抽样（不看热度，覆盖新生力量）
-    if new:
+    new_only = [u for u in uids if agg[u]["in_new"] and not agg[u]["in_main"]]
+
+    def _fill(ordered: list[str], reason: str, score: float, n: int) -> None:
+        """填满该维度配额（跳过已被其它维度选中的，保证去重后凑齐 n 部）。"""
+        added = 0
+        for u in ordered:
+            if u in out:
+                continue
+            _add(u, reason, score)
+            added += 1
+            if added >= n:
+                break
+
+    # ① 总排行最高：取主榜(非新书优先)中横跨多榜(coverage>=2)、平均名次最靠前的；
+    #    不足则放宽 coverage / 到全部。新书榜专属作品留给维度④。
+    cross = ([u for u in main if (agg[u]["coverage"] or 0) >= 2]
+             or main or uids)
+    _fill(sorted(cross, key=lambda u: (-(agg[u]["avg_recip"] or 0),
+                                       -(agg[u]["coverage"] or 0))),
+          "总排行最高", 0.95, _PICK_TOP_RANK)
+    # ② 热度最高
+    _fill(sorted(uids, key=lambda u: -(agg[u]["max_heat"] or 0)),
+          "热度最高", 0.85, _PICK_TOP_HEAT)
+    # ③ 上榜最多·稳定（历史上榜次数）
+    _fill(sorted(uids, key=lambda u: -(agg[u]["appearances"] or 0)),
+          "上榜最多·稳定", 0.75, _PICK_TOP_STABLE)
+    # ④ 新书榜抽样（仅在新书榜的作品；不足则放宽到所有上过新书榜的）
+    pool = new_only or [u for u in uids if agg[u]["in_new"]]
+    if pool:
         rng = random.Random(seed if seed is not None else f"{platform}:new")
-        for u in rng.sample(new, min(PER, len(new))):
-            _add(u, "新书榜抽样", 0.40)
+        rng.shuffle(pool)
+        _fill(pool, "新书榜抽样", 0.55, _PICK_TOP_NEW)
     return list(out.values())
 
 
