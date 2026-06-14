@@ -35,6 +35,7 @@ _FILES = {
     "common_words": "common_words.txt",
     "surnames": "surnames.txt",
     "given_names": "given_names.txt",
+    "name_chars": "name_chars.txt",
     "translit_chars": "translit_chars.txt",
 }
 
@@ -112,8 +113,16 @@ def load_surnames() -> frozenset[str]:
 
 
 def load_given_names() -> frozenset[str]:
-    """名（given names）— 中文/西方/日文，含用户 overlay。"""
+    """名（given names）— 中文/西方/日本，含用户 overlay。"""
     return _effective("given_names")
+
+
+def load_name_chars() -> frozenset[str]:
+    """中文名字常用字（单字）— 人名识别辅助，非 CRUD 资源。"""
+    chars: set[str] = set()
+    for tok in _effective("name_chars"):
+        chars.update(tok)
+    return frozenset(chars)
 
 
 def load_translit_chars() -> frozenset[str]:
@@ -255,6 +264,42 @@ def list_grouped(list_name: str, q: str | None = None) -> dict:
     groups = [{"group": g, "items": buckets[g]} for g in ordered]
     return {"list": list_name, "groups": groups,
             "total": sum(len(b) for b in buckets.values())}
+
+
+_NAME_COUNTRIES = ("中文", "日本", "西方")
+
+
+def names_overview(q: str | None = None) -> dict:
+    """人名总览：按国家(中文/日本/西方)分组，每组含「姓」与「名」两类，外加
+    无国别的「用户添加」。供资源管理 tab 的国家 section + 姓/名 切换展示。"""
+    sg = _grouped_bundled("surnames")
+    gg = _grouped_bundled("given_names")
+    q = (q or "").strip()
+
+    def bucket(list_name: str, w2g: dict) -> tuple[dict, list]:
+        eff = _effective(list_name)
+        adds = _overlay(list_name, "add")
+        per: dict[str, list] = {c: [] for c in _NAME_COUNTRIES}
+        user: list = []
+        for w in sorted(eff):
+            if q and q not in w:
+                continue
+            item = {"word": w, "user": w in adds}
+            g = w2g.get(w)
+            if g in per:
+                per[g].append(item)
+            else:
+                user.append(item)      # 用户添加 / 无国别 → 归入「用户添加」
+        return per, user
+
+    sp, su = bucket("surnames", sg)
+    gp, gu = bucket("given_names", gg)
+    data = {c: {"surnames": sp[c], "given": gp[c]} for c in _NAME_COUNTRIES}
+    return {
+        "countries": list(_NAME_COUNTRIES),
+        "data": data,
+        "user_added": {"surnames": su, "given": gu},
+    }
 
 
 def export_text(list_name: str) -> str:

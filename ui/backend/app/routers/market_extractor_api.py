@@ -460,7 +460,8 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
             parts.append(f"   简介：{intro}")
         return "\n".join(parts)
 
-    work_block = "\n".join(_fmt_work(w, i + 1) for i, w in enumerate(works[:12]))
+    # 含全部已选代表作（不再截断 top12）— 用户勾选多少就注入多少。
+    work_block = "\n".join(_fmt_work(w, i + 1) for i, w in enumerate(works))
     if not work_block:
         work_block = "（暂无候选代表作 — 请凭你对该榜单的常识答题。）"
 
@@ -477,7 +478,7 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
         crawler_db = resolve_crawler_db_path()
         stat_rows: list[dict] = []
         excerpts: list[str] = []
-        for w in works[:10]:
+        for w in works:
             novel_id = str(w.get("source_db_novel_id") or "")
             if not novel_id:
                 continue
@@ -488,7 +489,7 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
             for cn, text in chapters.items():
                 stat_rows.append({"chapter_num": cn, "text": text, "title": title})
             block = _first2_excerpt(chapters, head=600, tail=400)
-            if block and len(excerpts) < 8:
+            if block and len(excerpts) < 20:
                 excerpts.append(f"### 《{title}》\n{block}")
         if stat_rows:
             nlp_block = render_stats_for_prompt(
@@ -505,7 +506,7 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
         "清单（覆盖总排行最高、上榜最稳定、热度最高、新书等不同类型，以代表整个平台"
         "风格）、开篇章节的真实 NLP 统计、以及各作品前 2 章「开头+结尾」的原文节选。"
         "请综合分析后，按下列全部维度输出**结构化 JSON**。\n\n"
-        f"## 代表作清单（top {min(len(works), 12)} / 共 {len(works)} 部）\n\n"
+        f"## 代表作清单（已选 {len(works)} 部，全部纳入分析）\n\n"
         f"{work_block}\n\n"
         "## 开篇章节真实统计（脚本计算，含生造词Step1候选）\n\n"
         f"{nlp_block}\n\n"

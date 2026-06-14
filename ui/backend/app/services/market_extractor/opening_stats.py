@@ -55,14 +55,15 @@ _COMMON_WORDS: frozenset[str] = frozenset()
 _COMMON_MULTI: frozenset[str] = frozenset()
 _SURNAMES: frozenset[str] = frozenset()
 _GIVEN_NAMES: frozenset[str] = frozenset()
+_NAME_CHARS: frozenset[str] = frozenset()   # 中文名字常用字（单字），人名识别辅助
 _TRANSLIT_CHARS: frozenset[str] = frozenset()
 _NAME_DICT_LOADED = False
 
 
 def reload_wordlists() -> None:
-    """Refresh the in-process 常用词/姓/名/音译字 sets from wordlists.py — called
-    after a 资源管理 add/remove so the next analysis re-filters with the edit."""
-    global _COMMON_WORDS, _COMMON_MULTI, _SURNAMES, _GIVEN_NAMES
+    """Refresh the in-process 常用词/姓/名/名字用字/音译字 sets from wordlists.py
+    — called after a 资源管理 add/remove so the next analysis re-filters."""
+    global _COMMON_WORDS, _COMMON_MULTI, _SURNAMES, _GIVEN_NAMES, _NAME_CHARS
     global _TRANSLIT_CHARS, _NAME_DICT_LOADED
     if _wl is None:
         return
@@ -71,6 +72,7 @@ def reload_wordlists() -> None:
         _COMMON_MULTI = frozenset(w for w in _COMMON_WORDS if len(w) >= 2)
         _SURNAMES = _wl.load_surnames()
         _GIVEN_NAMES = _wl.load_given_names()
+        _NAME_CHARS = _wl.load_name_chars()
         _TRANSLIT_CHARS = _wl.load_translit_chars()
         _NAME_DICT_LOADED = False     # re-feed jieba userdict on next pass
     except Exception:  # pragma: no cover - resources always present
@@ -376,12 +378,14 @@ def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
         if token_isname.get(w) or _looks_like_person_name(w, token_pos.get(w, ""), freq):
             return True
         flag = token_pos.get(w, "")
-        # 3) 叠字名（翠翠/婷婷）— AA 且名词类
-        if len(w) == 2 and w[0] == w[1] and flag.startswith("n"):
-            return True
-        # 4) jieba 标注为人名/地名 且 仅出现在单一作品 → 角色/地名（域内造词如
-        #    灵能 跨多部书 df 较大，得以保留）
+        # 3) jieba 判为人名/地名(nr/ns…) 且仅出现在单一作品 → 角色/地名片段；域内
+        #    造词 灵能/异能 跨多部书 df 大，得以保留。
         if flag in _NAME_POS and df.get(w, 1) <= 1:
+            return True
+        # 4) 叠字名（翠翠/婷婷）— AA + 首字为名字常用字 + jieba 判为名（星星'n'/
+        #    渐渐'd' 不被误判，因非 nr/ns）。名字常用字来自 web 常用取名单字。
+        if (len(w) == 2 and w[0] == w[1] and w[0] in _NAME_CHARS
+                and flag in _NAME_POS):
             return True
         # 5) 多数出现紧跟姓氏（李三江→三江）
         if name_context.get(w, 0) >= max(1, 0.5 * counter[w]):
@@ -393,6 +397,15 @@ def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
             del counter[w]
     if not counter:
         return []
+
+    # Task 3：高频词须在「多个作品」出现（df>=2），只在一本书里高频的不算 —
+    # 语料里作品足够多时才启用（避免小样本被清空）。
+    if blobs and n_works >= 3:
+        for w in list(counter):
+            if df.get(w, 0) < 2:
+                del counter[w]
+        if not counter:
+            return []
 
     kept = set(_dedup_substrings(counter))
 

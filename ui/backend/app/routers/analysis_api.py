@@ -414,6 +414,13 @@ def wordlist_list(list: str = Query(...), q: str = Query(default="")):
     return data
 
 
+@router.get("/wordlist/names")
+def wordlist_names(q: str = Query(default="")):
+    """人名总览（按国家分组 + 姓/名）— 资源管理 tab 的人名视图。"""
+    from ..services.market_extractor import wordlists as _wl
+    return _wl.names_overview(q or None)
+
+
 @router.get("/wordlist/grouped")
 def wordlist_grouped(list: str = Query(...), q: str = Query(default="")):
     """分组列出资源（人名按国家分组 + 用户添加），供折叠展示。"""

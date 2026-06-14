@@ -59,8 +59,8 @@ class TestWordlistGroupingIO:
     def test_surnames_grouped_by_country(self, wl):
         g = wl.list_grouped("surnames")
         groups = {x["group"]: x["items"] for x in g["groups"]}
-        assert "中国" in groups and "日本" in groups
-        assert any(it["word"] == "李" for it in groups["中国"])
+        assert "中文" in groups and "日本" in groups
+        assert any(it["word"] == "李" for it in groups["中文"])
         assert any(it["word"] == "上杉" for it in groups["日本"])
 
     def test_user_added_lands_in_own_group(self, wl):
@@ -77,6 +77,33 @@ class TestWordlistGroupingIO:
         added = wl.import_text("surnames", "甲姓 乙姓\n# 注释行\n丙姓")
         assert added == 3
         assert "甲姓" in wl.load_surnames() and "丙姓" in wl.load_surnames()
+
+
+class TestNamesOverview:
+    def test_overview_by_country_and_kind(self, wl):
+        ov = wl.names_overview()
+        assert ov["countries"] == ["中文", "日本", "西方"]
+        cn = ov["data"]["中文"]
+        assert any(i["word"] == "李" for i in cn["surnames"])      # 姓
+        assert any(i["word"] == "翠翠" for i in cn["given"])        # 名
+        assert any(i["word"] == "史密斯" for i in ov["data"]["西方"]["surnames"])
+        assert any(i["word"] == "杰克" for i in ov["data"]["西方"]["given"])
+
+    def test_user_added_lands_in_user_bucket(self, wl):
+        wl.add_word("given_names", "测试用户名")
+        ov = wl.names_overview()
+        assert any(i["word"] == "测试用户名" for i in ov["user_added"]["given"])
+
+    def test_names_endpoint(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("INKOCTOBOT_WORDLIST_DIR", str(tmp_path / "wl"))
+        from ui.backend.app.services.market_extractor import wordlists as _wl
+        _wl._invalidate()
+        from ui.backend.app.main import app
+        c = TestClient(app)
+        r = c.get("/api/analysis/wordlist/names")
+        assert r.status_code == 200
+        body = r.json()
+        assert "中文" in body["data"] and "given" in body["data"]["中文"]
 
 
 class TestWordlistGroupedAPI:
