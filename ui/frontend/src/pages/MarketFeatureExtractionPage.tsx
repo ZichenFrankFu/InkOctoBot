@@ -1342,8 +1342,9 @@ function NameLibraryView() {
   const [sub, setSub] = React.useState<"list" | "patterns">("list");
   const [q, setQ] = React.useState("");
   const [order, setOrder] = React.useState("df");
-  const [nonstd, setNonstd] = React.useState("");
-  const [data, setData] = React.useState<any>(null);
+  const [byKind, setByKind] = React.useState<Record<string, any>>({});   // 按分类分组
+  const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>(
+    { japanese: true, western: true, nickname: true });                  // 默认只展开中文
   const [stats, setStats] = React.useState<any>(null);
   const [status, setStatus] = React.useState<any>(null);
   const [newName, setNewName] = React.useState("");
@@ -1351,16 +1352,26 @@ function NameLibraryView() {
   const [editId, setEditId] = React.useState<string | null>(null);   // 正在编辑的条目
   const [editName, setEditName] = React.useState("");
   const [editSent, setEditSent] = React.useState("");
-  const limit = 200;
+  const [editKind, setEditKind] = React.useState("chinese");
+  const [editAlias, setEditAlias] = React.useState("");
+  const limit = 300;
+  const KINDS: [string, string][] = [
+    ["chinese", "中文名"], ["japanese", "日文名"], ["western", "西方名"], ["nickname", "昵称"],
+  ];
 
   const reload = React.useCallback(async () => {
     try {
-      const params = new URLSearchParams({ q, order, limit: String(limit) });
-      if (nonstd) params.set("nonstandard", nonstd);
-      setData(await apiGet<any>(`/api/analysis/name-library?${params}`));
+      const kinds = ["chinese", "japanese", "western", "nickname"];
+      const results = await Promise.all(kinds.map(k => {
+        const params = new URLSearchParams({ q, order, kind: k, limit: String(limit) });
+        return apiGet<any>(`/api/analysis/name-library?${params}`);
+      }));
+      const map: Record<string, any> = {};
+      kinds.forEach((k, i) => { map[k] = results[i]; });
+      setByKind(map);
       setStats(await apiGet<any>("/api/analysis/name-library/stats"));
     } catch (e: any) { toast(`加载人名库失败：${e.message}`, "error"); }
-  }, [q, order, nonstd, toast]);
+  }, [q, order, toast]);
 
   const reloadStatus = React.useCallback(async () => {
     try { setStatus(await apiGet<any>("/api/analysis/name-library/refresh-status")); } catch { /* ignore */ }
@@ -1398,6 +1409,7 @@ function NameLibraryView() {
   };
   const startEdit = (it: any) => {
     setEditId(it.name_id); setEditName(it.full_name); setEditSent(it.example_sentence || "");
+    setEditKind(it.name_kind || "chinese"); setEditAlias(it.alias_of || "");
   };
   const saveEdit = async () => {
     if (editName.trim().length < 2) { toast("人名需 ≥2 字", "error"); return; }
@@ -1405,6 +1417,7 @@ function NameLibraryView() {
     try {
       await apiPost("/api/analysis/name-library/edit", {
         name_id: editId, full_name: editName.trim(), example_sentence: editSent,
+        name_kind: editKind, alias_of: editAlias.trim(),
       });
       toast("已保存", "success"); setEditId(null); reload();
     } catch (e: any) { toast(`保存失败：${e.message}`, "error"); }
@@ -1501,14 +1514,14 @@ function NameLibraryView() {
           <div style={{ fontSize: 11, color: "var(--text-tertiary)", display: "flex", gap: 12, flexWrap: "wrap" }}>
             <span>共 <strong style={{ color: "var(--text-secondary)" }}>{stats.total}</strong> 名</span>
             <span>DF≥2 <strong style={{ color: "var(--text-secondary)" }}>{stats.df_ge2}</strong></span>
-            <span>复姓 {stats.compound_surname} · 单名 {stats.single_given} · 非标准 {stats.nonstandard}</span>
+            <span>中文 {stats.by_kind?.chinese ?? 0} · 日文 {stats.by_kind?.japanese ?? 0} · 西方 {stats.by_kind?.western ?? 0} · 昵称 {stats.by_kind?.nickname ?? 0}</span>
           </div>
         )}
       </div>
 
       {sub === "patterns" ? <NamingPatternsPanel /> : (
         <>
-          {/* 工具栏 */}
+          {/* 工具栏（分类已按 section 分组，无需筛选下拉） */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <input className="input" value={q} onChange={e => setQ(e.target.value)}
               placeholder="搜索全名/姓/名…" style={{ flex: 1, minWidth: 150, maxWidth: 260, padding: "7px 12px" }} />
@@ -1517,11 +1530,6 @@ function NameLibraryView() {
               <option value="name">按名称</option>
               <option value="recent">按最近</option>
             </select>
-            <select className="select" value={nonstd} onChange={e => setNonstd(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
-              <option value="">全部</option>
-              <option value="0">仅标准名</option>
-              <option value="1">仅非标准</option>
-            </select>
             <input className="input" value={newName} onChange={e => setNewName(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter") add(); }}
               placeholder="新增全名" style={{ width: 130, padding: "7px 12px" }} />
@@ -1529,78 +1537,100 @@ function NameLibraryView() {
               style={{ fontSize: 12, padding: "7px 14px" }}>添加</button>
           </div>
 
-          {!data ? <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>加载中…</div> :
-            data.items.length === 0 ? <Empty msg={q ? `没有匹配「${q}」的人名。` : "人名库为空 — 点上方『刷新人名库』。"} /> : (
-              <div className="card"><div className="card-body" style={{ padding: 0 }}>
-                <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
-                  <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left", fontSize: 11 }}>
-                    <th style={{ padding: "6px 10px" }}>全名</th>
-                    <th style={{ padding: "6px 10px" }}>姓 / 名</th>
-                    <th style={{ padding: "6px 10px" }}>结构</th>
-                    <th style={{ padding: "6px 10px" }} title="出现的去重书数（按 book 不按 snapshot）— 可信度信号">DF</th>
-                    <th style={{ padding: "6px 10px" }}>来源</th>
-                    <th style={{ padding: "6px 10px" }}></th>
-                  </tr></thead>
-                  <tbody>
-                    {data.items.map((it: any) => (
-                      <React.Fragment key={it.name_id}>
-                        <tr style={{ borderTop: "1px solid var(--border)" }}>
-                          <td style={{ padding: "6px 10px", fontWeight: 600 }}>
-                            {it.full_name}
-                            {it.is_nonstandard ? <span title={it.nonstandard_reason}
-                              style={{ marginLeft: 6, fontSize: 10, color: "var(--error)", border: "1px solid var(--error)", borderRadius: 3, padding: "0 4px" }}>非标准</span> : null}
-                            {it.example_sentence ? (
-                              <div style={{ fontWeight: 400, fontSize: 11, color: "var(--text-tertiary)", marginTop: 2, maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                                title={it.example_sentence}>例句：{it.example_sentence}</div>
-                            ) : null}
-                          </td>
-                          <td style={{ padding: "6px 10px", color: "var(--text-secondary)" }}>{it.surname || "—"} / {it.given_name || "—"}</td>
-                          <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
-                            {it.is_compound_surname ? "复姓" : it.is_single_given ? "单名" : it.surname_kind === "single" ? "双名" : "—"}
-                          </td>
-                          <td style={{ padding: "6px 10px" }}>
-                            <span className="font-mono" style={{ color: it.book_df >= 2 ? "var(--jade)" : "var(--text-tertiary)" }}>{it.book_df}</span>
-                          </td>
-                          <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
-                            {it.source === "seed" ? "种子" : it.source === "ltp_ner" ? "LTP" : it.source === "jieba_nr" ? "jieba" : it.source === "user" ? "用户" : it.source}
-                            {it.source_category ? ` · ${it.source_category}` : ""}
-                          </td>
-                          <td style={{ padding: "6px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
-                            <button className="btn" disabled={busy} onClick={() => startEdit(it)}
-                              style={{ fontSize: 10, padding: "2px 8px", marginRight: 4 }}>编辑</button>
-                            <button className="btn" disabled={busy} onClick={() => remove(it.full_name)}
-                              style={{ fontSize: 10, padding: "2px 8px" }}>删除</button>
-                          </td>
-                        </tr>
-                        {editId === it.name_id && (
-                          <tr style={{ background: "var(--bg-surface-2)" }}>
-                            <td colSpan={6} style={{ padding: "8px 10px" }}>
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                                <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>全名</span>
-                                <input className="input" value={editName} onChange={e => setEditName(e.target.value)}
-                                  style={{ width: 120, padding: "4px 8px", fontSize: 12 }} />
-                                <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>例句</span>
-                                <input className="input" value={editSent} onChange={e => setEditSent(e.target.value)}
-                                  placeholder="该名出现的一句话" style={{ flex: 1, minWidth: 180, padding: "4px 8px", fontSize: 12 }} />
-                                <button className="btn-primary" disabled={busy} onClick={saveEdit}
-                                  style={{ fontSize: 11, padding: "4px 12px" }}>保存</button>
-                                <button className="btn" disabled={busy} onClick={() => setEditId(null)}
-                                  style={{ fontSize: 11, padding: "4px 12px" }}>取消</button>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                    ))}
-                  </tbody>
-                </table>
-                {data.truncated && (
-                  <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)", borderTop: "1px solid var(--border)" }}>
-                    共 {data.total} 条，已显示前 {limit} 条 — 用搜索缩小范围。
-                  </div>
+          {/* 四个可展开/收起的分类 section */}
+          {KINDS.map(([kind, label]) => {
+            const sec = byKind[kind];
+            const items = sec?.items || [];
+            const open = !collapsed[kind];
+            return (
+              <div key={kind} className="card">
+                <button onClick={() => setCollapsed(p => ({ ...p, [kind]: !p[kind] }))}
+                  className="card-header" style={{ display: "flex", alignItems: "center", gap: 8, width: "100%",
+                    background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
+                  <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>{open ? "▾" : "▸"}</span>
+                  <h3 style={{ margin: 0, fontSize: 14 }}>{label}</h3>
+                  <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)" }}>{sec?.total ?? 0}</span>
+                </button>
+                {open && (
+                  items.length === 0 ? (
+                    <div className="card-body"><div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                      {q ? `没有匹配「${q}」的${label}。` : `暂无${label} — 刷新人名库后由 LTP 从正文抽取。`}
+                    </div></div>
+                  ) : (
+                    <div className="card-body" style={{ padding: 0 }}>
+                      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                        <tbody>
+                          {items.map((it: any) => (
+                            <React.Fragment key={it.name_id}>
+                              <tr style={{ borderTop: "1px solid var(--border)" }}>
+                                <td style={{ padding: "6px 10px", fontWeight: 600 }}>
+                                  {it.full_name}
+                                  {kind === "nickname" && it.alias_of ? (
+                                    <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 400, color: "var(--accent)" }}>→ 本名 {it.alias_of}</span>
+                                  ) : null}
+                                  {it.example_sentence ? (
+                                    <div style={{ fontWeight: 400, fontSize: 11, color: "var(--text-tertiary)", marginTop: 2, maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                      title={it.example_sentence}>例句：{it.example_sentence}</div>
+                                  ) : null}
+                                </td>
+                                <td style={{ padding: "6px 10px", color: "var(--text-secondary)" }}>{it.surname || "—"} / {it.given_name || "—"}</td>
+                                <td style={{ padding: "6px 10px" }} title="出现的去重书数（DF）— 可信度信号">
+                                  <span className="font-mono" style={{ color: it.book_df >= 2 ? "var(--jade)" : "var(--text-tertiary)" }}>{it.book_df}</span>
+                                </td>
+                                <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
+                                  {it.source === "seed" ? "种子" : it.source === "ltp_ner" ? "LTP" : it.source === "user" ? "用户" : it.source}
+                                  {it.source_category ? ` · ${it.source_category}` : ""}
+                                </td>
+                                <td style={{ padding: "6px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
+                                  <button className="btn" disabled={busy} onClick={() => startEdit(it)}
+                                    style={{ fontSize: 10, padding: "2px 8px", marginRight: 4 }}>编辑</button>
+                                  <button className="btn" disabled={busy} onClick={() => remove(it.full_name)}
+                                    style={{ fontSize: 10, padding: "2px 8px" }}>删除</button>
+                                </td>
+                              </tr>
+                              {editId === it.name_id && (
+                                <tr style={{ background: "var(--bg-surface-2)" }}>
+                                  <td colSpan={5} style={{ padding: "8px 10px" }}>
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                                      <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>全名</span>
+                                      <input className="input" value={editName} onChange={e => setEditName(e.target.value)}
+                                        style={{ width: 110, padding: "4px 8px", fontSize: 12 }} />
+                                      <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>分类</span>
+                                      <select className="select" value={editKind} onChange={e => setEditKind(e.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
+                                        {KINDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                                      </select>
+                                      {editKind === "nickname" && (
+                                        <>
+                                          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>本名</span>
+                                          <input className="input" value={editAlias} onChange={e => setEditAlias(e.target.value)}
+                                            placeholder="如 刘明（可空）" style={{ width: 100, padding: "4px 8px", fontSize: 12 }} />
+                                        </>
+                                      )}
+                                      <input className="input" value={editSent} onChange={e => setEditSent(e.target.value)}
+                                        placeholder="例句" style={{ flex: 1, minWidth: 140, padding: "4px 8px", fontSize: 12 }} />
+                                      <button className="btn-primary" disabled={busy} onClick={saveEdit}
+                                        style={{ fontSize: 11, padding: "4px 12px" }}>保存</button>
+                                      <button className="btn" disabled={busy} onClick={() => setEditId(null)}
+                                        style={{ fontSize: 11, padding: "4px 12px" }}>取消</button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                      {sec?.truncated && (
+                        <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)", borderTop: "1px solid var(--border)" }}>
+                          共 {sec.total} 条，已显示前 {limit} 条 — 用搜索缩小范围。
+                        </div>
+                      )}
+                    </div>
+                  )
                 )}
-              </div></div>
-            )}
+              </div>
+            );
+          })}
         </>
       )}
     </div>
