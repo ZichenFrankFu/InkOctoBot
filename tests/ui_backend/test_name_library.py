@@ -93,17 +93,19 @@ class TestSeedAndCrud:
 
 
 class TestNerBackend:
-    def test_degrades_to_seed_without_ltp(self) -> None:
+    def test_no_ltp_uses_jieba_surname_gate(self) -> None:
         info = ner_backend.detect_ner_backend(refresh=True)
-        # 本环境无 LTP/torch → 仅静态种子人名库（不再用 jieba 抽名）
-        assert info.backend == "seed"
+        # 本环境无 LTP/torch → jieba 姓氏门控（仍从正文抽名，非 jieba nr）
+        assert info.backend == "jieba"
         assert info.uses_ltp is False
-        assert "种子" in info.reason or "LTP" in info.reason
 
-    def test_extract_per_returns_empty_without_ltp(self) -> None:
-        # 不用 jieba 抽人名（错误率高）→ 无 LTP 时返回空，靠静态种子库剔名。
-        names = ner_backend.extract_per_names(["李慕白对陈玄说道，张三丰在一旁微笑。"])
-        assert names == []
+    def test_extract_real_names_without_ltp(self) -> None:
+        # jieba 姓氏门控从正文抽名：姓氏开头 + 名字常用字，精度高、非空。
+        names = ner_backend.extract_per_names(
+            ["李慕白对萧炎说道，韩立在一旁修炼，王林冷笑一声。"])
+        assert "李慕白" in names and "萧炎" in names and "韩立" in names
+        # 不抽出非姓氏开头的造词
+        assert "修炼" not in names and "冷笑" not in names
 
 
 class TestNamingPatterns:

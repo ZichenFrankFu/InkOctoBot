@@ -184,15 +184,6 @@ def refresh(
     info = ner_backend.detect_ner_backend()
     name_library.seed_if_empty(project_db)   # 静态种子库始终就绪（剔名 fallback）
     try:
-        # LTP 不可用 → 不抽新名（不退化到易错方法），也不标记书为已处理（留待 LTP 可用
-        # 时再抽）。静态种子人名库继续作为高频词剔名的 fallback。
-        if not info.uses_ltp:
-            _set_progress(running=False, total=0, done=0, names=0,
-                          backend=info.backend, phase="ltp_unavailable",
-                          message=info.reason)
-            return {"status": "ltp_unavailable", "backend": info.backend,
-                    "backend_reason": info.reason, "new_books": 0, "names_added": 0,
-                    "elapsed_sec": round(time.time() - started, 1)}
         processed = _processed_state(project_db)
         new_books = _fetch_new_books(crawler_db, processed, platform=platform, limit=limit)
         _set_progress(running=True, total=len(new_books), done=0, names=0,
@@ -204,10 +195,7 @@ def refresh(
             except Exception as e:
                 logger.warning("NER failed for book %s: %s", b["novel_uid"], e)
                 pairs = []
-            cur = ner_backend.detect_ner_backend()
-            if not cur.uses_ltp:        # 运行中 LTP 加载失败被降级 → 停止，剩余书留待下次
-                _set_progress(phase="ltp_failed", message=cur.reason)
-                break
+            method = ner_backend.last_method()      # ltp_ner / jieba（实际所用）
             # 书内去重；每名留一句例句（首次出现的所在句）。
             name_sent: dict[str, str] = {}
             for nm, sent in pairs:
@@ -215,7 +203,7 @@ def refresh(
                     name_sent.setdefault(nm, sent)
             for fn, sent in name_sent.items():
                 name_library.add_name(
-                    project_db, fn, source="ltp_ner",
+                    project_db, fn, source=method,
                     work_id=b["novel_uid"], work_title=b.get("title") or "",
                     platform=b.get("platform") or "", category=b.get("category") or "",
                     rank=b.get("rank"), heat=b.get("heat"), count_df=True,
@@ -223,7 +211,7 @@ def refresh(
                 )
             total_names += len(name_sent)
             _record_state(project_db, b["novel_uid"], b["fingerprint"],
-                          cur.backend, len(name_sent))
+                          method, len(name_sent))
             _bump_progress(done=1, names=len(name_sent))
         _write_last_refresh(time.time())
         final = ner_backend.detect_ner_backend()

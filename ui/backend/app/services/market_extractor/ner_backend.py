@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 logger = logging.getLogger("inkoctobot.market_extractor.ner_backend")
 
@@ -45,6 +46,95 @@ def _split_sentences(texts: list[str], max_len: int = 180) -> list[str]:
                     if len(chunk) >= 2:
                         out.append(chunk)
     return out
+
+
+# ─────────── jieba「姓氏门控」抽名（LTP 缺位/无果时的可靠兜底，扫真实正文）───────────
+# 用 jieba **分词**（不是 jieba 的 nr 名实体标注）拿到词边界，再用「姓氏表 + 名字常用字
+# + 词频」做门控：只有「以真实姓氏开头 + 其余是名字常用字（或 jieba 标为 nr）+ 非高频
+# 常用词」的词才算人名。姓氏门控滤掉了 jieba nr 的误报（灵能/异能不以姓氏开头），精度高。
+
+_CJK_RUN = re.compile(r"^[一-鿿]+$")
+_jieba_userdict_fed = False
+
+
+@lru_cache(maxsize=1)
+def _name_resources():
+    from . import wordlists as wl
+    sur = wl.load_surnames()
+    single = frozenset(s for s in sur if len(s) == 1)
+    compound = tuple(sorted((s for s in sur if len(s) >= 2), key=len, reverse=True))
+    return single, compound, wl.load_name_chars(), wl.load_common_words()
+
+
+@lru_cache(maxsize=1)
+def _jieba_freq() -> dict:
+    try:
+        import jieba
+        jieba.initialize()
+        return jieba.dt.FREQ
+    except Exception:
+        return {}
+
+
+def _feed_jieba_userdict() -> None:
+    """把复姓 + 种子全名喂进 jieba 词典并标 nr，让它们整体成词、不被切碎。"""
+    global _jieba_userdict_fed
+    if _jieba_userdict_fed:
+        return
+    try:
+        import jieba
+        jieba.initialize()
+        _, compound, _, _ = _name_resources()
+        for cs in compound:
+            jieba.add_word(cs, tag="nr")
+        try:
+            from . import name_library
+            for fn in name_library._read_seed_names():
+                if len(fn) >= 2:
+                    jieba.add_word(fn, tag="nr")
+        except Exception:
+            pass
+        _jieba_userdict_fed = True
+    except Exception:
+        pass
+
+
+def _surname_prefix(w: str, single: frozenset, compound: tuple) -> str:
+    for cs in compound:                      # 复姓优先（上官/欧阳/诸葛…）
+        if w.startswith(cs) and len(w) > len(cs):
+            return cs
+    return w[0] if (w and w[0] in single) else ""
+
+
+def _jieba_surname_extract_context(texts: list[str]) -> list[tuple[str, str]]:
+    """jieba 分词 + 姓氏门控抽人名（含所在句）。无 LTP 时的可靠兜底。"""
+    try:
+        import jieba.posseg as pseg
+    except Exception:
+        return []
+    _feed_jieba_userdict()
+    single, compound, name_chars, common = _name_resources()
+    freq = _jieba_freq()
+    pairs: list[tuple[str, str]] = []
+    for sent in _split_sentences(texts, max_len=200):
+        seen: set[str] = set()
+        for tok in pseg.cut(sent):
+            w, flag = tok.word, tok.flag
+            if not (2 <= len(w) <= 4) or not _CJK_RUN.match(w):
+                continue
+            if w in common or w in seen:
+                continue
+            sur = _surname_prefix(w, single, compound)
+            if not sur:
+                continue
+            rest = w[len(sur):]
+            if not rest:
+                continue
+            # 名字判据：jieba 标 nr，或姓后皆为名字常用字；且非高频常用词。
+            if (flag.startswith("nr") or all(c in name_chars for c in rest)) and freq.get(w, 0) < 300:
+                pairs.append((w, sent))
+                seen.add(w)
+    return pairs
 
 # 跑 LTP 的最低 CPU 门槛（低于此判为「算力不足」→ 跳过 LTP）。
 _MIN_CPU_CORES = 4
@@ -162,25 +252,25 @@ def _ltp_importable() -> bool:
         return False
 
 
-def _degrade_to_seed(reason: str) -> None:
-    """LTP 运行时加载失败时，后端缓存改成 seed（只靠静态种子人名库，不抽新名）。"""
+def _degrade_to_jieba(reason: str) -> None:
+    """LTP 运行时加载失败时，后端缓存改成 jieba（姓氏门控分词抽名，扫真实正文）。"""
     global _cached_info
-    _cached_info = NerBackendInfo("seed", "none", True, reason)
-    logger.warning("NER degraded to seed name DB: %s", reason)
+    _cached_info = NerBackendInfo("jieba", "none", True, reason)
+    logger.warning("NER degraded to jieba surname-gated mode: %s", reason)
 
 
 def detect_ner_backend(*, refresh: bool = False) -> NerBackendInfo:
     """按硬件挑选 NER 后端并缓存。``refresh=True`` 重测（GPU 驱动变化/测试）。
-    人名识别只用 LTP（从市场库各小说章节正文抽名）；LTP 不可用时退到静态种子人名库
-    （不用 jieba —— 对人名错误率太高）。"""
+    优先用 LTP（质量最高）；LTP 不可用/无果时退到「jieba 姓氏门控」从章节正文抽名
+    （用 jieba 分词 + 姓氏表门控，非 jieba 的 nr 名实体标注，精度高）。"""
     global _cached_info
     if _cached_info is not None and not refresh:
         return _cached_info
 
     if not _ltp_importable():
         info = NerBackendInfo(
-            backend="seed", device="none", ltp_available=False,
-            reason="LTP/torch 未安装 —— 仅用静态种子人名库（装 ltp+torch 后用 LTP 从正文抽名）",
+            backend="jieba", device="none", ltp_available=False,
+            reason="LTP/torch 未安装 —— 用 jieba 姓氏门控从章节正文抽名（装 ltp+torch 可升级到 LTP）",
         )
         _cached_info = info
         logger.info("NER backend: %s (%s)", info.backend, info.reason)
@@ -190,8 +280,8 @@ def detect_ner_backend(*, refresh: bool = False) -> NerBackendInfo:
         from ..embedding.hardware_detector import detect_hardware
         caps = detect_hardware(refresh=refresh)
     except Exception as e:
-        info = NerBackendInfo("seed", "none", True,
-                              f"硬件检测失败（{e}）—— 跳过 LTP，仅用静态种子人名库")
+        info = NerBackendInfo("jieba", "none", True,
+                              f"硬件检测失败（{e}）—— 用 jieba 姓氏门控从章节正文抽名")
         _cached_info = info
         return info
 
@@ -213,8 +303,8 @@ def detect_ner_backend(*, refresh: bool = False) -> NerBackendInfo:
                               f"无可用 GPU，用 CPU 跑 LTP（{caps.cpu_count} 核 / {caps.ram_mb}MB 内存）")
     else:
         info = NerBackendInfo(
-            "seed", "none", True,
-            f"CPU 算力不足（{caps.cpu_count} 核 / {caps.ram_mb}MB）—— 跳过 LTP，仅用静态种子人名库")
+            "jieba", "none", True,
+            f"CPU 算力不足（{caps.cpu_count} 核 / {caps.ram_mb}MB）—— 用 jieba 姓氏门控从章节正文抽名")
     _cached_info = info
     logger.info("NER backend: %s (%s)", info.backend, info.reason)
     return info
@@ -437,17 +527,32 @@ def get_ltp_pipeline() -> LtpPipeline | None:
 # ─────────── public ───────────
 
 
+_last_method = "jieba"
+
+
+def last_method() -> str:
+    """上一次 extract 实际用的方法标签：ltp_ner / jieba。"""
+    return _last_method
+
+
 def extract_per_names_with_context(texts: list[str]) -> list[tuple[str, str]]:
-    """抽 PER 人名 + 所在句 (name, sentence)，**从真实章节正文**用 LTP 抽取。
-    LTP 不可用时返回空（不退化到易错的 jieba/字典法；剔名仍靠静态种子库）。"""
+    """抽 PER 人名 + 所在句 (name, sentence)，**从真实章节正文**抽取。
+    优先 LTP；LTP 不可用或没抽到（版本/格式问题）则用 jieba 姓氏门控兜底 —— 保证
+    总能从正文里抽到人名，而不是 0。"""
+    global _last_method
     info = detect_ner_backend()
     if info.uses_ltp:
         pipe = get_ltp_pipeline()
         if pipe is not None and pipe.ensure_ready():
-            return pipe.extract_per_context(texts)
-        # LTP 运行时加载失败 → 本会话降级为仅静态种子库（避免每本书重试刷屏）。
-        _degrade_to_seed("LTP 运行时加载失败（依赖不兼容/模型缺失）—— 仅用静态种子人名库")
-    return []
+            ltp_pairs = pipe.extract_per_context(texts)
+            if ltp_pairs:
+                _last_method = "ltp_ner"
+                return ltp_pairs
+            # LTP 加载成功却没抽到（多为版本/输出格式不匹配）→ jieba 姓氏门控兜底。
+        else:
+            _degrade_to_jieba("LTP 运行时加载失败 —— 改用 jieba 姓氏门控从正文抽名")
+    _last_method = "jieba"
+    return _jieba_surname_extract_context(texts)
 
 
 def extract_per_names(texts: list[str]) -> list[str]:
