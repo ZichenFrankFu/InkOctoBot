@@ -72,7 +72,9 @@ _FUNCTION_POS = frozenset({"u", "p", "c", "r", "d", "y", "e",
 # 高频词 df 带（spec §4）：须跨 ≥2 本、且 <60 本 unique 小说（上限滤掉过于普适的
 # 词，那类多半已在常用词/题材词典里）。
 _HF_MIN_DF = 2
-_HF_MAX_DF = 60
+# 上限按「总小说数量的 60%」算（不是固定 60 本）：出现在 >60% 作品里的词过于普适、
+# 不具代表性，剔除。总数指当前分析语料里的 unique 作品数。
+_HF_MAX_DF_RATIO = 0.6
 
 
 def reload_wordlists() -> None:
@@ -451,13 +453,14 @@ def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
     if not counter:
         return []
 
-    # spec §4：高频词须跨 ≥2 本、且 <60 本 unique 小说（df 带 [2,60)）。只在一本书
-    # 里高频的不算；普适到 60+ 本的多半已是常用/题材词。语料作品足够多时才启用
-    # df 下限（避免小样本被清空）；上限只在语料规模够大时才会咬到。
+    # spec §4：高频词须 2 <= 含该词的小说数 <= 60% 总小说数。只在一本书里高频的不算
+    # （下限），普适到 >60% 作品的过于常用（上限）。仅在语料作品足够多时启用（避免小
+    # 样本被清空）。上限随语料规模动态算，而非固定 60 本。
+    max_df = max(_HF_MIN_DF, int(_HF_MAX_DF_RATIO * n_works))
     if blobs and n_works >= 3:
         for w in list(counter):
             d = df.get(w, 0)
-            if d < _HF_MIN_DF or d >= _HF_MAX_DF:
+            if d < _HF_MIN_DF or d > max_df:
                 del counter[w]
         if not counter:
             return []

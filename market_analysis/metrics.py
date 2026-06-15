@@ -463,17 +463,34 @@ def compute_opening_opportunities(
     out = out.merge(nb, on=["platform", "cat_u", "tag_u"], how="left")
     out = out[out["total_books"].fillna(0) >= min_total_books].copy()
 
-    # 分平台标准化打分（简单可用）
+    # 分平台标准化打分（z-score）后，按 spec 机制4 加权：
+    #   开书机会 = 0.4·(份额/热度增长) + 0.3·新书占比 + 0.3·(既有份额/热度)
+    # 「份额/热度」= 份额与热度两路信号各自标准化后取均值（综合成一个维度）。
     def _z(s: pd.Series) -> pd.Series:
         s = s.astype(float)
         mu = np.nanmean(s)
         sd = np.nanstd(s)
         return (s - mu) / (sd + 1e-12)
 
-    out["score_share"] = out.groupby("platform")["share_delta"].transform(_z)
-    out["score_heat"] = out.groupby("platform")["heat_delta"].transform(_z)
-    out["score_new"] = out.groupby("platform")["new_entry_ratio"].transform(_z)
-    out["opportunity_score"] = out["score_share"].fillna(0) + out["score_heat"].fillna(0) + 0.8 * out["score_new"].fillna(0)
+    gb = out.groupby("platform")
+    # ① 增长项：份额增长 + 热度增长（标准化后取均值）
+    score_share_growth = gb["share_delta"].transform(_z).fillna(0)
+    score_heat_growth = gb["heat_delta"].transform(_z).fillna(0)
+    out["score_growth"] = (score_share_growth + score_heat_growth) / 2
+    # ② 新书占比项
+    out["score_new"] = gb["new_entry_ratio"].transform(_z).fillna(0)
+    # ③ 既有水平项：当前份额 + 当前热度（标准化后取均值）
+    score_share_level = gb["share_end"].transform(_z).fillna(0)
+    score_heat_level = gb["heat_end"].transform(_z).fillna(0)
+    out["score_existing"] = (score_share_level + score_heat_level) / 2
+    out["opportunity_score"] = (
+        0.4 * out["score_growth"]
+        + 0.3 * out["score_new"]
+        + 0.3 * out["score_existing"]
+    )
+    # 兼容旧列名（增长分拆为份额/热度两路，供报告引用）
+    out["score_share"] = score_share_growth
+    out["score_heat"] = score_heat_growth
 
     out = out.sort_values(["platform", "opportunity_score"], ascending=[True, False]).head(top_n)
     return out
