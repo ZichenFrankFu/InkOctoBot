@@ -151,6 +151,9 @@ def refresh(
             return {"status": "already_running"}
         _refreshing = True
     started = time.time()
+    # 手动/每日刷新都重置后端缓存：给 LTP 一次全新加载机会（上轮降级不影响本轮），
+    # 加载若仍失败则本轮内只降级一次（不刷屏）。
+    ner_backend.reset_backend_cache()
     info = ner_backend.detect_ner_backend()
     try:
         name_library.seed_if_empty(project_db)

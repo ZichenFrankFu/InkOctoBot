@@ -57,10 +57,11 @@ _cached_info: NerBackendInfo | None = None
 
 # 新版 huggingface_hub 删除了 ``use_auth_token`` 等旧参数，而 LTP 4.x 仍按旧签名
 # 调用 → ``hf_hub_download() got an unexpected keyword argument 'use_auth_token'``，
-# 导致模型永远加载失败、退回 jieba。这里在 import ltp 之前打一层兼容补丁：把
-# ``use_auth_token`` 翻译成 ``token``，并对任何"被删掉的关键字参数"做一次去除重试，
-# 让 LTP 在新版 huggingface_hub 上也能正常下载/加载模型。
+# 导致模型永远加载失败、退回 jieba。这里在 import ltp 之前打一层兼容补丁：先按原样
+# 调用，仅当抛出"未知关键字参数"的 TypeError 时才把 use_auth_token 翻译成 token、或
+# 去掉被删的参数后重试 —— 对新旧 huggingface_hub 都安全。
 _hf_patched = False
+_LTP_MARK = "_ltp_hf_compat"      # 标记"已是本补丁包装"，避免重复包装
 
 
 def _ensure_hf_compat() -> None:
@@ -68,53 +69,67 @@ def _ensure_hf_compat() -> None:
     if _hf_patched:
         return
     try:
-        import inspect
+        import re as _re
         import sys
         import huggingface_hub as _hf
     except Exception:
         return
-    _hf_patched = True   # 即便下面失败也不反复尝试
 
     def _wrap(fn):
+        if getattr(fn, _LTP_MARK, False):
+            return fn
+
         def inner(*args, **kwargs):
-            if "use_auth_token" in kwargs:
-                tok = kwargs.pop("use_auth_token")
-                kwargs.setdefault("token", tok)
-            try:
-                return fn(*args, **kwargs)
-            except TypeError as e:
-                import re as _re
-                m = _re.search(r"unexpected keyword argument '(\w+)'", str(e))
-                if m and m.group(1) in kwargs:
-                    kwargs.pop(m.group(1))
+            for _ in range(8):     # 至多几轮逐个修正被删的关键字参数
+                try:
                     return fn(*args, **kwargs)
-                raise
+                except TypeError as e:
+                    m = _re.search(r"unexpected keyword argument '(\w+)'", str(e))
+                    if not m:
+                        raise
+                    bad = m.group(1)
+                    if bad == "use_auth_token" and "use_auth_token" in kwargs:
+                        kwargs["token"] = kwargs.pop("use_auth_token")   # 改用新参数名
+                    elif bad in kwargs:
+                        kwargs.pop(bad)                                  # 去掉被删的参数
+                    else:
+                        raise
+            return fn(*args, **kwargs)
+        setattr(inner, _LTP_MARK, True)
         inner.__wrapped__ = fn
         return inner
 
+    patched_any = False
     for fname in ("hf_hub_download", "snapshot_download", "cached_download"):
+        orig = getattr(_hf, fname, None)
+        if orig is None or getattr(orig, _LTP_MARK, False):
+            continue
+        wrapped = _wrap(orig)
         try:
-            orig = getattr(_hf, fname, None)
-            if orig is None or getattr(orig, "__wrapped__", None) is not None:
-                continue
-            # 仍支持 use_auth_token 的旧版本无需补丁。
-            try:
-                if "use_auth_token" in inspect.signature(orig).parameters:
-                    continue
-            except (ValueError, TypeError):
-                pass
-            wrapped = _wrap(orig)
             setattr(_hf, fname, wrapped)
-            # 子模块 + 任何已 ``from huggingface_hub import hf_hub_download`` 绑定旧引用
-            # 的模块，一并替换。
-            for mod in list(sys.modules.values()):
-                try:
-                    if getattr(mod, fname, None) is orig:
-                        setattr(mod, fname, wrapped)
-                except Exception:
-                    pass
         except Exception:
             continue
+        patched_any = True
+        # 任何已 ``from huggingface_hub import hf_hub_download`` 绑定旧引用的模块
+        # （含 huggingface_hub.file_download、ltp 的下载模块），一并替换。
+        for mod in list(sys.modules.values()):
+            try:
+                if getattr(mod, fname, None) is orig:
+                    setattr(mod, fname, wrapped)
+            except Exception:
+                pass
+    _hf_patched = True
+    if patched_any:
+        logger.info("patched huggingface_hub download fns for LTP compat "
+                    "(use_auth_token→token)")
+
+
+def reset_backend_cache() -> None:
+    """清掉后端判定缓存 + LTP 句柄（改了补丁后想免重启重试时用）。"""
+    global _cached_info, _pipeline_singleton, _hf_patched
+    _cached_info = None
+    _pipeline_singleton = None
+    _hf_patched = False
 
 
 def _ltp_importable() -> bool:
