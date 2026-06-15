@@ -24,6 +24,28 @@ logger = logging.getLogger("inkoctobot.market_extractor.ner_backend")
 _LTP_PER_TAGS = {"Nh", "PER", "PERSON", "person", "name"}
 _CJK_ONLY = re.compile(r"^[一-鿿]{2,8}$")
 
+# 切句：LTP NER 是 transformer（~512 token 上限），整章直接送会被截断 → 召回极低。
+# 必须先切成短句再做 NER。
+_SENT_SPLIT_NER = re.compile(r"[。！？!?…\n\r；;]+")
+_ner_diag_logged = False
+
+
+def _split_sentences(texts: list[str], max_len: int = 180) -> list[str]:
+    out: list[str] = []
+    for t in texts:
+        for s in _SENT_SPLIT_NER.split(t or ""):
+            s = s.strip()
+            if len(s) < 2:
+                continue
+            if len(s) <= max_len:
+                out.append(s)
+            else:                       # 超长句再按长度硬切，避免越过模型上限
+                for i in range(0, len(s), max_len):
+                    chunk = s[i:i + max_len].strip()
+                    if len(chunk) >= 2:
+                        out.append(chunk)
+    return out
+
 # 跑 LTP 的最低 CPU 门槛（低于此判为「算力不足」→ 跳过 LTP）。
 _MIN_CPU_CORES = 4
 _MIN_RAM_MB = 4096
@@ -236,22 +258,38 @@ class LtpPipeline:
                            "for the rest of this session", e)
             return False
 
-    def extract_per(self, texts: list[str]) -> list[str]:
+    def extract_per_context(self, texts: list[str]) -> list[tuple[str, str]]:
+        """返回 (人名, 所在句) 列表。**先切句**再送 LTP NER —— 避开 transformer 的长度
+        上限，否则整章送进去只识别开头一小段、召回极低（= 抽不到名）。"""
+        global _ner_diag_logged
         if not self._ensure():
             return []
-        names: list[str] = []
+        sents = _split_sentences(texts)
+        if not sents:
+            return []
+        pairs: list[tuple[str, str]] = []
         try:
-            out = self._ltp.pipeline(texts, tasks=["cws", "ner"])
-            ner_lists = getattr(out, "ner", out.get("ner") if isinstance(out, dict) else None)
-            for sent_ents in (ner_lists or []):
-                for ent in sent_ents:
-                    # 兼容 (tag, word, start, end) 或 (word, tag) 等形态。
-                    tag, word = _unpack_entity(ent)
-                    if tag in _LTP_PER_TAGS and word and _CJK_ONLY.match(word):
-                        names.append(word)
-        except Exception as e:  # pragma: no cover
-            logger.debug("LTP ner failed: %s", e)
-        return names
+            for i in range(0, len(sents), 128):     # 分批，避免一次过多
+                batch = sents[i:i + 128]
+                res = self._ltp.pipeline(batch, tasks=["cws", "ner"])
+                ner_lists = getattr(res, "ner", None)
+                if ner_lists is None and isinstance(res, dict):
+                    ner_lists = res.get("ner")
+                if not _ner_diag_logged:            # 一次性诊断：打印真实 NER 输出格式
+                    _ner_diag_logged = True
+                    logger.info("LTP NER sample output: %r",
+                                (ner_lists[:2] if ner_lists else ner_lists))
+                for sent, sent_ents in zip(batch, (ner_lists or [])):
+                    for ent in (sent_ents or []):
+                        tag, word = _unpack_entity(ent)
+                        if tag in _LTP_PER_TAGS and word and _CJK_ONLY.match(word):
+                            pairs.append((word, sent))
+        except Exception as e:
+            logger.warning("LTP ner failed: %s", e)
+        return pairs
+
+    def extract_per(self, texts: list[str]) -> list[str]:
+        return [n for n, _ in self.extract_per_context(texts)]
 
     def mean_dependency_distance(self, sentences: list[str]) -> float | None:
         if not self._ensure():
@@ -328,20 +366,25 @@ def get_ltp_pipeline() -> LtpPipeline | None:
 # ─────────── public ───────────
 
 
+def extract_per_names_with_context(texts: list[str]) -> list[tuple[str, str]]:
+    """抽 PER 人名 + 所在句 (name, sentence)。**只用 LTP**；不可用时返回空。"""
+    info = detect_ner_backend()
+    if info.uses_ltp:
+        pipe = get_ltp_pipeline()
+        if pipe is not None and pipe.ensure_ready():
+            return pipe.extract_per_context(texts)
+        # LTP 运行时加载失败 → 本会话降级为「仅静态种子库」（避免每本书重试刷屏）。
+        _degrade_to_seed("LTP 运行时加载失败（依赖不兼容/模型缺失）—— 仅用静态种子人名库")
+    return []
+
+
 def extract_per_names(texts: list[str]) -> list[str]:
     """从一批文本抽 PER 人名实体（去重前的原始列表，含重复以便上层数 DF）。
 
     **只用 LTP 抽名**。LTP 不可用时返回空 —— 不再用 jieba 'nr'（对人名错误率极高）；
     人名库的静态种子库已作为 fallback 负责高频词剔名。
     """
-    info = detect_ner_backend()
-    if info.uses_ltp:
-        pipe = get_ltp_pipeline()
-        if pipe is not None and pipe.ensure_ready():
-            return pipe.extract_per(texts)
-        # LTP 运行时加载失败 → 本会话降级为「仅静态种子库」（避免每本书重试刷屏）。
-        _degrade_to_seed("LTP 运行时加载失败（依赖不兼容/模型缺失）—— 仅用静态种子人名库")
-    return []
+    return [n for n, _ in extract_per_names_with_context(texts)]
 
 
 def backend_status() -> dict:

@@ -24,7 +24,7 @@ from . import name_library, ner_backend
 logger = logging.getLogger("inkoctobot.market_extractor.name_refresh")
 
 _OPENING_CHAPTERS = 5          # 每本书取前 N 章开篇做 NER
-_DEFAULT_LIMIT = 500           # 单次刷新最多处理多少本新书（控耗时）
+_DEFAULT_LIMIT = 100000        # 单次刷新尽量处理完所有新书（后台运行 + 进度条）
 _DAILY_SECONDS = 24 * 3600
 
 _refresh_lock = threading.Lock()
@@ -195,27 +195,32 @@ def refresh(
         total_names = 0
         for b in new_books:
             try:
-                per = ner_backend.extract_per_names(b["texts"])
+                pairs = ner_backend.extract_per_names_with_context(b["texts"])
             except Exception as e:
                 logger.warning("NER failed for book %s: %s", b["novel_uid"], e)
-                per = []
+                pairs = []
             cur = ner_backend.detect_ner_backend()
             if not cur.uses_ltp:
                 # 运行中 LTP 加载失败被降级 → 停止处理，剩余书留待下次（绝不用 jieba）。
                 _set_progress(phase="ltp_failed", message=cur.reason)
                 break
-            unique = {n for n in per if name_library.is_valid_name(n)}   # 书内去重
-            for fn in unique:
+            # 书内去重；每名留一句例句（首次出现的所在句）。
+            name_sent: dict[str, str] = {}
+            for nm, sent in pairs:
+                if name_library.is_valid_name(nm):
+                    name_sent.setdefault(nm, sent)
+            for fn, sent in name_sent.items():
                 name_library.add_name(
                     project_db, fn, source="ltp_ner",
                     work_id=b["novel_uid"], work_title=b.get("title") or "",
                     platform=b.get("platform") or "", category=b.get("category") or "",
                     rank=b.get("rank"), heat=b.get("heat"), count_df=True,
+                    example_sentence=sent,
                 )
-            total_names += len(unique)
+            total_names += len(name_sent)
             _record_state(project_db, b["novel_uid"], b["fingerprint"],
-                          cur.backend, len(unique))
-            _bump_progress(done=1, names=len(unique))
+                          cur.backend, len(name_sent))
+            _bump_progress(done=1, names=len(name_sent))
         _write_last_refresh(time.time())
         final = ner_backend.detect_ner_backend()
         return {

@@ -318,6 +318,7 @@ _DDL: tuple[str, ...] = (
         source_work_rank    INTEGER,                  -- 来源作品排名
         source_work_heat    REAL,                     -- 来源作品热度
         book_df             INTEGER DEFAULT 0,        -- 去重书数 DF（按 book 不按 snapshot）
+        example_sentence    TEXT DEFAULT '',          -- 该名出现的一句例句（来源作品）
         first_seen_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -347,6 +348,9 @@ _PLATFORM_PROFILE_MIGRATIONS: tuple[tuple[str, str], ...] = (
 _REP_POOL_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("selection_reason", "TEXT DEFAULT ''"),
 )
+_PNL_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("example_sentence", "TEXT DEFAULT ''"),
+)
 
 
 def ensure_market_extractor_tables(conn: sqlite3.Connection) -> None:
@@ -363,4 +367,5 @@ def ensure_market_extractor_tables(conn: sqlite3.Connection) -> None:
 
     _migrate("platform_profiles", _PLATFORM_PROFILE_MIGRATIONS)
     _migrate("representative_works_pool", _REP_POOL_MIGRATIONS)
+    _migrate("person_name_library", _PNL_MIGRATIONS)
     conn.commit()

@@ -567,6 +567,28 @@ def name_library_flags(body: dict = Body(...)):
     return {"ok": ok, "full_name": fn}
 
 
+@router.post("/name-library/edit")
+def name_library_edit(body: dict = Body(...)):
+    """手动编辑一条人名库条目（改全名/例句/非标准标记）。改全名自动重算派生字段。"""
+    from ..services.market_extractor import name_library as _nl
+    name_id = (body.get("name_id") or "").strip()
+    if not name_id:
+        raise HTTPException(400, "name_id required")
+    kwargs: dict = {}
+    if "full_name" in body:
+        kwargs["full_name"] = str(body["full_name"])
+    if "example_sentence" in body:
+        kwargs["example_sentence"] = str(body["example_sentence"])
+    if "is_nonstandard" in body:
+        kwargs["is_nonstandard"] = int(body["is_nonstandard"])
+    try:
+        row = _nl.edit_name(_project_db_path(), name_id, **kwargs)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _wordlist_after_edit()
+    return {"ok": True, "name": row}
+
+
 @router.post("/name-library/refresh")
 def name_library_refresh(body: dict = Body(default={})):
     """手动刷新：对市场库新增书跑 LTP NER（GPU→CPU→jieba 降级），后台执行。"""

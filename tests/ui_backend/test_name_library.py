@@ -66,6 +66,19 @@ class TestSeedAndCrud:
         nl.seed_if_empty(db)
         assert nl.rebuild_derived(db) > 0
 
+    def test_example_sentence_stored(self, db) -> None:
+        nl.add_name(db, "李翠翠", source="ltp_ner", example_sentence="李翠翠笑着走来。")
+        row = nl.search_names(db, "李翠翠")["items"][0]
+        assert row["example_sentence"] == "李翠翠笑着走来。"
+
+    def test_edit_name_rederives(self, db) -> None:
+        row = nl.add_name(db, "王芳", source="user")
+        edited = nl.edit_name(db, row["name_id"], full_name="欧阳芳",
+                              example_sentence="欧阳芳点头。")
+        assert edited["full_name"] == "欧阳芳"
+        assert edited["surname"] == "欧阳" and edited["is_compound_surname"] == 1
+        assert edited["example_sentence"] == "欧阳芳点头。"
+
 
 class TestNerBackend:
     def test_degrades_to_seed_without_ltp(self) -> None:

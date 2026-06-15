@@ -135,7 +135,7 @@ def add_name(
     db_path: str, full_name: str, *, source: str = "user",
     work_id: str = "", work_title: str = "", platform: str = "",
     category: str = "", rank: int | None = None, heat: float | None = None,
-    count_df: bool = False,
+    count_df: bool = False, example_sentence: str = "",
 ) -> dict | None:
     """新增/更新一条全名记录（派生字段自动重算）。``count_df=True`` 时把 book_df +1
     （仅在「确属一本新书的去重名」时调用）。返回写入的行。"""
@@ -143,6 +143,7 @@ def add_name(
     if not is_valid_name(fn):
         return None
     parts = derive_name_parts(fn)
+    ex = (example_sentence or "").strip()[:300]
     with sqlite3.connect(db_path) as con:
         _ensure(con)
         con.row_factory = sqlite3.Row
@@ -156,9 +157,12 @@ def add_name(
                 "source_work_id = COALESCE(NULLIF(?, ''), source_work_id), "
                 "source_work_title = COALESCE(NULLIF(?, ''), source_work_title), "
                 "source_work_rank = COALESCE(?, source_work_rank), "
-                "source_work_heat = COALESCE(?, source_work_heat) "
+                "source_work_heat = COALESCE(?, source_work_heat), "
+                "source_category = COALESCE(NULLIF(?, ''), source_category), "
+                "source_platform = COALESCE(NULLIF(?, ''), source_platform), "
+                "example_sentence = COALESCE(NULLIF(example_sentence, ''), NULLIF(?, '')) "
                 "WHERE full_name = ?",
-                (df, work_id, work_title, rank, heat, fn),
+                (df, work_id, work_title, rank, heat, category, platform, ex, fn),
             )
             con.commit()
             row = con.execute("SELECT * FROM person_name_library WHERE full_name = ?", (fn,)).fetchone()
@@ -170,17 +174,57 @@ def add_name(
             "(name_id, full_name, surname, given_name, surname_kind, name_length, "
             " is_compound_surname, is_single_given, is_nonstandard, nonstandard_reason, "
             " source, source_work_id, source_work_title, source_platform, source_category, "
-            " source_work_rank, source_work_heat, book_df) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " source_work_rank, source_work_heat, book_df, example_sentence) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (nid, fn, parts["surname"], parts["given_name"], parts["surname_kind"],
              parts["name_length"], parts["is_compound_surname"], parts["is_single_given"],
              parts["is_nonstandard"], parts["nonstandard_reason"], source, work_id,
-             work_title, platform, category, rank, heat, 1 if count_df else 0),
+             work_title, platform, category, rank, heat, 1 if count_df else 0, ex),
         )
         con.commit()
         row = con.execute("SELECT * FROM person_name_library WHERE full_name = ?", (fn,)).fetchone()
     invalidate_cache(db_path)
     return dict(row)
+
+
+def edit_name(db_path: str, name_id: str, *, full_name: str | None = None,
+              example_sentence: str | None = None,
+              is_nonstandard: int | None = None) -> dict | None:
+    """手动编辑一条人名库条目。改全名时自动重算姓/名/标记派生字段。"""
+    sets: list[str] = []
+    params: list = []
+    if full_name is not None:
+        fn = full_name.strip()
+        if not is_valid_name(fn):
+            raise ValueError("full_name 需为 2-8 个汉字")
+        p = derive_name_parts(fn)
+        sets += ["full_name=?", "surname=?", "given_name=?", "surname_kind=?",
+                 "name_length=?", "is_compound_surname=?", "is_single_given=?",
+                 "is_nonstandard=?", "nonstandard_reason=?"]
+        params += [fn, p["surname"], p["given_name"], p["surname_kind"], p["name_length"],
+                   p["is_compound_surname"], p["is_single_given"], p["is_nonstandard"],
+                   p["nonstandard_reason"]]
+    if example_sentence is not None:
+        sets.append("example_sentence=?")
+        params.append(example_sentence.strip()[:300])
+    if is_nonstandard is not None:
+        sets.append("is_nonstandard=?")
+        params.append(int(is_nonstandard))
+    if not sets:
+        return None
+    with sqlite3.connect(db_path) as con:
+        _ensure(con)
+        con.row_factory = sqlite3.Row
+        try:
+            con.execute(
+                f"UPDATE person_name_library SET {', '.join(sets)}, "
+                "updated_at=CURRENT_TIMESTAMP WHERE name_id=?", params + [name_id])
+            con.commit()
+        except sqlite3.IntegrityError:
+            raise ValueError("该全名已存在于人名库")
+        row = con.execute("SELECT * FROM person_name_library WHERE name_id=?", (name_id,)).fetchone()
+    invalidate_cache(db_path)
+    return dict(row) if row else None
 
 
 def remove_name(db_path: str, full_name: str) -> bool:
