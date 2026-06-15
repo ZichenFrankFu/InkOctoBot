@@ -342,7 +342,8 @@ def _extract_tokens(texts: list[str], freq: dict):
             w, flag = tok.word, tok.flag
             if w and w.strip():
                 stream.append((w, flag))
-                total_tokens += 1
+                if flag not in ("x", "w"):     # 总词数排除标点（相对频率分母）
+                    total_tokens += 1
             cjk = len(w) >= 2 and bool(re.fullmatch(r"[一-鿿]+", w))
             if cjk and len(w) <= 6:
                 token_counts[w] += 1

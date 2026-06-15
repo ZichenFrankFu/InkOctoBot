@@ -121,9 +121,13 @@ def _fetch_new_books(
         b["texts"].append(str(r["cc"] or ""))
         if int(r["cn"] or 0) == 1:
             b["ch1_hash"] = str(r["ch"] or "")
+    import hashlib
     new_books: list[dict] = []
     for uid, b in books.items():
-        fingerprint = b["ch1_hash"] or str(hash("".join(b["texts"])[:2000]))
+        # 优先用爬虫库的 ch1 content_hash；缺失则对开篇文本取稳定指纹（跨重启一致，
+        # 不用内置 hash() 以免每次进程重启都误判为新书重跑）。
+        fingerprint = b["ch1_hash"] or hashlib.md5(
+            "".join(b["texts"])[:2000].encode("utf-8")).hexdigest()
         if processed.get(uid, "__none__") == fingerprint:
             continue        # 已处理且开篇未变 → 跳过（含 rank snapshot 更新）
         hm = heat_map.get(uid, {})

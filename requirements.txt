@@ -33,6 +33,14 @@ pywebview>=6.1
 # feature extraction & clustering
 scikit-learn>=1.3.0
 
+# 语言学文本特征 — 可选增强（全部缺失时自动降级，见 ner_backend.py / sentiment.py /
+# linguistics.py）。词性分布 / 词汇丰富度 / DUTIR 词典情感 / 人名库种子 仅依赖 jieba，
+# 无需以下任何包即可工作；以下仅用于「升级」到深度/句法路径：
+#   ltp>=4.2.0          # 人名 NER（GPU→CPU 自动）+ 依存分析（MDD 真值）
+#   torch>=2.0.0        # LTP 后端 + 预留的本地 BERT/RoBERTa/ERNIE 情感模型
+# psutil 用于硬件检测（内存/算力门槛）；缺失时按保守默认值，不影响降级正确性。
+psutil>=5.9.0
+
 # embedding (optional — TF-IDF fallback when unavailable)
 # sentence-transformers>=2.2.0
 

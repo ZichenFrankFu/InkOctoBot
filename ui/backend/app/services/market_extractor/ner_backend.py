@@ -80,7 +80,7 @@ def detect_ner_backend(*, refresh: bool = False) -> NerBackendInfo:
         return info
 
     try:
-        from ...embedding.hardware_detector import detect_hardware
+        from ..embedding.hardware_detector import detect_hardware
         caps = detect_hardware(refresh=refresh)
     except Exception as e:
         info = NerBackendInfo("jieba", "none", True,

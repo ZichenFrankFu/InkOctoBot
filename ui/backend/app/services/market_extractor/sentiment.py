@@ -247,7 +247,7 @@ class DeepSentimentBackend:
             return False
         try:
             # 复用 app 的硬件检测模块判定算力是否够跑（与 NER 同一套降级逻辑）。
-            from ...embedding.hardware_detector import detect_hardware
+            from ..embedding.hardware_detector import detect_hardware
             caps = detect_hardware()
             return caps.has_cuda or caps.ram_mb >= 4096
         except Exception:

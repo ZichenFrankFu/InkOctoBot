@@ -78,8 +78,10 @@ def pos_distribution(stream: list[tuple[str, str]]) -> dict:
     }
 
 
-def _avg_clause_tokens(texts: list[str], stream_cap: int = 60_000) -> float:
-    """每小句平均 token 数（按标点切小句）—— MDD 缺位时的句式复杂度代理量。"""
+def _avg_clause_tokens(texts: list[str], stream_cap: int = 60_000,
+                       max_clauses: int = 3000) -> float:
+    """每小句平均 token 数（按标点切小句）—— MDD 缺位时的句式复杂度代理量。
+    采样上限 ``max_clauses`` 个小句即够稳定均值，避免在大语料上二次分词开销失控。"""
     clause_lens: list[int] = []
     for t in texts:
         for clause in _CLAUSE_SPLIT.split(t[:stream_cap]):
@@ -93,6 +95,10 @@ def _avg_clause_tokens(texts: list[str], stream_cap: int = 60_000) -> float:
                 ntok = len(_CJK_TOKEN.findall(c))
             if ntok:
                 clause_lens.append(ntok)
+            if len(clause_lens) >= max_clauses:
+                break
+        if len(clause_lens) >= max_clauses:
+            break
     if not clause_lens:
         return 0.0
     return sum(clause_lens) / len(clause_lens)
