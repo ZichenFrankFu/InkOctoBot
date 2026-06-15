@@ -1817,8 +1817,8 @@ function HighFreqWord({ w, selected, busy, onSelect }: {
     >
       {w.word}
       <span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}
-        title={`相对频率 ${w.relative_freq_permille ?? "—"}‰ · 原始计数 ${w.count} · 跨 ${w.work_count ?? "?"} 部作品`}>
-        {w.relative_freq_permille != null ? `${w.relative_freq_permille}‰` : w.count}
+        title={`相对频率 ${w.relative_freq != null ? (w.relative_freq * 100).toFixed(2) : "—"}% （该词出现次数 ÷ 语料总词数）· 原始计数 ${w.count} · 跨 ${w.work_count ?? "?"} 部作品`}>
+        {w.relative_freq != null ? `${(w.relative_freq * 100).toFixed(2)}%` : w.count}
       </span>
     </button>
   );
