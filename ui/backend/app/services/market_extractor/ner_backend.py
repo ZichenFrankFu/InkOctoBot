@@ -54,6 +54,8 @@ def _split_sentences(texts: list[str], max_len: int = 180) -> list[str]:
 # 常用词」的词才算人名。姓氏门控滤掉了 jieba nr 的误报（灵能/异能不以姓氏开头），精度高。
 
 _CJK_RUN = re.compile(r"^[一-鿿]+$")
+# 末字若是这些地名/机构后缀，几乎不会是人名 → 排除（不含 山/林/江/河 等可入名的字）。
+_PLACE_ORG_TAIL = set("寺宫殿庙观城省市县国帮派教会厅局部区街道镇乡")
 _jieba_userdict_fed = False
 
 
@@ -107,7 +109,11 @@ def _surname_prefix(w: str, single: frozenset, compound: tuple) -> str:
 
 
 def _jieba_surname_extract_context(texts: list[str]) -> list[tuple[str, str]]:
-    """jieba 分词 + 姓氏门控抽人名（含所在句）。无 LTP 时的可靠兜底。"""
+    """jieba 分词 + 姓氏门控抽人名（含所在句）。无 LTP 时的可靠兜底。
+
+    精度优先：要求 **jieba 标 nr（人名）且以真实姓氏开头**，并排除常用词/地名后缀。
+    姓氏门控滤掉 nr 误报（灵能/异能非姓氏开头），nr 要求滤掉 龙王/江山 这类姓+常用字。
+    """
     try:
         import jieba.posseg as pseg
     except Exception:
@@ -122,18 +128,17 @@ def _jieba_surname_extract_context(texts: list[str]) -> list[tuple[str, str]]:
             w, flag = tok.word, tok.flag
             if not (2 <= len(w) <= 4) or not _CJK_RUN.match(w):
                 continue
-            if w in common or w in seen:
+            if w in common or w in seen or freq.get(w, 0) >= 300:
+                continue
+            if not flag.startswith("nr"):           # 必须是 jieba 判定的人名
                 continue
             sur = _surname_prefix(w, single, compound)
-            if not sur:
+            if not sur or not w[len(sur):]:          # 必须以真实姓氏开头、姓后有名
                 continue
-            rest = w[len(sur):]
-            if not rest:
+            if w[-1] in _PLACE_ORG_TAIL:             # 末字是地名/机构后缀 → 多半不是人名
                 continue
-            # 名字判据：jieba 标 nr，或姓后皆为名字常用字；且非高频常用词。
-            if (flag.startswith("nr") or all(c in name_chars for c in rest)) and freq.get(w, 0) < 300:
-                pairs.append((w, sent))
-                seen.add(w)
+            pairs.append((w, sent))
+            seen.add(w)
     return pairs
 
 # 跑 LTP 的最低 CPU 门槛（低于此判为「算力不足」→ 跳过 LTP）。

@@ -1354,6 +1354,8 @@ function NameLibraryView() {
   const [editSent, setEditSent] = React.useState("");
   const [editKind, setEditKind] = React.useState("chinese");
   const [editAlias, setEditAlias] = React.useState("");
+  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});  // 展开看原句
+  const [diag, setDiag] = React.useState<any>(null);   // NER 诊断结果
   const limit = 300;
   const KINDS: [string, string][] = [
     ["chinese", "中文名"], ["japanese", "日文名"], ["western", "西方名"], ["nickname", "昵称"],
@@ -1443,11 +1445,17 @@ function NameLibraryView() {
     } catch (e: any) { toast(`清空失败：${e.message}`, "error"); }
     finally { setBusy(false); }
   };
+  const runDiag = async () => {
+    setBusy(true);
+    try { setDiag(await apiPost<any>("/api/analysis/ner-test", {})); }
+    catch (e: any) { toast(`诊断失败：${e.message}`, "error"); }
+    finally { setBusy(false); }
+  };
 
   const backend = status?.backend || {};
   const gpu = backend.gpu || {};
   const backendLabel = backend.backend === "ltp_gpu" ? "LTP · GPU"
-    : backend.backend === "ltp_cpu" ? "LTP · CPU" : "静态种子库（未用 LTP）";
+    : backend.backend === "ltp_cpu" ? "LTP · CPU" : "jieba 姓氏门控（精度有限）";
   const prog = status?.progress || {};
   const showBar = !!status?.running && prog.total > 0;
 
@@ -1460,6 +1468,8 @@ function NameLibraryView() {
           {status?.last_refresh && <span style={{ color: "var(--text-tertiary)" }}>上次刷新 {new Date(status.last_refresh).toLocaleString()}</span>}
           <span style={{ color: "var(--text-tertiary)" }}>已处理 {status?.books_processed ?? "—"} 本</span>
           <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+            <button className="btn" disabled={busy} onClick={runDiag}
+              style={{ fontSize: 12, padding: "6px 14px" }}>诊断</button>
             <button className="btn" disabled={busy || status?.running} onClick={clearLib}
               style={{ fontSize: 12, padding: "6px 14px", color: "var(--error)", borderColor: "var(--error)" }}>
               清空人名库
@@ -1472,6 +1482,28 @@ function NameLibraryView() {
         </div>
         {/* 后端/GPU 诊断说明 */}
         <div style={{ color: "var(--text-tertiary)", marginTop: 6 }}>{backend.reason || "—"}</div>
+        {backend.backend === "jieba" && (
+          <div style={{ color: "var(--gold)", marginTop: 4 }}>
+            当前用 jieba 姓氏门控抽名（精度有限，会有少量误判）。装好可用的 LTP + torch 后会自动切换到 LTP（更准）。点「诊断」可查看 LTP 是否能加载。
+          </div>
+        )}
+        {diag && (
+          <div style={{ marginTop: 8, padding: 10, background: "var(--bg-surface-2)", borderRadius: 6, fontSize: 11, lineHeight: 1.6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <strong>NER 诊断</strong>
+              <button className="btn" style={{ fontSize: 10, padding: "1px 8px" }} onClick={() => setDiag(null)}>关闭</button>
+            </div>
+            <div>LTP 版本：<span className="font-mono">{String(diag.ltp_version)}</span></div>
+            <div>当前后端：<span className="font-mono">{diag.backend?.backend}</span>（{diag.backend?.reason}）</div>
+            <div>本次抽到 <strong>{diag.count ?? 0}</strong> 个名：<span className="font-mono">{(diag.names || []).join("、") || "—"}</span></div>
+            {diag.raw && (
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ cursor: "pointer", color: "var(--text-tertiary)" }}>LTP 原始输出（排查用，可发给支持）</summary>
+                <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-tertiary)", marginTop: 4 }}>{JSON.stringify(diag.raw, null, 1)}</pre>
+              </details>
+            )}
+          </div>
+        )}
         {gpu.physical_gpu && !gpu.torch_cuda_available && (
           <div style={{ color: "var(--gold)", marginTop: 4, lineHeight: 1.6 }}>
             检测到 GPU「{gpu.gpu_name}」{gpu.gpu_vram_mb ? `（${gpu.gpu_vram_mb}MB）` : ""}，
@@ -1569,8 +1601,15 @@ function NameLibraryView() {
                                     <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 400, color: "var(--accent)" }}>→ 本名 {it.alias_of}</span>
                                   ) : null}
                                   {it.example_sentence ? (
-                                    <div style={{ fontWeight: 400, fontSize: 11, color: "var(--text-tertiary)", marginTop: 2, maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                                      title={it.example_sentence}>例句：{it.example_sentence}</div>
+                                    <div onClick={() => setExpanded(p => ({ ...p, [it.name_id]: !p[it.name_id] }))}
+                                      style={{ fontWeight: 400, fontSize: 11, color: "var(--text-tertiary)", marginTop: 2, cursor: "pointer",
+                                        maxWidth: expanded[it.name_id] ? "none" : 360,
+                                        overflow: "hidden", textOverflow: "ellipsis",
+                                        whiteSpace: expanded[it.name_id] ? "normal" : "nowrap",
+                                        lineHeight: expanded[it.name_id] ? 1.6 : 1.2 }}
+                                      title={expanded[it.name_id] ? "收起" : "点击展开原句"}>
+                                      {expanded[it.name_id] ? "▾" : "▸"} 例句：{highlightWord(it.example_sentence, it.full_name)}
+                                    </div>
                                   ) : null}
                                 </td>
                                 <td style={{ padding: "6px 10px", color: "var(--text-secondary)" }}>{it.surname || "—"} / {it.given_name || "—"}</td>
