@@ -273,7 +273,7 @@ export default function UniversalLLMDialog({
         background: "rgba(0,0,0,0.45)",
         display: "flex", alignItems: "center", justifyContent: "center",
       }}
-      onClick={() => phase === "preview" && onClose()}
+      onClick={() => { if (phase !== "running" && phase !== "committing") onClose(); }}
     >
       <div
         className="card"
@@ -429,8 +429,7 @@ export default function UniversalLLMDialog({
                 pasteBuf={pasteBuf}
                 setPasteBuf={setPasteBuf}
                 onSubmit={submitManual}
-                onCancel={initialMode === "manual_only" ? onClose : () => setPhase("preview")}
-                cancelLabel={initialMode === "manual_only" ? "关闭" : "取消"}
+                onCancel={initialMode === "manual_only" ? undefined : () => setPhase("preview")}
                 submitLabel={initialMode === "manual_only" ? "提交并解析" : "提交粘贴"}
               />
             )}
@@ -439,6 +438,10 @@ export default function UniversalLLMDialog({
               <div style={{ textAlign: "center", padding: 40 }}>
                 <div style={{ fontSize: 28, marginBottom: 16 }}>⏳</div>
                 <h4>正在解析并写入...</h4>
+                <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden", margin: "14px auto", maxWidth: 320 }}>
+                  <div style={{ width: "40%", height: "100%", background: "var(--accent)", borderRadius: 4, animation: "ullm-indeterminate 1.2s ease-in-out infinite" }} />
+                </div>
+                <style>{`@keyframes ullm-indeterminate{0%{margin-left:-40%}100%{margin-left:100%}}`}</style>
                 <p style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
                   正在解析大模型返回的内容并保存到数据库。
                 </p>
@@ -602,17 +605,28 @@ function RunningPane({ onAbort }: { onAbort: () => void }) {
 
 
 function ManualPastePane({
-  pasteBuf, setPasteBuf, onSubmit, onCancel, cancelLabel, submitLabel,
+  pasteBuf, setPasteBuf, onSubmit, onCancel, submitLabel,
 }: {
   pasteBuf: string; setPasteBuf: (v: string) => void;
-  onSubmit: () => void; onCancel: () => void;
-  cancelLabel?: string; submitLabel?: string;
+  onSubmit: () => void; onCancel?: () => void;
+  submitLabel?: string;
 }) {
   return (
     <>
-      <h4 style={{ marginTop: 0 }}>将大模型输出粘贴到此处</h4>
+      {/* 提交按钮置顶（与 API 的「开始提取」同位置） */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 0 }}>
+        <h4 style={{ margin: 0 }}>粘贴大模型回复</h4>
+        <button
+          className="btn primary"
+          onClick={onSubmit}
+          disabled={pasteBuf.trim().length < 10}
+          style={{ padding: "10px 16px", fontSize: 14, fontWeight: 700 }}
+        >
+          {submitLabel || "提交并解析"}
+        </button>
+      </div>
       <p style={{ fontSize: 12, color: "var(--text-tertiary)", lineHeight: 1.6 }}>
-        先点左侧「复制提示词」 → 在网页版大模型粘贴并运行 → 将完整回复粘到下方文本框。
+        先点左侧「复制提示词」 → 在网页版大模型运行 → 将完整回复粘到下方。
       </p>
       <textarea
         value={pasteBuf}
@@ -628,23 +642,9 @@ function ManualPastePane({
           outline: "none",
         }}
       />
-      <div style={{
-        display: "flex", justifyContent: "space-between",
-        alignItems: "center", marginTop: 10,
-      }}>
-        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-          {pasteBuf.length} 字
-        </span>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn" onClick={onCancel}>{cancelLabel || "取消"}</button>
-          <button
-            className="btn primary"
-            onClick={onSubmit}
-            disabled={pasteBuf.trim().length < 10}
-          >
-            {submitLabel || "提交粘贴"}
-          </button>
-        </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{pasteBuf.length} 字</span>
+        {onCancel && <button className="btn" onClick={onCancel}>取消</button>}
       </div>
     </>
   );

@@ -1348,6 +1348,9 @@ function NameLibraryView() {
   const [status, setStatus] = React.useState<any>(null);
   const [newName, setNewName] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [editId, setEditId] = React.useState<string | null>(null);   // 正在编辑的条目
+  const [editName, setEditName] = React.useState("");
+  const [editSent, setEditSent] = React.useState("");
   const limit = 200;
 
   const reload = React.useCallback(async () => {
@@ -1391,6 +1394,20 @@ function NameLibraryView() {
     setBusy(true);
     try { await apiPost("/api/analysis/name-library/remove", { full_name: fn }); reload(); }
     catch (e: any) { toast(`删除失败：${e.message}`, "error"); }
+    finally { setBusy(false); }
+  };
+  const startEdit = (it: any) => {
+    setEditId(it.name_id); setEditName(it.full_name); setEditSent(it.example_sentence || "");
+  };
+  const saveEdit = async () => {
+    if (editName.trim().length < 2) { toast("人名需 ≥2 字", "error"); return; }
+    setBusy(true);
+    try {
+      await apiPost("/api/analysis/name-library/edit", {
+        name_id: editId, full_name: editName.trim(), example_sentence: editSent,
+      });
+      toast("已保存", "success"); setEditId(null); reload();
+    } catch (e: any) { toast(`保存失败：${e.message}`, "error"); }
     finally { setBusy(false); }
   };
   const refresh = async () => {
@@ -1460,7 +1477,7 @@ function NameLibraryView() {
               <div style={{ width: `${prog.pct || 0}%`, height: "100%", background: "var(--accent)", transition: "width 0.3s linear" }} />
             </div>
             <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
-              NER 处理中 {prog.done}/{prog.total} 本（{prog.pct || 0}%）· 已抽取 {prog.names} 个人名 · 可切到其它页面，进程不中断
+              NER 处理中 已处理 {prog.done} / {prog.total} 本作品（{prog.pct || 0}%）· 已抽取 {prog.names} 个人名 · 可切到其它页面，进程不中断
             </div>
           </div>
         )}
@@ -1526,28 +1543,54 @@ function NameLibraryView() {
                   </tr></thead>
                   <tbody>
                     {data.items.map((it: any) => (
-                      <tr key={it.name_id} style={{ borderTop: "1px solid var(--border)" }}>
-                        <td style={{ padding: "6px 10px", fontWeight: 600 }}>
-                          {it.full_name}
-                          {it.is_nonstandard ? <span title={it.nonstandard_reason}
-                            style={{ marginLeft: 6, fontSize: 10, color: "var(--error)", border: "1px solid var(--error)", borderRadius: 3, padding: "0 4px" }}>非标准</span> : null}
-                        </td>
-                        <td style={{ padding: "6px 10px", color: "var(--text-secondary)" }}>{it.surname || "—"} / {it.given_name || "—"}</td>
-                        <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
-                          {it.is_compound_surname ? "复姓" : it.is_single_given ? "单名" : it.surname_kind === "single" ? "双名" : "—"}
-                        </td>
-                        <td style={{ padding: "6px 10px" }}>
-                          <span className="font-mono" style={{ color: it.book_df >= 2 ? "var(--jade)" : "var(--text-tertiary)" }}>{it.book_df}</span>
-                        </td>
-                        <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
-                          {it.source === "seed" ? "种子" : it.source === "ltp_ner" ? "LTP" : it.source === "jieba_nr" ? "jieba" : it.source === "user" ? "用户" : it.source}
-                          {it.source_category ? ` · ${it.source_category}` : ""}
-                        </td>
-                        <td style={{ padding: "6px 10px", textAlign: "right" }}>
-                          <button className="btn" disabled={busy} onClick={() => remove(it.full_name)}
-                            style={{ fontSize: 10, padding: "2px 8px" }}>删除</button>
-                        </td>
-                      </tr>
+                      <React.Fragment key={it.name_id}>
+                        <tr style={{ borderTop: "1px solid var(--border)" }}>
+                          <td style={{ padding: "6px 10px", fontWeight: 600 }}>
+                            {it.full_name}
+                            {it.is_nonstandard ? <span title={it.nonstandard_reason}
+                              style={{ marginLeft: 6, fontSize: 10, color: "var(--error)", border: "1px solid var(--error)", borderRadius: 3, padding: "0 4px" }}>非标准</span> : null}
+                            {it.example_sentence ? (
+                              <div style={{ fontWeight: 400, fontSize: 11, color: "var(--text-tertiary)", marginTop: 2, maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                title={it.example_sentence}>例句：{it.example_sentence}</div>
+                            ) : null}
+                          </td>
+                          <td style={{ padding: "6px 10px", color: "var(--text-secondary)" }}>{it.surname || "—"} / {it.given_name || "—"}</td>
+                          <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
+                            {it.is_compound_surname ? "复姓" : it.is_single_given ? "单名" : it.surname_kind === "single" ? "双名" : "—"}
+                          </td>
+                          <td style={{ padding: "6px 10px" }}>
+                            <span className="font-mono" style={{ color: it.book_df >= 2 ? "var(--jade)" : "var(--text-tertiary)" }}>{it.book_df}</span>
+                          </td>
+                          <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
+                            {it.source === "seed" ? "种子" : it.source === "ltp_ner" ? "LTP" : it.source === "jieba_nr" ? "jieba" : it.source === "user" ? "用户" : it.source}
+                            {it.source_category ? ` · ${it.source_category}` : ""}
+                          </td>
+                          <td style={{ padding: "6px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
+                            <button className="btn" disabled={busy} onClick={() => startEdit(it)}
+                              style={{ fontSize: 10, padding: "2px 8px", marginRight: 4 }}>编辑</button>
+                            <button className="btn" disabled={busy} onClick={() => remove(it.full_name)}
+                              style={{ fontSize: 10, padding: "2px 8px" }}>删除</button>
+                          </td>
+                        </tr>
+                        {editId === it.name_id && (
+                          <tr style={{ background: "var(--bg-surface-2)" }}>
+                            <td colSpan={6} style={{ padding: "8px 10px" }}>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                                <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>全名</span>
+                                <input className="input" value={editName} onChange={e => setEditName(e.target.value)}
+                                  style={{ width: 120, padding: "4px 8px", fontSize: 12 }} />
+                                <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>例句</span>
+                                <input className="input" value={editSent} onChange={e => setEditSent(e.target.value)}
+                                  placeholder="该名出现的一句话" style={{ flex: 1, minWidth: 180, padding: "4px 8px", fontSize: 12 }} />
+                                <button className="btn-primary" disabled={busy} onClick={saveEdit}
+                                  style={{ fontSize: 11, padding: "4px 12px" }}>保存</button>
+                                <button className="btn" disabled={busy} onClick={() => setEditId(null)}
+                                  style={{ fontSize: 11, padding: "4px 12px" }}>取消</button>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     ))}
                   </tbody>
                 </table>
@@ -1882,20 +1925,28 @@ function PosMddPanel({ pos, mdd }: { pos: any; mdd: any }) {
   );
 }
 
-/** 用词丰富度（MATTR + MTLD）。spec §2。 */
+/** 用词丰富度（0-100 分 + 通俗档位）。底层 MATTR/MTLD 降为脚注。spec §2。 */
 function RichnessPanel({ lex }: { lex: any }) {
   if (!lex?.available) return null;
+  const score = Math.round((lex.richness || 0) * 100);
+  const tier = score >= 70 ? { label: "用词丰富", color: "var(--jade)" }
+    : score >= 45 ? { label: "用词中等", color: "var(--gold)" }
+    : { label: "用词偏单一", color: "var(--accent)" };
   return (
     <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
       <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>用词丰富度</div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-        <div style={{ flex: 1 }}><MiniBar value={lex.richness} max={1} color="var(--jade)" /></div>
-        <span className="font-mono" style={{ fontSize: 13, fontWeight: 700 }}>{(lex.richness * 100).toFixed(0)}<span style={{ fontSize: 10, fontWeight: 400 }}>/100</span></span>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
+        <span className="font-mono" style={{ fontSize: 26, fontWeight: 800, color: tier.color, lineHeight: 1 }}>{score}</span>
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>/ 100</span>
+        <span style={{ marginLeft: 6, fontSize: 13, fontWeight: 700, color: tier.color }}>{tier.label}</span>
       </div>
-      <div style={{ display: "flex", gap: 16, fontSize: 11, color: "var(--text-secondary)" }}>
-        <span title="Moving-Average Type-Token Ratio（窗口滑动，抗长度）">MATTR <strong className="font-mono">{lex.mattr}</strong></span>
-        <span title="Measure of Textual Lexical Diversity（双向扫描）">MTLD <strong className="font-mono">{lex.mtld}</strong></span>
-        <span title="独立词数 / 总词数">类符数 <strong className="font-mono">{lex.type_count}</strong></span>
+      <MiniBar value={score} max={100} color={tier.color} />
+      <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 8 }}>
+        分数越高，说明遣词越多样、重复用词越少。
+      </div>
+      <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 4 }}
+        title="MATTR/MTLD 为词汇多样性的学术指标，越大越丰富；本分数由二者归一合成">
+        参考指标：MATTR {lex.mattr} · MTLD {lex.mtld}
       </div>
     </div>
   );
