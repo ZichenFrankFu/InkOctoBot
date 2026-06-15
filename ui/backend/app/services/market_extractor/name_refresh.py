@@ -163,23 +163,27 @@ def refresh(
             except Exception as e:
                 logger.warning("NER failed for book %s: %s", b["novel_uid"], e)
                 per = []
+            # extract_per_names 可能在运行时把 LTP 降级成 jieba → 实时读取当前后端，
+            # 来源标签/台账才反映真实使用的引擎，而非启动时的判定。
+            cur = ner_backend.detect_ner_backend()
             unique = {n for n in per if name_library.is_valid_name(n)}   # 书内去重
             for fn in unique:
                 name_library.add_name(
                     project_db, fn,
-                    source=("ltp_ner" if info.uses_ltp else "jieba_nr"),
+                    source=("ltp_ner" if cur.uses_ltp else "jieba_nr"),
                     work_id=b["novel_uid"], work_title=b.get("title") or "",
                     platform=b.get("platform") or "", category=b.get("category") or "",
                     rank=b.get("rank"), heat=b.get("heat"), count_df=True,
                 )
             total_names += len(unique)
             _record_state(project_db, b["novel_uid"], b["fingerprint"],
-                          info.backend, len(unique))
+                          cur.backend, len(unique))
         _write_last_refresh(time.time())
+        final = ner_backend.detect_ner_backend()
         return {
             "status": "ok",
-            "backend": info.backend,
-            "backend_reason": info.reason,
+            "backend": final.backend,
+            "backend_reason": final.reason,
             "new_books": len(new_books),
             "names_added": total_names,
             "elapsed_sec": round(time.time() - started, 1),

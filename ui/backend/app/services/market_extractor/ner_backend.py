@@ -55,13 +55,83 @@ class NerBackendInfo:
 _cached_info: NerBackendInfo | None = None
 
 
+# 新版 huggingface_hub 删除了 ``use_auth_token`` 等旧参数，而 LTP 4.x 仍按旧签名
+# 调用 → ``hf_hub_download() got an unexpected keyword argument 'use_auth_token'``，
+# 导致模型永远加载失败、退回 jieba。这里在 import ltp 之前打一层兼容补丁：把
+# ``use_auth_token`` 翻译成 ``token``，并对任何"被删掉的关键字参数"做一次去除重试，
+# 让 LTP 在新版 huggingface_hub 上也能正常下载/加载模型。
+_hf_patched = False
+
+
+def _ensure_hf_compat() -> None:
+    global _hf_patched
+    if _hf_patched:
+        return
+    try:
+        import inspect
+        import sys
+        import huggingface_hub as _hf
+    except Exception:
+        return
+    _hf_patched = True   # 即便下面失败也不反复尝试
+
+    def _wrap(fn):
+        def inner(*args, **kwargs):
+            if "use_auth_token" in kwargs:
+                tok = kwargs.pop("use_auth_token")
+                kwargs.setdefault("token", tok)
+            try:
+                return fn(*args, **kwargs)
+            except TypeError as e:
+                import re as _re
+                m = _re.search(r"unexpected keyword argument '(\w+)'", str(e))
+                if m and m.group(1) in kwargs:
+                    kwargs.pop(m.group(1))
+                    return fn(*args, **kwargs)
+                raise
+        inner.__wrapped__ = fn
+        return inner
+
+    for fname in ("hf_hub_download", "snapshot_download", "cached_download"):
+        try:
+            orig = getattr(_hf, fname, None)
+            if orig is None or getattr(orig, "__wrapped__", None) is not None:
+                continue
+            # 仍支持 use_auth_token 的旧版本无需补丁。
+            try:
+                if "use_auth_token" in inspect.signature(orig).parameters:
+                    continue
+            except (ValueError, TypeError):
+                pass
+            wrapped = _wrap(orig)
+            setattr(_hf, fname, wrapped)
+            # 子模块 + 任何已 ``from huggingface_hub import hf_hub_download`` 绑定旧引用
+            # 的模块，一并替换。
+            for mod in list(sys.modules.values()):
+                try:
+                    if getattr(mod, fname, None) is orig:
+                        setattr(mod, fname, wrapped)
+                except Exception:
+                    pass
+        except Exception:
+            continue
+
+
 def _ltp_importable() -> bool:
     try:
+        _ensure_hf_compat()        # 必须在 import ltp 之前打补丁
         import ltp  # noqa: F401
         import torch  # noqa: F401
         return True
     except Exception:
         return False
+
+
+def _degrade_to_jieba(reason: str) -> None:
+    """LTP 运行时加载失败时，把后端缓存改成 jieba —— 后续书不再重试 LTP（止血刷屏）。"""
+    global _cached_info
+    _cached_info = NerBackendInfo("jieba", "none", True, reason)
+    logger.warning("NER degraded to jieba: %s", reason)
 
 
 def detect_ner_backend(*, refresh: bool = False) -> NerBackendInfo:
@@ -114,11 +184,18 @@ class LtpPipeline:
     def __init__(self, device: str) -> None:
         self.device = device
         self._ltp = None
+        self._failed = False          # 加载失败后置位 → 不再每本书重试刷屏
+
+    def ensure_ready(self) -> bool:
+        return self._ensure()
 
     def _ensure(self) -> bool:
         if self._ltp is not None:
             return True
+        if self._failed:              # 上次已失败 → 直接返回，不重试、不再打日志
+            return False
         try:
+            _ensure_hf_compat()       # 兼容新版 huggingface_hub（use_auth_token 等）
             from ltp import LTP
             self._ltp = LTP()
             try:
@@ -127,9 +204,12 @@ class LtpPipeline:
                     self._ltp.to("cuda")
             except Exception:
                 pass
+            logger.info("LTP loaded on %s", self.device)
             return True
-        except Exception as e:  # pragma: no cover - LTP 未安装
-            logger.warning("LTP load failed (%s); caller should fall back", e)
+        except Exception as e:  # pragma: no cover - LTP 未安装/模型不可用
+            self._failed = True       # 只记一次，之后静默降级
+            logger.warning("LTP load failed (%s); falling back to jieba nr "
+                           "for the rest of this session", e)
             return False
 
     def extract_per(self, texts: list[str]) -> list[str]:
@@ -248,12 +328,10 @@ def extract_per_names(texts: list[str]) -> list[str]:
     info = detect_ner_backend()
     if info.uses_ltp:
         pipe = get_ltp_pipeline()
-        if pipe is not None:
-            names = pipe.extract_per(texts)
-            if names or pipe._ltp is not None:
-                return names
-        # LTP 句柄构建/推理失败 → 运行时降级。
-        logger.info("LTP runtime unavailable; degrading to jieba nr for this run")
+        if pipe is not None and pipe.ensure_ready():
+            return pipe.extract_per(texts)
+        # LTP 运行时加载失败 → 本会话永久降级到 jieba（避免每本书重试刷屏）。
+        _degrade_to_jieba("LTP 运行时加载失败（依赖不兼容/模型缺失）—— 本会话降级 jieba")
     return _jieba_per(texts)
 
 
