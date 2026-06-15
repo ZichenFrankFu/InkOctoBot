@@ -35,10 +35,22 @@ class TestDerive:
     def test_single_given_flagged(self) -> None:
         assert nl.derive_name_parts("李白")["is_single_given"] == 1
 
-    def test_nonstandard_nickname(self) -> None:
-        p = nl.derive_name_parts("翠翠")        # 叠字、无姓 → 非标准
-        assert p["is_nonstandard"] == 1
-        assert "叠字" in p["nonstandard_reason"] or "姓氏" in p["nonstandard_reason"]
+    def test_nickname_kind(self) -> None:
+        p = nl.derive_name_parts("翠翠")        # 叠字 → 昵称
+        assert p["name_kind"] == "nickname"
+        assert p["is_nonstandard"] == 1        # 昵称排除出中文取名规律
+
+    def test_western_not_split_as_chinese(self) -> None:
+        p = nl.derive_name_parts("乔治")        # 西方名，不可拆成 姓乔+名治
+        assert p["name_kind"] == "western" and p["surname"] == ""
+
+    def test_fu_surname_split(self) -> None:
+        p = nl.derive_name_parts("傅红雪")      # 傅 是姓
+        assert p["name_kind"] == "chinese" and p["surname"] == "傅" and p["given_name"] == "红雪"
+
+    def test_japanese_kind(self) -> None:
+        p = nl.derive_name_parts("山田太郎")
+        assert p["name_kind"] == "japanese" and p["surname"] == "山田"
 
 
 class TestSeedAndCrud:

@@ -258,6 +258,31 @@ class LtpPipeline:
                            "for the rest of this session", e)
             return False
 
+    def _run_ner(self, batch: list[str]):
+        """跑一批句子的 NER，返回 (ner_per_sent, seg_per_sent)。兼容 LTP 4.2+ 的
+        ``pipeline`` 与 4.1.x 的 ``seg``/``ner`` 两套 API。"""
+        # —— LTP 4.2+：pipeline(sentences, tasks=[...]) → output.ner / output.cws
+        try:
+            res = self._ltp.pipeline(batch, tasks=["cws", "ner"])
+            ner = getattr(res, "ner", None)
+            if ner is None and isinstance(res, dict):
+                ner = res.get("ner")
+            seg = getattr(res, "cws", None)
+            if seg is None and isinstance(res, dict):
+                seg = res.get("cws")
+            if ner is not None:
+                return ner, seg
+        except Exception as e:  # pragma: no cover
+            logger.debug("LTP pipeline API failed (%s); trying seg/ner", e)
+        # —— LTP 4.1.x：seg(sentences) → (seg, hidden)；ner(seg, hidden)
+        try:
+            seg, hidden = self._ltp.seg(batch)
+            ner = self._ltp.ner(seg, hidden)
+            return ner, seg
+        except Exception as e:  # pragma: no cover
+            logger.debug("LTP seg/ner API failed: %s", e)
+        return None, None
+
     def extract_per_context(self, texts: list[str]) -> list[tuple[str, str]]:
         """返回 (人名, 所在句) 列表。**先切句**再送 LTP NER —— 避开 transformer 的长度
         上限，否则整章送进去只识别开头一小段、召回极低（= 抽不到名）。"""
@@ -268,25 +293,40 @@ class LtpPipeline:
         if not sents:
             return []
         pairs: list[tuple[str, str]] = []
-        try:
-            for i in range(0, len(sents), 128):     # 分批，避免一次过多
-                batch = sents[i:i + 128]
-                res = self._ltp.pipeline(batch, tasks=["cws", "ner"])
-                ner_lists = getattr(res, "ner", None)
-                if ner_lists is None and isinstance(res, dict):
-                    ner_lists = res.get("ner")
-                if not _ner_diag_logged:            # 一次性诊断：打印真实 NER 输出格式
-                    _ner_diag_logged = True
-                    logger.info("LTP NER sample output: %r",
-                                (ner_lists[:2] if ner_lists else ner_lists))
-                for sent, sent_ents in zip(batch, (ner_lists or [])):
-                    for ent in (sent_ents or []):
-                        tag, word = _unpack_entity(ent)
-                        if tag in _LTP_PER_TAGS and word and _CJK_ONLY.match(word):
-                            pairs.append((word, sent))
-        except Exception as e:
-            logger.warning("LTP ner failed: %s", e)
+        for i in range(0, len(sents), 64):
+            batch = sents[i:i + 64]
+            ner_lists, seg_lists = self._run_ner(batch)
+            if not _ner_diag_logged:            # 一次性诊断：打印真实 NER/CWS 输出格式
+                _ner_diag_logged = True
+                logger.info("LTP NER raw sample: ner=%r seg=%r",
+                            (ner_lists[:1] if ner_lists else ner_lists),
+                            (seg_lists[:1] if seg_lists else None))
+            if not ner_lists:
+                continue
+            for k, sent in enumerate(batch):
+                ents = ner_lists[k] if k < len(ner_lists) else []
+                seg = seg_lists[k] if (seg_lists and k < len(seg_lists)) else None
+                for ent in (ents or []):
+                    tag = _entity_tag(ent)
+                    word = _entity_word(ent, seg)
+                    if tag in _LTP_PER_TAGS and word and _CJK_ONLY.match(word):
+                        pairs.append((word, sent))
         return pairs
+
+    def debug_ner(self, text: str) -> dict:
+        """诊断：返回一句话的原始 NER/CWS 输出 + 解析出的人名，供排查格式。"""
+        if not self._ensure():
+            return {"loaded": False}
+        sents = _split_sentences([text]) or [text]
+        ner_lists, seg_lists = self._run_ner(sents[:8])
+        parsed = []
+        for k, sent in enumerate(sents[:8]):
+            ents = ner_lists[k] if (ner_lists and k < len(ner_lists)) else []
+            seg = seg_lists[k] if (seg_lists and k < len(seg_lists)) else None
+            for ent in (ents or []):
+                parsed.append({"tag": _entity_tag(ent), "word": _entity_word(ent, seg)})
+        return {"loaded": True, "ner_raw": repr(ner_lists)[:1500],
+                "seg_raw": repr(seg_lists)[:800], "parsed": parsed}
 
     def extract_per(self, texts: list[str]) -> list[str]:
         return [n for n, _ in self.extract_per_context(texts)]
@@ -314,20 +354,51 @@ class LtpPipeline:
             return None
 
 
-def _unpack_entity(ent) -> tuple[str, str]:
-    """从 LTP 的实体元组/字典里取 (tag, word)，兼容多种形态。"""
+def _entity_tag(ent) -> str:
+    """从 LTP 实体取标签。"""
     if isinstance(ent, dict):
-        return str(ent.get("type") or ent.get("tag") or ""), str(ent.get("text") or ent.get("word") or "")
+        return str(ent.get("type") or ent.get("tag") or ent.get("label") or "")
     if isinstance(ent, (list, tuple)):
-        if len(ent) >= 2:
-            a, b = ent[0], ent[1]
-            # (tag, word) 还是 (word, tag)？标签通常是短大写码。
-            if isinstance(a, str) and a in _LTP_PER_TAGS:
-                return a, str(b)
-            if isinstance(b, str) and b in _LTP_PER_TAGS:
-                return b, str(a)
-            return str(a), str(b)
-    return "", ""
+        for x in ent:
+            if isinstance(x, str) and x in _LTP_PER_TAGS:
+                return x
+        # 没匹配到已知标签 → 第一个字符串当标签
+        for x in ent:
+            if isinstance(x, str):
+                return x
+    return ""
+
+
+def _entity_word(ent, seg=None) -> str:
+    """从 LTP 实体取人名文本。兼容：
+      - (tag, word, start, end) / (word, tag) → 直接取词串；
+      - (tag, start, end) 偏移式 → 用 cws 分词结果 seg 把 [start:end] 拼回词；
+      - dict 形态。"""
+    if isinstance(ent, dict):
+        w = ent.get("text") or ent.get("word") or ent.get("entity")
+        if w:
+            return str(w)
+        s, e = ent.get("start"), ent.get("end")
+        if seg is not None and isinstance(s, int) and isinstance(e, int):
+            try:
+                return "".join(seg[s:e + 1])
+            except Exception:
+                return ""
+        return ""
+    if isinstance(ent, (list, tuple)):
+        # 优先：非标签的字符串就是词
+        strs = [x for x in ent if isinstance(x, str)]
+        non_tag = [x for x in strs if x not in _LTP_PER_TAGS]
+        if non_tag:
+            return non_tag[0]
+        # 否则是 (tag, start, end) 偏移式 → 用 seg 拼回
+        ints = [x for x in ent if isinstance(x, int)]
+        if seg is not None and len(ints) >= 2:
+            try:
+                return "".join(seg[ints[0]:ints[1] + 1])
+            except Exception:
+                return ""
+    return ""
 
 
 def _dep_heads(sent_dep) -> list[int | None]:
@@ -382,6 +453,30 @@ def extract_per_names_with_context(texts: list[str]) -> list[tuple[str, str]]:
 def extract_per_names(texts: list[str]) -> list[str]:
     """从一批文本抽 PER 人名实体（去重前的原始列表，含重复以便上层数 DF）。"""
     return [n for n, _ in extract_per_names_with_context(texts)]
+
+
+def debug_ner_text(text: str) -> dict:
+    """诊断 LTP NER：返回 LTP 版本、后端、原始输出与解析出的人名。用于排查
+    「LTP 处理了很多书却抽不到名」的具体原因（版本 API / 输出格式不匹配）。"""
+    out: dict = {"backend": detect_ner_backend(refresh=True).to_dict()}
+    try:
+        import ltp
+        out["ltp_version"] = getattr(ltp, "__version__", "?")
+    except Exception as e:
+        out["ltp_version"] = f"not importable: {e}"
+    try:
+        pairs = extract_per_names_with_context([text])
+        out["names"] = [n for n, _ in pairs]
+        out["count"] = len(pairs)
+    except Exception as e:
+        out["extract_error"] = str(e)
+    pipe = get_ltp_pipeline()
+    if pipe is not None:
+        try:
+            out["raw"] = pipe.debug_ner(text)
+        except Exception as e:
+            out["raw_error"] = str(e)
+    return out
 
 
 def backend_status() -> dict:

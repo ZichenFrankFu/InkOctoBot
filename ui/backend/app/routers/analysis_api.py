@@ -499,9 +499,10 @@ def wordlist_remove(body: dict = Body(...)):
 def name_library_list(
     q: str = Query(default=""), limit: int = Query(default=200, le=1000),
     offset: int = Query(default=0, ge=0), order: str = Query(default="df"),
-    nonstandard: str = Query(default=""),
+    nonstandard: str = Query(default=""), kind: str = Query(default=""),
 ):
-    """搜索 + 分页人名库（每条带 book_df 作可信度信号）。"""
+    """搜索 + 分页人名库（每条带 book_df 作可信度信号）。``kind`` 按分类筛
+    （chinese/japanese/western/nickname）。"""
     from ..services.market_extractor import name_library as _nl
     only = None
     if nonstandard == "1":
@@ -509,7 +510,7 @@ def name_library_list(
     elif nonstandard == "0":
         only = False
     data = _nl.search_names(_project_db_path(), q, limit=limit, offset=offset,
-                            only_nonstandard=only, order=order)
+                            only_nonstandard=only, order=order, kind=kind)
     return data
 
 
@@ -581,6 +582,10 @@ def name_library_edit(body: dict = Body(...)):
         kwargs["example_sentence"] = str(body["example_sentence"])
     if "is_nonstandard" in body:
         kwargs["is_nonstandard"] = int(body["is_nonstandard"])
+    if "name_kind" in body:
+        kwargs["name_kind"] = str(body["name_kind"])
+    if "alias_of" in body:
+        kwargs["alias_of"] = str(body["alias_of"])
     try:
         row = _nl.edit_name(_project_db_path(), name_id, **kwargs)
     except ValueError as e:
@@ -606,6 +611,16 @@ def name_library_refresh(body: dict = Body(default={})):
 def name_library_refresh_status():
     from ..services.market_extractor import name_refresh as _nr
     return _nr.status(_project_db_path())
+
+
+@router.post("/ner-test")
+def ner_test(body: dict = Body(default={})):
+    """诊断 NER：对一段示例文本跑 LTP，返回版本/原始输出/解析人名 —— 排查「处理很多
+    书却抽不到名」的根因（LTP 版本/输出格式不匹配）。"""
+    from ..services.market_extractor import ner_backend as _nb
+    text = (body.get("text") or
+            "他叫汤姆。李慕白对张三丰说道，萧炎冷笑一声，韩立默默修炼。乔治走了过来。")
+    return _nb.debug_ner_text(text)
 
 
 @router.get("/ner-status")

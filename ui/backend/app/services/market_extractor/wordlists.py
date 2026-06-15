@@ -38,6 +38,8 @@ _FILES = {
     "name_chars": "name_chars.txt",
     "translit_chars": "translit_chars.txt",
     "ltp_stopwords": "ltp_stopwords.txt",
+    "western_names": "western_names.txt",
+    "japanese_surnames": "japanese_surnames.txt",
 }
 
 # Human labels for the API / UI (资源管理 tab) and the targets a user may CRUD.
@@ -144,6 +146,16 @@ def load_common_words() -> frozenset[str]:
 def load_ltp_stopwords() -> frozenset[str]:
     """哈工大 LTP / HIT 停用词表（高频词识别兜底，spec §4）。"""
     return _effective("ltp_stopwords")
+
+
+def load_western_names() -> frozenset[str]:
+    """常见西方音译名（含会被中文姓氏误拆的「乔治」「大卫」等）。"""
+    return _effective("western_names")
+
+
+def load_japanese_surnames() -> frozenset[str]:
+    """常见日本姓氏（汉字写法）。"""
+    return _effective("japanese_surnames")
 
 
 def load_surnames() -> frozenset[str]:
