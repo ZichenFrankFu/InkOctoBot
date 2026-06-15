@@ -83,18 +83,21 @@ def _table_exists(con: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
-def _processed_state(project_db: str) -> dict[str, str]:
-    """novel_uid → content_hash 已处理台账。"""
-    out: dict[str, str] = {}
+def _processed_state(project_db: str) -> dict[str, tuple[str, int]]:
+    """novel_uid → (content_hash, names_found) 已处理台账。names_found 用于「上次抽到 0
+    个名 → 这次重试」（早期 NER 漏抽的书不必手动清空就能被重新处理）。"""
+    out: dict[str, tuple[str, int]] = {}
     with sqlite3.connect(project_db) as con:
         name_library._ensure(con)
-        for r in con.execute("SELECT novel_uid, content_hash FROM name_extraction_state").fetchall():
-            out[str(r[0])] = str(r[1] or "")
+        for r in con.execute(
+            "SELECT novel_uid, content_hash, names_found FROM name_extraction_state"
+        ).fetchall():
+            out[str(r[0])] = (str(r[1] or ""), int(r[2] or 0))
     return out
 
 
 def _fetch_new_books(
-    crawler_db: str, processed: dict[str, str], *, platform: str | None, limit: int,
+    crawler_db: str, processed: dict[str, tuple[str, int]], *, platform: str | None, limit: int,
 ) -> list[dict]:
     """爬虫库里按 book 去重的新增书：novel_uid 未处理，或开篇 content_hash 变化。"""
     with sqlite3.connect(crawler_db) as con:
@@ -151,8 +154,10 @@ def _fetch_new_books(
         # 不用内置 hash() 以免每次进程重启都误判为新书重跑）。
         fingerprint = b["ch1_hash"] or hashlib.md5(
             "".join(b["texts"])[:2000].encode("utf-8")).hexdigest()
-        if processed.get(uid, "__none__") == fingerprint:
-            continue        # 已处理且开篇未变 → 跳过（含 rank snapshot 更新）
+        prev = processed.get(uid)
+        # 已处理且开篇未变、且上次确实抽到过名 → 跳过；上次抽到 0 个名的书要重试。
+        if prev and prev[0] == fingerprint and prev[1] > 0:
+            continue
         hm = heat_map.get(uid, {})
         b["fingerprint"] = fingerprint
         b["rank"] = hm.get("rank")
@@ -177,10 +182,10 @@ def refresh(
     # 手动/每日刷新都重置后端缓存：给 LTP 一次全新加载机会（上轮降级不影响本轮）。
     ner_backend.reset_backend_cache()
     info = ner_backend.detect_ner_backend()
-    name_library.seed_if_empty(project_db)   # 静态种子库始终就绪（fallback）
+    name_library.seed_if_empty(project_db)   # 静态种子库始终就绪（剔名 fallback）
     try:
-        # LTP 不可用 → 不抽新名（jieba 错误率高），也不把书标记为已处理（留待 LTP 可
-        # 用时再抽）。静态种子人名库继续作为高频词剔名的 fallback。
+        # LTP 不可用 → 不抽新名（不退化到易错方法），也不标记书为已处理（留待 LTP 可用
+        # 时再抽）。静态种子人名库继续作为高频词剔名的 fallback。
         if not info.uses_ltp:
             _set_progress(running=False, total=0, done=0, names=0,
                           backend=info.backend, phase="ltp_unavailable",
@@ -200,8 +205,7 @@ def refresh(
                 logger.warning("NER failed for book %s: %s", b["novel_uid"], e)
                 pairs = []
             cur = ner_backend.detect_ner_backend()
-            if not cur.uses_ltp:
-                # 运行中 LTP 加载失败被降级 → 停止处理，剩余书留待下次（绝不用 jieba）。
+            if not cur.uses_ltp:        # 运行中 LTP 加载失败被降级 → 停止，剩余书留待下次
                 _set_progress(phase="ltp_failed", message=cur.reason)
                 break
             # 书内去重；每名留一句例句（首次出现的所在句）。

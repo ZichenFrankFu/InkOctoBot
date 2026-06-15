@@ -171,8 +171,8 @@ def _degrade_to_seed(reason: str) -> None:
 
 def detect_ner_backend(*, refresh: bool = False) -> NerBackendInfo:
     """按硬件挑选 NER 后端并缓存。``refresh=True`` 重测（GPU 驱动变化/测试）。
-    人名识别只用 LTP；LTP 不可用时退到静态种子人名库（不再用 jieba 抽人名——
-    jieba 对人名的错误率太高）。"""
+    人名识别只用 LTP（从市场库各小说章节正文抽名）；LTP 不可用时退到静态种子人名库
+    （不用 jieba —— 对人名错误率太高）。"""
     global _cached_info
     if _cached_info is not None and not refresh:
         return _cached_info
@@ -180,7 +180,7 @@ def detect_ner_backend(*, refresh: bool = False) -> NerBackendInfo:
     if not _ltp_importable():
         info = NerBackendInfo(
             backend="seed", device="none", ltp_available=False,
-            reason="LTP/torch 未安装 —— 仅用静态种子人名库（装 ltp+torch 后用 LTP 抽名）",
+            reason="LTP/torch 未安装 —— 仅用静态种子人名库（装 ltp+torch 后用 LTP 从正文抽名）",
         )
         _cached_info = info
         logger.info("NER backend: %s (%s)", info.backend, info.reason)
@@ -367,23 +367,20 @@ def get_ltp_pipeline() -> LtpPipeline | None:
 
 
 def extract_per_names_with_context(texts: list[str]) -> list[tuple[str, str]]:
-    """抽 PER 人名 + 所在句 (name, sentence)。**只用 LTP**；不可用时返回空。"""
+    """抽 PER 人名 + 所在句 (name, sentence)，**从真实章节正文**用 LTP 抽取。
+    LTP 不可用时返回空（不退化到易错的 jieba/字典法；剔名仍靠静态种子库）。"""
     info = detect_ner_backend()
     if info.uses_ltp:
         pipe = get_ltp_pipeline()
         if pipe is not None and pipe.ensure_ready():
             return pipe.extract_per_context(texts)
-        # LTP 运行时加载失败 → 本会话降级为「仅静态种子库」（避免每本书重试刷屏）。
+        # LTP 运行时加载失败 → 本会话降级为仅静态种子库（避免每本书重试刷屏）。
         _degrade_to_seed("LTP 运行时加载失败（依赖不兼容/模型缺失）—— 仅用静态种子人名库")
     return []
 
 
 def extract_per_names(texts: list[str]) -> list[str]:
-    """从一批文本抽 PER 人名实体（去重前的原始列表，含重复以便上层数 DF）。
-
-    **只用 LTP 抽名**。LTP 不可用时返回空 —— 不再用 jieba 'nr'（对人名错误率极高）；
-    人名库的静态种子库已作为 fallback 负责高频词剔名。
-    """
+    """从一批文本抽 PER 人名实体（去重前的原始列表，含重复以便上层数 DF）。"""
     return [n for n, _ in extract_per_names_with_context(texts)]
 
 

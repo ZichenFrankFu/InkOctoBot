@@ -1925,33 +1925,6 @@ function PosMddPanel({ pos, mdd }: { pos: any; mdd: any }) {
   );
 }
 
-/** 用词丰富度（0-100 分 + 通俗档位）。底层 MATTR/MTLD 降为脚注。spec §2。 */
-function RichnessPanel({ lex }: { lex: any }) {
-  if (!lex?.available) return null;
-  const score = Math.round((lex.richness || 0) * 100);
-  const tier = score >= 70 ? { label: "用词丰富", color: "var(--jade)" }
-    : score >= 45 ? { label: "用词中等", color: "var(--gold)" }
-    : { label: "用词偏单一", color: "var(--accent)" };
-  return (
-    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>用词丰富度</div>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
-        <span className="font-mono" style={{ fontSize: 26, fontWeight: 800, color: tier.color, lineHeight: 1 }}>{score}</span>
-        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>/ 100</span>
-        <span style={{ marginLeft: 6, fontSize: 13, fontWeight: 700, color: tier.color }}>{tier.label}</span>
-      </div>
-      <MiniBar value={score} max={100} color={tier.color} />
-      <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 8 }}>
-        分数越高，说明遣词越多样、重复用词越少。
-      </div>
-      <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 4 }}
-        title="MATTR/MTLD 为词汇多样性的学术指标，越大越丰富；本分数由二者归一合成">
-        参考指标：MATTR {lex.mattr} · MTLD {lex.mtld}
-      </div>
-    </div>
-  );
-}
-
 /** 情感分析（DUTIR 七大类占比，可视化）。spec §3。 */
 function EmotionPanel({ sent }: { sent: any }) {
   const labels: Record<string, string> = sent?.labels || {};
@@ -2098,8 +2071,6 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
           {/* 词性分布（动作场面/修饰描写/设定密度）+ 句式复杂度（MDD）— spec §1，
               扩展自字数维度 */}
           {hasPos && <PosMddPanel pos={lf.pos_distribution} mdd={lf.mdd} />}
-          {/* 用词丰富度（MATTR/MTLD）— spec §2 */}
-          {lf.lexical_diversity?.available && <RichnessPanel lex={lf.lexical_diversity} />}
         </div>
         {/* 情感分析（DUTIR 七大类占比，可视化）— spec §3 */}
         {lf.sentiment && (
