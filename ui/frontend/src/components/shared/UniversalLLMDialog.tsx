@@ -318,7 +318,7 @@ export default function UniversalLLMDialog({
             display: "flex", flexDirection: "column", minHeight: 0,
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <strong style={{ fontSize: 13 }}>{editablePrompt ? "提示词（可编辑）" : "提示词预览"}</strong>
+              <strong style={{ fontSize: 13 }}>提示词</strong>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
                   {(livePrompt.length + (system?.length || 0))} 字
@@ -382,9 +382,6 @@ export default function UniversalLLMDialog({
             {/* User prompt — editable textarea when editablePrompt, else read-only */}
             {editablePrompt ? (
               <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-                <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginBottom: 4 }}>
-                  用户提示词（可直接修改，下方运行/复制都用修改后的版本）
-                </div>
                 <textarea
                   value={livePrompt}
                   onChange={e => setLivePrompt(e.target.value)}
@@ -562,8 +559,7 @@ function ApiOnlyPane({ onStart, hasInvokeApi }: { onStart: () => void; hasInvoke
     <>
       <h4 style={{ marginTop: 0 }}>大模型 API 提取</h4>
       <p style={{ fontSize: 12, color: "var(--text-tertiary)", lineHeight: 1.6 }}>
-        左侧为完整提示词，可直接修改。确认无误后点击下方「开始提取」，将用已配置的大模型
-        API 自动运行并返回结果。
+        确认左侧提示词后点击「开始提取」，将用已配置的大模型 API 自动运行并返回结果。
       </p>
       <button
         className="btn primary"

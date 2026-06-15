@@ -490,8 +490,8 @@ export default function MarketFeatureExtractionPage() {
         onClose={() => setManualOpen(false)}
         title={`高级特征提取：${tPlatform(platform)}`}
         description={dialogMode === "api"
-          ? "可直接修改提示词，确认后用大模型 API 自动运行。"
-          : "可直接修改提示词，复制到网页版大模型运行后把回复粘回。"}
+          ? "确认提示词后用大模型 API 自动运行。"
+          : "复制提示词到网页版大模型运行后把回复粘回。"}
         prompt={manualPrompt}
         editablePrompt
         invokeApi={invokeApi}
@@ -1403,6 +1403,16 @@ function NameLibraryView() {
     } catch (e: any) { toast(`刷新失败：${e.message}`, "error"); }
     finally { setBusy(false); }
   };
+  const clearLib = async () => {
+    if (!window.confirm("确定清空人名库？将移除所有人名与 NER 处理记录，此操作不可撤销。")) return;
+    setBusy(true);
+    try {
+      const r = await apiPost<any>("/api/analysis/name-library/clear", {});
+      toast(`已清空人名库（移除 ${r.removed ?? 0} 条）`, "success");
+      reload(); reloadStatus();
+    } catch (e: any) { toast(`清空失败：${e.message}`, "error"); }
+    finally { setBusy(false); }
+  };
 
   const backend = status?.backend || {};
   const gpu = backend.gpu || {};
@@ -1419,10 +1429,16 @@ function NameLibraryView() {
           <span>识别后端 <strong style={{ color: backend.uses_ltp ? "var(--jade)" : "var(--text-primary)" }}>{backendLabel}</strong></span>
           {status?.last_refresh && <span style={{ color: "var(--text-tertiary)" }}>上次刷新 {new Date(status.last_refresh).toLocaleString()}</span>}
           <span style={{ color: "var(--text-tertiary)" }}>已处理 {status?.books_processed ?? "—"} 本</span>
-          <button className="btn-primary" disabled={busy || status?.running} onClick={refresh}
-            style={{ marginLeft: "auto", fontSize: 12, padding: "6px 14px" }}>
-            {status?.running ? "刷新中…" : "刷新人名库"}
-          </button>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+            <button className="btn" disabled={busy || status?.running} onClick={clearLib}
+              style={{ fontSize: 12, padding: "6px 14px", color: "var(--error)", borderColor: "var(--error)" }}>
+              清空人名库
+            </button>
+            <button className="btn-primary" disabled={busy || status?.running} onClick={refresh}
+              style={{ fontSize: 12, padding: "6px 14px" }}>
+              {status?.running ? "刷新中…" : "刷新人名库"}
+            </button>
+          </div>
         </div>
         {/* 后端/GPU 诊断说明 */}
         <div style={{ color: "var(--text-tertiary)", marginTop: 6 }}>{backend.reason || "—"}</div>

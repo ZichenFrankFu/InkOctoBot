@@ -58,7 +58,9 @@ def env(tmp_path, monkeypatch):
 
 class TestNameLibraryApi:
     def test_seed_stats_and_search(self, env) -> None:
-        client, _proj, _ = env
+        client, proj, _ = env
+        from ui.backend.app.services.market_extractor import name_library as nl
+        nl.seed_if_empty(proj)                 # 种子库由刷新/分析按需灌入（非 stats）
         st = client.get("/api/analysis/name-library/stats")
         assert st.status_code == 200
         assert st.json()["total"] > 0          # 种子库 day-1 覆盖
@@ -68,6 +70,18 @@ class TestNameLibraryApi:
         assert any("诸葛" in i["full_name"] for i in r.json()["items"])
         # 每条带 DF 可信度信号
         assert all("book_df" in i for i in r.json()["items"])
+
+    def test_clear_empties_library(self, env) -> None:
+        client, proj, _ = env
+        from ui.backend.app.services.market_extractor import name_library as nl
+        nl.seed_if_empty(proj)
+        assert nl.library_stats(proj)["total"] > 0
+        r = client.post("/api/analysis/name-library/clear")
+        assert r.status_code == 200 and r.json()["ok"] is True
+        assert r.json()["removed"] > 0
+        # 清空后确为空（stats 不再自动重灌种子）
+        assert client.get("/api/analysis/name-library/stats").json()["total"] == 0
+        assert nl.search_names(proj)["total"] == 0
 
     def test_crud(self, env) -> None:
         client, _proj, _ = env

@@ -516,8 +516,17 @@ def name_library_list(
 @router.get("/name-library/stats")
 def name_library_stats():
     from ..services.market_extractor import name_library as _nl
-    _nl.seed_if_empty(_project_db_path())
     return _nl.library_stats(_project_db_path())
+
+
+@router.post("/name-library/clear")
+def name_library_clear():
+    """清空人名库（移除所有全名 + NER 处理台账）。静态种子库会在下次刷新/基础特征
+    提取时按需重新灌入。"""
+    from ..services.market_extractor import name_library as _nl
+    result = _nl.clear_all(_project_db_path())
+    _wordlist_after_edit()      # 人名库变化影响高频词剔名 → 清开篇 NLP 缓存
+    return {"ok": True, **result}
 
 
 @router.post("/name-library/add")

@@ -193,6 +193,20 @@ def remove_name(db_path: str, full_name: str) -> bool:
     return cur.rowcount > 0
 
 
+def clear_all(db_path: str) -> dict:
+    """清空人名库：删除所有全名记录 + NER 处理台账（下次刷新/分析会重新抽取，并按需
+    重新灌入静态种子库）。返回删除数。"""
+    with sqlite3.connect(db_path) as con:
+        _ensure(con)
+        removed = con.execute("SELECT COUNT(*) FROM person_name_library").fetchone()[0]
+        con.execute("DELETE FROM person_name_library")
+        con.execute("DELETE FROM name_extraction_state")
+        con.commit()
+    invalidate_cache(db_path)
+    logger.info("cleared person_name_library (%d names removed)", removed)
+    return {"removed": int(removed or 0)}
+
+
 def update_flags(db_path: str, full_name: str, **flags: Any) -> bool:
     """手动改标记（如把某条标/取消标为非标准）。仅允许改标记类字段。"""
     allowed = {"is_nonstandard", "is_compound_surname", "is_single_given", "nonstandard_reason"}
