@@ -89,7 +89,7 @@ const STATE_COLOR: Record<string, string> = {
   running_phase_4:  "var(--accent)",
   running_phase_5:  "var(--accent)",
   completed:        "var(--success)",
-  failed:           "var(--danger)",
+  failed:           "var(--error)",
   cancelled:        "var(--text-disabled)",
 };
 
@@ -1043,7 +1043,7 @@ function BasicExtractionTab() {
           </div>
         </div>
       )}
-      {err && <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--danger)" }}><div className="card-body" style={{ fontSize: 12, color: "var(--danger)" }}>分析失败：{err}</div></div>}
+      {err && <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--error)" }}><div className="card-body" style={{ fontSize: 12, color: "var(--error)" }}>分析失败：{err}</div></div>}
 
       {!hasAny && !computing && (
         <Empty msg={everRun
@@ -1413,10 +1413,14 @@ function NameLibraryView() {
         {/* 后端/GPU 诊断说明 */}
         <div style={{ color: "var(--text-tertiary)", marginTop: 6 }}>{backend.reason || "—"}</div>
         {gpu.physical_gpu && !gpu.torch_cuda_available && (
-          <div style={{ color: "var(--gold)", marginTop: 4 }}>
+          <div style={{ color: "var(--gold)", marginTop: 4, lineHeight: 1.6 }}>
             检测到 GPU「{gpu.gpu_name}」{gpu.gpu_vram_mb ? `（${gpu.gpu_vram_mb}MB）` : ""}，
-            但当前 torch {gpu.torch_cuda_build ? "未启用 CUDA" : "为 CPU 版"}，无法 GPU 加速。
-            安装 CUDA 版 torch 后即可用 GPU。
+            但当前 torch {gpu.torch_cuda_build ? "未启用 CUDA" : "为 CPU 版"}
+            {gpu.torch_version ? `（${gpu.torch_version}）` : ""}，无法 GPU 加速。
+            <div style={{ color: "var(--text-secondary)", marginTop: 2 }}>
+              直接 <code>pip install</code> 不会替换已装的 CPU 版（会显示 already satisfied）。请
+              <strong>强制重装 CUDA 版</strong>：<code style={{ color: "var(--text-primary)" }}>pip install torch --index-url https://download.pytorch.org/whl/cu121 --force-reinstall</code>，再重启后端。
+            </div>
           </div>
         )}
         {/* 进度条（后台 NER 进行中） */}
@@ -1496,7 +1500,7 @@ function NameLibraryView() {
                         <td style={{ padding: "6px 10px", fontWeight: 600 }}>
                           {it.full_name}
                           {it.is_nonstandard ? <span title={it.nonstandard_reason}
-                            style={{ marginLeft: 6, fontSize: 10, color: "var(--danger)", border: "1px solid var(--danger)", borderRadius: 3, padding: "0 4px" }}>非标准</span> : null}
+                            style={{ marginLeft: 6, fontSize: 10, color: "var(--error)", border: "1px solid var(--error)", borderRadius: 3, padding: "0 4px" }}>非标准</span> : null}
                         </td>
                         <td style={{ padding: "6px 10px", color: "var(--text-secondary)" }}>{it.surname || "—"} / {it.given_name || "—"}</td>
                         <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
@@ -1800,17 +1804,17 @@ function HighFreqWord({ w, selected, busy, onSelect }: {
   );
 }
 
-/** 七大类情感配色（DUTIR）。 */
+/** 七大类情感配色（DUTIR）—— 全用主题已定义/明亮的色，避免与深色背景混淆。 */
 const EMOTION_COLORS: Record<string, string> = {
-  "乐": "var(--gold)", "好": "var(--jade)", "怒": "var(--danger)",
-  "哀": "var(--indigo)", "惧": "#8b5cf6", "恶": "#9ca3af", "惊": "var(--accent)",
+  "乐": "var(--gold)", "好": "var(--jade)", "怒": "var(--accent)",
+  "哀": "var(--indigo)", "惧": "var(--purple)", "恶": "var(--cyan)", "惊": "#f472b6",
 };
 
 /** 词性分布（动作场面/修饰描写/设定密度）+ 句式复杂度（MDD）。spec §1。 */
 function PosMddPanel({ pos, mdd }: { pos: any; mdd: any }) {
   const rows: { label: string; hint: string; val: number; color: string }[] = [];
   if (pos?.available) {
-    rows.push({ label: "动作场面", hint: `动词占比 ${(pos.verb_ratio * 100).toFixed(1)}%`, val: pos.action_scene, color: "var(--danger)" });
+    rows.push({ label: "动作场面", hint: `动词占比 ${(pos.verb_ratio * 100).toFixed(1)}%`, val: pos.action_scene, color: "var(--accent)" });
     rows.push({ label: "修饰描写密度", hint: `形容词占比 ${(pos.adjective_ratio * 100).toFixed(1)}%`, val: pos.description_density, color: "var(--gold)" });
     rows.push({ label: "设定密度", hint: `名词占比 ${(pos.noun_ratio * 100).toFixed(1)}%`, val: pos.setting_density, color: "var(--jade)" });
   }

@@ -356,6 +356,8 @@ def backend_status() -> dict:
             "gpu_vram_mb": caps.gpu_vram_mb,
             "torch_cuda_build": caps.torch_cuda_build,
             "torch_cuda_available": caps.has_cuda,
+            "torch_version": caps.torch_version,
+            "torch_cuda_version": caps.torch_cuda_version,
         }
     except Exception:
         d["gpu"] = {}

@@ -40,6 +40,8 @@ class HardwareCapabilities:
     gpu_name: str = ""           # 物理 GPU 名（nvidia-smi）
     gpu_vram_mb: int = 0         # 物理 GPU 显存
     torch_cuda_build: bool = False   # 安装的 torch 是否为 CUDA 构建
+    torch_version: str = ""          # 如 "2.12.0+cpu"(CPU版) / "2.12.0+cu121"(CUDA版)
+    torch_cuda_version: str = ""     # torch.version.cuda，CPU 版为空
 
 
 _cached: HardwareCapabilities | None = None
@@ -69,6 +71,17 @@ def _torch_cuda_build() -> bool:
         return bool(getattr(getattr(torch, "version", None), "cuda", None))
     except Exception:
         return False
+
+
+def _torch_info() -> tuple[str, str]:
+    """(torch 版本串, torch.version.cuda)。CPU 版形如 '2.12.0+cpu'、cuda 为 ''。"""
+    try:
+        import torch  # noqa: WPS433
+        ver = str(getattr(torch, "__version__", "") or "")
+        cu = getattr(getattr(torch, "version", None), "cuda", None)
+        return ver, str(cu or "")
+    except Exception:
+        return "", ""
 
 
 def _probe_nvidia_smi() -> tuple[bool, int, str]:
@@ -143,6 +156,8 @@ def detect_hardware(*, refresh: bool = False) -> HardwareCapabilities:
         gpu_name=name or phys_name,
         gpu_vram_mb=vram_mb or phys_vram,
         torch_cuda_build=_torch_cuda_build(),
+        torch_version=_torch_info()[0],
+        torch_cuda_version=_torch_info()[1],
     )
     _cached = caps
     logger.info(
