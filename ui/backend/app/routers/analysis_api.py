@@ -490,3 +490,141 @@ def wordlist_remove(body: dict = Body(...)):
     removed = _wl.remove_word(lst, word)
     _wordlist_after_edit()
     return {"ok": True, "removed": removed, "word": word, "list": lst}
+
+
+# ── 人名库 (person_name_library) ── 复用「资源管理」tab：全名为权威记录，姓/名为
+# 派生字段；DF 作可信度信号；LTP NER 增量刷新；用户可搜索 + CRUD。
+
+@router.get("/name-library")
+def name_library_list(
+    q: str = Query(default=""), limit: int = Query(default=200, le=1000),
+    offset: int = Query(default=0, ge=0), order: str = Query(default="df"),
+    nonstandard: str = Query(default=""),
+):
+    """搜索 + 分页人名库（每条带 book_df 作可信度信号）。"""
+    from ..services.market_extractor import name_library as _nl
+    only = None
+    if nonstandard == "1":
+        only = True
+    elif nonstandard == "0":
+        only = False
+    data = _nl.search_names(_project_db_path(), q, limit=limit, offset=offset,
+                            only_nonstandard=only, order=order)
+    return data
+
+
+@router.get("/name-library/stats")
+def name_library_stats():
+    from ..services.market_extractor import name_library as _nl
+    _nl.seed_if_empty(_project_db_path())
+    return _nl.library_stats(_project_db_path())
+
+
+@router.post("/name-library/add")
+def name_library_add(body: dict = Body(...)):
+    """手动新增/编辑一条全名（派生字段自动重算）。"""
+    from ..services.market_extractor import name_library as _nl
+    fn = (body.get("full_name") or "").strip()
+    if not _nl.is_valid_name(fn):
+        raise HTTPException(400, "full_name 需为 2-8 个汉字")
+    row = _nl.add_name(_project_db_path(), fn, source="user",
+                       work_title=(body.get("source_work_title") or ""),
+                       category=(body.get("category") or ""),
+                       platform=(body.get("platform") or ""))
+    _wordlist_after_edit()      # 人名库变化也影响高频词剔名 → 清开篇 NLP 缓存
+    return {"ok": True, "name": row}
+
+
+@router.post("/name-library/remove")
+def name_library_remove(body: dict = Body(...)):
+    from ..services.market_extractor import name_library as _nl
+    fn = (body.get("full_name") or "").strip()
+    removed = _nl.remove_name(_project_db_path(), fn)
+    _wordlist_after_edit()
+    return {"ok": True, "removed": removed, "full_name": fn}
+
+
+@router.post("/name-library/flags")
+def name_library_flags(body: dict = Body(...)):
+    """改某条全名的标记（如手动标/取消标为非标准，避免污染规律统计）。"""
+    from ..services.market_extractor import name_library as _nl
+    fn = (body.get("full_name") or "").strip()
+    flags = {k: int(body[k]) for k in
+             ("is_nonstandard", "is_compound_surname", "is_single_given")
+             if k in body}
+    if "nonstandard_reason" in body:
+        flags["nonstandard_reason"] = str(body["nonstandard_reason"])
+    ok = _nl.update_flags(_project_db_path(), fn, **flags)
+    return {"ok": ok, "full_name": fn}
+
+
+@router.post("/name-library/refresh")
+def name_library_refresh(body: dict = Body(default={})):
+    """手动刷新：对市场库新增书跑 LTP NER（GPU→CPU→jieba 降级），后台执行。"""
+    from ..services.market_extractor import name_refresh as _nr
+    platform = (body.get("platform") or "").strip() or None
+    crawler = resolve_crawler_db_path()
+    if not crawler:
+        raise HTTPException(400, "市场数据库未配置")
+    started = _nr.refresh_in_background(_project_db_path(), crawler, platform=platform)
+    return {"ok": True, "started": started,
+            "status": _nr.status(_project_db_path())}
+
+
+@router.get("/name-library/refresh-status")
+def name_library_refresh_status():
+    from ..services.market_extractor import name_refresh as _nr
+    return _nr.status(_project_db_path())
+
+
+@router.get("/ner-status")
+def ner_status():
+    """当前 NER 后端 + 硬件判定（GPU/CPU/jieba 兜底），供 UI 展示降级路径。"""
+    from ..services.market_extractor import ner_backend as _nb
+    return _nb.backend_status()
+
+
+# ── 取名规律统计 (naming_patterns) ── 按题材加权命名画像（描述性，非打分依据）。
+
+@router.get("/naming-patterns/categories")
+def naming_pattern_categories(platform: str = Query(default="")):
+    from ..services.market_extractor import naming_patterns as _np
+    return {"categories": _np.list_categories(_project_db_path(),
+                                              platform=platform or None)}
+
+
+@router.get("/naming-patterns")
+def naming_patterns(category: str = Query(...), platform: str = Query(default="")):
+    from ..services.market_extractor import naming_patterns as _np
+    return _np.compute_for_category(_project_db_path(), category,
+                                    platform=platform or None)
+
+
+# ── 用户纠错回环 ── 在例句里框选完整人名 → 写人名库(重分词) + 排除集 → 清缓存重算。
+
+@router.post("/name-correction")
+def name_correction(body: dict = Body(...)):
+    """用户在高频词/特征结果里框选完整人名（如「翠翠」属于「李翠翠」）后提交。
+
+    机制（spec §5，禁止删子串）：把完整人名写入人名库（→ jieba 词典整体切分）+
+    把片段写入名字排除集；清开篇 NLP 缓存，下次分析对该语料**重新分词**、重算高频词，
+    片段自然不再冒出，而非直接从计数里删子串。
+    """
+    from ..services.market_extractor import name_library as _nl, wordlists as _wl
+    full_name = (body.get("full_name") or "").strip()
+    fragment = (body.get("fragment") or "").strip()
+    if not _nl.is_valid_name(full_name):
+        raise HTTPException(400, "full_name 需为完整人名（2-8 个汉字）")
+    _nl.add_name(_project_db_path(), full_name, source="user",
+                 work_id=(body.get("work_id") or ""),
+                 work_title=(body.get("work_title") or ""),
+                 category=(body.get("category") or ""),
+                 platform=(body.get("platform") or ""))
+    # 片段进名字排除集（人名 overlay），即便重分词后仍残留也会被剔。
+    frag_added = False
+    if fragment and fragment != full_name and len(fragment) >= 2:
+        frag_added = _wl.add_word("given_names", fragment, "中文")
+    _wordlist_after_edit()      # reload 词表 + 清开篇 NLP 缓存 → 触发重分词重算
+    return {"ok": True, "full_name": full_name, "fragment": fragment,
+            "fragment_excluded": frag_added,
+            "note": "已写入人名库并清缓存；点「重新分析」即按新词典重分词重算高频词。"}

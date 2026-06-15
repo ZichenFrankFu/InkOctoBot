@@ -37,6 +37,7 @@ _FILES = {
     "given_names": "given_names.txt",
     "name_chars": "name_chars.txt",
     "translit_chars": "translit_chars.txt",
+    "ltp_stopwords": "ltp_stopwords.txt",
 }
 
 # Human labels for the API / UI (资源管理 tab) and the targets a user may CRUD.
@@ -138,6 +139,11 @@ def _invalidate() -> None:
 
 def load_common_words() -> frozenset[str]:
     return _effective("common_words")
+
+
+def load_ltp_stopwords() -> frozenset[str]:
+    """哈工大 LTP / HIT 停用词表（高频词识别兜底，spec §4）。"""
+    return _effective("ltp_stopwords")
 
 
 def load_surnames() -> frozenset[str]:

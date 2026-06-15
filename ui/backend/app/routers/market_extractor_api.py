@@ -493,7 +493,7 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
                 excerpts.append(f"### 《{title}》\n{block}")
         if stat_rows:
             nlp_block = render_stats_for_prompt(
-                compute_opening_stats(stat_rows),
+                compute_opening_stats(stat_rows, db_path=get_db_path()),
             )
         if excerpts:
             excerpt_block = "\n\n".join(excerpts)

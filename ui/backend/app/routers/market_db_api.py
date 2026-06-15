@@ -432,11 +432,19 @@ def _compute_opening_nlp(platform: str | None = None) -> dict:
     # 句长、分类型标点密度、高频词、生造词Step1）— shared helper so the
     # 启动提取 prompt injects the SAME numbers.
     from ..services.market_extractor.opening_stats import compute_opening_stats
+    from ..services.project_paths import get_db_path as _gdp
+    # 每天一次：打开基础特征提取时自动触发人名库刷新（后台、不阻塞本次分析）。
+    try:
+        from ..services.market_extractor import name_refresh as _nr
+        from ..utils import resolve_crawler_db_path as _rcdp
+        _nr.maybe_daily_refresh(_gdp(), _rcdp(), platform=platform)
+    except Exception as _e:
+        logger.debug("daily name refresh skipped: %s", _e)
     spec_stats = compute_opening_stats([
         {"chapter_num": int(r["cn"] or 0), "text": str(r["cc"] or ""),
          "title": (r["title"] or f"作品#{r['uid']}")}
         for r in all_rows
-    ])
+    ], db_path=_gdp())
 
     return {
         "available": True,

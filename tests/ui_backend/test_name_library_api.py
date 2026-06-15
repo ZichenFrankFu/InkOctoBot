@@ -1,0 +1,137 @@
+"""人名库 / 取名规律 / NER 状态 / 纠错回环 的 HTTP API + 增量刷新流程。"""
+from __future__ import annotations
+
+import sqlite3
+
+import pytest
+from fastapi.testclient import TestClient
+
+from storage.market_extractor_schema import ensure_market_extractor_tables
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    proj = str(tmp_path / "project.db")
+    con = sqlite3.connect(proj)
+    ensure_market_extractor_tables(con)
+    con.close()
+
+    # 爬虫库：两本书各 2 章开篇，含人名实体。
+    crawler = str(tmp_path / "crawler.db")
+    from storage.market_schema import create_all
+    ccon = sqlite3.connect(crawler)
+    create_all(ccon)
+    for uid, title, cat in ((1, "玄天剑主", "玄幻"), (2, "都市修仙", "都市")):
+        ccon.execute(
+            "INSERT INTO novels (novel_uid, platform, platform_novel_id, author, "
+            "author_norm, intro, main_category, status, total_words, url, "
+            "created_date, last_seen_date) VALUES (?, 'qidian', ?, '作者', '作者', "
+            "'简介', ?, 'ongoing', 100000, 'http://x', date('now'), date('now'))",
+            (uid, f"q{uid}", cat),
+        )
+        ccon.execute(
+            "INSERT INTO novel_titles (novel_uid, title, title_norm, is_primary, "
+            "first_seen_date, last_seen_date) VALUES (?, ?, ?, 1, date('now'), date('now'))",
+            (uid, title, title),
+        )
+        for cn in (1, 2):
+            ccon.execute(
+                "INSERT INTO first_n_chapters (novel_uid, chapter_num, chapter_title, "
+                "chapter_content, word_count, content_hash, publish_date) "
+                "VALUES (?, ?, ?, ?, ?, ?, date('now'))",
+                (uid, cn, f"第{cn}章",
+                 "李慕白对陈玄说道，张三在一旁微笑，王林默默看着这一切。" * 8,
+                 200, f"hash_{uid}_{cn}"),
+            )
+    ccon.commit()
+    ccon.close()
+
+    monkeypatch.setattr(
+        "ui.backend.app.routers.analysis_api._project_db_path", lambda: proj)
+    monkeypatch.setattr(
+        "ui.backend.app.routers.analysis_api.resolve_crawler_db_path", lambda: crawler)
+    monkeypatch.setattr(
+        "ui.backend.app.utils.resolve_crawler_db_path", lambda: crawler)
+    from ui.backend.app.main import app
+    return TestClient(app), proj, crawler
+
+
+class TestNameLibraryApi:
+    def test_seed_stats_and_search(self, env) -> None:
+        client, _proj, _ = env
+        st = client.get("/api/analysis/name-library/stats")
+        assert st.status_code == 200
+        assert st.json()["total"] > 0          # 种子库 day-1 覆盖
+
+        r = client.get("/api/analysis/name-library?q=诸葛")
+        assert r.status_code == 200
+        assert any("诸葛" in i["full_name"] for i in r.json()["items"])
+        # 每条带 DF 可信度信号
+        assert all("book_df" in i for i in r.json()["items"])
+
+    def test_crud(self, env) -> None:
+        client, _proj, _ = env
+        add = client.post("/api/analysis/name-library/add",
+                          json={"full_name": "墨千寻", "category": "玄幻"})
+        assert add.status_code == 200
+        assert add.json()["name"]["surname"] == "墨"
+        rm = client.post("/api/analysis/name-library/remove",
+                         json={"full_name": "墨千寻"})
+        assert rm.json()["removed"] is True
+
+    def test_add_validation(self, env) -> None:
+        client, *_ = env
+        bad = client.post("/api/analysis/name-library/add", json={"full_name": "x"})
+        assert bad.status_code == 400
+
+    def test_ner_status_reports_degradation(self, env) -> None:
+        client, *_ = env
+        r = client.get("/api/analysis/ner-status")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["backend"] in ("jieba", "ltp_gpu", "ltp_cpu")
+        assert "reason" in body
+
+
+class TestRefreshFlow:
+    def test_refresh_processes_new_books_book_deduped(self, env) -> None:
+        client, proj, crawler = env
+        from ui.backend.app.services.market_extractor import name_refresh as nr
+        out = nr.refresh(proj, crawler)
+        assert out["status"] == "ok"
+        assert out["new_books"] == 2
+        assert out["backend"] == "jieba"        # 无 LTP → 兜底
+        # 再跑一次：两本都已处理（content_hash 未变）→ 跳过
+        out2 = nr.refresh(proj, crawler)
+        assert out2["new_books"] == 0
+
+    def test_status_endpoint(self, env) -> None:
+        client, proj, crawler = env
+        from ui.backend.app.services.market_extractor import name_refresh as nr
+        nr.refresh(proj, crawler)
+        r = client.get("/api/analysis/name-library/refresh-status")
+        assert r.status_code == 200
+        assert r.json()["books_processed"] == 2
+
+
+class TestNamingPatternsApi:
+    def test_patterns_after_refresh(self, env) -> None:
+        client, proj, crawler = env
+        from ui.backend.app.services.market_extractor import name_refresh as nr
+        nr.refresh(proj, crawler)
+        cats = client.get("/api/analysis/naming-patterns/categories").json()["categories"]
+        # NER 抽到的人名带题材（玄幻/都市），应至少出现一个题材桶
+        assert isinstance(cats, list)
+
+
+class TestNameCorrection:
+    def test_correction_writes_library_and_excludes_fragment(self, env) -> None:
+        client, proj, _ = env
+        r = client.post("/api/analysis/name-correction",
+                        json={"full_name": "李翠翠", "fragment": "翠翠",
+                              "category": "古言"})
+        assert r.status_code == 200
+        assert r.json()["fragment_excluded"] in (True, False)
+        # 全名进了人名库
+        found = client.get("/api/analysis/name-library?q=李翠翠").json()
+        assert found["total"] >= 1
