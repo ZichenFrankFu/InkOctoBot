@@ -21,7 +21,7 @@ import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
 import { tPlatform } from "../i18n";
 
 
-// 基础特征提取 (市场信息 + 开篇章节NLP维度) 在前；高级特征提取
+// 基础特征提取 (市场信息 + 语言学文本特征) 在前；高级特征提取
 // (代表作选取 → 生造词Step2 + 行文风格七组 LLM 提取) 在后。
 type TopTab = "basic" | "advanced" | "resources";
 
@@ -1055,7 +1055,7 @@ function BasicExtractionTab() {
       {/* 市场信息 (spec 2.1.3.2 全部维度，可视化) */}
       {hasMarket && <MarketInfoBlock market={market!} platform={platform} />}
 
-      {/* 开篇章节NLP维度 */}
+      {/* 语言学文本特征 */}
       {hasNlp && <NlpDimsBlock nlp={nlp!} onReanalyze={() => load(true)} busy={computing} />}
     </>
   );
@@ -1140,7 +1140,7 @@ function ResourceManagerTab() {
   type CommonData = { total: number; groups: WLGroup[] };
   type NamesData = { sections: NameSec[] };
 
-  const [topCat, setTopCat] = React.useState<"names" | "common">("names");
+  const [topCat, setTopCat] = React.useState<"names" | "namelib" | "common">("names");
   const [q, setQ] = React.useState("");
   const [names, setNames] = React.useState<NamesData | null>(null);
   const [common, setCommon] = React.useState<CommonData | null>(null);
@@ -1150,6 +1150,7 @@ function ResourceManagerTab() {
   const fileRef = React.useRef<HTMLInputElement>(null);
 
   const reload = React.useCallback(async () => {
+    if (topCat === "namelib") return;   // 人名库由 NameLibraryView 自管，跳过共享拉取
     try {
       if (topCat === "names") {
         setNames(await apiGet<NamesData>(`/api/analysis/wordlist/names?q=${encodeURIComponent(q)}`));
@@ -1206,14 +1207,16 @@ function ResourceManagerTab() {
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-body" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 6 }}>
-            {([["names", "人名"], ["common", "常用词"]] as const).map(([k, lbl]) => (
+            {([["names", "人名"], ["namelib", "人名库"], ["common", "常用词"]] as const).map(([k, lbl]) => (
               <button key={k} className={topCat === k ? "btn-primary" : "btn"}
                 style={{ fontSize: 12, padding: "5px 16px", borderRadius: 20 }}
                 onClick={() => setTopCat(k)}>{lbl}</button>
             ))}
           </div>
-          <input className="input" value={q} onChange={e => setQ(e.target.value)}
-            placeholder="搜索…" style={{ flex: 1, minWidth: 150, maxWidth: 280, padding: "7px 12px" }} />
+          {topCat !== "namelib" && (
+            <input className="input" value={q} onChange={e => setQ(e.target.value)}
+              placeholder="搜索…" style={{ flex: 1, minWidth: 150, maxWidth: 280, padding: "7px 12px" }} />
+          )}
           {topCat === "common" && (
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input className="input" value={newWord} onChange={e => setNewWord(e.target.value)}
@@ -1224,25 +1227,28 @@ function ResourceManagerTab() {
                 style={{ fontSize: 12, padding: "7px 16px" }}>添加</button>
             </div>
           )}
-          <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
-            {topCat === "names" && (
-              <select className="select" value={ioList} onChange={e => setIoList(e.target.value as any)}
-                style={{ fontSize: 12, padding: "5px 8px" }}>
-                <option value="surnames">姓</option>
-                <option value="given_names">名</option>
-              </select>
-            )}
-            <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
-              disabled={busy} onClick={() => fileRef.current?.click()}>导入 txt</button>
-            <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
-              onClick={() => doExport(importList)}>导出 txt</button>
-            <input ref={fileRef} type="file" accept=".txt,text/plain" style={{ display: "none" }}
-              onChange={e => { const f = e.target.files?.[0]; if (f) doImport(f); }} />
-          </div>
+          {topCat !== "namelib" && (
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+              {topCat === "names" && (
+                <select className="select" value={ioList} onChange={e => setIoList(e.target.value as any)}
+                  style={{ fontSize: 12, padding: "5px 8px" }}>
+                  <option value="surnames">姓</option>
+                  <option value="given_names">名</option>
+                </select>
+              )}
+              <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
+                disabled={busy} onClick={() => fileRef.current?.click()}>导入 txt</button>
+              <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
+                onClick={() => doExport(importList)}>导出 txt</button>
+              <input ref={fileRef} type="file" accept=".txt,text/plain" style={{ display: "none" }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) doImport(f); }} />
+            </div>
+          )}
         </div>
       </div>
 
-      {topCat === "names" ? (
+      {topCat === "namelib" && <NameLibraryView />}
+      {topCat !== "namelib" && (topCat === "names" ? (
         !names ? <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>加载中…</div> : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {names.sections.map(sec => (
@@ -1268,11 +1274,285 @@ function ResourceManagerTab() {
               ))}
             </div>
           )
-      )}
+      ))}
     </>
   );
 }
 
+
+/** 加权分布水平条（取名规律用，展示加权值而非原始计数）。 */
+function WeightedBars({ rows, color, k = 12 }: { rows: any[]; color: string; k?: number }) {
+  const items = (rows || []).slice(0, k);
+  const max = Math.max(0.001, ...items.map(r => r.weight || 0));
+  if (items.length === 0) return <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {items.map((r, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+          <span style={{ width: 36, color: "var(--text-secondary)", textAlign: "center" }}>{r.key}</span>
+          <div style={{ flex: 1 }}><MiniBar value={r.weight || 0} max={max} color={color} /></div>
+          <span className="font-mono" style={{ width: 42, textAlign: "right", color: "var(--text-tertiary)" }}>{(r.pct * 100).toFixed(1)}%</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 取名规律统计：按题材加权命名画像（描述性，非打分依据）。spec §5。 */
+function NamingPatternsPanel() {
+  const { toast } = useToast();
+  const [cats, setCats] = React.useState<any[]>([]);
+  const [cat, setCat] = React.useState<string>("");
+  const [data, setData] = React.useState<any>(null);
+  const [pos, setPos] = React.useState<"first" | "last" | "all">("first");
+
+  React.useEffect(() => {
+    apiGet<{ categories: any[] }>("/api/analysis/naming-patterns/categories")
+      .then(r => { setCats(r.categories || []); if (!cat && r.categories?.[0]) setCat(r.categories[0].category); })
+      .catch(() => { });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  React.useEffect(() => {
+    if (!cat) { setData(null); return; }
+    apiGet<any>(`/api/analysis/naming-patterns?category=${encodeURIComponent(cat)}`)
+      .then(setData).catch((e: any) => toast(`加载取名规律失败：${e.message}`, "error"));
+  }, [cat, toast]);
+
+  if (cats.length === 0) {
+    return <Empty msg="人名库尚无带题材的人名 — 先在『名单』里点『刷新人名库』，让 NER 从市场库新增书抽取带题材的人名。" />;
+  }
+  const nls = data?.name_length_structure || {};
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>题材</span>
+        <select className="select" value={cat} onChange={e => setCat(e.target.value)}
+          style={{ fontSize: 12, padding: "5px 10px" }}>
+          {cats.map(c => <option key={c.category} value={c.category}>{c.category}（{c.standard_count}）</option>)}
+        </select>
+      </div>
+      {!data?.available ? (
+        <Empty msg={data?.reason || "该题材暂无足够数据。"} />
+      ) : (
+        <>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+            基于 {data.book_count} 部作品 · {data.name_count} 个标准名 · 按来源作品热度/排名加权（前排权重大）
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>姓氏加权分布</div>
+              <WeightedBars rows={data.surname_distribution} color="var(--accent)" />
+            </div>
+            <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                名字用字加权分布
+                <div style={{ display: "flex", gap: 4 }}>
+                  {(["first", "last", "all"] as const).map(p => (
+                    <button key={p} className={pos === p ? "btn-primary" : "btn"} onClick={() => setPos(p)}
+                      style={{ fontSize: 10, padding: "2px 8px" }}>{p === "first" ? "首字" : p === "last" ? "末字" : "全部"}</button>
+                  ))}
+                </div>
+              </div>
+              <WeightedBars rows={data.given_char_distribution?.[pos]} color="var(--jade)" />
+            </div>
+            <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>名长结构</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 11 }}>
+                {[["单名", nls.single_given], ["双名", nls.double_given], ["复姓", nls.compound_surname], ["其他", nls.other]].map(([lbl, v]: any) => (
+                  <div key={lbl} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 36, color: "var(--text-secondary)" }}>{lbl}</span>
+                    <div style={{ flex: 1 }}><MiniBar value={v || 0} max={1} color="var(--indigo)" /></div>
+                    <span className="font-mono" style={{ width: 42, textAlign: "right", color: "var(--text-tertiary)" }}>{((v || 0) * 100).toFixed(1)}%</span>
+                  </div>
+                ))}
+                <div style={{ marginTop: 4, paddingTop: 6, borderTop: "1px dashed var(--border)", color: "var(--text-secondary)" }}>
+                  生僻字使用率 <strong className="font-mono">{((data.rare_char_rate || 0) * 100).toFixed(1)}%</strong>
+                </div>
+              </div>
+            </div>
+            <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>名字字对·典型组合</div>
+              <WeightedBars rows={data.typical_char_pairs} color="var(--gold)" />
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", fontStyle: "italic" }}>
+            ⚠ {data.note}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 人名库视图：名单(CRUD/DF) + 取名规律 + LTP NER 增量刷新与硬件状态。spec §4/§5。 */
+function NameLibraryView() {
+  const { toast } = useToast();
+  const [sub, setSub] = React.useState<"list" | "patterns">("list");
+  const [q, setQ] = React.useState("");
+  const [order, setOrder] = React.useState("df");
+  const [nonstd, setNonstd] = React.useState("");
+  const [data, setData] = React.useState<any>(null);
+  const [stats, setStats] = React.useState<any>(null);
+  const [status, setStatus] = React.useState<any>(null);
+  const [newName, setNewName] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const limit = 200;
+
+  const reload = React.useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ q, order, limit: String(limit) });
+      if (nonstd) params.set("nonstandard", nonstd);
+      setData(await apiGet<any>(`/api/analysis/name-library?${params}`));
+      setStats(await apiGet<any>("/api/analysis/name-library/stats"));
+    } catch (e: any) { toast(`加载人名库失败：${e.message}`, "error"); }
+  }, [q, order, nonstd, toast]);
+
+  const reloadStatus = React.useCallback(async () => {
+    try { setStatus(await apiGet<any>("/api/analysis/name-library/refresh-status")); } catch { /* ignore */ }
+  }, []);
+
+  React.useEffect(() => {
+    const t = window.setTimeout(reload, 200);   // debounce 搜索
+    return () => window.clearTimeout(t);
+  }, [reload]);
+  React.useEffect(() => { reloadStatus(); }, [reloadStatus]);
+
+  const add = async () => {
+    const fn = newName.trim();
+    if (fn.length < 2) { toast("请填写完整人名（≥2 字）", "error"); return; }
+    setBusy(true);
+    try {
+      await apiPost("/api/analysis/name-library/add", { full_name: fn });
+      toast(`已添加「${fn}」`, "success"); setNewName(""); reload();
+    } catch (e: any) { toast(`添加失败：${e.message}`, "error"); }
+    finally { setBusy(false); }
+  };
+  const remove = async (fn: string) => {
+    setBusy(true);
+    try { await apiPost("/api/analysis/name-library/remove", { full_name: fn }); reload(); }
+    catch (e: any) { toast(`删除失败：${e.message}`, "error"); }
+    finally { setBusy(false); }
+  };
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      const r = await apiPost<any>("/api/analysis/name-library/refresh", {});
+      toast(r.started ? "已开始刷新人名库（后台 NER 处理新增书）…" : "刷新已在进行中", "info");
+      window.setTimeout(() => { reloadStatus(); reload(); }, 1500);
+    } catch (e: any) { toast(`刷新失败：${e.message}`, "error"); }
+    finally { setBusy(false); }
+  };
+
+  const backend = status?.backend || {};
+  const backendLabel = backend.backend === "ltp_gpu" ? "LTP · GPU"
+    : backend.backend === "ltp_cpu" ? "LTP · CPU" : "jieba 兜底";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* NER 后端 + 刷新条 */}
+      <div className="card"><div className="card-body" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12 }}>
+        <span>识别后端 <strong style={{ color: "var(--text-primary)" }}>{backendLabel}</strong></span>
+        <span style={{ color: "var(--text-tertiary)" }} title={backend.reason}>{backend.reason || "—"}</span>
+        {status?.last_refresh && <span style={{ color: "var(--text-tertiary)" }}>上次刷新 {new Date(status.last_refresh).toLocaleString()}</span>}
+        <span style={{ color: "var(--text-tertiary)" }}>已处理 {status?.books_processed ?? "—"} 本</span>
+        <button className="btn-primary" disabled={busy || status?.running} onClick={refresh}
+          style={{ marginLeft: "auto", fontSize: 12, padding: "6px 14px" }}>
+          {status?.running ? "刷新中…" : "刷新人名库"}
+        </button>
+      </div></div>
+
+      {/* 概览 + 子tab */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {([["list", "名单"], ["patterns", "取名规律"]] as const).map(([k, lbl]) => (
+            <button key={k} className={sub === k ? "btn-primary" : "btn"}
+              style={{ fontSize: 12, padding: "5px 14px", borderRadius: 20 }}
+              onClick={() => setSub(k)}>{lbl}</button>
+          ))}
+        </div>
+        {stats && (
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <span>共 <strong style={{ color: "var(--text-secondary)" }}>{stats.total}</strong> 名</span>
+            <span>DF≥2 <strong style={{ color: "var(--text-secondary)" }}>{stats.df_ge2}</strong></span>
+            <span>复姓 {stats.compound_surname} · 单名 {stats.single_given} · 非标准 {stats.nonstandard}</span>
+          </div>
+        )}
+      </div>
+
+      {sub === "patterns" ? <NamingPatternsPanel /> : (
+        <>
+          {/* 工具栏 */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <input className="input" value={q} onChange={e => setQ(e.target.value)}
+              placeholder="搜索全名/姓/名…" style={{ flex: 1, minWidth: 150, maxWidth: 260, padding: "7px 12px" }} />
+            <select className="select" value={order} onChange={e => setOrder(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
+              <option value="df">按 DF（可信度）</option>
+              <option value="name">按名称</option>
+              <option value="recent">按最近</option>
+            </select>
+            <select className="select" value={nonstd} onChange={e => setNonstd(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
+              <option value="">全部</option>
+              <option value="0">仅标准名</option>
+              <option value="1">仅非标准</option>
+            </select>
+            <input className="input" value={newName} onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") add(); }}
+              placeholder="新增全名" style={{ width: 130, padding: "7px 12px" }} />
+            <button className="btn-primary" disabled={busy || newName.trim().length < 2} onClick={add}
+              style={{ fontSize: 12, padding: "7px 14px" }}>添加</button>
+          </div>
+
+          {!data ? <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>加载中…</div> :
+            data.items.length === 0 ? <Empty msg={q ? `没有匹配「${q}」的人名。` : "人名库为空 — 点上方『刷新人名库』。"} /> : (
+              <div className="card"><div className="card-body" style={{ padding: 0 }}>
+                <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                  <thead><tr style={{ color: "var(--text-tertiary)", textAlign: "left", fontSize: 11 }}>
+                    <th style={{ padding: "6px 10px" }}>全名</th>
+                    <th style={{ padding: "6px 10px" }}>姓 / 名</th>
+                    <th style={{ padding: "6px 10px" }}>结构</th>
+                    <th style={{ padding: "6px 10px" }} title="出现的去重书数（按 book 不按 snapshot）— 可信度信号">DF</th>
+                    <th style={{ padding: "6px 10px" }}>来源</th>
+                    <th style={{ padding: "6px 10px" }}></th>
+                  </tr></thead>
+                  <tbody>
+                    {data.items.map((it: any) => (
+                      <tr key={it.name_id} style={{ borderTop: "1px solid var(--border)" }}>
+                        <td style={{ padding: "6px 10px", fontWeight: 600 }}>
+                          {it.full_name}
+                          {it.is_nonstandard ? <span title={it.nonstandard_reason}
+                            style={{ marginLeft: 6, fontSize: 10, color: "var(--danger)", border: "1px solid var(--danger)", borderRadius: 3, padding: "0 4px" }}>非标准</span> : null}
+                        </td>
+                        <td style={{ padding: "6px 10px", color: "var(--text-secondary)" }}>{it.surname || "—"} / {it.given_name || "—"}</td>
+                        <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
+                          {it.is_compound_surname ? "复姓" : it.is_single_given ? "单名" : it.surname_kind === "single" ? "双名" : "—"}
+                        </td>
+                        <td style={{ padding: "6px 10px" }}>
+                          <span className="font-mono" style={{ color: it.book_df >= 2 ? "var(--jade)" : "var(--text-tertiary)" }}>{it.book_df}</span>
+                        </td>
+                        <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
+                          {it.source === "seed" ? "种子" : it.source === "ltp_ner" ? "LTP" : it.source === "jieba_nr" ? "jieba" : it.source === "user" ? "用户" : it.source}
+                          {it.source_category ? ` · ${it.source_category}` : ""}
+                        </td>
+                        <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                          <button className="btn" disabled={busy} onClick={() => remove(it.full_name)}
+                            style={{ fontSize: 10, padding: "2px 8px" }}>删除</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {data.truncated && (
+                  <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)", borderTop: "1px solid var(--border)" }}>
+                    共 {data.total} 条，已显示前 {limit} 条 — 用搜索缩小范围。
+                  </div>
+                )}
+              </div></div>
+            )}
+        </>
+      )}
+    </div>
+  );
+}
 
 /** 趋势箭头：窗口内百分比变化。正=升(jade)、负=降(accent)、零=平。 */
 function TrendArrow({ v }: { v: number | null | undefined }) {
@@ -1535,12 +1815,129 @@ function HighFreqWord({ w, selected, busy, onSelect }: {
         color: "var(--text-primary)", opacity: busy ? 0.5 : 1,
       }}
     >
-      {w.word}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{w.count}</span>
+      {w.word}
+      <span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}
+        title={`相对频率 ${w.relative_freq_permille ?? "—"}‰ · 原始计数 ${w.count} · 跨 ${w.work_count ?? "?"} 部作品`}>
+        {w.relative_freq_permille != null ? `${w.relative_freq_permille}‰` : w.count}
+      </span>
     </button>
   );
 }
 
-/** 开篇章节NLP维度：首章/章均/章中位字数、平均句长、分类型标点密度、高频词。 */
+/** 七大类情感配色（DUTIR）。 */
+const EMOTION_COLORS: Record<string, string> = {
+  "乐": "var(--gold)", "好": "var(--jade)", "怒": "var(--danger)",
+  "哀": "var(--indigo)", "惧": "#8b5cf6", "恶": "#9ca3af", "惊": "var(--accent)",
+};
+
+/** 词性分布（动作场面/修饰描写/设定密度）+ 句式复杂度（MDD）。spec §1。 */
+function PosMddPanel({ pos, mdd }: { pos: any; mdd: any }) {
+  const rows: { label: string; hint: string; val: number; color: string }[] = [];
+  if (pos?.available) {
+    rows.push({ label: "动作场面", hint: `动词占比 ${(pos.verb_ratio * 100).toFixed(1)}%`, val: pos.action_scene, color: "var(--danger)" });
+    rows.push({ label: "修饰描写密度", hint: `形容词占比 ${(pos.adjective_ratio * 100).toFixed(1)}%`, val: pos.description_density, color: "var(--gold)" });
+    rows.push({ label: "设定密度", hint: `名词占比 ${(pos.noun_ratio * 100).toFixed(1)}%`, val: pos.setting_density, color: "var(--jade)" });
+  }
+  const max = Math.max(0.01, ...rows.map(r => r.val));
+  return (
+    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+        词性分布 <span style={{ fontWeight: 400, color: "var(--text-tertiary)" }}>· 读者视角</span>
+      </div>
+      {rows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>需 jieba 分词</div> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {rows.map(r => (
+            <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 8 }} title={r.hint}>
+              <span style={{ width: 92, fontSize: 11, color: "var(--text-secondary)" }}>{r.label}</span>
+              <div style={{ flex: 1 }}><MiniBar value={r.val} max={max} color={r.color} /></div>
+              <span className="font-mono" style={{ width: 48, textAlign: "right", fontSize: 11 }}>{(r.val * 100).toFixed(1)}%</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {mdd?.available && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}
+          title={mdd.is_estimate ? "依存距离需 LTP 句法分析；当前为按小句长度的估算" : `平均依存距离 MDD = ${mdd.mdd}`}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ width: 92, fontSize: 11, color: "var(--text-secondary)" }}>句式复杂度</span>
+            <div style={{ flex: 1 }}><MiniBar value={mdd.complexity} max={1} color="var(--indigo)" /></div>
+            <span className="font-mono" style={{ width: 48, textAlign: "right", fontSize: 11 }}>{(mdd.complexity * 100).toFixed(0)}%</span>
+          </div>
+          <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 3 }}>
+            {mdd.is_estimate ? "估算（依存距离需 LTP）" : `MDD ${mdd.mdd}`}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 用词丰富度（MATTR + MTLD）。spec §2。 */
+function RichnessPanel({ lex }: { lex: any }) {
+  if (!lex?.available) return null;
+  return (
+    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>用词丰富度</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <div style={{ flex: 1 }}><MiniBar value={lex.richness} max={1} color="var(--jade)" /></div>
+        <span className="font-mono" style={{ fontSize: 13, fontWeight: 700 }}>{(lex.richness * 100).toFixed(0)}<span style={{ fontSize: 10, fontWeight: 400 }}>/100</span></span>
+      </div>
+      <div style={{ display: "flex", gap: 16, fontSize: 11, color: "var(--text-secondary)" }}>
+        <span title="Moving-Average Type-Token Ratio（窗口滑动，抗长度）">MATTR <strong className="font-mono">{lex.mattr}</strong></span>
+        <span title="Measure of Textual Lexical Diversity（双向扫描）">MTLD <strong className="font-mono">{lex.mtld}</strong></span>
+        <span title="独立词数 / 总词数">类符数 <strong className="font-mono">{lex.type_count}</strong></span>
+      </div>
+    </div>
+  );
+}
+
+/** 情感分析（DUTIR 七大类占比，可视化）。spec §3。 */
+function EmotionPanel({ sent }: { sent: any }) {
+  const labels: Record<string, string> = sent?.labels || {};
+  const ratio: Record<string, number> = sent?.emotion_ratio || {};
+  const order = ["乐", "好", "怒", "哀", "惧", "恶", "惊"];
+  const present = order.filter(e => (ratio[e] || 0) > 0);
+  const methodTag = sent?.method === "dutir_lexicon" ? "DUTIR 词典法" : (sent?.method || "");
+  return (
+    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+        情感分析
+        <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)" }}>· {methodTag}</span>
+      </div>
+      {!sent?.available || present.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{sent?.reason || "语料中未命中情感词"}</div>
+      ) : (
+        <>
+          {/* 堆叠占比条 */}
+          <div style={{ display: "flex", height: 16, borderRadius: 4, overflow: "hidden", marginBottom: 8 }}>
+            {present.map(e => (
+              <div key={e} title={`${labels[e] || e} ${((ratio[e]) * 100).toFixed(1)}%`}
+                style={{ width: `${ratio[e] * 100}%`, background: EMOTION_COLORS[e] || "var(--accent)" }} />
+            ))}
+          </div>
+          {/* 图例 */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px" }}>
+            {present.map(e => (
+              <span key={e} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 2, background: EMOTION_COLORS[e] || "var(--accent)" }} />
+                {labels[e] || e}
+                <span className="font-mono" style={{ color: "var(--text-tertiary)" }}>{(ratio[e] * 100).toFixed(0)}%</span>
+              </span>
+            ))}
+          </div>
+          {sent.dominant_emotion && (
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 8 }}>
+              主导情绪 <strong>{labels[sent.dominant_emotion] || sent.dominant_emotion}</strong>
+              <span style={{ color: "var(--text-tertiary)", marginLeft: 8 }}>命中情感词 {sent.matched}</span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 语言学文本特征：字数/句长/词性分布/句式复杂度/标点密度/用词丰富度/情感/高频词。 */
 function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
   nlp: any; onReanalyze?: () => void; busy?: boolean;
 }) {
@@ -1548,6 +1945,22 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
   const [selWord, setSelWord] = React.useState<string | null>(null);
   const [classifying, setClassifying] = React.useState<string | null>(null);
   const [dirty, setDirty] = React.useState(false);   // 词库被归类修改、待重算
+  const [fullNameInput, setFullNameInput] = React.useState("");   // 纠错：完整人名
+
+  // 纠错回环（spec §5）：用户看到人名碎片（翠翠 属于 李翠翠）→ 提交完整人名，
+  // 写入人名库（→ jieba 整体切分）+ 片段进排除集，清缓存后重分词重算（不删子串）。
+  const correctName = async (fragment: string, fullName: string) => {
+    const fn = (fullName || "").trim();
+    if (fn.length < 2) { toast("请填写完整人名（≥2 字）", "error"); return; }
+    setClassifying(fragment);
+    try {
+      await apiPost("/api/analysis/name-correction", { full_name: fn, fragment });
+      toast(`已标记「${fragment}」属于人名「${fn}」`, "success");
+      setSelWord(null); setFullNameInput(""); setDirty(true);
+    } catch (e: any) {
+      toast(`标记失败：${e.message}`, "error");
+    } finally { setClassifying(null); }
+  };
 
   // 归类某高频词为 人名 / 常用词 → 写入资源；不立即重算，仅在高频词上方标记
   // 「词库已变更」，由用户点「重新分析」统一触发（避免每归类一个就重算）。
@@ -1569,7 +1982,7 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
   if (!spec?.available) {
     return (
       <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--jade)" }}>
-        <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>开篇章节 NLP 维度</h3></div>
+        <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>语言学文本特征</h3></div>
         <div className="card-body"><div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>暂无开篇章节统计数据。</div></div>
       </div>
     );
@@ -1582,10 +1995,12 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
   const wordMax = Math.max(1, ...wordStats.map(([, v]) => v || 0));
   const punct = (spec.punctuation_density_per_1k || {}) as Record<string, number>;
   const punctMax = Math.max(1, ...Object.values(punct).map(v => Number(v) || 0));
+  const lf = spec.linguistic_features || {};   // 词性/MDD/丰富度/情感（spec §1-3）
+  const hasPos = lf.pos_distribution?.available || lf.mdd?.available;
 
   return (
     <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--jade)" }}>
-      <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>开篇章节 NLP 维度</h3></div>
+      <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>语言学文本特征</h3></div>
       <div className="card-body">
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
           {/* 字数 */}
@@ -1619,7 +2034,16 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
               </div>
             )}
           </div>
+          {/* 词性分布（动作场面/修饰描写/设定密度）+ 句式复杂度（MDD）— spec §1，
+              扩展自字数维度 */}
+          {hasPos && <PosMddPanel pos={lf.pos_distribution} mdd={lf.mdd} />}
+          {/* 用词丰富度（MATTR/MTLD）— spec §2 */}
+          {lf.lexical_diversity?.available && <RichnessPanel lex={lf.lexical_diversity} />}
         </div>
+        {/* 情感分析（DUTIR 七大类占比，可视化）— spec §3 */}
+        {lf.sentiment && (
+          <div style={{ marginBottom: 14 }}><EmotionPanel sent={lf.sentiment} /></div>
+        )}
         {/* 词库变更提示 — 紧贴高频词上方 */}
         {dirty && (
           <div style={{
@@ -1664,6 +2088,18 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
                     <button className="btn" disabled={busy} style={{ fontSize: 10, padding: "3px 10px" }}
                       onClick={() => classify(sel.word, "common_words")}>归为常用词</button>
                   </div>
+                </div>
+                {/* 纠错回环：人名碎片 → 标记完整人名（spec §5）。在例句里看到完整名后填入。 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
+                  fontSize: 11, padding: "6px 8px", marginBottom: 8, borderRadius: 4,
+                  background: "var(--bg-surface-2)" }}>
+                  <span style={{ color: "var(--text-tertiary)" }}>是人名碎片？填完整人名（如「{sel.word}」属于）</span>
+                  <input className="input" value={fullNameInput} onChange={e => setFullNameInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") correctName(sel.word, fullNameInput); }}
+                    placeholder={`${sel.word}…`} style={{ width: 110, padding: "3px 8px", fontSize: 11 }} />
+                  <button className="btn" disabled={busy || fullNameInput.trim().length < 2}
+                    style={{ fontSize: 10, padding: "3px 10px" }}
+                    onClick={() => correctName(sel.word, fullNameInput)}>标记为人名</button>
                 </div>
                 {examples.length === 0 ? (
                   <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无可定位的作品片段。</div>
