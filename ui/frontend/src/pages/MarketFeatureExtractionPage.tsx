@@ -302,11 +302,17 @@ export default function MarketFeatureExtractionPage() {
 
   // API 模式：把（用户可能已编辑的）prompt 直接发给配置的大模型 API，返回原始回复。
   const invokeApi = useCallback(async (signal: AbortSignal, livePrompt: string) => {
+    if (!platform) throw new Error("未选择平台，请先在第 1 步选择平台");
+    if (!livePrompt || !livePrompt.trim()) throw new Error("提示词为空，无法提取");
     const res = await fetch("/api/market-extractor/api-extract", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ platform, category: "", prompt: livePrompt }), signal,
     });
-    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const e = await res.json(); msg = e.detail || msg; } catch { /* keep */ }
+      throw new Error(msg);
+    }
     const j = await res.json();
     return j.response_raw || "";
   }, [platform]);
@@ -491,7 +497,7 @@ export default function MarketFeatureExtractionPage() {
         invokeApi={invokeApi}
         onCommit={commitManual}
         minChars={80}
-        initialMode={dialogMode === "manual" ? "manual_only" : "picker"}
+        initialMode={dialogMode === "manual" ? "manual_only" : "api_only"}
       />
     </div>
   );

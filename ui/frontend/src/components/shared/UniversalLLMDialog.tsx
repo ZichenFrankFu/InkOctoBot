@@ -83,13 +83,12 @@ export interface UniversalLLMDialogProps {
   minChars?: number;
 
   /**
-   * Force a single execution mode. ``"manual_only"`` skips the
-   * preview/picker entirely and jumps straight to the manual-paste
-   * phase, so the user sees the copy-prompt + paste-back surface as
-   * the first screen. Useful when the parent already labels the
-   * action "使用大模型网页版提取".
+   * Force a single execution mode. ``"manual_only"`` jumps straight to
+   * the manual-paste surface; ``"api_only"`` shows just a single
+   * "开始提取" button (no method picker, never falls through to web);
+   * ``"picker"`` lets the user choose.
    */
-  initialMode?: "picker" | "manual_only";
+  initialMode?: "picker" | "manual_only" | "api_only";
 }
 
 
@@ -182,7 +181,9 @@ export default function UniversalLLMDialog({
     } finally {
       abortRef.current = null;
     }
-  }, [invokeApi, parseResponse, toast]);
+    // livePrompt MUST be a dep — otherwise startApi closes over the stale
+    // initial "" and posts an empty prompt (→ "platform + prompt required").
+  }, [invokeApi, parseResponse, toast, livePrompt]);
 
   const abort = useCallback(() => {
     abortRef.current?.abort();
@@ -411,11 +412,15 @@ export default function UniversalLLMDialog({
             display: "flex", flexDirection: "column", minHeight: 0,
           }}>
             {phase === "preview" && (
-              <PreviewPane
-                onUseApi={startApi}
-                onUseManual={startManual}
-                hasInvokeApi={!!invokeApi}
-              />
+              initialMode === "api_only" ? (
+                <ApiOnlyPane onStart={startApi} hasInvokeApi={!!invokeApi} />
+              ) : (
+                <PreviewPane
+                  onUseApi={startApi}
+                  onUseManual={startManual}
+                  hasInvokeApi={!!invokeApi}
+                />
+              )
             )}
 
             {phase === "running" && (
@@ -546,6 +551,33 @@ function PreviewPane({
           </div>
         </button>
       </div>
+    </>
+  );
+}
+
+
+/** API-only：右栏只保留单个「开始提取」按钮，不展示执行方式选择、不串到网页版。 */
+function ApiOnlyPane({ onStart, hasInvokeApi }: { onStart: () => void; hasInvokeApi: boolean }) {
+  return (
+    <>
+      <h4 style={{ marginTop: 0 }}>大模型 API 提取</h4>
+      <p style={{ fontSize: 12, color: "var(--text-tertiary)", lineHeight: 1.6 }}>
+        左侧为完整提示词，可直接修改。确认无误后点击下方「开始提取」，将用已配置的大模型
+        API 自动运行并返回结果。
+      </p>
+      <button
+        className="btn primary"
+        onClick={onStart}
+        disabled={!hasInvokeApi}
+        style={{ marginTop: 16, padding: "12px 16px", fontSize: 15, fontWeight: 700 }}
+      >
+        开始提取
+      </button>
+      {!hasInvokeApi && (
+        <p style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 8 }}>
+          该调用未提供 API 钩子。
+        </p>
+      )}
     </>
   );
 }
