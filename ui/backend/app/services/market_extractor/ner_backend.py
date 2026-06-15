@@ -22,14 +22,12 @@ logger = logging.getLogger("inkoctobot.market_extractor.ner_backend")
 
 # LTP NER 里人名实体的标签（跨版本兼容：4.x 用 'Nh'）。
 _LTP_PER_TAGS = {"Nh", "PER", "PERSON", "person", "name"}
-# jieba 人名词性。
-_JIEBA_NAME_FLAGS = {"nr", "nrt", "nrfg", "nrj"}
 _CJK_ONLY = re.compile(r"^[一-鿿]{2,8}$")
 
 # 跑 LTP 的最低 CPU 门槛（低于此判为「算力不足」→ 跳过 LTP）。
 _MIN_CPU_CORES = 4
 _MIN_RAM_MB = 4096
-_MIN_VRAM_MB = 1500
+_MIN_VRAM_MB = 1000     # LTP 模型很小，低显存 GPU 也能跑
 
 
 @dataclass(frozen=True)
@@ -142,23 +140,25 @@ def _ltp_importable() -> bool:
         return False
 
 
-def _degrade_to_jieba(reason: str) -> None:
-    """LTP 运行时加载失败时，把后端缓存改成 jieba —— 后续书不再重试 LTP（止血刷屏）。"""
+def _degrade_to_seed(reason: str) -> None:
+    """LTP 运行时加载失败时，后端缓存改成 seed（只靠静态种子人名库，不抽新名）。"""
     global _cached_info
-    _cached_info = NerBackendInfo("jieba", "none", True, reason)
-    logger.warning("NER degraded to jieba: %s", reason)
+    _cached_info = NerBackendInfo("seed", "none", True, reason)
+    logger.warning("NER degraded to seed name DB: %s", reason)
 
 
 def detect_ner_backend(*, refresh: bool = False) -> NerBackendInfo:
-    """按硬件挑选 NER 后端并缓存。``refresh=True`` 重测（GPU 驱动变化/测试）。"""
+    """按硬件挑选 NER 后端并缓存。``refresh=True`` 重测（GPU 驱动变化/测试）。
+    人名识别只用 LTP；LTP 不可用时退到静态种子人名库（不再用 jieba 抽人名——
+    jieba 对人名的错误率太高）。"""
     global _cached_info
     if _cached_info is not None and not refresh:
         return _cached_info
 
     if not _ltp_importable():
         info = NerBackendInfo(
-            backend="jieba", device="none", ltp_available=False,
-            reason="LTP/torch 未安装 —— 用 jieba nr + 种子人名库兜底",
+            backend="seed", device="none", ltp_available=False,
+            reason="LTP/torch 未安装 —— 仅用静态种子人名库（装 ltp+torch 后用 LTP 抽名）",
         )
         _cached_info = info
         logger.info("NER backend: %s (%s)", info.backend, info.reason)
@@ -168,8 +168,8 @@ def detect_ner_backend(*, refresh: bool = False) -> NerBackendInfo:
         from ..embedding.hardware_detector import detect_hardware
         caps = detect_hardware(refresh=refresh)
     except Exception as e:
-        info = NerBackendInfo("jieba", "none", True,
-                              f"硬件检测失败（{e}）—— 跳过 LTP，jieba 兜底")
+        info = NerBackendInfo("seed", "none", True,
+                              f"硬件检测失败（{e}）—— 跳过 LTP，仅用静态种子人名库")
         _cached_info = info
         return info
 
@@ -177,13 +177,22 @@ def detect_ner_backend(*, refresh: bool = False) -> NerBackendInfo:
         info = NerBackendInfo("ltp_gpu", "cuda", True,
                               f"检测到 GPU（{caps.cuda_device_name}，{caps.cuda_vram_mb}MB 显存）",
                               cuda_device_name=caps.cuda_device_name)
+    elif caps.physical_gpu and not caps.has_cuda:
+        # 有显卡但 torch 用不了 GPU（多为装了 CPU-only torch）→ 先 CPU，给出明确指引。
+        why = "未启用 CUDA" if caps.torch_cuda_build else "是 CPU 版"
+        info = NerBackendInfo(
+            "ltp_cpu", "cpu", True,
+            f"检测到 GPU（{caps.gpu_name}）但当前 torch {why}，无法用 GPU；先用 CPU 跑 LTP。"
+            f"装 CUDA 版 torch（pip install torch --index-url "
+            f"https://download.pytorch.org/whl/cu121）后即可用 GPU。",
+            cuda_device_name=caps.gpu_name)
     elif caps.cpu_count >= _MIN_CPU_CORES and caps.ram_mb >= _MIN_RAM_MB:
         info = NerBackendInfo("ltp_cpu", "cpu", True,
                               f"无可用 GPU，用 CPU 跑 LTP（{caps.cpu_count} 核 / {caps.ram_mb}MB 内存）")
     else:
         info = NerBackendInfo(
-            "jieba", "none", True,
-            f"CPU 算力不足（{caps.cpu_count} 核 / {caps.ram_mb}MB）—— 跳过 LTP，jieba 兜底")
+            "seed", "none", True,
+            f"CPU 算力不足（{caps.cpu_count} 核 / {caps.ram_mb}MB）—— 跳过 LTP，仅用静态种子人名库")
     _cached_info = info
     logger.info("NER backend: %s (%s)", info.backend, info.reason)
     return info
@@ -316,40 +325,38 @@ def get_ltp_pipeline() -> LtpPipeline | None:
     return _pipeline_singleton
 
 
-# ─────────── jieba 'nr' 兜底 ───────────
-
-
-def _jieba_per(texts: list[str]) -> list[str]:
-    try:
-        import jieba.posseg as pseg
-    except Exception:
-        return []
-    names: list[str] = []
-    for t in texts:
-        for tok in pseg.cut(t):
-            if tok.flag in _JIEBA_NAME_FLAGS and _CJK_ONLY.match(tok.word):
-                names.append(tok.word)
-    return names
-
-
 # ─────────── public ───────────
 
 
 def extract_per_names(texts: list[str]) -> list[str]:
     """从一批文本抽 PER 人名实体（去重前的原始列表，含重复以便上层数 DF）。
 
-    选定后端：LTP（GPU/CPU）→ 失败则就地降级 jieba。jieba 后端：直接 jieba 'nr'。
+    **只用 LTP 抽名**。LTP 不可用时返回空 —— 不再用 jieba 'nr'（对人名错误率极高）；
+    人名库的静态种子库已作为 fallback 负责高频词剔名。
     """
     info = detect_ner_backend()
     if info.uses_ltp:
         pipe = get_ltp_pipeline()
         if pipe is not None and pipe.ensure_ready():
             return pipe.extract_per(texts)
-        # LTP 运行时加载失败 → 本会话永久降级到 jieba（避免每本书重试刷屏）。
-        _degrade_to_jieba("LTP 运行时加载失败（依赖不兼容/模型缺失）—— 本会话降级 jieba")
-    return _jieba_per(texts)
+        # LTP 运行时加载失败 → 本会话降级为「仅静态种子库」（避免每本书重试刷屏）。
+        _degrade_to_seed("LTP 运行时加载失败（依赖不兼容/模型缺失）—— 仅用静态种子人名库")
+    return []
 
 
 def backend_status() -> dict:
-    """供 UI / API 展示当前 NER 后端与原因。"""
-    return detect_ner_backend().to_dict()
+    """供 UI / API 展示当前 NER 后端、原因与 GPU 诊断。"""
+    d = detect_ner_backend().to_dict()
+    try:
+        from ..embedding.hardware_detector import detect_hardware
+        caps = detect_hardware()
+        d["gpu"] = {
+            "physical_gpu": caps.physical_gpu,
+            "gpu_name": caps.gpu_name,
+            "gpu_vram_mb": caps.gpu_vram_mb,
+            "torch_cuda_build": caps.torch_cuda_build,
+            "torch_cuda_available": caps.has_cuda,
+        }
+    except Exception:
+        d["gpu"] = {}
+    return d

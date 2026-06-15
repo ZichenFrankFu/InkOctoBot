@@ -30,6 +30,29 @@ _DAILY_SECONDS = 24 * 3600
 _refresh_lock = threading.Lock()
 _refreshing = False
 
+# 进度状态（供 UI 进度条；后台线程更新、状态接口读取）。
+_progress_lock = threading.Lock()
+_progress: dict = {"running": False, "total": 0, "done": 0, "names": 0,
+                   "backend": "", "phase": "idle", "message": ""}
+
+
+def _set_progress(**kw) -> None:
+    with _progress_lock:
+        _progress.update(kw)
+
+
+def _bump_progress(done: int = 0, names: int = 0) -> None:
+    with _progress_lock:
+        _progress["done"] += done
+        _progress["names"] += names
+
+
+def _get_progress() -> dict:
+    with _progress_lock:
+        p = dict(_progress)
+    p["pct"] = round(p["done"] / p["total"] * 100, 1) if p["total"] else (100.0 if not p["running"] else 0.0)
+    return p
+
 
 def _marker_path() -> Path:
     try:
@@ -151,14 +174,24 @@ def refresh(
             return {"status": "already_running"}
         _refreshing = True
     started = time.time()
-    # 手动/每日刷新都重置后端缓存：给 LTP 一次全新加载机会（上轮降级不影响本轮），
-    # 加载若仍失败则本轮内只降级一次（不刷屏）。
+    # 手动/每日刷新都重置后端缓存：给 LTP 一次全新加载机会（上轮降级不影响本轮）。
     ner_backend.reset_backend_cache()
     info = ner_backend.detect_ner_backend()
+    name_library.seed_if_empty(project_db)   # 静态种子库始终就绪（fallback）
     try:
-        name_library.seed_if_empty(project_db)
+        # LTP 不可用 → 不抽新名（jieba 错误率高），也不把书标记为已处理（留待 LTP 可
+        # 用时再抽）。静态种子人名库继续作为高频词剔名的 fallback。
+        if not info.uses_ltp:
+            _set_progress(running=False, total=0, done=0, names=0,
+                          backend=info.backend, phase="ltp_unavailable",
+                          message=info.reason)
+            return {"status": "ltp_unavailable", "backend": info.backend,
+                    "backend_reason": info.reason, "new_books": 0, "names_added": 0,
+                    "elapsed_sec": round(time.time() - started, 1)}
         processed = _processed_state(project_db)
         new_books = _fetch_new_books(crawler_db, processed, platform=platform, limit=limit)
+        _set_progress(running=True, total=len(new_books), done=0, names=0,
+                      backend=info.backend, phase="running", message="")
         total_names = 0
         for b in new_books:
             try:
@@ -166,14 +199,15 @@ def refresh(
             except Exception as e:
                 logger.warning("NER failed for book %s: %s", b["novel_uid"], e)
                 per = []
-            # extract_per_names 可能在运行时把 LTP 降级成 jieba → 实时读取当前后端，
-            # 来源标签/台账才反映真实使用的引擎，而非启动时的判定。
             cur = ner_backend.detect_ner_backend()
+            if not cur.uses_ltp:
+                # 运行中 LTP 加载失败被降级 → 停止处理，剩余书留待下次（绝不用 jieba）。
+                _set_progress(phase="ltp_failed", message=cur.reason)
+                break
             unique = {n for n in per if name_library.is_valid_name(n)}   # 书内去重
             for fn in unique:
                 name_library.add_name(
-                    project_db, fn,
-                    source=("ltp_ner" if cur.uses_ltp else "jieba_nr"),
+                    project_db, fn, source="ltp_ner",
                     work_id=b["novel_uid"], work_title=b.get("title") or "",
                     platform=b.get("platform") or "", category=b.get("category") or "",
                     rank=b.get("rank"), heat=b.get("heat"), count_df=True,
@@ -181,6 +215,7 @@ def refresh(
             total_names += len(unique)
             _record_state(project_db, b["novel_uid"], b["fingerprint"],
                           cur.backend, len(unique))
+            _bump_progress(done=1, names=len(unique))
         _write_last_refresh(time.time())
         final = ner_backend.detect_ner_backend()
         return {
@@ -192,6 +227,7 @@ def refresh(
             "elapsed_sec": round(time.time() - started, 1),
         }
     finally:
+        _set_progress(running=False)
         with _refresh_lock:
             _refreshing = False
 
@@ -256,4 +292,5 @@ def status(project_db: str) -> dict:
                          if last else None),
         "books_processed": processed,
         "backend": ner_backend.backend_status(),
+        "progress": _get_progress(),
     }

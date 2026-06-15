@@ -34,6 +34,12 @@ class HardwareCapabilities:
     has_mps: bool            # Apple Silicon GPU
     ram_mb: int              # total system RAM
     cpu_count: int           # logical cores
+    # 物理 GPU 探测（即便 torch 是 CPU 版也能查到）—— 用于「有显卡但 torch 用不了」
+    # 的清晰提示。
+    physical_gpu: bool = False
+    gpu_name: str = ""           # 物理 GPU 名（nvidia-smi）
+    gpu_vram_mb: int = 0         # 物理 GPU 显存
+    torch_cuda_build: bool = False   # 安装的 torch 是否为 CUDA 构建
 
 
 _cached: HardwareCapabilities | None = None
@@ -53,6 +59,40 @@ def _probe_cuda() -> tuple[bool, int, str]:
         return True, vram_mb, props.name
     except Exception as e:
         logger.debug("cuda probe failed: %s", e)
+        return False, 0, ""
+
+
+def _torch_cuda_build() -> bool:
+    """torch 是否带 CUDA（CPU-only 版 ``torch.version.cuda`` 为 None）。"""
+    try:
+        import torch  # noqa: WPS433
+        return bool(getattr(getattr(torch, "version", None), "cuda", None))
+    except Exception:
+        return False
+
+
+def _probe_nvidia_smi() -> tuple[bool, int, str]:
+    """用 nvidia-smi 查物理 GPU —— 不依赖 torch，CPU-only torch 也能查到显卡。"""
+    import shutil
+    import subprocess
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return False, 0, ""
+    try:
+        out = subprocess.run(
+            [exe, "--query-gpu=name,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=6,
+        )
+        lines = [l for l in (out.stdout or "").strip().splitlines() if l.strip()]
+        if not lines:
+            return False, 0, ""
+        parts = lines[0].split(",")
+        name = parts[0].strip()
+        vram = int(float(parts[1].strip())) if len(parts) > 1 and parts[1].strip() else 0
+        return True, vram, name
+    except Exception as e:
+        logger.debug("nvidia-smi probe failed: %s", e)
         return False, 0, ""
 
 
@@ -87,6 +127,11 @@ def detect_hardware(*, refresh: bool = False) -> HardwareCapabilities:
     if _cached is not None and not refresh:
         return _cached
     has_cuda, vram_mb, name = _probe_cuda()
+    # 物理 GPU：torch 能用就用 torch 的数；否则退到 nvidia-smi（CPU-only torch 也能查）。
+    if has_cuda:
+        phys_gpu, phys_vram, phys_name = True, vram_mb, name
+    else:
+        phys_gpu, phys_vram, phys_name = _probe_nvidia_smi()
     caps = HardwareCapabilities(
         has_cuda=has_cuda,
         cuda_vram_mb=vram_mb,
@@ -94,12 +139,18 @@ def detect_hardware(*, refresh: bool = False) -> HardwareCapabilities:
         has_mps=_probe_mps(),
         ram_mb=_probe_ram_mb(),
         cpu_count=os.cpu_count() or 1,
+        physical_gpu=phys_gpu,
+        gpu_name=name or phys_name,
+        gpu_vram_mb=vram_mb or phys_vram,
+        torch_cuda_build=_torch_cuda_build(),
     )
     _cached = caps
     logger.info(
-        "hardware detected: cuda=%s vram=%dmb mps=%s ram=%dmb cpus=%d",
+        "hardware detected: cuda=%s vram=%dmb mps=%s ram=%dmb cpus=%d "
+        "physical_gpu=%s(%s) torch_cuda_build=%s",
         caps.has_cuda, caps.cuda_vram_mb, caps.has_mps,
-        caps.ram_mb, caps.cpu_count,
+        caps.ram_mb, caps.cpu_count, caps.physical_gpu, caps.gpu_name,
+        caps.torch_cuda_build,
     )
     return caps
 

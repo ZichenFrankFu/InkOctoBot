@@ -68,17 +68,17 @@ class TestSeedAndCrud:
 
 
 class TestNerBackend:
-    def test_degrades_to_jieba_without_ltp(self) -> None:
+    def test_degrades_to_seed_without_ltp(self) -> None:
         info = ner_backend.detect_ner_backend(refresh=True)
-        # 本环境无 LTP/torch → jieba 兜底
-        assert info.backend == "jieba"
+        # 本环境无 LTP/torch → 仅静态种子人名库（不再用 jieba 抽名）
+        assert info.backend == "seed"
         assert info.uses_ltp is False
-        assert "jieba" in info.reason or "LTP" in info.reason
+        assert "种子" in info.reason or "LTP" in info.reason
 
-    def test_extract_per_jieba(self) -> None:
+    def test_extract_per_returns_empty_without_ltp(self) -> None:
+        # 不用 jieba 抽人名（错误率高）→ 无 LTP 时返回空，靠静态种子库剔名。
         names = ner_backend.extract_per_names(["李慕白对陈玄说道，张三丰在一旁微笑。"])
-        # jieba nr 至少能识出部分人名（具体取决于词典，断言非异常 + 列表）
-        assert isinstance(names, list)
+        assert names == []
 
 
 class TestNamingPatterns:

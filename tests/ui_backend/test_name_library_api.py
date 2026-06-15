@@ -89,29 +89,32 @@ class TestNameLibraryApi:
         r = client.get("/api/analysis/ner-status")
         assert r.status_code == 200
         body = r.json()
-        assert body["backend"] in ("jieba", "ltp_gpu", "ltp_cpu")
+        assert body["backend"] in ("seed", "ltp_gpu", "ltp_cpu")
         assert "reason" in body
+        assert "gpu" in body            # GPU 诊断信息
 
 
 class TestRefreshFlow:
-    def test_refresh_processes_new_books_book_deduped(self, env) -> None:
+    def test_refresh_skips_when_ltp_unavailable(self, env) -> None:
         client, proj, crawler = env
         from ui.backend.app.services.market_extractor import name_refresh as nr
+        # 无 LTP（沙箱）→ 不抽名、不标记书为已处理（留待 LTP 可用时再抽），种子库就绪。
         out = nr.refresh(proj, crawler)
-        assert out["status"] == "ok"
-        assert out["new_books"] == 2
-        assert out["backend"] == "jieba"        # 无 LTP → 兜底
-        # 再跑一次：两本都已处理（content_hash 未变）→ 跳过
-        out2 = nr.refresh(proj, crawler)
-        assert out2["new_books"] == 0
+        assert out["status"] == "ltp_unavailable"
+        assert out["backend"] == "seed"
+        assert out["names_added"] == 0
 
-    def test_status_endpoint(self, env) -> None:
+    def test_status_endpoint_has_progress_and_backend(self, env) -> None:
         client, proj, crawler = env
         from ui.backend.app.services.market_extractor import name_refresh as nr
         nr.refresh(proj, crawler)
         r = client.get("/api/analysis/name-library/refresh-status")
         assert r.status_code == 200
-        assert r.json()["books_processed"] == 2
+        body = r.json()
+        # 无 LTP → 未处理任何书；但状态接口含进度 + 后端字段供 UI 用
+        assert body["books_processed"] == 0
+        assert "progress" in body
+        assert body["backend"]["backend"] == "seed"
 
 
 class TestNamingPatternsApi:

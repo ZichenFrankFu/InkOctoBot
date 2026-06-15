@@ -1091,72 +1091,25 @@ function WordChips({ items, list, busy, onRemove, emptyMsg }: {
   );
 }
 
-type NameSec = { key: string; title: string; addList: string | null; addGroup: string | null; items: WLItem[] };
-
-/** 人名 section（中文·姓氏 / 西方 …）— 可收起展开，section 内自带添加按钮。 */
-function NameSection({ section, busy, onAdd, onRemove }: {
-  section: NameSec; busy: boolean;
-  onAdd: (list: string, group: string | null, word: string) => void;
-  onRemove: (word: string, list: string) => void;
-}) {
-  const [collapsed, setCollapsed] = React.useState(false);
-  const [val, setVal] = React.useState("");
-  const submit = () => { const w = val.trim(); if (w && section.addList) { onAdd(section.addList, section.addGroup, w); setVal(""); } };
-  return (
-    <div className="card">
-      <div className="card-header" style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <button onClick={() => setCollapsed(c => !c)} style={{
-          border: "none", background: "none", cursor: "pointer", display: "flex",
-          alignItems: "center", gap: 8, padding: 0, color: "var(--text-primary)",
-        }}>
-          <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>{collapsed ? "▸" : "▾"}</span>
-          <h3 style={{ margin: 0, fontSize: 14 }}>{section.title}</h3>
-          <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)" }}>{section.items.length}</span>
-        </button>
-        {section.addList && (
-          <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
-            <input className="input" value={val} onChange={e => setVal(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") submit(); }}
-              placeholder="新增…" style={{ width: 120, padding: "5px 10px", fontSize: 12 }} />
-            <button className="btn-primary" disabled={busy || !val.trim()}
-              onClick={submit} style={{ fontSize: 11, padding: "5px 12px" }}>添加</button>
-          </div>
-        )}
-      </div>
-      {!collapsed && (
-        <div className="card-body">
-          <WordChips items={section.items} busy={busy} onRemove={onRemove} />
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** 资源管理 tab — 人名（中文·姓氏/名字、日本·姓氏/名字、西方）各 section 自带
  *  添加 + 收起展开；常用词分组列表。 */
 function ResourceManagerTab() {
   const { toast } = useToast();
   type WLGroup = { group: string; items: WLItem[] };
   type CommonData = { total: number; groups: WLGroup[] };
-  type NamesData = { sections: NameSec[] };
 
-  const [topCat, setTopCat] = React.useState<"names" | "namelib" | "common">("names");
+  // 「人名」tab 已被「人名库」取代（人名库才是权威人名数据，且作为静态 fallback）。
+  const [topCat, setTopCat] = React.useState<"namelib" | "common">("namelib");
   const [q, setQ] = React.useState("");
-  const [names, setNames] = React.useState<NamesData | null>(null);
   const [common, setCommon] = React.useState<CommonData | null>(null);
   const [newWord, setNewWord] = React.useState("");   // 常用词的顶部新增
-  const [ioList, setIoList] = React.useState<"surnames" | "given_names">("surnames");
   const [busy, setBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
 
   const reload = React.useCallback(async () => {
-    if (topCat === "namelib") return;   // 人名库由 NameLibraryView 自管，跳过共享拉取
+    if (topCat !== "common") return;   // 人名库由 NameLibraryView 自管
     try {
-      if (topCat === "names") {
-        setNames(await apiGet<NamesData>(`/api/analysis/wordlist/names?q=${encodeURIComponent(q)}`));
-      } else {
-        setCommon(await apiGet<CommonData>(`/api/analysis/wordlist/grouped?list=common_words&q=${encodeURIComponent(q)}`));
-      }
+      setCommon(await apiGet<CommonData>(`/api/analysis/wordlist/grouped?list=common_words&q=${encodeURIComponent(q)}`));
     } catch (e: any) { toast(`加载资源失败：${e.message}`, "error"); }
   }, [topCat, q, toast]);
 
@@ -1180,7 +1133,7 @@ function ResourceManagerTab() {
     catch (e: any) { toast(`删除失败：${e.message}`, "error"); }
     finally { setBusy(false); }
   };
-  const importList = topCat === "common" ? "common_words" : ioList;
+  const importList = "common_words";
   const doImport = async (file: File) => {
     setBusy(true);
     try {
@@ -1207,7 +1160,7 @@ function ResourceManagerTab() {
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-body" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 6 }}>
-            {([["names", "人名"], ["namelib", "人名库"], ["common", "常用词"]] as const).map(([k, lbl]) => (
+            {([["namelib", "人名库"], ["common", "常用词"]] as const).map(([k, lbl]) => (
               <button key={k} className={topCat === k ? "btn-primary" : "btn"}
                 style={{ fontSize: 12, padding: "5px 16px", borderRadius: 20 }}
                 onClick={() => setTopCat(k)}>{lbl}</button>
@@ -1227,15 +1180,8 @@ function ResourceManagerTab() {
                 style={{ fontSize: 12, padding: "7px 16px" }}>添加</button>
             </div>
           )}
-          {topCat !== "namelib" && (
+          {topCat === "common" && (
             <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
-              {topCat === "names" && (
-                <select className="select" value={ioList} onChange={e => setIoList(e.target.value as any)}
-                  style={{ fontSize: 12, padding: "5px 8px" }}>
-                  <option value="surnames">姓</option>
-                  <option value="given_names">名</option>
-                </select>
-              )}
               <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
                 disabled={busy} onClick={() => fileRef.current?.click()}>导入 txt</button>
               <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
@@ -1248,15 +1194,7 @@ function ResourceManagerTab() {
       </div>
 
       {topCat === "namelib" && <NameLibraryView />}
-      {topCat !== "namelib" && (topCat === "names" ? (
-        !names ? <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>加载中…</div> : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {names.sections.map(sec => (
-              <NameSection key={sec.key} section={sec} busy={busy} onAdd={addWord} onRemove={remove} />
-            ))}
-          </div>
-        )
-      ) : (
+      {topCat === "common" && (
         !common ? <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>加载中…</div> :
           common.total === 0 ? <Empty msg={q ? `没有匹配「${q}」的常用词。` : "常用词资源为空。"} /> : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1274,7 +1212,7 @@ function ResourceManagerTab() {
               ))}
             </div>
           )
-      ))}
+      )}
     </>
   );
 }
@@ -1415,7 +1353,15 @@ function NameLibraryView() {
     const t = window.setTimeout(reload, 200);   // debounce 搜索
     return () => window.clearTimeout(t);
   }, [reload]);
+  // 进入即拉一次状态（含在跑的后台任务进度）—— 离开再回来也能接着看进度。
   React.useEffect(() => { reloadStatus(); }, [reloadStatus]);
+  // 后台刷新进行时轮询进度；后台线程在服务端跑，切走/切回都不打断（切回时本 effect
+  // 重新轮询）。running 翻 false 时自动停。
+  React.useEffect(() => {
+    if (!status?.running) return;
+    const id = window.setInterval(() => { reloadStatus(); reload(); }, 2000);
+    return () => window.clearInterval(id);
+  }, [status?.running, reloadStatus, reload]);
 
   const add = async () => {
     const fn = newName.trim();
@@ -1437,28 +1383,58 @@ function NameLibraryView() {
     setBusy(true);
     try {
       const r = await apiPost<any>("/api/analysis/name-library/refresh", {});
-      toast(r.started ? "已开始刷新人名库（后台 NER 处理新增书）…" : "刷新已在进行中", "info");
-      window.setTimeout(() => { reloadStatus(); reload(); }, 1500);
+      if (r.status) setStatus(r.status);     // 立即反映 running，进度条/轮询随即接管
+      toast(r.started ? "已开始刷新人名库（后台运行，可切走）…" : "刷新已在进行中", "info");
+      window.setTimeout(() => { reloadStatus(); }, 500);
     } catch (e: any) { toast(`刷新失败：${e.message}`, "error"); }
     finally { setBusy(false); }
   };
 
   const backend = status?.backend || {};
+  const gpu = backend.gpu || {};
   const backendLabel = backend.backend === "ltp_gpu" ? "LTP · GPU"
-    : backend.backend === "ltp_cpu" ? "LTP · CPU" : "jieba 兜底";
+    : backend.backend === "ltp_cpu" ? "LTP · CPU" : "静态种子库（未用 LTP）";
+  const prog = status?.progress || {};
+  const showBar = !!status?.running && prog.total > 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {/* NER 后端 + 刷新条 */}
-      <div className="card"><div className="card-body" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12 }}>
-        <span>识别后端 <strong style={{ color: "var(--text-primary)" }}>{backendLabel}</strong></span>
-        <span style={{ color: "var(--text-tertiary)" }} title={backend.reason}>{backend.reason || "—"}</span>
-        {status?.last_refresh && <span style={{ color: "var(--text-tertiary)" }}>上次刷新 {new Date(status.last_refresh).toLocaleString()}</span>}
-        <span style={{ color: "var(--text-tertiary)" }}>已处理 {status?.books_processed ?? "—"} 本</span>
-        <button className="btn-primary" disabled={busy || status?.running} onClick={refresh}
-          style={{ marginLeft: "auto", fontSize: 12, padding: "6px 14px" }}>
-          {status?.running ? "刷新中…" : "刷新人名库"}
-        </button>
+      <div className="card"><div className="card-body" style={{ fontSize: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span>识别后端 <strong style={{ color: backend.uses_ltp ? "var(--jade)" : "var(--text-primary)" }}>{backendLabel}</strong></span>
+          {status?.last_refresh && <span style={{ color: "var(--text-tertiary)" }}>上次刷新 {new Date(status.last_refresh).toLocaleString()}</span>}
+          <span style={{ color: "var(--text-tertiary)" }}>已处理 {status?.books_processed ?? "—"} 本</span>
+          <button className="btn-primary" disabled={busy || status?.running} onClick={refresh}
+            style={{ marginLeft: "auto", fontSize: 12, padding: "6px 14px" }}>
+            {status?.running ? "刷新中…" : "刷新人名库"}
+          </button>
+        </div>
+        {/* 后端/GPU 诊断说明 */}
+        <div style={{ color: "var(--text-tertiary)", marginTop: 6 }}>{backend.reason || "—"}</div>
+        {gpu.physical_gpu && !gpu.torch_cuda_available && (
+          <div style={{ color: "var(--gold)", marginTop: 4 }}>
+            检测到 GPU「{gpu.gpu_name}」{gpu.gpu_vram_mb ? `（${gpu.gpu_vram_mb}MB）` : ""}，
+            但当前 torch {gpu.torch_cuda_build ? "未启用 CUDA" : "为 CPU 版"}，无法 GPU 加速。
+            安装 CUDA 版 torch 后即可用 GPU。
+          </div>
+        )}
+        {/* 进度条（后台 NER 进行中） */}
+        {showBar && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
+              <div style={{ width: `${prog.pct || 0}%`, height: "100%", background: "var(--accent)", transition: "width 0.3s linear" }} />
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+              NER 处理中 {prog.done}/{prog.total} 本（{prog.pct || 0}%）· 已抽取 {prog.names} 个人名 · 可切到其它页面，进程不中断
+            </div>
+          </div>
+        )}
+        {status && !status.running && backend.backend === "seed" && (
+          <div style={{ color: "var(--text-tertiary)", marginTop: 6 }}>
+            当前用静态种子人名库做兜底（剔名仍有效）；装好 LTP + 合适算力后点「刷新人名库」即用 LTP 抽取新名。
+          </div>
+        )}
       </div></div>
 
       {/* 概览 + 子tab */}

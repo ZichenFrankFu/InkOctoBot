@@ -13,7 +13,7 @@
 | `linguistics.py` | 词性分布 POS + 平均依存距离 MDD | jieba；MDD 真值需 LTP | MDD 退化为按小句长度的「句式复杂度」估算 |
 | `lexical_diversity.py` | 词汇丰富度 MATTR + MTLD | 无（纯 Python） | — |
 | `sentiment.py` | DUTIR 词典法七大类情感；预留 BERT/RoBERTa/ERNIE 接口 | 词典内置；深度模型需 torch+权重 | 深度后端不可用 → 词典法 |
-| `ner_backend.py` | 人名 NER（PER 抽取）+ 硬件分级 | LTP+torch；否则 jieba `nr` | GPU→CPU→跳过 LTP→jieba 兜底 |
+| `ner_backend.py` | 人名 NER（PER 抽取）+ 硬件分级 | LTP+torch | GPU→CPU→跳过 LTP→静态种子人名库（不再用 jieba 抽名） |
 | `name_library.py` | 人名库（全名权威 + 派生姓名 + DF + 标记 + CRUD） | 无 | — |
 | `name_refresh.py` | 按 book 去重对新增书增量抽人名 | 经 `ner_backend` | 同上 |
 | `naming_patterns.py` | 按题材加权取名规律画像 | 无 | — |
@@ -52,8 +52,10 @@
   变化）跑 PER 抽取，已处理书 / rank snapshot 更新跳过（`name_extraction_state` 台账）。
   触发：手动 API，或每天一次打开基础特征提取时自动后台刷新。
 - **硬件降级路径**（`ner_backend.detect_ner_backend`，复用 `embedding.hardware_detector`）：
-  有可用 GPU → LTP/CUDA；否则 CPU 算力够 → LTP/CPU；CPU 不足/测不到算力 → 跳过 LTP，
-  仅用**打包种子人名库** + jieba `nr` 兜底。零星新名运行时由 jieba `nr` 实时补充。
+  有可用 GPU → LTP/CUDA；否则 CPU 算力够 → LTP/CPU；CPU 不足/测不到算力/无 LTP →
+  **仅用打包静态种子人名库**做剔名 fallback。**不再用 jieba 抽人名**（jieba 对人名错误率
+  极高）；LTP 不可用时不抽新名、也不把书标记为已处理（待 LTP 可用时再抽）。
+  GPU 检测：torch 是 CPU 版时也用 `nvidia-smi` 查到物理显卡，并提示「装 CUDA 版 torch」。
 - **启用 LTP**：`pip install ltp torch`（GPU 机自动用显卡）。装好后下次刷新即走 LTP。
 - **用户纠错回环**：高频词/特征结果里看到人名碎片（「翠翠」属于「李翠翠」），填入完整
   人名提交 → 写人名库（全名进 jieba 词典整体切分）+ 片段进排除集 → 清缓存，下次**重新
