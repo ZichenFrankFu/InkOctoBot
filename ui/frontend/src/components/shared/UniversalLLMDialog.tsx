@@ -64,8 +64,14 @@ export interface UniversalLLMDialogProps {
    * API-mode entry: a function that hits the backend and resolves to
    * the LLM response text. The dialog supplies an AbortSignal so the
    * call can be aborted; the parent should pass it down to fetch().
+   * The 2nd arg is the (possibly user-edited) live prompt — callers that
+   * don't allow editing can ignore it.
    */
-  invokeApi?: (signal: AbortSignal) => Promise<string>;
+  invokeApi?: (signal: AbortSignal, prompt: string) => Promise<string>;
+
+  /** Allow the user to edit the prompt before running (textarea on the
+   *  left). Default false → read-only display (back-compat). */
+  editablePrompt?: boolean;
 
   /** Optional: parse the raw response (manual or API) into a struct. */
   parseResponse?: (raw: string) => any;
@@ -102,6 +108,7 @@ export default function UniversalLLMDialog({
   invokeApi, parseResponse, onCommit,
   minChars = 30,
   initialMode = "picker",
+  editablePrompt = false,
 }: UniversalLLMDialogProps) {
   const { toast } = useToast();
   const [phase, setPhase] = useState<Phase>(
@@ -115,6 +122,8 @@ export default function UniversalLLMDialog({
   const [pasteBuf, setPasteBuf] = useState("");
   const [parsed, setParsed] = useState<any>(undefined);
   const [committing, setCommitting] = useState(false);
+  // Live (editable) copy of the prompt — what actually gets copied / sent.
+  const [livePrompt, setLivePrompt] = useState(prompt);
   const abortRef = useRef<AbortController | null>(null);
 
   // Reset on open.
@@ -126,11 +135,12 @@ export default function UniversalLLMDialog({
       setPasteBuf("");
       setParsed(undefined);
       setErrorMsg("");
+      setLivePrompt(prompt);
     } else {
       abortRef.current?.abort();
       abortRef.current = null;
     }
-  }, [open, initialMode]);
+  }, [open, initialMode, prompt]);
 
   // ── actions ──
   // NOTE: every hook below MUST run on every render — the early
@@ -150,7 +160,7 @@ export default function UniversalLLMDialog({
     setPhase("running");
     setErrorMsg("");
     try {
-      const text = await invokeApi(ctrl.signal);
+      const text = await invokeApi(ctrl.signal, livePrompt);
       if (ctrl.signal.aborted) {
         // Aborted — leave us in preview so user can retry.
         setPhase("preview");
@@ -205,7 +215,7 @@ export default function UniversalLLMDialog({
         text: finalText,
         source: mode === "api" ? "api" : "manual_paste",
         parsed: parsedVal,
-        prompt,
+        prompt: livePrompt,
         system,
       });
       onClose();
@@ -239,12 +249,12 @@ export default function UniversalLLMDialog({
   }, [pasteBuf, parseResponse, toast, initialMode, doCommit]);
 
   const copyPrompt = useCallback(() => {
-    const full = system ? `${system}\n\n${prompt}` : prompt;
+    const full = system ? `${system}\n\n${livePrompt}` : livePrompt;
     navigator.clipboard.writeText(full).then(
       () => toast(`已复制 ${full.length} 字`, "success"),
       () => toast("复制失败，请手动选中", "error"),
     );
-  }, [prompt, system, toast]);
+  }, [livePrompt, system, toast]);
 
   const commit = useCallback(
     () => doCommit(responseText, parsed),
@@ -307,10 +317,10 @@ export default function UniversalLLMDialog({
             display: "flex", flexDirection: "column", minHeight: 0,
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <strong style={{ fontSize: 13 }}>提示词预览</strong>
+              <strong style={{ fontSize: 13 }}>{editablePrompt ? "提示词（可编辑）" : "提示词预览"}</strong>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                  {(prompt.length + (system?.length || 0))} 字
+                  {(livePrompt.length + (system?.length || 0))} 字
                 </span>
                 <button
                   onClick={copyPrompt}
@@ -368,11 +378,31 @@ export default function UniversalLLMDialog({
               </details>
             )}
 
-            {/* User prompt */}
-            <details open style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-              <summary style={{ cursor: "pointer", fontSize: 12 }}>用户提示词 ({prompt.length})</summary>
-              <pre style={{ ...preStyle(), flex: 1, maxHeight: "none" }}>{prompt}</pre>
-            </details>
+            {/* User prompt — editable textarea when editablePrompt, else read-only */}
+            {editablePrompt ? (
+              <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+                <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginBottom: 4 }}>
+                  用户提示词（可直接修改，下方运行/复制都用修改后的版本）
+                </div>
+                <textarea
+                  value={livePrompt}
+                  onChange={e => setLivePrompt(e.target.value)}
+                  disabled={phase === "running" || phase === "committing"}
+                  style={{
+                    flex: 1, minHeight: 240, padding: 10, fontSize: 12,
+                    fontFamily: "var(--font-mono)", lineHeight: 1.5,
+                    background: "var(--bg-surface-2)", color: "var(--text-primary)",
+                    border: "1px solid var(--border)", borderRadius: 4,
+                    resize: "vertical", outline: "none", whiteSpace: "pre-wrap",
+                  }}
+                />
+              </div>
+            ) : (
+              <details open style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+                <summary style={{ cursor: "pointer", fontSize: 12 }}>用户提示词 ({livePrompt.length})</summary>
+                <pre style={{ ...preStyle(), flex: 1, maxHeight: "none" }}>{livePrompt}</pre>
+              </details>
+            )}
           </div>
 
           {/* RIGHT: Action / Result */}
@@ -470,7 +500,7 @@ function PhaseBadge({ phase }: { phase: Phase }) {
     manual_pending: { label: "等待粘贴", color: "var(--gold)" },
     committing:     { label: "处理中", color: "var(--accent)" },
     result:         { label: "已就绪", color: "var(--success)" },
-    error:          { label: "错误",   color: "var(--danger)" },
+    error:          { label: "错误",   color: "var(--error)" },
   };
   const v = labels[phase];
   return (
@@ -526,10 +556,16 @@ function RunningPane({ onAbort }: { onAbort: () => void }) {
     <div style={{ textAlign: "center", padding: 40 }}>
       <div style={{ fontSize: 32, marginBottom: 16 }}>⏳</div>
       <h4>正在调用大模型...</h4>
+      {/* 不定长进度条（大模型不报细粒度进度，用滑动条表示进行中） */}
+      <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden", margin: "14px auto", maxWidth: 320 }}>
+        <div style={{ width: "40%", height: "100%", background: "var(--accent)", borderRadius: 4, animation: "ullm-indeterminate 1.2s ease-in-out infinite" }} />
+      </div>
+      <style>{`@keyframes ullm-indeterminate{0%{margin-left:-40%}100%{margin-left:100%}}`}</style>
       <p style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
-        中断后会停止生成；重试时将重发同一份提示词。
+        生成中，可能耗时数十秒；中断后会停止等待，重试时重发同一份提示词。
       </p>
-      <button className="btn danger" onClick={onAbort} style={{ marginTop: 16 }}>
+      <button className="btn" onClick={onAbort}
+        style={{ marginTop: 16, color: "var(--error)", borderColor: "var(--error)" }}>
         中断
       </button>
     </div>

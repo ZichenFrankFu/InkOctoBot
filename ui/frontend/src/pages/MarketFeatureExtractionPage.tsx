@@ -140,7 +140,6 @@ export default function MarketFeatureExtractionPage() {
   const [platform, setPlatform] = useState(
     () => (swrHydrate<PlatformOption[]>("mfe_platforms") || [])[0]?.key || "",
   );
-  const [launching, setLaunching] = useState(false);
 
   const [jobs, setJobs] = useState<Job[]>(
     () => swrHydrate<Job[]>("mfe_jobs") || [],
@@ -151,9 +150,11 @@ export default function MarketFeatureExtractionPage() {
 
   const [topTab, setTopTab] = useState<TopTab>("basic");
 
-  // Manual-mode dialog
+  // 启动提取弹窗（API / 网页版共用同一份可编辑 prompt）
   const [manualOpen, setManualOpen] = useState(false);
   const [manualPrompt, setManualPrompt] = useState("");
+  const [dialogMode, setDialogMode] = useState<"api" | "manual">("manual");
+  const [building, setBuilding] = useState(false);   // 生成 prompt 中（点击后进度）
 
   // 高级特征提取：自动选出的代表作候选 + 用户勾选集合（select/deselect）。
   const [candidates, setCandidates] = useState<RepCandidate[]>([]);
@@ -278,55 +279,37 @@ export default function MarketFeatureExtractionPage() {
 
   // ── actions ──
 
-  const launchJob = useCallback(async () => {
-    if (!platform) {
-      toast("请先选择平台", "error");
-      return;
-    }
-    if (selectedWorkIds.length === 0) {
-      toast("请至少勾选一部代表作", "error");
-      return;
-    }
-    if (!window.confirm(
-      `准备启动 API 提取任务：\n平台：${tPlatform(platform)}（整平台）\n` +
-      `代表作：已勾选 ${selectedWorkIds.length} 部\n\n` +
-      `将调用大模型对勾选的代表作做生造词Step2 + 行文风格七组抽取，更新该平台` +
-      `风格档案。可能耗时数分钟。继续？`,
-    )) return;
-    setLaunching(true);
-    try {
-      await apiPost<{ job_id: string; state: string }>(
-        "/api/market-extractor/jobs",
-        { platform, category: "", work_ids: selectedWorkIds },
-      );
-      toast("已启动平台提取任务", "success");
-    } catch (e: any) {
-      toast(`启动失败：${e.message}`, "error");
-    }
-    await refreshJobs();
-    setLaunching(false);
-  }, [platform, selectedWorkIds, refreshJobs, toast]);
-
-  const startManualMode = useCallback(async () => {
-    if (!platform) {
-      toast("请先选择平台", "error");
-      return;
-    }
-    if (selectedWorkIds.length === 0) {
-      toast("请至少勾选一部代表作", "error");
-      return;
-    }
+  // 点击「API」/「网页版」任一按钮：先生成（共用的）prompt，再打开可编辑弹窗。
+  // mode 决定弹窗默认走 API 自动调用 还是 网页版手动粘贴；两种都能看到并修改 prompt。
+  const buildAndOpen = useCallback(async (mode: "api" | "manual") => {
+    if (!platform) { toast("请先选择平台", "error"); return; }
+    if (selectedWorkIds.length === 0) { toast("请至少勾选一部代表作", "error"); return; }
+    setBuilding(true);
     try {
       const r = await apiPost<{ prompt: string }>(
         "/api/market-extractor/manual-prompt",
         { platform, category: "", work_ids: selectedWorkIds },
       );
       setManualPrompt(r.prompt || "");
+      setDialogMode(mode);
       setManualOpen(true);
     } catch (e: any) {
       toast(`生成 prompt 失败: ${e.message}`, "error");
+    } finally {
+      setBuilding(false);
     }
   }, [platform, selectedWorkIds, toast]);
+
+  // API 模式：把（用户可能已编辑的）prompt 直接发给配置的大模型 API，返回原始回复。
+  const invokeApi = useCallback(async (signal: AbortSignal, livePrompt: string) => {
+    const res = await fetch("/api/market-extractor/api-extract", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform, category: "", prompt: livePrompt }), signal,
+    });
+    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    const j = await res.json();
+    return j.response_raw || "";
+  }, [platform]);
 
   const commitManual = useCallback(async (payload: { text: string }) => {
     const r = await apiPost<{ profile_id: string }>(
@@ -453,30 +436,37 @@ export default function MarketFeatureExtractionPage() {
           </h3>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
             {([
-              { onClick: launchJob, primary: true, busy: launching,
-                title: "使用大模型 API 提取",
-                desc: "调用已配置的大模型 API 自动完成，无需人工粘贴；可能耗时数分钟。" },
-              { onClick: startManualMode, primary: false, busy: false,
-                title: "使用大模型网页版提取",
-                desc: "复制提示词到网页版大模型运行，再把回复粘回；无需 API key。" },
+              { mode: "api" as const, primary: true, title: "使用大模型 API 提取" },
+              { mode: "manual" as const, primary: false, title: "使用大模型网页版提取" },
             ]).map((opt) => {
-              const disabled = !SELECTION_OK || selectedWorkIds.length === 0 || opt.busy;
+              const disabled = !SELECTION_OK || selectedWorkIds.length === 0 || building;
               return (
-                <button key={opt.title} onClick={opt.onClick} disabled={disabled} style={{
-                  display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6,
-                  padding: 16, borderRadius: 8, cursor: disabled ? "not-allowed" : "pointer",
-                  textAlign: "left", opacity: disabled ? 0.55 : 1,
+                <button key={opt.title} onClick={() => buildAndOpen(opt.mode)} disabled={disabled} style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  padding: "16px 18px", borderRadius: 8, cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.55 : 1, fontSize: 14, fontWeight: 700,
                   border: `1.5px solid ${opt.primary ? "var(--accent)" : "var(--border)"}`,
                   background: opt.primary ? "var(--accent)" : "var(--bg-surface)",
                   color: opt.primary ? "white" : "var(--text-primary)",
                 }}>
-                  <span style={{ fontSize: 14, fontWeight: 700 }}>{opt.busy ? "启动中..." : opt.title}</span>
-                  <span style={{ fontSize: 11, lineHeight: 1.5, opacity: opt.primary ? 0.9 : 0.7 }}>{opt.desc}</span>
+                  {building ? "生成提示词中…" : opt.title}
                 </button>
               );
             })}
           </div>
-          {(!SELECTION_OK || selectedWorkIds.length === 0) && (
+          {/* 点击后：生成（共用）提示词的进度（不定长），随后弹出可编辑提示词窗口 */}
+          {building && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ width: "40%", height: "100%", background: "var(--jade)", borderRadius: 4, animation: "mfe-indeterminate 1.2s ease-in-out infinite" }} />
+              </div>
+              <style>{`@keyframes mfe-indeterminate{0%{margin-left:-40%}100%{margin-left:100%}}`}</style>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+                正在根据已选代表作生成提示词（含开篇统计 + 节选）…完成后可在弹窗里手动修改再运行。
+              </div>
+            </div>
+          )}
+          {(!SELECTION_OK || selectedWorkIds.length === 0) && !building && (
             <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 10 }}>
               {!SELECTION_OK ? "先在上方选择平台" : "请在「代表作选取」中至少勾选一部作品"}
             </div>
@@ -488,15 +478,20 @@ export default function MarketFeatureExtractionPage() {
           profiles={platformProfiles} platform={platform} category="" />
       </>)}
 
-      {/* 网页版大模型手动粘贴弹窗 */}
+      {/* 启动提取弹窗：可编辑 prompt；API 自动调用 / 网页版手动粘贴共用同一份 prompt */}
       <UniversalLLMDialog
         open={manualOpen}
         onClose={() => setManualOpen(false)}
-        title={`网页版大模型提取：${tPlatform(platform)}`}
+        title={`高级特征提取：${tPlatform(platform)}`}
+        description={dialogMode === "api"
+          ? "可直接修改提示词，确认后用大模型 API 自动运行。"
+          : "可直接修改提示词，复制到网页版大模型运行后把回复粘回。"}
         prompt={manualPrompt}
+        editablePrompt
+        invokeApi={invokeApi}
         onCommit={commitManual}
         minChars={80}
-        initialMode="manual_only"
+        initialMode={dialogMode === "manual" ? "manual_only" : "picker"}
       />
     </div>
   );
@@ -592,6 +587,7 @@ function RepWorksSelector({
   onClear: () => void; onReload: () => void;
 }) {
   const [openExcerpt, setOpenExcerpt] = React.useState<Record<string, boolean>>({});
+  const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>({});  // 各类代表作折叠
   const groups = React.useMemo(() => {
     const m = new Map<string, RepCandidate[]>();
     for (const c of candidates) {
@@ -638,28 +634,40 @@ function RepWorksSelector({
           <Empty msg="未选到代表作 — 请确认该平台已采集作品与章节（Settings → 市场数据库）。" />
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {groups.map(([reason, list]) => (
-              <div key={reason}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
-                  <span style={{
-                    fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 12,
-                    color: "white", background: REASON_COLOR[reason] || "var(--text-tertiary)",
-                  }}>{reason}</span>
-                  <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                    {REASON_DESC[reason] || ""} · {list.length} 部
-                  </span>
+            {groups.map(([reason, list]) => {
+              const isCollapsed = !!collapsed[reason];
+              const selInGroup = list.filter(c => selected.includes(c.work_id)).length;
+              return (
+                <div key={reason}>
+                  <button
+                    onClick={() => setCollapsed(p => ({ ...p, [reason]: !p[reason] }))}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8, marginBottom: 8,
+                      background: "none", border: "none", padding: 0, cursor: "pointer", width: "100%", textAlign: "left",
+                    }}>
+                    <span style={{ fontSize: 12, color: "var(--text-tertiary)", width: 12 }}>{isCollapsed ? "▸" : "▾"}</span>
+                    <span style={{
+                      fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 12,
+                      color: "white", background: REASON_COLOR[reason] || "var(--text-tertiary)",
+                    }}>{reason}</span>
+                    <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                      {REASON_DESC[reason] || ""} · {list.length} 部{selInGroup ? ` · 已选 ${selInGroup}` : ""}
+                    </span>
+                  </button>
+                  {!isCollapsed && (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
+                      {list.map(c => (
+                        <RepCard key={c.work_id} c={c}
+                          on={selected.includes(c.work_id)}
+                          onToggle={() => onToggle(c.work_id)}
+                          expanded={!!openExcerpt[c.work_id]}
+                          onExcerpt={() => setOpenExcerpt(p => ({ ...p, [c.work_id]: !p[c.work_id] }))} />
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
-                  {list.map(c => (
-                    <RepCard key={c.work_id} c={c}
-                      on={selected.includes(c.work_id)}
-                      onToggle={() => onToggle(c.work_id)}
-                      expanded={!!openExcerpt[c.work_id]}
-                      onExcerpt={() => setOpenExcerpt(p => ({ ...p, [c.work_id]: !p[c.work_id] }))} />
-                  ))}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
