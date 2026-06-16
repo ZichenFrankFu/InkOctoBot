@@ -58,17 +58,22 @@ _ORG_PLACE_TAIL = frozenset(
 
 def _is_western(fn: str, western: frozenset[str], translit: frozenset[str],
                 surnames: frozenset[str], blocklist: frozenset[str]) -> bool:
-    """西方名判定（收紧）：词典命中 / 含间隔号「·」/（保守）长度≥3 且**全部**为音译字
-    且非中文姓氏开头。**不再用「音译字占比」启发**——那会把「查克拉」「金丹」这类网文
-    名词误判成西方名（金/丹/克/拉 都在音译字表里）。"""
+    """西方名判定：词典命中 / 含间隔号「·」/ 整名皆音译字且非中文姓氏开头（长度≥2）。
+    **不用「音译字占比」启发**（会把「查克拉」误判：查 不在音译字表）；要求**全部**字
+    是音译字 + 首字非中文姓氏，挡掉「金丹」（金 是姓）等网文名词。"""
     if fn in western:
         return True
     if "·" in fn or "・" in fn:           # 乔治·马丁 这类强信号
         return True
-    if len(fn) >= 3 and fn not in blocklist and fn[0] not in surnames:
-        if all(ch in translit for ch in fn):   # 整名皆音译字（查克拉因「查」不在表→不命中）
+    if 2 <= len(fn) <= 6 and fn not in blocklist and fn[0] not in surnames:
+        if all(ch in translit for ch in fn):   # 整名皆音译字（玛丽/汉斯/丽莎…）
             return True
     return False
+
+
+# 强日文信号（太郎/次郎/健一郎；之介/之助）。汉字写法的日本名常以此收尾。
+_JP_GIVEN_TAIL = frozenset("郎朗")
+_JP_GIVEN_SUB = ("之介", "之助", "之丞", "卫门", "兵卫")
 
 
 def _jp_prefix(fn: str, jp_surnames: frozenset[str]) -> str:
@@ -76,6 +81,15 @@ def _jp_prefix(fn: str, jp_surnames: frozenset[str]) -> str:
         if len(fn) > k and fn[:k] in jp_surnames:
             return fn[:k]
     return ""
+
+
+def _looks_japanese(fn: str, surnames: frozenset[str]) -> bool:
+    """无已知日文姓前缀时的兜底：含强日文收尾/子串、且非中文姓氏开头（挡掉武大郎这类）。"""
+    if any(sub in fn for sub in _JP_GIVEN_SUB):
+        return True
+    if 2 <= len(fn) <= 5 and fn[-1] in _JP_GIVEN_TAIL and fn[0] not in surnames:
+        return True
+    return False
 
 
 def _is_nickname(fn: str) -> bool:
@@ -161,6 +175,9 @@ def derive_name_parts(full_name: str, surnames: frozenset[str] | None = None) ->
     elif (jp := _jp_prefix(fn, jp_surnames)):
         name_kind, surname_kind, surname = "japanese", "japanese", jp
         given = fn[len(jp):]
+    elif _looks_japanese(fn, surnames):       # 无已知日文姓但有强日文信号（太郎/之介…）
+        name_kind, surname_kind = "japanese", "japanese"
+        given = fn
     else:
         # 中文：复姓优先（2-3 字），再单字姓。
         for k in (3, 2):
@@ -685,22 +702,26 @@ def import_records(db_path: str, records: list[dict], *,
 
 
 def rebuild_derived(db_path: str) -> int:
-    """姓氏表更新后，对全库重算姓/名/标记派生字段（全名权威记录不动）。"""
+    """姓氏/分类规则更新后，对全库重算姓/名/分类/标记派生字段（全名权威记录不动）。
+    用于「重新分类」：把误入中文区的日文名/西方名按最新规则归位。性别只回填空缺项
+    （不覆盖用户手动标注）。"""
     surnames = _surnames()
     updated = 0
     with sqlite3.connect(db_path) as con:
         _ensure(con)
         con.row_factory = sqlite3.Row
-        rows = con.execute("SELECT full_name FROM person_name_library").fetchall()
+        rows = con.execute(
+            "SELECT full_name, gender FROM person_name_library").fetchall()
         for r in rows:
             p = derive_name_parts(r["full_name"], surnames)
+            gender = r["gender"] or p["gender"]    # 保留手动标注，仅回填空缺
             con.execute(
                 "UPDATE person_name_library SET surname=?, given_name=?, surname_kind=?, "
                 "name_length=?, is_compound_surname=?, is_single_given=?, is_nonstandard=?, "
-                "nonstandard_reason=?, name_kind=? WHERE full_name=?",
+                "nonstandard_reason=?, name_kind=?, gender=? WHERE full_name=?",
                 (p["surname"], p["given_name"], p["surname_kind"], p["name_length"],
                  p["is_compound_surname"], p["is_single_given"], p["is_nonstandard"],
-                 p["nonstandard_reason"], p["name_kind"], r["full_name"]),
+                 p["nonstandard_reason"], p["name_kind"], gender, r["full_name"]),
             )
             updated += 1
         con.commit()

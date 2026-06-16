@@ -1443,6 +1443,15 @@ function NameLibraryView() {
     } catch (e: any) { toast(`刷新失败：${e.message}`, "error"); }
     finally { setBusy(false); }
   };
+  const reclassify = async () => {
+    setBusy(true);
+    try {
+      const r = await apiPost<any>("/api/analysis/name-library/reclassify", {});
+      toast(`已按最新规则重新分类（${r.updated ?? 0} 条）`, "success");
+      reload();
+    } catch (e: any) { toast(`重新分类失败：${e.message}`, "error"); }
+    finally { setBusy(false); }
+  };
   const clearLib = async () => {
     if (!window.confirm("确定清空人名库？将移除所有人名与 NER 处理记录，此操作不可撤销。")) return;
     setBusy(true);
@@ -1512,6 +1521,8 @@ function NameLibraryView() {
             <input ref={fileRef} type="file" accept=".json,.txt,application/json,text/plain"
               style={{ display: "none" }}
               onChange={e => { const f = e.target.files?.[0]; if (f) doImport(f); }} />
+            <button className="btn" disabled={busy || status?.running} onClick={reclassify}
+              title="按最新规则把误入中文区的日文/西方名归位" style={{ fontSize: 12, padding: "6px 14px" }}>重新分类</button>
             <button className="btn" disabled={busy || status?.running} onClick={clearLib}
               style={{ fontSize: 12, padding: "6px 14px", color: "var(--error)", borderColor: "var(--error)" }}>
               清空人名库
@@ -1629,7 +1640,13 @@ function NameLibraryView() {
                     </div></div>
                   ) : (
                     <div className="card-body" style={{ padding: 0 }}>
-                      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse", tableLayout: "fixed" }}>
+                        <colgroup>
+                          <col style={{ width: "46%" }} />
+                          <col style={{ width: "18%" }} />
+                          <col style={{ width: "20%" }} />
+                          <col style={{ width: "16%" }} />
+                        </colgroup>
                         <tbody>
                           {items.map((it: any) => (
                             <React.Fragment key={it.name_id}>
@@ -1644,9 +1661,9 @@ function NameLibraryView() {
                                   {it.example_sentence ? (
                                     <div onClick={() => setExpanded(p => ({ ...p, [it.name_id]: !p[it.name_id] }))}
                                       style={{ fontWeight: 400, fontSize: 11, color: "var(--text-tertiary)", marginTop: 2, cursor: "pointer",
-                                        maxWidth: expanded[it.name_id] ? "none" : 360,
                                         overflow: "hidden", textOverflow: "ellipsis",
                                         whiteSpace: expanded[it.name_id] ? "normal" : "nowrap",
+                                        wordBreak: expanded[it.name_id] ? "break-word" : "normal",
                                         lineHeight: expanded[it.name_id] ? 1.6 : 1.2 }}
                                       title={expanded[it.name_id] ? "收起" : "点击展开原句"}>
                                       {expanded[it.name_id] ? "▾" : "▸"} 例句：{highlightWord(it.example_sentence, it.full_name)}

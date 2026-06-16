@@ -521,6 +521,16 @@ def name_library_stats():
     return _nl.library_stats(_project_db_path())
 
 
+@router.post("/name-library/reclassify")
+def name_library_reclassify():
+    """按最新分类规则 + 词表对全库重新分类（把误入中文区的日文/西方名归位），并回填
+    空缺性别。不动全名本身与用户手动标注的性别。"""
+    from ..services.market_extractor import name_library as _nl
+    n = _nl.rebuild_derived(_project_db_path())
+    _wordlist_after_edit()
+    return {"ok": True, "updated": n}
+
+
 @router.post("/name-library/clear")
 def name_library_clear():
     """清空人名库（移除所有全名 + NER 处理台账）。静态种子库会在下次刷新/基础特征

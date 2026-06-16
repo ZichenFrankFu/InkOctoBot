@@ -39,6 +39,22 @@ class TestDerive:
         # 昵称分类已下线：不再产出 nickname 这个 name_kind。
         assert nl.derive_name_parts("翠翠")["name_kind"] != "nickname"
 
+    def test_japanese_without_known_surname(self) -> None:
+        # 无已知日文姓前缀，但有强日文信号（太郎/之介）→ 日文名，不留在中文区。
+        assert nl.derive_name_parts("太郎")["name_kind"] == "japanese"
+        assert nl.derive_name_parts("健一郎")["name_kind"] == "japanese"
+        assert nl.derive_name_parts("龙之介")["name_kind"] == "japanese"
+        # 中文姓开头的 郎 名不误判（武大郎）。
+        assert nl.derive_name_parts("武大郎")["name_kind"] == "chinese"
+
+    def test_western_two_char_translit(self) -> None:
+        # 词典外的 2 字纯音译名也判西方（汉斯/丽莎），不再漏进中文区。
+        assert nl.derive_name_parts("汉斯")["name_kind"] == "western"
+        assert nl.derive_name_parts("丽莎")["name_kind"] == "western"
+        # 金丹（金 是中文姓）/查克拉（查 非音译字）仍不误判西方。
+        assert nl.derive_name_parts("金丹")["name_kind"] == "chinese"
+        assert nl.derive_name_parts("查克拉")["name_kind"] == "chinese"
+
     def test_gender_inference(self) -> None:
         assert nl.derive_name_parts("李伟")["gender"] == "male"
         assert nl.derive_name_parts("王芳婷")["gender"] == "female"

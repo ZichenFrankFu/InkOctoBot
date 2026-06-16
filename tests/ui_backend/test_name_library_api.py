@@ -180,6 +180,23 @@ class TestNameLibraryApi:
         assert r.status_code == 200 and r.json()["name"]["gender"] == "female"
         assert "by_gender" in client.get("/api/analysis/name-library/stats").json()
 
+    def test_reclassify_moves_misclassified(self, env) -> None:
+        client, proj, _ = env
+        from ui.backend.app.services.market_extractor import name_library as nl
+        # 模拟早期被误归到中文区的日文名（直接落库为 chinese）。
+        import sqlite3
+        nl.add_name(proj, "山田太郎", source="ltp_ner")
+        with sqlite3.connect(proj) as con:
+            con.execute("UPDATE person_name_library SET name_kind='chinese' WHERE full_name=?",
+                        ("山田太郎",))
+            con.commit()
+        assert client.get("/api/analysis/name-library?kind=chinese&q=山田太郎").json()["total"] == 1
+        # 重新分类 → 归位到日文区。
+        r = client.post("/api/analysis/name-library/reclassify")
+        assert r.status_code == 200 and r.json()["updated"] >= 1
+        assert client.get("/api/analysis/name-library?kind=japanese&q=山田太郎").json()["total"] == 1
+        assert client.get("/api/analysis/name-library?kind=chinese&q=山田太郎").json()["total"] == 0
+
     def test_remove_blocklists_so_ner_wont_readd(self, env) -> None:
         client, proj, _ = env
         from ui.backend.app.services.market_extractor import name_library as nl
