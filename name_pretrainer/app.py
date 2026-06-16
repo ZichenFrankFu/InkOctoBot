@@ -44,13 +44,23 @@ def _save_config(cfg: dict) -> None:
 
 
 def crawler_db() -> str:
+    """市场数据库（爬虫库，只读）地址：config > env > 空。"""
     import os
     return (_load_config().get("crawler_db")
             or os.environ.get("NAME_TRAINER_CRAWLER_DB") or "")
 
 
+def name_db_path() -> str:
+    """人名数据库（读写）地址：config > env > 本工具自带 data/name_library.db。
+    指向 InkOctoBot 的库即可两边共用同一份人名库（schema 幂等、不动其它表）。"""
+    import os
+    return (_load_config().get("name_db")
+            or os.environ.get("NAME_TRAINER_NAME_DB") or paths.name_db_path())
+
+
 def project_db() -> str:
-    p = paths.name_db_path()
+    p = name_db_path()
+    Path(p).expanduser().parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(p) as con:
         schema.ensure_name_tables(con)
     return p
@@ -67,16 +77,18 @@ def index():
 # ── 配置 ──
 @app.get("/api/config")
 def get_config():
-    cdb = crawler_db()
-    return {"crawler_db": cdb, "crawler_exists": bool(cdb and Path(cdb).exists()),
-            "name_db": paths.name_db_path()}
+    cdb, ndb = crawler_db(), name_db_path()
+    return {"crawler_db": cdb, "crawler_exists": bool(cdb and Path(cdb).expanduser().exists()),
+            "name_db": ndb, "name_db_exists": Path(ndb).expanduser().exists()}
 
 
 @app.post("/api/config")
 def set_config(body: dict = Body(...)):
-    cdb = (body.get("crawler_db") or "").strip()
     cfg = _load_config()
-    cfg["crawler_db"] = cdb
+    if "crawler_db" in body:
+        cfg["crawler_db"] = (body.get("crawler_db") or "").strip()
+    if "name_db" in body:
+        cfg["name_db"] = (body.get("name_db") or "").strip()
     _save_config(cfg)
     return get_config()
 
@@ -262,12 +274,18 @@ app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 def main() -> None:
     ap = argparse.ArgumentParser(description="InkOctoBot 人名识别预训练器")
     ap.add_argument("--crawler-db", default="", help="市场数据库(爬虫库) sqlite 路径")
+    ap.add_argument("--name-db", default="", help="人名数据库 sqlite 路径（默认 data/name_library.db）")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
-    if args.crawler_db:
-        cfg = _load_config(); cfg["crawler_db"] = args.crawler_db; _save_config(cfg)
+    if args.crawler_db or args.name_db:
+        cfg = _load_config()
+        if args.crawler_db:
+            cfg["crawler_db"] = args.crawler_db
+        if args.name_db:
+            cfg["name_db"] = args.name_db
+        _save_config(cfg)
     url = f"http://{args.host}:{args.port}/"
     if not args.no_browser:
         import threading

@@ -47,10 +47,15 @@
   <!-- 配置 + 后端 + 预训练 -->
   <div class="card"><div class="body">
     <div class="row">
-      <span class="muted">市场数据库</span>
-      <input id="crawler" style="flex:1;min-width:240px" placeholder="爬虫库 sqlite 路径，如 .../market.db" />
-      <button onclick="saveCfg()">保存路径</button>
+      <span class="muted" style="width:72px">市场数据库</span>
+      <input id="crawler" style="flex:1;min-width:240px" placeholder="爬虫库 sqlite 路径（只读），如 .../market.db" />
       <span id="cfgState" class="dim"></span>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <span class="muted" style="width:72px">人名数据库</span>
+      <input id="namedb" style="flex:1;min-width:240px" placeholder="人名库 sqlite 路径（读写），留空=本工具 data/name_library.db" />
+      <span id="ndbState" class="dim"></span>
+      <button onclick="saveCfg()">保存路径</button>
     </div>
     <div class="row" style="margin-top:10px">
       <span>识别后端 <strong id="backend">…</strong></span>
@@ -127,10 +132,12 @@ function hl(text,word){text=esc(text);if(!word)return text;return text.split(esc
 function toggle(id){const e=$(id);const i=$(id+'-i');const open=e.style.display==='none';e.style.display=open?'':'none';if(i)i.textContent=open?'▾':'▸';if(id.startsWith('charBody')&&open)loadChars();}
 
 // ── 配置 + 后端 ──
-async function loadCfg(){try{const c=await jget('/api/config');$('crawler').value=c.crawler_db||'';
+async function loadCfg(){try{const c=await jget('/api/config');$('crawler').value=c.crawler_db||'';$('namedb').value=c.name_db||'';
   $('cfgState').textContent=c.crawler_db?(c.crawler_exists?'✓ 已找到':'✗ 文件不存在'):'未配置';
-  $('cfgState').style.color=c.crawler_exists?'var(--jade)':'var(--gold)';}catch(e){}}
-async function saveCfg(){await jpost('/api/config',{crawler_db:$('crawler').value.trim()});toast('已保存');loadCfg();}
+  $('cfgState').style.color=c.crawler_exists?'var(--jade)':'var(--gold)';
+  $('ndbState').textContent=c.name_db_exists?'✓ 已就绪':'将自动创建';
+  $('ndbState').style.color=c.name_db_exists?'var(--jade)':'var(--muted)';}catch(e){}}
+async function saveCfg(){await jpost('/api/config',{crawler_db:$('crawler').value.trim(),name_db:$('namedb').value.trim()});toast('已保存');loadCfg();reload();loadStatus();}
 async function loadStatus(){try{const s=await jget('/api/ner-status');
   const m={ltp_gpu:'LTP · GPU',ltp_cpu:'LTP · CPU',seed:'LTP 未就绪'};
   $('backend').textContent=m[s.backend]||s.backend;$('backend').style.color=s.uses_ltp?'var(--jade)':'var(--gold)';
