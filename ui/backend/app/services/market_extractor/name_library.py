@@ -6,7 +6,7 @@
 - 对**昵称 / 复姓 / 单名**等非标准名打标记（``is_nonstandard`` / ``is_compound_surname``
   / ``is_single_given``），以免污染后续取名规律统计。
 - 每条附元数据：来源作品、来源作品热度/排名、出现的去重书数 ``book_df``
-  （按 book 去重、不按 snapshot 统计）—— 管理界面用 DF 作可信度信号。
+  （按 book 去重统计，仅作内部元数据，不作识别指标、不在界面排序/展示）。
 
 入库来源：种子库（seed）/ LTP NER（ltp_ner）/ jieba nr（jieba_nr）/ 用户（user）。
 NER 仅对按 book 去重的新增书运行（见 name_refresh.py），已处理书用 name_extraction_state
@@ -360,10 +360,10 @@ def update_flags(db_path: str, full_name: str, **flags: Any) -> bool:
 
 def search_names(
     db_path: str, q: str = "", *, limit: int = 200, offset: int = 0,
-    only_nonstandard: bool | None = None, order: str = "df", kind: str = "",
+    only_nonstandard: bool | None = None, order: str = "name", kind: str = "",
 ) -> dict:
     """搜索 + 分页。``kind`` ∈ {chinese,japanese,western,nickname,''}。``order`` ∈
-    {df, name, recent}。DF 作可信度信号一并返回。"""
+    {name, recent}（不再按 DF 排序 —— 人名识别不用 DF 作指标）。"""
     q = (q or "").strip()
     where = []
     params: list = []
@@ -379,10 +379,9 @@ def search_names(
         where.append("is_nonstandard = 0")
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     order_sql = {
-        "df": "book_df DESC, full_name",
         "name": "full_name",
-        "recent": "updated_at DESC",
-    }.get(order, "book_df DESC, full_name")
+        "recent": "updated_at DESC, full_name",
+    }.get(order, "full_name")
     with sqlite3.connect(db_path) as con:
         _ensure(con)
         con.row_factory = sqlite3.Row
@@ -411,8 +410,7 @@ def library_stats(db_path: str) -> dict:
             "SELECT COUNT(*) AS total, "
             " SUM(is_nonstandard) AS nonstandard, "
             " SUM(is_compound_surname) AS compound, "
-            " SUM(is_single_given) AS single_given, "
-            " SUM(CASE WHEN book_df >= 2 THEN 1 ELSE 0 END) AS df_ge2 "
+            " SUM(is_single_given) AS single_given "
             "FROM person_name_library"
         ).fetchone()
         by_source = {
@@ -430,7 +428,6 @@ def library_stats(db_path: str) -> dict:
         "nonstandard": row["nonstandard"] or 0,
         "compound_surname": row["compound"] or 0,
         "single_given": row["single_given"] or 0,
-        "df_ge2": row["df_ge2"] or 0,
         "by_source": by_source,
         "by_kind": by_kind,
     }
@@ -490,19 +487,19 @@ def seed_if_empty(db_path: str) -> int:
 
 # ─────────── 导入 / 导出（预训练好的清理库可整体迁移、备份、复用）───────────
 
-_EXPORT_FIELDS = ("full_name", "name_kind", "alias_of", "source", "book_df",
+_EXPORT_FIELDS = ("full_name", "name_kind", "alias_of", "source",
                   "example_sentence", "source_category", "source_work_title")
 
 
 def export_all(db_path: str) -> list[dict]:
-    """导出全部人名为可移植记录（含分类/别名/DF/例句/题材），供备份或迁移到别处。
+    """导出全部人名为可移植记录（含分类/别名/例句/题材），供备份或迁移到别处。
     全名权威、姓/名派生字段不导（导入端按姓氏表重算）。"""
     with sqlite3.connect(db_path) as con:
         _ensure(con)
         con.row_factory = sqlite3.Row
         rows = con.execute(
             f"SELECT {', '.join(_EXPORT_FIELDS)} FROM person_name_library "
-            "ORDER BY name_kind, book_df DESC, full_name"
+            "ORDER BY name_kind, full_name"
         ).fetchall()
     return [dict(r) for r in rows]
 

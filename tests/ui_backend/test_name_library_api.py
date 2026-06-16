@@ -73,8 +73,8 @@ class TestNameLibraryApi:
         r = client.get("/api/analysis/name-library?q=诸葛")
         assert r.status_code == 200
         assert any("诸葛" in i["full_name"] for i in r.json()["items"])
-        # 每条带 DF 可信度信号
-        assert all("book_df" in i for i in r.json()["items"])
+        # 不再用 DF 作指标（stats 不含 df_ge2）。
+        assert "df_ge2" not in client.get("/api/analysis/name-library/stats").json()
 
     def test_clear_empties_library(self, env) -> None:
         client, proj, _ = env
@@ -125,6 +125,40 @@ class TestNameLibraryApi:
         imp = client.post("/api/analysis/name-library/import",
                           json={"content": "诸葛云\n# 注释行\n方源\n"})
         assert imp.json()["added"] == 2
+
+    def test_export_to_path_writes_file(self, env, tmp_path) -> None:
+        client, *_ = env
+        client.post("/api/analysis/name-library/add", json={"full_name": "墨千寻"})
+        dest = str(tmp_path / "out" / "names.json")     # 父目录不存在 → 自动创建
+        r = client.post("/api/analysis/name-library/export-to-path",
+                        json={"path": dest, "format": "json"})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        import json as _json
+        from pathlib import Path as _P
+        data = _json.loads(_P(dest).read_text("utf-8"))
+        assert any(rec["full_name"] == "墨千寻" for rec in data)
+
+    def test_export_to_path_directory_autonames(self, env, tmp_path) -> None:
+        client, *_ = env
+        client.post("/api/analysis/name-library/add", json={"full_name": "韩立"})
+        d = tmp_path / "expdir"
+        d.mkdir()
+        r = client.post("/api/analysis/name-library/export-to-path",
+                        json={"path": str(d), "format": "txt"})
+        assert r.status_code == 200
+        from pathlib import Path as _P
+        assert (_P(str(d)) / "name_library.txt").exists()
+
+    def test_pagination_offset_limit(self, env) -> None:
+        client, proj, _ = env
+        from ui.backend.app.services.market_extractor import name_library as nl
+        for i in range(5):
+            nl.add_name(proj, f"测试名{chr(0x4e00 + i)}", source="user")
+        p1 = client.get("/api/analysis/name-library?q=测试名&limit=2&offset=0").json()
+        p2 = client.get("/api/analysis/name-library?q=测试名&limit=2&offset=2").json()
+        assert p1["total"] == 5 and len(p1["items"]) == 2
+        assert {i["full_name"] for i in p1["items"]}.isdisjoint(
+            {i["full_name"] for i in p2["items"]})   # 翻页不重叠
 
     def test_remove_blocklists_so_ner_wont_readd(self, env) -> None:
         client, proj, _ = env

@@ -1341,8 +1341,11 @@ function NameLibraryView() {
   const { toast } = useToast();
   const [sub, setSub] = React.useState<"list" | "patterns">("list");
   const [q, setQ] = React.useState("");
-  const [order, setOrder] = React.useState("df");
+  const [order, setOrder] = React.useState("name");
   const [byKind, setByKind] = React.useState<Record<string, any>>({});   // 按分类分组
+  const [pages, setPages] = React.useState<Record<string, number>>(
+    { chinese: 0, japanese: 0, western: 0, nickname: 0 });               // 每个 section 的页码
+  const [exportPath, setExportPath] = React.useState("");                // 导出目标路径（可空=下载）
   const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>(
     { japanese: true, western: true, nickname: true });                  // 默认只展开中文
   const [stats, setStats] = React.useState<any>(null);
@@ -1356,7 +1359,7 @@ function NameLibraryView() {
   const [editAlias, setEditAlias] = React.useState("");
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});  // 展开看原句
   const fileRef = React.useRef<HTMLInputElement>(null);
-  const limit = 10000;     // 一次拉全，便于逐条 review / 手动修改
+  const PAGE_SIZE = 100;     // 每个 section 每页 100 条，翻页看后续
   const KINDS: [string, string][] = [
     ["chinese", "中文名"], ["japanese", "日文名"], ["western", "西方名"], ["nickname", "昵称"],
   ];
@@ -1365,7 +1368,10 @@ function NameLibraryView() {
     try {
       const kinds = ["chinese", "japanese", "western", "nickname"];
       const results = await Promise.all(kinds.map(k => {
-        const params = new URLSearchParams({ q, order, kind: k, limit: String(limit) });
+        const params = new URLSearchParams({
+          q, order, kind: k, limit: String(PAGE_SIZE),
+          offset: String((pages[k] || 0) * PAGE_SIZE),
+        });
         return apiGet<any>(`/api/analysis/name-library?${params}`);
       }));
       const map: Record<string, any> = {};
@@ -1373,7 +1379,9 @@ function NameLibraryView() {
       setByKind(map);
       setStats(await apiGet<any>("/api/analysis/name-library/stats"));
     } catch (e: any) { toast(`加载人名库失败：${e.message}`, "error"); }
-  }, [q, order, toast]);
+  }, [q, order, pages, toast]);
+  // 搜索词/排序变化 → 各 section 回到第 1 页。
+  React.useEffect(() => { setPages({ chinese: 0, japanese: 0, western: 0, nickname: 0 }); }, [q, order]);
 
   const reloadStatus = React.useCallback(async () => {
     try { setStatus(await apiGet<any>("/api/analysis/name-library/refresh-status")); } catch { /* ignore */ }
@@ -1446,8 +1454,15 @@ function NameLibraryView() {
     finally { setBusy(false); }
   };
   const doExport = async () => {
+    const path = exportPath.trim();
     try {
-      const res = await fetch("/api/analysis/name-library/export?format=json");
+      if (path) {           // 指定了路径 → 后端直接写盘到该地址
+        const r = await apiPost<any>("/api/analysis/name-library/export-to-path",
+          { path, format: "json" });
+        toast(`已导出 ${r.count} 条到 ${r.path}`, "success");
+        return;
+      }
+      const res = await fetch("/api/analysis/name-library/export?format=json");   // 否则浏览器下载
       const url = URL.createObjectURL(new Blob([await res.text()], { type: "application/json;charset=utf-8" }));
       const a = document.createElement("a");
       a.href = url; a.download = "name_library.json";
@@ -1485,9 +1500,13 @@ function NameLibraryView() {
           <span>识别后端 <strong style={{ color: backend.uses_ltp ? "var(--jade)" : "var(--text-primary)" }}>{backendLabel}</strong></span>
           {status?.last_refresh && <span style={{ color: "var(--text-tertiary)" }}>上次刷新 {new Date(status.last_refresh).toLocaleString()}</span>}
           <span style={{ color: "var(--text-tertiary)" }}>已处理 {status?.books_processed ?? "—"} 本</span>
-          <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
             <button className="btn" disabled={busy} onClick={() => fileRef.current?.click()}
               style={{ fontSize: 12, padding: "6px 14px" }}>导入</button>
+            <input className="input" value={exportPath} onChange={e => setExportPath(e.target.value)}
+              placeholder="导出路径（可空=下载）"
+              title="填本地路径（文件或目录）则后端写到该地址；留空则浏览器下载"
+              style={{ width: 180, padding: "6px 10px", fontSize: 12 }} />
             <button className="btn" disabled={busy} onClick={doExport}
               style={{ fontSize: 12, padding: "6px 14px" }}>导出</button>
             <input ref={fileRef} type="file" accept=".json,.txt,application/json,text/plain"
@@ -1566,7 +1585,6 @@ function NameLibraryView() {
         {stats && (
           <div style={{ fontSize: 11, color: "var(--text-tertiary)", display: "flex", gap: 12, flexWrap: "wrap" }}>
             <span>共 <strong style={{ color: "var(--text-secondary)" }}>{stats.total}</strong> 名</span>
-            <span>DF≥2 <strong style={{ color: "var(--text-secondary)" }}>{stats.df_ge2}</strong></span>
             <span>中文 {stats.by_kind?.chinese ?? 0} · 日文 {stats.by_kind?.japanese ?? 0} · 西方 {stats.by_kind?.western ?? 0} · 昵称 {stats.by_kind?.nickname ?? 0}</span>
           </div>
         )}
@@ -1579,7 +1597,6 @@ function NameLibraryView() {
             <input className="input" value={q} onChange={e => setQ(e.target.value)}
               placeholder="搜索全名/姓/名…" style={{ flex: 1, minWidth: 150, maxWidth: 260, padding: "7px 12px" }} />
             <select className="select" value={order} onChange={e => setOrder(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
-              <option value="df">按 DF（可信度）</option>
               <option value="name">按名称</option>
               <option value="recent">按最近</option>
             </select>
@@ -1634,9 +1651,6 @@ function NameLibraryView() {
                                   ) : null}
                                 </td>
                                 <td style={{ padding: "6px 10px", color: "var(--text-secondary)" }}>{it.surname || "—"} / {it.given_name || "—"}</td>
-                                <td style={{ padding: "6px 10px" }} title="出现的去重书数（DF）— 可信度信号">
-                                  <span className="font-mono" style={{ color: it.book_df >= 2 ? "var(--jade)" : "var(--text-tertiary)" }}>{it.book_df}</span>
-                                </td>
                                 <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
                                   {it.source === "seed" ? "种子" : it.source === "ltp_ner" ? "LTP" : it.source === "user" ? "用户" : it.source}
                                   {it.source_category ? ` · ${it.source_category}` : ""}
@@ -1650,7 +1664,7 @@ function NameLibraryView() {
                               </tr>
                               {editId === it.name_id && (
                                 <tr style={{ background: "var(--bg-surface-2)" }}>
-                                  <td colSpan={5} style={{ padding: "8px 10px" }}>
+                                  <td colSpan={4} style={{ padding: "8px 10px" }}>
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
                                       <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>全名</span>
                                       <input className="input" value={editName} onChange={e => setEditName(e.target.value)}
@@ -1680,11 +1694,24 @@ function NameLibraryView() {
                           ))}
                         </tbody>
                       </table>
-                      {sec?.truncated && (
-                        <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)", borderTop: "1px solid var(--border)" }}>
-                          共 {sec.total} 条，已显示前 {limit} 条 — 用搜索缩小范围。
-                        </div>
-                      )}
+                      {(() => {
+                        const total = sec?.total || 0;
+                        const page = pages[kind] || 0;
+                        const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+                        if (total <= PAGE_SIZE) return null;
+                        return (
+                          <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)", borderTop: "1px solid var(--border)",
+                            display: "flex", alignItems: "center", gap: 10, justifyContent: "flex-end" }}>
+                            <span>共 {total} 条 · 第 {page + 1}/{totalPages} 页</span>
+                            <button className="btn" disabled={page <= 0}
+                              onClick={() => setPages(p => ({ ...p, [kind]: Math.max(0, (p[kind] || 0) - 1) }))}
+                              style={{ fontSize: 11, padding: "2px 10px" }}>上一页</button>
+                            <button className="btn" disabled={page >= totalPages - 1}
+                              onClick={() => setPages(p => ({ ...p, [kind]: (p[kind] || 0) + 1 }))}
+                              style={{ fontSize: 11, padding: "2px 10px" }}>下一页</button>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )
                 )}

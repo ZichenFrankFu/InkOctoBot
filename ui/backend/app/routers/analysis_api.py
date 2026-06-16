@@ -497,12 +497,12 @@ def wordlist_remove(body: dict = Body(...)):
 
 @router.get("/name-library")
 def name_library_list(
-    q: str = Query(default=""), limit: int = Query(default=200, le=20000),
-    offset: int = Query(default=0, ge=0), order: str = Query(default="df"),
+    q: str = Query(default=""), limit: int = Query(default=100, le=20000),
+    offset: int = Query(default=0, ge=0), order: str = Query(default="name"),
     nonstandard: str = Query(default=""), kind: str = Query(default=""),
 ):
-    """搜索 + 分页人名库（每条带 book_df 作可信度信号）。``kind`` 按分类筛
-    （chinese/japanese/western/nickname）。"""
+    """搜索 + 分页人名库。``kind`` 按分类筛（chinese/japanese/western/nickname）。
+    不再按 DF 排序/筛选（人名识别不用 DF 作指标）。"""
     from ..services.market_extractor import name_library as _nl
     only = None
     if nonstandard == "1":
@@ -576,6 +576,33 @@ def name_library_export(format: str = Query(default="json")):
         json.dumps(records, ensure_ascii=False, indent=1),
         media_type="application/json",
         headers={"Content-Disposition": 'attachment; filename="name_library.json"'})
+
+
+@router.post("/name-library/export-to-path")
+def name_library_export_to_path(body: dict = Body(...)):
+    """导出到**用户指定的本地路径**（本地工具，后端直接写盘）。``path`` 为目标文件或
+    目录；为目录/无扩展名时按 format 自动补 name_library.json/.txt。``format`` ∈ {json,txt}。"""
+    import json
+    from ..services.market_extractor import name_library as _nl
+    raw = (body.get("path") or "").strip()
+    if not raw:
+        raise HTTPException(400, "请填写导出路径")
+    fmt = (body.get("format") or "json").strip().lower()
+    fmt = "txt" if fmt == "txt" else "json"
+    p = Path(raw).expanduser()
+    if p.is_dir() or raw.endswith(("/", "\\")) or not p.suffix:
+        p = p / f"name_library.{fmt}"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        records = _nl.export_all(_project_db_path())
+        if fmt == "txt":
+            p.write_text("\n".join(r["full_name"] for r in records)
+                         + ("\n" if records else ""), "utf-8")
+        else:
+            p.write_text(json.dumps(records, ensure_ascii=False, indent=1), "utf-8")
+    except OSError as e:
+        raise HTTPException(400, f"写入失败：{e}")
+    return {"ok": True, "path": str(p), "count": len(records)}
 
 
 @router.post("/name-library/import")
