@@ -110,6 +110,41 @@ class TestNerBackend:
         assert ner_backend.last_method() == "seed"
 
 
+class TestTokenizerCompat:
+    """新版 transformers 移除 batch_encode_plus → LTP NER 崩；验证兼容补丁。"""
+
+    def test_shim_adds_batch_encode_plus(self, monkeypatch) -> None:
+        import sys
+        import types
+
+        # 造一个「缺 batch_encode_plus」的 fast tokenizer 基类（模拟新版 transformers）。
+        calls = {}
+
+        class FakeBase:
+            is_fast = True
+
+            def __call__(self, batch, **kwargs):     # __call__ 仍可用
+                calls["args"] = (batch, kwargs)
+                return {"ok": True}
+
+        fake_tub = types.ModuleType("transformers.tokenization_utils_base")
+        fake_tub.PreTrainedTokenizerBase = FakeBase
+        fake_root = types.ModuleType("transformers")
+        fake_root.PreTrainedTokenizerBase = FakeBase
+        monkeypatch.setitem(sys.modules, "transformers", fake_root)
+        monkeypatch.setitem(sys.modules, "transformers.tokenization_utils_base", fake_tub)
+
+        monkeypatch.setattr(ner_backend, "_tok_patched", False)
+        assert not hasattr(FakeBase, "batch_encode_plus")
+        ner_backend._ensure_tokenizer_compat()
+        # 补丁挂上后：batch_encode_plus 委托给 __call__（fast 下产出 .encodings）。
+        assert hasattr(FakeBase, "batch_encode_plus")
+        out = FakeBase().batch_encode_plus(["李慕白说道"], max_length=512)
+        assert out == {"ok": True}
+        assert calls["args"][0] == ["李慕白说道"]
+        assert calls["args"][1]["max_length"] == 512
+
+
 class TestNamingPatterns:
     def _populate(self, db) -> None:
         # 两本书：爆款(rank1,heat高,角色多) + 普通(rank50,heat低)。

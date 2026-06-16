@@ -1456,7 +1456,9 @@ function NameLibraryView() {
   const gpu = backend.gpu || {};
   const backendLabel = backend.backend === "ltp_gpu" ? "LTP · GPU"
     : backend.backend === "ltp_cpu" ? "LTP · CPU" : "LTP 未就绪";
-  const ltpErr = backend.ltp_load_error || backend.ltp_import_error || "";
+  const ltpErr = backend.ltp_load_error || backend.ltp_import_error || backend.ltp_ner_error || "";
+  // LTP 后端在跑但 NER 推理报错（如 transformers 不兼容 batch_encode_plus）→ 也要醒目提示。
+  const nerErr = backend.uses_ltp ? (backend.ltp_ner_error || "") : "";
   const prog = status?.progress || {};
   const showBar = !!status?.running && prog.total > 0;
 
@@ -1494,6 +1496,15 @@ function NameLibraryView() {
             )}
           </div>
         )}
+        {nerErr && (
+          <div style={{ color: "var(--error)", marginTop: 4, lineHeight: 1.6 }}>
+            <strong>LTP 已加载但 NER 推理报错</strong>，本轮可能抽不到名。
+            <details style={{ marginTop: 4 }}>
+              <summary style={{ cursor: "pointer", color: "var(--gold)" }}>报错详情 / 修复命令</summary>
+              <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-secondary)", marginTop: 4 }}>{nerErr}</pre>
+            </details>
+          </div>
+        )}
         {diag && (
           <div style={{ marginTop: 8, padding: 10, background: "var(--bg-surface-2)", borderRadius: 6, fontSize: 11, lineHeight: 1.6 }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -1503,11 +1514,11 @@ function NameLibraryView() {
             <div>LTP 版本：<span className="font-mono">{String(diag.ltp_version)}</span></div>
             <div>torch 版本：<span className="font-mono">{String(diag.torch_version)}</span>{diag.torch_cuda_available != null && <>（CUDA 可用：{String(diag.torch_cuda_available)}）</>}</div>
             <div>当前后端：<span className="font-mono">{diag.backend_after?.backend || diag.backend?.backend}</span>（{diag.backend_after?.reason || diag.backend?.reason}）</div>
-            {(diag.ltp_import_error || diag.ltp_load_error || diag.extract_error) && (
+            {(diag.ltp_import_error || diag.ltp_load_error || diag.ltp_ner_error || diag.extract_error) && (
               <div style={{ marginTop: 4, color: "var(--error)" }}>
-                <strong>LTP 报错（这是 LTP 加载不了的真正原因）：</strong>
+                <strong>LTP 报错（这是抽不到名的真正原因）：</strong>
                 <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-secondary)", marginTop: 2 }}>
-                  {diag.ltp_load_error || diag.ltp_import_error || diag.extract_error}
+                  {diag.ltp_load_error || diag.ltp_import_error || diag.ltp_ner_error || diag.extract_error}
                 </pre>
               </div>
             )}

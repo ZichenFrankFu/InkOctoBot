@@ -37,6 +37,8 @@ _ner_diag_logged = False
 # LTP 不可用时捕获的真实报错（暴露给前端诊断，便于定位为何 LTP 加载不了）。
 _ltp_import_error = ""     # import ltp / torch 失败的原因
 _ltp_load_error = ""       # LTP() 模型构造/下载失败的原因（含各构造方式的报错）
+_ltp_ner_error = ""        # NER 推理期的真实报错（如 batch_encode_plus / .encodings）
+_ner_err_logged = False
 
 
 def _split_sentences(texts: list[str], max_len: int = 180) -> list[str]:
@@ -81,6 +83,7 @@ class NerBackendInfo:
             "cuda_device_name": self.cuda_device_name, "uses_ltp": self.uses_ltp,
             "ltp_import_error": _ltp_import_error,
             "ltp_load_error": _ltp_load_error,
+            "ltp_ner_error": _ltp_ner_error,
         }
 
 
@@ -93,7 +96,69 @@ _cached_info: NerBackendInfo | None = None
 # "未知关键字参数"的 TypeError 时才把 use_auth_token 翻译成 token、或去掉被删的参数后
 # 重试 —— 对新旧 huggingface_hub 都安全。
 _hf_patched = False
+_tok_patched = False
 _LTP_MARK = "_ltp_hf_compat"      # 标记"已是本补丁包装"，避免重复包装
+
+# LTP 4.2.x 兼容的 transformers 版本（新版 transformers 5.x 移除了公开的
+# batch_encode_plus、改了 fast tokenizer 回退行为 → LTP NER 崩）。给前端做修复指引。
+_LTP_FIX_HINT = ("pip install -U 'ltp-extension>=0.1.9' 'tokenizers' "
+                 "'transformers==4.30.2'，然后重启后端")
+
+
+def _ensure_tokenizer_compat() -> None:
+    """新版 transformers（5.x）移除了公开的 ``batch_encode_plus``，而 LTP 4.2.x 仍在
+    NER 里调用它 → ``... has no attribute batch_encode_plus``。这里给 tokenizer 基类补一个
+    兼容方法：委托给 ``__call__`` —— 在 **fast tokenizer** 下同样产出 ``.encodings``
+    （LTP 抽 NER 必需），从而无需用户改环境即可修复。幂等、对旧版无副作用。"""
+    global _tok_patched
+    if _tok_patched:
+        return
+    try:
+        from transformers.tokenization_utils_base import (
+            PreTrainedTokenizerBase as _Base,
+        )
+    except Exception:
+        try:
+            from transformers import PreTrainedTokenizerBase as _Base  # type: ignore
+        except Exception:
+            return
+    if not hasattr(_Base, "batch_encode_plus"):
+        def batch_encode_plus(self, batch_text_or_text_pairs, **kwargs):
+            return self(batch_text_or_text_pairs, **kwargs)
+        try:
+            _Base.batch_encode_plus = batch_encode_plus
+            logger.info("patched transformers tokenizer.batch_encode_plus for LTP compat")
+        except Exception:
+            pass
+    if not hasattr(_Base, "encode_plus"):
+        def encode_plus(self, text, text_pair=None, **kwargs):
+            return self(text, text_pair, **kwargs)
+        try:
+            _Base.encode_plus = encode_plus
+        except Exception:
+            pass
+    _tok_patched = True
+
+
+def _ensure_fast_tokenizer(ltp_obj) -> str:
+    """LTP NER 需要 **fast tokenizer**（读取 ``tokenized.encodings``）。若 LTP 回退到了
+    slow ``BertTokenizer``（多因 transformers 版本过新/缺 fast 后端），尝试重建 fast；
+    仍失败则返回一条可操作的诊断（空字符串=正常，可继续）。"""
+    tok = getattr(ltp_obj, "tokenizer", None)
+    if tok is None or getattr(tok, "is_fast", False):
+        return ""
+    name = getattr(tok, "name_or_path", "") or ""
+    try:
+        from transformers import AutoTokenizer
+        fast = AutoTokenizer.from_pretrained(name, use_fast=True)
+        if getattr(fast, "is_fast", False):
+            ltp_obj.tokenizer = fast
+            logger.info("rebuilt fast tokenizer for LTP (%s)", name)
+            return ""
+    except Exception as e:
+        logger.warning("fast tokenizer rebuild failed: %s", e)
+    return ("LTP 回退到 slow tokenizer（NER 需要 fast tokenizer 的 .encodings）。"
+            f"多为 transformers 版本过新或缺 fast 后端 —— 请对齐版本：{_LTP_FIX_HINT}。")
 
 
 def _ensure_hf_compat() -> None:
@@ -158,13 +223,16 @@ def _ensure_hf_compat() -> None:
 
 def reset_backend_cache() -> None:
     """清掉后端判定缓存 + LTP 句柄（改了补丁/装好 LTP 后想免重启重试时用）。"""
-    global _cached_info, _pipeline_singleton, _hf_patched
-    global _ltp_import_error, _ltp_load_error
+    global _cached_info, _pipeline_singleton, _hf_patched, _tok_patched
+    global _ltp_import_error, _ltp_load_error, _ltp_ner_error, _ner_err_logged
     _cached_info = None
     _pipeline_singleton = None
     _hf_patched = False
+    _tok_patched = False
     _ltp_import_error = ""
     _ltp_load_error = ""
+    _ltp_ner_error = ""
+    _ner_err_logged = False
 
 
 def _ltp_importable() -> bool:
@@ -174,6 +242,7 @@ def _ltp_importable() -> bool:
         _ensure_hf_compat()        # 必须在 import ltp 之前打补丁
         import ltp  # noqa: F401
         import torch  # noqa: F401
+        _ensure_tokenizer_compat()  # 补 batch_encode_plus（新版 transformers 移除了）
         _ltp_import_error = ""
         return True
     except Exception as e:
@@ -288,14 +357,22 @@ class LtpPipeline:
             return False
         try:
             _ensure_hf_compat()       # 兼容新版 huggingface_hub（use_auth_token 等）
+            _ensure_tokenizer_compat()  # 兼容新版 transformers（batch_encode_plus）
         except Exception as e:
-            logger.warning("hf compat patch failed: %s", e)
+            logger.warning("compat patch failed: %s", e)
         ltp_obj, err = _load_ltp()
         if ltp_obj is None:
             self._failed = True
             _ltp_load_error = err
             # 完整 traceback 进日志，详细 error 进诊断接口 —— 让用户能看清为何加载不了。
             logger.error("LTP model load failed (all ctors):\n%s", err)
+            return False
+        # NER 需要 fast tokenizer（.encodings）；slow 兜底会在抽名时崩 → 提前检测+给指引。
+        slow_msg = _ensure_fast_tokenizer(ltp_obj)
+        if slow_msg:
+            self._failed = True
+            _ltp_load_error = slow_msg
+            logger.error(slow_msg)
             return False
         self._ltp = ltp_obj
         _ltp_load_error = ""
@@ -310,7 +387,10 @@ class LtpPipeline:
 
     def _run_ner(self, batch: list[str]):
         """跑一批句子的 NER，返回 (ner_per_sent, seg_per_sent)。兼容 LTP 4.2+ 的
-        ``pipeline`` 与 4.1.x 的 ``seg``/``ner`` 两套 API。"""
+        ``pipeline`` 与 4.1.x 的 ``seg``/``ner`` 两套 API。两套都失败时把真实报错记进
+        ``_ltp_ner_error``（如 batch_encode_plus / .encodings），让"抽不到名"不再无声。"""
+        global _ltp_ner_error, _ner_err_logged
+        errs: list[str] = []
         # —— LTP 4.2+：pipeline(sentences, tasks=[...]) → output.ner / output.cws
         try:
             res = self._ltp.pipeline(batch, tasks=["cws", "ner"])
@@ -321,16 +401,27 @@ class LtpPipeline:
             if seg is None and isinstance(res, dict):
                 seg = res.get("cws")
             if ner is not None:
+                _ltp_ner_error = ""
                 return ner, seg
         except Exception as e:  # pragma: no cover
+            errs.append(f"pipeline: {type(e).__name__}: {e}")
             logger.debug("LTP pipeline API failed (%s); trying seg/ner", e)
         # —— LTP 4.1.x：seg(sentences) → (seg, hidden)；ner(seg, hidden)
         try:
             seg, hidden = self._ltp.seg(batch)
             ner = self._ltp.ner(seg, hidden)
+            _ltp_ner_error = ""
             return ner, seg
         except Exception as e:  # pragma: no cover
+            errs.append(f"seg/ner: {type(e).__name__}: {e}")
             logger.debug("LTP seg/ner API failed: %s", e)
+        if errs:
+            _ltp_ner_error = " || ".join(errs)
+            if "batch_encode_plus" in _ltp_ner_error or "encodings" in _ltp_ner_error:
+                _ltp_ner_error += f"（多为 transformers 版本不兼容 —— 修复：{_LTP_FIX_HINT}）"
+            if not _ner_err_logged:
+                _ner_err_logged = True
+                logger.error("LTP NER runtime failed: %s", _ltp_ner_error)
         return None, None
 
     def extract_per_context(self, texts: list[str]) -> list[tuple[str, str]]:
@@ -496,8 +587,8 @@ def last_method() -> str:
 
 
 def last_ltp_error() -> str:
-    """暴露最近一次 LTP 不可用的真实报错（加载失败优先，其次 import 失败）。"""
-    return _ltp_load_error or _ltp_import_error
+    """暴露最近一次 LTP 不可用的真实报错（加载失败 > NER 运行期失败 > import 失败）。"""
+    return _ltp_load_error or _ltp_ner_error or _ltp_import_error
 
 
 def extract_per_names_with_context(texts: list[str]) -> list[tuple[str, str]]:
@@ -552,6 +643,7 @@ def debug_ner_text(text: str) -> dict:
     out["backend_after"] = detect_ner_backend().to_dict()
     out["ltp_import_error"] = _ltp_import_error
     out["ltp_load_error"] = _ltp_load_error
+    out["ltp_ner_error"] = _ltp_ner_error
     pipe = get_ltp_pipeline()
     if pipe is not None:
         try:
@@ -566,6 +658,7 @@ def backend_status() -> dict:
     d = detect_ner_backend().to_dict()
     d["ltp_import_error"] = _ltp_import_error
     d["ltp_load_error"] = _ltp_load_error
+    d["ltp_ner_error"] = _ltp_ner_error
     try:
         from ..embedding.hardware_detector import detect_hardware
         caps = detect_hardware()
