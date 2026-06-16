@@ -1338,157 +1338,36 @@ function NamingPatternsPanel() {
 
 /** 人名库视图：名单(CRUD/DF) + 取名规律 + LTP NER 增量刷新与硬件状态。spec §4/§5。 */
 function NameLibraryView() {
+  // InkOctoBot 侧只做「增量更新」：对市场库新增小说开篇正文跑 LTP 抽人名入库。
+  // 全量预训练 + 查看/编辑/清洗/导入导出 在独立工具 name_pretrainer。取名规律保留。
   const { toast } = useToast();
-  const [sub, setSub] = React.useState<"list" | "patterns">("list");
-  const [q, setQ] = React.useState("");
-  const [order, setOrder] = React.useState("name");
-  const [byKind, setByKind] = React.useState<Record<string, any>>({});   // 按分类分组
-  const [pages, setPages] = React.useState<Record<string, number>>(
-    { chinese: 0, japanese: 0, western: 0 });                            // 每个 section 的页码
-  const [exportPath, setExportPath] = React.useState("");                // 导出目标路径（可空=下载）
-  const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>(
-    { japanese: true, western: true });                                  // 默认只展开中文
   const [stats, setStats] = React.useState<any>(null);
   const [status, setStatus] = React.useState<any>(null);
-  const [newName, setNewName] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const [editId, setEditId] = React.useState<string | null>(null);   // 正在编辑的条目
-  const [editName, setEditName] = React.useState("");
-  const [editSent, setEditSent] = React.useState("");
-  const [editKind, setEditKind] = React.useState("chinese");
-  const [editGender, setEditGender] = React.useState("");
-  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});  // 展开看原句
-  const fileRef = React.useRef<HTMLInputElement>(null);
-  const PAGE_SIZE = 100;     // 每个 section 每页 100 条，翻页看后续
-  const KINDS: [string, string][] = [
-    ["chinese", "中文名"], ["japanese", "日文名"], ["western", "西方名"],
-  ];
-
-  const reload = React.useCallback(async () => {
-    try {
-      const kinds = ["chinese", "japanese", "western"];
-      const results = await Promise.all(kinds.map(k => {
-        const params = new URLSearchParams({
-          q, order, kind: k, limit: String(PAGE_SIZE),
-          offset: String((pages[k] || 0) * PAGE_SIZE),
-        });
-        return apiGet<any>(`/api/analysis/name-library?${params}`);
-      }));
-      const map: Record<string, any> = {};
-      kinds.forEach((k, i) => { map[k] = results[i]; });
-      setByKind(map);
-      setStats(await apiGet<any>("/api/analysis/name-library/stats"));
-    } catch (e: any) { toast(`加载人名库失败：${e.message}`, "error"); }
-  }, [q, order, pages, toast]);
-  // 搜索词/排序变化 → 各 section 回到第 1 页。
-  React.useEffect(() => { setPages({ chinese: 0, japanese: 0, western: 0 }); }, [q, order]);
 
   const reloadStatus = React.useCallback(async () => {
     try { setStatus(await apiGet<any>("/api/analysis/name-library/refresh-status")); } catch { /* ignore */ }
   }, []);
-
-  React.useEffect(() => {
-    const t = window.setTimeout(reload, 200);   // debounce 搜索
-    return () => window.clearTimeout(t);
-  }, [reload]);
-  // 进入即拉一次状态（含在跑的后台任务进度）—— 离开再回来也能接着看进度。
-  React.useEffect(() => { reloadStatus(); }, [reloadStatus]);
-  // 后台刷新进行时轮询进度；后台线程在服务端跑，切走/切回都不打断（切回时本 effect
-  // 重新轮询）。running 翻 false 时自动停。
+  const reloadStats = React.useCallback(async () => {
+    try { setStats(await apiGet<any>("/api/analysis/name-library/stats")); } catch { /* ignore */ }
+  }, []);
+  React.useEffect(() => { reloadStatus(); reloadStats(); }, [reloadStatus, reloadStats]);
+  // 后台增量进行时轮询进度（切走/切回不打断）；running 翻 false 自动停。
   React.useEffect(() => {
     if (!status?.running) return;
-    const id = window.setInterval(() => { reloadStatus(); reload(); }, 2000);
+    const id = window.setInterval(() => { reloadStatus(); reloadStats(); }, 2000);
     return () => window.clearInterval(id);
-  }, [status?.running, reloadStatus, reload]);
+  }, [status?.running, reloadStatus, reloadStats]);
 
-  const add = async () => {
-    const fn = newName.trim();
-    if (fn.length < 2) { toast("请填写完整人名（≥2 字）", "error"); return; }
-    setBusy(true);
-    try {
-      await apiPost("/api/analysis/name-library/add", { full_name: fn });
-      toast(`已添加「${fn}」`, "success"); setNewName(""); reload();
-    } catch (e: any) { toast(`添加失败：${e.message}`, "error"); }
-    finally { setBusy(false); }
-  };
-  const remove = async (fn: string) => {
-    setBusy(true);
-    try { await apiPost("/api/analysis/name-library/remove", { full_name: fn }); reload(); }
-    catch (e: any) { toast(`删除失败：${e.message}`, "error"); }
-    finally { setBusy(false); }
-  };
-  const startEdit = (it: any) => {
-    setEditId(it.name_id); setEditName(it.full_name); setEditSent(it.example_sentence || "");
-    setEditKind(it.name_kind || "chinese"); setEditGender(it.gender || "");
-  };
-  const saveEdit = async () => {
-    if (editName.trim().length < 2) { toast("人名需 ≥2 字", "error"); return; }
-    setBusy(true);
-    try {
-      await apiPost("/api/analysis/name-library/edit", {
-        name_id: editId, full_name: editName.trim(), example_sentence: editSent,
-        name_kind: editKind, gender: editGender,
-      });
-      toast("已保存", "success"); setEditId(null); reload();
-    } catch (e: any) { toast(`保存失败：${e.message}`, "error"); }
-    finally { setBusy(false); }
-  };
   const refresh = async () => {
     setBusy(true);
     try {
       const r = await apiPost<any>("/api/analysis/name-library/refresh", {});
-      if (r.status) setStatus(r.status);     // 立即反映 running，进度条/轮询随即接管
-      toast(r.started ? "已开始刷新人名库（后台运行，可切走）…" : "刷新已在进行中", "info");
+      if (r.status) setStatus(r.status);
+      toast(r.started ? "已开始增量更新（后台运行，可切走）…" : "更新已在进行中", "info");
       window.setTimeout(() => { reloadStatus(); }, 500);
-    } catch (e: any) { toast(`刷新失败：${e.message}`, "error"); }
+    } catch (e: any) { toast(`更新失败：${e.message}`, "error"); }
     finally { setBusy(false); }
-  };
-  const reclassify = async () => {
-    setBusy(true);
-    try {
-      const r = await apiPost<any>("/api/analysis/name-library/reclassify", {});
-      toast(`已按最新规则重新分类（${r.updated ?? 0} 条）`, "success");
-      reload();
-    } catch (e: any) { toast(`重新分类失败：${e.message}`, "error"); }
-    finally { setBusy(false); }
-  };
-  const clearLib = async () => {
-    if (!window.confirm("确定清空人名库？将移除所有人名与 NER 处理记录，此操作不可撤销。")) return;
-    setBusy(true);
-    try {
-      const r = await apiPost<any>("/api/analysis/name-library/clear", {});
-      toast(`已清空人名库（移除 ${r.removed ?? 0} 条）`, "success");
-      reload(); reloadStatus();
-    } catch (e: any) { toast(`清空失败：${e.message}`, "error"); }
-    finally { setBusy(false); }
-  };
-  const doExport = async () => {
-    const path = exportPath.trim();
-    try {
-      if (path) {           // 指定了路径 → 后端直接写盘到该地址
-        const r = await apiPost<any>("/api/analysis/name-library/export-to-path",
-          { path, format: "json" });
-        toast(`已导出 ${r.count} 条到 ${r.path}`, "success");
-        return;
-      }
-      const res = await fetch("/api/analysis/name-library/export?format=json");   // 否则浏览器下载
-      const url = URL.createObjectURL(new Blob([await res.text()], { type: "application/json;charset=utf-8" }));
-      const a = document.createElement("a");
-      a.href = url; a.download = "name_library.json";
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a); URL.revokeObjectURL(url);
-      toast("已导出人名库（JSON）", "success");
-    } catch (e: any) { toast(`导出失败：${e.message}`, "error"); }
-  };
-  const doImport = async (file: File) => {
-    setBusy(true);
-    try {
-      const content = await file.text();
-      const r = await apiPost<any>("/api/analysis/name-library/import", { content });
-      toast(`导入完成：新增 ${r.added}，已存在补充 ${r.updated}，跳过 ${r.skipped}`, "success");
-      reload();
-    } catch (e: any) { toast(`导入失败：${e.message}`, "error"); }
-    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ""; }
   };
 
   const backend = status?.backend || {};
@@ -1496,51 +1375,33 @@ function NameLibraryView() {
   const backendLabel = backend.backend === "ltp_gpu" ? "LTP · GPU"
     : backend.backend === "ltp_cpu" ? "LTP · CPU" : "LTP 未就绪";
   const ltpErr = backend.ltp_load_error || backend.ltp_import_error || backend.ltp_ner_error || "";
-  // LTP 后端在跑但 NER 推理报错（如 transformers 不兼容 batch_encode_plus）→ 也要醒目提示。
   const nerErr = backend.uses_ltp ? (backend.ltp_ner_error || "") : "";
   const prog = status?.progress || {};
   const showBar = !!status?.running && prog.total > 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* NER 后端 + 刷新条 */}
+      {/* NER 后端 + 增量更新 */}
       <div className="card"><div className="card-body" style={{ fontSize: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <span>识别后端 <strong style={{ color: backend.uses_ltp ? "var(--jade)" : "var(--text-primary)" }}>{backendLabel}</strong></span>
-          {status?.last_refresh && <span style={{ color: "var(--text-tertiary)" }}>上次刷新 {new Date(status.last_refresh).toLocaleString()}</span>}
+          {status?.last_refresh && <span style={{ color: "var(--text-tertiary)" }}>上次更新 {new Date(status.last_refresh).toLocaleString()}</span>}
           <span style={{ color: "var(--text-tertiary)" }}>已处理 {status?.books_processed ?? "—"} 本</span>
-          <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-            <button className="btn" disabled={busy} onClick={() => fileRef.current?.click()}
-              style={{ fontSize: 12, padding: "6px 14px" }}>导入</button>
-            <input className="input" value={exportPath} onChange={e => setExportPath(e.target.value)}
-              placeholder="导出路径（可空=下载）"
-              title="填本地路径（文件或目录）则后端写到该地址；留空则浏览器下载"
-              style={{ width: 180, padding: "6px 10px", fontSize: 12 }} />
-            <button className="btn" disabled={busy} onClick={doExport}
-              style={{ fontSize: 12, padding: "6px 14px" }}>导出</button>
-            <input ref={fileRef} type="file" accept=".json,.txt,application/json,text/plain"
-              style={{ display: "none" }}
-              onChange={e => { const f = e.target.files?.[0]; if (f) doImport(f); }} />
-            <button className="btn" disabled={busy || status?.running} onClick={reclassify}
-              title="按最新规则把误入中文区的日文/西方名归位" style={{ fontSize: 12, padding: "6px 14px" }}>重新分类</button>
-            <button className="btn" disabled={busy || status?.running} onClick={clearLib}
-              style={{ fontSize: 12, padding: "6px 14px", color: "var(--error)", borderColor: "var(--error)" }}>
-              清空人名库
-            </button>
+          {stats && <span style={{ color: "var(--text-tertiary)" }}>共 {stats.total} 名 · 中 {stats.by_kind?.chinese || 0} / 日 {stats.by_kind?.japanese || 0} / 西 {stats.by_kind?.western || 0}</span>}
+          <div style={{ marginLeft: "auto" }}>
             <button className="btn-primary" disabled={busy || status?.running} onClick={refresh}
-              style={{ fontSize: 12, padding: "6px 14px" }}>
-              {status?.running ? "刷新中…" : "刷新人名库"}
+              style={{ fontSize: 12, padding: "6px 16px" }}>
+              {status?.running ? "更新中…" : "增量更新（新书）"}
             </button>
           </div>
         </div>
-        {/* 后端/GPU 诊断说明 */}
         <div style={{ color: "var(--text-tertiary)", marginTop: 6 }}>{backend.reason || "—"}</div>
         {backend.backend === "seed" && (
           <div style={{ color: "var(--error)", marginTop: 4, lineHeight: 1.6 }}>
-            <strong>LTP 未就绪，暂不抽取人名</strong>（按要求不使用 jieba 兜底）。请安装 / 修复 LTP 后点「刷新人名库」。
+            <strong>LTP 未就绪，暂不抽取人名</strong>（不使用 jieba 兜底）。请安装 / 修复 LTP 后再「增量更新」。
             {ltpErr && (
               <details style={{ marginTop: 4 }}>
-                <summary style={{ cursor: "pointer", color: "var(--gold)" }}>LTP 报错（点开查看，发给我可精确定位）</summary>
+                <summary style={{ cursor: "pointer", color: "var(--gold)" }}>LTP 报错（发我可精确定位）</summary>
                 <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-secondary)", marginTop: 4 }}>{ltpErr}</pre>
               </details>
             )}
@@ -1561,184 +1422,28 @@ function NameLibraryView() {
             但当前 torch {gpu.torch_cuda_build ? "未启用 CUDA" : "为 CPU 版"}
             {gpu.torch_version ? `（${gpu.torch_version}）` : ""}，无法 GPU 加速。
             <div style={{ color: "var(--text-secondary)", marginTop: 2 }}>
-              直接 <code>pip install</code> 不会替换已装的 CPU 版（会显示 already satisfied）。请
-              <strong>强制重装 CUDA 版</strong>：<code style={{ color: "var(--text-primary)" }}>pip install torch --index-url https://download.pytorch.org/whl/cu121 --force-reinstall</code>，再重启后端。
+              强制重装 CUDA 版：<code style={{ color: "var(--text-primary)" }}>pip install torch --index-url https://download.pytorch.org/whl/cu121 --force-reinstall</code>，再重启后端。
             </div>
           </div>
         )}
-        {/* 进度条（后台 NER 进行中） */}
         {showBar && (
           <div style={{ marginTop: 8 }}>
             <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
               <div style={{ width: `${prog.pct || 0}%`, height: "100%", background: "var(--accent)", transition: "width 0.3s linear" }} />
             </div>
             <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
-              NER 处理中 已处理 {prog.done} / {prog.total} 本作品（{prog.pct || 0}%）· 已抽取 {prog.names} 个人名 · 可切到其它页面，进程不中断
+              处理中 {prog.done} / {prog.total} 本（{prog.pct || 0}%）· 已抽 {prog.names} 名 · 可切到其它页面，进程不中断
             </div>
           </div>
         )}
-        {status && !status.running && backend.backend === "seed" && (
-          <div style={{ color: "var(--text-tertiary)", marginTop: 6 }}>
-            注：高频词「剔名」仍用打包的静态种子人名库，照常生效；仅“从正文抽新名”需要 LTP。
-          </div>
-        )}
+        <div style={{ color: "var(--text-tertiary)", marginTop: 8, lineHeight: 1.6 }}>
+          此处仅做<strong>增量更新</strong>（市场库新增小说 → 抽人名入库）。人名库的全量预训练、
+          查看 / 编辑 / 清洗、导入导出，请用独立的「人名识别预训练器」（name_pretrainer）。
+        </div>
       </div></div>
 
-      {/* 概览 + 子tab */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 6 }}>
-          {([["list", "名单"], ["patterns", "取名规律"]] as const).map(([k, lbl]) => (
-            <button key={k} className={sub === k ? "btn-primary" : "btn"}
-              style={{ fontSize: 12, padding: "5px 14px", borderRadius: 20 }}
-              onClick={() => setSub(k)}>{lbl}</button>
-          ))}
-        </div>
-        {stats && (
-          <div style={{ fontSize: 11, color: "var(--text-tertiary)", display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <span>共 <strong style={{ color: "var(--text-secondary)" }}>{stats.total}</strong> 名</span>
-            <span>中文 {stats.by_kind?.chinese ?? 0} · 日文 {stats.by_kind?.japanese ?? 0} · 西方 {stats.by_kind?.western ?? 0}</span>
-            <span>♂ {stats.by_gender?.male ?? 0} · ♀ {stats.by_gender?.female ?? 0}</span>
-          </div>
-        )}
-      </div>
-
-      {sub === "patterns" ? <NamingPatternsPanel /> : (
-        <>
-          {/* 工具栏（分类已按 section 分组，无需筛选下拉） */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <input className="input" value={q} onChange={e => setQ(e.target.value)}
-              placeholder="搜索全名/姓/名…" style={{ flex: 1, minWidth: 150, maxWidth: 260, padding: "7px 12px" }} />
-            <select className="select" value={order} onChange={e => setOrder(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
-              <option value="name">按名称</option>
-              <option value="recent">按最近</option>
-            </select>
-            <input className="input" value={newName} onChange={e => setNewName(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") add(); }}
-              placeholder="新增全名" style={{ width: 130, padding: "7px 12px" }} />
-            <button className="btn-primary" disabled={busy || newName.trim().length < 2} onClick={add}
-              style={{ fontSize: 12, padding: "7px 14px" }}>添加</button>
-          </div>
-
-          {/* 四个可展开/收起的分类 section */}
-          {KINDS.map(([kind, label]) => {
-            const sec = byKind[kind];
-            const items = sec?.items || [];
-            const open = !collapsed[kind];
-            return (
-              <div key={kind} className="card">
-                <button onClick={() => setCollapsed(p => ({ ...p, [kind]: !p[kind] }))}
-                  className="card-header" style={{ display: "flex", alignItems: "center", gap: 8, width: "100%",
-                    background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
-                  <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>{open ? "▾" : "▸"}</span>
-                  <h3 style={{ margin: 0, fontSize: 14 }}>{label}</h3>
-                  <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)" }}>{sec?.total ?? 0}</span>
-                </button>
-                {open && (
-                  items.length === 0 ? (
-                    <div className="card-body"><div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                      {q ? `没有匹配「${q}」的${label}。` : `暂无${label} — 刷新人名库后由 LTP 从正文抽取。`}
-                    </div></div>
-                  ) : (
-                    <div className="card-body" style={{ padding: 0 }}>
-                      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse", tableLayout: "fixed" }}>
-                        <colgroup>
-                          <col style={{ width: "46%" }} />
-                          <col style={{ width: "18%" }} />
-                          <col style={{ width: "20%" }} />
-                          <col style={{ width: "16%" }} />
-                        </colgroup>
-                        <tbody>
-                          {items.map((it: any) => (
-                            <React.Fragment key={it.name_id}>
-                              <tr style={{ borderTop: "1px solid var(--border)" }}>
-                                <td style={{ padding: "6px 10px", fontWeight: 600 }}>
-                                  {it.full_name}
-                                  {it.gender === "male" ? (
-                                    <span style={{ marginLeft: 6, fontSize: 12, fontWeight: 400, color: "var(--cyan)" }} title="男">♂</span>
-                                  ) : it.gender === "female" ? (
-                                    <span style={{ marginLeft: 6, fontSize: 12, fontWeight: 400, color: "#f472b6" }} title="女">♀</span>
-                                  ) : null}
-                                  {it.example_sentence ? (
-                                    <div onClick={() => setExpanded(p => ({ ...p, [it.name_id]: !p[it.name_id] }))}
-                                      style={{ fontWeight: 400, fontSize: 11, color: "var(--text-tertiary)", marginTop: 2, cursor: "pointer",
-                                        overflow: "hidden", textOverflow: "ellipsis",
-                                        whiteSpace: expanded[it.name_id] ? "normal" : "nowrap",
-                                        wordBreak: expanded[it.name_id] ? "break-word" : "normal",
-                                        lineHeight: expanded[it.name_id] ? 1.6 : 1.2 }}
-                                      title={expanded[it.name_id] ? "收起" : "点击展开原句"}>
-                                      {expanded[it.name_id] ? "▾" : "▸"} 例句：{highlightWord(it.example_sentence, it.full_name)}
-                                    </div>
-                                  ) : null}
-                                </td>
-                                <td style={{ padding: "6px 10px", color: "var(--text-secondary)" }}>{it.surname || "—"} / {it.given_name || "—"}</td>
-                                <td style={{ padding: "6px 10px", color: "var(--text-tertiary)", fontSize: 11 }}>
-                                  {it.source === "seed" ? "种子" : it.source === "ltp_ner" ? "LTP" : it.source === "user" ? "用户" : it.source}
-                                  {it.source_category ? ` · ${it.source_category}` : ""}
-                                </td>
-                                <td style={{ padding: "6px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
-                                  <button className="btn" disabled={busy} onClick={() => startEdit(it)}
-                                    style={{ fontSize: 10, padding: "2px 8px", marginRight: 4 }}>编辑</button>
-                                  <button className="btn" disabled={busy} onClick={() => remove(it.full_name)}
-                                    style={{ fontSize: 10, padding: "2px 8px" }}>删除</button>
-                                </td>
-                              </tr>
-                              {editId === it.name_id && (
-                                <tr style={{ background: "var(--bg-surface-2)" }}>
-                                  <td colSpan={4} style={{ padding: "8px 10px" }}>
-                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                                      <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>全名</span>
-                                      <input className="input" value={editName} onChange={e => setEditName(e.target.value)}
-                                        style={{ width: 110, padding: "4px 8px", fontSize: 12 }} />
-                                      <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>分类</span>
-                                      <select className="select" value={editKind} onChange={e => setEditKind(e.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
-                                        {KINDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-                                      </select>
-                                      <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>性别</span>
-                                      <select className="select" value={editGender} onChange={e => setEditGender(e.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
-                                        <option value="">中性/未知</option>
-                                        <option value="male">男</option>
-                                        <option value="female">女</option>
-                                      </select>
-                                      <input className="input" value={editSent} onChange={e => setEditSent(e.target.value)}
-                                        placeholder="例句" style={{ flex: 1, minWidth: 140, padding: "4px 8px", fontSize: 12 }} />
-                                      <button className="btn-primary" disabled={busy} onClick={saveEdit}
-                                        style={{ fontSize: 11, padding: "4px 12px" }}>保存</button>
-                                      <button className="btn" disabled={busy} onClick={() => setEditId(null)}
-                                        style={{ fontSize: 11, padding: "4px 12px" }}>取消</button>
-                                    </div>
-                                  </td>
-                                </tr>
-                              )}
-                            </React.Fragment>
-                          ))}
-                        </tbody>
-                      </table>
-                      {(() => {
-                        const total = sec?.total || 0;
-                        const page = pages[kind] || 0;
-                        const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-                        if (total <= PAGE_SIZE) return null;
-                        return (
-                          <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-tertiary)", borderTop: "1px solid var(--border)",
-                            display: "flex", alignItems: "center", gap: 10, justifyContent: "flex-end" }}>
-                            <span>共 {total} 条 · 第 {page + 1}/{totalPages} 页</span>
-                            <button className="btn" disabled={page <= 0}
-                              onClick={() => setPages(p => ({ ...p, [kind]: Math.max(0, (p[kind] || 0) - 1) }))}
-                              style={{ fontSize: 11, padding: "2px 10px" }}>上一页</button>
-                            <button className="btn" disabled={page >= totalPages - 1}
-                              onClick={() => setPages(p => ({ ...p, [kind]: (p[kind] || 0) + 1 }))}
-                              style={{ fontSize: 11, padding: "2px 10px" }}>下一页</button>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  )
-                )}
-              </div>
-            );
-          })}
-        </>
-      )}
+      {/* 取名规律（保留） */}
+      <NamingPatternsPanel />
     </div>
   );
 }
