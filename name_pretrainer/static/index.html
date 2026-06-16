@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>InkOctoBot 人名识别预训练器</title>
+<style>
+  :root{--bg:#0f1115;--surface:#171a21;--surface2:#1f232c;--border:#2a2f3a;--text:#e6e8ec;
+    --muted:#9aa3b2;--dim:#6b7280;--accent:#7c9cff;--jade:#4ade80;--gold:#fbbf24;--error:#f87171;--cyan:#22d3ee;--pink:#f472b6;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1100px;margin:0 auto;padding:18px;}
+  h1{font-size:18px;margin:0 0 12px;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:14px;}
+  .card .body{padding:12px 14px;}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+  .spacer{margin-left:auto;}
+  input,select,button{font:inherit;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 10px;}
+  input:focus,select:focus{outline:1px solid var(--accent);}
+  button{cursor:pointer;}
+  button.primary{background:var(--accent);color:#0b1020;border-color:var(--accent);font-weight:600;}
+  button.danger{color:var(--error);border-color:var(--error);}
+  button:disabled{opacity:.5;cursor:not-allowed;}
+  .muted{color:var(--muted);} .dim{color:var(--dim);font-size:12px;}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border:1px solid var(--border);border-radius:10px;}
+  table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px;}
+  td{padding:6px 10px;border-top:1px solid var(--border);vertical-align:top;}
+  .ex{font-size:11.5px;color:var(--muted);margin-top:2px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .ex.open{white-space:normal;word-break:break-word;}
+  .sec h3{margin:0;font-size:14px;display:inline;}
+  .sec-hd{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;user-select:none;}
+  .bar{height:8px;background:var(--surface2);border-radius:4px;overflow:hidden;}
+  .bar > div{height:100%;background:var(--accent);transition:width .3s;}
+  .gen-name{display:inline-flex;align-items:center;gap:4px;font-size:13px;padding:5px 12px;margin:3px;border-radius:6px;}
+  .chip{font-size:12px;padding:1px 7px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:var(--surface2);margin:2px;display:inline-block;}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border);
+    padding:8px 16px;border-radius:8px;z-index:99;opacity:0;transition:opacity .25s;}
+  .toast.show{opacity:1;}
+  .male{color:var(--cyan);} .female{color:var(--pink);}
+  a.link{color:var(--accent);cursor:pointer;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🐙 InkOctoBot 人名识别预训练器 <span class="dim">基于市场数据库的 LTP 人名抽取 · 独立工具</span></h1>
+
+  <!-- 配置 + 后端 + 预训练 -->
+  <div class="card"><div class="body">
+    <div class="row">
+      <span class="muted">市场数据库</span>
+      <input id="crawler" style="flex:1;min-width:240px" placeholder="爬虫库 sqlite 路径，如 .../market.db" />
+      <button onclick="saveCfg()">保存路径</button>
+      <span id="cfgState" class="dim"></span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span>识别后端 <strong id="backend">…</strong></span>
+      <span id="processed" class="dim"></span>
+      <div class="spacer"></div>
+      <button class="primary" id="trainBtn" onclick="pretrain()">运行预训练 / 增量更新</button>
+    </div>
+    <div id="backendReason" class="dim" style="margin-top:6px"></div>
+    <div id="ltpErr" style="color:var(--error);margin-top:6px;display:none"></div>
+    <div id="progWrap" style="margin-top:10px;display:none">
+      <div class="bar"><div id="progBar" style="width:0%"></div></div>
+      <div id="progText" class="dim" style="margin-top:4px"></div>
+    </div>
+  </div></div>
+
+  <!-- 工具栏 + 统计 -->
+  <div class="card"><div class="body">
+    <div class="row">
+      <input id="q" placeholder="搜索全名/姓/名…" style="flex:1;min-width:160px" oninput="debouncedReload()" />
+      <select id="order" onchange="reload()"><option value="name">按名称</option><option value="recent">按最近</option></select>
+      <input id="newName" placeholder="新增全名" style="width:120px" onkeydown="if(event.key==='Enter')addName()" />
+      <button onclick="addName()">添加</button>
+      <div class="spacer"></div>
+      <input id="expPath" placeholder="导出路径(可空=下载)" style="width:170px" />
+      <button onclick="doExport()">导出</button>
+      <label class="chip" style="border-color:var(--accent)">导入<input type="file" id="impFile" accept=".json,.txt" style="display:none" onchange="doImport(event)" /></label>
+      <button onclick="reclassify()" title="按最新规则归位日文/西方名">重新分类</button>
+      <button class="danger" onclick="clearLib()">清空</button>
+    </div>
+    <div id="stats" class="dim" style="margin-top:8px"></div>
+  </div></div>
+
+  <!-- 取名 -->
+  <div class="card"><div class="sec-hd" onclick="toggle('genBody')"><span id="genBody-i">▸</span><h3>取名 · 基于人名库重组生成</h3></div>
+    <div class="body" id="genBody" style="display:none">
+      <div class="row">
+        <span class="muted">分类</span>
+        <select id="gKind"><option value="chinese">中文名</option><option value="japanese">日文名</option><option value="western">西方名</option></select>
+        <span class="muted">性别</span>
+        <select id="gGender"><option value="">不限</option><option value="male">男</option><option value="female">女</option></select>
+        <span class="muted">姓氏</span><input id="gSurname" placeholder="可空" style="width:70px" />
+        <span class="muted">题材</span><input id="gCat" placeholder="如 玄幻(可空)" style="width:100px" />
+        <span class="muted">数量</span><input id="gCount" type="number" value="20" min="1" max="100" style="width:60px" />
+        <button class="primary" onclick="generate()">生成</button>
+        <button onclick="copyAllGen()">全部复制</button>
+      </div>
+      <div id="genNote" class="dim" style="margin-top:6px"></div>
+      <div id="genOut" style="margin-top:8px"></div>
+      <div style="margin-top:8px"><a class="link" onclick="toggle('charBody')"><span id="charBody-i">▸</span> 调整性别用字</a>
+        <div id="charBody" style="display:none;margin-top:8px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 名单 sections -->
+  <div id="sections"></div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script>
+const KINDS=[["chinese","中文名"],["japanese","日文名"],["western","西方名"]];
+const PAGE=100;
+let pages={chinese:0,japanese:0,western:0};
+let collapsed={chinese:false,japanese:true,western:true};
+let expanded={};            // name_id -> bool (例句展开)
+let editing=null;           // name_id 正在编辑
+let pollTimer=null;
+const $=id=>document.getElementById(id);
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800);}
+async function jget(u){const r=await fetch(u);if(!r.ok)throw new Error((await r.json()).detail||r.status);return r.json();}
+async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.status);return r.json();}
+function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function hl(text,word){text=esc(text);if(!word)return text;return text.split(esc(word)).join('<b style="color:var(--gold)">'+esc(word)+'</b>');}
+function toggle(id){const e=$(id);const i=$(id+'-i');const open=e.style.display==='none';e.style.display=open?'':'none';if(i)i.textContent=open?'▾':'▸';if(id.startsWith('charBody')&&open)loadChars();}
+
+// ── 配置 + 后端 ──
+async function loadCfg(){try{const c=await jget('/api/config');$('crawler').value=c.crawler_db||'';
+  $('cfgState').textContent=c.crawler_db?(c.crawler_exists?'✓ 已找到':'✗ 文件不存在'):'未配置';
+  $('cfgState').style.color=c.crawler_exists?'var(--jade)':'var(--gold)';}catch(e){}}
+async function saveCfg(){await jpost('/api/config',{crawler_db:$('crawler').value.trim()});toast('已保存');loadCfg();}
+async function loadStatus(){try{const s=await jget('/api/ner-status');
+  const m={ltp_gpu:'LTP · GPU',ltp_cpu:'LTP · CPU',seed:'LTP 未就绪'};
+  $('backend').textContent=m[s.backend]||s.backend;$('backend').style.color=s.uses_ltp?'var(--jade)':'var(--gold)';
+  $('backendReason').textContent=s.reason||'';
+  const err=s.ltp_load_error||s.ltp_import_error||s.ltp_ner_error||'';
+  $('ltpErr').style.display=err?'':'none';$('ltpErr').textContent=err?('LTP 报错：'+err):'';
+}catch(e){}}
+
+// ── 预训练 ──
+async function pretrain(){try{const r=await jpost('/api/pretrain',{});toast(r.started?'已开始（后台运行）…':'已在进行中');startPoll();}
+  catch(e){toast('启动失败：'+e.message);}}
+function startPoll(){if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval(pollStatus,2000);pollStatus();}
+async function pollStatus(){try{const s=await jget('/api/pretrain-status');const p=s.progress||{};
+  $('processed').textContent='已处理 '+(s.books_processed??'—')+' 本';
+  if(p.running){$('progWrap').style.display='';$('progBar').style.width=(p.pct||0)+'%';
+    $('progText').textContent='NER 处理中 '+p.done+' / '+p.total+'（'+(p.pct||0)+'%）· 已抽 '+p.names+' 名';
+    $('trainBtn').disabled=true;}
+  else{$('progWrap').style.display='none';$('trainBtn').disabled=false;if(pollTimer){clearInterval(pollTimer);pollTimer=null;reload();loadStatus();}}
+}catch(e){}}
+
+// ── 名单 ──
+let debTimer=null;function debouncedReload(){clearTimeout(debTimer);pages={chinese:0,japanese:0,western:0};debTimer=setTimeout(reload,250);}
+async function reload(){
+  const q=$('q').value.trim(),order=$('order').value;
+  const data={};
+  await Promise.all(KINDS.map(async([k])=>{
+    data[k]=await jget(`/api/names?kind=${k}&q=${encodeURIComponent(q)}&order=${order}&limit=${PAGE}&offset=${pages[k]*PAGE}`);}));
+  renderSections(data);
+  try{const st=await jget('/api/stats');
+    $('stats').innerHTML=`共 <b>${st.total}</b> 名 &nbsp; 中文 ${st.by_kind?.chinese||0} · 日文 ${st.by_kind?.japanese||0} · 西方 ${st.by_kind?.western||0} &nbsp; ♂ ${st.by_gender?.male||0} · ♀ ${st.by_gender?.female||0}`;}catch(e){}
+}
+function genderBadge(g){return g==='male'?'<span class="male" title="男">♂</span>':g==='female'?'<span class="female" title="女">♀</span>':'';}
+function renderSections(data){
+  $('sections').innerHTML=KINDS.map(([k,label])=>{
+    const sec=data[k]||{items:[],total:0};const open=!collapsed[k];const tp=Math.max(1,Math.ceil((sec.total||0)/PAGE));const pg=pages[k];
+    const rows=(sec.items||[]).map(it=>rowHtml(it,k)).join('');
+    const pager=sec.total>PAGE?`<div class="row" style="justify-content:flex-end;padding:8px 10px"><span class="dim">共 ${sec.total} · 第 ${pg+1}/${tp} 页</span>
+      <button ${pg<=0?'disabled':''} onclick="setPage('${k}',${pg-1})">上一页</button>
+      <button ${pg>=tp-1?'disabled':''} onclick="setPage('${k}',${pg+1})">下一页</button></div>`:'';
+    return `<div class="card sec"><div class="sec-hd" onclick="collapse('${k}')"><span>${open?'▾':'▸'}</span><h3>${label}</h3><span class="dim">${sec.total||0}</span></div>
+      ${open?(sec.items&&sec.items.length?`<table>${rows}</table>${pager}`:`<div class="body dim">${$('q').value?'无匹配':'暂无 —— 运行预训练后由 LTP 从正文抽取'}</div>`):''}</div>`;
+  }).join('');
+}
+function rowHtml(it,k){
+  const exOpen=expanded[it.name_id];
+  const ex=it.example_sentence?`<div class="ex ${exOpen?'open':''}" onclick="toggleEx('${it.name_id}')">${exOpen?'▾':'▸'} 例句：${hl(it.example_sentence,it.full_name)}</div>`:'';
+  let editRow='';
+  if(editing===it.name_id){
+    editRow=`<tr><td colspan="4" style="background:var(--surface2)">
+      <div class="row">
+        <span class="muted">全名</span><input id="e_fn" value="${esc(it.full_name)}" style="width:110px"/>
+        <span class="muted">分类</span><select id="e_kind">${KINDS.map(([kk,ll])=>`<option value="${kk}" ${it.name_kind===kk?'selected':''}>${ll}</option>`).join('')}</select>
+        <span class="muted">性别</span><select id="e_gender"><option value="">中性/未知</option><option value="male" ${it.gender==='male'?'selected':''}>男</option><option value="female" ${it.gender==='female'?'selected':''}>女</option></select>
+        <input id="e_ex" value="${esc(it.example_sentence||'')}" placeholder="例句" style="flex:1;min-width:140px"/>
+        <button class="primary" onclick="saveEdit('${it.name_id}')">保存</button><button onclick="editing=null;reload()">取消</button>
+      </div></td></tr>`;
+  }
+  return `<tr>
+    <td style="width:46%;font-weight:600">${esc(it.full_name)} ${genderBadge(it.gender)}${ex}</td>
+    <td style="width:18%" class="muted">${esc(it.surname||'—')} / ${esc(it.given_name||'—')}</td>
+    <td style="width:20%" class="dim">${it.source==='seed'?'种子':it.source==='ltp_ner'?'LTP':it.source==='user'?'用户':esc(it.source)}${it.source_category?' · '+esc(it.source_category):''}</td>
+    <td style="width:16%;text-align:right;white-space:nowrap"><button onclick="startEdit('${it.name_id}')" style="padding:2px 8px">编辑</button> <button onclick="removeName('${esc(it.full_name)}')" style="padding:2px 8px">删除</button></td>
+  </tr>${editRow}`;
+}
+function collapse(k){collapsed[k]=!collapsed[k];reload();}
+function setPage(k,p){pages[k]=Math.max(0,p);reload();}
+function toggleEx(id){expanded[id]=!expanded[id];reload();}
+let _rowsCache={};
+function startEdit(id){editing=id;reload();}
+async function saveEdit(id){try{await jpost('/api/names/edit',{name_id:id,full_name:$('e_fn').value.trim(),name_kind:$('e_kind').value,gender:$('e_gender').value,example_sentence:$('e_ex').value});editing=null;toast('已保存');reload();}catch(e){toast('保存失败：'+e.message);}}
+async function addName(){const fn=$('newName').value.trim();if(fn.length<2){toast('请填完整人名(≥2字)');return;}try{await jpost('/api/names/add',{full_name:fn});$('newName').value='';toast('已添加');reload();}catch(e){toast('添加失败：'+e.message);}}
+async function removeName(fn){if(!confirm('删除「'+fn+'」？删除即拉黑，不会被再次抽回。'))return;try{await jpost('/api/names/remove',{full_name:fn});reload();}catch(e){toast('删除失败：'+e.message);}}
+async function reclassify(){try{const r=await jpost('/api/reclassify',{});toast('已重新分类（'+r.updated+' 条）');reload();}catch(e){toast('失败：'+e.message);}}
+async function clearLib(){if(!confirm('确定清空人名库？不可撤销。'))return;try{const r=await jpost('/api/clear',{});toast('已清空（'+(r.removed||0)+' 条）');reload();}catch(e){toast('失败：'+e.message);}}
+
+// ── 导入导出 ──
+async function doExport(){const path=$('expPath').value.trim();try{
+  if(path){const r=await jpost('/api/export-to-path',{path,format:'json'});toast('已导出 '+r.count+' 条到 '+r.path);return;}
+  const res=await fetch('/api/export?format=json');const blob=new Blob([await res.text()],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='name_library.json';a.click();URL.revokeObjectURL(a.href);toast('已导出');
+}catch(e){toast('导出失败：'+e.message);}}
+async function doImport(ev){const f=ev.target.files[0];if(!f)return;try{const content=await f.text();const r=await jpost('/api/import',{content});toast('导入：新增 '+r.added+'，补充 '+r.updated+'，跳过 '+r.skipped);reload();}catch(e){toast('导入失败：'+e.message);}ev.target.value='';}
+
+// ── 取名 ──
+let lastGen=[];
+async function generate(){try{const r=await jpost('/api/generate',{kind:$('gKind').value,gender:$('gGender').value,surname:$('gSurname').value.trim(),category:$('gCat').value.trim(),count:+$('gCount').value});
+  lastGen=r.names||[];$('genNote').textContent=r.note||'';
+  $('genOut').innerHTML=lastGen.map(n=>`<button class="gen-name" onclick="copyName('${esc(n.full_name)}')" title="点击复制">${esc(n.full_name)} ${genderBadge(n.gender)}</button>`).join('')||'<span class="dim">无</span>';
+}catch(e){toast('生成失败：'+e.message);}}
+function copyName(n){navigator.clipboard.writeText(n).then(()=>toast('已复制 '+n),()=>toast('复制失败'));}
+function copyAllGen(){if(!lastGen.length)return;navigator.clipboard.writeText(lastGen.map(n=>n.full_name).join('\n')).then(()=>toast('已复制 '+lastGen.length+' 个'),()=>toast('复制失败'));}
+
+// ── 性别用字 ──
+async function loadChars(){const mk=await jget('/api/wordlist?list=male_name_chars');const fk=await jget('/api/wordlist?list=female_name_chars');
+  $('charBody').innerHTML=[['male_name_chars','男性用字','male',mk],['female_name_chars','女性用字','female',fk]].map(([list,label,cls,d])=>
+    `<div style="margin-bottom:8px"><div class="row"><b class="${cls}">${label}</b><span class="dim">${d.total} 字</span>
+      <input id="nc_${list}" placeholder="加字" style="width:70px;margin-left:auto" onkeydown="if(event.key==='Enter')addChar('${list}')"/>
+      <button onclick="addChar('${list}')">添加</button></div>
+      <div style="margin-top:4px;max-height:120px;overflow:auto">${(d.items||[]).map(i=>`<span class="chip" onclick="rmChar('${list}','${esc(i.word)}')" title="点击删除">${esc(i.word)}</span>`).join('')}</div></div>`
+  ).join('')+'<div class="dim">点字即删除；改完重新「生成」即按新字表判性别。</div>';}
+async function addChar(list){const v=$('nc_'+list).value.trim();if(!v)return;await jpost('/api/wordlist/add',{list,word:v});loadChars();}
+async function rmChar(list,w){await jpost('/api/wordlist/remove',{list,word:w});loadChars();}
+
+// ── init ──
+(async function(){await loadCfg();await loadStatus();await reload();
+  const s=await jget('/api/pretrain-status').catch(()=>({}));if(s.running)startPoll();})();
+</script>
+</body>
+</html>

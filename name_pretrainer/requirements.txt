@@ -1,0 +1,10 @@
+# 人名识别预训练器依赖。LTP 4.2.x 需要兼容版 transformers（新版 5.x 会移除
+# batch_encode_plus；代码内已有兼容补丁，但锁版更稳）。
+fastapi>=0.110
+uvicorn>=0.27
+ltp>=4.2.0
+torch
+transformers>=4.26,<4.41
+tokenizers
+huggingface_hub
+psutil
