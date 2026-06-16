@@ -1344,10 +1344,10 @@ function NameLibraryView() {
   const [order, setOrder] = React.useState("name");
   const [byKind, setByKind] = React.useState<Record<string, any>>({});   // 按分类分组
   const [pages, setPages] = React.useState<Record<string, number>>(
-    { chinese: 0, japanese: 0, western: 0, nickname: 0 });               // 每个 section 的页码
+    { chinese: 0, japanese: 0, western: 0 });                            // 每个 section 的页码
   const [exportPath, setExportPath] = React.useState("");                // 导出目标路径（可空=下载）
   const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>(
-    { japanese: true, western: true, nickname: true });                  // 默认只展开中文
+    { japanese: true, western: true });                                  // 默认只展开中文
   const [stats, setStats] = React.useState<any>(null);
   const [status, setStatus] = React.useState<any>(null);
   const [newName, setNewName] = React.useState("");
@@ -1356,17 +1356,17 @@ function NameLibraryView() {
   const [editName, setEditName] = React.useState("");
   const [editSent, setEditSent] = React.useState("");
   const [editKind, setEditKind] = React.useState("chinese");
-  const [editAlias, setEditAlias] = React.useState("");
+  const [editGender, setEditGender] = React.useState("");
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});  // 展开看原句
   const fileRef = React.useRef<HTMLInputElement>(null);
   const PAGE_SIZE = 100;     // 每个 section 每页 100 条，翻页看后续
   const KINDS: [string, string][] = [
-    ["chinese", "中文名"], ["japanese", "日文名"], ["western", "西方名"], ["nickname", "昵称"],
+    ["chinese", "中文名"], ["japanese", "日文名"], ["western", "西方名"],
   ];
 
   const reload = React.useCallback(async () => {
     try {
-      const kinds = ["chinese", "japanese", "western", "nickname"];
+      const kinds = ["chinese", "japanese", "western"];
       const results = await Promise.all(kinds.map(k => {
         const params = new URLSearchParams({
           q, order, kind: k, limit: String(PAGE_SIZE),
@@ -1381,7 +1381,7 @@ function NameLibraryView() {
     } catch (e: any) { toast(`加载人名库失败：${e.message}`, "error"); }
   }, [q, order, pages, toast]);
   // 搜索词/排序变化 → 各 section 回到第 1 页。
-  React.useEffect(() => { setPages({ chinese: 0, japanese: 0, western: 0, nickname: 0 }); }, [q, order]);
+  React.useEffect(() => { setPages({ chinese: 0, japanese: 0, western: 0 }); }, [q, order]);
 
   const reloadStatus = React.useCallback(async () => {
     try { setStatus(await apiGet<any>("/api/analysis/name-library/refresh-status")); } catch { /* ignore */ }
@@ -1419,7 +1419,7 @@ function NameLibraryView() {
   };
   const startEdit = (it: any) => {
     setEditId(it.name_id); setEditName(it.full_name); setEditSent(it.example_sentence || "");
-    setEditKind(it.name_kind || "chinese"); setEditAlias(it.alias_of || "");
+    setEditKind(it.name_kind || "chinese"); setEditGender(it.gender || "");
   };
   const saveEdit = async () => {
     if (editName.trim().length < 2) { toast("人名需 ≥2 字", "error"); return; }
@@ -1427,7 +1427,7 @@ function NameLibraryView() {
     try {
       await apiPost("/api/analysis/name-library/edit", {
         name_id: editId, full_name: editName.trim(), example_sentence: editSent,
-        name_kind: editKind, alias_of: editAlias.trim(),
+        name_kind: editKind, gender: editGender,
       });
       toast("已保存", "success"); setEditId(null); reload();
     } catch (e: any) { toast(`保存失败：${e.message}`, "error"); }
@@ -1585,7 +1585,8 @@ function NameLibraryView() {
         {stats && (
           <div style={{ fontSize: 11, color: "var(--text-tertiary)", display: "flex", gap: 12, flexWrap: "wrap" }}>
             <span>共 <strong style={{ color: "var(--text-secondary)" }}>{stats.total}</strong> 名</span>
-            <span>中文 {stats.by_kind?.chinese ?? 0} · 日文 {stats.by_kind?.japanese ?? 0} · 西方 {stats.by_kind?.western ?? 0} · 昵称 {stats.by_kind?.nickname ?? 0}</span>
+            <span>中文 {stats.by_kind?.chinese ?? 0} · 日文 {stats.by_kind?.japanese ?? 0} · 西方 {stats.by_kind?.western ?? 0}</span>
+            <span>♂ {stats.by_gender?.male ?? 0} · ♀ {stats.by_gender?.female ?? 0}</span>
           </div>
         )}
       </div>
@@ -1635,8 +1636,10 @@ function NameLibraryView() {
                               <tr style={{ borderTop: "1px solid var(--border)" }}>
                                 <td style={{ padding: "6px 10px", fontWeight: 600 }}>
                                   {it.full_name}
-                                  {kind === "nickname" && it.alias_of ? (
-                                    <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 400, color: "var(--accent)" }}>→ 本名 {it.alias_of}</span>
+                                  {it.gender === "male" ? (
+                                    <span style={{ marginLeft: 6, fontSize: 12, fontWeight: 400, color: "var(--cyan)" }} title="男">♂</span>
+                                  ) : it.gender === "female" ? (
+                                    <span style={{ marginLeft: 6, fontSize: 12, fontWeight: 400, color: "#f472b6" }} title="女">♀</span>
                                   ) : null}
                                   {it.example_sentence ? (
                                     <div onClick={() => setExpanded(p => ({ ...p, [it.name_id]: !p[it.name_id] }))}
@@ -1673,13 +1676,12 @@ function NameLibraryView() {
                                       <select className="select" value={editKind} onChange={e => setEditKind(e.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
                                         {KINDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
                                       </select>
-                                      {editKind === "nickname" && (
-                                        <>
-                                          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>本名</span>
-                                          <input className="input" value={editAlias} onChange={e => setEditAlias(e.target.value)}
-                                            placeholder="如 刘明（可空）" style={{ width: 100, padding: "4px 8px", fontSize: 12 }} />
-                                        </>
-                                      )}
+                                      <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>性别</span>
+                                      <select className="select" value={editGender} onChange={e => setEditGender(e.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
+                                        <option value="">中性/未知</option>
+                                        <option value="male">男</option>
+                                        <option value="female">女</option>
+                                      </select>
                                       <input className="input" value={editSent} onChange={e => setEditSent(e.target.value)}
                                         placeholder="例句" style={{ flex: 1, minWidth: 140, padding: "4px 8px", fontSize: 12 }} />
                                       <button className="btn-primary" disabled={busy} onClick={saveEdit}

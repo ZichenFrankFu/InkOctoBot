@@ -160,6 +160,26 @@ class TestNameLibraryApi:
         assert {i["full_name"] for i in p1["items"]}.isdisjoint(
             {i["full_name"] for i in p2["items"]})   # 翻页不重叠
 
+    def test_name_generator_endpoint(self, env) -> None:
+        client, proj, _ = env
+        from ui.backend.app.services.market_extractor import name_library as nl
+        nl.seed_if_empty(proj)
+        r = client.post("/api/analysis/name-generator",
+                        json={"kind": "chinese", "gender": "male", "count": 6})
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body["names"], list) and len(body["names"]) >= 1
+        assert all(n["name_kind"] == "chinese" for n in body["names"])
+
+    def test_edit_sets_gender_and_stats_has_by_gender(self, env) -> None:
+        client, proj, _ = env
+        from ui.backend.app.services.market_extractor import name_library as nl
+        row = nl.add_name(proj, "王芳", source="user")
+        r = client.post("/api/analysis/name-library/edit",
+                        json={"name_id": row["name_id"], "gender": "female"})
+        assert r.status_code == 200 and r.json()["name"]["gender"] == "female"
+        assert "by_gender" in client.get("/api/analysis/name-library/stats").json()
+
     def test_remove_blocklists_so_ner_wont_readd(self, env) -> None:
         client, proj, _ = env
         from ui.backend.app.services.market_extractor import name_library as nl

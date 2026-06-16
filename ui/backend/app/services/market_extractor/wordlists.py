@@ -41,6 +41,8 @@ _FILES = {
     "western_names": "western_names.txt",
     "japanese_surnames": "japanese_surnames.txt",
     "name_blocklist": "name_blocklist.txt",
+    "male_name_chars": "male_name_chars.txt",
+    "female_name_chars": "female_name_chars.txt",
 }
 
 # Human labels for the API / UI (资源管理 tab) and the targets a user may CRUD.
@@ -48,6 +50,8 @@ LIST_LABELS = {
     "common_words": "常用词",
     "surnames": "姓",
     "given_names": "名",
+    "male_name_chars": "男性用字",
+    "female_name_chars": "女性用字",
 }
 
 
@@ -162,6 +166,22 @@ def load_japanese_surnames() -> frozenset[str]:
 def load_name_blocklist() -> frozenset[str]:
     """人名识别黑名单（网文设定/物品/称谓/动词）—— 抽名时剔除 LTP 的误报。"""
     return _effective("name_blocklist")
+
+
+def load_male_name_chars() -> frozenset[str]:
+    """男性名字常用字（单字集合）—— 中文名性别启发；用户可增删。"""
+    chars: set[str] = set()
+    for tok in _effective("male_name_chars"):
+        chars.update(tok)
+    return frozenset(chars)
+
+
+def load_female_name_chars() -> frozenset[str]:
+    """女性名字常用字（单字集合）—— 中文名性别启发；用户可增删。"""
+    chars: set[str] = set()
+    for tok in _effective("female_name_chars"):
+        chars.update(tok)
+    return frozenset(chars)
 
 
 def load_surnames() -> frozenset[str]:

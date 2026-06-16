@@ -385,7 +385,8 @@ def cache_evict_expired():
 # ── 词表资源管理 (人名 / 常用词) ── 「资源管理」tab CRUD + 高频词一键归类。
 # 所有调用统一走 wordlists.py（resources/wordlists/*.txt + 用户 overlay）。
 
-_WORDLIST_OK = {"surnames", "given_names", "common_words"}
+_WORDLIST_OK = {"surnames", "given_names", "common_words",
+                "male_name_chars", "female_name_chars"}
 
 
 def _wordlist_after_edit() -> None:
@@ -667,6 +668,8 @@ def name_library_edit(body: dict = Body(...)):
         kwargs["is_nonstandard"] = int(body["is_nonstandard"])
     if "name_kind" in body:
         kwargs["name_kind"] = str(body["name_kind"])
+    if "gender" in body:
+        kwargs["gender"] = str(body["gender"])
     if "alias_of" in body:
         kwargs["alias_of"] = str(body["alias_of"])
     try:
@@ -694,6 +697,21 @@ def name_library_refresh(body: dict = Body(default={})):
 def name_library_refresh_status():
     from ..services.market_extractor import name_refresh as _nr
     return _nr.status(_project_db_path())
+
+
+@router.post("/name-generator")
+def name_generator(body: dict = Body(default={})):
+    """取名：基于人名库按题材/性别/姓氏**重组**出库里没有的新名供复制。
+    body: {kind: chinese|japanese|western, gender: male|female|'', surname, category, count}"""
+    from ..services.market_extractor import name_generator as _ng
+    return _ng.generate_names(
+        _project_db_path(),
+        kind=(body.get("kind") or "chinese"),
+        gender=(body.get("gender") or ""),
+        surname=(body.get("surname") or ""),
+        category=(body.get("category") or ""),
+        count=int(body.get("count") or 20),
+    )
 
 
 @router.post("/ner-test")

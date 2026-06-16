@@ -35,10 +35,16 @@ class TestDerive:
     def test_single_given_flagged(self) -> None:
         assert nl.derive_name_parts("李白")["is_single_given"] == 1
 
-    def test_nickname_kind(self) -> None:
-        p = nl.derive_name_parts("翠翠")        # 叠字 → 昵称
-        assert p["name_kind"] == "nickname"
-        assert p["is_nonstandard"] == 1        # 昵称排除出中文取名规律
+    def test_nickname_kind_removed(self) -> None:
+        # 昵称分类已下线：不再产出 nickname 这个 name_kind。
+        assert nl.derive_name_parts("翠翠")["name_kind"] != "nickname"
+
+    def test_gender_inference(self) -> None:
+        assert nl.derive_name_parts("李伟")["gender"] == "male"
+        assert nl.derive_name_parts("王芳婷")["gender"] == "female"
+        assert nl.derive_name_parts("山田太郎")["gender"] == "male"     # 日文收尾字
+        assert nl.derive_name_parts("乔治")["gender"] == "male"          # 西方词典
+        assert nl.derive_name_parts("玛丽")["gender"] == "female"
 
     def test_western_not_split_as_chinese(self) -> None:
         p = nl.derive_name_parts("乔治")        # 西方名，不可拆成 姓乔+名治
@@ -52,10 +58,10 @@ class TestDerive:
         p = nl.derive_name_parts("山田太郎")
         assert p["name_kind"] == "japanese" and p["surname"] == "山田"
 
-    def test_title_suffix_is_nickname(self) -> None:
-        # 王总 / 李叔 / 统子哥 / 张姐 都是称谓昵称（spec 修复项）。
-        for n in ("王总", "李叔", "统子哥", "张姐"):
-            assert nl.derive_name_parts(n)["name_kind"] == "nickname", n
+    def test_nickname_forms_rejected_not_stored(self) -> None:
+        # 昵称已下线：称谓/叠字/小阿老形态在抽名质量闸被剔除，不入库。
+        for n in ("王总", "李叔", "统子哥", "张姐", "翠翠", "小明", "老李"):
+            assert nl.is_plausible_person_name(n) is False, n
 
     def test_translit_noun_not_western(self) -> None:
         # 「金丹」「查克拉」是网文名词，不应再被音译占比误判成西方名（旧 bug）。
@@ -78,16 +84,16 @@ class TestPlausibleNameGate:
 
 
 class TestImportExport:
-    def test_roundtrip_preserves_kind_alias_example(self, db) -> None:
+    def test_roundtrip_preserves_kind_gender_example(self, db) -> None:
         nl.add_name(db, "李慕白", source="ltp_ner",
                     example_sentence="李慕白说道。", category="玄幻")
-        row = nl.add_name(db, "小明", source="user")
-        nl.edit_name(db, row["name_id"], name_kind="nickname", alias_of="刘明")
+        row = nl.add_name(db, "欧阳菲", source="user")
+        nl.edit_name(db, row["name_id"], gender="female")     # 手动标性别
         exported = nl.export_all(db)
-        assert any(r["full_name"] == "小明" and r["name_kind"] == "nickname"
-                   and r["alias_of"] == "刘明" for r in exported)
+        assert any(r["full_name"] == "欧阳菲" and r["gender"] == "female"
+                   for r in exported)
 
-        # 灌进新库，分类/别名/例句/题材应原样保留。
+        # 灌进新库，分类/性别/例句/题材应原样保留。
         import sqlite3 as _sql
         from storage.market_extractor_schema import ensure_market_extractor_tables
         p2 = db + ".2.db"
@@ -96,14 +102,33 @@ class TestImportExport:
         con.close()
         res = nl.import_records(p2, exported)
         assert res["added"] >= 2
-        got = nl.search_names(p2, "小明")["items"][0]
-        assert got["name_kind"] == "nickname" and got["alias_of"] == "刘明"
+        got = nl.search_names(p2, "欧阳菲")["items"][0]
+        assert got["gender"] == "female"
         lmb = nl.search_names(p2, "李慕白")["items"][0]
         assert lmb["example_sentence"] == "李慕白说道。" and lmb["source_category"] == "玄幻"
 
     def test_import_plain_text_lines(self, db) -> None:
         res = nl.import_records(db, [{"full_name": "韩立"}, {"full_name": "x"}])
         assert res["added"] == 1 and res["skipped"] == 1   # 'x' 非法被跳过
+
+
+class TestNameGenerator:
+    def test_recombines_with_surname_constraint(self, db) -> None:
+        from ui.backend.app.services.market_extractor import name_generator as ng
+        nl.seed_if_empty(db)
+        out = ng.generate_names(db, kind="chinese", surname="慕容", count=6)
+        assert out["count"] >= 1
+        assert all(n["full_name"].startswith("慕容") for n in out["names"])
+        assert all(n["name_kind"] == "chinese" for n in out["names"])
+
+    def test_gender_constraint_and_uniqueness(self, db) -> None:
+        from ui.backend.app.services.market_extractor import name_generator as ng
+        nl.seed_if_empty(db)
+        out = ng.generate_names(db, kind="chinese", gender="female", count=10)
+        names = [n["full_name"] for n in out["names"]]
+        assert len(names) == len(set(names))            # 不重复
+        # 女性约束下不应出现明显男性字（启发式，允许中性）。
+        assert not any("伟" in n or "刚" in n for n in names)
 
 
 class TestSeedAndCrud:

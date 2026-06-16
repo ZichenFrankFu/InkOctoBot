@@ -79,6 +79,8 @@ def _jp_prefix(fn: str, jp_surnames: frozenset[str]) -> str:
 
 
 def _is_nickname(fn: str) -> bool:
+    """昵称形态（已下线昵称分类 —— 抽名时据此**剔除**，不入库）：叠字 / 小阿老前缀 /
+    称谓后缀（王总/李叔/统子哥/张姐）。"""
     if len(fn) == 2 and fn[0] == fn[1]:   # 叠字：翠翠 / 婷婷
         return True
     if 2 <= len(fn) <= 3 and fn[0] in _NICK_PREFIX:  # 小明 / 阿强 / 老李
@@ -88,12 +90,58 @@ def _is_nickname(fn: str) -> bool:
     return False
 
 
-# ─────────── 全名 → 派生字段 + 分类（中文/日文/西方/昵称）───────────
+# ─────────── 性别启发（字启发式；可手动覆盖、字表可增删）───────────
+_JP_MALE_TAIL = frozenset("郎朗夫雄也介彦之吾太树斗健直辉武洋丸藏")
+_JP_FEMALE_TAIL = frozenset("子美惠奈香菜花枝代穗乃织音叶纱莉爱")
+_WEST_MALE = frozenset({
+    "乔治", "约翰", "大卫", "汤姆", "杰克", "威廉", "亨利", "查理", "彼得", "迈克",
+    "詹姆斯", "本杰明", "卢卡斯", "亚瑟", "爱德华", "哈利", "罗恩", "杰森", "瑞恩",
+    "凯文", "布莱恩", "史蒂夫", "马克", "保罗", "安东尼", "丹尼尔", "马修", "约瑟夫",
+    "亚历山大", "尼古拉斯", "维克托", "奥斯卡", "雨果", "路易", "菲利普", "文森特",
+    "卡尔", "弗兰克", "诺亚", "伊森", "西奥多", "阿尔伯特", "欧文", "雷蒙德"})
+_WEST_FEMALE = frozenset({
+    "玛丽", "爱丽丝", "莉莉", "安娜", "苏菲", "艾玛", "伊莎贝拉", "奥利维亚", "夏洛特",
+    "艾娃", "米娅", "罗丝", "贝拉", "赫敏", "凯特", "露西", "薇薇安", "索菲亚", "艾米丽",
+    "艾米", "莉莉安", "格蕾丝", "克莱尔", "黛西", "珍妮", "莎拉", "丽贝卡", "艾琳",
+    "玛格丽特", "维多利亚", "伊丽莎白", "凯瑟琳", "朱莉娅", "娜塔莉", "露娜", "黛安娜",
+    "卡罗琳", "海伦", "琳达", "雪莉", "温迪", "莫妮卡", "蕾切尔", "妮可", "珊曼莎"})
+
+
+def infer_gender(full_name: str, name_kind: str, given_name: str = "") -> str:
+    """字启发式判性别：返回 'male' / 'female' / ''（中性/未知）。中文按名字用字统计、
+    日文按收尾字、西方按常见男女名词典。仅作建议，用户可手动覆盖。"""
+    fn = (full_name or "").strip()
+    if name_kind == "western":
+        if fn in _WEST_MALE:
+            return "male"
+        if fn in _WEST_FEMALE:
+            return "female"
+        return ""
+    if name_kind == "japanese":
+        if fn and fn[-1] in _JP_FEMALE_TAIL:
+            return "female"
+        if fn and fn[-1] in _JP_MALE_TAIL:
+            return "male"
+        return ""
+    # 中文：名字用字男女计数（多者胜，平局/无命中→中性）。
+    given = given_name or fn
+    male = _wl_set("load_male_name_chars")
+    female = _wl_set("load_female_name_chars")
+    m = sum(1 for c in given if c in male)
+    f = sum(1 for c in given if c in female)
+    if m > f:
+        return "male"
+    if f > m:
+        return "female"
+    return ""
+
+
+# ─────────── 全名 → 派生字段 + 分类（中文/日文/西方）───────────
 
 
 def derive_name_parts(full_name: str, surnames: frozenset[str] | None = None) -> dict[str, Any]:
-    """从全名重算姓/名 + **分类** name_kind（chinese/japanese/western/nickname）。
-    分类顺序：西方 → 日文 → 昵称 → 中文，避免「乔治」被误拆成中文姓+名。
+    """从全名重算姓/名 + **分类** name_kind（chinese/japanese/western）+ 性别启发。
+    分类顺序：西方 → 日文 → 中文，避免「乔治」被误拆成中文姓+名（昵称已下线）。
     姓氏/名字表更新后可对全库重跑本函数重建派生字段。"""
     surnames = surnames if surnames is not None else _surnames()
     western = _wl_set("load_western_names")
@@ -113,9 +161,6 @@ def derive_name_parts(full_name: str, surnames: frozenset[str] | None = None) ->
     elif (jp := _jp_prefix(fn, jp_surnames)):
         name_kind, surname_kind, surname = "japanese", "japanese", jp
         given = fn[len(jp):]
-    elif _is_nickname(fn):
-        name_kind, surname_kind = "nickname", "nickname"
-        given = fn
     else:
         # 中文：复姓优先（2-3 字），再单字姓。
         for k in (3, 2):
@@ -126,6 +171,7 @@ def derive_name_parts(full_name: str, surnames: frozenset[str] | None = None) ->
             surname, surname_kind = fn[:1], "single"
         given = fn[len(surname):] if surname else fn
 
+    gender = infer_gender(fn, name_kind, given)
     is_compound = surname_kind == "compound"
     is_single_given = name_kind == "chinese" and bool(surname) and len(given) == 1
     # is_nonstandard 仅用于「中文取名规律」排除：非中文名或无法识别姓氏的中文名都排除。
@@ -136,12 +182,13 @@ def derive_name_parts(full_name: str, surnames: frozenset[str] | None = None) ->
         "given_name": given,
         "surname_kind": surname_kind,
         "name_kind": name_kind,
+        "gender": gender,
         "name_length": length,
         "is_compound_surname": int(is_compound),
         "is_single_given": int(is_single_given),
         "is_nonstandard": int(is_nonstandard),
         "nonstandard_reason": "" if name_kind == "chinese" and surname_kind != "unknown"
-        else {"western": "西方名", "japanese": "日文名", "nickname": "昵称"}.get(name_kind, "无法识别姓氏"),
+        else {"western": "西方名", "japanese": "日文名"}.get(name_kind, "无法识别姓氏"),
     }
 
 
@@ -152,13 +199,16 @@ def is_valid_name(full_name: str) -> bool:
 def is_plausible_person_name(full_name: str) -> bool:
     """抽名质量闸（仅用于 LTP 自动抽取，手动添加不受限）：在 ``is_valid_name`` 基础上
     再剔除 LTP 的常见误报 —— ①命中网文「设定/物品/称谓」黑名单（金丹/甲胄/查克拉/启禀…）；
-    ②以组织/门派/宗族后缀结尾（唐门/宗门/丐帮/刘氏…）。宁可漏，不要脏。"""
+    ②以组织/门派/宗族后缀结尾（唐门/宗门/丐帮/刘氏…）；③昵称形态（叠字/小阿老/王总李叔，
+    昵称已下线、不入库）。宁可漏，不要脏。"""
     fn = (full_name or "").strip()
     if not is_valid_name(fn):
         return False
     if fn in _wl_set("load_name_blocklist"):
         return False
     if len(fn) >= 2 and fn[-1] in _ORG_PLACE_TAIL:
+        return False
+    if _is_nickname(fn):
         return False
     return True
 
@@ -253,13 +303,14 @@ def add_name(
             "(name_id, full_name, surname, given_name, surname_kind, name_length, "
             " is_compound_surname, is_single_given, is_nonstandard, nonstandard_reason, "
             " source, source_work_id, source_work_title, source_platform, source_category, "
-            " source_work_rank, source_work_heat, book_df, example_sentence, name_kind, alias_of) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " source_work_rank, source_work_heat, book_df, example_sentence, name_kind, "
+            " gender, alias_of) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (nid, fn, parts["surname"], parts["given_name"], parts["surname_kind"],
              parts["name_length"], parts["is_compound_surname"], parts["is_single_given"],
              parts["is_nonstandard"], parts["nonstandard_reason"], source, work_id,
              work_title, platform, category, rank, heat, 1 if count_df else 0, ex,
-             parts["name_kind"], (alias_of or "").strip()),
+             parts["name_kind"], parts["gender"], (alias_of or "").strip()),
         )
         con.commit()
         row = con.execute("SELECT * FROM person_name_library WHERE full_name = ?", (fn,)).fetchone()
@@ -270,9 +321,10 @@ def add_name(
 def edit_name(db_path: str, name_id: str, *, full_name: str | None = None,
               example_sentence: str | None = None,
               is_nonstandard: int | None = None,
-              name_kind: str | None = None, alias_of: str | None = None) -> dict | None:
-    """手动编辑一条人名库条目。改全名时自动重算姓/名/分类派生字段；可手动改分类
-    name_kind（中文/日文/西方/昵称）与昵称→本名 alias_of。"""
+              name_kind: str | None = None, alias_of: str | None = None,
+              gender: str | None = None) -> dict | None:
+    """手动编辑一条人名库条目。改全名时自动重算姓/名/分类/性别派生字段；可手动覆盖
+    分类 name_kind（中文/日文/西方）与性别 gender（male/female/''）。"""
     sets: list[str] = []
     params: list = []
     if full_name is not None:
@@ -282,13 +334,16 @@ def edit_name(db_path: str, name_id: str, *, full_name: str | None = None,
         p = derive_name_parts(fn)
         sets += ["full_name=?", "surname=?", "given_name=?", "surname_kind=?",
                  "name_length=?", "is_compound_surname=?", "is_single_given=?",
-                 "is_nonstandard=?", "nonstandard_reason=?", "name_kind=?"]
+                 "is_nonstandard=?", "nonstandard_reason=?", "name_kind=?", "gender=?"]
         params += [fn, p["surname"], p["given_name"], p["surname_kind"], p["name_length"],
                    p["is_compound_surname"], p["is_single_given"], p["is_nonstandard"],
-                   p["nonstandard_reason"], p["name_kind"]]
-    if name_kind is not None and name_kind in ("chinese", "japanese", "western", "nickname"):
+                   p["nonstandard_reason"], p["name_kind"], p["gender"]]
+    if name_kind is not None and name_kind in ("chinese", "japanese", "western"):
         sets.append("name_kind=?")
         params.append(name_kind)
+    if gender is not None and gender in ("male", "female", ""):
+        sets.append("gender=?")             # 手动标性别（覆盖启发式）
+        params.append(gender)
     if alias_of is not None:
         sets.append("alias_of=?")
         params.append(alias_of.strip()[:32])
@@ -423,11 +478,17 @@ def library_stats(db_path: str) -> dict:
                 "SELECT name_kind, COUNT(*) AS c FROM person_name_library GROUP BY name_kind"
             ).fetchall()
         }
+        by_gender = {
+            (r["gender"] or "unknown"): r["c"] for r in con.execute(
+                "SELECT gender, COUNT(*) AS c FROM person_name_library GROUP BY gender"
+            ).fetchall()
+        }
     return {
         "total": row["total"] or 0,
         "nonstandard": row["nonstandard"] or 0,
         "compound_surname": row["compound"] or 0,
         "single_given": row["single_given"] or 0,
+        "by_gender": by_gender,
         "by_source": by_source,
         "by_kind": by_kind,
     }
@@ -470,11 +531,11 @@ def seed_if_empty(db_path: str) -> int:
                     "INSERT OR IGNORE INTO person_name_library "
                     "(name_id, full_name, surname, given_name, surname_kind, name_length, "
                     " is_compound_surname, is_single_given, is_nonstandard, nonstandard_reason, "
-                    " name_kind, source, book_df) VALUES (?,?,?,?,?,?,?,?,?,?,?, 'seed', 0)",
+                    " name_kind, gender, source, book_df) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'seed', 0)",
                     (nid, fn, parts["surname"], parts["given_name"], parts["surname_kind"],
                      parts["name_length"], parts["is_compound_surname"],
                      parts["is_single_given"], parts["is_nonstandard"], parts["nonstandard_reason"],
-                     parts["name_kind"]),
+                     parts["name_kind"], parts["gender"]),
                 )
                 written += 1
             except sqlite3.IntegrityError:
@@ -487,7 +548,7 @@ def seed_if_empty(db_path: str) -> int:
 
 # ─────────── 导入 / 导出（预训练好的清理库可整体迁移、备份、复用）───────────
 
-_EXPORT_FIELDS = ("full_name", "name_kind", "alias_of", "source",
+_EXPORT_FIELDS = ("full_name", "name_kind", "gender", "alias_of", "source",
                   "example_sentence", "source_category", "source_work_title")
 
 
@@ -532,13 +593,14 @@ def import_records(db_path: str, records: list[dict], *,
         if not row:
             skipped += 1
             continue
-        # 导入端尊重导出时的人工分类/别名（如把「乔治」固定为西方名、昵称关联本名）。
+        # 导入端尊重导出时的人工分类/性别（如把「乔治」固定为西方名、手动标的性别）。
         kind = (str(rec.get("name_kind") or "")).strip()
-        alias = (str(rec.get("alias_of") or "")).strip()
-        if kind in ("chinese", "japanese", "western", "nickname") or alias:
+        gender = (str(rec.get("gender") or "")).strip()
+        if kind in ("chinese", "japanese", "western") or gender in ("male", "female"):
             try:
                 edit_name(db_path, row["name_id"],
-                          name_kind=kind or None, alias_of=alias or None)
+                          name_kind=kind if kind in ("chinese", "japanese", "western") else None,
+                          gender=gender if gender in ("male", "female") else None)
             except Exception:
                 pass
         updated += 1 if existed else 0

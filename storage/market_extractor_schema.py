@@ -319,8 +319,9 @@ _DDL: tuple[str, ...] = (
         source_work_heat    REAL,                     -- 来源作品热度
         book_df             INTEGER DEFAULT 0,        -- 去重书数 DF（按 book 不按 snapshot）
         example_sentence    TEXT DEFAULT '',          -- 该名出现的一句例句（来源作品）
-        name_kind           TEXT DEFAULT 'chinese',   -- chinese|japanese|western|nickname
-        alias_of            TEXT DEFAULT '',          -- 昵称→本名（如 小明→刘明）；可空
+        name_kind           TEXT DEFAULT 'chinese',   -- chinese|japanese|western
+        gender              TEXT DEFAULT '',          -- male|female|''(未知/中性)；字启发式+可手动标
+        alias_of            TEXT DEFAULT '',          -- 保留列（昵称已下线）；可空
         first_seen_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -354,6 +355,7 @@ _PNL_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("example_sentence", "TEXT DEFAULT ''"),
     ("name_kind", "TEXT DEFAULT 'chinese'"),
     ("alias_of", "TEXT DEFAULT ''"),
+    ("gender", "TEXT DEFAULT ''"),
 )
 
 

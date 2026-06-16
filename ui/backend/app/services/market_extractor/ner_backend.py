@@ -58,6 +58,25 @@ def _split_sentences(texts: list[str], max_len: int = 180) -> list[str]:
     return out
 
 
+def _context_window(sents: list[str], gi: int, target: int = 130) -> str:
+    """围绕第 gi 句拼一段更长的例句（前后各扩若干句，约 target 字），让人名库的例句
+    更有上下文。人名所在句一定包含在内（前端按全名高亮仍命中）。"""
+    if not (0 <= gi < len(sents)):
+        return ""
+    parts = [sents[gi]]
+    total = len(sents[gi])
+    left, right = gi - 1, gi + 1
+    while total < target:
+        grew = False
+        if right < len(sents) and total + len(sents[right]) <= target + 40:
+            parts.append(sents[right]); total += len(sents[right]); right += 1; grew = True
+        if total < target and left >= 0 and total + len(sents[left]) <= target + 40:
+            parts.insert(0, sents[left]); total += len(sents[left]); left -= 1; grew = True
+        if not grew:
+            break
+    return "。".join(parts) + "。"
+
+
 # 跑 LTP 的最低 CPU 门槛（低于此判为「算力不足」→ 跳过 LTP）。
 _MIN_CPU_CORES = 4
 _MIN_RAM_MB = 4096
@@ -451,7 +470,7 @@ class LtpPipeline:
                     tag = _entity_tag(ent)
                     word = _entity_word(ent, seg)
                     if tag in _LTP_PER_TAGS and word and _CJK_ONLY.match(word):
-                        pairs.append((word, sent))
+                        pairs.append((word, _context_window(sents, i + k)))   # 更长例句
         return pairs
 
     def debug_ner(self, text: str) -> dict:
