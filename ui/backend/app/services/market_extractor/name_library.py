@@ -45,14 +45,28 @@ def _wl_set(loader: str) -> frozenset[str]:
 
 
 _NICK_PREFIX = ("小", "阿", "老")     # 小明 / 阿强 / 老李 …
+# 称谓后缀：姓/名 + 这些字 = 昵称（王总 / 李叔 / 统子哥 / 张姐）。这些字几乎不作中文
+# 名字的收尾字，故可据此判昵称而不误伤真名。
+_NICK_SUFFIX = ("哥", "姐", "叔", "姨", "伯", "婶", "嫂", "爷", "总", "董", "爹", "妈", "爸")
+
+# 组织/门派/宗族后缀：以这些字结尾的实体几乎都是机构/势力而非个人（唐门/宗门/丐帮/
+# 刘氏/慕容世家…）。只收极少作中文名收尾字的，避免误伤（不含 国/堂/宗/山/林/江… 等
+# 可入名的字）。抽名时据此剔除 LTP 误标。
+_ORG_PLACE_TAIL = frozenset(
+    "门派帮会殿宫府寺庙观族氏团盟教营院局厅省市县区乡镇司")
 
 
-def _is_western(fn: str, western: frozenset[str], translit: frozenset[str]) -> bool:
+def _is_western(fn: str, western: frozenset[str], translit: frozenset[str],
+                surnames: frozenset[str], blocklist: frozenset[str]) -> bool:
+    """西方名判定（收紧）：词典命中 / 含间隔号「·」/（保守）长度≥3 且**全部**为音译字
+    且非中文姓氏开头。**不再用「音译字占比」启发**——那会把「查克拉」「金丹」这类网文
+    名词误判成西方名（金/丹/克/拉 都在音译字表里）。"""
     if fn in western:
         return True
-    if len(fn) >= 2:
-        tr = sum(1 for ch in fn if ch in translit)
-        if tr / len(fn) >= 0.6:          # 多数字是音译字 → 西方名
+    if "·" in fn or "・" in fn:           # 乔治·马丁 这类强信号
+        return True
+    if len(fn) >= 3 and fn not in blocklist and fn[0] not in surnames:
+        if all(ch in translit for ch in fn):   # 整名皆音译字（查克拉因「查」不在表→不命中）
             return True
     return False
 
@@ -69,6 +83,8 @@ def _is_nickname(fn: str) -> bool:
         return True
     if 2 <= len(fn) <= 3 and fn[0] in _NICK_PREFIX:  # 小明 / 阿强 / 老李
         return True
+    if 2 <= len(fn) <= 4 and fn[-1] in _NICK_SUFFIX:  # 王总 / 李叔 / 统子哥 / 张姐
+        return True
     return False
 
 
@@ -83,6 +99,7 @@ def derive_name_parts(full_name: str, surnames: frozenset[str] | None = None) ->
     western = _wl_set("load_western_names")
     jp_surnames = _wl_set("load_japanese_surnames")
     translit = _wl_set("load_translit_chars")
+    blocklist = _wl_set("load_name_blocklist")
     fn = (full_name or "").strip()
     length = len(fn)
 
@@ -90,7 +107,7 @@ def derive_name_parts(full_name: str, surnames: frozenset[str] | None = None) ->
     surname_kind = "unknown"
     name_kind = "chinese"
 
-    if _is_western(fn, western, translit):
+    if _is_western(fn, western, translit, surnames, blocklist):
         name_kind, surname_kind = "western", "western"
         given = fn
     elif (jp := _jp_prefix(fn, jp_surnames)):
@@ -130,6 +147,20 @@ def derive_name_parts(full_name: str, surnames: frozenset[str] | None = None) ->
 
 def is_valid_name(full_name: str) -> bool:
     return bool(_CJK_NAME.match((full_name or "").strip()))
+
+
+def is_plausible_person_name(full_name: str) -> bool:
+    """抽名质量闸（仅用于 LTP 自动抽取，手动添加不受限）：在 ``is_valid_name`` 基础上
+    再剔除 LTP 的常见误报 —— ①命中网文「设定/物品/称谓」黑名单（金丹/甲胄/查克拉/启禀…）；
+    ②以组织/门派/宗族后缀结尾（唐门/宗门/丐帮/刘氏…）。宁可漏，不要脏。"""
+    fn = (full_name or "").strip()
+    if not is_valid_name(fn):
+        return False
+    if fn in _wl_set("load_name_blocklist"):
+        return False
+    if len(fn) >= 2 and fn[-1] in _ORG_PLACE_TAIL:
+        return False
+    return True
 
 
 # ─────────── 进程内缓存（剔名 / jieba userdict 用） ───────────
@@ -455,6 +486,68 @@ def seed_if_empty(db_path: str) -> int:
     invalidate_cache(db_path)
     logger.info("seeded person_name_library with %d names", written)
     return written
+
+
+# ─────────── 导入 / 导出（预训练好的清理库可整体迁移、备份、复用）───────────
+
+_EXPORT_FIELDS = ("full_name", "name_kind", "alias_of", "source", "book_df",
+                  "example_sentence", "source_category", "source_work_title")
+
+
+def export_all(db_path: str) -> list[dict]:
+    """导出全部人名为可移植记录（含分类/别名/DF/例句/题材），供备份或迁移到别处。
+    全名权威、姓/名派生字段不导（导入端按姓氏表重算）。"""
+    with sqlite3.connect(db_path) as con:
+        _ensure(con)
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            f"SELECT {', '.join(_EXPORT_FIELDS)} FROM person_name_library "
+            "ORDER BY name_kind, book_df DESC, full_name"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def import_records(db_path: str, records: list[dict], *,
+                   default_source: str = "import") -> dict:
+    """导入人名记录（全名权威，姓/名按本机姓氏表重算）。已存在的全名按需补 DF/例句/
+    分类（不重复计）。``records`` 每条至少含 ``full_name``；其余字段（name_kind/alias_of/
+    example_sentence/source_category）若给则覆盖。返回 {added, updated, skipped}。"""
+    with sqlite3.connect(db_path) as con:
+        _ensure(con)
+        existing = {r[0] for r in con.execute(
+            "SELECT full_name FROM person_name_library").fetchall()}
+    added = updated = skipped = 0
+    for rec in records or []:
+        fn = (str(rec.get("full_name") or "")).strip()
+        if not is_valid_name(fn):
+            skipped += 1
+            continue
+        src = (str(rec.get("source") or "")).strip() or default_source
+        existed = fn in existing
+        existing.add(fn)
+        row = add_name(
+            db_path, fn, source=src,
+            work_title=str(rec.get("source_work_title") or ""),
+            category=str(rec.get("source_category") or ""),
+            example_sentence=str(rec.get("example_sentence") or ""),
+            alias_of=str(rec.get("alias_of") or ""),
+        )
+        if not row:
+            skipped += 1
+            continue
+        # 导入端尊重导出时的人工分类/别名（如把「乔治」固定为西方名、昵称关联本名）。
+        kind = (str(rec.get("name_kind") or "")).strip()
+        alias = (str(rec.get("alias_of") or "")).strip()
+        if kind in ("chinese", "japanese", "western", "nickname") or alias:
+            try:
+                edit_name(db_path, row["name_id"],
+                          name_kind=kind or None, alias_of=alias or None)
+            except Exception:
+                pass
+        updated += 1 if existed else 0
+        added += 0 if existed else 1
+    invalidate_cache(db_path)
+    return {"added": added, "updated": updated, "skipped": skipped}
 
 
 def rebuild_derived(db_path: str) -> int:

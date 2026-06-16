@@ -11,6 +11,11 @@ from storage.market_extractor_schema import ensure_market_extractor_tables
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    # 隔离词表 overlay（含人名黑名单）到 tmp，避免污染真实用户数据目录。
+    monkeypatch.setenv("INKOCTOBOT_WORDLIST_DIR", str(tmp_path / "wordlists"))
+    from ui.backend.app.services.market_extractor import wordlists as _wl
+    _wl._effective.cache_clear()
+
     proj = str(tmp_path / "project.db")
     con = sqlite3.connect(proj)
     ensure_market_extractor_tables(con)
@@ -97,6 +102,37 @@ class TestNameLibraryApi:
         client, *_ = env
         bad = client.post("/api/analysis/name-library/add", json={"full_name": "x"})
         assert bad.status_code == 400
+
+    def test_export_then_import(self, env) -> None:
+        client, proj, _ = env
+        from ui.backend.app.services.market_extractor import name_library as nl
+        nl.add_name(proj, "墨千寻", source="ltp_ner", example_sentence="墨千寻一笑。")
+        ex = client.get("/api/analysis/name-library/export?format=json")
+        assert ex.status_code == 200
+        records = ex.json()
+        assert any(r["full_name"] == "墨千寻" for r in records)
+        # 清空再导回 → 又能搜到（JSON 整库回灌）。
+        client.post("/api/analysis/name-library/clear")
+        imp = client.post("/api/analysis/name-library/import", json={"content": records})
+        assert imp.status_code == 200 and imp.json()["added"] >= 1
+        assert client.get("/api/analysis/name-library?q=墨千寻").json()["total"] >= 1
+
+    def test_export_txt_and_import_lines(self, env) -> None:
+        client, *_ = env
+        client.post("/api/analysis/name-library/add", json={"full_name": "韩立"})
+        txt = client.get("/api/analysis/name-library/export?format=txt")
+        assert txt.status_code == 200 and "韩立" in txt.text
+        imp = client.post("/api/analysis/name-library/import",
+                          json={"content": "诸葛云\n# 注释行\n方源\n"})
+        assert imp.json()["added"] == 2
+
+    def test_remove_blocklists_so_ner_wont_readd(self, env) -> None:
+        client, proj, _ = env
+        from ui.backend.app.services.market_extractor import name_library as nl
+        client.post("/api/analysis/name-library/add", json={"full_name": "错误名"})
+        client.post("/api/analysis/name-library/remove", json={"full_name": "错误名"})
+        # 删除即拉黑：后续 LTP 抽名的质量闸会挡掉它，不会再被抽回。
+        assert nl.is_plausible_person_name("错误名") is False
 
     def test_ner_status_reports_backend(self, env) -> None:
         client, *_ = env

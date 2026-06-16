@@ -497,7 +497,7 @@ def wordlist_remove(body: dict = Body(...)):
 
 @router.get("/name-library")
 def name_library_list(
-    q: str = Query(default=""), limit: int = Query(default=200, le=1000),
+    q: str = Query(default=""), limit: int = Query(default=200, le=20000),
     offset: int = Query(default=0, ge=0), order: str = Query(default="df"),
     nonstandard: str = Query(default=""), kind: str = Query(default=""),
 ):
@@ -547,11 +547,67 @@ def name_library_add(body: dict = Body(...)):
 
 @router.post("/name-library/remove")
 def name_library_remove(body: dict = Body(...)):
-    from ..services.market_extractor import name_library as _nl
+    """删除一条全名。``blocklist=True``（默认）时把它写入人名黑名单，使其**不会**在
+    下次 LTP 刷新时被重新抽回 —— 让用户的「清理」结果稳定保留。"""
+    from ..services.market_extractor import name_library as _nl, wordlists as _wl
     fn = (body.get("full_name") or "").strip()
     removed = _nl.remove_name(_project_db_path(), fn)
+    if removed and body.get("blocklist", True) and _nl.is_valid_name(fn):
+        try:
+            _wl.add_word("name_blocklist", fn)   # 删了就别再被 NER 抽回来
+        except Exception:
+            pass
     _wordlist_after_edit()
     return {"ok": True, "removed": removed, "full_name": fn}
+
+
+@router.get("/name-library/export")
+def name_library_export(format: str = Query(default="json")):
+    """导出整个人名库：``json``（全字段，可回灌）或 ``txt``（每行一个全名）。"""
+    from fastapi.responses import PlainTextResponse
+    from ..services.market_extractor import name_library as _nl
+    records = _nl.export_all(_project_db_path())
+    if format == "txt":
+        body = "\n".join(r["full_name"] for r in records) + ("\n" if records else "")
+        return PlainTextResponse(
+            body, headers={"Content-Disposition": 'attachment; filename="name_library.txt"'})
+    import json
+    return PlainTextResponse(
+        json.dumps(records, ensure_ascii=False, indent=1),
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="name_library.json"'})
+
+
+@router.post("/name-library/import")
+def name_library_import(body: dict = Body(...)):
+    """导入人名库：``content`` 为导出的 JSON（数组）或纯文本（每行一个全名）。
+    全名权威，姓/名按本机姓氏表重算；已存在的全名按需补 DF/例句/分类。"""
+    import json
+    from ..services.market_extractor import name_library as _nl
+    content = body.get("content")
+    records: list[dict] = []
+    if isinstance(content, list):
+        records = [r for r in content if isinstance(r, dict)]
+    elif isinstance(content, str):
+        txt = content.strip()
+        if txt.startswith("[") or txt.startswith("{"):
+            try:
+                parsed = json.loads(txt)
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
+                records = [r for r in parsed if isinstance(r, dict)]
+            except Exception:
+                records = []
+        if not records:                       # 退化为纯文本：每行一个全名
+            for line in txt.splitlines():
+                s = line.strip()
+                if s and not s.startswith("#"):
+                    records.append({"full_name": s})
+    if not records:
+        raise HTTPException(400, "未解析到任何人名（支持导出的 JSON 或每行一个全名的 txt）")
+    result = _nl.import_records(_project_db_path(), records)
+    _wordlist_after_edit()
+    return {"ok": True, **result}
 
 
 @router.post("/name-library/flags")
@@ -596,7 +652,7 @@ def name_library_edit(body: dict = Body(...)):
 
 @router.post("/name-library/refresh")
 def name_library_refresh(body: dict = Body(default={})):
-    """手动刷新：对市场库新增书跑 LTP NER（GPU→CPU→jieba 降级），后台执行。"""
+    """手动刷新：对市场库新增书跑 LTP NER（GPU→CPU），后台执行。"""
     from ..services.market_extractor import name_refresh as _nr
     platform = (body.get("platform") or "").strip() or None
     crawler = resolve_crawler_db_path()

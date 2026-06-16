@@ -216,7 +216,7 @@ def refresh(
             # 书内去重；每名留一句例句（首次出现的所在句）。
             name_sent: dict[str, str] = {}
             for nm, sent in pairs:
-                if name_library.is_valid_name(nm):
+                if name_library.is_plausible_person_name(nm):   # 剔除 LTP 误报（设定/物品/门派）
                     name_sent.setdefault(nm, sent)
             for fn, sent in name_sent.items():
                 name_library.add_name(

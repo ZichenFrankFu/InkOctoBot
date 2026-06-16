@@ -52,6 +52,59 @@ class TestDerive:
         p = nl.derive_name_parts("山田太郎")
         assert p["name_kind"] == "japanese" and p["surname"] == "山田"
 
+    def test_title_suffix_is_nickname(self) -> None:
+        # 王总 / 李叔 / 统子哥 / 张姐 都是称谓昵称（spec 修复项）。
+        for n in ("王总", "李叔", "统子哥", "张姐"):
+            assert nl.derive_name_parts(n)["name_kind"] == "nickname", n
+
+    def test_translit_noun_not_western(self) -> None:
+        # 「金丹」「查克拉」是网文名词，不应再被音译占比误判成西方名（旧 bug）。
+        assert nl.derive_name_parts("金丹")["name_kind"] != "western"
+        assert nl.derive_name_parts("查克拉")["name_kind"] != "western"
+        # 真·西方名仍判对（词典命中）。
+        assert nl.derive_name_parts("乔治")["name_kind"] == "western"
+
+
+class TestPlausibleNameGate:
+    """LTP 抽名质量闸：剔除设定/物品/门派/动词类误报（spec 修复项）。"""
+
+    def test_rejects_org_and_noun_false_positives(self) -> None:
+        for bad in ("唐门", "宗门", "刘氏", "甲胄", "金丹", "查克拉", "启禀", "少年", "师兄"):
+            assert nl.is_plausible_person_name(bad) is False, bad
+
+    def test_accepts_real_names(self) -> None:
+        for good in ("李慕白", "韩立", "萧炎", "傅红雪", "上官婉儿"):
+            assert nl.is_plausible_person_name(good) is True, good
+
+
+class TestImportExport:
+    def test_roundtrip_preserves_kind_alias_example(self, db) -> None:
+        nl.add_name(db, "李慕白", source="ltp_ner",
+                    example_sentence="李慕白说道。", category="玄幻")
+        row = nl.add_name(db, "小明", source="user")
+        nl.edit_name(db, row["name_id"], name_kind="nickname", alias_of="刘明")
+        exported = nl.export_all(db)
+        assert any(r["full_name"] == "小明" and r["name_kind"] == "nickname"
+                   and r["alias_of"] == "刘明" for r in exported)
+
+        # 灌进新库，分类/别名/例句/题材应原样保留。
+        import sqlite3 as _sql
+        from storage.market_extractor_schema import ensure_market_extractor_tables
+        p2 = db + ".2.db"
+        con = _sql.connect(p2)
+        ensure_market_extractor_tables(con)
+        con.close()
+        res = nl.import_records(p2, exported)
+        assert res["added"] >= 2
+        got = nl.search_names(p2, "小明")["items"][0]
+        assert got["name_kind"] == "nickname" and got["alias_of"] == "刘明"
+        lmb = nl.search_names(p2, "李慕白")["items"][0]
+        assert lmb["example_sentence"] == "李慕白说道。" and lmb["source_category"] == "玄幻"
+
+    def test_import_plain_text_lines(self, db) -> None:
+        res = nl.import_records(db, [{"full_name": "韩立"}, {"full_name": "x"}])
+        assert res["added"] == 1 and res["skipped"] == 1   # 'x' 非法被跳过
+
 
 class TestSeedAndCrud:
     def test_seed_then_search_and_df(self, db) -> None:

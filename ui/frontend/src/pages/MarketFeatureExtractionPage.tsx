@@ -1355,8 +1355,8 @@ function NameLibraryView() {
   const [editKind, setEditKind] = React.useState("chinese");
   const [editAlias, setEditAlias] = React.useState("");
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});  // 展开看原句
-  const [diag, setDiag] = React.useState<any>(null);   // NER 诊断结果
-  const limit = 300;
+  const fileRef = React.useRef<HTMLInputElement>(null);
+  const limit = 10000;     // 一次拉全，便于逐条 review / 手动修改
   const KINDS: [string, string][] = [
     ["chinese", "中文名"], ["japanese", "日文名"], ["western", "西方名"], ["nickname", "昵称"],
   ];
@@ -1445,11 +1445,26 @@ function NameLibraryView() {
     } catch (e: any) { toast(`清空失败：${e.message}`, "error"); }
     finally { setBusy(false); }
   };
-  const runDiag = async () => {
+  const doExport = async () => {
+    try {
+      const res = await fetch("/api/analysis/name-library/export?format=json");
+      const url = URL.createObjectURL(new Blob([await res.text()], { type: "application/json;charset=utf-8" }));
+      const a = document.createElement("a");
+      a.href = url; a.download = "name_library.json";
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+      toast("已导出人名库（JSON）", "success");
+    } catch (e: any) { toast(`导出失败：${e.message}`, "error"); }
+  };
+  const doImport = async (file: File) => {
     setBusy(true);
-    try { setDiag(await apiPost<any>("/api/analysis/ner-test", {})); }
-    catch (e: any) { toast(`诊断失败：${e.message}`, "error"); }
-    finally { setBusy(false); }
+    try {
+      const content = await file.text();
+      const r = await apiPost<any>("/api/analysis/name-library/import", { content });
+      toast(`导入完成：新增 ${r.added}，已存在补充 ${r.updated}，跳过 ${r.skipped}`, "success");
+      reload();
+    } catch (e: any) { toast(`导入失败：${e.message}`, "error"); }
+    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ""; }
   };
 
   const backend = status?.backend || {};
@@ -1471,8 +1486,13 @@ function NameLibraryView() {
           {status?.last_refresh && <span style={{ color: "var(--text-tertiary)" }}>上次刷新 {new Date(status.last_refresh).toLocaleString()}</span>}
           <span style={{ color: "var(--text-tertiary)" }}>已处理 {status?.books_processed ?? "—"} 本</span>
           <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-            <button className="btn" disabled={busy} onClick={runDiag}
-              style={{ fontSize: 12, padding: "6px 14px" }}>诊断</button>
+            <button className="btn" disabled={busy} onClick={() => fileRef.current?.click()}
+              style={{ fontSize: 12, padding: "6px 14px" }}>导入</button>
+            <button className="btn" disabled={busy} onClick={doExport}
+              style={{ fontSize: 12, padding: "6px 14px" }}>导出</button>
+            <input ref={fileRef} type="file" accept=".json,.txt,application/json,text/plain"
+              style={{ display: "none" }}
+              onChange={e => { const f = e.target.files?.[0]; if (f) doImport(f); }} />
             <button className="btn" disabled={busy || status?.running} onClick={clearLib}
               style={{ fontSize: 12, padding: "6px 14px", color: "var(--error)", borderColor: "var(--error)" }}>
               清空人名库
@@ -1503,32 +1523,6 @@ function NameLibraryView() {
               <summary style={{ cursor: "pointer", color: "var(--gold)" }}>报错详情 / 修复命令</summary>
               <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-secondary)", marginTop: 4 }}>{nerErr}</pre>
             </details>
-          </div>
-        )}
-        {diag && (
-          <div style={{ marginTop: 8, padding: 10, background: "var(--bg-surface-2)", borderRadius: 6, fontSize: 11, lineHeight: 1.6 }}>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <strong>NER 诊断</strong>
-              <button className="btn" style={{ fontSize: 10, padding: "1px 8px" }} onClick={() => setDiag(null)}>关闭</button>
-            </div>
-            <div>LTP 版本：<span className="font-mono">{String(diag.ltp_version)}</span></div>
-            <div>torch 版本：<span className="font-mono">{String(diag.torch_version)}</span>{diag.torch_cuda_available != null && <>（CUDA 可用：{String(diag.torch_cuda_available)}）</>}</div>
-            <div>当前后端：<span className="font-mono">{diag.backend_after?.backend || diag.backend?.backend}</span>（{diag.backend_after?.reason || diag.backend?.reason}）</div>
-            {(diag.ltp_import_error || diag.ltp_load_error || diag.ltp_ner_error || diag.extract_error) && (
-              <div style={{ marginTop: 4, color: "var(--error)" }}>
-                <strong>LTP 报错（这是抽不到名的真正原因）：</strong>
-                <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-secondary)", marginTop: 2 }}>
-                  {diag.ltp_load_error || diag.ltp_import_error || diag.ltp_ner_error || diag.extract_error}
-                </pre>
-              </div>
-            )}
-            <div>本次抽到 <strong>{diag.count ?? 0}</strong> 个名：<span className="font-mono">{(diag.names || []).join("、") || "—"}</span></div>
-            {diag.raw && (
-              <details style={{ marginTop: 4 }}>
-                <summary style={{ cursor: "pointer", color: "var(--text-tertiary)" }}>LTP 原始输出（排查用，可发给支持）</summary>
-                <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-tertiary)", marginTop: 4 }}>{JSON.stringify(diag.raw, null, 1)}</pre>
-              </details>
-            )}
           </div>
         )}
         {gpu.physical_gpu && !gpu.torch_cuda_available && (

@@ -40,6 +40,7 @@ _FILES = {
     "ltp_stopwords": "ltp_stopwords.txt",
     "western_names": "western_names.txt",
     "japanese_surnames": "japanese_surnames.txt",
+    "name_blocklist": "name_blocklist.txt",
 }
 
 # Human labels for the API / UI (资源管理 tab) and the targets a user may CRUD.
@@ -156,6 +157,11 @@ def load_western_names() -> frozenset[str]:
 def load_japanese_surnames() -> frozenset[str]:
     """常见日本姓氏（汉字写法）。"""
     return _effective("japanese_surnames")
+
+
+def load_name_blocklist() -> frozenset[str]:
+    """人名识别黑名单（网文设定/物品/称谓/动词）—— 抽名时剔除 LTP 的误报。"""
+    return _effective("name_blocklist")
 
 
 def load_surnames() -> frozenset[str]:
