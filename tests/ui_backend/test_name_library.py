@@ -112,6 +112,39 @@ class TestImportExport:
         assert res["added"] == 1 and res["skipped"] == 1   # 'x' 非法被跳过
 
 
+class TestFragmentDedup:
+    def test_fragment_not_added_when_fullname_exists(self, db) -> None:
+        nl.add_name(db, "王一涵", source="ltp_ner", count_df=True)
+        # 去姓的名 / 截断前缀都不再各占一条
+        assert nl.add_name(db, "一涵", source="ltp_ner") is None
+        assert nl.add_name(db, "王一", source="ltp_ner") is None
+        assert [i["full_name"] for i in nl.search_names(db)["items"]] == ["王一涵"]
+
+    def test_fullname_absorbs_existing_auto_fragments(self, db) -> None:
+        nl.add_name(db, "一涵", source="ltp_ner", count_df=True)
+        nl.add_name(db, "王一", source="ltp_ner", count_df=True)
+        nl.add_name(db, "王一涵", source="ltp_ner", count_df=True)
+        assert [i["full_name"] for i in nl.search_names(db)["items"]] == ["王一涵"]
+
+    def test_manual_add_bypasses_dedup(self, db) -> None:
+        nl.add_name(db, "王一涵", source="ltp_ner")
+        # 用户手动/导入：完全尊重输入，不去碎片
+        assert nl.add_name(db, "一涵", source="user", dedupe_fragments=False)
+        names = {i["full_name"] for i in nl.search_names(db)["items"]}
+        assert names == {"王一涵", "一涵"}
+
+    def test_independent_name_not_harmed(self, db) -> None:
+        nl.add_name(db, "王一涵", source="ltp_ner")
+        nl.add_name(db, "李芳", source="ltp_ner")    # 不同姓的独立名
+        assert nl.search_names(db, "李芳")["total"] == 1
+
+    def test_user_fragment_preserved_when_fullname_arrives(self, db) -> None:
+        nl.add_name(db, "一涵", source="user")        # 用户加的碎片
+        nl.add_name(db, "王一涵", source="ltp_ner")   # 长名到来：只清自动碎片，不动用户的
+        names = {i["full_name"] for i in nl.search_names(db)["items"]}
+        assert "一涵" in names and "王一涵" in names
+
+
 class TestNameGenerator:
     def test_recombines_with_surname_constraint(self, db) -> None:
         from ui.backend.app.services.market_extractor import name_generator as ng

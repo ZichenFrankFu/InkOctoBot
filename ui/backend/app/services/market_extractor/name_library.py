@@ -213,6 +213,68 @@ def is_plausible_person_name(full_name: str) -> bool:
     return True
 
 
+# ─────────── 人名碎片去重（「王一涵」存在时，「一涵」「王一」不再各占一条）───────────
+
+
+def _surname_of(fn: str, surnames: frozenset[str]) -> str:
+    for k in (3, 2):                       # 复姓优先
+        if len(fn) > k and fn[:k] in surnames:
+            return fn[:k]
+    if len(fn) >= 2 and fn[:1] in surnames:
+        return fn[:1]
+    return ""
+
+
+def _is_name_fragment(short: str, longer: str, surnames: frozenset[str]) -> bool:
+    """short 是否 longer 的人名碎片：① short 是 longer 去姓后的名或裸名前缀（自身不带姓，
+    如 一涵/明华 ⊂ 王一涵/李明华）；② short 与 longer 同姓且是其截断前缀（王一 ⊂ 王一涵）。"""
+    if not short or not longer or short == longer:
+        return False
+    if len(short) >= len(longer) or short not in longer:
+        return False
+    s = _surname_of(longer, surnames)
+    if not s:
+        return False
+    given = longer[len(s):]
+    # ① 裸名碎片：short 是 given 或其前缀，且 short 自身不以姓氏开头
+    if (short == given or given.startswith(short)) and not _surname_of(short, surnames):
+        return True
+    # ② 同姓截断前缀：short = 姓 + given 的真前缀
+    if longer.startswith(short) and short.startswith(s) and len(short) > len(s):
+        tail = short[len(s):]
+        if tail and tail != given and given.startswith(tail):
+            return True
+    return False
+
+
+def _fragment_of_existing(con: sqlite3.Connection, fn: str,
+                          surnames: frozenset[str]) -> str:
+    """fn 若是某已存在更长名的碎片，返回那个长名（方向①：碎片不新建）；否则 ''。"""
+    for r in con.execute(
+        "SELECT full_name FROM person_name_library "
+        "WHERE length(full_name) > ? AND instr(full_name, ?) > 0",
+        (len(fn), fn),
+    ).fetchall():
+        if _is_name_fragment(fn, r[0], surnames):
+            return r[0]
+    return ""
+
+
+def _absorb_fragments(con: sqlite3.Connection, fn: str,
+                      surnames: frozenset[str]) -> int:
+    """删掉 fn 的已存在「自动抽取」碎片（方向②：长名到来时清理旧碎片，保留用户/种子）。"""
+    removed = 0
+    for r in con.execute(
+        "SELECT full_name, source FROM person_name_library "
+        "WHERE length(full_name) < ? AND instr(?, full_name) > 0",
+        (len(fn), fn),
+    ).fetchall():
+        if r[1] == "ltp_ner" and _is_name_fragment(r[0], fn, surnames):
+            con.execute("DELETE FROM person_name_library WHERE full_name = ?", (r[0],))
+            removed += 1
+    return removed
+
+
 # ─────────── 进程内缓存（剔名 / jieba userdict 用） ───────────
 
 _cache_lock = threading.Lock()
@@ -265,9 +327,14 @@ def add_name(
     work_id: str = "", work_title: str = "", platform: str = "",
     category: str = "", rank: int | None = None, heat: float | None = None,
     count_df: bool = False, example_sentence: str = "", alias_of: str = "",
+    dedupe_fragments: bool = True,
 ) -> dict | None:
     """新增/更新一条全名记录（派生字段自动重算）。``count_df=True`` 时把 book_df +1
-    （仅在「确属一本新书的去重名」时调用）。返回写入的行。"""
+    （仅在「确属一本新书的去重名」时调用）。返回写入的行。
+
+    ``dedupe_fragments=True``（NER 抽名默认）做人名碎片去重：fn 若是某已存在更长名的
+    碎片（一涵/王一 ⊂ 王一涵）则不入库返回 None；fn 若是长名则顺手删掉它的旧自动抽取碎片。
+    手动添加/导入传 False 以完全尊重用户输入。"""
     fn = (full_name or "").strip()
     if not is_valid_name(fn):
         return None
@@ -276,6 +343,13 @@ def add_name(
     with sqlite3.connect(db_path) as con:
         _ensure(con)
         con.row_factory = sqlite3.Row
+        if dedupe_fragments:
+            surnames = _surnames()
+            sup = _fragment_of_existing(con, fn, surnames)
+            if sup:                       # fn 是已存在长名的碎片 → 不新建
+                logger.debug("skip fragment '%s' of existing '%s'", fn, sup)
+                return None
+            _absorb_fragments(con, fn, surnames)   # 清掉 fn 的旧自动抽取碎片
         existing = con.execute(
             "SELECT * FROM person_name_library WHERE full_name = ?", (fn,)
         ).fetchone()
@@ -589,6 +663,7 @@ def import_records(db_path: str, records: list[dict], *,
             category=str(rec.get("source_category") or ""),
             example_sentence=str(rec.get("example_sentence") or ""),
             alias_of=str(rec.get("alias_of") or ""),
+            dedupe_fragments=False,        # 导入：原样保留用户整理过的库
         )
         if not row:
             skipped += 1

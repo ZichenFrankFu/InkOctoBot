@@ -541,7 +541,8 @@ def name_library_add(body: dict = Body(...)):
     row = _nl.add_name(_project_db_path(), fn, source="user",
                        work_title=(body.get("source_work_title") or ""),
                        category=(body.get("category") or ""),
-                       platform=(body.get("platform") or ""))
+                       platform=(body.get("platform") or ""),
+                       dedupe_fragments=False)   # 手动添加完全尊重用户输入
     _wordlist_after_edit()      # 人名库变化也影响高频词剔名 → 清开篇 NLP 缓存
     return {"ok": True, "name": row}
 
