@@ -6,7 +6,7 @@
 - 每本新书抽 PER 人名实体，**书内去重**后并入人名库，对每个去重名把 ``book_df`` +1
   （按 book 不按 snapshot）。并带上来源作品的标题/题材/平台/排名/热度做元数据。
 - 触发：用户手动刷新（API），或每天一次打开基础特征提取时自动刷新（maybe_daily_refresh）。
-- 后端选择与降级由 ner_backend 负责（GPU→CPU→jieba 兜底）。
+- 后端只用 LTP（GPU→CPU）；LTP 不可用时**不抽名**（不退 jieba），返回真实报错。
 
 人名库在**项目库**（project db），开篇章节在**爬虫库**（crawler db），两库路径分开传入。
 """
@@ -183,6 +183,23 @@ def refresh(
     ner_backend.reset_backend_cache()
     info = ner_backend.detect_ner_backend()
     name_library.seed_if_empty(project_db)   # 静态种子库始终就绪（剔名 fallback）
+    # 只用 LTP 抽名：LTP 不可用时**不跑 jieba**，直接返回并带上真实报错（不把书标记为
+    # 已处理，装好 LTP 后会重新处理）。宁可不抽，也不拿 jieba 的误报冒充人名。
+    if not info.uses_ltp:
+        _set_progress(running=False, total=0, done=0, names=0,
+                      backend=info.backend, phase="ltp_unavailable",
+                      message=info.reason)
+        with _refresh_lock:
+            _refreshing = False
+        return {
+            "status": "ltp_unavailable",
+            "backend": info.backend,
+            "backend_reason": info.reason,
+            "ltp_error": ner_backend.last_ltp_error(),
+            "new_books": 0,
+            "names_added": 0,
+            "elapsed_sec": round(time.time() - started, 1),
+        }
     try:
         processed = _processed_state(project_db)
         new_books = _fetch_new_books(crawler_db, processed, platform=platform, limit=limit)
@@ -195,7 +212,7 @@ def refresh(
             except Exception as e:
                 logger.warning("NER failed for book %s: %s", b["novel_uid"], e)
                 pairs = []
-            method = ner_backend.last_method()      # ltp_ner / jieba（实际所用）
+            method = ner_backend.last_method()      # ltp_ner（实际所用）
             # 书内去重；每名留一句例句（首次出现的所在句）。
             name_sent: dict[str, str] = {}
             for nm, sent in pairs:

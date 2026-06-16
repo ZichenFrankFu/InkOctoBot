@@ -1455,7 +1455,8 @@ function NameLibraryView() {
   const backend = status?.backend || {};
   const gpu = backend.gpu || {};
   const backendLabel = backend.backend === "ltp_gpu" ? "LTP · GPU"
-    : backend.backend === "ltp_cpu" ? "LTP · CPU" : "jieba 姓氏门控（精度有限）";
+    : backend.backend === "ltp_cpu" ? "LTP · CPU" : "LTP 未就绪";
+  const ltpErr = backend.ltp_load_error || backend.ltp_import_error || "";
   const prog = status?.progress || {};
   const showBar = !!status?.running && prog.total > 0;
 
@@ -1482,9 +1483,15 @@ function NameLibraryView() {
         </div>
         {/* 后端/GPU 诊断说明 */}
         <div style={{ color: "var(--text-tertiary)", marginTop: 6 }}>{backend.reason || "—"}</div>
-        {backend.backend === "jieba" && (
-          <div style={{ color: "var(--gold)", marginTop: 4 }}>
-            当前用 jieba 姓氏门控抽名（精度有限，会有少量误判）。装好可用的 LTP + torch 后会自动切换到 LTP（更准）。点「诊断」可查看 LTP 是否能加载。
+        {backend.backend === "seed" && (
+          <div style={{ color: "var(--error)", marginTop: 4, lineHeight: 1.6 }}>
+            <strong>LTP 未就绪，暂不抽取人名</strong>（按要求不使用 jieba 兜底）。请安装 / 修复 LTP 后点「刷新人名库」。
+            {ltpErr && (
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ cursor: "pointer", color: "var(--gold)" }}>LTP 报错（点开查看，发给我可精确定位）</summary>
+                <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-secondary)", marginTop: 4 }}>{ltpErr}</pre>
+              </details>
+            )}
           </div>
         )}
         {diag && (
@@ -1494,7 +1501,16 @@ function NameLibraryView() {
               <button className="btn" style={{ fontSize: 10, padding: "1px 8px" }} onClick={() => setDiag(null)}>关闭</button>
             </div>
             <div>LTP 版本：<span className="font-mono">{String(diag.ltp_version)}</span></div>
-            <div>当前后端：<span className="font-mono">{diag.backend?.backend}</span>（{diag.backend?.reason}）</div>
+            <div>torch 版本：<span className="font-mono">{String(diag.torch_version)}</span>{diag.torch_cuda_available != null && <>（CUDA 可用：{String(diag.torch_cuda_available)}）</>}</div>
+            <div>当前后端：<span className="font-mono">{diag.backend_after?.backend || diag.backend?.backend}</span>（{diag.backend_after?.reason || diag.backend?.reason}）</div>
+            {(diag.ltp_import_error || diag.ltp_load_error || diag.extract_error) && (
+              <div style={{ marginTop: 4, color: "var(--error)" }}>
+                <strong>LTP 报错（这是 LTP 加载不了的真正原因）：</strong>
+                <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-secondary)", marginTop: 2 }}>
+                  {diag.ltp_load_error || diag.ltp_import_error || diag.extract_error}
+                </pre>
+              </div>
+            )}
             <div>本次抽到 <strong>{diag.count ?? 0}</strong> 个名：<span className="font-mono">{(diag.names || []).join("、") || "—"}</span></div>
             {diag.raw && (
               <details style={{ marginTop: 4 }}>
@@ -1528,7 +1544,7 @@ function NameLibraryView() {
         )}
         {status && !status.running && backend.backend === "seed" && (
           <div style={{ color: "var(--text-tertiary)", marginTop: 6 }}>
-            当前用静态种子人名库做兜底（剔名仍有效）；装好 LTP + 合适算力后点「刷新人名库」即用 LTP 抽取新名。
+            注：高频词「剔名」仍用打包的静态种子人名库，照常生效；仅“从正文抽新名”需要 LTP。
           </div>
         )}
       </div></div>

@@ -103,25 +103,27 @@ class TestNameLibraryApi:
         r = client.get("/api/analysis/ner-status")
         assert r.status_code == 200
         body = r.json()
-        assert body["backend"] in ("jieba", "ltp_gpu", "ltp_cpu")
+        assert body["backend"] in ("seed", "ltp_gpu", "ltp_cpu")
         assert "reason" in body
-        assert "gpu" in body            # GPU 诊断信息
+        assert "gpu" in body                    # GPU 诊断信息
+        assert "ltp_import_error" in body       # 真实 LTP 报错暴露给前端诊断
 
 
 class TestRefreshFlow:
-    def test_refresh_extracts_names_via_jieba(self, env) -> None:
+    def test_refresh_without_ltp_is_clean_noop(self, env) -> None:
         client, proj, crawler = env
-        from ui.backend.app.services.market_extractor import name_refresh as nr, name_library as nl
-        # 无 LTP（沙箱）→ jieba 姓氏门控从正文抽名，处理 2 本、抽到真实人名。
+        from ui.backend.app.services.market_extractor import name_refresh as nr
+        # 无 LTP（沙箱）→ 只用 LTP、不退 jieba：刷新不抽名，返回 ltp_unavailable + 报错。
         out = nr.refresh(proj, crawler)
-        assert out["status"] == "ok"
-        assert out["new_books"] == 2
-        assert out["backend"] == "jieba"
-        assert out["names_added"] > 0
-        # 从真实正文抽到 → DF 计数 + 例句被填上（李慕白 本就在种子里，故 source 仍 seed，
-        # 但 DF/例句由正文补齐，证明确实扫了正文）。
-        got = nl.search_names(proj, "李慕白")["items"]
-        assert got and got[0]["book_df"] >= 1 and got[0]["example_sentence"]
+        assert out["status"] == "ltp_unavailable"
+        assert out["backend"] == "seed"
+        assert out["new_books"] == 0
+        assert out["names_added"] == 0
+        assert "ltp_error" in out                # 真实报错带回，便于定位
+        # 没把任何书标记为已处理 → 装好 LTP 后会重新处理（不是被吞掉）。
+        with sqlite3.connect(proj) as con:
+            n = con.execute("SELECT COUNT(*) FROM name_extraction_state").fetchone()[0]
+        assert n == 0
 
     def test_status_endpoint_has_progress_and_backend(self, env) -> None:
         client, proj, crawler = env
@@ -130,9 +132,9 @@ class TestRefreshFlow:
         r = client.get("/api/analysis/name-library/refresh-status")
         assert r.status_code == 200
         body = r.json()
-        assert body["books_processed"] == 2
+        assert body["books_processed"] == 0      # 无 LTP → 未处理任何书
         assert "progress" in body
-        assert body["backend"]["backend"] == "jieba"
+        assert body["backend"]["backend"] == "seed"
 
 
 class TestNamingPatternsApi:
