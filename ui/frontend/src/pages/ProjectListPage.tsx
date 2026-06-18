@@ -134,41 +134,89 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
   // Active project's publish platform — drives the trending-tag query and
   // the marketing-agent RAG so hot-topic stats match where the user actually
-  // publishes. Resolves the free-text platform field via PLATFORM_PROFILES
-  // (e.g. "起点" / "qidian" / "起点中文" → "起点中文网").
-  const activePlatformLabel = useMemo(() => {
+  // publishes. Resolves the free-text `platform` field via PLATFORM_PROFILES
+  // (e.g. "起点" / "qidian" / "起点中文" → id:"qidian", label:"起点中文网").
+  // The API expects platform IDs (matches the crawler DB's `novels.platform`);
+  // the label is only for display.
+  const activePlatform = useMemo(() => {
     const proj = projects.find(p => p.id === activeProject);
     const raw = (proj as any)?.platform;
-    if (!raw) return "";
+    if (!raw) return { id: "", label: "" };
     const prof = platformProfile(raw);
-    return prof.id === "other" ? "" : prof.label;
+    if (prof.id === "other") return { id: "", label: "" };
+    return { id: prof.id, label: prof.label };
   }, [projects, activeProject]);
+  const activePlatformLabel = activePlatform.label;
+  const activePlatformId = activePlatform.id;
 
-  // Load trending tags scoped to the active project's platform. Re-fetches when
-  // the active project (or its platform) changes so the trending tab matches
-  // the current work's publishing platform — driven by 市场特征提取 data.
+  // Market-data hot-topic info for the 开书助手 — fetched once per platform
+  // from the 基础特征提取 cache (/api/analysis/run · cached_only=true) so the
+  // assistant grounds answers in the same panel the user sees on
+  // 市场特征提取 → 基础特征提取. We never kick off the heavy compute from
+  // here; if the cache is empty the assistant falls back to /market_brief
+  // and surfaces a deep-link to run the analysis.
+  type PanelRow = {
+    name: string; total: number; avg_heat: number; latest_share: number;
+    count_pct: number | null; heat_pct: number | null; share_pct: number | null;
+    new_count?: number; parent?: string;
+  };
+  type AnalysisPayload = {
+    empty?: boolean;
+    start_date?: string; end_date?: string;
+    panel?: { categories?: PanelRow[]; tags?: PanelRow[] };
+  };
+  const [analysis, setAnalysis] = useState<AnalysisPayload | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisStale, setAnalysisStale] = useState(false);
+
+  useEffect(() => {
+    if (studioTab !== "trending") return;
+    setAnalysisLoading(true);
+    setAnalysisStale(false);
+    const params = new URLSearchParams({
+      platform: activePlatformId || "both",
+      lookback: "all", top_k: "10", cached_only: "true",
+    });
+    apiGet<{ state: string; payload?: AnalysisPayload; stale?: boolean }>(
+      `/api/analysis/run?${params}`,
+    )
+      .then(r => {
+        if (r.state === "ready" && r.payload && !r.payload.empty) {
+          setAnalysis(r.payload);
+          setAnalysisStale(!!r.stale);
+        } else {
+          setAnalysis(null);
+        }
+      })
+      .catch(() => setAnalysis(null))
+      .finally(() => setAnalysisLoading(false));
+  }, [studioTab, activePlatformId]);
+
+  // Backup tag-stats / brief feed — used as a fallback when the rich
+  // 基础特征提取 cache hasn't been computed for this platform yet. Also
+  // powers the agent's RAG brief.
   useEffect(() => {
     if (studioTab !== "trending") return;
     setTrendingLoading(true);
-    const q = activePlatformLabel
-      ? `/api/db/tag_stats?limit=30&platform=${encodeURIComponent(activePlatformLabel)}`
+    const q = activePlatformId
+      ? `/api/db/tag_stats?limit=30&platform=${encodeURIComponent(activePlatformId)}`
       : "/api/db/tag_stats?limit=30";
     apiGet<{ rows: { tag_name: string; novel_count: number }[] }>(q)
       .then(r => setTrendingTags(r.rows || []))
       .catch(() => setTrendingTags([]))
       .finally(() => setTrendingLoading(false));
-  }, [studioTab, activePlatformLabel]);
+  }, [studioTab, activePlatformId]);
 
   // Market-data RAG for the 开书助手 — grounds answers in real data,
   // restricted to the active project's platform when available.
   useEffect(() => {
-    const q = activePlatformLabel
-      ? `/api/db/market_brief?platform=${encodeURIComponent(activePlatformLabel)}`
+    const q = activePlatformId
+      ? `/api/db/market_brief?platform=${encodeURIComponent(activePlatformId)}`
       : "/api/db/market_brief";
     apiGet<{ brief: string }>(q)
       .then(r => setMarketBrief(r.brief || ""))
       .catch(() => setMarketBrief(""));
-  }, [activePlatformLabel]);
+  }, [activePlatformId]);
 
 
   const handleCreate = async () => {
@@ -249,6 +297,34 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     return configs[tab];
   };
 
+  // Build a marketing-agent brief from the 基础特征提取 panel so the assistant
+  // can quote real category/tag heat + trend numbers instead of generic
+  // intuition. Falls back to the simpler /market_brief feed when the panel
+  // cache hasn't been computed yet for this platform.
+  const buildMarketBrief = useCallback((): string => {
+    const panel = analysis?.panel;
+    const cats = panel?.categories?.slice(0, 8) || [];
+    const tags = panel?.tags?.slice(0, 12) || [];
+    if (cats.length === 0 && tags.length === 0) return marketBrief;
+    const pct = (v: number | null | undefined) =>
+      v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(0)}%`;
+    const fmtRow = (r: PanelRow) => {
+      const trend = `数量${pct(r.count_pct)}/热度${pct(r.heat_pct)}`;
+      return `${r.parent ? `${r.parent}·` : ""}${r.name}（库内 ${r.total} 部, 热度 ${Math.round(r.avg_heat || 0)}, 新书 ${r.new_count || 0} 部, ${trend}）`;
+    };
+    const lines: string[] = [];
+    if (analysis?.start_date || analysis?.end_date) {
+      lines.push(`时间区间：${analysis.start_date || "?"} ~ ${analysis.end_date || "?"}`);
+    }
+    if (cats.length) {
+      lines.push("热门大分类（按数量+热度）：" + cats.map(fmtRow).join("；"));
+    }
+    if (tags.length) {
+      lines.push("热门题材标签（按数量+热度）：" + tags.map(fmtRow).join("；"));
+    }
+    return lines.join("\n");
+  }, [analysis, marketBrief]);
+
   // Build the prompt (conversation + system hint + market-data RAG) for the
   // current 开书助手 turn. Shared by send and the web-LLM preview.
   const buildChatPrompt = async (text: string): Promise<{ fullPrompt: string; systemHint: string }> => {
@@ -269,9 +345,11 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 回答用户问题后，必须追加1个追问来引导用户进入下一步创作讨论。
 追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
 追问规则：3个选项，具体有区分度，不重复已确认内容。`;
-    if (marketBrief) {
-      const platformNote = activePlatformLabel ? `（${activePlatformLabel}）` : "";
-      systemHint += `\n\n[市场数据参考${platformNote}——以下为市场数据库的真实统计，回答须据此，不要编造市场数据]\n${marketBrief}`;
+    const brief = buildMarketBrief();
+    if (brief) {
+      const platformNote = activePlatformLabel ? `（${activePlatformLabel}）` : "（全平台）";
+      const source = analysis?.panel ? "市场特征提取 · 基础特征提取" : "市场数据库";
+      systemHint += `\n\n[市场数据参考${platformNote} · 来源：${source}——以下为真实统计，回答须据此，不要编造市场数据]\n${brief}`;
     }
     return { fullPrompt, systemHint };
   };
@@ -714,59 +792,17 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                   { label: "趋势预测", prompt: "目前网文市场有哪些新兴趋势值得关注？" },
                 ]}
                 emptyState={
-                  <div style={{ padding: "16px" }}>
-                    <div style={{ padding: "12px 14px", background: "var(--accent-subtle)", borderRadius: 8, marginBottom: 16, borderLeft: "3px solid var(--accent)" }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)", marginBottom: 4 }}>Marketing Agent</div>
-                      <div className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                        讨论题材在市场上是否吃香，是否新人友好等，帮助你确认想写的题材方向。
-                        {activePlatformLabel
-                          ? `数据来源于「${activePlatformLabel}」市场特征提取。`
-                          : "未设置发布平台时显示全平台综合数据，到项目设置中选择平台可获得平台专属市场分析。"}
-                      </div>
-                    </div>
-                    {/* Trending tag cloud */}
-                    {trendingLoading ? (
-                      <div className="loading"><div className="loading-spinner" />加载市场数据...</div>
-                    ) : trendingTags.length > 0 ? (
-                      <>
-                        <div className="flex items-center justify-between mb-8">
-                          <span className="label" style={{ fontSize: 11, marginBottom: 0 }}>
-                            热门题材标签 TOP {trendingTags.length}
-                          </span>
-                          {activePlatformLabel && (
-                            <span className="tag" style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--accent-subtle)", color: "var(--accent)", border: "1px solid var(--accent)" }}>
-                              {activePlatformLabel}
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-                          {trendingTags.slice(0, 20).map((tag, i) => {
-                            const isTop = i < 5;
-                            return (
-                              <button key={tag.tag_name}
-                                onClick={() => sendMessage(`分析一下「${tag.tag_name}」这个题材的市场前景和新人友好度`)}
-                                style={{
-                                  padding: "5px 12px", borderRadius: 16,
-                                  border: `1px solid ${isTop ? "var(--accent)" : "var(--border)"}`,
-                                  background: isTop ? "var(--accent-subtle)" : "var(--bg-surface-2)",
-                                  color: isTop ? "var(--accent)" : "var(--text-secondary)",
-                                  fontSize: 12, fontWeight: isTop ? 600 : 400,
-                                  cursor: "pointer", transition: "all 0.15s",
-                                }}>
-                                {tag.tag_name} <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>{tag.novel_count}</span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="text-xs text-muted" style={{ padding: "8px 4px", lineHeight: 1.6 }}>
-                        {activePlatformLabel
-                          ? `当前平台「${activePlatformLabel}」暂无热门题材数据，建议先到 市场分析 中抓取该平台数据。`
-                          : "市场数据库暂无热门题材数据。"}
-                      </div>
-                    )}
-                  </div>
+                  <TrendingEmptyState
+                    activePlatformLabel={activePlatformLabel}
+                    activePlatformId={activePlatformId}
+                    analysis={analysis}
+                    analysisLoading={analysisLoading}
+                    analysisStale={analysisStale}
+                    trendingLoading={trendingLoading}
+                    trendingTags={trendingTags}
+                    onAsk={(prompt) => sendMessage(prompt)}
+                    onOpenMarket={() => onNavigate("market-features")}
+                  />
                 }
               />
             ) : studioTab === "brainstorm" ? (
@@ -820,6 +856,199 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
         </div>
         )}
       </div>
+    </div>
+  );
+}
+
+
+/* ── TrendingEmptyState ──
+ * Hot-topic panel rendered above the empty Marketing-agent chat. Reuses the
+ * 基础特征提取 (analysis/run) panel data — categories + tags + opportunity
+ * scoring — so the assistant landing screen mirrors the rich market view the
+ * user already curates on 市场特征提取 → 基础特征提取. Falls back to the
+ * simpler tag_stats cloud when the panel cache is empty for this platform.
+ */
+type TrendingPanelRow = {
+  name: string; total: number; avg_heat: number; latest_share: number;
+  count_pct: number | null; heat_pct: number | null; share_pct: number | null;
+  new_count?: number; parent?: string;
+};
+type TrendingAnalysis = {
+  empty?: boolean;
+  start_date?: string; end_date?: string;
+  panel?: { categories?: TrendingPanelRow[]; tags?: TrendingPanelRow[] };
+};
+
+function TrendingEmptyState({
+  activePlatformLabel, activePlatformId, analysis, analysisLoading,
+  analysisStale, trendingLoading, trendingTags, onAsk, onOpenMarket,
+}: {
+  activePlatformLabel: string;
+  activePlatformId: string;
+  analysis: TrendingAnalysis | null;
+  analysisLoading: boolean;
+  analysisStale: boolean;
+  trendingLoading: boolean;
+  trendingTags: { tag_name: string; novel_count: number }[];
+  onAsk: (prompt: string) => void;
+  onOpenMarket: () => void;
+}) {
+  const panel = analysis?.panel;
+  const cats = (panel?.categories || []).slice(0, 8);
+  const tags = (panel?.tags || []).slice(0, 10);
+  const hasPanel = cats.length > 0 || tags.length > 0;
+  const platformId = activePlatformId || "both";
+  const isQidian = platformId === "qidian";
+  const catLabel = isQidian ? "大分类" : "类目";
+  const tagLabel = isQidian ? "副分类" : "标签";
+
+  const pctText = (v: number | null | undefined): { text: string; color: string } => {
+    if (v == null) return { text: "—", color: "var(--text-tertiary)" };
+    const p = v * 100;
+    const sign = p >= 0 ? "+" : "";
+    const color = p >= 5 ? "var(--jade)" : p <= -5 ? "var(--error)" : "var(--text-tertiary)";
+    return { text: `${sign}${p.toFixed(0)}%`, color };
+  };
+
+  const renderRows = (rows: TrendingPanelRow[]) => {
+    const maxHeat = Math.max(1, ...rows.map(r => r.avg_heat || 0));
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {rows.map((r) => {
+          const trendPct = pctText(r.heat_pct);
+          const heatBar = Math.max(2, ((r.avg_heat || 0) / maxHeat) * 100);
+          const displayName = r.parent ? `${r.parent}·${r.name}` : r.name;
+          return (
+            <button key={r.name}
+              onClick={() => onAsk(`分析一下「${r.name}」这个题材的市场前景、竞争程度和新人友好度`)}
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "5px 10px", borderRadius: 6,
+                background: "var(--bg-surface-2)", border: "1px solid var(--border)",
+                cursor: "pointer", textAlign: "left", width: "100%",
+                transition: "border-color 0.15s",
+              }}>
+              <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {displayName}
+              </span>
+              <span className="font-mono" style={{ fontSize: 10, color: "var(--text-tertiary)", flexShrink: 0 }}>
+                {r.total}部
+              </span>
+              <div style={{ width: 50, height: 4, background: "var(--bg-app)", borderRadius: 2, overflow: "hidden", flexShrink: 0 }}>
+                <div style={{ width: `${heatBar}%`, height: "100%", background: "var(--accent)" }} />
+              </div>
+              <span className="font-mono" style={{ fontSize: 10, color: trendPct.color, fontWeight: 600, minWidth: 36, textAlign: "right", flexShrink: 0 }}>
+                {trendPct.text}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ padding: "16px" }}>
+      <div style={{ padding: "12px 14px", background: "var(--accent-subtle)", borderRadius: 8, marginBottom: 12, borderLeft: "3px solid var(--accent)" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--accent)", marginBottom: 4 }}>Marketing Agent</div>
+        <div className="text-xs" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
+          讨论题材在市场上是否吃香，是否新人友好等，帮助你确认想写的题材方向。
+          {activePlatformLabel
+            ? `数据来源于「${activePlatformLabel}」基础特征提取。`
+            : "未设置发布平台时显示全平台综合数据，到项目设置中选择平台可获得平台专属市场分析。"}
+        </div>
+      </div>
+
+      {analysisStale && (
+        <div style={{ padding: "6px 10px", background: "var(--gold-subtle, var(--bg-surface-2))", border: "1px solid var(--gold)", borderRadius: 6, marginBottom: 10, fontSize: 11, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
+          <span>市场数据已更新，当前展示上一次分析结果。</span>
+          <button onClick={onOpenMarket} className="btn" style={{ fontSize: 10, padding: "1px 8px", marginLeft: "auto" }}>
+            去市场特征提取重算
+          </button>
+        </div>
+      )}
+
+      {analysisLoading && !hasPanel ? (
+        <div className="loading"><div className="loading-spinner" />加载市场数据...</div>
+      ) : hasPanel ? (
+        <>
+          {(analysis?.start_date || analysis?.end_date) && (
+            <div className="text-xs text-muted" style={{ marginBottom: 8 }}>
+              时间区间 <span style={{ color: "var(--text-secondary)" }}>{analysis?.start_date || "—"} ~ {analysis?.end_date || "—"}</span>
+            </div>
+          )}
+          {cats.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div className="flex items-center justify-between mb-4">
+                <span className="label" style={{ fontSize: 11, marginBottom: 0 }}>{catLabel} TOP {cats.length}</span>
+                <span className="text-xs text-muted">数量 · 热度 · 趋势</span>
+              </div>
+              {renderRows(cats)}
+            </div>
+          )}
+          {tags.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div className="flex items-center justify-between mb-4">
+                <span className="label" style={{ fontSize: 11, marginBottom: 0 }}>{tagLabel} TOP {tags.length}</span>
+                <span className="text-xs text-muted">数量 · 热度 · 趋势</span>
+              </div>
+              {renderRows(tags)}
+            </div>
+          )}
+          <div className="flex items-center justify-between mt-12">
+            <span className="text-xs text-muted">点击任意题材让 Agent 展开分析</span>
+            <button onClick={onOpenMarket} className="btn" style={{ fontSize: 10, padding: "2px 10px" }}>
+              到市场特征提取查看完整面板
+            </button>
+          </div>
+        </>
+      ) : trendingLoading ? (
+        <div className="loading"><div className="loading-spinner" />加载市场数据...</div>
+      ) : trendingTags.length > 0 ? (
+        <>
+          <div className="flex items-center justify-between mb-8">
+            <span className="label" style={{ fontSize: 11, marginBottom: 0 }}>
+              热门题材标签 TOP {trendingTags.length}
+            </span>
+            <button onClick={onOpenMarket} className="btn" style={{ fontSize: 10, padding: "1px 8px" }}>
+              到市场特征提取运行完整分析
+            </button>
+          </div>
+          <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.5 }}>
+            当前展示的是基础题材标签计数，运行基础特征提取后可查看带热度/趋势的完整面板。
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+            {trendingTags.slice(0, 20).map((tag, i) => {
+              const isTop = i < 5;
+              return (
+                <button key={tag.tag_name}
+                  onClick={() => onAsk(`分析一下「${tag.tag_name}」这个题材的市场前景和新人友好度`)}
+                  style={{
+                    padding: "5px 12px", borderRadius: 16,
+                    border: `1px solid ${isTop ? "var(--accent)" : "var(--border)"}`,
+                    background: isTop ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+                    color: isTop ? "var(--accent)" : "var(--text-secondary)",
+                    fontSize: 12, fontWeight: isTop ? 600 : 400,
+                    cursor: "pointer", transition: "all 0.15s",
+                  }}>
+                  {tag.tag_name} <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>{tag.novel_count}</span>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <div className="text-xs text-muted" style={{ padding: "8px 4px", lineHeight: 1.7 }}>
+          {activePlatformLabel
+            ? `当前平台「${activePlatformLabel}」暂无市场数据。`
+            : "市场数据库暂无热门题材数据。"}
+          <div style={{ marginTop: 8 }}>
+            <button onClick={onOpenMarket} className="btn" style={{ fontSize: 10, padding: "2px 10px" }}>
+              到市场特征提取运行分析
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
