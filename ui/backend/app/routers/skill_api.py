@@ -715,27 +715,55 @@ class CompareWorksRequest(BaseModel):
     prompt_override: Optional[str] = None  # per-call ephemeral override
 
 
+# Placeholders below use the literal-substitution scheme — see
+# _render_compare_prompt(). We avoid str.format() because the bundle text
+# can contain literal `{` / `}` characters (JSON snippets, rules-as-code).
 _COMPARE_PROMPT_DEFAULT = """你是创作技巧分析师。下面是 {n} 部参考作品的提取特征（剧情结构、角色原型、世界设定、叙事节奏 —— 已结构化提炼，非原文逐字数据）。
 请对比它们的 **{focus}** 特征，找出**共同模式**和**显著差异**，并提炼出一条可作为创作技巧 (Skill) 的洞察。
 
 要求：
 1. 先客观陈述共同模式（2-3 句），再陈述差异点（2-3 句），最后给出可操作的写作建议。
-2. 把它包装成一个**可重用的 Skill** — 一段 prompt 模板，里面带 {{user_input}} 占位符让后续调用可以传入新场景。
+2. 把它包装成一个**可重用的 Skill** — 一段 prompt 模板，里面带 {user_input} 占位符让后续调用可以传入新场景。
 
 {instruction_block}
 
 返回严格 JSON（不要 markdown 包装）：
-{{
+{
   "name": "snake_case_skill_name",
   "display_name": "可读名称",
   "description": "≤ 100 字描述这个 skill 解决什么问题",
-  "prompt_template": "完整 prompt 模板，包含 {{user_input}} 占位符",
+  "prompt_template": "完整 prompt 模板，包含 {user_input} 占位符",
   "tags": ["对比", "学习", ...]
-}}
+}
 
 作品特征数据：
 {bundle}
 """
+
+
+def _render_compare_prompt(
+    template: str, *, n: int, focus: str,
+    instruction_block: str, bundle: str,
+) -> str:
+    """Substitute only the four named placeholders.
+
+    str.format() would also process literal `{` / `}` in the bundle as
+    field references and either raise KeyError or — when escaped — leak
+    the escapes (`{{x}}` → `{{x}}` because format doesn't un-double
+    *substituted* values, only the template literal). Plain replacement
+    avoids both problems: every other `{...}` in the template (e.g. the
+    `{user_input}` token meant for the resulting Skill prompt) survives
+    intact.
+    """
+    out = template
+    for key, value in (
+        ("{n}", str(n)),
+        ("{focus}", focus),
+        ("{instruction_block}", instruction_block),
+        ("{bundle}", bundle),
+    ):
+        out = out.replace(key, value)
+    return out
 
 
 def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
@@ -745,9 +773,13 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
     """
     from knowledge.reference_db import ReferenceDB
     from ui.backend.app.settings import settings as _app_settings
-    from ui.backend.app.routers._rag_context import (
-        _condense_ref_characters, _condense_ref_settings,
-        _condense_ref_plot, _condense_ref_rhythm,
+    # The condense_ref_* helpers live in the prompt_context.references
+    # module; the legacy _rag_context shim doesn't re-export them.
+    from ui.backend.app.services.prompt_context.references import (
+        condense_ref_characters as _condense_ref_characters,
+        condense_ref_settings as _condense_ref_settings,
+        condense_ref_plot as _condense_ref_plot,
+        condense_ref_rhythm as _condense_ref_rhythm,
     )
 
     if not body.ref_ids:
@@ -762,7 +794,11 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
             db_path = get_db_path(repo_cfg, _app_settings.repo_root)
         except FileNotFoundError:
             db_path = str(_app_settings.repo_root / "data" / "novels.db")
-        rdb = ReferenceDB(db_path)
+        # The compare prompt pulls from the reference DB (works, extracted
+        # features), not the novels DB. The fallback above is only used
+        # when paths.yaml is missing — switch to the reference DB path.
+        from ui.backend.app.routers.reference._common import reference_db_path
+        rdb = ReferenceDB(reference_db_path())
     except Exception as e:
         raise HTTPException(500, f"打开参考库失败: {e}")
 
@@ -775,8 +811,7 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
 
     def _focused(w: dict) -> str:
         """Condense one work into a readable feature digest (剧情/角色/
-        设定/节奏), scoped to the chosen focus — not raw extraction JSON
-        (which is dominated by low-level word/style statistics)."""
+        设定/节奏) tailored to the chosen focus."""
         head = f"《{w.get('title') or '未命名'}》"
         meta = "，".join(
             str(x) for x in (w.get("creator"), w.get("genre"), w.get("media_type"))
@@ -815,8 +850,8 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
     }.get(body.focus, body.focus)
 
     base = body.prompt_override or _COMPARE_PROMPT_DEFAULT
-    prompt = base.format(
-        n=len(works), focus=focus_zh,
+    prompt = _render_compare_prompt(
+        base, n=len(works), focus=focus_zh,
         instruction_block=instruction_block,
         bundle=bundle_str,
     )

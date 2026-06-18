@@ -7,7 +7,6 @@ import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import ReferenceSearchPage from "./ReferenceSearchPage";
 import CompareWorksPanel from "../components/CompareWorksPanel";
-import CommonPatternLearningPanel from "../components/reference/CommonPatternLearningPanel";
 
 const MEDIA_TYPES: { value: MediaType; label: string; color: string }[] = [
   { value: "web_novel", label: "网文", color: "var(--accent)" },
@@ -860,37 +859,13 @@ function ReferenceLearningTab({ works }: { works: ReferenceWork[] }) {
         </div>
       </div>
 
-      {/* 共通点学习（不带自己的作品选择/成果列表） */}
-      <div className="card">
-        <div className="card-header">
-          <h3 style={{ margin: 0 }}>共通点学习</h3>
-        </div>
-        <div className="card-body">
-          <CommonPatternLearningPanel
-            works={works.map(w => ({
-              ref_id: w.ref_id, title: w.title, creator: w.creator,
-            }))}
-            selectedRefIds={selected}
-            hideWorkPicker
-            hideSelfLearnedList
-            onLearned={reloadSkills}
-          />
-        </div>
-      </div>
-
-      {/* 作品对比 → 草稿技能（不带自己的作品选择） */}
-      <div className="card">
-        <div className="card-header">
-          <h3 style={{ margin: 0 }}>作品对比 → 草稿技能</h3>
-        </div>
-        <div className="card-body">
-          <CompareWorksPanel
-            selectedWorks={selectedWorks}
-            hideWorkPicker
-            onSaved={reloadSkills}
-          />
-        </div>
-      </div>
+      {/* 共通点学习 — 直接展开 (不再 nested card)，按统一 LLM 交互
+          模式：直接选取关注维度 + 弹窗里选 API 或网页版处理。 */}
+      <CompareWorksPanel
+        selectedWorks={selectedWorks}
+        hideWorkPicker
+        onSaved={reloadSkills}
+      />
 
       {/* 统一的自学习成果列表（与「智能体」页面共用同一份数据） */}
       <div className="card">
