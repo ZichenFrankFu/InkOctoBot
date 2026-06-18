@@ -73,6 +73,51 @@ function readChapterMetrics(w: ReferenceWork): ChapterMetrics {
   };
 }
 
+/** Parse the pure-setting raw_entries list out of `quick_input_text`.
+ *  Returns [] for legacy plain-text values. */
+function parseRawEntries(raw: string | undefined | null): { title: string; content: string }[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    if (Array.isArray(v)) {
+      return v
+        .filter((x: any) => x && typeof x === "object")
+        .map((x: any) => ({
+          title: String(x.title || ""),
+          content: String(x.content || ""),
+        }))
+        .filter(e => e.title || e.content);
+    }
+  } catch { /* legacy plain string */ }
+  return [];
+}
+
+/** Count source / extracted items for a pure-setting (setting_collection) work. */
+interface PureSettingCounts {
+  entries: number;
+  settings: number;
+  characters: number;
+  features: number;
+}
+
+function readPureSettingCounts(w: ReferenceWork): PureSettingCounts {
+  const entries = parseRawEntries(w.quick_input_text);
+  const settings = pj(w.settings_json);
+  const characters = pj(w.static_characters_json);
+  const features = pj(w.setting_features_json);
+  return {
+    entries: entries.length,
+    settings: Array.isArray(settings) ? settings.length : 0,
+    characters: Array.isArray(characters) ? characters.length : 0,
+    features: Array.isArray(features) ? features.length : 0,
+  };
+}
+
+function pureSettingHasContent(w: ReferenceWork): boolean {
+  const c = readPureSettingCounts(w);
+  return c.entries > 0 || c.settings > 0 || c.characters > 0;
+}
+
 interface FeatureProgress {
   total: number;
   events: number;
@@ -140,7 +185,6 @@ export default function ReferenceOverviewPage({ onNavigate, initialTab }: Props)
     const byGenre: Record<string, number> = {};
     const byStatus: Record<string, number> = { not_applicable: 0, pending: 0, processing: 0, done: 0, error: 0 };
     let withFullText = 0, withPlot = 0, withCharacters = 0;
-    let totalRatings = 0, ratedCount = 0;
     for (const w of works) {
       byMedia[w.media_type] = (byMedia[w.media_type] || 0) + 1;
       // Split multi-tag genre strings so each tag contributes independently.
@@ -148,18 +192,21 @@ export default function ReferenceOverviewPage({ onNavigate, initialTab }: Props)
         byGenre[g] = (byGenre[g] || 0) + 1;
       }
       byStatus[w.preprocessing_status] = (byStatus[w.preprocessing_status] || 0) + 1;
-      if (w.has_full_text) withFullText++;
+      // Pure-setting works don't have full text — count them as "uploaded"
+      // when they have any 原始文本 / 设定 / 角色 content.
+      if (w.structure_type === "setting_collection") {
+        if (pureSettingHasContent(w)) withFullText++;
+      } else if (w.has_full_text) {
+        withFullText++;
+      }
       if (w.plot_outline_json) withPlot++;
       const chars = pj(w.extracted_characters_json);
       if (Array.isArray(chars) && chars.length) withCharacters++;
-      if (w.user_rating) { totalRatings += w.user_rating; ratedCount++; }
     }
     return {
       total: works.length,
       byMedia, byGenre, byStatus,
       withFullText, withPlot, withCharacters,
-      avgRating: ratedCount > 0 ? totalRatings / ratedCount : null,
-      ratedCount,
     };
   }, [works]);
 
@@ -253,9 +300,6 @@ export default function ReferenceOverviewPage({ onNavigate, initialTab }: Props)
               hint={`${pct(stats.withPlot, stats.total)}%`} accent="var(--purple)" />
             <KpiTile label="已提取角色" value={stats.withCharacters}
               hint={`${pct(stats.withCharacters, stats.total)}%`} accent="var(--indigo)" />
-            <KpiTile label="平均评分"
-              value={stats.avgRating == null ? "—" : stats.avgRating.toFixed(1)}
-              hint={`${stats.ratedCount} 部已评分`} accent="var(--gold)" />
           </div>
 
           {/* Two stacked-bar cards */}
@@ -496,10 +540,7 @@ function WorkCard({ w, onOpen }: {
   w: ReferenceWork;
   onOpen: () => void;
 }) {
-  const ch = readChapterMetrics(w);
-  const hasText = Boolean(w.has_full_text);
-  const fp = readFeatureProgress(w);
-  const isEpisode = EPISODE_MEDIA.has(w.media_type);
+  const isPureSetting = w.structure_type === "setting_collection";
   const genres = splitGenres(w.genre);
   const serialKey = (w.serial_status || "unknown") as keyof typeof SERIAL_LABEL;
   const serial = SERIAL_LABEL[serialKey];
@@ -510,7 +551,7 @@ function WorkCard({ w, onOpen }: {
       background: "var(--bg-surface)",
       border: "1px solid var(--border)",
       borderRadius: "var(--radius-sm)",
-      borderLeft: `3px solid ${mediaColor(w.media_type)}`,
+      borderLeft: `3px solid ${isPureSetting ? "var(--gold)" : mediaColor(w.media_type)}`,
       display: "flex", flexDirection: "column", gap: 8,
     }}>
       {/* Title row */}
@@ -521,12 +562,19 @@ function WorkCard({ w, onOpen }: {
           </div>
           <div className="flex gap-6 items-center" style={{ flexWrap: "wrap", marginTop: 3, fontSize: 11 }}>
             <span style={{ color: mediaColor(w.media_type), fontWeight: 600 }}>{mediaLabel(w.media_type)}</span>
+            {isPureSetting && (
+              <span style={{
+                fontSize: 10, padding: "1px 6px", borderRadius: 3,
+                color: "var(--gold)", border: "1px solid var(--gold)",
+                background: "var(--bg-surface-2)", fontWeight: 600,
+              }}>纯设定</span>
+            )}
             {w.creator && <span className="text-muted">· {w.creator}</span>}
             {w.user_rating ? <span style={{ color: "var(--gold)" }}>{stars(w.user_rating)}</span> : null}
           </div>
         </div>
-        {/* Serial status — shown only when known; the 未知 tag is dropped. */}
-        {serialKey !== "unknown" && serial && (
+        {/* Serial status — narrative works only; 未知 is dropped. */}
+        {!isPureSetting && serialKey !== "unknown" && serial && (
           <span className="tag" title={`连载状态：${serial.label}`} style={{
             fontSize: 10, padding: "1px 7px",
             color: serial.color,
@@ -551,9 +599,35 @@ function WorkCard({ w, onOpen }: {
         </div>
       )}
 
-      {/* Chapter / volume / word counts — no more "已上传正文（尚未
-          分段）" branch per latest IA, kept "未上传正文" only as a
-          fallback when there is no text at all. */}
+      {isPureSetting ? (
+        <PureSettingBody w={w} />
+      ) : (
+        <NarrativeBody w={w} />
+      )}
+
+      {/* Actions */}
+      <div className="flex gap-6" style={{ marginTop: "auto" }}>
+        <button
+          className="btn-primary"
+          style={{ fontSize: 11, padding: "4px 10px", flex: 1 }}
+          onClick={onOpen}
+        >
+          打开详情
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Body block for narrative reference works (with chapters / extraction progress). */
+function NarrativeBody({ w }: { w: ReferenceWork }) {
+  const ch = readChapterMetrics(w);
+  const hasText = Boolean(w.has_full_text);
+  const fp = readFeatureProgress(w);
+  const isEpisode = EPISODE_MEDIA.has(w.media_type);
+  return (
+    <>
+      {/* Chapter / volume / word counts */}
       <div className="text-xs text-muted" style={{ lineHeight: 1.5 }}>
         {ch.chapters > 0 ? (
           <>
@@ -566,10 +640,6 @@ function WorkCard({ w, onOpen }: {
         ) : null}
       </div>
 
-      {/* Compact 正文+tag + single extraction progress. The earlier
-          per-feature bars (大纲/角色/设定/特征) all came from the
-          same per-chapter extraction job, so showing one progress
-          bar tells the same story without 4x visual weight. */}
       <div className="flex flex-col gap-5">
         <div className="flex items-center gap-8">
           <span className="text-xs text-muted" style={{ minWidth: 30 }}>正文</span>
@@ -588,17 +658,52 @@ function WorkCard({ w, onOpen }: {
           />
         )}
       </div>
+    </>
+  );
+}
 
-      {/* Actions */}
-      <div className="flex gap-6" style={{ marginTop: "auto" }}>
-        <button
-          className="btn-primary"
-          style={{ fontSize: 11, padding: "4px 10px", flex: 1 }}
-          onClick={onOpen}
-        >
-          打开详情
-        </button>
+/** Body block for pure-setting (setting_collection) works.
+ *  Shows entry count (原始文本) + extraction progress as three counts
+ *  (设定 / 角色 / 设定特征). No upload-status badge — these works don't
+ *  have a「正文」to upload. */
+function PureSettingBody({ w }: { w: ReferenceWork }) {
+  const c = readPureSettingCounts(w);
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center gap-8">
+        <span className="text-xs text-muted" style={{ minWidth: 36 }}>条目</span>
+        <span style={{
+          fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 700,
+          color: c.entries > 0 ? "var(--jade)" : "var(--text-tertiary)",
+        }}>{c.entries}</span>
+      </div>
+      <div className="flex items-center gap-8" style={{ flexWrap: "wrap" }}>
+        <span className="text-xs text-muted" style={{ minWidth: 36 }}>提取</span>
+        <PureSettingChip label="设定" value={c.settings} color="var(--accent)" />
+        <PureSettingChip label="角色" value={c.characters} color="var(--indigo)" />
+        <PureSettingChip label="特征" value={c.features} color="var(--purple)" />
       </div>
     </div>
+  );
+}
+
+function PureSettingChip({ label, value, color }: {
+  label: string; value: number; color: string;
+}) {
+  const has = value > 0;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      fontSize: 11, padding: "1px 8px", borderRadius: 4,
+      color: has ? color : "var(--text-tertiary)",
+      border: `1px solid ${has ? color : "var(--border)"}`,
+      background: has ? "var(--bg-surface-2)" : "transparent",
+      fontWeight: 600,
+    }}>
+      {label}
+      <span style={{
+        fontFamily: "var(--font-mono)", fontWeight: 700,
+      }}>{value}</span>
+    </span>
   );
 }

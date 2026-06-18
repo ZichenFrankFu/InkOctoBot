@@ -56,13 +56,49 @@ type PlatformFilter = "" | "qidian" | "fanqie";
 const platformLabel = (p: string) =>
   p === "qidian" ? "起点" : p === "fanqie" ? "番茄" : p || "未知";
 
+/** Market preview cache — `localStorage` (survives across browser
+ *  sessions) keyed by platform. The mtime check in the background
+ *  refresh handles staleness. */
+const MARKET_CACHE_PREFIX = "inkoctobot_market_preview_v2::";
+
+interface MarketCachedEntry {
+  mtimeKey: string;
+  platform: PlatformFilter;
+  overview: Overview;
+  highFreq: HighFreqNovel[];
+  hotTags: HotTag[];
+}
+
+function readMarketCache(platform: PlatformFilter): MarketCachedEntry | null {
+  try {
+    const raw = localStorage.getItem(MARKET_CACHE_PREFIX + platform);
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    if (c && c.overview && c.platform === platform) return c;
+  } catch { /* parse / quota errors are fine */ }
+  return null;
+}
+
+function writeMarketCache(entry: MarketCachedEntry): void {
+  try {
+    localStorage.setItem(
+      MARKET_CACHE_PREFIX + entry.platform,
+      JSON.stringify(entry),
+    );
+  } catch { /* quota — cache is best-effort */ }
+}
+
 export default function DashboardPage({ projects, onNavigate, onSelectProject }: { projects: { id: string; name: string; genre?: string; word_count?: number; chapter_count?: number }[]; onNavigate: (tab: string) => void; onSelectProject?: (id: string) => void }) {
   const { toast } = useToast();
   const [platform, setPlatform] = useState<PlatformFilter>("");
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [highFreq, setHighFreq] = useState<HighFreqNovel[]>([]);
-  const [hotTags, setHotTags] = useState<HotTag[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Hydrate the initial state SYNCHRONOUSLY from localStorage so first
+  // paint already has data — no spinner flash on revisit.
+  const initialCache = useMemo(() => readMarketCache(""), []);
+  const [overview, setOverview] = useState<Overview | null>(initialCache?.overview ?? null);
+  const [highFreq, setHighFreq] = useState<HighFreqNovel[]>(initialCache?.highFreq ?? []);
+  const [hotTags, setHotTags] = useState<HotTag[]>(initialCache?.hotTags ?? []);
+  // Loading is only true when we genuinely have nothing to show.
+  const [loading, setLoading] = useState(!initialCache);
   const [loadError, setLoadError] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
 
@@ -173,26 +209,22 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
   // invalidates the cached overview.
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
     setLoadError(false);
     const qs = platform ? `?platform=${platform}` : "";
 
-    (async () => {
-      const cacheKey = "inkoctobot_market_preview_v1";
-      // 0. cache-first：命中即立刻渲染（不等任何网络往返），后台再
-      //    校验 mtime——用户打开首页不应有可感知的等待。
-      let cachedEntry: any = null;
-      try {
-        const raw = sessionStorage.getItem(cacheKey);
-        if (raw) cachedEntry = JSON.parse(raw);
-      } catch { /* ignore parse errors */ }
-      if (cachedEntry && cachedEntry.platform === platform && !cancelled) {
-        setOverview(cachedEntry.overview);
-        setHighFreq(cachedEntry.highFreq || []);
-        setHotTags(cachedEntry.hotTags || []);
-        setLoading(false);
-      }
+    // Hydrate from cache synchronously up-front — only show the spinner
+    // when there's truly nothing to display.
+    const cachedEntry = readMarketCache(platform);
+    if (cachedEntry) {
+      setOverview(cachedEntry.overview);
+      setHighFreq(cachedEntry.highFreq || []);
+      setHotTags(cachedEntry.hotTags || []);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
 
+    (async () => {
       // 1. cheap mtime check (background) — unchanged DB → keep cache.
       let mtimeKey = "";
       try {
@@ -221,23 +253,25 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
         setHighFreq(highFreq);
         setHotTags(hotTags);
         if (mtimeKey) {
-          try {
-            sessionStorage.setItem(cacheKey, JSON.stringify({
-              mtimeKey, platform, overview, highFreq, hotTags,
-            }));
-          } catch { /* sessionStorage quota — skip cache */ }
+          writeMarketCache({
+            mtimeKey, platform, overview, highFreq, hotTags,
+          });
         }
       } catch (e: any) {
         if (cancelled) return;
-        setLoadError(true);
-        toast(e.message || "加载失败", "error");
+        // Only surface a hard error when we have nothing cached — a
+        // background refresh failure shouldn't blow away the visible data.
+        if (!cachedEntry) {
+          setLoadError(true);
+          toast(e.message || "加载失败", "error");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
 
     return () => { cancelled = true; };
-  }, [platform, retryKey]);
+  }, [platform, retryKey, toast]);
 
   /* ── derived ── */
   const maxCategory = useMemo(
@@ -531,7 +565,6 @@ export default function DashboardPage({ projects, onNavigate, onSelectProject }:
                 { value: refSummary.done, label: "已完成分析" },
                 { value: refSummary.withPlot, label: "已生成大纲" },
                 { value: refSummary.withCharacters, label: "已提取角色" },
-                { value: refSummary.avgRating > 0 ? refSummary.avgRating.toFixed(1) : "—", label: "平均评分" },
               ].map((s) => (
                 <div className="stat-card" key={s.label}>
                   <div className="stat-value">{s.value}</div>
