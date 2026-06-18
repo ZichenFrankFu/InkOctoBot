@@ -127,6 +127,35 @@ def preview_prompt(
     if not required_vars:
         return {"key": key, "template": template, "rendered": template, "vars": {}}
 
+    # Pure-setting: ref_id + optional chunk_index → pull quick_input,
+    # split into chunks, render the requested chunk's prompt. Used by
+    # the 网页版 mode's PromptCopyPanel so the user copies *exactly*
+    # what the API path would send.
+    if key == "reference.pure_setting":
+        if not ref_id:
+            raise HTTPException(400, "ref_id required for this prompt")
+        from .pure_setting import _split_chunks
+        rdb = db()
+        w = rdb.get_work(ref_id)
+        if not w:
+            raise HTTPException(404, "参考作品不存在")
+        text = (w.get("quick_input_text") or "").strip()
+        if not text:
+            raise HTTPException(400, "快捷输入为空 — 请先粘贴 wiki 条目原文")
+        chunks = _split_chunks(text)
+        ci = max(0, min(segment_index or 0, len(chunks) - 1))
+        chunk_text = chunks[ci]["text"]
+        vars_ = {
+            "title": w.get("title", ""),
+            "author": w.get("creator", "") or "",
+            "chunk_index_human": ci + 1,
+            "total_chunks": len(chunks),
+            "n_chars": len(chunk_text),
+            "text": chunk_text,
+        }
+        rendered = render(key, **vars_)
+        return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
+
     # Work-scoped: volume_detect just needs ref_id.
     if key == "reference.volume_detect":
         if not ref_id:

@@ -5,10 +5,17 @@ Surfaces:
 - GET/PUT /works/{ref_id}/pure-setting — structure type, 快捷输入原文,
   设定条目 (6 类 + 其他), 静态角色 (姓名/定位/描述, 不绑定章节),
   设定特征 (作品级世界观高概念/母题)
-- POST /works/{ref_id}/pure-setting/extract — ONE LLM call over the
-  quick-input wiki text, returning a PREVIEW {settings, characters,
-  setting_features}; nothing persists until the client PUTs the
-  user-pruned lists back (预览后逐项入库, LLM交互·机制2)
+- GET /works/{ref_id}/pure-setting/segments — chunk plan for the
+  quick-input wiki text (满足 LLM 交互机制 4：长文本分段，每段独立 prompt)
+- POST /works/{ref_id}/pure-setting/extract — extract one chunk (or
+  the whole text when short) via the configured LLM API, returning a
+  PREVIEW {settings, characters, setting_features}; nothing persists
+  until the client PUTs the user-pruned lists back (预览后逐项入库,
+  LLM交互·机制2)
+
+满足 LLM 交互机制 1：本路由提供 API 提取模式；网页版模式通过
+``/prompts/reference.pure_setting/preview`` 渲染 prompt 由前端发布给
+用户复制，结果直接在前端粘贴解析。
 """
 from __future__ import annotations
 
@@ -30,22 +37,9 @@ SETTING_CATEGORIES = (
     "力量体系", "势力组织", "地理", "社会规则", "历史背景", "世界观", "其他",
 )
 
-_SYSTEM = (
-    "你是设定集分析助手。用户粘贴了某个共创世界观作品（如 SCP、后室、"
-    "战锤40K）的 wiki 条目原文，请从中抽取结构化设定。\n"
-    "输出 JSON：\n"
-    "{\n"
-    '  "settings": [{"category": "力量体系|势力组织|地理|社会规则|历史背景|世界观|其他", "title": "条目名", "content": "条目内容概述"}],\n'
-    '  "characters": [{"name": "姓名", "role": "定位", "description": "描述"}],\n'
-    '  "setting_features": [{"title": "高概念/母题", "description": "一句话解释"}]\n'
-    "}\n"
-    "要求：\n"
-    "1. settings 按原文忠实概括，不要自行虚构\n"
-    "2. characters 为静态条目（不绑定章节），只收录有名字的个体\n"
-    "3. setting_features 是作品级世界观高概念/核心母题"
-    "（如战锤40K的「太空大航海」「唯心影响现实世界」），1-6 条\n"
-    "4. 禁止使用 emoji"
-)
+# 单段最大字符数 — 与 ai_extractor._MAX_PROMPT_CHARS 保持一致，避免分段提取
+# 时 prompt 太长触发上下文限制；同时也是网页版复制 prompt 的安全上限。
+_MAX_CHUNK_CHARS = 12_000
 
 
 def _conn() -> sqlite3.Connection:
@@ -62,6 +56,69 @@ def _loads(raw: Any) -> list:
         return v if isinstance(v, list) else []
     except Exception:
         return []
+
+
+def _split_chunks(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> list[dict]:
+    """Split the quick-input wiki text into chunks of <= max_chars.
+
+    Greedy split that respects段落/章节边界: first tries双换行（段落），
+    then单换行，falls back to硬切. Returns a list of
+    {chunk_index, total_chunks, text, n_chars} dicts.
+    """
+    if not text:
+        return []
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [{
+            "chunk_index": 0, "total_chunks": 1,
+            "text": text, "n_chars": len(text),
+        }]
+
+    # Prefer段落边界 — split on blank lines first.
+    paragraphs = re.split(r"\n\s*\n", text)
+    if len(paragraphs) == 1:
+        # Fall back to线性切分 by newline
+        paragraphs = text.split("\n")
+
+    chunks: list[str] = []
+    cur = ""
+    for p in paragraphs:
+        p = p.strip()
+        if not p:
+            continue
+        candidate = f"{cur}\n\n{p}" if cur else p
+        if len(candidate) > max_chars and cur:
+            chunks.append(cur)
+            cur = p
+        else:
+            cur = candidate
+    if cur:
+        chunks.append(cur)
+
+    # Any single段落 itself >  max_chars: hard-cut it.
+    final: list[str] = []
+    for c in chunks:
+        if len(c) <= max_chars:
+            final.append(c)
+            continue
+        # hard-cut on punctuation if possible
+        i = 0
+        while i < len(c):
+            end = min(i + max_chars, len(c))
+            # try to break at句号 within last 500 chars
+            if end < len(c):
+                window = c[end - 500:end]
+                m = max((window.rfind(p) for p in "。！？\n"), default=-1)
+                if m >= 0:
+                    end = end - 500 + m + 1
+            final.append(c[i:end].strip())
+            i = end
+
+    total = len(final)
+    return [{
+        "chunk_index": i, "total_chunks": total,
+        "text": t, "n_chars": len(t),
+    } for i, t in enumerate(final)]
 
 
 @router.get("/works/{ref_id}/pure-setting")
@@ -125,6 +182,45 @@ def update_pure_setting(ref_id: str, body: dict = Body(...)):
     return get_pure_setting(ref_id)
 
 
+@router.get("/works/{ref_id}/pure-setting/segments")
+def get_pure_setting_segments(ref_id: str):
+    """Return the chunk plan for this work's 快捷输入文本.
+
+    Long wiki dumps (战锤40K 一个种族就上万字) need to be split into
+    multiple LLM calls. Returns a list of chunk metadata
+    ``{chunk_index, total_chunks, n_chars, preview}`` so the UI can
+    render a per-chunk extraction row without itself running the split.
+    """
+    with _conn() as con:
+        row = con.execute(
+            "SELECT title, creator, quick_input_text "
+            "FROM reference_works WHERE ref_id = ?",
+            (ref_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "work not found")
+    text = (row["quick_input_text"] or "").strip()
+    chunks = _split_chunks(text)
+    return {
+        "ref_id": ref_id,
+        "title": row["title"] or "",
+        "creator": row["creator"] or "",
+        "total_chars": len(text),
+        "total_chunks": len(chunks),
+        "max_chunk_chars": _MAX_CHUNK_CHARS,
+        "chunks": [
+            {
+                "chunk_index": c["chunk_index"],
+                "total_chunks": c["total_chunks"],
+                "n_chars": c["n_chars"],
+                # 仅返回前 80 字作为列表显示用，正文不重复 traffic
+                "preview": c["text"][:80],
+            }
+            for c in chunks
+        ],
+    }
+
+
 def _extract_json(raw: str) -> dict:
     s = raw.strip()
     if s.startswith("```"):
@@ -142,7 +238,7 @@ def _normalize_preview(parsed: dict) -> dict:
         if not isinstance(s, dict):
             continue
         title = str(s.get("title") or "").strip()
-        content = str(s.get("content") or "").strip()
+        content = str(s.get("content") or s.get("summary") or "").strip()
         if not title and not content:
             continue
         cat = str(s.get("category") or "其他").strip()
@@ -179,21 +275,75 @@ def _normalize_preview(parsed: dict) -> dict:
     }
 
 
+def _render_pure_setting_prompt(
+    *, title: str, author: str,
+    chunk_index: int, total_chunks: int,
+    text: str,
+) -> tuple[str, str]:
+    """Render the user prompt + return the (empty) system prompt.
+
+    The pure-setting prompt template carries every constraint inline so
+    the system prompt stays empty — same shape as the other reference
+    prompts (`reference.unified`, etc.) which keep `system=""` and put
+    the schema inside the user prompt.
+    """
+    from reference_pipeline.prompts import render
+    user_prompt = render(
+        "reference.pure_setting",
+        title=title or "",
+        author=author or "",
+        chunk_index_human=chunk_index + 1,
+        total_chunks=total_chunks,
+        n_chars=len(text),
+        text=text,
+    )
+    return user_prompt, ""
+
+
 @router.post("/works/{ref_id}/pure-setting/extract")
 async def extract_pure_setting(ref_id: str, body: dict = Body(default={})):
-    """ONE LLM call over 快捷输入 → preview lists (NOT persisted)."""
-    text = str(body.get("text") or "").strip()
-    if not text:
-        with _conn() as con:
-            row = con.execute(
-                "SELECT quick_input_text FROM reference_works WHERE ref_id = ?",
-                (ref_id,),
-            ).fetchone()
-        if not row:
-            raise HTTPException(404, "work not found")
-        text = (row["quick_input_text"] or "").strip()
-    if not text:
-        raise HTTPException(400, "快捷输入为空 — 请先粘贴 wiki 条目原文")
+    """ONE LLM API call over a chunk of 快捷输入 → preview lists (NOT persisted).
+
+    Body params:
+    - ``chunk_index`` (optional): when set, extract only that chunk of
+      the segmented text; otherwise extract the first/only chunk.
+    - ``text`` (optional): override the source text entirely (used by
+      paste-back mode where the client already split). Falls back to
+      reading ``quick_input_text`` from the DB.
+    """
+    text_override = str(body.get("text") or "").strip()
+    chunk_index = int(body.get("chunk_index") or 0)
+
+    with _conn() as con:
+        row = con.execute(
+            "SELECT title, creator, quick_input_text "
+            "FROM reference_works WHERE ref_id = ?",
+            (ref_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "work not found")
+    title = row["title"] or ""
+    author = row["creator"] or ""
+    full_text = (row["quick_input_text"] or "").strip()
+
+    if text_override:
+        chunk_text = text_override
+        total_chunks = 1
+        chunk_index = 0
+    else:
+        if not full_text:
+            raise HTTPException(400, "快捷输入为空 — 请先粘贴 wiki 条目原文")
+        chunks = _split_chunks(full_text)
+        if chunk_index < 0 or chunk_index >= len(chunks):
+            raise HTTPException(400, f"chunk_index 超出范围（0–{len(chunks) - 1}）")
+        chunk_text = chunks[chunk_index]["text"]
+        total_chunks = len(chunks)
+
+    user_prompt, system_prompt = _render_pure_setting_prompt(
+        title=title, author=author,
+        chunk_index=chunk_index, total_chunks=total_chunks,
+        text=chunk_text,
+    )
 
     from llm.call_site import LLMCallSite
     cs = LLMCallSite(
@@ -203,12 +353,41 @@ async def extract_pure_setting(ref_id: str, body: dict = Body(default={})):
         default_max_tokens=3000, default_temperature=0.2,
     )
     raw = await cs.invoke(
-        prompt=f"wiki 条目原文：\n\n{text[:12000]}\n\n请输出 JSON。",
-        system=_SYSTEM,
+        prompt=user_prompt,
+        system=system_prompt,
         project_id=ref_id,
     )
     try:
         preview = _normalize_preview(_extract_json(raw))
     except Exception as e:
         raise HTTPException(500, f"提取结果解析失败: {e}")
-    return {"ref_id": ref_id, "preview": True, **preview}
+    return {
+        "ref_id": ref_id, "preview": True,
+        "chunk_index": chunk_index, "total_chunks": total_chunks,
+        **preview,
+    }
+
+
+@router.post("/works/{ref_id}/pure-setting/parse-paste")
+def parse_pure_setting_paste(ref_id: str, body: dict = Body(...)):
+    """Parse a pasted web-LLM JSON response into preview lists.
+
+    Pure server-side normalization — no LLM call. Used by the 网页版
+    extraction mode (LLM交互·机制1): the user copies the rendered prompt
+    out to e.g. claude.ai, pastes the JSON response back, and the client
+    POSTs the raw text here for parsing.
+    """
+    raw = str(body.get("raw") or "").strip()
+    chunk_index = int(body.get("chunk_index") or 0)
+    if not raw:
+        raise HTTPException(400, "raw 为空 — 请先粘贴 LLM 返回内容")
+    try:
+        parsed = _extract_json(raw)
+    except Exception as e:
+        raise HTTPException(400, f"解析失败：{e}")
+    preview = _normalize_preview(parsed)
+    return {
+        "ref_id": ref_id, "preview": True,
+        "chunk_index": chunk_index,
+        **preview,
+    }

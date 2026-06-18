@@ -747,6 +747,70 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
         "description": "创作管线 · 旁白 Agent 的 system 提示",
     },
 
+    "reference.pure_setting": {
+        "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
+
+任务：阅读下面这**一段**纯设定作品（如 SCP / 后室 / 战锤40K）的 wiki 条目原文，一次性抽取 3 类信息——**设定 / 角色 / 设定特征**——合并成**一个** JSON 对象返回。
+
+作品上下文（仅供消歧）：
+- 作品标题：《{title}》
+- 作者/来源：{author}
+- 分段：第 {chunk_index_human}/{total_chunks} 段（共 {n_chars} 字）
+
+**严格禁止**（违反则整条响应被视为错误）：
+- 任何寒暄、解释、对话语句
+- ```json ... ``` 这样的 markdown 包装
+- <think>...</think> 等推理块
+- JSON 之外的任何文字
+
+**只输出**：以 `{{` 开始、以 `}}` 结束的合法 JSON 对象，顶层恰好 3 个键：settings / characters / setting_features。
+
+输出 JSON schema（字段名严格匹配）：
+
+{{
+  "settings": [
+    {{
+      "category": "力量体系 | 势力组织 | 地理 | 社会规则 | 历史背景 | 世界观 | 其他",
+      "title": "条目名（短，≤ 16 字，wiki 原标题或概括）",
+      "content": "条目内容概述（≤ 120 字，忠实概括，不要虚构）"
+    }}
+  ],
+  "characters": [
+    {{
+      "name": "姓名（必填）",
+      "role": "定位（如 创始人/异常实体/守护者/领袖 等，≤ 12 字）",
+      "description": "静态描述，≤ 80 字，**不绑定章节**"
+    }}
+  ],
+  "setting_features": [
+    {{
+      "title": "高概念/母题（如「太空大航海」「唯心影响现实世界」，≤ 16 字）",
+      "description": "一句话解释（≤ 60 字）"
+    }}
+  ]
+}}
+
+类别中文对照：
+- 设定 category：直接使用上述 7 个中文 key
+- characters 为静态条目，只收录有名字的个体
+- setting_features 是作品级世界观高概念/核心母题，1-6 条；分段时只保留本段能体现的特征
+
+要求：
+- settings 按原文忠实概括，不要自行虚构；最多 30 条
+- 禁止使用 emoji
+- 没有内容的类别返回空数组
+
+本段原文（约 {n_chars} 字）：
+{text}
+""",
+        "vars": [
+            "title", "author",
+            "chunk_index_human", "total_chunks",
+            "n_chars", "text",
+        ],
+        "description": "纯设定作品（SCP/后室/战锤40K 等）分段抽取设定/角色/设定特征",
+    },
+
     "pipeline.editor": {
         "template": """你是剪辑师+作家（Editor-Writer），负责将演员的表演记录剪辑成最终章节正文。
 

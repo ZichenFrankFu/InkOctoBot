@@ -132,3 +132,109 @@ class TestExtraction:
     def test_extract_without_input_400(self, client, llm) -> None:
         r = client.post("/api/references/works/w1/pure-setting/extract", json={})
         assert r.status_code == 400
+
+
+class TestSegments:
+    def test_segments_empty_text(self, client) -> None:
+        r = client.get("/api/references/works/w1/pure-setting/segments")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total_chunks"] == 0
+        assert body["chunks"] == []
+
+    def test_segments_short_text_single_chunk(self, client) -> None:
+        client.put("/api/references/works/w1/pure-setting",
+                   json={"quick_input_text": _WIKI})
+        body = client.get(
+            "/api/references/works/w1/pure-setting/segments").json()
+        assert body["total_chunks"] == 1
+        assert body["chunks"][0]["n_chars"] == len(_WIKI)
+
+    def test_segments_long_text_multi_chunk(self, client) -> None:
+        # 30000 chars across many paragraphs forces a split (max_chunk_chars=12000)
+        long = "\n\n".join(f"段落 {i}：" + ("内容" * 400) for i in range(15))
+        client.put("/api/references/works/w1/pure-setting",
+                   json={"quick_input_text": long})
+        body = client.get(
+            "/api/references/works/w1/pure-setting/segments").json()
+        assert body["total_chunks"] >= 2
+        # Each chunk obeys the max
+        assert all(c["n_chars"] <= body["max_chunk_chars"] for c in body["chunks"])
+
+    def test_extract_specific_chunk(self, client, monkeypatch) -> None:
+        captured: dict = {}
+
+        async def fake_invoke(self, *, prompt, system, **kw):
+            captured["prompt"] = prompt
+            return json.dumps({
+                "settings": [], "characters": [], "setting_features": [],
+            })
+        monkeypatch.setattr("llm.call_site.LLMCallSite.invoke", fake_invoke)
+
+        long = "\n\n".join(f"段落 {i}：" + ("内容" * 400) for i in range(15))
+        client.put("/api/references/works/w1/pure-setting",
+                   json={"quick_input_text": long})
+        r = client.post("/api/references/works/w1/pure-setting/extract",
+                        json={"chunk_index": 1})
+        assert r.status_code == 200
+        assert r.json()["chunk_index"] == 1
+        assert r.json()["total_chunks"] >= 2
+        # Prompt should advertise chunk 2/N
+        assert "第 2" in captured["prompt"]
+
+    def test_extract_invalid_chunk_index_400(self, client, monkeypatch) -> None:
+        async def fake_invoke(self, *, prompt, system, **kw):
+            return "{}"
+        monkeypatch.setattr("llm.call_site.LLMCallSite.invoke", fake_invoke)
+        client.put("/api/references/works/w1/pure-setting",
+                   json={"quick_input_text": _WIKI})
+        r = client.post("/api/references/works/w1/pure-setting/extract",
+                        json={"chunk_index": 5})
+        assert r.status_code == 400
+
+
+class TestPastedParse:
+    def test_parse_paste_normalizes(self, client) -> None:
+        raw = json.dumps({
+            "settings": [
+                {"category": "地理", "title": "Site-19", "content": "主收容站"},
+                {"category": "未知类", "title": "X", "content": "x"},
+            ],
+            "characters": [{"name": "Bright博士", "role": "研究员", "description": "无法死亡"}],
+            "setting_features": [{"title": "黑色幽默", "description": "..."}],
+        })
+        r = client.post(
+            "/api/references/works/w1/pure-setting/parse-paste",
+            json={"chunk_index": 0, "raw": raw},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        cats = {s["title"]: s["category"] for s in body["settings"]}
+        assert cats["Site-19"] == "地理"
+        # 非法分类 normalized to 其他
+        assert cats["X"] == "其他"
+        assert body["characters"][0]["name"] == "Bright博士"
+
+    def test_parse_paste_with_markdown_fence(self, client) -> None:
+        raw = ("```json\n"
+               + json.dumps({"settings": [], "characters": [], "setting_features": []})
+               + "\n```")
+        r = client.post(
+            "/api/references/works/w1/pure-setting/parse-paste",
+            json={"raw": raw},
+        )
+        assert r.status_code == 200
+
+    def test_parse_paste_invalid_400(self, client) -> None:
+        r = client.post(
+            "/api/references/works/w1/pure-setting/parse-paste",
+            json={"raw": "not json"},
+        )
+        assert r.status_code == 400
+
+    def test_parse_paste_empty_400(self, client) -> None:
+        r = client.post(
+            "/api/references/works/w1/pure-setting/parse-paste",
+            json={"raw": ""},
+        )
+        assert r.status_code == 400
