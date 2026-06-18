@@ -82,7 +82,6 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
   // Search state
   const [q, setQ] = useState("");
   const [k, setK] = useState(10);
-  const [includeL3InSearch, setIncludeL3InSearch] = useState(false);
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [loading, setLoading] = useState(false);
   const [drillingRefId, setDrillingRefId] = useState<string | null>(null);
@@ -91,6 +90,10 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
   // Index state
   const [indexing, setIndexing] = useState<Record<string, boolean>>({});
   const [indexFilter, setIndexFilter] = useState<"all" | "indexed" | "unindexed">("all");
+  // Multi-select 索引级别（默认 L1 + L2；L3 较重，按需勾选）。
+  const [selectedLevels, setSelectedLevels] = useState<Set<"L1" | "L2" | "L3">>(
+    new Set(["L1", "L2"]),
+  );
 
   // ── Loaders ──
 
@@ -216,12 +219,52 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
     } finally { setIndexing(prev => ({ ...prev, [refId]: false })); }
   };
 
+  /** Build a specific level for one work. The /index/run API accepts
+   *  one level at a time (or "all" for L1+L2). For arbitrary level
+   *  combinations we just call it level-by-level. */
+  const buildLevel = async (
+    refId: string, level: "L1" | "L2" | "L3",
+  ): Promise<void> => {
+    setIndexing(prev => ({ ...prev, [refId]: true }));
+    try {
+      const r = await apiPost<any>(
+        `/api/references/works/${refId}/index/run`,
+        { level, include_l3: level === "L3" },
+        { timeoutMs: 900_000 },
+      );
+      const lv = r?.[level];
+      if (lv?.embedded != null) {
+        toast(`${level} 索引完成：${lv.embedded}`, "success");
+      } else {
+        toast(`${level} 索引完成`, "success");
+      }
+      await loadProgress([refId]);
+    } catch (e: any) {
+      toast(e?.message || `${level} 索引失败`, "error");
+    } finally {
+      setIndexing(prev => ({ ...prev, [refId]: false }));
+    }
+  };
+
   const buildAllIndexes = async () => {
-    if (!(await confirm({ message: `确认为全部 ${works.length} 部作品建立 L1+L2 索引？L3（正文片段）不会包含；如需逐部勾选 L3。` }))) return;
+    const levels = Array.from(selectedLevels) as ("L1" | "L2" | "L3")[];
+    if (levels.length === 0) {
+      toast("请先勾选要建立的索引级别（L1 / L2 / L3）", "info");
+      return;
+    }
+    const orderedLevels = (["L1", "L2", "L3"] as const).filter(l => levels.includes(l));
+    const includesL3 = orderedLevels.includes("L3");
+    const summary = orderedLevels.join(" + ");
+    if (!(await confirm({
+      message: `确认为全部 ${works.length} 部作品建立 ${summary} 索引？`
+        + (includesL3 ? "\nL3 较重，~10 万字单作品需 1–3 分钟。" : ""),
+    }))) return;
     for (const w of works) {
-      // Sequential to avoid hammering local embedding backend with parallel requests.
-      // eslint-disable-next-line no-await-in-loop
-      await buildIndex(w.ref_id, false);
+      for (const level of orderedLevels) {
+        // Sequential to avoid hammering local embedding backend with parallel requests.
+        // eslint-disable-next-line no-await-in-loop
+        await buildLevel(w.ref_id, level);
+      }
     }
   };
 
@@ -409,7 +452,9 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
         <>
           <div className="card" style={{ marginBottom: 14 }}>
             <div className="card-body">
-              <div className="flex items-center gap-12" style={{ flexWrap: "wrap" }}>
+              <div className="flex items-center gap-12" style={{
+                flexWrap: "wrap", marginBottom: 12,
+              }}>
                 <div className="flex gap-4">
                   {([
                     { key: "all" as const, label: `全部 ${works.length}` },
@@ -425,19 +470,16 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
                   ))}
                 </div>
                 <div style={{ flex: 1 }} />
-                <label className="flex items-center gap-4" style={{ fontSize: 12, color: "var(--text-secondary)", cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={includeL3InSearch}
-                    onChange={e => setIncludeL3InSearch(e.target.checked)}
-                    style={{ width: 14, height: 14 }}
-                  />
-                  「全部建索引」时包含 L3 正文
-                </label>
-                <button className="btn-primary" onClick={buildAllIndexes} disabled={Object.values(indexing).some(Boolean)}>
-                  为全部作品建索引
+                <button className="btn-primary"
+                        onClick={buildAllIndexes}
+                        disabled={Object.values(indexing).some(Boolean) || selectedLevels.size === 0}>
+                  一键建索引（已选 {selectedLevels.size} 个级别）
                 </button>
               </div>
+              <LevelMultiSelect
+                selected={selectedLevels}
+                onChange={setSelectedLevels}
+              />
             </div>
           </div>
 
@@ -466,6 +508,80 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
 
       {activeTab === "compare" && <CompareWorksPanel />}
       {activeTab === "learn" && <CommonPatternLearningPanel works={works} />}
+    </div>
+  );
+}
+
+/** Per-level meta — drives the multi-select description cards. */
+const LEVEL_META = {
+  "L1": {
+    label: "L1 · 作品级",
+    color: "var(--jade)",
+    desc: "大纲 / 角色 / 设定 — 跨作品检索的基础索引，建立最快。",
+  },
+  "L2": {
+    label: "L2 · 章节级",
+    color: "var(--gold)",
+    desc: "章节摘要 — 章节粒度的语义检索，覆盖每章关键节拍。",
+  },
+  "L3": {
+    label: "L3 · 正文片段",
+    color: "var(--accent)",
+    desc: "1500 字片段 — 正文级精细检索，~10 万字单作品需 1–3 分钟。",
+  },
+} as const;
+
+function LevelMultiSelect({
+  selected, onChange,
+}: {
+  selected: Set<"L1" | "L2" | "L3">;
+  onChange: (next: Set<"L1" | "L2" | "L3">) => void;
+}) {
+  const toggle = (lv: "L1" | "L2" | "L3") => {
+    const next = new Set(selected);
+    if (next.has(lv)) next.delete(lv); else next.add(lv);
+    onChange(next);
+  };
+  return (
+    <div style={{
+      display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10,
+    }}>
+      {(["L1", "L2", "L3"] as const).map(lv => {
+        const meta = LEVEL_META[lv];
+        const on = selected.has(lv);
+        return (
+          <label
+            key={lv}
+            onClick={(e) => { e.preventDefault(); toggle(lv); }}
+            style={{
+              display: "flex", alignItems: "flex-start", gap: 10,
+              padding: "10px 12px",
+              border: `1px solid ${on ? meta.color : "var(--border)"}`,
+              borderRadius: "var(--radius-sm)",
+              background: on ? "var(--bg-surface-2)" : "var(--bg-surface)",
+              cursor: "pointer",
+              transition: "border-color 0.15s, background 0.15s",
+            }}>
+            <input
+              type="checkbox"
+              checked={on}
+              onChange={() => toggle(lv)}
+              onClick={(e) => e.stopPropagation()}
+              style={{ width: 14, height: 14, marginTop: 2, flexShrink: 0 }}
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{
+                fontSize: 13, fontWeight: 700,
+                color: on ? meta.color : "var(--text-primary)",
+                marginBottom: 2,
+              }}>{meta.label}</div>
+              <div className="text-xs" style={{
+                color: "var(--text-tertiary)", lineHeight: 1.6,
+              }}>{meta.desc}</div>
+            </div>
+          </label>
+        );
+      })}
     </div>
   );
 }

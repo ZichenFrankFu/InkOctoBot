@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { apiGet } from "../api/client";
+import { apiGet, apiDelete } from "../api/client";
 import { swrHydrate, swrStore } from "../api/swr";
-import type { ReferenceWork, MediaType } from "../api/types";
+import type { ReferenceWork, MediaType, SkillInfo } from "../api/types";
 import { splitGenres } from "../utils/genre";
+import { useToast } from "../components/shared/Toast";
+import { useDialog } from "../components/shared/Dialog";
 import ReferenceSearchPage from "./ReferenceSearchPage";
 import CompareWorksPanel from "../components/CompareWorksPanel";
 import CommonPatternLearningPanel from "../components/reference/CommonPatternLearningPanel";
@@ -255,7 +257,7 @@ export default function ReferenceOverviewPage({ onNavigate, initialTab }: Props)
         {([
           { key: "overview"      as const, label: "总览" },
           { key: "search"        as const, label: "作品搜索" },
-          { key: "compare_learn" as const, label: "作品对比 & 共通点学习" },
+          { key: "compare_learn" as const, label: "参考学习" },
           { key: "index"         as const, label: "索引管理" },
         ]).map(opt => (
           <button
@@ -281,14 +283,7 @@ export default function ReferenceOverviewPage({ onNavigate, initialTab }: Props)
       ) : subTab === "index" ? (
         <ReferenceSearchPage embedded hideTabs initialTab="index" onNavigate={onNavigate} />
       ) : subTab === "compare_learn" ? (
-        <div className="flex flex-col" style={{ gap: 18 }}>
-          <CompareWorksPanel />
-          <CommonPatternLearningPanel
-            works={works.map(w => ({
-              ref_id: w.ref_id, title: w.title, creator: w.creator,
-            }))}
-          />
-        </div>
+        <ReferenceLearningTab works={works} />
       ) : loading && stats.total === 0 ? (
         <div className="empty-state" style={{ paddingTop: 60 }}><p>加载中...</p></div>
       ) : stats.total === 0 ? (
@@ -722,5 +717,243 @@ function PureSettingChip({ label, value, color }: {
         fontFamily: "var(--font-mono)", fontWeight: 700,
       }}>{value}</span>
     </span>
+  );
+}
+
+/* ──────────────── 参考学习 tab ───────────────── */
+
+/** Unified work-selection picker for the 参考学习 tab. Uses the
+ *  checkbox + border-color-on-select pattern that's standard across
+ *  the rest of the app (see LevelMultiSelect in 索引管理). The
+ *  selection is shared by both the 作品对比 and 共通点学习 flows. */
+function ReferenceLearningTab({ works }: { works: ReferenceWork[] }) {
+  const { toast } = useToast();
+  const { confirm } = useDialog();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // 自学习成果 — fetched from /api/skills/learned which the backend
+  // already merges (file-based learned_skills + DB self_learned). This
+  // is the same endpoint the 智能体 page consumes, so the two stay in
+  // sync (delete in one place clears the other on refresh).
+  const reloadSkills = useCallback(async () => {
+    try {
+      const r = await apiGet<{ skills: SkillInfo[] }>("/api/skills/learned");
+      setSkills(r.skills || []);
+    } catch { setSkills([]); }
+  }, []);
+  useEffect(() => { reloadSkills(); }, [reloadSkills]);
+
+  const filtered = works.filter(w => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (w.title || "").toLowerCase().includes(q)
+        || (w.creator || "").toLowerCase().includes(q);
+  });
+
+  const toggle = (refId: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(refId)) next.delete(refId);
+      else if (next.size < 8) next.add(refId);
+      else { toast("最多 8 部作品", "info"); return prev; }
+      return next;
+    });
+  };
+
+  const selectedWorks = useMemo(() => works
+    .filter(w => selected.has(w.ref_id))
+    .map(w => ({ ref_id: w.ref_id, title: w.title, creator: w.creator })),
+    [works, selected]);
+
+  const deleteSkill = async (s: SkillInfo) => {
+    if (!(await confirm({
+      message: `确认删除自学习技能「${s.display_name || s.name}」？`,
+      destructive: true,
+    }))) return;
+    try {
+      await apiDelete(`/api/skills/${encodeURIComponent(s.name)}`);
+      toast("已删除", "success");
+      await reloadSkills();
+    } catch (e: any) {
+      toast(e?.message || "删除失败", "error");
+    }
+  };
+
+  return (
+    <div className="flex flex-col" style={{ gap: 18 }}>
+      {/* 共享作品选择 */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3 style={{ margin: 0 }}>选择参考作品</h3>
+            <p style={{ margin: "2px 0 0" }}>
+              {selected.size} / {Math.min(works.length, 8)} 已选（最多 8 部，最少 2 部）
+            </p>
+          </div>
+          {selected.size > 0 && (
+            <button className="btn" onClick={() => setSelected(new Set())}>清除选择</button>
+          )}
+        </div>
+        <div className="card-body">
+          <input
+            className="input"
+            placeholder="搜索标题 / 作者..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{ marginBottom: 12 }}
+          />
+          {filtered.length === 0 ? (
+            <div className="text-xs text-muted text-center" style={{ padding: 20 }}>
+              无匹配作品
+            </div>
+          ) : (
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+              gap: 8,
+              maxHeight: 320,
+              overflowY: "auto",
+              padding: 2,
+            }}>
+              {filtered.map(w => {
+                const on = selected.has(w.ref_id);
+                return (
+                  <label
+                    key={w.ref_id}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      toggle(w.ref_id);
+                    }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      padding: "8px 12px",
+                      border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                      borderRadius: "var(--radius-sm)",
+                      background: on ? "var(--bg-surface-2)" : "var(--bg-surface)",
+                      cursor: "pointer",
+                      transition: "border-color 0.15s, background 0.15s",
+                    }}>
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => toggle(w.ref_id)}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ width: 14, height: 14, flexShrink: 0 }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="truncate" style={{
+                        fontSize: 13, fontWeight: 600,
+                        color: on ? "var(--accent)" : "var(--text-primary)",
+                      }}>{w.title}</div>
+                      {w.creator && (
+                        <div className="text-xs text-muted truncate">{w.creator}</div>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 共通点学习（不带自己的作品选择/成果列表） */}
+      <div className="card">
+        <div className="card-header">
+          <h3 style={{ margin: 0 }}>共通点学习</h3>
+        </div>
+        <div className="card-body">
+          <CommonPatternLearningPanel
+            works={works.map(w => ({
+              ref_id: w.ref_id, title: w.title, creator: w.creator,
+            }))}
+            selectedRefIds={selected}
+            hideWorkPicker
+            hideSelfLearnedList
+            onLearned={reloadSkills}
+          />
+        </div>
+      </div>
+
+      {/* 作品对比 → 草稿技能（不带自己的作品选择） */}
+      <div className="card">
+        <div className="card-header">
+          <h3 style={{ margin: 0 }}>作品对比 → 草稿技能</h3>
+        </div>
+        <div className="card-body">
+          <CompareWorksPanel
+            selectedWorks={selectedWorks}
+            hideWorkPicker
+            onSaved={reloadSkills}
+          />
+        </div>
+      </div>
+
+      {/* 统一的自学习成果列表（与「智能体」页面共用同一份数据） */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3 style={{ margin: 0 }}>自学习成果</h3>
+            <p style={{ margin: "2px 0 0" }}>
+              {skills.length} 个技能 · 与「智能体 → 自学习成果」共用同一份数据
+            </p>
+          </div>
+          <button className="btn" onClick={reloadSkills}>刷新</button>
+        </div>
+        <div className="card-body">
+          {skills.length === 0 ? (
+            <div className="text-xs text-muted text-center" style={{ padding: 20 }}>
+              暂无自学习技能。选择 2-8 部作品并触发上方任一学习按钮即可生成。
+            </div>
+          ) : (
+            <div className="flex flex-col" style={{ gap: 8 }}>
+              {skills.map(s => (
+                <div key={s.name} style={{
+                  border: "1px solid var(--border)",
+                  borderLeft: "3px solid var(--purple)",
+                  borderRadius: "var(--radius-sm)",
+                  background: "var(--bg-surface)",
+                  padding: "10px 14px",
+                }}>
+                  <div className="flex items-center" style={{ gap: 10, flexWrap: "wrap" }}>
+                    <span style={{
+                      fontSize: 13, fontWeight: 700,
+                      color: "var(--text-primary)",
+                    }}>{s.display_name || s.name}</span>
+                    <span className="text-xs text-muted" style={{ flex: 1, minWidth: 120 }}>
+                      {s.description}
+                    </span>
+                    <button className="btn"
+                            style={{ fontSize: 11, padding: "3px 10px" }}
+                            onClick={() => setExpandedId(expandedId === s.name ? null : s.name)}>
+                      {expandedId === s.name ? "收起" : "查看"}
+                    </button>
+                    <button className="btn"
+                            style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)" }}
+                            onClick={() => deleteSkill(s)}>
+                      删除
+                    </button>
+                  </div>
+                  {expandedId === s.name && (
+                    <pre style={{
+                      marginTop: 8, fontSize: 11, lineHeight: 1.6,
+                      whiteSpace: "pre-wrap",
+                      color: "var(--text-secondary)",
+                      background: "var(--bg-card)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 4, padding: "8px 12px",
+                      maxHeight: 280, overflow: "auto",
+                    }}>{s.skill_md || ""}</pre>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

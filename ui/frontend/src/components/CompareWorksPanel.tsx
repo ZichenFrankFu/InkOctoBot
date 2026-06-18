@@ -37,10 +37,22 @@ const FOCUS_OPTIONS: { value: string; label: string }[] = [
   { value: "style",      label: "语言风格" },
 ];
 
-export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
+export default function CompareWorksPanel({
+  onSaved,
+  selectedWorks: controlledSelected,
+  hideWorkPicker = false,
+}: {
+  onSaved?: () => void;
+  /** When provided, the panel uses this controlled selection instead of
+   *  its own internal state (and hides the work picker if
+   *  hideWorkPicker=true). The parent is responsible for sourcing works
+   *  and managing the selection set. */
+  selectedWorks?: { ref_id: string; title: string; creator?: string }[];
+  hideWorkPicker?: boolean;
+}) {
   const { toast } = useToast();
   const [works, setWorks] = useState<WorkRow[]>([]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [internalSelected, setInternalSelected] = useState<Set<string>>(new Set());
   const [focus, setFocus] = useState<string>("all");
   const [instruction, setInstruction] = useState("");
   const [searching, setSearching] = useState("");
@@ -55,10 +67,21 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
   const [loadingPrompt, setLoadingPrompt] = useState(false);
 
   useEffect(() => {
+    if (controlledSelected) return;  // parent supplies works via selection
     apiGet<{ items: WorkRow[]; total: number }>("/api/references/works?limit=500")
       .then(r => setWorks(r.items || []))
       .catch(() => setWorks([]));
-  }, []);
+  }, [controlledSelected]);
+
+  // 当父组件托管选择时，使用受控数据；否则用内部状态。
+  const selected = controlledSelected
+    ? new Set(controlledSelected.map(w => w.ref_id))
+    : internalSelected;
+  const selectedAsWorks = controlledSelected
+    ?? Array.from(internalSelected).map(rid => {
+      const w = works.find(x => x.ref_id === rid);
+      return { ref_id: rid, title: w?.title || rid };
+    });
 
   const filtered = works.filter(w => {
     if (!searching.trim()) return true;
@@ -68,7 +91,7 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
   });
 
   const toggleWork = (refId: string) => {
-    setSelected(prev => {
+    setInternalSelected(prev => {
       const next = new Set(prev);
       if (next.has(refId)) next.delete(refId);
       else if (next.size < 8) next.add(refId);
@@ -135,7 +158,7 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
         prompt_template: String(obj.prompt_template || ""),
         tags: Array.isArray(obj.tags) ? obj.tags.map((t: any) => String(t)) : [],
       });
-      setSourceWorks(works.filter(w => selected.has(w.ref_id)).map(w => ({ ref_id: w.ref_id, title: w.title })));
+      setSourceWorks(selectedAsWorks.map(w => ({ ref_id: w.ref_id, title: w.title })));
       toast("解析成功", "success");
     } catch {
       toast("解析失败：粘贴的内容不是合法 JSON", "error");
@@ -162,7 +185,7 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
       toast("已保存为自学习技能，可在「智能体」页面的「自学习成果」查看", "success");
       onSaved?.();
       setDraft(null);
-      setSelected(new Set());
+      if (!controlledSelected) setInternalSelected(new Set());
       setPromptText("");
       setPasteText("");
     } catch (e: any) {
@@ -172,56 +195,62 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
 
   return (
     <div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        {/* LEFT: work picker */}
-        <div className="card">
-          <div className="card-header">
-            <h3>
-              选择作品
-              <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
-                {selected.size}/{Math.min(works.length, 8)} 已选 (最多 8)
-              </span>
-            </h3>
-          </div>
-          <div className="card-body">
-            <input
-              className="input"
-              placeholder="搜索标题 / 作者..."
-              value={searching}
-              onChange={e => setSearching(e.target.value)}
-              style={{ marginBottom: 8 }}
-            />
-            <div style={{ maxHeight: 380, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-              {filtered.length === 0 ? (
-                <div className="text-xs text-muted text-center" style={{ padding: 16 }}>
-                  无匹配作品
-                </div>
-              ) : filtered.map(w => {
-                const on = selected.has(w.ref_id);
-                return (
-                  <label key={w.ref_id} style={{
-                    display: "flex", alignItems: "center", gap: 8,
-                    padding: "8px 12px", cursor: "pointer",
-                    borderBottom: "1px solid var(--border)",
-                    background: on ? "var(--accent-subtle)" : "transparent",
-                  }}>
-                    <input
-                      type="checkbox" checked={on}
-                      onChange={() => toggleWork(w.ref_id)}
-                      style={{ width: 14, height: 14 }}
-                    />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="truncate" style={{ fontSize: 13, fontWeight: 600 }}>{w.title}</div>
-                      {w.creator && (
-                        <div className="text-xs text-muted truncate">{w.creator}</div>
-                      )}
-                    </div>
-                  </label>
-                );
-              })}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: hideWorkPicker ? "1fr" : "1fr 1fr",
+        gap: 14,
+      }}>
+        {/* LEFT: work picker (only when not controlled by parent) */}
+        {!hideWorkPicker && (
+          <div className="card">
+            <div className="card-header">
+              <h3>
+                选择作品
+                <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
+                  {selected.size}/{Math.min(works.length, 8)} 已选 (最多 8)
+                </span>
+              </h3>
+            </div>
+            <div className="card-body">
+              <input
+                className="input"
+                placeholder="搜索标题 / 作者..."
+                value={searching}
+                onChange={e => setSearching(e.target.value)}
+                style={{ marginBottom: 8 }}
+              />
+              <div style={{ maxHeight: 380, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+                {filtered.length === 0 ? (
+                  <div className="text-xs text-muted text-center" style={{ padding: 16 }}>
+                    无匹配作品
+                  </div>
+                ) : filtered.map(w => {
+                  const on = selected.has(w.ref_id);
+                  return (
+                    <label key={w.ref_id} style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      padding: "8px 12px", cursor: "pointer",
+                      borderBottom: "1px solid var(--border)",
+                      background: on ? "var(--accent-subtle)" : "transparent",
+                    }}>
+                      <input
+                        type="checkbox" checked={on}
+                        onChange={() => toggleWork(w.ref_id)}
+                        style={{ width: 14, height: 14 }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="truncate" style={{ fontSize: 13, fontWeight: 600 }}>{w.title}</div>
+                        {w.creator && (
+                          <div className="text-xs text-muted truncate">{w.creator}</div>
+                        )}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* RIGHT: focus + instruction + run */}
         <div className="card">

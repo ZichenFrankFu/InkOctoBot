@@ -120,15 +120,63 @@ def _render_claude_skill_md(name: str, display: str, desc: str) -> str:
     )
 
 
+def _db_self_learned_as_skill_info() -> list[dict]:
+    """Render skill_index 'self_learned' rows as SkillInfo dicts so the
+    listing endpoints surface them alongside file-based learned skills.
+
+    These rows are created by /api/references/works/learn-common
+    (CommonPatternLearningPanel). They live in the DB instead of the
+    filesystem, so the file-based skill registry doesn't see them — we
+    merge them in here so both the 智能体 and 参考学习 surfaces share
+    one synchronized list.
+    """
+    try:
+        from ui.backend.app.services import skill_index
+        from ui.backend.app.services.project_paths import get_db_path
+        rows = skill_index.list_skills(get_db_path())
+    except Exception:
+        return []
+    out: list[dict] = []
+    for r in rows:
+        if (r.get("kind") or "") != "self_learned":
+            continue
+        sid = r.get("skill_id") or ""
+        body = r.get("body_snippet") or ""
+        out.append({
+            "name": sid,
+            "display_name": r.get("display_name") or sid,
+            "description": r.get("description") or "",
+            "version": "1.0.0",
+            "model_role": "default",
+            "max_tokens": 2000,
+            "temperature": 0.3,
+            "tags": [],
+            "permissions": [],
+            "learnable": True,
+            "is_learned": True,
+            "is_basic": False,
+            "active": True,
+            "agent_domain": "learned_skills",
+            "input_schema": {},
+            "output_schema": {},
+            "skill_md": body,
+        })
+    return out
+
+
 @router.get("")
 def list_skills():
-    """List all registered skills with metadata."""
+    """List all registered skills with metadata. Includes both
+    file-based skills from the registry and DB-based self_learned
+    skills from skill_index so the 智能体 page surfaces 参考学习
+    results too."""
     registry = _get_registry()
     deactivated = _get_deactivated()
     skills = [
         _skill_public_dict(skill, deactivated)
         for skill in registry._skills.values()
     ]
+    skills.extend(_db_self_learned_as_skill_info())
     return {"skills": skills, "total": len(skills)}
 
 
@@ -233,7 +281,9 @@ def add_learning_log_entry(body: dict = Body(...)):
 
 @router.get("/learned")
 def list_learned_skills():
-    """List skills from the learned_skills directory."""
+    """List learned skills (filesystem-based + DB-based self_learned).
+    Mirrors the merging done by GET / so the 自学习成果 panels stay in
+    sync regardless of which page the user opened."""
     registry = _get_registry()
     deactivated = _get_deactivated()
     learned = [
@@ -241,6 +291,7 @@ def list_learned_skills():
         for skill in registry._skills.values()
         if _skill_domain(skill) == "learned_skills"
     ]
+    learned.extend(_db_self_learned_as_skill_info())
     return {"skills": learned, "total": len(learned)}
 
 
@@ -421,7 +472,26 @@ class Skill(BaseSkill):
 
 @router.delete("/{name}")
 def delete_skill(name: str):
-    """Delete a learned skill entirely."""
+    """Delete a learned skill entirely.
+
+    Routes by storage backend:
+    - Filesystem-based learned_skills/ → unregister + rmtree the dir
+    - DB-based self_learned (skill_index) → delete the skill_index row
+    """
+    # First try DB-based self_learned skills (kind='self_learned'). The
+    # name passed here is the skill_id we synthesized in
+    # _db_self_learned_as_skill_info().
+    try:
+        from ui.backend.app.services import skill_index
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+        existing = skill_index.get_skill(db_path, name)
+        if existing is not None and (existing.get("kind") or "") == "self_learned":
+            skill_index.delete_skill(db_path, name)
+            return {"status": "ok", "name": name, "source": "skill_index"}
+    except Exception as e:
+        logger.warning("DB self_learned delete probe failed for %s: %s", name, e)
+
     registry = _get_registry()
     if not registry.has(name):
         raise HTTPException(404, f"Skill '{name}' not found")
@@ -441,7 +511,7 @@ def delete_skill(name: str):
         logger.error("Failed to delete skill files for %s: %s", name, e)
 
     registry.unregister(name)
-    return {"status": "ok", "name": name}
+    return {"status": "ok", "name": name, "source": "registry"}
 
 
 # ── Deactivated skills tracking ──
