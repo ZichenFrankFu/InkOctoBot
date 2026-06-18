@@ -2,12 +2,10 @@
  * InspirationLibraryPage — combined library + on-demand reference-work
  * fragment matching.
  *
- * Latest UX revision:
- *  - Default view shows every inspiration with local text search.
- *  - Below the library, an embedding-driven "在参考作品中找相似片段"
- *    panel lets the user type any text (or click "用这条灵感搜" on a
- *    card) and surfaces matching reference-work segments / outlines
- *    via the existing /api/references/search endpoint.
+ * Layout:
+ *  - Page header (title only — no verbose intro)
+ *  - Library cards (with inline add/edit form)
+ *  - Reference-work fragment search panel below
  */
 import React, { useCallback, useState } from "react";
 import { apiGet } from "../api/client";
@@ -30,7 +28,7 @@ interface RefSearchHit {
 }
 
 
-export default function InspirationLibraryPage({ onNavigate }: Props) {
+export default function InspirationLibraryPage({ onNavigate: _onNavigate }: Props) {
   const { toast } = useToast();
   const [refQuery, setRefQuery] = useState("");
   const [refSearching, setRefSearching] = useState(false);
@@ -46,8 +44,6 @@ export default function InspirationLibraryPage({ onNavigate }: Props) {
       const r = await apiGet<{ groups?: any[]; rows?: RefSearchHit[] }>(
         `/api/references/search?${params.toString()}`,
       );
-      // The API returns either {groups:[{ref_id,title,rows:[...]}]} or
-      // a flat {rows:[...]} depending on version — handle both.
       let flat: RefSearchHit[] = [];
       if (r.groups && Array.isArray(r.groups)) {
         for (const g of r.groups) {
@@ -75,7 +71,6 @@ export default function InspirationLibraryPage({ onNavigate }: Props) {
     setRefQuery(q);
     setAutoQuery(q);
     runRefSearch(q);
-    // Scroll to the panel so the user sees the result.
     setTimeout(() => {
       const el = document.getElementById("ref-match-panel");
       el?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -83,30 +78,38 @@ export default function InspirationLibraryPage({ onNavigate }: Props) {
   }, [runRefSearch]);
 
   return (
-    <div className="page" style={{ padding: 16 }}>
-      <header style={{ marginBottom: 12 }}>
-        <h2 style={{ margin: 0 }}>灵感库</h2>
-        <p style={{ color: "var(--text-tertiary)", fontSize: 12, margin: "4px 0 0" }}>
-          自由记录的创作灵感片段。带 embedding ，可在生成时按相关性自动召回。
-          下方面板可用任意文字（或某条灵感）在已索引的参考作品里找相似段落。
-        </p>
-      </header>
+    <div className="page" style={{ padding: "24px 28px 48px" }}>
+      <div className="page-header" style={{ padding: 0, marginBottom: 20 }}>
+        <div className="page-header-row">
+          <div>
+            <h2>灵感库</h2>
+            <p>自由记录的创作灵感片段 · 生成时按相关性自动召回</p>
+          </div>
+        </div>
+      </div>
 
       <InspirationLibrary onSearchWorks={handleSearchFromCard} />
 
       {/* Reference-work fragment matching panel */}
       <div id="ref-match-panel" className="card" style={{ marginTop: 18 }}>
         <div className="card-header">
-          <h3 style={{ margin: 0, fontSize: 14 }}>在参考作品中找相似片段</h3>
+          <div>
+            <h3 style={{ margin: 0 }}>在参考作品中找相似片段</h3>
+            <p style={{ margin: "2px 0 0" }}>
+              基于参考作品的 embedding 索引 · distance 越小越相似
+            </p>
+          </div>
         </div>
         <div className="card-body">
-          <div className="flex gap-8 items-center" style={{ flexWrap: "wrap" }}>
+          <div className="flex items-center" style={{
+            gap: 10, flexWrap: "wrap", marginBottom: 8,
+          }}>
             <input
               className="input"
               value={refQuery}
               onChange={e => setRefQuery(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter") runRefSearch(); }}
-              placeholder='例："主角第一次觉醒能力" / "穿越后第一次见到女主"'
+              placeholder='例：主角第一次觉醒能力 / 穿越后第一次见到女主'
               style={{ flex: 1, minWidth: 260 }}
             />
             <button
@@ -118,44 +121,80 @@ export default function InspirationLibraryPage({ onNavigate }: Props) {
             </button>
           </div>
           {autoQuery && (
-            <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-tertiary)" }}>
-              已用灵感内容自动搜索：{autoQuery.slice(0, 80)}{autoQuery.length > 80 ? "..." : ""}
+            <div className="text-xs" style={{
+              padding: "6px 10px", marginBottom: 8,
+              background: "var(--accent-subtle)",
+              border: "1px solid var(--accent)",
+              borderRadius: "var(--radius-sm)",
+              color: "var(--accent)", lineHeight: 1.6,
+            }}>
+              已用灵感内容自动搜索：{autoQuery.slice(0, 100)}{autoQuery.length > 100 ? "…" : ""}
             </div>
           )}
-          <div className="text-xs text-muted" style={{ marginTop: 8, lineHeight: 1.55 }}>
-            搜索基于参考作品的 embedding 索引（先在「参考数据库工具 → 索引管理」给作品建索引）。
-            距离 (distance) 越小越相似。
-          </div>
 
           {refHits.length > 0 ? (
-            <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div className="flex flex-col" style={{ gap: 8, marginTop: 8 }}>
               {refHits.map((h, i) => (
-                <div key={`${h.ref_id}-${i}`} className="card" style={{
-                  padding: 10, background: "var(--bg-surface-2)",
-                }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                    <strong style={{ fontSize: 12 }}>
-                      {h.work_title || h.ref_id}
-                      <span style={{ color: "var(--text-tertiary)", fontWeight: 400, marginLeft: 6 }}>
-                        · {h.level}
-                      </span>
-                    </strong>
-                    <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                      distance {h.distance.toFixed(3)}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
-                    {h.text.slice(0, 360)}{h.text.length > 360 ? "..." : ""}
-                  </div>
-                </div>
+                <HitCard key={`${h.ref_id}-${i}`} hit={h} />
               ))}
             </div>
           ) : (
-            <p style={{ marginTop: 14, color: "var(--text-tertiary)", fontSize: 12 }}>
-              {refSearching ? "搜索中..." : "输入查询并点搜索，或在上面任意一条灵感卡片上点「搜索参考作品」。"}
-            </p>
+            <div style={{
+              padding: "30px 20px", textAlign: "center",
+              background: "var(--bg-surface)",
+              border: "1px dashed var(--border)",
+              borderRadius: "var(--radius-sm)",
+              color: "var(--text-tertiary)",
+              fontSize: 12, lineHeight: 1.7,
+              marginTop: 8,
+            }}>
+              {refSearching
+                ? "搜索中..."
+                : "输入查询并搜索；或在上面任意一条灵感卡片上点「搜索参考作品」。"}
+            </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+
+function HitCard({ hit }: { hit: RefSearchHit }) {
+  return (
+    <div style={{
+      border: "1px solid var(--border)",
+      borderLeft: "3px solid var(--accent)",
+      borderRadius: "var(--radius-sm)",
+      background: "var(--bg-surface)",
+      padding: "10px 14px",
+    }}>
+      <div className="flex items-center" style={{
+        gap: 8, marginBottom: 6, flexWrap: "wrap",
+      }}>
+        <strong style={{
+          fontSize: 13, color: "var(--text-primary)",
+          fontFamily: "var(--font-serif)",
+        }}>{hit.work_title || hit.ref_id}</strong>
+        <span style={{
+          fontSize: 11, padding: "1px 8px", borderRadius: 4,
+          color: "var(--text-secondary)",
+          background: "var(--bg-surface-2)",
+          fontWeight: 600,
+        }}>{hit.level}</span>
+        <div style={{ flex: 1 }} />
+        <span style={{
+          fontSize: 11, padding: "1px 8px", borderRadius: 4,
+          color: "var(--accent)", background: "var(--accent-subtle)",
+          fontFamily: "var(--font-mono)", fontWeight: 700,
+        }}>{hit.distance.toFixed(3)}</span>
+      </div>
+      <div style={{
+        fontSize: 12, lineHeight: 1.65,
+        color: "var(--text-secondary)",
+        whiteSpace: "pre-wrap",
+      }}>
+        {hit.text.slice(0, 360)}{hit.text.length > 360 ? "…" : ""}
       </div>
     </div>
   );
