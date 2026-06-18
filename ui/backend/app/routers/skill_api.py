@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 logger = logging.getLogger("inkoctobot.ui.backend.skill_api")
@@ -255,6 +255,10 @@ def get_skill(name: str):
 
 
 class SkillCreateRequest(BaseModel):
+    # Pydantic v2 reserves names starting with `model_` for its own API;
+    # `model_role` is a legitimate domain field so opt out of the warning.
+    model_config = ConfigDict(protected_namespaces=())
+
     name: str
     display_name: str = ""
     description: str = ""
@@ -327,6 +331,8 @@ class Skill(BaseSkill):
 
 
 class SkillUpdateRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     display_name: str = ""
     description: str = ""
     tags: list[str] = []

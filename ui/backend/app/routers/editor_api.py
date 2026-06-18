@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ui.backend.app.services import project_store
 from ui.backend.app.services.project_paths import get_db_path
@@ -23,6 +23,10 @@ logger = logging.getLogger("inkoctobot.ui.backend.editor_api")
 
 
 class SaveVersionRequest(BaseModel):
+    # Pydantic v2 reserves names starting with `model_` for its own API;
+    # `model_used` is a legitimate domain field so opt out of the warning.
+    model_config = ConfigDict(protected_namespaces=())
+
     project_id: str = "default"
     chapter_id: str
     text: str

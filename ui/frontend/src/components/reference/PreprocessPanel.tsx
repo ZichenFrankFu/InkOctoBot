@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { apiGet, apiPost, apiPut, apiPatch } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { useConfirm } from "../shared/Confirm";
+import { invalidateSegmentation } from "./segmentationCache";
 
 interface ChapterPattern {
   name: string;
@@ -1143,10 +1144,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       // The chronicle / characters / settings tabs share a segmentation
       // cache keyed by refId — invalidate it so the next tab they
       // open sees the new plan, not the cached old one.
-      try {
-        const mod = await import("./segmentationCache");
-        mod.invalidateSegmentation(refId);
-      } catch { /* shared cache module is optional */ }
+      invalidateSegmentation(refId);
     } catch (e: any) {
       toast(e?.message || "保存失败", "error");
     } finally { setPlanSaving(false); }
