@@ -780,6 +780,9 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
         condense_ref_settings as _condense_ref_settings,
         condense_ref_plot as _condense_ref_plot,
         condense_ref_rhythm as _condense_ref_rhythm,
+        condense_ref_static_characters as _condense_ref_static_characters,
+        condense_ref_setting_features as _condense_ref_setting_features,
+        condense_ref_raw_entries as _condense_ref_raw_entries,
     )
 
     if not body.ref_ids:
@@ -810,29 +813,69 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
         works.append(w)
 
     def _focused(w: dict) -> str:
-        """Condense one work into a readable feature digest (剧情/角色/
-        设定/节奏) tailored to the chosen focus."""
+        """Condense one work into a readable feature digest. Branches by
+        structure_type — pure-setting (setting_collection) works don't have
+        plot/rhythm and use a different field layout for characters."""
         head = f"《{w.get('title') or '未命名'}》"
-        meta = "，".join(
-            str(x) for x in (w.get("creator"), w.get("genre"), w.get("media_type"))
-            if x
-        )
-        if meta:
-            head += f"（{meta}）"
+        is_pure = (w.get("structure_type") or "narrative") == "setting_collection"
+        meta_parts: list[str] = []
+        for x in (w.get("creator"), w.get("genre"), w.get("media_type")):
+            if x:
+                meta_parts.append(str(x))
+        if is_pure:
+            meta_parts.append("纯设定作品")
+        if meta_parts:
+            head += "（" + "，".join(meta_parts) + "）"
+
         segs: list[str] = []
-        if body.focus in ("plot", "all"):
-            segs.append(_condense_ref_plot(w.get("plot_outline_json")))
-        if body.focus in ("characters", "all"):
-            segs.append(_condense_ref_characters(w.get("extracted_characters_json")))
-        if body.focus in ("settings", "all"):
-            segs.append(_condense_ref_settings(w.get("settings_json")))
-        if body.focus in ("rhythm", "style", "all"):
-            segs.append(_condense_ref_rhythm(
-                w.get("rhythm_json"), w.get("style_fingerprint_json")))
-        segs = [s.strip() for s in segs if s and s.strip()]
-        if not segs:
-            segs = ["（该作品尚未提取特征，请先在参考库完成特征提取）"]
-        return head + "\n" + "\n\n".join(segs)
+        if is_pure:
+            # Pure-setting works carry: 原始文本条目 + 设定 +
+            # 静态角色 + 设定特征（核心冲突/高概念）。Map the focus
+            # axes to the closest pure-setting equivalent so the prompt
+            # actually includes data instead of an empty placeholder.
+            if body.focus in ("plot", "all"):
+                segs.append(_condense_ref_raw_entries(w.get("quick_input_text")))
+                segs.append(_condense_ref_setting_features(w.get("setting_features_json")))
+            if body.focus in ("characters", "all"):
+                segs.append(_condense_ref_static_characters(w.get("static_characters_json")))
+            if body.focus in ("settings", "all"):
+                segs.append(_condense_ref_settings(w.get("settings_json")))
+                # 设定特征 is the作品-level world-view feature — always
+                # relevant to「设定」focus and the「整体」focus.
+                segs.append(_condense_ref_setting_features(w.get("setting_features_json")))
+            if body.focus in ("rhythm", "style") and not segs:
+                # rhythm/style 对纯设定作品意义有限，回退到 setting_features
+                # 让 prompt 至少包含一些可对比的语义信息。
+                segs.append(_condense_ref_setting_features(w.get("setting_features_json")))
+        else:
+            if body.focus in ("plot", "all"):
+                segs.append(_condense_ref_plot(w.get("plot_outline_json")))
+            if body.focus in ("characters", "all"):
+                segs.append(_condense_ref_characters(w.get("extracted_characters_json")))
+            if body.focus in ("settings", "all"):
+                segs.append(_condense_ref_settings(w.get("settings_json")))
+            if body.focus in ("rhythm", "style", "all"):
+                segs.append(_condense_ref_rhythm(
+                    w.get("rhythm_json"), w.get("style_fingerprint_json")))
+
+        # Dedupe segments (e.g. setting_features can be appended twice
+        # for 「设定」focus on a pure-setting work).
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for s in segs:
+            s = s.strip() if s else ""
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            deduped.append(s)
+        if not deduped:
+            hint = (
+                "（该作品尚未填写任何内容，请先在参考库添加原始文本 / 设定 / 角色 / 特征）"
+                if is_pure
+                else "（该作品尚未提取特征，请先在参考库完成特征提取）"
+            )
+            deduped = [hint]
+        return head + "\n" + "\n\n".join(deduped)
 
     bundle_str = "\n\n———\n\n".join(_focused(w) for w in works)
     # Cap bundle size to keep prompt tractable
@@ -868,6 +911,96 @@ def compare_works_prompt(body: CompareWorksRequest):
         "source_works": [
             {"ref_id": w["ref_id"], "title": w.get("title")} for w in works
         ],
+    }
+
+
+class CompareWorksInvokeRequest(BaseModel):
+    """Direct LLM invocation with a (possibly user-edited) prompt.
+
+    Used by UniversalLLMDialog's API mode: the dialog ships the
+    prompt the user has reviewed/edited; this endpoint just runs it
+    through the configured model and returns the raw text. Parsing
+    into the draft Skill happens in /compare_works/parse so the
+    dialog's preview/edit step can sit in between.
+    """
+    prompt: str
+
+
+@router.post("/compare_works/invoke")
+async def compare_works_invoke(body: CompareWorksInvokeRequest):
+    """Run the (possibly user-edited) compare prompt through the LLM and
+    return the raw text response."""
+    if not body.prompt or not body.prompt.strip():
+        raise HTTPException(400, "prompt 为空")
+    from llm.router import ModelRouter
+    try:
+        router_inst = ModelRouter()
+        raw = await router_inst.invoke(
+            role="reference_extractor", prompt=body.prompt,
+            max_tokens=2048, temperature=0.4,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"AI 对比调用失败: {e}")
+    return {"raw": raw or ""}
+
+
+class CompareWorksParseRequest(BaseModel):
+    """Parse a raw LLM response (from API or web LLM paste) into a
+    Skill draft. Same JSON extraction logic the legacy /compare_works
+    endpoint uses, exposed as a standalone step for the dialog."""
+    raw: str
+    ref_ids: list[str] = []
+    focus: str = "all"
+
+
+@router.post("/compare_works/parse")
+def compare_works_parse(body: CompareWorksParseRequest):
+    """Extract the {name, display_name, description, prompt_template,
+    tags} draft from the raw LLM response."""
+    if not body.raw or not body.raw.strip():
+        raise HTTPException(400, "raw 为空")
+    import re as _re
+    s = body.raw.strip()
+    fence = _re.match(r"^```(?:json)?\s*(.*?)\s*```$", s, _re.DOTALL)
+    if fence:
+        s = fence.group(1).strip()
+    a, b = s.find("{"), s.rfind("}")
+    if 0 <= a < b:
+        s = s[a:b + 1]
+    try:
+        draft = json.loads(s)
+        if not isinstance(draft, dict):
+            raise ValueError("not an object")
+    except Exception as e:
+        raise HTTPException(400, f"JSON 解析失败: {e}")
+
+    # Resolve source_works for traceability (optional, best-effort).
+    source_works: list[dict] = []
+    if body.ref_ids:
+        from knowledge.reference_db import ReferenceDB
+        from ui.backend.app.routers.reference._common import reference_db_path
+        try:
+            rdb = ReferenceDB(reference_db_path())
+            for rid in body.ref_ids:
+                w = rdb.get_work(rid)
+                if w:
+                    source_works.append({"ref_id": rid, "title": w.get("title")})
+        except Exception:
+            pass
+
+    tags = list(draft.get("tags") or [])
+    if "对比" not in tags: tags.insert(0, "对比")
+    if "自学习" not in tags: tags.append("自学习")
+    return {
+        "draft": {
+            "name": str(draft.get("name") or f"compare_{int(time.time())}"),
+            "display_name": str(draft.get("display_name") or "作品对比"),
+            "description": str(draft.get("description") or ""),
+            "prompt_template": str(draft.get("prompt_template") or ""),
+            "tags": tags,
+        },
+        "source_works": source_works,
+        "focus": body.focus,
     }
 
 

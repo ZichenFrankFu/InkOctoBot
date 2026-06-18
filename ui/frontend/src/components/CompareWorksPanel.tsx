@@ -1,11 +1,19 @@
 /**
  * Compare-Works → Draft Skill. Pick 2-8 reference works, contrast their
  * extracted features, and turn the insight into a saveable learned skill.
- * Rendered as a tab inside the 灵感搜索 page.
+ *
+ * Two LLM entry points (consistent with 市场特征提取 / 高级特征提取):
+ *   - 使用大模型 API  → open UniversalLLMDialog with editable prompt + API run
+ *   - 使用大模型网页版 → open the same dialog with a paste-back surface
+ *
+ * Both modes share one prompt (loaded once via /compare_works/prompt), let
+ * the user edit it before running, and converge on /compare_works/parse to
+ * turn the raw response into a Skill draft.
  */
 import React, { useEffect, useState } from "react";
 import { apiGet, apiPost } from "../api/client";
 import { useToast } from "./shared/Toast";
+import UniversalLLMDialog from "./shared/UniversalLLMDialog";
 
 interface WorkRow {
   ref_id: string;
@@ -56,16 +64,13 @@ export default function CompareWorksPanel({
   const [focus, setFocus] = useState<string>("all");
   const [instruction, setInstruction] = useState("");
   const [searching, setSearching] = useState("");
-  // Processing-mode lives in a modal now; `modalOpen` drives it.
-  const [modalOpen, setModalOpen] = useState(false);
-  const [mode, setMode] = useState<"ai" | "manual">("ai");
-  const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<CompareDraft | null>(null);
   const [sourceWorks, setSourceWorks] = useState<{ ref_id: string; title: string }[]>([]);
-  // Manual (copy-prompt / paste-result) mode
-  const [promptText, setPromptText] = useState("");
-  const [pasteText, setPasteText] = useState("");
+  // Universal LLM dialog state — one prompt, two modes (api / manual).
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogMode, setDialogMode] = useState<"api" | "manual">("api");
+  const [dialogPrompt, setDialogPrompt] = useState("");
   const [loadingPrompt, setLoadingPrompt] = useState(false);
 
   useEffect(() => {
@@ -101,28 +106,10 @@ export default function CompareWorksPanel({
     });
   };
 
-  const generate = async () => {
-    if (selected.size < 2) {
-      toast("请选择至少 2 部作品对比", "error");
-      return;
-    }
-    setGenerating(true);
-    setDraft(null);
-    try {
-      const r = await apiPost<CompareResponse>(
-        "/api/skills/compare_works",
-        { ref_ids: Array.from(selected), focus, instruction },
-        { timeoutMs: 300_000 },
-      );
-      setDraft(r.draft);
-      setSourceWorks(r.source_works || []);
-      setModalOpen(false);
-    } catch (e: any) {
-      toast(`生成失败: ${e?.message || e}`, "error");
-    } finally { setGenerating(false); }
-  };
-
-  const loadPrompt = async () => {
+  /** Build (or rebuild) the compare prompt with the current ref_ids /
+   *  focus / instruction, open the UniversalLLMDialog in the chosen
+   *  mode with that prompt pre-loaded and editable. */
+  const openDialog = async (mode: "api" | "manual") => {
     if (selected.size < 2) {
       toast("请选择至少 2 部作品对比", "error");
       return;
@@ -133,39 +120,53 @@ export default function CompareWorksPanel({
         "/api/skills/compare_works/prompt",
         { ref_ids: Array.from(selected), focus, instruction },
       );
-      setPromptText(r.prompt || "");
-      try {
-        await navigator.clipboard.writeText(r.prompt || "");
-        toast("Prompt 已生成并复制到剪贴板", "success");
-      } catch {
-        toast("Prompt 已生成（请手动复制下方文本）", "info");
-      }
+      setDialogPrompt(r.prompt || "");
+      setDialogMode(mode);
+      setDialogOpen(true);
     } catch (e: any) {
-      toast(`生成 Prompt 失败: ${e?.message || e}`, "error");
+      toast(`生成 prompt 失败: ${e?.message || e}`, "error");
     } finally { setLoadingPrompt(false); }
   };
 
-  const parsePasted = () => {
-    let s = pasteText.trim();
-    if (!s) { toast("请先粘贴网页 LLM 返回的结果", "error"); return; }
-    const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-    if (fence) s = fence[1].trim();
-    const a = s.indexOf("{"), b = s.lastIndexOf("}");
-    if (a >= 0 && b > a) s = s.slice(a, b + 1);
+  /** API mode invocation — runs the (possibly user-edited) prompt
+   *  through the configured LLM and returns the raw text. */
+  const invokeApi = async (signal: AbortSignal, livePrompt: string): Promise<string> => {
+    const res = await fetch("/api/skills/compare_works/invoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: livePrompt }),
+      signal,
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const e = await res.json(); msg = e.detail || msg; } catch { /* keep */ }
+      throw new Error(msg);
+    }
+    const j = await res.json();
+    return j.raw || "";
+  };
+
+  /** Parse the (possibly user-edited) raw response into the Skill
+   *  draft via the backend (single source of truth for JSON cleanup +
+   *  tag defaulting). Stash the draft into the preview card and close
+   *  the dialog. Called by UniversalLLMDialog.onCommit. */
+  const onDialogCommit = async (payload: { text: string }) => {
     try {
-      const obj = JSON.parse(s);
-      setDraft({
-        name: String(obj.name || ""),
-        display_name: String(obj.display_name || ""),
-        description: String(obj.description || ""),
-        prompt_template: String(obj.prompt_template || ""),
-        tags: Array.isArray(obj.tags) ? obj.tags.map((t: any) => String(t)) : [],
-      });
-      setSourceWorks(selectedAsWorks.map(w => ({ ref_id: w.ref_id, title: w.title })));
-      setModalOpen(false);
-      toast("解析成功", "success");
-    } catch {
-      toast("解析失败：粘贴的内容不是合法 JSON", "error");
+      const r = await apiPost<CompareResponse>(
+        "/api/skills/compare_works/parse",
+        { raw: payload.text, ref_ids: Array.from(selected), focus },
+      );
+      setDraft(r.draft);
+      setSourceWorks(
+        r.source_works?.length
+          ? r.source_works
+          : selectedAsWorks.map(w => ({ ref_id: w.ref_id, title: w.title })),
+      );
+      setDialogOpen(false);
+      toast("已生成草稿", "success");
+    } catch (e: any) {
+      toast(`解析失败: ${e?.message || e}`, "error");
+      throw e;  // let the dialog stay open so the user can fix the JSON
     }
   };
 
@@ -190,8 +191,6 @@ export default function CompareWorksPanel({
       onSaved?.();
       setDraft(null);
       if (!controlledSelected) setInternalSelected(new Set());
-      setPromptText("");
-      setPasteText("");
     } catch (e: any) {
       toast(`保存失败: ${e?.message || e}`, "error");
     } finally { setSaving(false); }
@@ -293,35 +292,45 @@ export default function CompareWorksPanel({
             />
           </div>
 
-          <div className="flex" style={{ justifyContent: "flex-end" }}>
+          {/* Two direct buttons — API vs 网页版 — matching the
+              advanced extraction page in 市场特征提取. */}
+          <div className="flex" style={{ gap: 10, justifyContent: "flex-end" }}>
             <button
-              className="btn-primary"
-              onClick={() => setModalOpen(true)}
-              disabled={selected.size < 2}
+              className="btn"
+              onClick={() => openDialog("manual")}
+              disabled={selected.size < 2 || loadingPrompt}
               title={selected.size < 2 ? "请先选择至少 2 部作品" : ""}
             >
-              提取共通点（{selected.size} 部已选）
+              {loadingPrompt && dialogMode === "manual" ? "生成 prompt 中…" : "使用大模型网页版"}
+            </button>
+            <button
+              className="btn-primary"
+              onClick={() => openDialog("api")}
+              disabled={selected.size < 2 || loadingPrompt}
+              title={selected.size < 2 ? "请先选择至少 2 部作品" : ""}
+            >
+              {loadingPrompt && dialogMode === "api" ? "生成 prompt 中…" : "使用大模型 API"}
             </button>
           </div>
         </div>
       </div>
 
-      {/* 处理方式弹窗 — API 或 网页版，统一与其他大模型交互一致 */}
-      {modalOpen && (
-        <ProcessingModeModal
-          mode={mode}
-          onChangeMode={setMode}
-          generating={generating}
-          loadingPrompt={loadingPrompt}
-          promptText={promptText}
-          pasteText={pasteText}
-          onChangePaste={setPasteText}
-          onRunApi={generate}
-          onLoadPrompt={loadPrompt}
-          onParsePaste={parsePasted}
-          onClose={() => setModalOpen(false)}
-        />
-      )}
+      {/* Universal LLM dialog — left = editable prompt, right = API run
+          (start / progress / result) or 网页版 paste box. */}
+      <UniversalLLMDialog
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        title={`共通点学习（${selected.size} 部已选）`}
+        description={dialogMode === "api"
+          ? "确认提示词后用大模型 API 自动运行；右侧显示进度与原始回复。"
+          : "复制提示词到大模型网页版运行后，把返回内容粘回右侧。"}
+        prompt={dialogPrompt}
+        editablePrompt
+        invokeApi={invokeApi}
+        onCommit={onDialogCommit}
+        minChars={20}
+        initialMode={dialogMode === "manual" ? "manual_only" : "api_only"}
+      />
 
       {/* Draft preview */}
       {draft && (
@@ -389,128 +398,3 @@ export default function CompareWorksPanel({
   );
 }
 
-/** Modal for picking the LLM processing mode (API vs 网页版). Matches
- *  the pattern used by 纯设定作品 / 参考作品特征提取 — a slider toggle
- *  at the top + the relevant action below. */
-function ProcessingModeModal({
-  mode, onChangeMode,
-  generating, loadingPrompt, promptText, pasteText,
-  onChangePaste, onRunApi, onLoadPrompt, onParsePaste, onClose,
-}: {
-  mode: "ai" | "manual";
-  onChangeMode: (m: "ai" | "manual") => void;
-  generating: boolean;
-  loadingPrompt: boolean;
-  promptText: string;
-  pasteText: string;
-  onChangePaste: (s: string) => void;
-  onRunApi: () => void;
-  onLoadPrompt: () => void;
-  onParsePaste: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <>
-      <div className="side-panel-overlay" onClick={onClose} />
-      <div style={{
-        position: "fixed", inset: 0, zIndex: 100,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        pointerEvents: "none",
-      }}>
-        <div className="card" style={{
-          width: 720, maxHeight: "85vh", overflow: "auto",
-          pointerEvents: "auto", boxShadow: "var(--shadow-lg)",
-        }}>
-          <div className="card-header">
-            <h3>处理方式</h3>
-            <button className="btn-icon" onClick={onClose}
-                    style={{ width: 28, height: 28, fontSize: 18 }}>×</button>
-          </div>
-          <div className="card-body">
-            {/* Mode toggle — same slider style used elsewhere */}
-            <div style={{
-              display: "inline-flex",
-              background: "var(--bg-surface)",
-              borderRadius: "var(--radius-sm)",
-              border: "1px solid var(--border)",
-              padding: 3, marginBottom: 14,
-            }}>
-              {([["ai", "使用大模型 API"], ["manual", "使用大模型网页版"]] as const).map(([k, lbl]) => (
-                <button key={k}
-                        onClick={() => onChangeMode(k)}
-                        style={{
-                          padding: "6px 14px", fontSize: 12,
-                          fontWeight: 600,
-                          color: mode === k ? "white" : "var(--text-secondary)",
-                          background: mode === k ? "var(--accent)" : "transparent",
-                          border: "none",
-                          borderRadius: 4,
-                          cursor: "pointer",
-                          transition: "all 0.15s",
-                        }}>{lbl}</button>
-              ))}
-            </div>
-
-            {mode === "ai" ? (
-              <>
-                <div className="text-xs" style={{
-                  color: "var(--text-tertiary)", marginBottom: 12, lineHeight: 1.7,
-                }}>
-                  使用 UI 设置页面里配置好的模型 API，根据已选作品的提取数据生成草稿技能。
-                </div>
-                <button className="btn-primary"
-                        onClick={onRunApi}
-                        disabled={generating}>
-                  {generating ? "AI 对比生成中…" : "调用 API 生成草稿"}
-                </button>
-              </>
-            ) : (
-              <>
-                <div className="text-xs" style={{
-                  color: "var(--text-tertiary)", marginBottom: 12, lineHeight: 1.7,
-                }}>
-                  生成 prompt 复制到大模型网页版（ChatGPT / Claude.ai 等），
-                  把返回的 JSON 粘贴回下方输入框，系统自动解析为草稿技能。
-                </div>
-                <button className="btn" onClick={onLoadPrompt}
-                        disabled={loadingPrompt}
-                        style={{ marginBottom: 10 }}>
-                  {loadingPrompt ? "生成中…" : "生成并复制 prompt"}
-                </button>
-                {promptText && (
-                  <textarea className="input font-mono" rows={4} readOnly
-                            value={promptText}
-                            style={{
-                              fontSize: 11, lineHeight: 1.5,
-                              marginBottom: 10,
-                              background: "var(--bg-app)",
-                            }} />
-                )}
-                <label className="label" style={{
-                  fontSize: 11, fontWeight: 600,
-                  color: "var(--text-tertiary)",
-                  textTransform: "uppercase", letterSpacing: 0.5,
-                  marginBottom: 4,
-                }}>粘贴网页 LLM 返回的 JSON</label>
-                <textarea className="input font-mono" rows={6}
-                          value={pasteText}
-                          onChange={e => onChangePaste(e.target.value)}
-                          placeholder='{"name": "...", "display_name": "...", "description": "...", "prompt_template": "...", "tags": [...]}'
-                          style={{
-                            fontSize: 11, lineHeight: 1.5,
-                            marginBottom: 10,
-                            background: "var(--bg-app)",
-                          }} />
-                <button className="btn-primary"
-                        onClick={onParsePaste}
-                        disabled={!pasteText.trim()}>
-                  解析为草稿技能
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}

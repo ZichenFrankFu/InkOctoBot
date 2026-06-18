@@ -563,11 +563,12 @@ function LevelMultiSelect({
               transition: "border-color 0.15s, background 0.15s",
             }}>
             <input
+              className="checkbox-pretty"
               type="checkbox"
               checked={on}
               onChange={() => toggle(lv)}
               onClick={(e) => e.stopPropagation()}
-              style={{ width: 14, height: 14, marginTop: 2, flexShrink: 0 }}
+              style={{ marginTop: 2 }}
             />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{

@@ -836,11 +836,11 @@ function ReferenceLearningTab({ works }: { works: ReferenceWork[] }) {
                       transition: "border-color 0.15s, background 0.15s",
                     }}>
                     <input
+                      className="checkbox-pretty"
                       type="checkbox"
                       checked={on}
                       onChange={() => toggle(w.ref_id)}
                       onClick={(e) => e.stopPropagation()}
-                      style={{ width: 14, height: 14, flexShrink: 0 }}
                     />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="truncate" style={{

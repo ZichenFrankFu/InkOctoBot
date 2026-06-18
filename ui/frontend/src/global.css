@@ -1288,6 +1288,55 @@ textarea.input {
   width: 80px;
   flex-shrink: 0;
 }
+/* ══════════════════════════════════════
+   Custom Checkbox
+   ══════════════════════════════════════ */
+
+/* `checkbox-pretty` — a square checkbox with our color palette. Use it
+   when the default OS checkbox looks out of place (work pickers, list
+   selection grids, anywhere the surrounding card is dark-themed). */
+.checkbox-pretty {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--border-active);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  margin: 0;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.checkbox-pretty:hover {
+  border-color: var(--accent);
+}
+.checkbox-pretty:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-glow);
+}
+.checkbox-pretty:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0px;
+  width: 5px;
+  height: 9px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.checkbox-pretty:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.checkbox-pretty:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .param-slider input[type="range"] {
   flex: 1;
   height: 4px;

@@ -76,6 +76,71 @@ def condense_ref_plot(raw: Any) -> str:
     return "剧情结构：\n" + "\n".join(parts) if parts else ""
 
 
+def condense_ref_static_characters(raw: Any) -> str:
+    """Pure-setting (setting_collection) works store characters under
+    ``static_characters_json`` with ``{name, role, description}`` —
+    different shape from narrative ``extracted_characters_json``."""
+    data = coerce_json(raw)
+    items = data if isinstance(data, list) else (
+        data.get("characters") if isinstance(data, dict) else None
+    )
+    if not isinstance(items, list):
+        return ""
+    out: list[str] = []
+    for c in items[:8]:
+        if not isinstance(c, dict):
+            continue
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        role = (c.get("role") or "").strip()
+        desc = (c.get("description") or "").strip()
+        line = f"- {name}" + (f"（{role}）" if role else "")
+        if desc:
+            line += f"：{desc}"
+        out.append(line)
+    return "角色：\n" + "\n".join(out) if out else ""
+
+
+def condense_ref_setting_features(raw: Any) -> str:
+    """Pure-setting 作品级世界观特征：核心冲突 / 高概念。"""
+    items = coerce_json(raw)
+    if not isinstance(items, list):
+        return ""
+    out: list[str] = []
+    for f in items[:8]:
+        if not isinstance(f, dict):
+            continue
+        cat = (f.get("category") or "").strip()
+        title = (f.get("title") or "").strip()
+        desc = (f.get("description") or "").strip()
+        if not title and not desc:
+            continue
+        prefix = f"[{cat}]" if cat else ""
+        line = f"- {prefix}{title}".rstrip() + (f"：{desc}" if desc else "")
+        out.append(line)
+    return "设定特征（核心冲突 / 高概念）：\n" + "\n".join(out) if out else ""
+
+
+def condense_ref_raw_entries(raw: Any) -> str:
+    """Pure-setting 原始文本条目（按条目截断；只取前几条）。"""
+    data = coerce_json(raw)
+    if not isinstance(data, list):
+        return ""
+    out: list[str] = []
+    for e in data[:5]:
+        if not isinstance(e, dict):
+            continue
+        title = (e.get("title") or "").strip()
+        content = (e.get("content") or "").strip()
+        if not title and not content:
+            continue
+        snippet = content if len(content) <= 240 else content[:236] + "…"
+        head = title or "条目"
+        out.append(f"- 【{head}】{snippet}".rstrip())
+    return "原始文本片段：\n" + "\n".join(out) if out else ""
+
+
 def condense_ref_rhythm(raw: Any, style_fp: Any) -> str:
     data = coerce_json(raw)
     parts: list[str] = []
