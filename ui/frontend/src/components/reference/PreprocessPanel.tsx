@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { apiGet, apiPost, apiPut, apiPatch } from "../../api/client";
 import { useToast } from "../shared/Toast";
 import { useConfirm } from "../shared/Confirm";
+import { invalidateSegmentation } from "./segmentationCache";
 
 interface ChapterPattern {
   name: string;
@@ -1143,10 +1144,7 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
       // The chronicle / characters / settings tabs share a segmentation
       // cache keyed by refId — invalidate it so the next tab they
       // open sees the new plan, not the cached old one.
-      try {
-        const mod = await import("./segmentationCache");
-        mod.invalidateSegmentation(refId);
-      } catch { /* shared cache module is optional */ }
+      invalidateSegmentation(refId);
     } catch (e: any) {
       toast(e?.message || "保存失败", "error");
     } finally { setPlanSaving(false); }
@@ -1340,10 +1338,6 @@ export default function PreprocessPanel({ refId, hasFullText, onUpload, onAfterA
                 <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)" }} onClick={cancelJob}>取消</button>
               </>
             )}
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={onUpload}
-                    title="到「文件」tab 管理上传">
-              管理文件
-            </button>
           </div>
         </div>
 
@@ -3009,10 +3003,6 @@ function VolumeEditor(p: VolumeEditorProps) {
             <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>
               分卷与分段
             </span>
-            <span className="tag" style={{
-              fontSize: 10, padding: "1px 7px",
-              color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 3,
-            }}>新建 / 编辑 / 删除卷</span>
           </div>
           <div className="text-xs text-muted" style={{ marginTop: 2 }}>
             {!plan
@@ -3026,8 +3016,13 @@ function VolumeEditor(p: VolumeEditorProps) {
           <div className="flex" style={{ gap: 6 }}>
             <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
                     onClick={p.loadAutoSuggest} disabled={p.aiDetecting}
-                    title="用AI大模型API 重新检测分卷边界（模型可在 设置 · Pipeline 配置 中选择）">
-              {p.aiDetecting ? "检测中…" : "使用AI大模型API检测"}
+                    title="本地配置的 LLM API 自动重新检测分卷边界">
+              {p.aiDetecting ? "检测中…" : "使用大模型 API"}
+            </button>
+            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                    onClick={p.showAiPrompt}
+                    title="查看 / 复制 prompt 到大模型网页版（ChatGPT / Claude.ai 等），把返回的 JSON 粘回下方解析">
+              使用大模型网页版
             </button>
             <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
                     onClick={p.startPlanEdit}
@@ -3071,13 +3066,13 @@ function VolumeEditor(p: VolumeEditorProps) {
             </button>
             <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={p.loadAutoSuggest}
                     disabled={p.aiDetecting}
-                    title="用AI大模型API 检测分卷（联网模型可用时优先联网检索官方分卷；模型可在 设置 · Pipeline 配置 中选择）">
-              {p.aiDetecting ? "检测中…" : "使用AI大模型API检测"}
+                    title="本地配置的 LLM API 自动检测分卷边界">
+              {p.aiDetecting ? "检测中…" : "使用大模型 API"}
             </button>
-            <button className="btn-ghost" style={{ fontSize: 11, padding: "5px 10px" }}
+            <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }}
                     onClick={p.showAiPrompt}
-                    title="查看 / 复制发给 LLM 的 prompt（可粘到 ChatGPT、Claude.ai 等手动检测）">
-              AI大模型网页版
+                    title="查看 / 复制 prompt 到大模型网页版（ChatGPT / Claude.ai 等），把返回的 JSON 粘回下方解析">
+              使用大模型网页版
             </button>
           </div>
         </div>
@@ -3094,13 +3089,13 @@ function VolumeEditor(p: VolumeEditorProps) {
               <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
                       onClick={p.loadAutoSuggest}
                       disabled={planSaving || p.aiDetecting}
-                      title="优先用联网 AI 检索官方分卷信息；联网模型不可用时回退到正文卷标记扫描">
-                {p.aiDetecting ? "检测中…" : "自动检测分卷"}
+                      title="本地配置的 LLM API 自动检测分卷边界">
+                {p.aiDetecting ? "检测中…" : "使用大模型 API"}
               </button>
-              <button className="btn-ghost" style={{ fontSize: 11, padding: "3px 8px" }}
+              <button className="btn" style={{ fontSize: 11, padding: "3px 8px" }}
                       onClick={p.showAiPrompt}
-                      title="查看 / 复制发给 LLM 的 prompt（可粘到 ChatGPT、Claude.ai 等手动检测）">
-                AI大模型网页版
+                      title="查看 / 复制 prompt 到大模型网页版（ChatGPT / Claude.ai 等），把返回的 JSON 粘回下方解析">
+                使用大模型网页版
               </button>
             </div>
           </div>

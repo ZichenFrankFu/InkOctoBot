@@ -112,6 +112,13 @@ export interface ReferenceWork {
   /** JSON array of {chapter, text} — per-chapter reader notes. */
   chapter_comments_json?: string;
   serial_status?: "ongoing" | "completed" | "hiatus" | "unknown" | null;
+  // Pure-setting (setting_collection) fields — only populated for works
+  // whose structure_type === "setting_collection".
+  structure_type?: "narrative" | "setting_collection";
+  /** JSON array of {title, content} entries — the「原始文本」条目集 */
+  quick_input_text?: string;
+  static_characters_json?: string;
+  setting_features_json?: string;
   created_at?: string;
   updated_at?: string;
 }

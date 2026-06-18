@@ -747,6 +747,108 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
         "description": "创作管线 · 旁白 Agent 的 system 提示",
     },
 
+    "reference.pure_setting": {
+        "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
+
+任务：阅读下面这**一段**纯设定作品（如 SCP / 后室 / 战锤40K）的「作品材料」，一次性抽取 3 类信息——**设定 / 角色 / 设定特征**——合并成**一个** JSON 对象返回。
+
+作品上下文（仅供消歧）：
+- 作品标题：《{title}》
+- 作者/来源：{author}
+- 本段：第 {chunk_index_human}/{total_chunks} 段（原文 {n_chars} 字）
+
+【作品材料 · 三部分组合】
+
+==== 部分一：本段原文 ====
+{text}
+
+==== 部分二：已有设定（{existing_settings_count} 条，避免重复抽取） ====
+{existing_settings}
+
+==== 部分三：已有角色（{existing_characters_count} 条，避免重复抽取） ====
+{existing_characters}
+
+**严格禁止**（违反则整条响应被视为错误）：
+- 任何寒暄、解释、对话语句
+- ```json ... ``` 这样的 markdown 包装
+- <think>...</think> 等推理块
+- JSON 之外的任何文字
+
+**只输出**：以 `{{` 开始、以 `}}` 结束的合法 JSON 对象，顶层恰好 3 个键：settings / characters / setting_features。
+
+输出 JSON schema（字段名严格匹配）：
+
+{{
+  "settings": [
+    {{
+      "category": "力量体系 | 势力组织 | 地理 | 社会规则 | 历史背景 | 世界观 | 其他",
+      "title": "条目名（短，≤ 16 字，wiki 原标题或概括）",
+      "content": "条目内容概述（≤ 120 字，忠实概括，不要虚构）"
+    }}
+  ],
+  "characters": [
+    {{
+      "name": "姓名（必填）",
+      "role": "定位（如 创始人/异常实体/守护者/领袖 等，≤ 12 字）",
+      "description": "静态描述，≤ 80 字，**不绑定章节**"
+    }}
+  ],
+  "setting_features": [
+    {{
+      "category": "核心冲突 | 高概念",
+      "title": "短标题（≤ 16 字）",
+      "description": "一句话解释（≤ 80 字）"
+    }}
+  ]
+}}
+
+抽取规则（必读）：
+- **settings**：主要从「部分一 原文」抽取新设定；**不要**重复「部分二 已有设定」中已经出现的条目（标题或内容明显重合视为重复）
+- **characters**：主要从「部分一 原文」抽取新角色；**不要**重复「部分三 已有角色」中已经出现的人物
+- **setting_features**：综合**三个部分**的全部内容（含已有设定与角色）总结作品级世界观特征，**必须按下面 2 类分别给出**（每段每类至少 1 条，理想 1–3 条）：
+    - **核心冲突 (core conflict)**：作品在世界设定层面持续推动剧情的根本对立——如「秩序与失序」「文明与异常」「神性与凡人」；写成可识别的张力对子或一句话冲突命题
+    - **高概念 (high concept)**：作品被一句话能讲清的世界观底座——如「太空大航海」「混凝土雕像未被注视时高速移动」「人类一思考神就发笑」；具备「钩子」属性
+- 当「部分一」为空时，可以单独基于「部分二」「部分三」补充 setting_features
+- 类别 category 必须严格使用上述中文 key（核心冲突 / 高概念）
+- characters 为静态条目，只收录有名字的个体
+- 禁止使用 emoji；settings 最多 30 条；setting_features 两类合计最多 10 条；没有内容的类别返回空数组
+""",
+        "vars": [
+            "title", "author",
+            "chunk_index_human", "total_chunks",
+            "n_chars", "text",
+            "existing_settings_count", "existing_settings",
+            "existing_characters_count", "existing_characters",
+        ],
+        "description": "纯设定作品（SCP/后室/战锤40K 等）分段抽取设定/角色/设定特征（含核心冲突/高概念/母题三类）",
+    },
+
+    "reference.pure_setting_translate": {
+        "template": """[自动化文本翻译 · 不是对话] 任务：把下面这段纯设定作品（SCP / 后室 / 战锤40K 等）的原文**忠实翻译成简体中文**。
+
+作品上下文（仅供消歧）：
+- 作品标题：《{title}》
+- 作者/来源：{author}
+- 本段：第 {chunk_index_human}/{total_chunks} 段（原文 {n_chars} 字）
+
+**严格要求**：
+- 直接输出译文正文，不要寒暄、解释、目录、标题、说明，也不要 markdown 包装
+- 保留原文的段落结构（空行隔段）；保留原文中已是中文的部分原样
+- 专有名词（角色/组织/项目编号等）译名首次出现时附原文，如「Site-19（19 号站点）」
+- 翻译风格力求准确而非文学化；技术性、设定性表述优先精确
+- 译文末尾不要附任何「以上为译文」之类的尾注
+
+==== 原文 ====
+{text}
+""",
+        "vars": [
+            "title", "author",
+            "chunk_index_human", "total_chunks",
+            "n_chars", "text",
+        ],
+        "description": "纯设定作品原文 → 简体中文翻译（分段，逐段翻译）",
+    },
+
     "pipeline.editor": {
         "template": """你是剪辑师+作家（Editor-Writer），负责将演员的表演记录剪辑成最终章节正文。
 

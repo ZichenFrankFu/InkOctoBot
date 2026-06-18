@@ -5,11 +5,12 @@
  * /api/references/inspirations endpoints; each entry carries a「搜索
  * 参考作品」action that runs the cross-work fuzzy search using the
  * inspiration's text as the query (handled by the parent page). */
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { swrHydrate, swrStore } from "../api/swr";
 import { useToast } from "./shared/Toast";
 import { useDialog } from "./shared/Dialog";
+import { tInspirationCategory } from "../i18n";
 
 interface Inspiration {
   id: string;
@@ -20,8 +21,6 @@ interface Inspiration {
   updated_at?: string;
 }
 
-import { tInspirationCategory } from "../i18n";
-
 const CATEGORIES: { key: string; label: string; color: string }[] = [
   { key: "scene",         label: "场景",     color: "var(--accent)" },
   { key: "plot_device",   label: "桥段",     color: "var(--gold)" },
@@ -29,10 +28,10 @@ const CATEGORIES: { key: string; label: string; color: string }[] = [
   { key: "worldbuilding", label: "设定",     color: "var(--jade)" },
   { key: "other",         label: "其他",     color: "var(--text-tertiary)" },
 ];
-// Route through i18n so labels switch with the language toggle. Falls
-// through to the raw key when the category isn't in the i18n dict.
+
 const catLabel = (k: string) => tInspirationCategory(k);
-const catColor = (k: string) => CATEGORIES.find(c => c.key === k)?.color || "var(--text-tertiary)";
+const catColor = (k: string) =>
+  CATEGORIES.find(c => c.key === k)?.color || "var(--text-tertiary)";
 
 export default function InspirationLibrary({ onSearchWorks }: {
   /** Run the cross-work fuzzy search with the given text as the query. */
@@ -46,9 +45,7 @@ export default function InspirationLibrary({ onSearchWorks }: {
   );
   const [loading, setLoading] = useState(false);
   const [catFilter, setCatFilter] = useState("");
-  // Text search filter — kept lightweight (no server round-trip, no
-  // embedding cosine). For semantic cross-work search, the user can
-  // jump to 灵感搜索 page (or click "搜索参考作品" on any card).
+  // Text search — local fuzzy match against title + content.
   const [textFilter, setTextFilter] = useState("");
   // draft being added/edited; id === "" means a new inspiration.
   const [draft, setDraft] = useState<Inspiration | null>(null);
@@ -101,85 +98,127 @@ export default function InspirationLibrary({ onSearchWorks }: {
   };
 
   const q = textFilter.trim().toLowerCase();
-  const shown = items.filter(it => {
+  const shown = useMemo(() => items.filter(it => {
     if (catFilter && it.category !== catFilter) return false;
     if (!q) return true;
     return (it.title || "").toLowerCase().includes(q)
         || (it.content || "").toLowerCase().includes(q);
-  });
+  }), [items, catFilter, q]);
+
+  // 类别计数 — 用于在 chip 上显示数字
+  const catCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const it of items) m[it.category] = (m[it.category] || 0) + 1;
+    return m;
+  }, [items]);
 
   return (
     <>
+      {/* Toolbar */}
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-body">
-          {/* Top row: search box + add button */}
-          <div className="flex gap-8 items-center" style={{ flexWrap: "wrap", marginBottom: 10 }}>
+          <div className="flex items-center" style={{
+            gap: 10, marginBottom: 12, flexWrap: "wrap",
+          }}>
             <input
               className="input"
               type="text"
               placeholder="搜索灵感（标题或正文）..."
               value={textFilter}
               onChange={e => setTextFilter(e.target.value)}
-              style={{ flex: 1, minWidth: 240, padding: "6px 12px", fontSize: 13 }}
+              style={{ flex: 1, minWidth: 240 }}
             />
             {textFilter && (
               <button className="btn"
-                      style={{ fontSize: 11, padding: "4px 10px" }}
                       onClick={() => setTextFilter("")}>清除</button>
             )}
             <button className="btn-primary"
-                    onClick={() => setDraft({ id: "", category: "scene", title: "", content: "" })}>
+                    onClick={() => setDraft({
+                      id: "", category: "scene", title: "", content: "",
+                    })}>
               + 添加灵感
             </button>
           </div>
-          {/* Category row */}
-          <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
-            <button className={catFilter === "" ? "btn-primary" : "btn"}
-                    style={{ fontSize: 11, padding: "2px 10px" }}
-                    onClick={() => setCatFilter("")}>全部</button>
+
+          {/* Category chips */}
+          <div className="flex items-center" style={{ gap: 6, flexWrap: "wrap" }}>
+            <CategoryChip
+              label="全部" count={items.length}
+              color="var(--text-secondary)"
+              active={catFilter === ""}
+              onClick={() => setCatFilter("")}
+            />
             {CATEGORIES.map(c => (
-              <button key={c.key}
-                      className={catFilter === c.key ? "btn-primary" : "btn"}
-                      style={{ fontSize: 11, padding: "2px 10px" }}
-                      onClick={() => setCatFilter(c.key)}>{tInspirationCategory(c.key)}</button>
+              <CategoryChip key={c.key}
+                label={tInspirationCategory(c.key)}
+                count={catCounts[c.key] || 0}
+                color={c.color}
+                active={catFilter === c.key}
+                onClick={() => setCatFilter(c.key)}
+              />
             ))}
             <div style={{ flex: 1 }} />
-            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-              {shown.length} / {items.length}
-            </span>
-          </div>
-          <div className="text-xs text-muted" style={{ marginTop: 8, lineHeight: 1.55 }}>
-            灵感库默认显示全部条目；搜索框为本地模糊匹配（标题/正文）。
-            如需跨参考作品做语义搜索，请在任意一条灵感上点「搜索参考作品」按钮。
+            <span className="text-xs" style={{
+              fontFamily: "var(--font-mono)", color: "var(--text-tertiary)",
+            }}>{shown.length} / {items.length}</span>
           </div>
         </div>
       </div>
 
+      {/* Inline add/edit form */}
       {draft && (
-        <div className="card" style={{ marginBottom: 14, border: "1px solid var(--accent)" }}>
-          <div className="card-body flex flex-col gap-8">
-            <div className="flex items-center gap-8">
-              <span className="text-xs text-muted" style={{ minWidth: 36 }}>类别</span>
+        <div className="card" style={{
+          marginBottom: 14, border: "1px solid var(--accent)",
+        }}>
+          <div className="card-header">
+            <h3 style={{ margin: 0 }}>
+              {draft.id ? "编辑灵感" : "添加灵感"}
+            </h3>
+            <button className="btn-icon" onClick={() => setDraft(null)}
+                    disabled={saving} title="取消">×</button>
+          </div>
+          <div className="card-body flex flex-col" style={{ gap: 12 }}>
+            <div>
+              <label className="label" style={{
+                fontSize: 11, fontWeight: 600, marginBottom: 4,
+                color: "var(--text-tertiary)",
+                textTransform: "uppercase", letterSpacing: 0.5,
+              }}>类别</label>
               <select className="select" value={draft.category}
-                      onChange={e => setDraft({ ...draft, category: e.target.value })}
-                      style={{ fontSize: 12 }}>
-                {CATEGORIES.map(c => <option key={c.key} value={c.key}>{tInspirationCategory(c.key)}</option>)}
+                      onChange={e => setDraft({ ...draft, category: e.target.value })}>
+                {CATEGORIES.map(c => (
+                  <option key={c.key} value={c.key}>
+                    {tInspirationCategory(c.key)}
+                  </option>
+                ))}
               </select>
             </div>
-            <div className="flex items-center gap-8">
-              <span className="text-xs text-muted" style={{ minWidth: 36 }}>标题</span>
+            <div>
+              <label className="label" style={{
+                fontSize: 11, fontWeight: 600, marginBottom: 4,
+                color: "var(--text-tertiary)",
+                textTransform: "uppercase", letterSpacing: 0.5,
+              }}>标题（可选）</label>
               <input className="input" value={draft.title}
-                     placeholder="一句话概括（可选）"
-                     onChange={e => setDraft({ ...draft, title: e.target.value })}
-                     style={{ flex: 1, fontSize: 12 }} />
+                     placeholder="一句话概括"
+                     onChange={e => setDraft({ ...draft, title: e.target.value })} />
             </div>
-            <textarea className="input" value={draft.content}
-                      placeholder="详细描述这个灵感：一个场景、一段桥段、一个人物设计…"
-                      rows={5}
-                      onChange={e => setDraft({ ...draft, content: e.target.value })}
-                      style={{ fontSize: 13, lineHeight: 1.7, resize: "vertical" }} />
-            <div className="flex gap-6" style={{ justifyContent: "flex-end" }}>
-              <button className="btn" onClick={() => setDraft(null)} disabled={saving}>取消</button>
+            <div>
+              <label className="label" style={{
+                fontSize: 11, fontWeight: 600, marginBottom: 4,
+                color: "var(--text-tertiary)",
+                textTransform: "uppercase", letterSpacing: 0.5,
+              }}>正文</label>
+              <textarea className="input" value={draft.content}
+                        placeholder="详细描述这个灵感：一个场景、一段桥段、一个人物设计…"
+                        rows={6}
+                        onChange={e => setDraft({ ...draft, content: e.target.value })}
+                        style={{ lineHeight: 1.7, resize: "vertical" }} />
+            </div>
+            <div className="flex" style={{ gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setDraft(null)} disabled={saving}>
+                取消
+              </button>
               <button className="btn-primary" onClick={save} disabled={saving}>
                 {saving ? "保存中..." : (draft.id ? "保存" : "添加")}
               </button>
@@ -188,16 +227,27 @@ export default function InspirationLibrary({ onSearchWorks }: {
         </div>
       )}
 
+      {/* List */}
       {loading && items.length === 0 ? (
-        <div className="empty-state" style={{ paddingTop: 40 }}><p>加载中...</p></div>
-      ) : shown.length === 0 ? (
         <div className="empty-state" style={{ paddingTop: 40 }}>
-          <p>{catFilter
-            ? "该类别下还没有灵感。"
-            : "灵感库还是空的。点击「添加灵感」记录第一个想法。"}</p>
+          <p>加载中...</p>
         </div>
+      ) : shown.length === 0 ? (
+        <EmptyHero
+          title={catFilter ? "该类别下还没有灵感" : "灵感库还是空的"}
+          message="点击右上角「+ 添加灵感」记录第一个想法。"
+          actions={(
+            <button className="btn-primary"
+                    onClick={() => setDraft({
+                      id: "", category: catFilter || "scene",
+                      title: "", content: "",
+                    })}>
+              + 添加灵感
+            </button>
+          )}
+        />
       ) : (
-        <div className="flex flex-col gap-10">
+        <div className="flex flex-col" style={{ gap: 10 }}>
           {shown.map(it => (
             <InspirationCard key={it.id} it={it}
               onEdit={() => setDraft({ ...it })}
@@ -211,38 +261,117 @@ export default function InspirationLibrary({ onSearchWorks }: {
   );
 }
 
+function CategoryChip({
+  label, count, color, active, onClick,
+}: {
+  label: string;
+  count: number;
+  color: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "4px 10px", fontSize: 12, fontWeight: 600,
+        background: active ? color : "transparent",
+        color: active ? "white" : color,
+        border: `1px solid ${color}`,
+        borderRadius: 12,
+        cursor: "pointer",
+        transition: "all 0.15s",
+        display: "inline-flex", alignItems: "center", gap: 6,
+      }}>
+      {label}
+      <span style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: 10, fontWeight: 700,
+        opacity: 0.85,
+      }}>{count}</span>
+    </button>
+  );
+}
+
 function InspirationCard({ it, onEdit, onDelete, onSearchWorks }: {
   it: Inspiration;
   onEdit: () => void;
   onDelete: () => void;
   onSearchWorks: () => void;
 }) {
+  const color = catColor(it.category);
   return (
-    <div className="card">
-      <div className="card-body">
-        <div className="flex items-center gap-8" style={{ marginBottom: 6, flexWrap: "wrap" }}>
-          <span className="tag" style={{
-            fontSize: 10, padding: "1px 8px",
-            color: catColor(it.category), background: "var(--bg-surface-2)",
-            border: `1px solid ${catColor(it.category)}`,
+    <div className="card" style={{
+      borderLeft: `3px solid ${color}`,
+    }}>
+      <div className="card-body" style={{ padding: "14px 16px" }}>
+        <div className="flex items-center" style={{
+          gap: 10, marginBottom: 8, flexWrap: "wrap",
+        }}>
+          <span style={{
+            fontSize: 11, padding: "2px 8px", borderRadius: 4,
+            color, background: "var(--bg-surface-2)",
+            border: `1px solid ${color}`,
+            flexShrink: 0, fontWeight: 600,
           }}>{catLabel(it.category)}</span>
           {it.title && (
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{it.title}</span>
+            <span style={{
+              fontSize: 14, fontWeight: 700,
+              color: "var(--text-primary)",
+              fontFamily: "var(--font-serif)",
+            }}>{it.title}</span>
           )}
           <div style={{ flex: 1 }} />
-          <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
+          <button className="btn"
                   onClick={onSearchWorks}
-                  title="用这条灵感的内容跨参考作品模糊搜索相似片段">搜索参考作品</button>
-          <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 8px" }}
-                  onClick={onEdit}>编辑</button>
-          <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 8px", color: "var(--error)" }}
-                  onClick={onDelete}>删除</button>
+                  style={{ fontSize: 12, padding: "4px 12px" }}
+                  title="用这条灵感的内容跨参考作品模糊搜索相似片段">
+            搜索参考作品
+          </button>
+          <button className="btn-ghost"
+                  onClick={onEdit}
+                  style={{ fontSize: 12 }}>编辑</button>
+          <button className="btn-icon"
+                  onClick={onDelete}
+                  title="删除"
+                  style={{
+                    width: 28, height: 28, fontSize: 16,
+                    color: "var(--text-tertiary)",
+                  }}>×</button>
         </div>
         <div style={{
-          fontSize: 13, lineHeight: 1.7,
-          color: "var(--text-secondary)", whiteSpace: "pre-wrap",
+          fontSize: 13, lineHeight: 1.75,
+          color: "var(--text-secondary)",
+          whiteSpace: "pre-wrap",
         }}>{it.content}</div>
       </div>
+    </div>
+  );
+}
+
+function EmptyHero({
+  title, message, actions,
+}: {
+  title: string;
+  message: string;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div style={{
+      padding: "40px 20px", textAlign: "center",
+      background: "var(--bg-surface)",
+      border: "1px dashed var(--border)",
+      borderRadius: "var(--radius-sm)",
+    }}>
+      <div style={{
+        fontSize: 14, fontWeight: 600,
+        color: "var(--text-secondary)", marginBottom: 6,
+      }}>{title}</div>
+      <div className="text-xs" style={{
+        color: "var(--text-tertiary)", lineHeight: 1.7,
+        maxWidth: 420, margin: "0 auto 16px",
+      }}>{message}</div>
+      {actions}
     </div>
   );
 }

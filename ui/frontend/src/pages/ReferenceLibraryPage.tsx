@@ -22,7 +22,8 @@ import type { PlotOutline } from "../components/reference/AnalysisEditors";
 import { useSegmentation } from "../components/reference/segmentationCache";
 import type { ChunkLoc } from "../components/reference/referenceMerge";
 import PreprocessPanel from "../components/reference/PreprocessPanel";
-import PureSettingPanel from "../components/reference/PureSettingPanel";
+import PureSettingPanel, { PURE_SETTING_TABS } from "../components/reference/PureSettingPanel";
+import type { PureSettingTab } from "../components/reference/PureSettingPanel";
 import FilesPanel from "../components/reference/FilesPanel";
 import { splitGenres } from "../utils/genre";
 
@@ -307,15 +308,15 @@ export default function ReferenceLibraryPage() {
   }
 
   const statusBadge = (s: string) => {
+    // `not_applicable` (纯设定作品的状态) 不需要任何徽章 — 列表行已经有「纯设定」标签
     const map: Record<string, { cls: string; label: string }> = {
       done: { cls: "status-ongoing", label: "已分析" },
       pending: { cls: "qidian", label: "待处理" },
       processing: { cls: "cyan", label: "处理中" },
       error: { cls: "accent", label: "出错" },
-      not_applicable: { cls: "category", label: "手动" },
     };
-    const m = map[s] || map.not_applicable;
-    return <span className={`tag ${m.cls}`}>{m.label}</span>;
+    const m = map[s];
+    return m ? <span className={`tag ${m.cls}`}>{m.label}</span> : null;
   };
 
   return (
@@ -695,7 +696,6 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   processing: { label: "处理中", color: "var(--gold)" },
   pending: { label: "待处理", color: "var(--accent)" },
   error: { label: "出错", color: "var(--error)" },
-  not_applicable: { label: "手动维护", color: "var(--text-tertiary)" },
 };
 
 interface ChapterComment { chapter: string; text: string; }
@@ -804,6 +804,7 @@ function WorkDetail({
   onAfterMerge: () => Promise<void> | void;
 }) {
   const [tab, setTab] = useState<WorkDetailTab>("files");
+  const [pureSettingTab, setPureSettingTab] = useState<PureSettingTab>("raw");
   const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
   const [editingWhy, setEditingWhy] = useState(false);
   const chapterComments = useMemo<ChapterComment[]>(() => {
@@ -867,7 +868,9 @@ function WorkDetail({
     setEditingWhy(false);
   }, [sel.ref_id, sel.user_why_i_like]);
 
-  const status = STATUS_LABEL[sel.preprocessing_status] || STATUS_LABEL.not_applicable;
+  // For 纯设定作品 there's no preprocessing status to show; the「纯设定作品」
+  // tag carries enough information already.
+  const status = STATUS_LABEL[sel.preprocessing_status] || null;
   // Cache JSON.parse + .reduce work — the tab-bar re-renders on every
   // setTab() click and these parsed blobs can be megabytes (a full plot
   // outline with hundreds of events). Without memoization a single tab
@@ -938,12 +941,14 @@ function WorkDetail({
           {isPureSetting && (
             <span className="tag" style={{ fontSize: 11, padding: "1px 8px", color: "var(--gold)", background: "var(--bg-surface-2)", border: "1px solid var(--gold)" }}>纯设定作品</span>
           )}
-          <span className="tag" style={{
-            fontSize: 11, padding: "1px 8px",
-            color: status.color,
-            background: "var(--bg-surface-2)",
-            border: `1px solid ${status.color}`,
-          }}>{status.label}</span>
+          {status && (
+            <span className="tag" style={{
+              fontSize: 11, padding: "1px 8px",
+              color: status.color,
+              background: "var(--bg-surface-2)",
+              border: `1px solid ${status.color}`,
+            }}>{status.label}</span>
+          )}
           <div style={{ flex: 1 }} />
           <div className="flex gap-6" style={{ flexShrink: 0 }}>
             {!sel.has_full_text && !isPureSetting && (
@@ -959,44 +964,70 @@ function WorkDetail({
           {sel.user_rating ? <span style={{ color: "var(--gold)" }}>· {stars(sel.user_rating)}</span> : null}
         </div>
 
-        {/* Horizontal tab bar (叙事型专属) */}
-        {!isPureSetting && (
+        {/* Horizontal tab bar — same styling for narrative 与 纯设定，
+            只是 tabs 来源不同 */}
         <div className="flex" style={{ marginTop: 12, gap: 4, borderBottom: "1px solid var(--border)" }}>
-          {TABS.map(t => (
-            <button
-              key={t.key}
-              className="btn-ghost"
-              onClick={() => setTab(t.key)}
-              style={{
-                padding: "8px 16px",
-                fontSize: 13,
-                fontWeight: tab === t.key ? 600 : 400,
-                color: tab === t.key ? "var(--accent)" : "var(--text-secondary)",
-                borderBottom: tab === t.key ? "2px solid var(--accent)" : "2px solid transparent",
-                marginBottom: -1,
-                borderRadius: 0,
-              }}
-            >
-              {t.label}
-              {t.count != null && (
-                <span style={{
-                  marginLeft: 6,
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: tab === t.key ? "var(--accent)" : "var(--text-tertiary)",
-                  background: tab === t.key ? "var(--accent-subtle)" : "var(--bg-surface-2)",
-                  padding: "1px 6px",
-                  borderRadius: 10,
-                }}>{t.count}</span>
-              )}
-            </button>
-          ))}
+          {isPureSetting ? (
+            PURE_SETTING_TABS.map(t => (
+              <button
+                key={t.key}
+                className="btn-ghost"
+                onClick={() => setPureSettingTab(t.key)}
+                style={{
+                  padding: "8px 16px",
+                  fontSize: 13,
+                  fontWeight: pureSettingTab === t.key ? 600 : 400,
+                  color: pureSettingTab === t.key ? "var(--accent)" : "var(--text-secondary)",
+                  borderBottom: pureSettingTab === t.key ? "2px solid var(--accent)" : "2px solid transparent",
+                  marginBottom: -1,
+                  borderRadius: 0,
+                }}
+              >
+                {t.label}
+              </button>
+            ))
+          ) : (
+            TABS.map(t => (
+              <button
+                key={t.key}
+                className="btn-ghost"
+                onClick={() => setTab(t.key)}
+                style={{
+                  padding: "8px 16px",
+                  fontSize: 13,
+                  fontWeight: tab === t.key ? 600 : 400,
+                  color: tab === t.key ? "var(--accent)" : "var(--text-secondary)",
+                  borderBottom: tab === t.key ? "2px solid var(--accent)" : "2px solid transparent",
+                  marginBottom: -1,
+                  borderRadius: 0,
+                }}
+              >
+                {t.label}
+                {t.count != null && (
+                  <span style={{
+                    marginLeft: 6,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: tab === t.key ? "var(--accent)" : "var(--text-tertiary)",
+                    background: tab === t.key ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+                    padding: "1px 6px",
+                    borderRadius: 10,
+                  }}>{t.count}</span>
+                )}
+              </button>
+            ))
+          )}
         </div>
-        )}
       </div>
 
       {/* 纯设定作品面板 (五 tab: 快捷输入/设定/角色/特征提取/设定特征) */}
-      {isPureSetting && <PureSettingPanel refId={sel.ref_id} />}
+      {isPureSetting && (
+        <PureSettingPanel
+          refId={sel.ref_id}
+          tab={pureSettingTab}
+          onTabChange={setPureSettingTab}
+        />
+      )}
 
       {/* Tab content (叙事型) */}
       {!isPureSetting && tab === "files" && (
@@ -1013,7 +1044,7 @@ function WorkDetail({
             <div className="card-body">
               <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>作品摘要</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
-                <Stat label="处理状态" value={status.label} accent={status.color} />
+                {status && <Stat label="处理状态" value={status.label} accent={status.color} />}
                 <Stat label="正文" value={sel.has_full_text ? "已上传" : "未上传"} />
                 <Stat label="时间段" value={periodCount} />
                 <Stat label="事件" value={eventCount} />

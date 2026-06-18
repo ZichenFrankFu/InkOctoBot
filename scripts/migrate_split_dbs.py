@@ -85,13 +85,17 @@ def _copy_tables(
             return summary
 
         # Bail safely if dst already has data — don't double-insert.
+        # This is the steady state after a successful migration (or when
+        # the user populated the new DB before any migration ran), so
+        # log at INFO rather than WARNING — there's nothing actionable.
         if dst_path.exists():
             with sqlite3.connect(str(dst_path)) as probe:
                 for t in present:
                     if _row_count(probe, t) > 0:
-                        logger.warning(
-                            "migrate_split_dbs %s SKIP table=%s dst already has rows — manual reconciliation needed",
-                            label, t,
+                        logger.info(
+                            "migrate_split_dbs %s already migrated "
+                            "(table=%s has data in %s) — skipping",
+                            label, t, dst_path.name,
                         )
                         return summary
 

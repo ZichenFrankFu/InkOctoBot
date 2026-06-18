@@ -1,11 +1,19 @@
 /**
  * Compare-Works → Draft Skill. Pick 2-8 reference works, contrast their
  * extracted features, and turn the insight into a saveable learned skill.
- * Rendered as a tab inside the 灵感搜索 page.
+ *
+ * Two LLM entry points (consistent with 市场特征提取 / 高级特征提取):
+ *   - 使用大模型 API  → open UniversalLLMDialog with editable prompt + API run
+ *   - 使用大模型网页版 → open the same dialog with a paste-back surface
+ *
+ * Both modes share one prompt (loaded once via /compare_works/prompt), let
+ * the user edit it before running, and converge on /compare_works/parse to
+ * turn the raw response into a Skill draft.
  */
 import React, { useEffect, useState } from "react";
 import { apiGet, apiPost } from "../api/client";
 import { useToast } from "./shared/Toast";
+import UniversalLLMDialog from "./shared/UniversalLLMDialog";
 
 interface WorkRow {
   ref_id: string;
@@ -37,28 +45,50 @@ const FOCUS_OPTIONS: { value: string; label: string }[] = [
   { value: "style",      label: "语言风格" },
 ];
 
-export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void }) {
+export default function CompareWorksPanel({
+  onSaved,
+  selectedWorks: controlledSelected,
+  hideWorkPicker = false,
+}: {
+  onSaved?: () => void;
+  /** When provided, the panel uses this controlled selection instead of
+   *  its own internal state (and hides the work picker if
+   *  hideWorkPicker=true). The parent is responsible for sourcing works
+   *  and managing the selection set. */
+  selectedWorks?: { ref_id: string; title: string; creator?: string }[];
+  hideWorkPicker?: boolean;
+}) {
   const { toast } = useToast();
   const [works, setWorks] = useState<WorkRow[]>([]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [internalSelected, setInternalSelected] = useState<Set<string>>(new Set());
   const [focus, setFocus] = useState<string>("all");
   const [instruction, setInstruction] = useState("");
   const [searching, setSearching] = useState("");
-  const [mode, setMode] = useState<"ai" | "manual">("ai");
-  const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<CompareDraft | null>(null);
   const [sourceWorks, setSourceWorks] = useState<{ ref_id: string; title: string }[]>([]);
-  // Manual (copy-prompt / paste-result) mode
-  const [promptText, setPromptText] = useState("");
-  const [pasteText, setPasteText] = useState("");
+  // Universal LLM dialog state — one prompt, two modes (api / manual).
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogMode, setDialogMode] = useState<"api" | "manual">("api");
+  const [dialogPrompt, setDialogPrompt] = useState("");
   const [loadingPrompt, setLoadingPrompt] = useState(false);
 
   useEffect(() => {
+    if (controlledSelected) return;  // parent supplies works via selection
     apiGet<{ items: WorkRow[]; total: number }>("/api/references/works?limit=500")
       .then(r => setWorks(r.items || []))
       .catch(() => setWorks([]));
-  }, []);
+  }, [controlledSelected]);
+
+  // 当父组件托管选择时，使用受控数据；否则用内部状态。
+  const selected = controlledSelected
+    ? new Set(controlledSelected.map(w => w.ref_id))
+    : internalSelected;
+  const selectedAsWorks = controlledSelected
+    ?? Array.from(internalSelected).map(rid => {
+      const w = works.find(x => x.ref_id === rid);
+      return { ref_id: rid, title: w?.title || rid };
+    });
 
   const filtered = works.filter(w => {
     if (!searching.trim()) return true;
@@ -68,7 +98,7 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
   });
 
   const toggleWork = (refId: string) => {
-    setSelected(prev => {
+    setInternalSelected(prev => {
       const next = new Set(prev);
       if (next.has(refId)) next.delete(refId);
       else if (next.size < 8) next.add(refId);
@@ -76,27 +106,10 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
     });
   };
 
-  const generate = async () => {
-    if (selected.size < 2) {
-      toast("请选择至少 2 部作品对比", "error");
-      return;
-    }
-    setGenerating(true);
-    setDraft(null);
-    try {
-      const r = await apiPost<CompareResponse>(
-        "/api/skills/compare_works",
-        { ref_ids: Array.from(selected), focus, instruction },
-        { timeoutMs: 300_000 },
-      );
-      setDraft(r.draft);
-      setSourceWorks(r.source_works || []);
-    } catch (e: any) {
-      toast(`生成失败: ${e?.message || e}`, "error");
-    } finally { setGenerating(false); }
-  };
-
-  const loadPrompt = async () => {
+  /** Build (or rebuild) the compare prompt with the current ref_ids /
+   *  focus / instruction, open the UniversalLLMDialog in the chosen
+   *  mode with that prompt pre-loaded and editable. */
+  const openDialog = async (mode: "api" | "manual") => {
     if (selected.size < 2) {
       toast("请选择至少 2 部作品对比", "error");
       return;
@@ -107,38 +120,53 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
         "/api/skills/compare_works/prompt",
         { ref_ids: Array.from(selected), focus, instruction },
       );
-      setPromptText(r.prompt || "");
-      try {
-        await navigator.clipboard.writeText(r.prompt || "");
-        toast("Prompt 已生成并复制到剪贴板", "success");
-      } catch {
-        toast("Prompt 已生成（请手动复制下方文本）", "info");
-      }
+      setDialogPrompt(r.prompt || "");
+      setDialogMode(mode);
+      setDialogOpen(true);
     } catch (e: any) {
-      toast(`生成 Prompt 失败: ${e?.message || e}`, "error");
+      toast(`生成 prompt 失败: ${e?.message || e}`, "error");
     } finally { setLoadingPrompt(false); }
   };
 
-  const parsePasted = () => {
-    let s = pasteText.trim();
-    if (!s) { toast("请先粘贴网页 LLM 返回的结果", "error"); return; }
-    const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-    if (fence) s = fence[1].trim();
-    const a = s.indexOf("{"), b = s.lastIndexOf("}");
-    if (a >= 0 && b > a) s = s.slice(a, b + 1);
+  /** API mode invocation — runs the (possibly user-edited) prompt
+   *  through the configured LLM and returns the raw text. */
+  const invokeApi = async (signal: AbortSignal, livePrompt: string): Promise<string> => {
+    const res = await fetch("/api/skills/compare_works/invoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: livePrompt }),
+      signal,
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const e = await res.json(); msg = e.detail || msg; } catch { /* keep */ }
+      throw new Error(msg);
+    }
+    const j = await res.json();
+    return j.raw || "";
+  };
+
+  /** Parse the (possibly user-edited) raw response into the Skill
+   *  draft via the backend (single source of truth for JSON cleanup +
+   *  tag defaulting). Stash the draft into the preview card and close
+   *  the dialog. Called by UniversalLLMDialog.onCommit. */
+  const onDialogCommit = async (payload: { text: string }) => {
     try {
-      const obj = JSON.parse(s);
-      setDraft({
-        name: String(obj.name || ""),
-        display_name: String(obj.display_name || ""),
-        description: String(obj.description || ""),
-        prompt_template: String(obj.prompt_template || ""),
-        tags: Array.isArray(obj.tags) ? obj.tags.map((t: any) => String(t)) : [],
-      });
-      setSourceWorks(works.filter(w => selected.has(w.ref_id)).map(w => ({ ref_id: w.ref_id, title: w.title })));
-      toast("解析成功", "success");
-    } catch {
-      toast("解析失败：粘贴的内容不是合法 JSON", "error");
+      const r = await apiPost<CompareResponse>(
+        "/api/skills/compare_works/parse",
+        { raw: payload.text, ref_ids: Array.from(selected), focus },
+      );
+      setDraft(r.draft);
+      setSourceWorks(
+        r.source_works?.length
+          ? r.source_works
+          : selectedAsWorks.map(w => ({ ref_id: w.ref_id, title: w.title })),
+      );
+      setDialogOpen(false);
+      toast("已生成草稿", "success");
+    } catch (e: any) {
+      toast(`解析失败: ${e?.message || e}`, "error");
+      throw e;  // let the dialog stay open so the user can fix the JSON
     }
   };
 
@@ -162,9 +190,7 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
       toast("已保存为自学习技能，可在「智能体」页面的「自学习成果」查看", "success");
       onSaved?.();
       setDraft(null);
-      setSelected(new Set());
-      setPromptText("");
-      setPasteText("");
+      if (!controlledSelected) setInternalSelected(new Set());
     } catch (e: any) {
       toast(`保存失败: ${e?.message || e}`, "error");
     } finally { setSaving(false); }
@@ -172,13 +198,10 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
 
   return (
     <div>
-      <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
-        选择 2-8 部参考作品，对比它们的提取数据并生成一条可保存为技能的洞察。可使用AI大模型API处理，也可复制 Prompt 以使用AI大模型网页版再粘回结果。保存后会出现在「智能体」页面的「自学习成果」标签页。
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        {/* LEFT: work picker */}
-        <div className="card">
+      {/* Body: optional work picker (standalone use) + inline settings.
+          In controlled mode, the picker is hidden and only the form is shown. */}
+      {!hideWorkPicker && (
+        <div className="card" style={{ marginBottom: 14 }}>
           <div className="card-header">
             <h3>
               选择作品
@@ -226,76 +249,88 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
             </div>
           </div>
         </div>
+      )}
 
-        {/* RIGHT: focus + instruction + run */}
-        <div className="card">
-          <div className="card-header"><h3>对比设置</h3></div>
-          <div className="card-body">
-            <div className="field" style={{ marginBottom: 12 }}>
-              <label className="label">关注维度</label>
-              <select className="select w-full" value={focus} onChange={e => setFocus(e.target.value)}>
-                {FOCUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-            </div>
-            <div className="field" style={{ marginBottom: 12 }}>
-              <label className="label">额外指示（可选）</label>
-              <textarea
-                className="input" rows={2}
-                placeholder="例如：把对比结果包装成一个能指导章节导演选择 hook 类型的技能"
-                value={instruction}
-                onChange={e => setInstruction(e.target.value)}
-              />
-            </div>
-            <div className="field" style={{ marginBottom: 12 }}>
-              <label className="label">处理方式</label>
-              <div style={{ display: "flex", gap: 6 }}>
-                {([["ai", "AI大模型API处理"], ["manual", "AI大模型网页版"]] as const).map(([k, lbl]) => (
-                  <button key={k} className={mode === k ? "btn-primary" : "btn"}
+      {/* 共通点学习 settings — flat (no inner card-in-card nesting). */}
+      <div className="card">
+        <div className="card-header">
+          <h3 style={{ margin: 0 }}>共通点学习</h3>
+        </div>
+        <div className="card-body">
+          {/* 关注维度 — direct button selection (no dropdown) */}
+          <div className="field" style={{ marginBottom: 14 }}>
+            <label className="label">关注维度</label>
+            <div className="flex" style={{ gap: 6, flexWrap: "wrap" }}>
+              {FOCUS_OPTIONS.map(o => {
+                const on = focus === o.value;
+                return (
+                  <button
+                    key={o.value}
+                    onClick={() => setFocus(o.value)}
                     style={{
-                      fontSize: 11, flex: 1, padding: "6px 4px",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      textAlign: "center",
-                    }}
-                    onClick={() => setMode(k)}>{lbl}</button>
-                ))}
-              </div>
+                      padding: "5px 14px", fontSize: 12,
+                      fontWeight: on ? 700 : 500,
+                      color: on ? "var(--accent)" : "var(--text-secondary)",
+                      background: on ? "var(--bg-surface-2)" : "var(--bg-surface)",
+                      border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                      borderRadius: "var(--radius-sm)",
+                      cursor: "pointer",
+                      transition: "all 0.15s",
+                    }}>{o.label}</button>
+                );
+              })}
             </div>
+          </div>
 
-            {mode === "ai" ? (
-              <button
-                className="btn-primary w-full"
-                onClick={generate}
-                disabled={generating || selected.size < 2}
-              >
-                {generating ? "AI 对比生成中..." : `生成对比技能 (${selected.size} 部作品)`}
-              </button>
-            ) : (
-              <div>
-                <button
-                  className="btn w-full"
-                  onClick={loadPrompt}
-                  disabled={loadingPrompt || selected.size < 2}
-                  style={{ marginBottom: 8 }}
-                >
-                  {loadingPrompt ? "生成中..." : `复制对比 Prompt (${selected.size} 部作品)`}
-                </button>
-                {promptText && (
-                  <textarea className="input font-mono" rows={4} readOnly value={promptText}
-                    style={{ fontSize: 11, marginBottom: 8, width: "100%", boxSizing: "border-box" }} />
-                )}
-                <label className="label">粘贴网页 LLM 返回的结果</label>
-                <textarea className="input font-mono" rows={4} value={pasteText}
-                  onChange={e => setPasteText(e.target.value)}
-                  placeholder='{"name": "...", "display_name": "...", "description": "...", "prompt_template": "...", "tags": [...]}'
-                  style={{ fontSize: 11, marginBottom: 8, width: "100%", boxSizing: "border-box" }} />
-                <button className="btn-primary w-full" onClick={parsePasted} disabled={!pasteText.trim()}>
-                  解析为技能草稿
-                </button>
-              </div>
-            )}
+          <div className="field" style={{ marginBottom: 14 }}>
+            <label className="label">额外指示（可选）</label>
+            <textarea
+              className="input" rows={2}
+              placeholder="例如：把对比结果包装成一个能指导章节导演选择 hook 类型的技能"
+              value={instruction}
+              onChange={e => setInstruction(e.target.value)}
+            />
+          </div>
+
+          {/* Two direct buttons — API vs 网页版 — matching the
+              advanced extraction page in 市场特征提取. */}
+          <div className="flex" style={{ gap: 10, justifyContent: "flex-end" }}>
+            <button
+              className="btn"
+              onClick={() => openDialog("manual")}
+              disabled={selected.size < 2 || loadingPrompt}
+              title={selected.size < 2 ? "请先选择至少 2 部作品" : ""}
+            >
+              {loadingPrompt && dialogMode === "manual" ? "生成 prompt 中…" : "使用大模型网页版"}
+            </button>
+            <button
+              className="btn-primary"
+              onClick={() => openDialog("api")}
+              disabled={selected.size < 2 || loadingPrompt}
+              title={selected.size < 2 ? "请先选择至少 2 部作品" : ""}
+            >
+              {loadingPrompt && dialogMode === "api" ? "生成 prompt 中…" : "使用大模型 API"}
+            </button>
           </div>
         </div>
       </div>
+
+      {/* Universal LLM dialog — left = editable prompt, right = API run
+          (start / progress / result) or 网页版 paste box. */}
+      <UniversalLLMDialog
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        title={`共通点学习（${selected.size} 部已选）`}
+        description={dialogMode === "api"
+          ? "确认提示词后用大模型 API 自动运行；右侧显示进度与原始回复。"
+          : "复制提示词到大模型网页版运行后，把返回内容粘回右侧。"}
+        prompt={dialogPrompt}
+        editablePrompt
+        invokeApi={invokeApi}
+        onCommit={onDialogCommit}
+        minChars={20}
+        initialMode={dialogMode === "manual" ? "manual_only" : "api_only"}
+      />
 
       {/* Draft preview */}
       {draft && (
@@ -362,3 +397,4 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
     </div>
   );
 }
+

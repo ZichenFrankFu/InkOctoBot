@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 logger = logging.getLogger("inkoctobot.ui.backend.skill_api")
@@ -120,15 +120,63 @@ def _render_claude_skill_md(name: str, display: str, desc: str) -> str:
     )
 
 
+def _db_self_learned_as_skill_info() -> list[dict]:
+    """Render skill_index 'self_learned' rows as SkillInfo dicts so the
+    listing endpoints surface them alongside file-based learned skills.
+
+    These rows are created by /api/references/works/learn-common
+    (CommonPatternLearningPanel). They live in the DB instead of the
+    filesystem, so the file-based skill registry doesn't see them — we
+    merge them in here so both the 智能体 and 参考学习 surfaces share
+    one synchronized list.
+    """
+    try:
+        from ui.backend.app.services import skill_index
+        from ui.backend.app.services.project_paths import get_db_path
+        rows = skill_index.list_skills(get_db_path())
+    except Exception:
+        return []
+    out: list[dict] = []
+    for r in rows:
+        if (r.get("kind") or "") != "self_learned":
+            continue
+        sid = r.get("skill_id") or ""
+        body = r.get("body_snippet") or ""
+        out.append({
+            "name": sid,
+            "display_name": r.get("display_name") or sid,
+            "description": r.get("description") or "",
+            "version": "1.0.0",
+            "model_role": "default",
+            "max_tokens": 2000,
+            "temperature": 0.3,
+            "tags": [],
+            "permissions": [],
+            "learnable": True,
+            "is_learned": True,
+            "is_basic": False,
+            "active": True,
+            "agent_domain": "learned_skills",
+            "input_schema": {},
+            "output_schema": {},
+            "skill_md": body,
+        })
+    return out
+
+
 @router.get("")
 def list_skills():
-    """List all registered skills with metadata."""
+    """List all registered skills with metadata. Includes both
+    file-based skills from the registry and DB-based self_learned
+    skills from skill_index so the 智能体 page surfaces 参考学习
+    results too."""
     registry = _get_registry()
     deactivated = _get_deactivated()
     skills = [
         _skill_public_dict(skill, deactivated)
         for skill in registry._skills.values()
     ]
+    skills.extend(_db_self_learned_as_skill_info())
     return {"skills": skills, "total": len(skills)}
 
 
@@ -233,7 +281,9 @@ def add_learning_log_entry(body: dict = Body(...)):
 
 @router.get("/learned")
 def list_learned_skills():
-    """List skills from the learned_skills directory."""
+    """List learned skills (filesystem-based + DB-based self_learned).
+    Mirrors the merging done by GET / so the 自学习成果 panels stay in
+    sync regardless of which page the user opened."""
     registry = _get_registry()
     deactivated = _get_deactivated()
     learned = [
@@ -241,6 +291,7 @@ def list_learned_skills():
         for skill in registry._skills.values()
         if _skill_domain(skill) == "learned_skills"
     ]
+    learned.extend(_db_self_learned_as_skill_info())
     return {"skills": learned, "total": len(learned)}
 
 
@@ -255,6 +306,10 @@ def get_skill(name: str):
 
 
 class SkillCreateRequest(BaseModel):
+    # Pydantic v2 reserves names starting with `model_` for its own API;
+    # `model_role` is a legitimate domain field so opt out of the warning.
+    model_config = ConfigDict(protected_namespaces=())
+
     name: str
     display_name: str = ""
     description: str = ""
@@ -327,6 +382,8 @@ class Skill(BaseSkill):
 
 
 class SkillUpdateRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     display_name: str = ""
     description: str = ""
     tags: list[str] = []
@@ -415,7 +472,26 @@ class Skill(BaseSkill):
 
 @router.delete("/{name}")
 def delete_skill(name: str):
-    """Delete a learned skill entirely."""
+    """Delete a learned skill entirely.
+
+    Routes by storage backend:
+    - Filesystem-based learned_skills/ → unregister + rmtree the dir
+    - DB-based self_learned (skill_index) → delete the skill_index row
+    """
+    # First try DB-based self_learned skills (kind='self_learned'). The
+    # name passed here is the skill_id we synthesized in
+    # _db_self_learned_as_skill_info().
+    try:
+        from ui.backend.app.services import skill_index
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+        existing = skill_index.get_skill(db_path, name)
+        if existing is not None and (existing.get("kind") or "") == "self_learned":
+            skill_index.delete_skill(db_path, name)
+            return {"status": "ok", "name": name, "source": "skill_index"}
+    except Exception as e:
+        logger.warning("DB self_learned delete probe failed for %s: %s", name, e)
+
     registry = _get_registry()
     if not registry.has(name):
         raise HTTPException(404, f"Skill '{name}' not found")
@@ -435,7 +511,7 @@ def delete_skill(name: str):
         logger.error("Failed to delete skill files for %s: %s", name, e)
 
     registry.unregister(name)
-    return {"status": "ok", "name": name}
+    return {"status": "ok", "name": name, "source": "registry"}
 
 
 # ── Deactivated skills tracking ──
@@ -639,27 +715,55 @@ class CompareWorksRequest(BaseModel):
     prompt_override: Optional[str] = None  # per-call ephemeral override
 
 
+# Placeholders below use the literal-substitution scheme — see
+# _render_compare_prompt(). We avoid str.format() because the bundle text
+# can contain literal `{` / `}` characters (JSON snippets, rules-as-code).
 _COMPARE_PROMPT_DEFAULT = """你是创作技巧分析师。下面是 {n} 部参考作品的提取特征（剧情结构、角色原型、世界设定、叙事节奏 —— 已结构化提炼，非原文逐字数据）。
 请对比它们的 **{focus}** 特征，找出**共同模式**和**显著差异**，并提炼出一条可作为创作技巧 (Skill) 的洞察。
 
 要求：
 1. 先客观陈述共同模式（2-3 句），再陈述差异点（2-3 句），最后给出可操作的写作建议。
-2. 把它包装成一个**可重用的 Skill** — 一段 prompt 模板，里面带 {{user_input}} 占位符让后续调用可以传入新场景。
+2. 把它包装成一个**可重用的 Skill** — 一段 prompt 模板，里面带 {user_input} 占位符让后续调用可以传入新场景。
 
 {instruction_block}
 
 返回严格 JSON（不要 markdown 包装）：
-{{
+{
   "name": "snake_case_skill_name",
   "display_name": "可读名称",
   "description": "≤ 100 字描述这个 skill 解决什么问题",
-  "prompt_template": "完整 prompt 模板，包含 {{user_input}} 占位符",
+  "prompt_template": "完整 prompt 模板，包含 {user_input} 占位符",
   "tags": ["对比", "学习", ...]
-}}
+}
 
 作品特征数据：
 {bundle}
 """
+
+
+def _render_compare_prompt(
+    template: str, *, n: int, focus: str,
+    instruction_block: str, bundle: str,
+) -> str:
+    """Substitute only the four named placeholders.
+
+    str.format() would also process literal `{` / `}` in the bundle as
+    field references and either raise KeyError or — when escaped — leak
+    the escapes (`{{x}}` → `{{x}}` because format doesn't un-double
+    *substituted* values, only the template literal). Plain replacement
+    avoids both problems: every other `{...}` in the template (e.g. the
+    `{user_input}` token meant for the resulting Skill prompt) survives
+    intact.
+    """
+    out = template
+    for key, value in (
+        ("{n}", str(n)),
+        ("{focus}", focus),
+        ("{instruction_block}", instruction_block),
+        ("{bundle}", bundle),
+    ):
+        out = out.replace(key, value)
+    return out
 
 
 def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
@@ -669,9 +773,16 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
     """
     from knowledge.reference_db import ReferenceDB
     from ui.backend.app.settings import settings as _app_settings
-    from ui.backend.app.routers._rag_context import (
-        _condense_ref_characters, _condense_ref_settings,
-        _condense_ref_plot, _condense_ref_rhythm,
+    # The condense_ref_* helpers live in the prompt_context.references
+    # module; the legacy _rag_context shim doesn't re-export them.
+    from ui.backend.app.services.prompt_context.references import (
+        condense_ref_characters as _condense_ref_characters,
+        condense_ref_settings as _condense_ref_settings,
+        condense_ref_plot as _condense_ref_plot,
+        condense_ref_rhythm as _condense_ref_rhythm,
+        condense_ref_static_characters as _condense_ref_static_characters,
+        condense_ref_setting_features as _condense_ref_setting_features,
+        condense_ref_raw_entries as _condense_ref_raw_entries,
     )
 
     if not body.ref_ids:
@@ -686,7 +797,11 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
             db_path = get_db_path(repo_cfg, _app_settings.repo_root)
         except FileNotFoundError:
             db_path = str(_app_settings.repo_root / "data" / "novels.db")
-        rdb = ReferenceDB(db_path)
+        # The compare prompt pulls from the reference DB (works, extracted
+        # features), not the novels DB. The fallback above is only used
+        # when paths.yaml is missing — switch to the reference DB path.
+        from ui.backend.app.routers.reference._common import reference_db_path
+        rdb = ReferenceDB(reference_db_path())
     except Exception as e:
         raise HTTPException(500, f"打开参考库失败: {e}")
 
@@ -698,30 +813,69 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
         works.append(w)
 
     def _focused(w: dict) -> str:
-        """Condense one work into a readable feature digest (剧情/角色/
-        设定/节奏), scoped to the chosen focus — not raw extraction JSON
-        (which is dominated by low-level word/style statistics)."""
+        """Condense one work into a readable feature digest. Branches by
+        structure_type — pure-setting (setting_collection) works don't have
+        plot/rhythm and use a different field layout for characters."""
         head = f"《{w.get('title') or '未命名'}》"
-        meta = "，".join(
-            str(x) for x in (w.get("creator"), w.get("genre"), w.get("media_type"))
-            if x
-        )
-        if meta:
-            head += f"（{meta}）"
+        is_pure = (w.get("structure_type") or "narrative") == "setting_collection"
+        meta_parts: list[str] = []
+        for x in (w.get("creator"), w.get("genre"), w.get("media_type")):
+            if x:
+                meta_parts.append(str(x))
+        if is_pure:
+            meta_parts.append("纯设定作品")
+        if meta_parts:
+            head += "（" + "，".join(meta_parts) + "）"
+
         segs: list[str] = []
-        if body.focus in ("plot", "all"):
-            segs.append(_condense_ref_plot(w.get("plot_outline_json")))
-        if body.focus in ("characters", "all"):
-            segs.append(_condense_ref_characters(w.get("extracted_characters_json")))
-        if body.focus in ("settings", "all"):
-            segs.append(_condense_ref_settings(w.get("settings_json")))
-        if body.focus in ("rhythm", "style", "all"):
-            segs.append(_condense_ref_rhythm(
-                w.get("rhythm_json"), w.get("style_fingerprint_json")))
-        segs = [s.strip() for s in segs if s and s.strip()]
-        if not segs:
-            segs = ["（该作品尚未提取特征，请先在参考库完成特征提取）"]
-        return head + "\n" + "\n\n".join(segs)
+        if is_pure:
+            # Pure-setting works carry: 原始文本条目 + 设定 +
+            # 静态角色 + 设定特征（核心冲突/高概念）。Map the focus
+            # axes to the closest pure-setting equivalent so the prompt
+            # actually includes data instead of an empty placeholder.
+            if body.focus in ("plot", "all"):
+                segs.append(_condense_ref_raw_entries(w.get("quick_input_text")))
+                segs.append(_condense_ref_setting_features(w.get("setting_features_json")))
+            if body.focus in ("characters", "all"):
+                segs.append(_condense_ref_static_characters(w.get("static_characters_json")))
+            if body.focus in ("settings", "all"):
+                segs.append(_condense_ref_settings(w.get("settings_json")))
+                # 设定特征 is the作品-level world-view feature — always
+                # relevant to「设定」focus and the「整体」focus.
+                segs.append(_condense_ref_setting_features(w.get("setting_features_json")))
+            if body.focus in ("rhythm", "style") and not segs:
+                # rhythm/style 对纯设定作品意义有限，回退到 setting_features
+                # 让 prompt 至少包含一些可对比的语义信息。
+                segs.append(_condense_ref_setting_features(w.get("setting_features_json")))
+        else:
+            if body.focus in ("plot", "all"):
+                segs.append(_condense_ref_plot(w.get("plot_outline_json")))
+            if body.focus in ("characters", "all"):
+                segs.append(_condense_ref_characters(w.get("extracted_characters_json")))
+            if body.focus in ("settings", "all"):
+                segs.append(_condense_ref_settings(w.get("settings_json")))
+            if body.focus in ("rhythm", "style", "all"):
+                segs.append(_condense_ref_rhythm(
+                    w.get("rhythm_json"), w.get("style_fingerprint_json")))
+
+        # Dedupe segments (e.g. setting_features can be appended twice
+        # for 「设定」focus on a pure-setting work).
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for s in segs:
+            s = s.strip() if s else ""
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            deduped.append(s)
+        if not deduped:
+            hint = (
+                "（该作品尚未填写任何内容，请先在参考库添加原始文本 / 设定 / 角色 / 特征）"
+                if is_pure
+                else "（该作品尚未提取特征，请先在参考库完成特征提取）"
+            )
+            deduped = [hint]
+        return head + "\n" + "\n\n".join(deduped)
 
     bundle_str = "\n\n———\n\n".join(_focused(w) for w in works)
     # Cap bundle size to keep prompt tractable
@@ -739,8 +893,8 @@ def _build_compare_prompt(body: CompareWorksRequest) -> tuple[str, list[dict]]:
     }.get(body.focus, body.focus)
 
     base = body.prompt_override or _COMPARE_PROMPT_DEFAULT
-    prompt = base.format(
-        n=len(works), focus=focus_zh,
+    prompt = _render_compare_prompt(
+        base, n=len(works), focus=focus_zh,
         instruction_block=instruction_block,
         bundle=bundle_str,
     )
@@ -757,6 +911,96 @@ def compare_works_prompt(body: CompareWorksRequest):
         "source_works": [
             {"ref_id": w["ref_id"], "title": w.get("title")} for w in works
         ],
+    }
+
+
+class CompareWorksInvokeRequest(BaseModel):
+    """Direct LLM invocation with a (possibly user-edited) prompt.
+
+    Used by UniversalLLMDialog's API mode: the dialog ships the
+    prompt the user has reviewed/edited; this endpoint just runs it
+    through the configured model and returns the raw text. Parsing
+    into the draft Skill happens in /compare_works/parse so the
+    dialog's preview/edit step can sit in between.
+    """
+    prompt: str
+
+
+@router.post("/compare_works/invoke")
+async def compare_works_invoke(body: CompareWorksInvokeRequest):
+    """Run the (possibly user-edited) compare prompt through the LLM and
+    return the raw text response."""
+    if not body.prompt or not body.prompt.strip():
+        raise HTTPException(400, "prompt 为空")
+    from llm.router import ModelRouter
+    try:
+        router_inst = ModelRouter()
+        raw = await router_inst.invoke(
+            role="reference_extractor", prompt=body.prompt,
+            max_tokens=2048, temperature=0.4,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"AI 对比调用失败: {e}")
+    return {"raw": raw or ""}
+
+
+class CompareWorksParseRequest(BaseModel):
+    """Parse a raw LLM response (from API or web LLM paste) into a
+    Skill draft. Same JSON extraction logic the legacy /compare_works
+    endpoint uses, exposed as a standalone step for the dialog."""
+    raw: str
+    ref_ids: list[str] = []
+    focus: str = "all"
+
+
+@router.post("/compare_works/parse")
+def compare_works_parse(body: CompareWorksParseRequest):
+    """Extract the {name, display_name, description, prompt_template,
+    tags} draft from the raw LLM response."""
+    if not body.raw or not body.raw.strip():
+        raise HTTPException(400, "raw 为空")
+    import re as _re
+    s = body.raw.strip()
+    fence = _re.match(r"^```(?:json)?\s*(.*?)\s*```$", s, _re.DOTALL)
+    if fence:
+        s = fence.group(1).strip()
+    a, b = s.find("{"), s.rfind("}")
+    if 0 <= a < b:
+        s = s[a:b + 1]
+    try:
+        draft = json.loads(s)
+        if not isinstance(draft, dict):
+            raise ValueError("not an object")
+    except Exception as e:
+        raise HTTPException(400, f"JSON 解析失败: {e}")
+
+    # Resolve source_works for traceability (optional, best-effort).
+    source_works: list[dict] = []
+    if body.ref_ids:
+        from knowledge.reference_db import ReferenceDB
+        from ui.backend.app.routers.reference._common import reference_db_path
+        try:
+            rdb = ReferenceDB(reference_db_path())
+            for rid in body.ref_ids:
+                w = rdb.get_work(rid)
+                if w:
+                    source_works.append({"ref_id": rid, "title": w.get("title")})
+        except Exception:
+            pass
+
+    tags = list(draft.get("tags") or [])
+    if "对比" not in tags: tags.insert(0, "对比")
+    if "自学习" not in tags: tags.append("自学习")
+    return {
+        "draft": {
+            "name": str(draft.get("name") or f"compare_{int(time.time())}"),
+            "display_name": str(draft.get("display_name") or "作品对比"),
+            "description": str(draft.get("description") or ""),
+            "prompt_template": str(draft.get("prompt_template") or ""),
+            "tags": tags,
+        },
+        "source_works": source_works,
+        "focus": body.focus,
     }
 
 

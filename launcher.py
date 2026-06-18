@@ -7,7 +7,22 @@ import socket
 import sys
 import threading
 import time
+import warnings
 from pathlib import Path
+
+# Silence third-party noise that we can't fix:
+#   - jieba imports `pkg_resources` which setuptools now flags as deprecated
+#   - some libs leak SyntaxWarning from regex compiles
+# These are upstream and don't affect runtime; muting them keeps the
+# console legible. Done BEFORE any heavy imports so the filter is in
+# place when jieba loads (via downstream modules).
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated.*",
+    category=UserWarning,
+    module=r"jieba(\..*)?",
+)
+
 from framework.log_setup import setup_logging
 import uvicorn
 import webview

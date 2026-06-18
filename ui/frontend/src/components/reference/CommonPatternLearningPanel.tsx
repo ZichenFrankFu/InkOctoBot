@@ -16,25 +16,40 @@ const DIMENSIONS: [string, string][] = [
   ["settings", "世界观设定"], ["rhythm", "叙事节奏"], ["style", "语言风格"],
 ];
 
-export default function CommonPatternLearningPanel({ works }: { works: WorkLite[] }) {
+export default function CommonPatternLearningPanel({
+  works, selectedRefIds, hideWorkPicker = false, hideSelfLearnedList = false,
+  onLearned,
+}: {
+  works: WorkLite[];
+  /** Controlled selection from parent. When provided, hides the panel's
+   *  own work picker and uses these refIds as the selected set. */
+  selectedRefIds?: Set<string>;
+  hideWorkPicker?: boolean;
+  /** Hide the bottom 自学习成果 list — the parent renders a unified one. */
+  hideSelfLearnedList?: boolean;
+  /** Called after a successful learn so the parent can refresh its list. */
+  onLearned?: () => void;
+}) {
   const { toast } = useToast();
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [internalSelected, setInternalSelected] = useState<Set<string>>(new Set());
+  const selected = selectedRefIds ?? internalSelected;
   const [dimension, setDimension] = useState("overall");
   const [learning, setLearning] = useState(false);
   const [skills, setSkills] = useState<LearnedSkill[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
+    if (hideSelfLearnedList) return;  // parent owns the list
     try {
       const r = await apiGet<{ items: LearnedSkill[] }>("/api/references/learned-skills");
       setSkills(r.items || []);
     } catch { setSkills([]); }
-  }, []);
+  }, [hideSelfLearnedList]);
 
   useEffect(() => { reload(); }, [reload]);
 
   const toggle = (id: string) => {
-    setSelected(prev => {
+    setInternalSelected(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
@@ -51,36 +66,34 @@ export default function CommonPatternLearningPanel({ works }: { works: WorkLite[
       toast(`学习完成：「${r.display_name}」已存为自学习 skill（${r.patterns_count} 条共通点）`, "success");
       setExpandedId(r.skill_id);
       await reload();
+      onLearned?.();
     } catch (e: any) { toast(e.message || "学习失败", "error"); }
     finally { setLearning(false); }
   };
 
   return (
     <div>
-      <div style={{ padding: "8px 12px", background: "var(--bg-surface)", borderRadius: 6, marginBottom: 12, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-        选取多部参考作品与一个关注维度，AI 提取它们的共通技法并总结为自学习 skill。
-        学到的 skill 在章节生成时按相关度自动召回注入（与其他 skill 同一链路）。
-      </div>
-
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap" }}>
-        <div style={{ flex: 1, minWidth: 280 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
-            选择参考作品（已选 {selected.size}）
+        {!hideWorkPicker && (
+          <div style={{ flex: 1, minWidth: 280 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+              选择参考作品（已选 {selected.size}）
+            </div>
+            <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "4px 8px" }}>
+              {works.length === 0 && <div style={{ fontSize: 11, color: "var(--text-tertiary)", padding: 8 }}>参考库暂无作品。</div>}
+              {works.map(w => (
+                <label key={w.ref_id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0", fontSize: 12, cursor: "pointer", borderBottom: "1px solid var(--border-subtle)" }}>
+                  <input type="checkbox" checked={selected.has(w.ref_id)} onChange={() => toggle(w.ref_id)} />
+                  <span style={{ fontWeight: 600 }}>{w.title}</span>
+                  {w.creator && <span style={{ color: "var(--text-tertiary)", fontSize: 10 }}>{w.creator}</span>}
+                </label>
+              ))}
+            </div>
           </div>
-          <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "4px 8px" }}>
-            {works.length === 0 && <div style={{ fontSize: 11, color: "var(--text-tertiary)", padding: 8 }}>参考库暂无作品。</div>}
-            {works.map(w => (
-              <label key={w.ref_id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0", fontSize: 12, cursor: "pointer", borderBottom: "1px solid var(--border-subtle)" }}>
-                <input type="checkbox" checked={selected.has(w.ref_id)} onChange={() => toggle(w.ref_id)} />
-                <span style={{ fontWeight: 600 }}>{w.title}</span>
-                {w.creator && <span style={{ color: "var(--text-tertiary)", fontSize: 10 }}>{w.creator}</span>}
-              </label>
-            ))}
-          </div>
-        </div>
-        <div style={{ width: 220 }}>
+        )}
+        <div style={{ width: hideWorkPicker ? "auto" : 220, flex: hideWorkPicker ? 1 : "0 0 220px" }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>关注维度</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ display: "flex", flexDirection: hideWorkPicker ? "row" : "column", gap: 4, flexWrap: "wrap" }}>
             {DIMENSIONS.map(([k, label]) => (
               <button key={k} className="btn" style={{
                 fontSize: 11, padding: "4px 12px", textAlign: "center",
@@ -89,39 +102,43 @@ export default function CommonPatternLearningPanel({ works }: { works: WorkLite[
               }} onClick={() => setDimension(k)}>{label}</button>
             ))}
           </div>
-          <button className="btn-primary" style={{ width: "100%", marginTop: 10, fontSize: 12, padding: "6px 0" }}
+          <button className="btn-primary" style={{ width: hideWorkPicker ? "auto" : "100%", marginTop: 10, fontSize: 12, padding: "6px 14px" }}
             disabled={learning || selected.size < 2} onClick={run}>
-            {learning ? "学习中..." : "提取共通点"}
+            {learning ? "学习中..." : `提取共通点（${selected.size} 部已选）`}
           </button>
         </div>
       </div>
 
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
-        自学习成果（{skills.length}）
-      </div>
-      {skills.length === 0 && <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无自学习 skill。</div>}
-      {skills.map(s => (
-        <div key={s.skill_id} style={{ borderTop: "1px solid var(--border-subtle)", padding: "8px 0" }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <span style={{ fontSize: 12, fontWeight: 600 }}>{s.display_name}</span>
-            <span style={{ fontSize: 10, color: "var(--text-tertiary)", flex: 1 }}>{s.description}</span>
-            <button className="btn" style={{ fontSize: 10, padding: "1px 8px" }}
-              onClick={() => setExpandedId(expandedId === s.skill_id ? null : s.skill_id)}>
-              {expandedId === s.skill_id ? "收起" : "查看"}
-            </button>
-            <button className="btn" style={{ fontSize: 10, padding: "1px 8px", color: "var(--error)" }}
-              onClick={async () => {
-                try { await apiDelete(`/api/references/learned-skills/${s.skill_id}`); reload(); }
-                catch (e: any) { toast(e.message || "删除失败", "error"); }
-              }}>删除</button>
+      {!hideSelfLearnedList && (
+        <>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+            自学习成果（{skills.length}）
           </div>
-          {expandedId === s.skill_id && (
-            <pre style={{ marginTop: 6, fontSize: 11, whiteSpace: "pre-wrap", color: "var(--text-secondary)", background: "var(--bg-secondary)", borderRadius: 6, padding: "8px 10px", maxHeight: 280, overflow: "auto" }}>
-              {s.body_snippet}
-            </pre>
-          )}
-        </div>
-      ))}
+          {skills.length === 0 && <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无自学习 skill。</div>}
+          {skills.map(s => (
+            <div key={s.skill_id} style={{ borderTop: "1px solid var(--border-subtle)", padding: "8px 0" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{s.display_name}</span>
+                <span style={{ fontSize: 10, color: "var(--text-tertiary)", flex: 1 }}>{s.description}</span>
+                <button className="btn" style={{ fontSize: 10, padding: "1px 8px" }}
+                  onClick={() => setExpandedId(expandedId === s.skill_id ? null : s.skill_id)}>
+                  {expandedId === s.skill_id ? "收起" : "查看"}
+                </button>
+                <button className="btn" style={{ fontSize: 10, padding: "1px 8px", color: "var(--error)" }}
+                  onClick={async () => {
+                    try { await apiDelete(`/api/references/learned-skills/${s.skill_id}`); reload(); }
+                    catch (e: any) { toast(e.message || "删除失败", "error"); }
+                  }}>删除</button>
+              </div>
+              {expandedId === s.skill_id && (
+                <pre style={{ marginTop: 6, fontSize: 11, whiteSpace: "pre-wrap", color: "var(--text-secondary)", background: "var(--bg-secondary)", borderRadius: 6, padding: "8px 10px", maxHeight: 280, overflow: "auto" }}>
+                  {s.body_snippet}
+                </pre>
+              )}
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
