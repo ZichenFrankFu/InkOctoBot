@@ -364,7 +364,8 @@ class TestPastedParse:
 
 
 class TestFeatureCategories:
-    """设定特征 now carries a category in {核心冲突, 高概念, 母题}."""
+    """设定特征 now carries a category in {核心冲突, 高概念}; legacy 母题
+    or other invalid values are coerced to 高概念."""
 
     def test_parse_paste_categorized_features(self, client) -> None:
         raw = json.dumps({
@@ -374,8 +375,8 @@ class TestFeatureCategories:
                  "description": "..."},
                 {"category": "高概念", "title": "未注视时移动的雕像",
                  "description": "..."},
-                {"category": "母题", "title": "黑色幽默",
-                 "description": "..."},
+                {"category": "母题",  # legacy — coerced to 高概念
+                 "title": "黑色幽默", "description": "..."},
                 {"category": "其他",  # invalid → coerced to 高概念
                  "title": "X", "description": "y"},
             ],
@@ -388,7 +389,7 @@ class TestFeatureCategories:
         cats = {f["title"]: f["category"] for f in r.json()["setting_features"]}
         assert cats["秩序与失序"] == "核心冲突"
         assert cats["未注视时移动的雕像"] == "高概念"
-        assert cats["黑色幽默"] == "母题"
+        assert cats["黑色幽默"] == "高概念"
         assert cats["X"] == "高概念"
 
     def test_parse_paste_missing_category_defaults(self, client) -> None:

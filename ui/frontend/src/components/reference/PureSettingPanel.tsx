@@ -42,30 +42,12 @@ const SETTING_CAT_COLORS: Record<string, string> = {
   "其他": "var(--text-tertiary)",
 };
 
-const FEATURE_CATEGORIES = ["核心冲突", "高概念", "母题"] as const;
+const FEATURE_CATEGORIES = ["核心冲突", "高概念"] as const;
 type FeatureCategory = typeof FEATURE_CATEGORIES[number];
 
-const FEATURE_CAT_META: Record<FeatureCategory, {
-  color: string; label: string; intro: string; example: string;
-}> = {
-  "核心冲突": {
-    color: "var(--accent)",
-    label: "核心冲突",
-    intro: "世界观层面持续推动剧情的根本对立——可识别的张力对子。",
-    example: "如「秩序与失序」「文明与异常」「神性与凡人」",
-  },
-  "高概念": {
-    color: "var(--gold)",
-    label: "高概念",
-    intro: "作品被一句话能讲清的世界观底座，具备「钩子」属性。",
-    example: "如「混凝土雕像未被注视时高速移动」「太空大航海」",
-  },
-  "母题": {
-    color: "var(--purple)",
-    label: "母题",
-    intro: "贯穿作品的反复出现的意象 / 情绪 / 主题，不必是冲突。",
-    example: "如「黑色幽默」「不可见者掌权」「记录癖」",
-  },
+const FEATURE_CAT_META: Record<FeatureCategory, { color: string; label: string }> = {
+  "核心冲突": { color: "var(--accent)", label: "核心冲突" },
+  "高概念":   { color: "var(--gold)",   label: "高概念" },
 };
 
 interface ChunkMeta {
@@ -117,6 +99,7 @@ export default function PureSettingPanel({
   const [settings, setSettings] = useState<SettingEntry[]>([]);
   const [characters, setCharacters] = useState<StaticCharacter[]>([]);
   const [features, setFeatures] = useState<SettingFeature[]>([]);
+  const [updatedAt, setUpdatedAt] = useState("");
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -126,6 +109,7 @@ export default function PureSettingPanel({
       setRawEntries(r.raw_entries || []);
       setSettings(r.settings || []);
       setCharacters(r.static_characters || []);
+      setUpdatedAt(r.updated_at || "");
       // Normalize features without category to 高概念
       setFeatures((r.setting_features || []).map((f: any) => ({
         category: (FEATURE_CATEGORIES as readonly string[]).includes(f.category)
@@ -155,6 +139,7 @@ export default function PureSettingPanel({
         <RawTextTab
           refId={refId}
           entries={rawEntries}
+          updatedAt={updatedAt}
           saving={saving}
           onSave={items => put({ raw_entries: items }, "原始文本已保存")}
         />
@@ -163,7 +148,7 @@ export default function PureSettingPanel({
       {tab === "settings" && (
         <TabCard
           title="设定条目"
-          subtitle={`${settings.length} 条 · 折叠条目点击展开编辑`}
+          subtitle={`${settings.length} 条 · 更新于 ${fmtUpdated(updatedAt)}`}
         >
           <CollapsibleList<SettingEntry>
             items={settings}
@@ -183,6 +168,15 @@ export default function PureSettingPanel({
                 )}
               </>
             )}
+            renderView={(item) => (
+              <ReadOnlyView
+                rows={[
+                  ["分类", item.category || "其他"],
+                  ["条目名", item.title || "（未命名）"],
+                  ["内容", item.content],
+                ]}
+              />
+            )}
             renderEditor={(item, set) => (
               <>
                 <Field label="分类">
@@ -193,12 +187,10 @@ export default function PureSettingPanel({
                 </Field>
                 <Field label="条目名">
                   <input className="input" value={item.title}
-                         placeholder="如 18 号监狱、收容协议"
                          onChange={e => set({ ...item, title: e.target.value })} />
                 </Field>
                 <Field label="内容">
                   <textarea className="input" value={item.content} rows={4}
-                            placeholder="一句话说明这是什么、有何作用"
                             onChange={e => set({ ...item, content: e.target.value })}
                             style={{ lineHeight: 1.65 }} />
                 </Field>
@@ -209,11 +201,6 @@ export default function PureSettingPanel({
             saving={saving}
             addLabel="新增设定"
             emptyHint="暂无设定条目"
-            emptyExtraAction={(
-              <button className="btn" onClick={() => onTabChange("extract")}>
-                去「特征提取」由 LLM 抽取
-              </button>
-            )}
           />
         </TabCard>
       )}
@@ -221,7 +208,7 @@ export default function PureSettingPanel({
       {tab === "characters" && (
         <TabCard
           title="角色"
-          subtitle={`${characters.length} 位 · 静态条目，不绑定章节`}
+          subtitle={`${characters.length} 位 · 更新于 ${fmtUpdated(updatedAt)}`}
         >
           <CollapsibleList<StaticCharacter>
             items={characters}
@@ -244,6 +231,15 @@ export default function PureSettingPanel({
                 )}
               </>
             )}
+            renderView={(item) => (
+              <ReadOnlyView
+                rows={[
+                  ["姓名", item.name || "（未命名）"],
+                  ["定位", item.role],
+                  ["描述", item.description],
+                ]}
+              />
+            )}
             renderEditor={(item, set) => (
               <>
                 <Field label="姓名">
@@ -252,12 +248,10 @@ export default function PureSettingPanel({
                 </Field>
                 <Field label="定位">
                   <input className="input" value={item.role}
-                         onChange={e => set({ ...item, role: e.target.value })}
-                         placeholder="如 创始人 / 异常实体 / 守护者" />
+                         onChange={e => set({ ...item, role: e.target.value })} />
                 </Field>
                 <Field label="描述">
                   <textarea className="input" value={item.description} rows={4}
-                            placeholder="静态描述（不与章节绑定）"
                             onChange={e => set({ ...item, description: e.target.value })}
                             style={{ lineHeight: 1.65 }} />
                 </Field>
@@ -268,11 +262,6 @@ export default function PureSettingPanel({
             saving={saving}
             addLabel="新增角色"
             emptyHint="暂无角色"
-            emptyExtraAction={(
-              <button className="btn" onClick={() => onTabChange("extract")}>
-                去「特征提取」由 LLM 抽取
-              </button>
-            )}
           />
         </TabCard>
       )}
@@ -282,7 +271,6 @@ export default function PureSettingPanel({
           features={features}
           saving={saving}
           onSave={items => put({ setting_features: items }, "设定特征已保存")}
-          onGoToExtract={() => onTabChange("extract")}
         />
       )}
 
@@ -291,7 +279,6 @@ export default function PureSettingPanel({
           refId={refId}
           existing={{ settings, characters, features }}
           onCommitted={reload}
-          onGoToTab={onTabChange}
         />
       )}
     </div>
@@ -301,10 +288,11 @@ export default function PureSettingPanel({
 /* ───────────────────────── Raw text tab ───────────────────────────── */
 
 function RawTextTab({
-  refId, entries, saving, onSave,
+  refId, entries, updatedAt, saving, onSave,
 }: {
   refId: string;
   entries: RawEntry[];
+  updatedAt: string;
   saving: boolean;
   onSave: (items: RawEntry[]) => void;
 }) {
@@ -414,7 +402,7 @@ function RawTextTab({
   return (
     <TabCard
       title="原始文本"
-      subtitle={`${entries.length} 个条目 · 多个条目可分开管理；保存后可展开/收起查看`}
+      subtitle={`${entries.length} 个条目 · 更新于 ${fmtUpdated(updatedAt)}`}
       headerAction={(
         <div className="flex" style={{ gap: 8 }}>
           <button className="btn" onClick={exportTxt}
@@ -443,19 +431,6 @@ function RawTextTab({
         </div>
       )}
     >
-      <div className="text-xs" style={{
-        color: "var(--text-tertiary)", marginBottom: 12, lineHeight: 1.75,
-        padding: "10px 12px", background: "var(--bg-surface)",
-        borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)",
-      }}>
-        每个条目独立标题 + 正文，可以是一个 SCP 编号、一个房间、一个种族等。
-        条目越独立，提取效果越好。每段正文超过
-        <strong style={{ color: "var(--text-secondary)" }}> 12000 字</strong>
-        时在「特征提取」自动按段落分段。条目正文支持
-        <strong style={{ color: "var(--text-secondary)" }}>原文翻译</strong>，
-        可使用 LLM API 或网页版完成。
-      </div>
-
       <CollapsibleList<RawEntry>
         items={entries}
         summary={(e, i) => (
@@ -483,41 +458,51 @@ function RawTextTab({
             )}
           </>
         )}
-        renderEditor={(item, set, idx) => (
+        renderView={(item, idx) => (
+          <ReadOnlyView
+            rows={[
+              ["标题", item.title || "（未命名）"],
+              [`正文（${item.content.length.toLocaleString()} 字）`,
+                item.content
+                  ? (
+                    <span style={{
+                      fontFamily: "var(--font-mono)", fontSize: 12,
+                      lineHeight: 1.7,
+                    }}>{item.content}</span>
+                  ) : "—",
+              ],
+            ]}
+            extras={item.content ? (
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <button className="btn"
+                        onClick={() => runTranslateApi(idx)}
+                        disabled={translating === idx}>
+                  {translating === idx ? "翻译中…" : "原文翻译 (API)"}
+                </button>
+                <button className="btn"
+                        onClick={() => setTranslateModal({
+                          entryIndex: idx, mode: "web",
+                        })}>
+                  原文翻译 (网页版)
+                </button>
+              </div>
+            ) : undefined}
+          />
+        )}
+        renderEditor={(item, set) => (
           <>
             <Field label="标题">
               <input className="input" value={item.title}
-                     placeholder="如 SCP-173 / 0号层级 / 阿斯塔特"
                      onChange={e => set({ ...item, title: e.target.value })} />
             </Field>
             <Field label={`正文（${item.content.length.toLocaleString()} 字）`}>
               <textarea className="input" value={item.content} rows={14}
-                        placeholder="粘贴本条目的 wiki 原文..."
                         onChange={e => set({ ...item, content: e.target.value })}
                         style={{
                           fontFamily: "var(--font-mono)", fontSize: 12,
                           lineHeight: 1.65,
                         }} />
             </Field>
-            <div className="flex items-center" style={{
-              gap: 8, paddingTop: 4,
-            }}>
-              <button className="btn"
-                      onClick={() => runTranslateApi(idx)}
-                      disabled={translating === idx || !item.content.trim()}>
-                {translating === idx ? "翻译中…" : "原文翻译 (API)"}
-              </button>
-              <button className="btn"
-                      onClick={() => setTranslateModal({
-                        entryIndex: idx, mode: "web",
-                      })}
-                      disabled={!item.content.trim()}>
-                原文翻译 (网页版)
-              </button>
-              <span className="text-xs text-muted" style={{ marginLeft: 4 }}>
-                翻译完成后会让你确认是否替换正文
-              </span>
-            </div>
           </>
         )}
         blank={{ title: "", content: "" }}
@@ -525,7 +510,6 @@ function RawTextTab({
         saving={saving}
         addLabel="新增条目"
         emptyHint="暂无原始文本条目"
-        defaultOpen
       />
 
       {translateModal && (
@@ -615,20 +599,21 @@ function TranslateWebModal({
 /* ───────────────────────── Features tab ───────────────────────────── */
 
 function FeaturesTab({
-  features, saving, onSave, onGoToExtract,
+  features, saving, onSave,
 }: {
   features: SettingFeature[];
   saving: boolean;
   onSave: (items: SettingFeature[]) => void;
-  onGoToExtract: () => void;
 }) {
   const [draft, setDraft] = useState<SettingFeature[]>(features);
   const [dirty, setDirty] = useState(false);
+  // 展开但默认为只读视图，editingIdx 控制是否进入编辑模式
   const [openIdx, setOpenIdx] = useState<Set<number>>(new Set());
+  const [editingIdx, setEditingIdx] = useState<Set<number>>(new Set());
   useEffect(() => { if (!dirty) setDraft(features); }, [features, dirty]);
 
   const grouped: Record<FeatureCategory, { item: SettingFeature; idx: number }[]> = {
-    "核心冲突": [], "高概念": [], "母题": [],
+    "核心冲突": [], "高概念": [],
   };
   draft.forEach((f, idx) => {
     const cat = (FEATURE_CATEGORIES as readonly string[]).includes(f.category)
@@ -642,45 +627,43 @@ function FeaturesTab({
   };
   const remove = (i: number) => {
     setDraft(prev => prev.filter((_, j) => j !== i));
-    setOpenIdx(prev => {
+    const reindex = (s: Set<number>) => {
       const next = new Set<number>();
-      prev.forEach(idx => { if (idx < i) next.add(idx); else if (idx > i) next.add(idx - 1); });
+      s.forEach(idx => { if (idx < i) next.add(idx); else if (idx > i) next.add(idx - 1); });
       return next;
-    });
+    };
+    setOpenIdx(reindex);
+    setEditingIdx(reindex);
     setDirty(true);
   };
   const add = (cat: FeatureCategory) => {
-    const newItem: SettingFeature = { category: cat, title: "", description: "" };
-    setDraft(prev => [...prev, newItem]);
-    setOpenIdx(prev => new Set([...prev, draft.length]));
+    const newIdx = draft.length;
+    setDraft(prev => [...prev, { category: cat, title: "", description: "" }]);
+    // 新条目自动展开并进入编辑模式（空条目没有可读内容）
+    setOpenIdx(prev => new Set([...prev, newIdx]));
+    setEditingIdx(prev => new Set([...prev, newIdx]));
     setDirty(true);
   };
   const toggle = (i: number) =>
     setOpenIdx(prev => {
       const next = new Set(prev);
-      if (next.has(i)) next.delete(i); else next.add(i);
+      if (next.has(i)) {
+        next.delete(i);
+        // 折叠时一并退出编辑模式
+        setEditingIdx(s => { const n = new Set(s); n.delete(i); return n; });
+      } else next.add(i);
       return next;
     });
+  const enterEdit = (i: number) =>
+    setEditingIdx(prev => new Set([...prev, i]));
+  const exitEdit = (i: number) =>
+    setEditingIdx(prev => { const n = new Set(prev); n.delete(i); return n; });
 
   return (
     <TabCard
       title="设定特征"
-      subtitle="作品级世界观特征 · 分为核心冲突 / 高概念 / 母题 三类"
+      subtitle={`${draft.length} 条 · 核心冲突 ${grouped["核心冲突"].length} · 高概念 ${grouped["高概念"].length}`}
     >
-      <div className="text-xs" style={{
-        color: "var(--text-tertiary)", marginBottom: 16, lineHeight: 1.8,
-        padding: "12px 14px",
-        background: "var(--bg-surface)",
-        borderRadius: "var(--radius-sm)",
-        border: "1px solid var(--border-subtle)",
-      }}>
-        本 tab 收录的是<strong style={{ color: "var(--text-primary)" }}>整部作品级</strong>的
-        世界观特征。三类一起回答：这部作品在<strong style={{ color: "var(--text-primary)" }}>冲什么、
-        亮点是什么、味道是什么</strong>。新增条目时请先选好分类；也可以到
-        <strong style={{ color: "var(--accent)" }}>「特征提取」tab</strong>由 LLM 综合
-        原始文本 + 设定 + 角色 一并抽取。
-      </div>
-
       <div className="flex flex-col gap-12">
         {FEATURE_CATEGORIES.map(cat => {
           const meta = FEATURE_CAT_META[cat];
@@ -694,110 +677,126 @@ function FeaturesTab({
               overflow: "hidden",
             }}>
               <div style={{
-                padding: "10px 14px 8px",
+                padding: "10px 14px",
                 background: "var(--bg-surface)",
                 borderBottom: "1px solid var(--border)",
+                display: "flex", alignItems: "center", gap: 8,
               }}>
-                <div className="flex items-center" style={{ gap: 8, marginBottom: 4 }}>
-                  <span style={{
-                    fontSize: 14, fontWeight: 700, color: meta.color,
-                    fontFamily: "var(--font-serif)",
-                  }}>{meta.label}</span>
-                  <span className="tag" style={{
-                    fontSize: 11, padding: "1px 8px",
-                    color: items.length > 0 ? meta.color : "var(--text-tertiary)",
-                    border: `1px solid ${items.length > 0 ? meta.color : "var(--border)"}`,
-                    fontFamily: "var(--font-mono)",
-                  }}>{items.length}</span>
-                  <div style={{ flex: 1 }} />
-                  <button className="btn"
-                          onClick={() => add(cat)}
-                          style={{ fontSize: 11, padding: "4px 10px" }}>
-                    + 新增 {meta.label}
-                  </button>
-                </div>
-                <div className="text-xs" style={{
-                  color: "var(--text-tertiary)", lineHeight: 1.65,
-                }}>
-                  {meta.intro}
-                  <span style={{
-                    color: "var(--text-secondary)", marginLeft: 6, fontStyle: "italic",
-                  }}>{meta.example}</span>
-                </div>
+                <span style={{
+                  fontSize: 14, fontWeight: 700, color: meta.color,
+                  fontFamily: "var(--font-serif)",
+                }}>{meta.label}</span>
+                <span className="tag" style={{
+                  fontSize: 11, padding: "1px 8px",
+                  color: items.length > 0 ? meta.color : "var(--text-tertiary)",
+                  border: `1px solid ${items.length > 0 ? meta.color : "var(--border)"}`,
+                  fontFamily: "var(--font-mono)",
+                }}>{items.length}</span>
+                <div style={{ flex: 1 }} />
+                <button className="btn"
+                        onClick={() => add(cat)}
+                        style={{ fontSize: 11, padding: "4px 10px" }}>
+                  + 新增
+                </button>
               </div>
-              <div style={{ padding: items.length === 0 ? "16px" : "8px 12px 12px" }}>
+              <div style={{ padding: items.length === 0 ? "14px" : "8px 12px 12px" }}>
                 {items.length === 0 ? (
                   <div className="text-xs" style={{
                     color: "var(--text-tertiary)", textAlign: "center",
-                    fontStyle: "italic", padding: "8px 0",
+                    fontStyle: "italic", padding: "4px 0",
                   }}>
-                    暂无{meta.label}条目
+                    暂无条目
                   </div>
                 ) : (
                   <div className="flex flex-col gap-6">
-                    {items.map(({ item, idx }) => (
-                      <div key={idx} style={{
-                        border: "1px solid var(--border)",
-                        borderRadius: "var(--radius-sm)",
-                        background: "var(--bg-surface)",
-                      }}>
-                        <div className="flex items-center" style={{
-                          gap: 8, padding: "8px 12px",
+                    {items.map(({ item, idx }) => {
+                      const isOpen = openIdx.has(idx);
+                      const isEditing = editingIdx.has(idx);
+                      return (
+                        <div key={idx} style={{
+                          border: "1px solid var(--border)",
+                          borderRadius: "var(--radius-sm)",
+                          background: "var(--bg-surface)",
                         }}>
-                          <button className="btn-ghost"
-                                  onClick={() => toggle(idx)}
-                                  style={{
-                                    display: "flex", alignItems: "center", gap: 8,
-                                    flex: 1, padding: "2px 0", borderRadius: 0,
-                                    minWidth: 0, textAlign: "left",
-                                    justifyContent: "flex-start",
-                                  }}>
-                            <span style={{
-                              transition: "transform 0.15s",
-                              transform: openIdx.has(idx) ? "rotate(90deg)" : "none",
-                              display: "inline-block", fontSize: 10,
-                              color: "var(--text-tertiary)", flexShrink: 0,
-                            }}>▶</span>
-                            <span style={{
-                              fontSize: 13, fontWeight: 600,
-                              color: "var(--text-primary)", flexShrink: 0,
-                            }}>{item.title || "（未命名）"}</span>
-                            {item.description && (
-                              <span style={summaryDesc} className="truncate">
-                                {item.description}
-                              </span>
-                            )}
-                          </button>
-                          <button className="btn-icon" title="删除"
-                                  onClick={() => remove(idx)}
-                                  style={{ width: 28, height: 28, fontSize: 16 }}>×</button>
-                        </div>
-                        {openIdx.has(idx) && (
-                          <div style={{
-                            padding: "12px 14px 14px",
-                            borderTop: "1px solid var(--border)",
-                            display: "flex", flexDirection: "column", gap: 10,
+                          <div className="flex items-center" style={{
+                            gap: 8, padding: "8px 12px",
                           }}>
-                            <Field label="分类">
-                              <select className="select" value={item.category}
-                                      onChange={e => update(idx, { ...item, category: e.target.value })}>
-                                {FEATURE_CATEGORIES.map(o => <option key={o} value={o}>{o}</option>)}
-                              </select>
-                            </Field>
-                            <Field label="标题">
-                              <input className="input" value={item.title}
-                                     placeholder={meta.example.replace("如 ", "")}
-                                     onChange={e => update(idx, { ...item, title: e.target.value })} />
-                            </Field>
-                            <Field label="一句话解释">
-                              <textarea className="input" value={item.description} rows={3}
-                                        onChange={e => update(idx, { ...item, description: e.target.value })}
-                                        style={{ lineHeight: 1.65 }} />
-                            </Field>
+                            <button className="btn-ghost"
+                                    onClick={() => toggle(idx)}
+                                    style={{
+                                      display: "flex", alignItems: "center", gap: 8,
+                                      flex: 1, padding: "2px 0", borderRadius: 0,
+                                      minWidth: 0, textAlign: "left",
+                                      justifyContent: "flex-start",
+                                    }}>
+                              <span style={{
+                                transition: "transform 0.15s",
+                                transform: isOpen ? "rotate(90deg)" : "none",
+                                display: "inline-block", fontSize: 10,
+                                color: "var(--text-tertiary)", flexShrink: 0,
+                              }}>▶</span>
+                              <span style={{
+                                fontSize: 13, fontWeight: 600,
+                                color: "var(--text-primary)", flexShrink: 0,
+                              }}>{item.title || "（未命名）"}</span>
+                              {item.description && (
+                                <span style={summaryDesc} className="truncate">
+                                  {item.description}
+                                </span>
+                              )}
+                            </button>
+                            {isOpen && !isEditing && (
+                              <button className="btn"
+                                      onClick={() => enterEdit(idx)}
+                                      style={{ fontSize: 11, padding: "3px 10px" }}>
+                                编辑
+                              </button>
+                            )}
+                            <button className="btn-icon" title="删除"
+                                    onClick={() => remove(idx)}
+                                    style={{ width: 28, height: 28, fontSize: 16 }}>×</button>
                           </div>
-                        )}
-                      </div>
-                    ))}
+                          {isOpen && (
+                            isEditing ? (
+                              <div style={{
+                                padding: "12px 14px 14px",
+                                borderTop: "1px solid var(--border)",
+                                display: "flex", flexDirection: "column", gap: 10,
+                              }}>
+                                <Field label="分类">
+                                  <select className="select" value={item.category}
+                                          onChange={e => update(idx, { ...item, category: e.target.value })}>
+                                    {FEATURE_CATEGORIES.map(o => <option key={o} value={o}>{o}</option>)}
+                                  </select>
+                                </Field>
+                                <Field label="标题">
+                                  <input className="input" value={item.title}
+                                         onChange={e => update(idx, { ...item, title: e.target.value })} />
+                                </Field>
+                                <Field label="一句话解释">
+                                  <textarea className="input" value={item.description} rows={3}
+                                            onChange={e => update(idx, { ...item, description: e.target.value })}
+                                            style={{ lineHeight: 1.65 }} />
+                                </Field>
+                                <div className="flex" style={{ justifyContent: "flex-end" }}>
+                                  <button className="btn" onClick={() => exitEdit(idx)}
+                                          style={{ fontSize: 11, padding: "4px 12px" }}>
+                                    完成编辑
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <ReadOnlyView
+                                rows={[
+                                  ["标题", item.title || "（未命名）"],
+                                  ["一句话解释", item.description || "—"],
+                                ]}
+                              />
+                            )
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -810,9 +809,6 @@ function FeaturesTab({
         gap: 10, marginTop: 18, paddingTop: 14,
         borderTop: "1px solid var(--border-subtle)",
       }}>
-        <button className="btn" onClick={onGoToExtract}>
-          去「特征提取」由 LLM 综合分析
-        </button>
         <div style={{ flex: 1 }} />
         <span className="text-xs text-muted">
           {dirty ? "有未保存的修改" : "已保存"}
@@ -830,7 +826,7 @@ function FeaturesTab({
 /* ───────────────────────── Extract tab ────────────────────────────── */
 
 function ExtractTab({
-  refId, existing, onCommitted, onGoToTab,
+  refId, existing, onCommitted,
 }: {
   refId: string;
   existing: {
@@ -839,7 +835,6 @@ function ExtractTab({
     features: SettingFeature[];
   };
   onCommitted: () => void | Promise<void>;
-  onGoToTab: (t: PureSettingTab) => void;
 }) {
   const { toast } = useToast();
   const [plan, setPlan] = useState<SegmentPlan | null>(null);
@@ -1025,20 +1020,7 @@ function ExtractTab({
       <TabCard title="特征提取" subtitle="所有三类输入都为空">
         <EmptyHero
           title="还没有可提取的内容"
-          message="请到「原始文本」粘贴 wiki 原文，或在「设定」「角色」tab 手动新增条目。三类输入只要任一非空即可提取。"
-          actions={(
-            <>
-              <button className="btn" onClick={() => onGoToTab("raw")}>
-                去「原始文本」
-              </button>
-              <button className="btn" onClick={() => onGoToTab("settings")}>
-                去「设定」
-              </button>
-              <button className="btn" onClick={() => onGoToTab("characters")}>
-                去「角色」
-              </button>
-            </>
-          )}
+          message="请到「原始文本」「设定」「角色」三个 tab 中至少填写一项。"
         />
       </TabCard>
     );
@@ -1047,7 +1029,7 @@ function ExtractTab({
   return (
     <TabCard
       title="特征提取"
-      subtitle={`${plan.total_chunks} 段 · 每段独立 prompt · 含已有 ${plan.existing_settings_count} 条设定 + ${plan.existing_characters_count} 位角色作为去重上下文`}
+      subtitle={`${plan.total_chunks} 段`}
       headerAction={
         plan.total_chunks > 1 ? (
           <button className="btn-primary"
@@ -1069,17 +1051,7 @@ function ExtractTab({
         existingCharacters={plan.existing_characters_count}
       />
 
-      <div className="text-xs" style={{
-        color: "var(--text-tertiary)",
-        margin: "12px 0", lineHeight: 1.75,
-      }}>
-        每段提供 <strong style={{ color: "var(--accent)" }}>大模型 API</strong>（设置中配置好模型后直接调用）
-        与 <strong style={{ color: "var(--accent)" }}>大模型网页版</strong>
-        （复制 prompt → 在网页 LLM 运行 → 粘贴 JSON 由系统解析）两种模式。
-        每段 prompt 包含本段原文 + 已有设定 + 已有角色，
-        <strong style={{ color: "var(--text-secondary)" }}>设定特征会按核心冲突 / 高概念 / 母题三类输出</strong>。
-        结果先入预览，确认后逐板块入库。
-      </div>
+      <div style={{ height: 12 }} />
 
       <div className="flex flex-col gap-8">
         {plan.chunks.map(c => (
@@ -1306,7 +1278,7 @@ function ChunkRow({
                   ))}
               </PreviewBlock>
               <PreviewBlock
-                title="设定特征（核心冲突 / 高概念 / 母题）"
+                title="设定特征（核心冲突 / 高概念）"
                 count={p.setting_features.length}
                 accent="var(--purple)"
                 onCommit={p.setting_features.length > 0 ? () => onCommitSection("setting_features") : undefined}
@@ -1456,24 +1428,24 @@ function ChunkRow({
 /* ───────────────────────── Collapsible list ───────────────────────── */
 
 function CollapsibleList<T extends Record<string, any>>({
-  items, summary, renderEditor, blank, onSave, saving,
-  addLabel, emptyHint, emptyExtraAction, defaultOpen,
+  items, summary, renderEditor, renderView, blank, onSave, saving,
+  addLabel, emptyHint,
 }: {
   items: T[];
   summary: (item: T, index: number) => React.ReactNode;
   renderEditor: (item: T, set: (next: T) => void, index: number) => React.ReactNode;
+  /** Read-only display of the full item; shown when the row is expanded
+   *  but not in edit mode. */
+  renderView: (item: T, index: number) => React.ReactNode;
   blank: T;
   onSave: (items: T[]) => void;
   saving: boolean;
   addLabel: string;
   emptyHint: string;
-  emptyExtraAction?: React.ReactNode;
-  defaultOpen?: boolean;
 }) {
   const [draft, setDraft] = useState<T[]>(items);
-  const [openIdx, setOpenIdx] = useState<Set<number>>(
-    defaultOpen && items.length > 0 ? new Set([0]) : new Set(),
-  );
+  const [openIdx, setOpenIdx] = useState<Set<number>>(new Set());
+  const [editingIdx, setEditingIdx] = useState<Set<number>>(new Set());
   const [dirty, setDirty] = useState(false);
   useEffect(() => { if (!dirty) setDraft(items); }, [items, dirty]);
 
@@ -1483,24 +1455,37 @@ function CollapsibleList<T extends Record<string, any>>({
   };
   const remove = (i: number) => {
     setDraft(prev => prev.filter((_, j) => j !== i));
-    setOpenIdx(prev => {
+    const reindex = (s: Set<number>) => {
       const next = new Set<number>();
-      prev.forEach(idx => { if (idx < i) next.add(idx); else if (idx > i) next.add(idx - 1); });
+      s.forEach(idx => { if (idx < i) next.add(idx); else if (idx > i) next.add(idx - 1); });
       return next;
-    });
+    };
+    setOpenIdx(reindex);
+    setEditingIdx(reindex);
     setDirty(true);
   };
   const add = () => {
+    const newIdx = draft.length;
     setDraft(prev => [...prev, { ...blank }]);
-    setOpenIdx(prev => new Set([...prev, draft.length]));
+    // 新条目自动展开 + 进入编辑模式（空数据没有可读内容）
+    setOpenIdx(prev => new Set([...prev, newIdx]));
+    setEditingIdx(prev => new Set([...prev, newIdx]));
     setDirty(true);
   };
   const toggle = (i: number) =>
     setOpenIdx(prev => {
       const next = new Set(prev);
-      if (next.has(i)) next.delete(i); else next.add(i);
+      if (next.has(i)) {
+        next.delete(i);
+        // 折叠时一并退出编辑模式
+        setEditingIdx(s => { const n = new Set(s); n.delete(i); return n; });
+      } else next.add(i);
       return next;
     });
+  const enterEdit = (i: number) =>
+    setEditingIdx(prev => new Set([...prev, i]));
+  const exitEdit = (i: number) =>
+    setEditingIdx(prev => { const n = new Set(prev); n.delete(i); return n; });
 
   return (
     <div>
@@ -1509,62 +1494,85 @@ function CollapsibleList<T extends Record<string, any>>({
           title={emptyHint}
           message="点击下方「新增」手动录入条目。"
           actions={(
-            <>
-              <button className="btn-primary" onClick={add}>+ {addLabel}</button>
-              {emptyExtraAction}
-            </>
+            <button className="btn-primary" onClick={add}>+ {addLabel}</button>
           )}
         />
       ) : (
         <div className="flex flex-col gap-6">
-          {draft.map((row, i) => (
-            <div key={i} style={{
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius-sm)",
-              background: "var(--bg-card)",
-              transition: "border-color 0.15s",
-            }}>
-              <div className="flex items-center" style={{
-                gap: 8, padding: "8px 12px",
+          {draft.map((row, i) => {
+            const isOpen = openIdx.has(i);
+            const isEditing = editingIdx.has(i);
+            return (
+              <div key={i} style={{
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)",
+                background: "var(--bg-card)",
+                transition: "border-color 0.15s",
               }}>
-                <button className="btn-ghost"
-                        onClick={() => toggle(i)}
-                        style={{
-                          display: "flex", alignItems: "center", gap: 8, flex: 1,
-                          padding: "2px 0", justifyContent: "flex-start",
-                          borderRadius: 0, minWidth: 0, textAlign: "left",
-                        }}>
-                  <span style={{
-                    transition: "transform 0.15s",
-                    transform: openIdx.has(i) ? "rotate(90deg)" : "none",
-                    display: "inline-block", fontSize: 10, color: "var(--text-tertiary)",
-                    flexShrink: 0,
-                  }}>▶</span>
-                  <div className="flex items-center" style={{
-                    gap: 8, flex: 1, minWidth: 0, fontSize: 13,
-                  }}>
-                    {summary(row, i)}
-                  </div>
-                </button>
-                <button className="btn-icon" title="删除"
-                        onClick={() => remove(i)}
-                        style={{
-                          width: 28, height: 28, fontSize: 16,
-                          color: "var(--text-tertiary)",
-                        }}>×</button>
-              </div>
-              {openIdx.has(i) && (
-                <div style={{
-                  padding: "12px 14px 14px",
-                  borderTop: "1px solid var(--border)",
-                  background: "var(--bg-surface)",
-                  display: "flex", flexDirection: "column", gap: 10,
+                <div className="flex items-center" style={{
+                  gap: 8, padding: "8px 12px",
                 }}>
-                  {renderEditor(row, (next) => update(i, next), i)}
+                  <button className="btn-ghost"
+                          onClick={() => toggle(i)}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 8, flex: 1,
+                            padding: "2px 0", justifyContent: "flex-start",
+                            borderRadius: 0, minWidth: 0, textAlign: "left",
+                          }}>
+                    <span style={{
+                      transition: "transform 0.15s",
+                      transform: isOpen ? "rotate(90deg)" : "none",
+                      display: "inline-block", fontSize: 10, color: "var(--text-tertiary)",
+                      flexShrink: 0,
+                    }}>▶</span>
+                    <div className="flex items-center" style={{
+                      gap: 8, flex: 1, minWidth: 0, fontSize: 13,
+                    }}>
+                      {summary(row, i)}
+                    </div>
+                  </button>
+                  {isOpen && !isEditing && (
+                    <button className="btn"
+                            onClick={() => enterEdit(i)}
+                            style={{ fontSize: 11, padding: "3px 10px" }}>
+                      编辑
+                    </button>
+                  )}
+                  <button className="btn-icon" title="删除"
+                          onClick={() => remove(i)}
+                          style={{
+                            width: 28, height: 28, fontSize: 16,
+                            color: "var(--text-tertiary)",
+                          }}>×</button>
                 </div>
-              )}
-            </div>
-          ))}
+                {isOpen && (
+                  isEditing ? (
+                    <div style={{
+                      padding: "12px 14px 14px",
+                      borderTop: "1px solid var(--border)",
+                      background: "var(--bg-surface)",
+                      display: "flex", flexDirection: "column", gap: 10,
+                    }}>
+                      {renderEditor(row, (next) => update(i, next), i)}
+                      <div className="flex" style={{ justifyContent: "flex-end" }}>
+                        <button className="btn" onClick={() => exitEdit(i)}
+                                style={{ fontSize: 11, padding: "4px 12px" }}>
+                          完成编辑
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{
+                      borderTop: "1px solid var(--border)",
+                      background: "var(--bg-surface)",
+                    }}>
+                      {renderView(row, i)}
+                    </div>
+                  )
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1642,6 +1650,41 @@ function EmptyHero({
         <div className="flex items-center" style={{
           gap: 8, justifyContent: "center", flexWrap: "wrap",
         }}>{actions}</div>
+      )}
+    </div>
+  );
+}
+
+/** Compact read-only display of a list of (label, value) rows. Used as
+ *  the「展开后只读视图」for collapsible items — user must click「编辑」to
+ *  enter edit mode (clear separation between viewing and editing). */
+function ReadOnlyView({
+  rows, extras,
+}: {
+  rows: Array<[string, React.ReactNode]>;
+  extras?: React.ReactNode;
+}) {
+  return (
+    <div style={{
+      padding: "12px 14px 14px",
+      display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 14px",
+      alignItems: "baseline", fontSize: 13,
+    }}>
+      {rows.map(([label, value]) => (
+        <React.Fragment key={label}>
+          <span style={{
+            fontSize: 11, color: "var(--text-tertiary)", fontWeight: 600,
+            textTransform: "uppercase", letterSpacing: 0.5,
+            whiteSpace: "nowrap",
+          }}>{label}</span>
+          <span style={{
+            color: "var(--text-primary)", lineHeight: 1.65,
+            wordBreak: "break-word", whiteSpace: "pre-wrap",
+          }}>{value || <span style={{ color: "var(--text-tertiary)" }}>—</span>}</span>
+        </React.Fragment>
+      ))}
+      {extras && (
+        <div style={{ gridColumn: "1 / -1", marginTop: 4 }}>{extras}</div>
       )}
     </div>
   );
@@ -1770,6 +1813,15 @@ const errBox: React.CSSProperties = {
   borderRadius: "var(--radius-sm)",
   fontSize: 12, color: "var(--error)", lineHeight: 1.6,
 };
+
+/** Format the work's `updated_at` timestamp for display. SQLite stores
+ *  it as `YYYY-MM-DD HH:MM:SS` (UTC) or ISO 8601; show date + minutes. */
+function fmtUpdated(raw: string): string {
+  if (!raw) return "—";
+  // SQLite "YYYY-MM-DD HH:MM:SS" → keep first 16 chars (date + HH:MM)
+  const cleaned = raw.replace("T", " ").slice(0, 16);
+  return cleaned || "—";
+}
 
 function dedupeBy<T>(items: T[], key: (x: T) => string): T[] {
   const seen = new Set<string>();

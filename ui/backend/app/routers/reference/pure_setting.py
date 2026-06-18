@@ -36,8 +36,8 @@ SETTING_CATEGORIES = (
     "力量体系", "势力组织", "地理", "社会规则", "历史背景", "世界观", "其他",
 )
 
-# 设定特征三类（用于按类别分组与显示）。
-SETTING_FEATURE_CATEGORIES = ("核心冲突", "高概念", "母题")
+# 设定特征类别（用于按类别分组与显示）。母题已废弃，遗留数据归到「高概念」。
+SETTING_FEATURE_CATEGORIES = ("核心冲突", "高概念")
 
 # 单段最大字符数 — 与 ai_extractor._MAX_PROMPT_CHARS 保持一致，避免分段提取
 # 时 prompt 太长触发上下文限制；同时也是网页版复制 prompt 的安全上限。
@@ -248,7 +248,7 @@ def get_pure_setting(ref_id: str):
     with _conn() as con:
         row = con.execute(
             "SELECT structure_type, quick_input_text, settings_json, "
-            "static_characters_json, setting_features_json "
+            "static_characters_json, setting_features_json, updated_at "
             "FROM reference_works WHERE ref_id = ?",
             (ref_id,),
         ).fetchone()
@@ -258,6 +258,7 @@ def get_pure_setting(ref_id: str):
     return {
         "ref_id": ref_id,
         "structure_type": row["structure_type"] or "narrative",
+        "updated_at": row["updated_at"] or "",
         # Both shapes are returned: `raw_entries` is the new structured
         # form; `quick_input_text` keeps the old contract (the raw stored
         # string, which now happens to be JSON) for any legacy consumer.

@@ -308,15 +308,15 @@ export default function ReferenceLibraryPage() {
   }
 
   const statusBadge = (s: string) => {
+    // `not_applicable` (纯设定作品的状态) 不需要任何徽章 — 列表行已经有「纯设定」标签
     const map: Record<string, { cls: string; label: string }> = {
       done: { cls: "status-ongoing", label: "已分析" },
       pending: { cls: "qidian", label: "待处理" },
       processing: { cls: "cyan", label: "处理中" },
       error: { cls: "accent", label: "出错" },
-      not_applicable: { cls: "category", label: "手动" },
     };
-    const m = map[s] || map.not_applicable;
-    return <span className={`tag ${m.cls}`}>{m.label}</span>;
+    const m = map[s];
+    return m ? <span className={`tag ${m.cls}`}>{m.label}</span> : null;
   };
 
   return (
@@ -696,7 +696,6 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   processing: { label: "处理中", color: "var(--gold)" },
   pending: { label: "待处理", color: "var(--accent)" },
   error: { label: "出错", color: "var(--error)" },
-  not_applicable: { label: "手动维护", color: "var(--text-tertiary)" },
 };
 
 interface ChapterComment { chapter: string; text: string; }
@@ -869,7 +868,9 @@ function WorkDetail({
     setEditingWhy(false);
   }, [sel.ref_id, sel.user_why_i_like]);
 
-  const status = STATUS_LABEL[sel.preprocessing_status] || STATUS_LABEL.not_applicable;
+  // For 纯设定作品 there's no preprocessing status to show; the「纯设定作品」
+  // tag carries enough information already.
+  const status = STATUS_LABEL[sel.preprocessing_status] || null;
   // Cache JSON.parse + .reduce work — the tab-bar re-renders on every
   // setTab() click and these parsed blobs can be megabytes (a full plot
   // outline with hundreds of events). Without memoization a single tab
@@ -940,12 +941,14 @@ function WorkDetail({
           {isPureSetting && (
             <span className="tag" style={{ fontSize: 11, padding: "1px 8px", color: "var(--gold)", background: "var(--bg-surface-2)", border: "1px solid var(--gold)" }}>纯设定作品</span>
           )}
-          <span className="tag" style={{
-            fontSize: 11, padding: "1px 8px",
-            color: status.color,
-            background: "var(--bg-surface-2)",
-            border: `1px solid ${status.color}`,
-          }}>{status.label}</span>
+          {status && (
+            <span className="tag" style={{
+              fontSize: 11, padding: "1px 8px",
+              color: status.color,
+              background: "var(--bg-surface-2)",
+              border: `1px solid ${status.color}`,
+            }}>{status.label}</span>
+          )}
           <div style={{ flex: 1 }} />
           <div className="flex gap-6" style={{ flexShrink: 0 }}>
             {!sel.has_full_text && !isPureSetting && (
@@ -1041,7 +1044,7 @@ function WorkDetail({
             <div className="card-body">
               <div className="label" style={{ color: "var(--accent)", marginBottom: 10 }}>作品摘要</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
-                <Stat label="处理状态" value={status.label} accent={status.color} />
+                {status && <Stat label="处理状态" value={status.label} accent={status.color} />}
                 <Stat label="正文" value={sel.has_full_text ? "已上传" : "未上传"} />
                 <Stat label="时间段" value={periodCount} />
                 <Stat label="事件" value={eventCount} />
