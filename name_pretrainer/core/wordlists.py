@@ -28,7 +28,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent / "resources" / "wordlists"
+_ROOT = Path(__file__).resolve().parent.parent / "resources" / "wordlists"
 
 # Public list names → bundled file.
 _FILES = {
@@ -63,7 +63,7 @@ def _overlay_dir() -> Path:
         d = Path(env)
     else:
         try:
-            from ...runtime_paths import data_dir
+            from .paths import data_dir
             d = data_dir() / "wordlists"
         except Exception:
             d = _ROOT / "_user"

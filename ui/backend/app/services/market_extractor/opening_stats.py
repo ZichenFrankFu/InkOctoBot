@@ -53,23 +53,44 @@ _COMMON_WORDS: frozenset[str] = frozenset()
 # common word (停用词表含「能 / 力 / 会 / 在」等单字)会误杀 灵能 / 异能 / 能力
 # 这类域内复合词 — 单字虚词另由 _HARD_REJECT_CHARS 把关。
 _COMMON_MULTI: frozenset[str] = frozenset()
+_LTP_STOPWORDS: frozenset[str] = frozenset()   # 哈工大 LTP 停用词表（兜底）
 _SURNAMES: frozenset[str] = frozenset()
 _GIVEN_NAMES: frozenset[str] = frozenset()
 _NAME_CHARS: frozenset[str] = frozenset()   # 中文名字常用字（单字），人名识别辅助
 _TRANSLIT_CHARS: frozenset[str] = frozenset()
 _NAME_DICT_LOADED = False
 
+# 人名库（person_name_library）的全名集合 —— 由 compute_opening_stats(db_path=…)
+# 注入，喂进 jieba 词典使全名整体切分（用重分词剔名，不删子串），并参与高频词剔名。
+_EXTRA_NAME_DICT: frozenset[str] = frozenset()
+
+# jieba 词性里的虚词（spec §4：助词u/介词p/连词c/代词r/副词d/语气词y/叹词e）—
+# 高频词识别显式剔除这些词性。
+_FUNCTION_POS = frozenset({"u", "p", "c", "r", "d", "y", "e",
+                           "uj", "ul", "uv", "ug", "ud", "uz", "rr", "rz"})
+
+# 高频词 df 带（spec §4）：须跨 ≥2 本、且 <60 本 unique 小说（上限滤掉过于普适的
+# 词，那类多半已在常用词/题材词典里）。
+_HF_MIN_DF = 2
+# 上限按「总小说数量的 60%」算（不是固定 60 本）：出现在 >60% 作品里的词过于普适、
+# 不具代表性，剔除。总数指当前分析语料里的 unique 作品数。
+_HF_MAX_DF_RATIO = 0.6
+
 
 def reload_wordlists() -> None:
-    """Refresh the in-process 常用词/姓/名/名字用字/音译字 sets from wordlists.py
-    — called after a 资源管理 add/remove so the next analysis re-filters."""
-    global _COMMON_WORDS, _COMMON_MULTI, _SURNAMES, _GIVEN_NAMES, _NAME_CHARS
-    global _TRANSLIT_CHARS, _NAME_DICT_LOADED
+    """Refresh the in-process 常用词/姓/名/名字用字/音译字/停用词 sets from
+    wordlists.py — called after a 资源管理 add/remove so the next analysis re-filters."""
+    global _COMMON_WORDS, _COMMON_MULTI, _LTP_STOPWORDS, _SURNAMES, _GIVEN_NAMES
+    global _NAME_CHARS, _TRANSLIT_CHARS, _NAME_DICT_LOADED
     if _wl is None:
         return
     try:
         _COMMON_WORDS = _wl.load_common_words()
         _COMMON_MULTI = frozenset(w for w in _COMMON_WORDS if len(w) >= 2)
+        try:
+            _LTP_STOPWORDS = _wl.load_ltp_stopwords()
+        except Exception:
+            _LTP_STOPWORDS = frozenset()
         _SURNAMES = _wl.load_surnames()
         _GIVEN_NAMES = _wl.load_given_names()
         _NAME_CHARS = _wl.load_name_chars()
@@ -77,6 +98,16 @@ def reload_wordlists() -> None:
         _NAME_DICT_LOADED = False     # re-feed jieba userdict on next pass
     except Exception:  # pragma: no cover - resources always present
         pass
+
+
+def set_name_library(full_names: frozenset[str]) -> None:
+    """注入人名库全名集合（compute_opening_stats 从 db 读出后调用）。变化时强制
+    下次重喂 jieba 词典，保证「用重分词剔名」对新加入的全名即时生效。"""
+    global _EXTRA_NAME_DICT, _NAME_DICT_LOADED
+    new = frozenset(full_names or ())
+    if new != _EXTRA_NAME_DICT:
+        _EXTRA_NAME_DICT = new
+        _NAME_DICT_LOADED = False
 
 
 reload_wordlists()
@@ -103,6 +134,11 @@ def _ensure_name_userdict() -> None:
                 jieba.add_word(w, tag="nr")
         for w in _SURNAMES:
             if len(w) >= 2:        # 复姓/日文姓（单字姓不进，否则每个 李/王 都成名）
+                jieba.add_word(w, tag="nr")
+        # 人名库全名（李翠翠…）整体入词典 → 切分时整体成词并标 nr，使「翠翠」这类
+        # 残片不再单独冒出（spec §4/§5：用重分词剔名，禁止删子串）。
+        for w in _EXTRA_NAME_DICT:
+            if len(w) >= 2:
                 jieba.add_word(w, tag="nr")
         _NAME_DICT_LOADED = True
     except Exception:  # pragma: no cover - jieba absent in CI
@@ -135,6 +171,8 @@ def _is_content_phrase(term: str, max_len: int = 6) -> bool:
     if not re.fullmatch(r"[一-鿿]+", term):
         return False
     if _is_common(term):
+        return False
+    if term in _LTP_STOPWORDS:     # 哈工大 LTP 停用词兜底（spec §4）
         return False
     if any(ch in _HARD_REJECT_CHARS for ch in term):
         return False
@@ -291,16 +329,23 @@ def _extract_tokens(texts: list[str], freq: dict):
     token_pos: dict[str, str] = {}         # word -> jieba POS flag (first seen)
     name_context: Counter = Counter()      # word -> times it directly followed a 姓氏
     bigram_counts: Counter = Counter()
+    stream: list[tuple[str, str]] = []     # 有序 (word, flag) 流（喂语言学特征，单次分词复用）
     try:
         import jieba.posseg as _pseg
     except Exception:
-        return token_counts, token_isname, token_pos, name_context, bigram_counts, False
+        return (token_counts, token_isname, token_pos, name_context,
+                bigram_counts, False, stream, 0)
     _ensure_name_userdict()   # 多字姓名注入词典 → 整体切分并标注 nr
+    total_tokens = 0
     for t in texts:
         prev: tuple[str, str] | None = None
         prev_surname = False                # 上一个 token 是否为姓氏（含单字姓）
         for tok in _pseg.cut(t):
             w, flag = tok.word, tok.flag
+            if w and w.strip():
+                stream.append((w, flag))
+                if flag not in ("x", "w"):     # 总词数排除标点（相对频率分母）
+                    total_tokens += 1
             cjk = len(w) >= 2 and bool(re.fullmatch(r"[一-鿿]+", w))
             if cjk and len(w) <= 6:
                 token_counts[w] += 1
@@ -328,14 +373,17 @@ def _extract_tokens(texts: list[str], freq: dict):
             else:
                 prev = None
             prev_surname = (len(w) == 1 and w in _SURNAMES) or flag.startswith("nr")
-    return token_counts, token_isname, token_pos, name_context, bigram_counts, True
+    return (token_counts, token_isname, token_pos, name_context,
+            bigram_counts, True, stream, total_tokens)
 
 
 def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
                name_context: Counter, bigram_counts: Counter, freq: dict,
                has_jieba: bool, texts: list[str],
                owner_blobs: list[str] | None = None,
-               k: int = 40) -> list[dict[str, Any]]:
+               k: int = 40, *, total_tokens: int = 0,
+               name_full: frozenset[str] = frozenset(),
+               name_given: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
     """高频词 — content keywords that characterize the WHOLE platform, not a
     single book. Restricted to noun-class POS (everyday 副词/动词 like 马上/
     感觉 never surface); 人名 dropped via 姓/名资源 + jieba 命名实体 + 跨作品
@@ -348,7 +396,10 @@ def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
     counter: Counter = Counter()
     if has_jieba:
         for w, c in token_counts.items():
-            if (not _is_common(w) and _keep_noun(token_pos.get(w, ""))
+            flag = token_pos.get(w, "")
+            if flag in _FUNCTION_POS:        # 显式去虚词（助/介/连/代/副/语气/叹词）
+                continue
+            if (not _is_common(w) and _keep_noun(flag)
                     and _is_content_phrase(w)):
                 counter[w] += c
         for m, c in bigram_counts.items():
@@ -371,6 +422,10 @@ def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
     df = {t: (sum(1 for b in blobs if t in b) if blobs else 1) for t in counter}
 
     def _is_name(w: str) -> bool:
+        # 0) 人名库命中（全名或名字片段）。护栏（spec §5）：该词若同时命中常用词表
+        #    则不剔——只作用于高频词候选这一小集合，不做全文盲删。
+        if (w in name_full or w in name_given) and not _is_common(w):
+            return True
         # 1) 资源命中：姓 / 名（含西方名，可由「资源管理」扩展，已注入 jieba 词典）
         if w in _SURNAMES or w in _GIVEN_NAMES:
             return True
@@ -398,11 +453,14 @@ def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
     if not counter:
         return []
 
-    # Task 3：高频词须在「多个作品」出现（df>=2），只在一本书里高频的不算 —
-    # 语料里作品足够多时才启用（避免小样本被清空）。
+    # spec §4：高频词须 2 <= 含该词的小说数 <= 60% 总小说数。只在一本书里高频的不算
+    # （下限），普适到 >60% 作品的过于常用（上限）。仅在语料作品足够多时启用（避免小
+    # 样本被清空）。上限随语料规模动态算，而非固定 60 本。
+    max_df = max(_HF_MIN_DF, int(_HF_MAX_DF_RATIO * n_works))
     if blobs and n_works >= 3:
         for w in list(counter):
-            if df.get(w, 0) < 2:
+            d = df.get(w, 0)
+            if d < _HF_MIN_DF or d > max_df:
                 del counter[w]
         if not counter:
             return []
@@ -416,7 +474,11 @@ def _top_words(token_counts: Counter, token_isname: dict, token_pos: dict,
                 * (1.0 + 0.12 * (len(t) - 2)) * breadth)
 
     ranked = sorted((t for t in counter if t in kept), key=_score, reverse=True)
+    # spec §4：频率按相对频率（次数 ÷ 总词数）展示，不用原始计数。count 保留供
+    # 排序/下钻参考，relative_freq 是给用户看的频率口径。
     return [{"word": t, "count": counter[t],
+             "relative_freq": round(counter[t] / total_tokens, 6) if total_tokens else 0.0,
+             "relative_freq_permille": round(counter[t] / total_tokens * 1000, 3) if total_tokens else 0.0,
              "work_count": int(df.get(t, 0))} for t in ranked[:k]]
 
 
@@ -498,14 +560,43 @@ def _attach_examples(top_words: list[dict[str, Any]],
         ]
 
 
-def compute_opening_stats(
-    rows: list[dict[str, Any]],
+def _linguistic_features(
+    stream: list[tuple[str, str]], texts: list[str],
 ) -> dict[str, Any]:
-    """Spec-dimension stats over opening chapters.
+    """语言学文本特征（spec §1/§2/§3）：词性分布 + MDD + 词汇丰富度 + 情感分析。
+    复用 ``_extract_tokens`` 的单次分词流，避免二次分词。"""
+    try:
+        from . import linguistics, lexical_diversity, sentiment
+    except Exception:  # pragma: no cover
+        return {}
+    pos = linguistics.pos_distribution(stream)
+    tokens = linguistics.content_tokens(stream)
+    lexdiv = lexical_diversity.compute(tokens)
+    joined = "\n".join(texts)[:200_000]
+    try:
+        senti = sentiment.analyze_sentiment(tokens, text=joined).to_dict()
+    except Exception:  # pragma: no cover
+        senti = {"available": False}
+    mdd = linguistics.mean_dependency_distance(texts)
+    return {
+        "pos_distribution": pos,
+        "lexical_diversity": lexdiv,
+        "sentiment": senti,
+        "mdd": mdd,
+    }
+
+
+def compute_opening_stats(
+    rows: list[dict[str, Any]], *, db_path: str | None = None,
+) -> dict[str, Any]:
+    """Spec-dimension stats over opening chapters + 语言学文本特征。
 
     ``rows``: [{"chapter_num": int, "text": str, "title"?: str}] — every
     collected opening chapter of the analyzed work set. ``title`` (作品名)
     powers the「点击高频词→使用最多的 top3 作品+片段」drill-down.
+
+    ``db_path`` (项目库): 提供时启用人名库 —— 全名注入 jieba 整体切分 + 高频词
+    剔名（带常用词护栏）。缺省（prompt 注入 / 单测）则不依赖人名库。
     """
     texts: list[str] = []
     owners: list[str] = []          # parallel 作品名 per text (for 高频词 examples)
@@ -558,15 +649,36 @@ def compute_opening_stats(
             break
     freq = _general_freq()
     known = _load_known_words()
-    tok_counts, tok_isname, tok_pos, name_ctx, bigrams, has_jieba = _extract_tokens(kw_texts, freq)
+
+    # 人名库（person_name_library）注入：全名喂 jieba 整体切分 + 高频词剔名护栏。
+    # db_path 缺省（prompt 注入 / 单测）则跳过，行为与旧版一致。
+    name_full: frozenset[str] = frozenset()
+    name_given: frozenset[str] = frozenset()
+    if db_path:
+        try:
+            from . import name_library
+            name_library.seed_if_empty(db_path)
+            name_full, name_given = name_library.cached_name_sets(db_path)
+            set_name_library(name_full)
+        except Exception:  # pragma: no cover - 人名库不可用不阻断基础统计
+            pass
+
+    (tok_counts, tok_isname, tok_pos, name_ctx, bigrams,
+     has_jieba, stream, total_tokens) = _extract_tokens(kw_texts, freq)
     owner_blobs = list(owner_joined.values())
     top_words = _top_words(tok_counts, tok_isname, tok_pos, name_ctx, bigrams,
-                           freq, has_jieba, kw_texts, owner_blobs=owner_blobs)
+                           freq, has_jieba, kw_texts, owner_blobs=owner_blobs,
+                           total_tokens=total_tokens, name_full=name_full,
+                           name_given=name_given)
     _attach_examples(top_words, owner_joined)
+    linguistic = _linguistic_features(stream, kw_texts)
 
     return {
         "available": True,
         "chapters_analyzed": len(texts),
+        # 语言学文本特征（spec §1/§2/§3）：词性分布 / MDD / 词汇丰富度 / 情感分析
+        "linguistic_features": linguistic,
+        "total_tokens": total_tokens,
         # 字数维度
         "first_chapter_words_avg": (
             round(statistics.mean(first_counts)) if first_counts else None
@@ -602,11 +714,35 @@ def render_stats_for_prompt(stats: dict[str, Any]) -> str:
             "- 标点密度（次/千字）："
             + "，".join(f"{k} {v}" for k, v in pd.items())
         )
+    lf = stats.get("linguistic_features") or {}
+    pos = lf.get("pos_distribution") or {}
+    if pos.get("available"):
+        lines.append(
+            "- 词性分布：动作场面(动词) {:.0%} · 修饰描写密度(形容词) {:.0%} · "
+            "设定密度(名词) {:.0%}".format(
+                pos.get("action_scene", 0), pos.get("description_density", 0),
+                pos.get("setting_density", 0))
+        )
+    mdd = lf.get("mdd") or {}
+    if mdd.get("available"):
+        tag = "MDD {}".format(mdd["mdd"]) if mdd.get("mdd") is not None else "估算"
+        lines.append(f"- 句式复杂度：{mdd.get('complexity', 0):.2f}（{tag}）")
+    lx = lf.get("lexical_diversity") or {}
+    if lx.get("available"):
+        lines.append(
+            f"- 用词丰富度：MATTR {lx.get('mattr')} · MTLD {lx.get('mtld')}"
+        )
+    se = lf.get("sentiment") or {}
+    if se.get("available") and se.get("emotion_ratio"):
+        top_emo = sorted(se["emotion_ratio"].items(), key=lambda x: -x[1])[:3]
+        lines.append(
+            "- 情感占比（DUTIR）：" + "、".join(f"{k} {v:.0%}" for k, v in top_emo if v)
+        )
     tw = stats.get("top_words") or []
     if tw:
         lines.append(
-            "- 高频词：" + "、".join(
-                f"{w['word']}({w['count']})" for w in tw[:15]
+            "- 高频词（相对频率‰）：" + "、".join(
+                f"{w['word']}({w.get('relative_freq_permille', w['count'])}‰)" for w in tw[:15]
             )
         )
     neo = stats.get("neologism_step1") or []

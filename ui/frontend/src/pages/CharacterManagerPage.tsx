@@ -5,6 +5,7 @@ import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 import SnapshotStageEditor from "../components/characters/SnapshotStageEditor";
+import NameGeneratorModal from "../components/characters/NameGeneratorModal";
 import type { Character, CharacterLayerB, CharacterRelationship, DynamicPropertySnapshot } from "../api/types";
 import { renderPrompt } from "../utils/promptTemplate";
 
@@ -44,6 +45,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const [rightView, setRightView] = useState<"detail" | "graph">("detail");
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showNamer, setShowNamer] = useState(false);   // 取名弹窗
 
   // Warn before leaving with unsaved changes
   useEffect(() => {
@@ -532,6 +534,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 
   return (
     <div className="page-full">
+      {showNamer && <NameGeneratorModal onClose={() => setShowNamer(false)} />}
       <div className="panel-layout">
         {/* ======== LEFT PANEL: Character List ======== */}
         <div className="panel" style={{ width: leftPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)" }}>
@@ -539,6 +542,10 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
             <div className="flex items-center justify-between">
               <h3>角色管理</h3>
               <div className="flex gap-4">
+                <button className="btn" style={{ padding: "5px 10px", fontSize: 11 }}
+                  onClick={() => setShowNamer(true)} title="基于人名库取名">
+                  取名
+                </button>
                 <button className="btn" style={{ padding: "5px 10px", fontSize: 11 }}
                   onClick={() => { setBatchMode(!batchMode); setSelectedIds(new Set()); }}>
                   {batchMode ? "取消" : "批量"}

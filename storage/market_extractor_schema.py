@@ -296,6 +296,50 @@ _DDL: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_pej_state "
     "ON platform_extraction_jobs(state, created_at)",
+
+    # ── 8. person_name_library （人名库；全名为权威记录，姓/名为派生字段）──
+    """
+    CREATE TABLE IF NOT EXISTS person_name_library (
+        name_id             TEXT PRIMARY KEY,
+        full_name           TEXT NOT NULL UNIQUE,     -- 权威记录
+        surname             TEXT DEFAULT '',          -- 派生：姓（可重算）
+        given_name          TEXT DEFAULT '',          -- 派生：名（可重算）
+        surname_kind        TEXT DEFAULT 'unknown',   -- single|compound|unknown
+        name_length         INTEGER DEFAULT 0,
+        is_compound_surname INTEGER DEFAULT 0,        -- 复姓标记
+        is_single_given     INTEGER DEFAULT 0,        -- 单名标记
+        is_nonstandard      INTEGER DEFAULT 0,        -- 昵称/异常名 → 不进规律统计
+        nonstandard_reason  TEXT DEFAULT '',
+        source              TEXT DEFAULT '',          -- seed|ltp_ner|jieba_nr|user
+        source_work_id      TEXT DEFAULT '',          -- 来源作品
+        source_work_title   TEXT DEFAULT '',
+        source_platform     TEXT DEFAULT '',
+        source_category     TEXT DEFAULT '',
+        source_work_rank    INTEGER,                  -- 来源作品排名
+        source_work_heat    REAL,                     -- 来源作品热度
+        book_df             INTEGER DEFAULT 0,        -- 去重书数 DF（按 book 不按 snapshot）
+        example_sentence    TEXT DEFAULT '',          -- 该名出现的一句例句（来源作品）
+        name_kind           TEXT DEFAULT 'chinese',   -- chinese|japanese|western
+        gender              TEXT DEFAULT '',          -- male|female|''(未知/中性)；字启发式+可手动标
+        alias_of            TEXT DEFAULT '',          -- 保留列（昵称已下线）；可空
+        first_seen_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_pnl_surname ON person_name_library(surname)",
+    "CREATE INDEX IF NOT EXISTS idx_pnl_df ON person_name_library(book_df)",
+    "CREATE INDEX IF NOT EXISTS idx_pnl_cat ON person_name_library(source_category)",
+
+    # ── 9. name_extraction_state （NER 按 book 去重的处理台账）──
+    """
+    CREATE TABLE IF NOT EXISTS name_extraction_state (
+        novel_uid        TEXT PRIMARY KEY,
+        content_hash     TEXT DEFAULT '',   -- 开篇内容指纹；变则视为新书重跑
+        method           TEXT DEFAULT '',   -- ltp_gpu|ltp_cpu|jieba|skipped
+        names_found      INTEGER DEFAULT 0,
+        processed_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 )
 
 
@@ -306,6 +350,12 @@ _PLATFORM_PROFILE_MIGRATIONS: tuple[tuple[str, str], ...] = (
 )
 _REP_POOL_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("selection_reason", "TEXT DEFAULT ''"),
+)
+_PNL_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("example_sentence", "TEXT DEFAULT ''"),
+    ("name_kind", "TEXT DEFAULT 'chinese'"),
+    ("alias_of", "TEXT DEFAULT ''"),
+    ("gender", "TEXT DEFAULT ''"),
 )
 
 
@@ -323,4 +373,5 @@ def ensure_market_extractor_tables(conn: sqlite3.Connection) -> None:
 
     _migrate("platform_profiles", _PLATFORM_PROFILE_MIGRATIONS)
     _migrate("representative_works_pool", _REP_POOL_MIGRATIONS)
+    _migrate("person_name_library", _PNL_MIGRATIONS)
     conn.commit()

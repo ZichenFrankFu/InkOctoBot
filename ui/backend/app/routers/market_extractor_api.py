@@ -493,7 +493,7 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
                 excerpts.append(f"### 《{title}》\n{block}")
         if stat_rows:
             nlp_block = render_stats_for_prompt(
-                compute_opening_stats(stat_rows),
+                compute_opening_stats(stat_rows, db_path=get_db_path()),
             )
         if excerpts:
             excerpt_block = "\n\n".join(excerpts)
@@ -628,6 +628,33 @@ def submit_manual_extraction(body: dict = Body(...)) -> dict:
         con.commit()
     return {"profile_id": profile_id, "platform": platform,
             "category": category, "parsed_keys": list(parsed.keys())}
+
+
+@router.post("/api-extract")
+async def api_extract(body: dict = Body(...)) -> dict:
+    """用配置的大模型 API 直接跑（可能已被用户手动编辑的）高级提取 prompt，返回原始
+    回复，供前端预览/编辑后再走 /manual-submit 解析入库 —— 与「网页版」共用同一份 prompt，
+    只是把「人工粘贴」换成「自动调用」。"""
+    platform = (body.get("platform") or "").strip()
+    prompt = (body.get("prompt") or "").strip()
+    if not platform or not prompt:
+        raise HTTPException(400, "platform + prompt required")
+    from llm.call_site import LLMCallSite
+    cs = LLMCallSite(
+        call_site_id="market_extractor.advanced_api_extract",
+        primary_role="post_commit",
+        parsed_target_table="platform_profiles",
+        default_max_tokens=8000, default_temperature=0.3,
+    )
+    try:
+        raw = await cs.invoke(
+            prompt=prompt,
+            system="你是资深网络文学市场分析师。严格只输出 JSON，不要解释、不要 markdown 围栏。",
+            project_id=platform, db_path=get_db_path(), manual_mode=False,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"大模型 API 调用失败：{e}")
+    return {"response_raw": raw or ""}
 
 
 # ─────────── representative works ───────────

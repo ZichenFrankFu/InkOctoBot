@@ -21,7 +21,7 @@ import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
 import { tPlatform } from "../i18n";
 
 
-// 基础特征提取 (市场信息 + 开篇章节NLP维度) 在前；高级特征提取
+// 基础特征提取 (市场信息 + 语言学文本特征) 在前；高级特征提取
 // (代表作选取 → 生造词Step2 + 行文风格七组 LLM 提取) 在后。
 type TopTab = "basic" | "advanced" | "resources";
 
@@ -89,7 +89,7 @@ const STATE_COLOR: Record<string, string> = {
   running_phase_4:  "var(--accent)",
   running_phase_5:  "var(--accent)",
   completed:        "var(--success)",
-  failed:           "var(--danger)",
+  failed:           "var(--error)",
   cancelled:        "var(--text-disabled)",
 };
 
@@ -140,7 +140,6 @@ export default function MarketFeatureExtractionPage() {
   const [platform, setPlatform] = useState(
     () => (swrHydrate<PlatformOption[]>("mfe_platforms") || [])[0]?.key || "",
   );
-  const [launching, setLaunching] = useState(false);
 
   const [jobs, setJobs] = useState<Job[]>(
     () => swrHydrate<Job[]>("mfe_jobs") || [],
@@ -151,9 +150,11 @@ export default function MarketFeatureExtractionPage() {
 
   const [topTab, setTopTab] = useState<TopTab>("basic");
 
-  // Manual-mode dialog
+  // 启动提取弹窗（API / 网页版共用同一份可编辑 prompt）
   const [manualOpen, setManualOpen] = useState(false);
   const [manualPrompt, setManualPrompt] = useState("");
+  const [dialogMode, setDialogMode] = useState<"api" | "manual">("manual");
+  const [building, setBuilding] = useState(false);   // 生成 prompt 中（点击后进度）
 
   // 高级特征提取：自动选出的代表作候选 + 用户勾选集合（select/deselect）。
   const [candidates, setCandidates] = useState<RepCandidate[]>([]);
@@ -278,55 +279,43 @@ export default function MarketFeatureExtractionPage() {
 
   // ── actions ──
 
-  const launchJob = useCallback(async () => {
-    if (!platform) {
-      toast("请先选择平台", "error");
-      return;
-    }
-    if (selectedWorkIds.length === 0) {
-      toast("请至少勾选一部代表作", "error");
-      return;
-    }
-    if (!window.confirm(
-      `准备启动 API 提取任务：\n平台：${tPlatform(platform)}（整平台）\n` +
-      `代表作：已勾选 ${selectedWorkIds.length} 部\n\n` +
-      `将调用大模型对勾选的代表作做生造词Step2 + 行文风格七组抽取，更新该平台` +
-      `风格档案。可能耗时数分钟。继续？`,
-    )) return;
-    setLaunching(true);
-    try {
-      await apiPost<{ job_id: string; state: string }>(
-        "/api/market-extractor/jobs",
-        { platform, category: "", work_ids: selectedWorkIds },
-      );
-      toast("已启动平台提取任务", "success");
-    } catch (e: any) {
-      toast(`启动失败：${e.message}`, "error");
-    }
-    await refreshJobs();
-    setLaunching(false);
-  }, [platform, selectedWorkIds, refreshJobs, toast]);
-
-  const startManualMode = useCallback(async () => {
-    if (!platform) {
-      toast("请先选择平台", "error");
-      return;
-    }
-    if (selectedWorkIds.length === 0) {
-      toast("请至少勾选一部代表作", "error");
-      return;
-    }
+  // 点击「API」/「网页版」任一按钮：先生成（共用的）prompt，再打开可编辑弹窗。
+  // mode 决定弹窗默认走 API 自动调用 还是 网页版手动粘贴；两种都能看到并修改 prompt。
+  const buildAndOpen = useCallback(async (mode: "api" | "manual") => {
+    if (!platform) { toast("请先选择平台", "error"); return; }
+    if (selectedWorkIds.length === 0) { toast("请至少勾选一部代表作", "error"); return; }
+    setBuilding(true);
     try {
       const r = await apiPost<{ prompt: string }>(
         "/api/market-extractor/manual-prompt",
         { platform, category: "", work_ids: selectedWorkIds },
       );
       setManualPrompt(r.prompt || "");
+      setDialogMode(mode);
       setManualOpen(true);
     } catch (e: any) {
       toast(`生成 prompt 失败: ${e.message}`, "error");
+    } finally {
+      setBuilding(false);
     }
   }, [platform, selectedWorkIds, toast]);
+
+  // API 模式：把（用户可能已编辑的）prompt 直接发给配置的大模型 API，返回原始回复。
+  const invokeApi = useCallback(async (signal: AbortSignal, livePrompt: string) => {
+    if (!platform) throw new Error("未选择平台，请先在第 1 步选择平台");
+    if (!livePrompt || !livePrompt.trim()) throw new Error("提示词为空，无法提取");
+    const res = await fetch("/api/market-extractor/api-extract", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform, category: "", prompt: livePrompt }), signal,
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const e = await res.json(); msg = e.detail || msg; } catch { /* keep */ }
+      throw new Error(msg);
+    }
+    const j = await res.json();
+    return j.response_raw || "";
+  }, [platform]);
 
   const commitManual = useCallback(async (payload: { text: string }) => {
     const r = await apiPost<{ profile_id: string }>(
@@ -453,30 +442,37 @@ export default function MarketFeatureExtractionPage() {
           </h3>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
             {([
-              { onClick: launchJob, primary: true, busy: launching,
-                title: "使用大模型 API 提取",
-                desc: "调用已配置的大模型 API 自动完成，无需人工粘贴；可能耗时数分钟。" },
-              { onClick: startManualMode, primary: false, busy: false,
-                title: "使用大模型网页版提取",
-                desc: "复制提示词到网页版大模型运行，再把回复粘回；无需 API key。" },
+              { mode: "api" as const, primary: true, title: "使用大模型 API 提取" },
+              { mode: "manual" as const, primary: false, title: "使用大模型网页版提取" },
             ]).map((opt) => {
-              const disabled = !SELECTION_OK || selectedWorkIds.length === 0 || opt.busy;
+              const disabled = !SELECTION_OK || selectedWorkIds.length === 0 || building;
               return (
-                <button key={opt.title} onClick={opt.onClick} disabled={disabled} style={{
-                  display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6,
-                  padding: 16, borderRadius: 8, cursor: disabled ? "not-allowed" : "pointer",
-                  textAlign: "left", opacity: disabled ? 0.55 : 1,
+                <button key={opt.title} onClick={() => buildAndOpen(opt.mode)} disabled={disabled} style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  padding: "16px 18px", borderRadius: 8, cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.55 : 1, fontSize: 14, fontWeight: 700,
                   border: `1.5px solid ${opt.primary ? "var(--accent)" : "var(--border)"}`,
                   background: opt.primary ? "var(--accent)" : "var(--bg-surface)",
                   color: opt.primary ? "white" : "var(--text-primary)",
                 }}>
-                  <span style={{ fontSize: 14, fontWeight: 700 }}>{opt.busy ? "启动中..." : opt.title}</span>
-                  <span style={{ fontSize: 11, lineHeight: 1.5, opacity: opt.primary ? 0.9 : 0.7 }}>{opt.desc}</span>
+                  {building ? "生成提示词中…" : opt.title}
                 </button>
               );
             })}
           </div>
-          {(!SELECTION_OK || selectedWorkIds.length === 0) && (
+          {/* 点击后：生成（共用）提示词的进度（不定长），随后弹出可编辑提示词窗口 */}
+          {building && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ width: "40%", height: "100%", background: "var(--jade)", borderRadius: 4, animation: "mfe-indeterminate 1.2s ease-in-out infinite" }} />
+              </div>
+              <style>{`@keyframes mfe-indeterminate{0%{margin-left:-40%}100%{margin-left:100%}}`}</style>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+                正在根据已选代表作生成提示词（含开篇统计 + 节选）…完成后可在弹窗里手动修改再运行。
+              </div>
+            </div>
+          )}
+          {(!SELECTION_OK || selectedWorkIds.length === 0) && !building && (
             <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 10 }}>
               {!SELECTION_OK ? "先在上方选择平台" : "请在「代表作选取」中至少勾选一部作品"}
             </div>
@@ -488,15 +484,20 @@ export default function MarketFeatureExtractionPage() {
           profiles={platformProfiles} platform={platform} category="" />
       </>)}
 
-      {/* 网页版大模型手动粘贴弹窗 */}
+      {/* 启动提取弹窗：可编辑 prompt；API 自动调用 / 网页版手动粘贴共用同一份 prompt */}
       <UniversalLLMDialog
         open={manualOpen}
         onClose={() => setManualOpen(false)}
-        title={`网页版大模型提取：${tPlatform(platform)}`}
+        title={`高级特征提取：${tPlatform(platform)}`}
+        description={dialogMode === "api"
+          ? "确认提示词后用大模型 API 自动运行。"
+          : "复制提示词到网页版大模型运行后把回复粘回。"}
         prompt={manualPrompt}
+        editablePrompt
+        invokeApi={invokeApi}
         onCommit={commitManual}
         minChars={80}
-        initialMode="manual_only"
+        initialMode={dialogMode === "manual" ? "manual_only" : "api_only"}
       />
     </div>
   );
@@ -592,6 +593,7 @@ function RepWorksSelector({
   onClear: () => void; onReload: () => void;
 }) {
   const [openExcerpt, setOpenExcerpt] = React.useState<Record<string, boolean>>({});
+  const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>({});  // 各类代表作折叠
   const groups = React.useMemo(() => {
     const m = new Map<string, RepCandidate[]>();
     for (const c of candidates) {
@@ -638,28 +640,40 @@ function RepWorksSelector({
           <Empty msg="未选到代表作 — 请确认该平台已采集作品与章节（Settings → 市场数据库）。" />
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {groups.map(([reason, list]) => (
-              <div key={reason}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
-                  <span style={{
-                    fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 12,
-                    color: "white", background: REASON_COLOR[reason] || "var(--text-tertiary)",
-                  }}>{reason}</span>
-                  <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                    {REASON_DESC[reason] || ""} · {list.length} 部
-                  </span>
+            {groups.map(([reason, list]) => {
+              const isCollapsed = !!collapsed[reason];
+              const selInGroup = list.filter(c => selected.includes(c.work_id)).length;
+              return (
+                <div key={reason}>
+                  <button
+                    onClick={() => setCollapsed(p => ({ ...p, [reason]: !p[reason] }))}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8, marginBottom: 8,
+                      background: "none", border: "none", padding: 0, cursor: "pointer", width: "100%", textAlign: "left",
+                    }}>
+                    <span style={{ fontSize: 12, color: "var(--text-tertiary)", width: 12 }}>{isCollapsed ? "▸" : "▾"}</span>
+                    <span style={{
+                      fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 12,
+                      color: "white", background: REASON_COLOR[reason] || "var(--text-tertiary)",
+                    }}>{reason}</span>
+                    <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                      {REASON_DESC[reason] || ""} · {list.length} 部{selInGroup ? ` · 已选 ${selInGroup}` : ""}
+                    </span>
+                  </button>
+                  {!isCollapsed && (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
+                      {list.map(c => (
+                        <RepCard key={c.work_id} c={c}
+                          on={selected.includes(c.work_id)}
+                          onToggle={() => onToggle(c.work_id)}
+                          expanded={!!openExcerpt[c.work_id]}
+                          onExcerpt={() => setOpenExcerpt(p => ({ ...p, [c.work_id]: !p[c.work_id] }))} />
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
-                  {list.map(c => (
-                    <RepCard key={c.work_id} c={c}
-                      on={selected.includes(c.work_id)}
-                      onToggle={() => onToggle(c.work_id)}
-                      expanded={!!openExcerpt[c.work_id]}
-                      onExcerpt={() => setOpenExcerpt(p => ({ ...p, [c.work_id]: !p[c.work_id] }))} />
-                  ))}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -1043,7 +1057,7 @@ function BasicExtractionTab() {
           </div>
         </div>
       )}
-      {err && <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--danger)" }}><div className="card-body" style={{ fontSize: 12, color: "var(--danger)" }}>分析失败：{err}</div></div>}
+      {err && <div className="card" style={{ marginBottom: 14, borderLeft: "3px solid var(--error)" }}><div className="card-body" style={{ fontSize: 12, color: "var(--error)" }}>分析失败：{err}</div></div>}
 
       {!hasAny && !computing && (
         <Empty msg={everRun
@@ -1055,7 +1069,7 @@ function BasicExtractionTab() {
       {/* 市场信息 (spec 2.1.3.2 全部维度，可视化) */}
       {hasMarket && <MarketInfoBlock market={market!} platform={platform} />}
 
-      {/* 开篇章节NLP维度 */}
+      {/* 语言学文本特征 */}
       {hasNlp && <NlpDimsBlock nlp={nlp!} onReanalyze={() => load(true)} busy={computing} />}
     </>
   );
@@ -1091,71 +1105,25 @@ function WordChips({ items, list, busy, onRemove, emptyMsg }: {
   );
 }
 
-type NameSec = { key: string; title: string; addList: string | null; addGroup: string | null; items: WLItem[] };
-
-/** 人名 section（中文·姓氏 / 西方 …）— 可收起展开，section 内自带添加按钮。 */
-function NameSection({ section, busy, onAdd, onRemove }: {
-  section: NameSec; busy: boolean;
-  onAdd: (list: string, group: string | null, word: string) => void;
-  onRemove: (word: string, list: string) => void;
-}) {
-  const [collapsed, setCollapsed] = React.useState(false);
-  const [val, setVal] = React.useState("");
-  const submit = () => { const w = val.trim(); if (w && section.addList) { onAdd(section.addList, section.addGroup, w); setVal(""); } };
-  return (
-    <div className="card">
-      <div className="card-header" style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <button onClick={() => setCollapsed(c => !c)} style={{
-          border: "none", background: "none", cursor: "pointer", display: "flex",
-          alignItems: "center", gap: 8, padding: 0, color: "var(--text-primary)",
-        }}>
-          <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>{collapsed ? "▸" : "▾"}</span>
-          <h3 style={{ margin: 0, fontSize: 14 }}>{section.title}</h3>
-          <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-tertiary)" }}>{section.items.length}</span>
-        </button>
-        {section.addList && (
-          <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
-            <input className="input" value={val} onChange={e => setVal(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") submit(); }}
-              placeholder="新增…" style={{ width: 120, padding: "5px 10px", fontSize: 12 }} />
-            <button className="btn-primary" disabled={busy || !val.trim()}
-              onClick={submit} style={{ fontSize: 11, padding: "5px 12px" }}>添加</button>
-          </div>
-        )}
-      </div>
-      {!collapsed && (
-        <div className="card-body">
-          <WordChips items={section.items} busy={busy} onRemove={onRemove} />
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** 资源管理 tab — 人名（中文·姓氏/名字、日本·姓氏/名字、西方）各 section 自带
  *  添加 + 收起展开；常用词分组列表。 */
 function ResourceManagerTab() {
   const { toast } = useToast();
   type WLGroup = { group: string; items: WLItem[] };
   type CommonData = { total: number; groups: WLGroup[] };
-  type NamesData = { sections: NameSec[] };
 
-  const [topCat, setTopCat] = React.useState<"names" | "common">("names");
+  // 「人名」tab 已被「人名库」取代（人名库才是权威人名数据，且作为静态 fallback）。
+  const [topCat, setTopCat] = React.useState<"namelib" | "common">("namelib");
   const [q, setQ] = React.useState("");
-  const [names, setNames] = React.useState<NamesData | null>(null);
   const [common, setCommon] = React.useState<CommonData | null>(null);
   const [newWord, setNewWord] = React.useState("");   // 常用词的顶部新增
-  const [ioList, setIoList] = React.useState<"surnames" | "given_names">("surnames");
   const [busy, setBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
 
   const reload = React.useCallback(async () => {
+    if (topCat !== "common") return;   // 人名库由 NameLibraryView 自管
     try {
-      if (topCat === "names") {
-        setNames(await apiGet<NamesData>(`/api/analysis/wordlist/names?q=${encodeURIComponent(q)}`));
-      } else {
-        setCommon(await apiGet<CommonData>(`/api/analysis/wordlist/grouped?list=common_words&q=${encodeURIComponent(q)}`));
-      }
+      setCommon(await apiGet<CommonData>(`/api/analysis/wordlist/grouped?list=common_words&q=${encodeURIComponent(q)}`));
     } catch (e: any) { toast(`加载资源失败：${e.message}`, "error"); }
   }, [topCat, q, toast]);
 
@@ -1179,7 +1147,7 @@ function ResourceManagerTab() {
     catch (e: any) { toast(`删除失败：${e.message}`, "error"); }
     finally { setBusy(false); }
   };
-  const importList = topCat === "common" ? "common_words" : ioList;
+  const importList = "common_words";
   const doImport = async (file: File) => {
     setBusy(true);
     try {
@@ -1206,14 +1174,16 @@ function ResourceManagerTab() {
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-body" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 6 }}>
-            {([["names", "人名"], ["common", "常用词"]] as const).map(([k, lbl]) => (
+            {([["namelib", "人名库"], ["common", "常用词"]] as const).map(([k, lbl]) => (
               <button key={k} className={topCat === k ? "btn-primary" : "btn"}
                 style={{ fontSize: 12, padding: "5px 16px", borderRadius: 20 }}
                 onClick={() => setTopCat(k)}>{lbl}</button>
             ))}
           </div>
-          <input className="input" value={q} onChange={e => setQ(e.target.value)}
-            placeholder="搜索…" style={{ flex: 1, minWidth: 150, maxWidth: 280, padding: "7px 12px" }} />
+          {topCat !== "namelib" && (
+            <input className="input" value={q} onChange={e => setQ(e.target.value)}
+              placeholder="搜索…" style={{ flex: 1, minWidth: 150, maxWidth: 280, padding: "7px 12px" }} />
+          )}
           {topCat === "common" && (
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input className="input" value={newWord} onChange={e => setNewWord(e.target.value)}
@@ -1224,33 +1194,21 @@ function ResourceManagerTab() {
                 style={{ fontSize: 12, padding: "7px 16px" }}>添加</button>
             </div>
           )}
-          <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
-            {topCat === "names" && (
-              <select className="select" value={ioList} onChange={e => setIoList(e.target.value as any)}
-                style={{ fontSize: 12, padding: "5px 8px" }}>
-                <option value="surnames">姓</option>
-                <option value="given_names">名</option>
-              </select>
-            )}
-            <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
-              disabled={busy} onClick={() => fileRef.current?.click()}>导入 txt</button>
-            <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
-              onClick={() => doExport(importList)}>导出 txt</button>
-            <input ref={fileRef} type="file" accept=".txt,text/plain" style={{ display: "none" }}
-              onChange={e => { const f = e.target.files?.[0]; if (f) doImport(f); }} />
-          </div>
+          {topCat === "common" && (
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+              <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
+                disabled={busy} onClick={() => fileRef.current?.click()}>导入 txt</button>
+              <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }}
+                onClick={() => doExport(importList)}>导出 txt</button>
+              <input ref={fileRef} type="file" accept=".txt,text/plain" style={{ display: "none" }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) doImport(f); }} />
+            </div>
+          )}
         </div>
       </div>
 
-      {topCat === "names" ? (
-        !names ? <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>加载中…</div> : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {names.sections.map(sec => (
-              <NameSection key={sec.key} section={sec} busy={busy} onAdd={addWord} onRemove={remove} />
-            ))}
-          </div>
-        )
-      ) : (
+      {topCat === "namelib" && <NameLibraryView />}
+      {topCat === "common" && (
         !common ? <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>加载中…</div> :
           common.total === 0 ? <Empty msg={q ? `没有匹配「${q}」的常用词。` : "常用词资源为空。"} /> : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1273,6 +1231,222 @@ function ResourceManagerTab() {
   );
 }
 
+
+/** 加权分布水平条（取名规律用，展示加权值而非原始计数）。 */
+function WeightedBars({ rows, color, k = 12 }: { rows: any[]; color: string; k?: number }) {
+  const items = (rows || []).slice(0, k);
+  const max = Math.max(0.001, ...items.map(r => r.weight || 0));
+  if (items.length === 0) return <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {items.map((r, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+          <span style={{ width: 36, color: "var(--text-secondary)", textAlign: "center" }}>{r.key}</span>
+          <div style={{ flex: 1 }}><MiniBar value={r.weight || 0} max={max} color={color} /></div>
+          <span className="font-mono" style={{ width: 42, textAlign: "right", color: "var(--text-tertiary)" }}>{(r.pct * 100).toFixed(1)}%</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 取名规律统计：按题材加权命名画像（描述性，非打分依据）。spec §5。 */
+function NamingPatternsPanel() {
+  const { toast } = useToast();
+  const [cats, setCats] = React.useState<any[]>([]);
+  const [cat, setCat] = React.useState<string>("");
+  const [data, setData] = React.useState<any>(null);
+  const [pos, setPos] = React.useState<"first" | "last" | "all">("first");
+
+  React.useEffect(() => {
+    apiGet<{ categories: any[] }>("/api/analysis/naming-patterns/categories")
+      .then(r => { setCats(r.categories || []); if (!cat && r.categories?.[0]) setCat(r.categories[0].category); })
+      .catch(() => { });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  React.useEffect(() => {
+    if (!cat) { setData(null); return; }
+    apiGet<any>(`/api/analysis/naming-patterns?category=${encodeURIComponent(cat)}`)
+      .then(setData).catch((e: any) => toast(`加载取名规律失败：${e.message}`, "error"));
+  }, [cat, toast]);
+
+  if (cats.length === 0) {
+    return <Empty msg="人名库尚无带题材的人名 — 先在『名单』里点『刷新人名库』，让 NER 从市场库新增书抽取带题材的人名。" />;
+  }
+  const nls = data?.name_length_structure || {};
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>题材</span>
+        <select className="select" value={cat} onChange={e => setCat(e.target.value)}
+          style={{ fontSize: 12, padding: "5px 10px" }}>
+          {cats.map(c => <option key={c.category} value={c.category}>{c.category}（{c.standard_count}）</option>)}
+        </select>
+      </div>
+      {!data?.available ? (
+        <Empty msg={data?.reason || "该题材暂无足够数据。"} />
+      ) : (
+        <>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+            基于 {data.book_count} 部作品 · {data.name_count} 个标准名 · 按来源作品热度/排名加权（前排权重大）
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>姓氏加权分布</div>
+              <WeightedBars rows={data.surname_distribution} color="var(--accent)" />
+            </div>
+            <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                名字用字加权分布
+                <div style={{ display: "flex", gap: 4 }}>
+                  {(["first", "last", "all"] as const).map(p => (
+                    <button key={p} className={pos === p ? "btn-primary" : "btn"} onClick={() => setPos(p)}
+                      style={{ fontSize: 10, padding: "2px 8px" }}>{p === "first" ? "首字" : p === "last" ? "末字" : "全部"}</button>
+                  ))}
+                </div>
+              </div>
+              <WeightedBars rows={data.given_char_distribution?.[pos]} color="var(--jade)" />
+            </div>
+            <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>名长结构</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 11 }}>
+                {[["单名", nls.single_given], ["双名", nls.double_given], ["复姓", nls.compound_surname], ["其他", nls.other]].map(([lbl, v]: any) => (
+                  <div key={lbl} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 36, color: "var(--text-secondary)" }}>{lbl}</span>
+                    <div style={{ flex: 1 }}><MiniBar value={v || 0} max={1} color="var(--indigo)" /></div>
+                    <span className="font-mono" style={{ width: 42, textAlign: "right", color: "var(--text-tertiary)" }}>{((v || 0) * 100).toFixed(1)}%</span>
+                  </div>
+                ))}
+                <div style={{ marginTop: 4, paddingTop: 6, borderTop: "1px dashed var(--border)", color: "var(--text-secondary)" }}>
+                  生僻字使用率 <strong className="font-mono">{((data.rare_char_rate || 0) * 100).toFixed(1)}%</strong>
+                </div>
+              </div>
+            </div>
+            <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>名字字对·典型组合</div>
+              <WeightedBars rows={data.typical_char_pairs} color="var(--gold)" />
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", fontStyle: "italic" }}>
+            ⚠ {data.note}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 人名库视图：名单(CRUD/DF) + 取名规律 + LTP NER 增量刷新与硬件状态。spec §4/§5。 */
+function NameLibraryView() {
+  // InkOctoBot 侧只做「增量更新」：对市场库新增小说开篇正文跑 LTP 抽人名入库。
+  // 全量预训练 + 查看/编辑/清洗/导入导出 在独立工具 name_pretrainer。取名规律保留。
+  const { toast } = useToast();
+  const [stats, setStats] = React.useState<any>(null);
+  const [status, setStatus] = React.useState<any>(null);
+  const [busy, setBusy] = React.useState(false);
+
+  const reloadStatus = React.useCallback(async () => {
+    try { setStatus(await apiGet<any>("/api/analysis/name-library/refresh-status")); } catch { /* ignore */ }
+  }, []);
+  const reloadStats = React.useCallback(async () => {
+    try { setStats(await apiGet<any>("/api/analysis/name-library/stats")); } catch { /* ignore */ }
+  }, []);
+  React.useEffect(() => { reloadStatus(); reloadStats(); }, [reloadStatus, reloadStats]);
+  // 后台增量进行时轮询进度（切走/切回不打断）；running 翻 false 自动停。
+  React.useEffect(() => {
+    if (!status?.running) return;
+    const id = window.setInterval(() => { reloadStatus(); reloadStats(); }, 2000);
+    return () => window.clearInterval(id);
+  }, [status?.running, reloadStatus, reloadStats]);
+
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      const r = await apiPost<any>("/api/analysis/name-library/refresh", {});
+      if (r.status) setStatus(r.status);
+      toast(r.started ? "已开始增量更新（后台运行，可切走）…" : "更新已在进行中", "info");
+      window.setTimeout(() => { reloadStatus(); }, 500);
+    } catch (e: any) { toast(`更新失败：${e.message}`, "error"); }
+    finally { setBusy(false); }
+  };
+
+  const backend = status?.backend || {};
+  const gpu = backend.gpu || {};
+  const backendLabel = backend.backend === "ltp_gpu" ? "LTP · GPU"
+    : backend.backend === "ltp_cpu" ? "LTP · CPU" : "LTP 未就绪";
+  const ltpErr = backend.ltp_load_error || backend.ltp_import_error || backend.ltp_ner_error || "";
+  const nerErr = backend.uses_ltp ? (backend.ltp_ner_error || "") : "";
+  const prog = status?.progress || {};
+  const showBar = !!status?.running && prog.total > 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* NER 后端 + 增量更新 */}
+      <div className="card"><div className="card-body" style={{ fontSize: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span>识别后端 <strong style={{ color: backend.uses_ltp ? "var(--jade)" : "var(--text-primary)" }}>{backendLabel}</strong></span>
+          {status?.last_refresh && <span style={{ color: "var(--text-tertiary)" }}>上次更新 {new Date(status.last_refresh).toLocaleString()}</span>}
+          <span style={{ color: "var(--text-tertiary)" }}>已处理 {status?.books_processed ?? "—"} 本</span>
+          {stats && <span style={{ color: "var(--text-tertiary)" }}>共 {stats.total} 名 · 中 {stats.by_kind?.chinese || 0} / 日 {stats.by_kind?.japanese || 0} / 西 {stats.by_kind?.western || 0}</span>}
+          <div style={{ marginLeft: "auto" }}>
+            <button className="btn-primary" disabled={busy || status?.running} onClick={refresh}
+              style={{ fontSize: 12, padding: "6px 16px" }}>
+              {status?.running ? "更新中…" : "增量更新（新书）"}
+            </button>
+          </div>
+        </div>
+        <div style={{ color: "var(--text-tertiary)", marginTop: 6 }}>{backend.reason || "—"}</div>
+        {backend.backend === "seed" && (
+          <div style={{ color: "var(--error)", marginTop: 4, lineHeight: 1.6 }}>
+            <strong>LTP 未就绪，暂不抽取人名</strong>（不使用 jieba 兜底）。请安装 / 修复 LTP 后再「增量更新」。
+            {ltpErr && (
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ cursor: "pointer", color: "var(--gold)" }}>LTP 报错（发我可精确定位）</summary>
+                <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-secondary)", marginTop: 4 }}>{ltpErr}</pre>
+              </details>
+            )}
+          </div>
+        )}
+        {nerErr && (
+          <div style={{ color: "var(--error)", marginTop: 4, lineHeight: 1.6 }}>
+            <strong>LTP 已加载但 NER 推理报错</strong>，本轮可能抽不到名。
+            <details style={{ marginTop: 4 }}>
+              <summary style={{ cursor: "pointer", color: "var(--gold)" }}>报错详情 / 修复命令</summary>
+              <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-secondary)", marginTop: 4 }}>{nerErr}</pre>
+            </details>
+          </div>
+        )}
+        {gpu.physical_gpu && !gpu.torch_cuda_available && (
+          <div style={{ color: "var(--gold)", marginTop: 4, lineHeight: 1.6 }}>
+            检测到 GPU「{gpu.gpu_name}」{gpu.gpu_vram_mb ? `（${gpu.gpu_vram_mb}MB）` : ""}，
+            但当前 torch {gpu.torch_cuda_build ? "未启用 CUDA" : "为 CPU 版"}
+            {gpu.torch_version ? `（${gpu.torch_version}）` : ""}，无法 GPU 加速。
+            <div style={{ color: "var(--text-secondary)", marginTop: 2 }}>
+              强制重装 CUDA 版：<code style={{ color: "var(--text-primary)" }}>pip install torch --index-url https://download.pytorch.org/whl/cu121 --force-reinstall</code>，再重启后端。
+            </div>
+          </div>
+        )}
+        {showBar && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ height: 8, background: "var(--bg-surface-2)", borderRadius: 4, overflow: "hidden" }}>
+              <div style={{ width: `${prog.pct || 0}%`, height: "100%", background: "var(--accent)", transition: "width 0.3s linear" }} />
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+              处理中 {prog.done} / {prog.total} 本（{prog.pct || 0}%）· 已抽 {prog.names} 名 · 可切到其它页面，进程不中断
+            </div>
+          </div>
+        )}
+        <div style={{ color: "var(--text-tertiary)", marginTop: 8, lineHeight: 1.6 }}>
+          此处仅做<strong>增量更新</strong>（市场库新增小说 → 抽人名入库）。人名库的全量预训练、
+          查看 / 编辑 / 清洗、导入导出，请用独立的「人名识别预训练器」（name_pretrainer）。
+        </div>
+      </div></div>
+
+      {/* 取名规律（保留） */}
+      <NamingPatternsPanel />
+    </div>
+  );
+}
 
 /** 趋势箭头：窗口内百分比变化。正=升(jade)、负=降(accent)、零=平。 */
 function TrendArrow({ v }: { v: number | null | undefined }) {
@@ -1535,12 +1709,110 @@ function HighFreqWord({ w, selected, busy, onSelect }: {
         color: "var(--text-primary)", opacity: busy ? 0.5 : 1,
       }}
     >
-      {w.word}<span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}>{w.count}</span>
+      {w.word}
+      <span style={{ color: "var(--text-tertiary)", marginLeft: 4 }}
+        title={`相对频率 ${w.relative_freq != null ? (w.relative_freq * 100).toFixed(2) : "—"}% （该词出现次数 ÷ 语料总词数）· 原始计数 ${w.count} · 跨 ${w.work_count ?? "?"} 部作品`}>
+        {w.relative_freq != null ? `${(w.relative_freq * 100).toFixed(2)}%` : w.count}
+      </span>
     </button>
   );
 }
 
-/** 开篇章节NLP维度：首章/章均/章中位字数、平均句长、分类型标点密度、高频词。 */
+/** 七大类情感配色（DUTIR）—— 全用主题已定义/明亮的色，避免与深色背景混淆。 */
+const EMOTION_COLORS: Record<string, string> = {
+  "乐": "var(--gold)", "好": "var(--jade)", "怒": "var(--accent)",
+  "哀": "var(--indigo)", "惧": "var(--purple)", "恶": "var(--cyan)", "惊": "#f472b6",
+};
+
+/** 词性分布（动作场面/修饰描写/设定密度）+ 句式复杂度（MDD）。spec §1。 */
+function PosMddPanel({ pos, mdd }: { pos: any; mdd: any }) {
+  const rows: { label: string; hint: string; val: number; color: string }[] = [];
+  if (pos?.available) {
+    rows.push({ label: "动作场面", hint: `动词占比 ${(pos.verb_ratio * 100).toFixed(1)}%`, val: pos.action_scene, color: "var(--accent)" });
+    rows.push({ label: "修饰描写密度", hint: `形容词占比 ${(pos.adjective_ratio * 100).toFixed(1)}%`, val: pos.description_density, color: "var(--gold)" });
+    rows.push({ label: "设定密度", hint: `名词占比 ${(pos.noun_ratio * 100).toFixed(1)}%`, val: pos.setting_density, color: "var(--jade)" });
+  }
+  const max = Math.max(0.01, ...rows.map(r => r.val));
+  return (
+    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+        词性分布 <span style={{ fontWeight: 400, color: "var(--text-tertiary)" }}>· 读者视角</span>
+      </div>
+      {rows.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>需 jieba 分词</div> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {rows.map(r => (
+            <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 8 }} title={r.hint}>
+              <span style={{ width: 92, fontSize: 11, color: "var(--text-secondary)" }}>{r.label}</span>
+              <div style={{ flex: 1 }}><MiniBar value={r.val} max={max} color={r.color} /></div>
+              <span className="font-mono" style={{ width: 48, textAlign: "right", fontSize: 11 }}>{(r.val * 100).toFixed(1)}%</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {mdd?.available && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}
+          title={mdd.is_estimate ? "依存距离需 LTP 句法分析；当前为按小句长度的估算" : `平均依存距离 MDD = ${mdd.mdd}`}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ width: 92, fontSize: 11, color: "var(--text-secondary)" }}>句式复杂度</span>
+            <div style={{ flex: 1 }}><MiniBar value={mdd.complexity} max={1} color="var(--indigo)" /></div>
+            <span className="font-mono" style={{ width: 48, textAlign: "right", fontSize: 11 }}>{(mdd.complexity * 100).toFixed(0)}%</span>
+          </div>
+          <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 3 }}>
+            {mdd.is_estimate ? "估算（依存距离需 LTP）" : `MDD ${mdd.mdd}`}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 情感分析（DUTIR 七大类占比，可视化）。spec §3。 */
+function EmotionPanel({ sent }: { sent: any }) {
+  const labels: Record<string, string> = sent?.labels || {};
+  const ratio: Record<string, number> = sent?.emotion_ratio || {};
+  const order = ["乐", "好", "怒", "哀", "惧", "恶", "惊"];
+  const present = order.filter(e => (ratio[e] || 0) > 0);
+  const methodTag = sent?.method === "dutir_lexicon" ? "DUTIR 词典法" : (sent?.method || "");
+  return (
+    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+        情感分析
+        <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)" }}>· {methodTag}</span>
+      </div>
+      {!sent?.available || present.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{sent?.reason || "语料中未命中情感词"}</div>
+      ) : (
+        <>
+          {/* 堆叠占比条 */}
+          <div style={{ display: "flex", height: 16, borderRadius: 4, overflow: "hidden", marginBottom: 8 }}>
+            {present.map(e => (
+              <div key={e} title={`${labels[e] || e} ${((ratio[e]) * 100).toFixed(1)}%`}
+                style={{ width: `${ratio[e] * 100}%`, background: EMOTION_COLORS[e] || "var(--accent)" }} />
+            ))}
+          </div>
+          {/* 图例 */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px" }}>
+            {present.map(e => (
+              <span key={e} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 2, background: EMOTION_COLORS[e] || "var(--accent)" }} />
+                {labels[e] || e}
+                <span className="font-mono" style={{ color: "var(--text-tertiary)" }}>{(ratio[e] * 100).toFixed(0)}%</span>
+              </span>
+            ))}
+          </div>
+          {sent.dominant_emotion && (
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 8 }}>
+              主导情绪 <strong>{labels[sent.dominant_emotion] || sent.dominant_emotion}</strong>
+              <span style={{ color: "var(--text-tertiary)", marginLeft: 8 }}>命中情感词 {sent.matched}</span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 语言学文本特征：字数/句长/词性分布/句式复杂度/标点密度/用词丰富度/情感/高频词。 */
 function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
   nlp: any; onReanalyze?: () => void; busy?: boolean;
 }) {
@@ -1548,6 +1820,22 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
   const [selWord, setSelWord] = React.useState<string | null>(null);
   const [classifying, setClassifying] = React.useState<string | null>(null);
   const [dirty, setDirty] = React.useState(false);   // 词库被归类修改、待重算
+  const [fullNameInput, setFullNameInput] = React.useState("");   // 纠错：完整人名
+
+  // 纠错回环（spec §5）：用户看到人名碎片（翠翠 属于 李翠翠）→ 提交完整人名，
+  // 写入人名库（→ jieba 整体切分）+ 片段进排除集，清缓存后重分词重算（不删子串）。
+  const correctName = async (fragment: string, fullName: string) => {
+    const fn = (fullName || "").trim();
+    if (fn.length < 2) { toast("请填写完整人名（≥2 字）", "error"); return; }
+    setClassifying(fragment);
+    try {
+      await apiPost("/api/analysis/name-correction", { full_name: fn, fragment });
+      toast(`已标记「${fragment}」属于人名「${fn}」`, "success");
+      setSelWord(null); setFullNameInput(""); setDirty(true);
+    } catch (e: any) {
+      toast(`标记失败：${e.message}`, "error");
+    } finally { setClassifying(null); }
+  };
 
   // 归类某高频词为 人名 / 常用词 → 写入资源；不立即重算，仅在高频词上方标记
   // 「词库已变更」，由用户点「重新分析」统一触发（避免每归类一个就重算）。
@@ -1569,7 +1857,7 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
   if (!spec?.available) {
     return (
       <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--jade)" }}>
-        <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>开篇章节 NLP 维度</h3></div>
+        <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>语言学文本特征</h3></div>
         <div className="card-body"><div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>暂无开篇章节统计数据。</div></div>
       </div>
     );
@@ -1582,10 +1870,12 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
   const wordMax = Math.max(1, ...wordStats.map(([, v]) => v || 0));
   const punct = (spec.punctuation_density_per_1k || {}) as Record<string, number>;
   const punctMax = Math.max(1, ...Object.values(punct).map(v => Number(v) || 0));
+  const lf = spec.linguistic_features || {};   // 词性/MDD/丰富度/情感（spec §1-3）
+  const hasPos = lf.pos_distribution?.available || lf.mdd?.available;
 
   return (
     <div className="card" style={{ marginBottom: 14, borderTop: "3px solid var(--jade)" }}>
-      <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>开篇章节 NLP 维度</h3></div>
+      <div className="card-header"><h3 style={{ margin: 0, fontSize: 14 }}>语言学文本特征</h3></div>
       <div className="card-body">
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
           {/* 字数 */}
@@ -1619,7 +1909,14 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
               </div>
             )}
           </div>
+          {/* 词性分布（动作场面/修饰描写/设定密度）+ 句式复杂度（MDD）— spec §1，
+              扩展自字数维度 */}
+          {hasPos && <PosMddPanel pos={lf.pos_distribution} mdd={lf.mdd} />}
         </div>
+        {/* 情感分析（DUTIR 七大类占比，可视化）— spec §3 */}
+        {lf.sentiment && (
+          <div style={{ marginBottom: 14 }}><EmotionPanel sent={lf.sentiment} /></div>
+        )}
         {/* 词库变更提示 — 紧贴高频词上方 */}
         {dirty && (
           <div style={{
@@ -1664,6 +1961,18 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
                     <button className="btn" disabled={busy} style={{ fontSize: 10, padding: "3px 10px" }}
                       onClick={() => classify(sel.word, "common_words")}>归为常用词</button>
                   </div>
+                </div>
+                {/* 纠错回环：人名碎片 → 标记完整人名（spec §5）。在例句里看到完整名后填入。 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
+                  fontSize: 11, padding: "6px 8px", marginBottom: 8, borderRadius: 4,
+                  background: "var(--bg-surface-2)" }}>
+                  <span style={{ color: "var(--text-tertiary)" }}>是人名碎片？填完整人名（如「{sel.word}」属于）</span>
+                  <input className="input" value={fullNameInput} onChange={e => setFullNameInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") correctName(sel.word, fullNameInput); }}
+                    placeholder={`${sel.word}…`} style={{ width: 110, padding: "3px 8px", fontSize: 11 }} />
+                  <button className="btn" disabled={busy || fullNameInput.trim().length < 2}
+                    style={{ fontSize: 10, padding: "3px 10px" }}
+                    onClick={() => correctName(sel.word, fullNameInput)}>标记为人名</button>
                 </div>
                 {examples.length === 0 ? (
                   <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无可定位的作品片段。</div>
