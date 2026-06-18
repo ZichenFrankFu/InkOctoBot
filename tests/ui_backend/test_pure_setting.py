@@ -193,6 +193,104 @@ class TestSegments:
         assert r.status_code == 400
 
 
+class TestCombinedSources:
+    """新行为：快捷输入 / 设定 / 角色三者任一非空即可提取，
+    且 prompt 必须包含三类内容作为去重上下文。"""
+
+    @pytest.fixture
+    def captured_prompt(self, monkeypatch):
+        captured: dict = {}
+
+        async def fake_invoke(self, *, prompt, system, **kw):
+            captured["prompt"] = prompt
+            return json.dumps({
+                "settings": [], "characters": [],
+                "setting_features": [{"title": "测试母题", "description": "..."}],
+            })
+        monkeypatch.setattr("llm.call_site.LLMCallSite.invoke", fake_invoke)
+        return captured
+
+    def test_extract_with_only_settings(self, client, captured_prompt) -> None:
+        """快捷输入为空，但已有设定 → 应可提取，prompt 含设定上下文。"""
+        client.put("/api/references/works/w1/pure-setting", json={
+            "settings": [{"category": "地理", "title": "Site-19",
+                          "content": "主收容站点"}],
+        })
+        r = client.post("/api/references/works/w1/pure-setting/extract",
+                        json={"chunk_index": 0})
+        assert r.status_code == 200
+        prompt = captured_prompt["prompt"]
+        # 设定 Site-19 应出现在 prompt 里作为去重上下文
+        assert "Site-19" in prompt
+        # 应至少返回特征（基于已有设定）
+        assert r.json()["setting_features"][0]["title"] == "测试母题"
+
+    def test_extract_with_only_characters(self, client, captured_prompt) -> None:
+        """快捷输入为空，但已有角色 → 应可提取，prompt 含角色上下文。"""
+        client.put("/api/references/works/w1/pure-setting", json={
+            "static_characters": [{"name": "Bright博士", "role": "研究员",
+                                    "description": "无法死亡"}],
+        })
+        r = client.post("/api/references/works/w1/pure-setting/extract",
+                        json={"chunk_index": 0})
+        assert r.status_code == 200
+        assert "Bright博士" in captured_prompt["prompt"]
+
+    def test_extract_with_all_three_sources(self, client, captured_prompt) -> None:
+        """三类输入都有时 prompt 必须同时包含。"""
+        client.put("/api/references/works/w1/pure-setting", json={
+            "quick_input_text": _WIKI,
+            "settings": [{"category": "地理", "title": "Site-19", "content": "x"}],
+            "static_characters": [{"name": "Bright博士", "role": "研究员",
+                                    "description": "y"}],
+        })
+        r = client.post("/api/references/works/w1/pure-setting/extract",
+                        json={"chunk_index": 0})
+        assert r.status_code == 200
+        prompt = captured_prompt["prompt"]
+        assert "SCP-173" in prompt        # 快捷输入原文
+        assert "Site-19" in prompt        # 已有设定
+        assert "Bright博士" in prompt      # 已有角色
+
+    def test_extract_with_nothing_400(self, client, captured_prompt) -> None:
+        """三类输入全部为空 → 400。"""
+        r = client.post("/api/references/works/w1/pure-setting/extract",
+                        json={"chunk_index": 0})
+        assert r.status_code == 400
+
+    def test_segments_returns_existing_counts(self, client) -> None:
+        client.put("/api/references/works/w1/pure-setting", json={
+            "quick_input_text": _WIKI,
+            "settings": [{"category": "地理", "title": "Site-19", "content": "x"}],
+            "static_characters": [
+                {"name": "A", "role": "x", "description": "y"},
+                {"name": "B", "role": "x", "description": "y"},
+            ],
+        })
+        body = client.get(
+            "/api/references/works/w1/pure-setting/segments").json()
+        assert body["existing_settings_count"] == 1
+        assert body["existing_characters_count"] == 2
+        assert body["can_extract"] is True
+
+    def test_segments_empty_input_with_existing(self, client) -> None:
+        """快捷输入为空但已有设定/角色 → 返回 1 个空段，can_extract=True。"""
+        client.put("/api/references/works/w1/pure-setting", json={
+            "settings": [{"category": "地理", "title": "X", "content": "y"}],
+        })
+        body = client.get(
+            "/api/references/works/w1/pure-setting/segments").json()
+        assert body["total_chunks"] == 1
+        assert body["chunks"][0]["n_chars"] == 0
+        assert body["can_extract"] is True
+
+    def test_segments_truly_empty_not_extractable(self, client) -> None:
+        body = client.get(
+            "/api/references/works/w1/pure-setting/segments").json()
+        assert body["can_extract"] is False
+        assert body["total_chunks"] == 0
+
+
 class TestPastedParse:
     def test_parse_paste_normalizes(self, client) -> None:
         raw = json.dumps({

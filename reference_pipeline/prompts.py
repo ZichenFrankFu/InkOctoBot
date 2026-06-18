@@ -750,12 +750,23 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
     "reference.pure_setting": {
         "template": """[自动化数据抽取 · 不是对话] 你的输出会被 `json.loads` 直接解析；任何非 JSON 字符都会导致管线失败。
 
-任务：阅读下面这**一段**纯设定作品（如 SCP / 后室 / 战锤40K）的 wiki 条目原文，一次性抽取 3 类信息——**设定 / 角色 / 设定特征**——合并成**一个** JSON 对象返回。
+任务：阅读下面这**一段**纯设定作品（如 SCP / 后室 / 战锤40K）的「作品材料」，一次性抽取 3 类信息——**设定 / 角色 / 设定特征**——合并成**一个** JSON 对象返回。
 
 作品上下文（仅供消歧）：
 - 作品标题：《{title}》
 - 作者/来源：{author}
-- 分段：第 {chunk_index_human}/{total_chunks} 段（共 {n_chars} 字）
+- 本段：第 {chunk_index_human}/{total_chunks} 段（wiki 原文 {n_chars} 字）
+
+【作品材料 · 三部分组合】
+
+==== 部分一：本段 wiki 原文 ====
+{text}
+
+==== 部分二：已有设定（{existing_settings_count} 条，避免重复抽取） ====
+{existing_settings}
+
+==== 部分三：已有角色（{existing_characters_count} 条，避免重复抽取） ====
+{existing_characters}
 
 **严格禁止**（违反则整条响应被视为错误）：
 - 任何寒暄、解释、对话语句
@@ -790,25 +801,23 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
   ]
 }}
 
-类别中文对照：
-- 设定 category：直接使用上述 7 个中文 key
+抽取规则（必读）：
+- **settings**：主要从「部分一 wiki 原文」抽取新设定；**不要**重复「部分二 已有设定」中已经出现的条目（标题或内容明显重合视为重复）
+- **characters**：主要从「部分一 wiki 原文」抽取新角色；**不要**重复「部分三 已有角色」中已经出现的人物
+- **setting_features**：综合**三个部分**的全部内容（含已有设定与角色）总结作品级世界观高概念/核心母题，1-6 条；分段时只保留本段能体现的特征
+- 当「部分一」为空时，可以单独基于「部分二」「部分三」补充 setting_features
+- 类别 category 必须使用上述 7 个中文 key 之一
 - characters 为静态条目，只收录有名字的个体
-- setting_features 是作品级世界观高概念/核心母题，1-6 条；分段时只保留本段能体现的特征
-
-要求：
-- settings 按原文忠实概括，不要自行虚构；最多 30 条
-- 禁止使用 emoji
-- 没有内容的类别返回空数组
-
-本段原文（约 {n_chars} 字）：
-{text}
+- 禁止使用 emoji；settings 最多 30 条；没有内容的类别返回空数组
 """,
         "vars": [
             "title", "author",
             "chunk_index_human", "total_chunks",
             "n_chars", "text",
+            "existing_settings_count", "existing_settings",
+            "existing_characters_count", "existing_characters",
         ],
-        "description": "纯设定作品（SCP/后室/战锤40K 等）分段抽取设定/角色/设定特征",
+        "description": "纯设定作品（SCP/后室/战锤40K 等）分段抽取设定/角色/设定特征（prompt 含已有设定/角色作为去重上下文）",
     },
 
     "pipeline.editor": {

@@ -5,17 +5,21 @@ Surfaces:
 - GET/PUT /works/{ref_id}/pure-setting — structure type, 快捷输入原文,
   设定条目 (6 类 + 其他), 静态角色 (姓名/定位/描述, 不绑定章节),
   设定特征 (作品级世界观高概念/母题)
-- GET /works/{ref_id}/pure-setting/segments — chunk plan for the
-  quick-input wiki text (满足 LLM 交互机制 4：长文本分段，每段独立 prompt)
-- POST /works/{ref_id}/pure-setting/extract — extract one chunk (or
-  the whole text when short) via the configured LLM API, returning a
-  PREVIEW {settings, characters, setting_features}; nothing persists
-  until the client PUTs the user-pruned lists back (预览后逐项入库,
-  LLM交互·机制2)
+- GET /works/{ref_id}/pure-setting/segments — chunk plan; 切分对象 = 快捷
+  输入文本。当快捷输入为空但已有设定/角色非空时返回一个空文本段，
+  仍允许触发提取（用已有设定/角色合成 setting_features）。
+- POST /works/{ref_id}/pure-setting/extract — extract one chunk (combining
+  the chunk's wiki text + ALL existing settings + ALL existing characters
+  into ONE prompt) via the configured LLM API, returning a PREVIEW;
+  nothing persists until the client PUTs the user-pruned lists back
+  (LLM交互·机制2).
+- POST /works/{ref_id}/pure-setting/parse-paste — parse a pasted web-LLM
+  JSON response into preview lists (LLM交互·机制1 网页版 path).
 
-满足 LLM 交互机制 1：本路由提供 API 提取模式；网页版模式通过
-``/prompts/reference.pure_setting/preview`` 渲染 prompt 由前端发布给
-用户复制，结果直接在前端粘贴解析。
+满足 LLM 交互机制：
+1. API 提取 + 网页版 prompt 复制粘贴两种模式
+2. 预览先入内存，逐项「确认入库」才持久化
+4. 长文本按段落自动分段，每段一个独立 prompt
 """
 from __future__ import annotations
 
@@ -64,6 +68,9 @@ def _split_chunks(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> list[dict]:
     Greedy split that respects段落/章节边界: first tries双换行（段落），
     then单换行，falls back to硬切. Returns a list of
     {chunk_index, total_chunks, text, n_chars} dicts.
+
+    Empty input returns []; the planning endpoint synthesizes an empty
+    placeholder chunk when existing settings/characters supply context.
     """
     if not text:
         return []
@@ -95,13 +102,12 @@ def _split_chunks(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> list[dict]:
     if cur:
         chunks.append(cur)
 
-    # Any single段落 itself >  max_chars: hard-cut it.
+    # Any single段落 itself > max_chars: hard-cut it.
     final: list[str] = []
     for c in chunks:
         if len(c) <= max_chars:
             final.append(c)
             continue
-        # hard-cut on punctuation if possible
         i = 0
         while i < len(c):
             end = min(i + max_chars, len(c))
@@ -119,6 +125,68 @@ def _split_chunks(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> list[dict]:
         "chunk_index": i, "total_chunks": total,
         "text": t, "n_chars": len(t),
     } for i, t in enumerate(final)]
+
+
+def _format_existing_settings(items: list[dict]) -> str:
+    """Render existing settings as compact bullet list for the prompt.
+
+    Empty list → "（无）" so the LLM knows there's nothing to dedupe against.
+    """
+    if not items:
+        return "（无）"
+    lines: list[str] = []
+    for s in items:
+        if not isinstance(s, dict):
+            continue
+        cat = str(s.get("category") or "其他").strip()
+        title = str(s.get("title") or "").strip()
+        content = str(s.get("content") or "").strip()
+        if not title and not content:
+            continue
+        # Trim long content to keep prompt tractable; LLM only needs the gist
+        # to recognize duplicates, not the full description.
+        snippet = content if len(content) <= 80 else content[:78] + "…"
+        lines.append(f"- [{cat}] {title or '（未命名）'}: {snippet}")
+    return "\n".join(lines) if lines else "（无）"
+
+
+def _format_existing_characters(items: list[dict]) -> str:
+    if not items:
+        return "（无）"
+    lines: list[str] = []
+    for c in items:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "").strip()
+        if not name:
+            continue
+        role = str(c.get("role") or "").strip()
+        desc = str(c.get("description") or "").strip()
+        snippet = desc if len(desc) <= 60 else desc[:58] + "…"
+        role_part = f" [{role}]" if role else ""
+        desc_part = f": {snippet}" if snippet else ""
+        lines.append(f"- {name}{role_part}{desc_part}")
+    return "\n".join(lines) if lines else "（无）"
+
+
+def _load_work_sources(ref_id: str) -> dict:
+    """Single DB read for all extract inputs."""
+    with _conn() as con:
+        row = con.execute(
+            "SELECT title, creator, quick_input_text, settings_json, "
+            "static_characters_json "
+            "FROM reference_works WHERE ref_id = ?",
+            (ref_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "work not found")
+    return {
+        "title": row["title"] or "",
+        "author": row["creator"] or "",
+        "quick_input_text": (row["quick_input_text"] or "").strip(),
+        "settings": _loads(row["settings_json"]),
+        "characters": _loads(row["static_characters_json"]),
+    }
 
 
 @router.get("/works/{ref_id}/pure-setting")
@@ -184,37 +252,39 @@ def update_pure_setting(ref_id: str, body: dict = Body(...)):
 
 @router.get("/works/{ref_id}/pure-setting/segments")
 def get_pure_setting_segments(ref_id: str):
-    """Return the chunk plan for this work's 快捷输入文本.
+    """Return the chunk plan + existing-list counts.
 
-    Long wiki dumps (战锤40K 一个种族就上万字) need to be split into
-    multiple LLM calls. Returns a list of chunk metadata
-    ``{chunk_index, total_chunks, n_chars, preview}`` so the UI can
-    render a per-chunk extraction row without itself running the split.
+    Long wiki dumps need to be split into multiple LLM calls. When the
+    wiki text is empty but the user has already entered settings/characters,
+    we still return ONE empty-text chunk so the UI can run a single
+    extraction pass (which will use the existing lists as input to
+    synthesize setting_features).
     """
-    with _conn() as con:
-        row = con.execute(
-            "SELECT title, creator, quick_input_text "
-            "FROM reference_works WHERE ref_id = ?",
-            (ref_id,),
-        ).fetchone()
-    if not row:
-        raise HTTPException(404, "work not found")
-    text = (row["quick_input_text"] or "").strip()
-    chunks = _split_chunks(text)
+    src = _load_work_sources(ref_id)
+    chunks = _split_chunks(src["quick_input_text"])
+    has_existing = bool(src["settings"]) or bool(src["characters"])
+    if not chunks and has_existing:
+        chunks = [{
+            "chunk_index": 0, "total_chunks": 1,
+            "text": "", "n_chars": 0,
+        }]
     return {
         "ref_id": ref_id,
-        "title": row["title"] or "",
-        "creator": row["creator"] or "",
-        "total_chars": len(text),
+        "title": src["title"],
+        "creator": src["author"],
+        "total_chars": len(src["quick_input_text"]),
         "total_chunks": len(chunks),
         "max_chunk_chars": _MAX_CHUNK_CHARS,
+        "existing_settings_count": len(src["settings"]),
+        "existing_characters_count": len(src["characters"]),
+        "can_extract": bool(chunks),
         "chunks": [
             {
                 "chunk_index": c["chunk_index"],
                 "total_chunks": c["total_chunks"],
                 "n_chars": c["n_chars"],
                 # 仅返回前 80 字作为列表显示用，正文不重复 traffic
-                "preview": c["text"][:80],
+                "preview": c["text"][:80] if c["text"] else "（无 wiki 原文，仅用已有设定/角色）",
             }
             for c in chunks
         ],
@@ -279,13 +349,14 @@ def _render_pure_setting_prompt(
     *, title: str, author: str,
     chunk_index: int, total_chunks: int,
     text: str,
+    existing_settings: list[dict], existing_characters: list[dict],
 ) -> tuple[str, str]:
     """Render the user prompt + return the (empty) system prompt.
 
-    The pure-setting prompt template carries every constraint inline so
-    the system prompt stays empty — same shape as the other reference
-    prompts (`reference.unified`, etc.) which keep `system=""` and put
-    the schema inside the user prompt.
+    The pure-setting prompt carries every constraint inline so the
+    system prompt stays empty — same shape as other reference prompts.
+    The prompt now includes ALL existing settings/characters as
+    deduplication context so the LLM doesn't re-extract them.
     """
     from reference_pipeline.prompts import render
     user_prompt = render(
@@ -293,56 +364,68 @@ def _render_pure_setting_prompt(
         title=title or "",
         author=author or "",
         chunk_index_human=chunk_index + 1,
-        total_chunks=total_chunks,
+        total_chunks=max(1, total_chunks),
         n_chars=len(text),
-        text=text,
+        text=text or "（本段无 wiki 原文 — 请基于已有设定/角色合成 setting_features）",
+        existing_settings_count=len(existing_settings),
+        existing_settings=_format_existing_settings(existing_settings),
+        existing_characters_count=len(existing_characters),
+        existing_characters=_format_existing_characters(existing_characters),
     )
     return user_prompt, ""
 
 
+def _plan_chunks_for_extract(src: dict) -> list[dict]:
+    """Shared between extract & preview: build the chunk list that
+    extraction will iterate over, including the empty-text fallback
+    when only settings/characters exist."""
+    chunks = _split_chunks(src["quick_input_text"])
+    if not chunks and (src["settings"] or src["characters"]):
+        chunks = [{
+            "chunk_index": 0, "total_chunks": 1,
+            "text": "", "n_chars": 0,
+        }]
+    return chunks
+
+
 @router.post("/works/{ref_id}/pure-setting/extract")
 async def extract_pure_setting(ref_id: str, body: dict = Body(default={})):
-    """ONE LLM API call over a chunk of 快捷输入 → preview lists (NOT persisted).
+    """ONE LLM API call combining the chunk's wiki text + ALL existing
+    settings + ALL existing characters → preview lists (NOT persisted).
 
     Body params:
-    - ``chunk_index`` (optional): when set, extract only that chunk of
-      the segmented text; otherwise extract the first/only chunk.
-    - ``text`` (optional): override the source text entirely (used by
-      paste-back mode where the client already split). Falls back to
-      reading ``quick_input_text`` from the DB.
+    - ``chunk_index`` (optional): which chunk of the wiki text to extract.
+      Defaults to 0. Out-of-range → 400.
+    - ``text`` (optional): override the wiki chunk text entirely; used by
+      the preview UI when the user wants to dry-run a custom string.
     """
     text_override = str(body.get("text") or "").strip()
     chunk_index = int(body.get("chunk_index") or 0)
 
-    with _conn() as con:
-        row = con.execute(
-            "SELECT title, creator, quick_input_text "
-            "FROM reference_works WHERE ref_id = ?",
-            (ref_id,),
-        ).fetchone()
-    if not row:
-        raise HTTPException(404, "work not found")
-    title = row["title"] or ""
-    author = row["creator"] or ""
-    full_text = (row["quick_input_text"] or "").strip()
+    src = _load_work_sources(ref_id)
 
     if text_override:
         chunk_text = text_override
         total_chunks = 1
         chunk_index = 0
     else:
-        if not full_text:
-            raise HTTPException(400, "快捷输入为空 — 请先粘贴 wiki 条目原文")
-        chunks = _split_chunks(full_text)
+        chunks = _plan_chunks_for_extract(src)
+        if not chunks:
+            raise HTTPException(
+                400,
+                "无可处理的内容 — 请先填写「快捷输入」/「设定」/「角色」三者之一",
+            )
         if chunk_index < 0 or chunk_index >= len(chunks):
             raise HTTPException(400, f"chunk_index 超出范围（0–{len(chunks) - 1}）")
         chunk_text = chunks[chunk_index]["text"]
         total_chunks = len(chunks)
 
     user_prompt, system_prompt = _render_pure_setting_prompt(
-        title=title, author=author,
+        title=src["title"], author=src["author"],
         chunk_index=chunk_index, total_chunks=total_chunks,
         text=chunk_text,
+        existing_settings=src["settings"],
+        existing_characters=src["characters"],
     )
 
     from llm.call_site import LLMCallSite
