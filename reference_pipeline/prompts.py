@@ -755,11 +755,11 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 作品上下文（仅供消歧）：
 - 作品标题：《{title}》
 - 作者/来源：{author}
-- 本段：第 {chunk_index_human}/{total_chunks} 段（wiki 原文 {n_chars} 字）
+- 本段：第 {chunk_index_human}/{total_chunks} 段（原文 {n_chars} 字）
 
 【作品材料 · 三部分组合】
 
-==== 部分一：本段 wiki 原文 ====
+==== 部分一：本段原文 ====
 {text}
 
 ==== 部分二：已有设定（{existing_settings_count} 条，避免重复抽取） ====
@@ -795,20 +795,24 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
   ],
   "setting_features": [
     {{
-      "title": "高概念/母题（如「太空大航海」「唯心影响现实世界」，≤ 16 字）",
-      "description": "一句话解释（≤ 60 字）"
+      "category": "核心冲突 | 高概念 | 母题",
+      "title": "短标题（≤ 16 字）",
+      "description": "一句话解释（≤ 80 字）"
     }}
   ]
 }}
 
 抽取规则（必读）：
-- **settings**：主要从「部分一 wiki 原文」抽取新设定；**不要**重复「部分二 已有设定」中已经出现的条目（标题或内容明显重合视为重复）
-- **characters**：主要从「部分一 wiki 原文」抽取新角色；**不要**重复「部分三 已有角色」中已经出现的人物
-- **setting_features**：综合**三个部分**的全部内容（含已有设定与角色）总结作品级世界观高概念/核心母题，1-6 条；分段时只保留本段能体现的特征
+- **settings**：主要从「部分一 原文」抽取新设定；**不要**重复「部分二 已有设定」中已经出现的条目（标题或内容明显重合视为重复）
+- **characters**：主要从「部分一 原文」抽取新角色；**不要**重复「部分三 已有角色」中已经出现的人物
+- **setting_features**：综合**三个部分**的全部内容（含已有设定与角色）总结作品级世界观特征，**必须按下面 3 类分别给出**（每段每类至少 1 条，理想 1–3 条）：
+    - **核心冲突 (core conflict)**：作品在世界设定层面持续推动剧情的根本对立——如「秩序与失序」「文明与异常」「神性与凡人」；写成可识别的张力对子或一句话冲突命题
+    - **高概念 (high concept)**：作品被一句话能讲清的世界观底座——如「太空大航海」「混凝土雕像未被注视时高速移动」「人类一思考神就发笑」；具备「钩子」属性
+    - **母题 (motif)**：贯穿作品的反复出现的意象 / 情绪 / 主题——如「黑色幽默」「不可见者掌权」「记录癖」；不必是冲突，但反复出现
 - 当「部分一」为空时，可以单独基于「部分二」「部分三」补充 setting_features
-- 类别 category 必须使用上述 7 个中文 key 之一
+- 类别 category 必须严格使用上述中文 key
 - characters 为静态条目，只收录有名字的个体
-- 禁止使用 emoji；settings 最多 30 条；没有内容的类别返回空数组
+- 禁止使用 emoji；settings 最多 30 条；setting_features 全部三类合计最多 12 条；没有内容的类别返回空数组
 """,
         "vars": [
             "title", "author",
@@ -817,7 +821,33 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
             "existing_settings_count", "existing_settings",
             "existing_characters_count", "existing_characters",
         ],
-        "description": "纯设定作品（SCP/后室/战锤40K 等）分段抽取设定/角色/设定特征（prompt 含已有设定/角色作为去重上下文）",
+        "description": "纯设定作品（SCP/后室/战锤40K 等）分段抽取设定/角色/设定特征（含核心冲突/高概念/母题三类）",
+    },
+
+    "reference.pure_setting_translate": {
+        "template": """[自动化文本翻译 · 不是对话] 任务：把下面这段纯设定作品（SCP / 后室 / 战锤40K 等）的原文**忠实翻译成简体中文**。
+
+作品上下文（仅供消歧）：
+- 作品标题：《{title}》
+- 作者/来源：{author}
+- 本段：第 {chunk_index_human}/{total_chunks} 段（原文 {n_chars} 字）
+
+**严格要求**：
+- 直接输出译文正文，不要寒暄、解释、目录、标题、说明，也不要 markdown 包装
+- 保留原文的段落结构（空行隔段）；保留原文中已是中文的部分原样
+- 专有名词（角色/组织/项目编号等）译名首次出现时附原文，如「Site-19（19 号站点）」
+- 翻译风格力求准确而非文学化；技术性、设定性表述优先精确
+- 译文末尾不要附任何「以上为译文」之类的尾注
+
+==== 原文 ====
+{text}
+""",
+        "vars": [
+            "title", "author",
+            "chunk_index_human", "total_chunks",
+            "n_chars", "text",
+        ],
+        "description": "纯设定作品原文 → 简体中文翻译（分段，逐段翻译）",
     },
 
     "pipeline.editor": {

@@ -127,57 +127,67 @@ def preview_prompt(
     if not required_vars:
         return {"key": key, "template": template, "rendered": template, "vars": {}}
 
-    # Pure-setting: ref_id + optional chunk_index → pull quick_input,
-    # split into chunks, render the requested chunk's prompt. The
-    # rendered prompt includes ALL existing settings/characters as
-    # deduplication context so the 网页版 copy is identical to what the
-    # API path would send.
+    # Pure-setting: ref_id + optional chunk_index → render the requested
+    # chunk's prompt with the same context the API path uses (entries
+    # rendered into text + existing settings/characters for dedup).
     if key == "reference.pure_setting":
         if not ref_id:
             raise HTTPException(400, "ref_id required for this prompt")
         from .pure_setting import (
-            _split_chunks, _format_existing_settings, _format_existing_characters,
+            _load_work_sources, _plan_chunks_for_extract,
+            _format_existing_settings, _format_existing_characters,
         )
-        import json as _json
-        rdb = db()
-        w = rdb.get_work(ref_id)
-        if not w:
-            raise HTTPException(404, "参考作品不存在")
-        text = (w.get("quick_input_text") or "").strip()
         try:
-            existing_settings = _json.loads(w.get("settings_json") or "[]")
-            if not isinstance(existing_settings, list):
-                existing_settings = []
-        except Exception:
-            existing_settings = []
-        try:
-            existing_characters = _json.loads(w.get("static_characters_json") or "[]")
-            if not isinstance(existing_characters, list):
-                existing_characters = []
-        except Exception:
-            existing_characters = []
-
-        chunks = _split_chunks(text)
-        if not chunks and (existing_settings or existing_characters):
-            chunks = [{"chunk_index": 0, "total_chunks": 1, "text": "", "n_chars": 0}]
+            src = _load_work_sources(ref_id)
+        except HTTPException:
+            raise
+        chunks = _plan_chunks_for_extract(src)
         if not chunks:
             raise HTTPException(
                 400,
-                "无可处理的内容 — 请先填写「快捷输入」/「设定」/「角色」三者之一",
+                "无可处理的内容 — 请先填写「原始文本」/「设定」/「角色」三者之一",
             )
         ci = max(0, min(segment_index or 0, len(chunks) - 1))
         chunk_text = chunks[ci]["text"]
         vars_ = {
-            "title": w.get("title", ""),
-            "author": w.get("creator", "") or "",
+            "title": src["title"],
+            "author": src["author"],
             "chunk_index_human": ci + 1,
             "total_chunks": len(chunks),
             "n_chars": len(chunk_text),
-            "text": chunk_text or "（本段无 wiki 原文 — 请基于已有设定/角色合成 setting_features）",
-            "existing_settings_count": len(existing_settings),
-            "existing_settings": _format_existing_settings(existing_settings),
-            "existing_characters_count": len(existing_characters),
-            "existing_characters": _format_existing_characters(existing_characters),
+            "text": chunk_text or "（本段无原文 — 请基于已有设定/角色合成 setting_features）",
+            "existing_settings_count": len(src["settings"]),
+            "existing_settings": _format_existing_settings(src["settings"]),
+            "existing_characters_count": len(src["characters"]),
+            "existing_characters": _format_existing_characters(src["characters"]),
+        }
+        rendered = render(key, **vars_)
+        return {"key": key, "template": template, "rendered": rendered, "vars": vars_}
+
+    # Pure-setting translation: ref_id + entry_index → render translate
+    # prompt for one entry. Long entries chunked; here we only render
+    # the first chunk for preview/copy.
+    if key == "reference.pure_setting_translate":
+        if not ref_id:
+            raise HTTPException(400, "ref_id required for this prompt")
+        from .pure_setting import _load_work_sources, _split_chunks
+        src = _load_work_sources(ref_id)
+        entry_index = segment_index or 0
+        if entry_index < 0 or entry_index >= len(src["entries"]):
+            raise HTTPException(400, "entry_index 超出范围")
+        text = src["entries"][entry_index]["content"]
+        if not text.strip():
+            raise HTTPException(400, "条目内容为空")
+        chunks = _split_chunks(text)
+        if not chunks:
+            raise HTTPException(400, "条目内容为空")
+        vars_ = {
+            "title": src["title"],
+            "author": src["author"],
+            "chunk_index_human": 1,
+            "total_chunks": len(chunks),
+            "n_chars": chunks[0]["n_chars"],
+            "text": chunks[0]["text"],
         }
         rendered = render(key, **vars_)
         return {"key": key, "template": template, "rendered": rendered, "vars": vars_}

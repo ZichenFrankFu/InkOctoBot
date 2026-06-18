@@ -1,23 +1,24 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut } from "../../api/client";
 import { useToast } from "../shared/Toast";
+import { useDialog } from "../shared/Dialog";
 import { PromptCopyPanel } from "./AnalysisEditors";
 
-// 纯设定作品面板 (spec 2.2.2 / 6.2)：SCP、后室、战锤40K 等无完整正文的
+// 纯设定作品面板 (spec 2.2.2 / 6.2)：SCP、后室、战锤40K 等无创作正文的
 // 众创/设定集作品。tab 由父级 ReferenceLibraryPage 统一渲染（与叙事型一致），
 // 这里只负责面板内容。
 //
 // 满足 LLM 交互机制 1/4：
-//  - 特征提取支持「大模型 API」和「大模型网页版」两种模式
-//  - 当原文超过单段上限时按段落自动切分，每段一个 prompt
-//  - 特征提取 prompt 同时包含「快捷输入 / 设定 / 角色」三类用户输入，
+//  - 特征提取与原文翻译都支持「大模型 API」和「大模型网页版」两种模式
+//  - 原文按段落自动切分，每段一个独立 prompt
+//  - 特征提取 prompt 同时包含「原始文本 / 设定 / 角色」三类用户输入，
 //    三者只要任一非空即可提取
 // 满足 LLM 交互机制 2：提取生成的内容先进入预览，逐项确认后才入库
 
-export type PureSettingTab = "quick" | "settings" | "characters" | "extract" | "features";
+export type PureSettingTab = "raw" | "settings" | "characters" | "extract" | "features";
 
 export const PURE_SETTING_TABS: { key: PureSettingTab; label: string }[] = [
-  { key: "quick", label: "快捷输入" },
+  { key: "raw", label: "原始文本" },
   { key: "settings", label: "设定" },
   { key: "characters", label: "角色" },
   { key: "extract", label: "特征提取" },
@@ -26,11 +27,12 @@ export const PURE_SETTING_TABS: { key: PureSettingTab; label: string }[] = [
 
 type SettingEntry = { category: string; title: string; content: string };
 type StaticCharacter = { name: string; role: string; description: string };
-type SettingFeature = { title: string; description: string };
+type SettingFeature = { category: string; title: string; description: string };
+type RawEntry = { title: string; content: string };
 
-const CATEGORIES = ["力量体系", "势力组织", "地理", "社会规则", "历史背景", "世界观", "其他"];
+const SETTING_CATEGORIES = ["力量体系", "势力组织", "地理", "社会规则", "历史背景", "世界观", "其他"];
 
-const CATEGORY_COLORS: Record<string, string> = {
+const SETTING_CAT_COLORS: Record<string, string> = {
   "力量体系": "var(--accent)",
   "势力组织": "var(--indigo)",
   "地理": "var(--jade)",
@@ -38,6 +40,32 @@ const CATEGORY_COLORS: Record<string, string> = {
   "历史背景": "var(--gold)",
   "世界观": "var(--purple)",
   "其他": "var(--text-tertiary)",
+};
+
+const FEATURE_CATEGORIES = ["核心冲突", "高概念", "母题"] as const;
+type FeatureCategory = typeof FEATURE_CATEGORIES[number];
+
+const FEATURE_CAT_META: Record<FeatureCategory, {
+  color: string; label: string; intro: string; example: string;
+}> = {
+  "核心冲突": {
+    color: "var(--accent)",
+    label: "核心冲突",
+    intro: "世界观层面持续推动剧情的根本对立——可识别的张力对子。",
+    example: "如「秩序与失序」「文明与异常」「神性与凡人」",
+  },
+  "高概念": {
+    color: "var(--gold)",
+    label: "高概念",
+    intro: "作品被一句话能讲清的世界观底座，具备「钩子」属性。",
+    example: "如「混凝土雕像未被注视时高速移动」「太空大航海」",
+  },
+  "母题": {
+    color: "var(--purple)",
+    label: "母题",
+    intro: "贯穿作品的反复出现的意象 / 情绪 / 主题，不必是冲突。",
+    example: "如「黑色幽默」「不可见者掌权」「记录癖」",
+  },
 };
 
 interface ChunkMeta {
@@ -53,6 +81,7 @@ interface SegmentPlan {
   max_chunk_chars: number;
   existing_settings_count: number;
   existing_characters_count: number;
+  entries_count: number;
   can_extract: boolean;
   chunks: ChunkMeta[];
 }
@@ -84,8 +113,7 @@ export default function PureSettingPanel({
   onTabChange: (t: PureSettingTab) => void;
 }) {
   const { toast } = useToast();
-  const [quickText, setQuickText] = useState("");
-  const [savedText, setSavedText] = useState("");
+  const [rawEntries, setRawEntries] = useState<RawEntry[]>([]);
   const [settings, setSettings] = useState<SettingEntry[]>([]);
   const [characters, setCharacters] = useState<StaticCharacter[]>([]);
   const [features, setFeatures] = useState<SettingFeature[]>([]);
@@ -95,12 +123,16 @@ export default function PureSettingPanel({
   const reload = useCallback(async () => {
     try {
       const r = await apiGet<any>(`/api/references/works/${refId}/pure-setting`);
-      const txt = r.quick_input_text || "";
-      setQuickText(txt);
-      setSavedText(txt);
+      setRawEntries(r.raw_entries || []);
       setSettings(r.settings || []);
       setCharacters(r.static_characters || []);
-      setFeatures(r.setting_features || []);
+      // Normalize features without category to 高概念
+      setFeatures((r.setting_features || []).map((f: any) => ({
+        category: (FEATURE_CATEGORIES as readonly string[]).includes(f.category)
+          ? f.category : "高概念",
+        title: f.title || "",
+        description: f.description || "",
+      })));
       setLoaded(true);
     } catch (e: any) { toast(e.message || "加载失败", "error"); }
   }, [refId, toast]);
@@ -119,17 +151,12 @@ export default function PureSettingPanel({
 
   return (
     <div style={{ paddingTop: 4 }}>
-      {tab === "quick" && (
-        <QuickInputTab
-          text={quickText} savedText={savedText}
-          onChange={setQuickText} saving={saving}
-          onSave={() => put({ quick_input_text: quickText }, "快捷输入已保存")}
-          onSaveAndExtract={async () => {
-            if (quickText !== savedText) {
-              await put({ quick_input_text: quickText }, "快捷输入已保存");
-            }
-            onTabChange("extract");
-          }}
+      {tab === "raw" && loaded && (
+        <RawTextTab
+          refId={refId}
+          entries={rawEntries}
+          saving={saving}
+          onSave={items => put({ raw_entries: items }, "原始文本已保存")}
         />
       )}
 
@@ -140,10 +167,12 @@ export default function PureSettingPanel({
         >
           <CollapsibleList<SettingEntry>
             items={settings}
-            identify={(s) => s.title || s.content}
             summary={(s) => (
               <>
-                <CategoryChip category={s.category || "其他"} />
+                <CategoryChip
+                  category={s.category || "其他"}
+                  colorMap={SETTING_CAT_COLORS}
+                />
                 <span style={summaryTitle}>
                   {s.title || "（未命名设定）"}
                 </span>
@@ -159,7 +188,7 @@ export default function PureSettingPanel({
                 <Field label="分类">
                   <select className="select" value={item.category}
                           onChange={e => set({ ...item, category: e.target.value })}>
-                    {CATEGORIES.map(o => <option key={o} value={o}>{o}</option>)}
+                    {SETTING_CATEGORIES.map(o => <option key={o} value={o}>{o}</option>)}
                   </select>
                 </Field>
                 <Field label="条目名">
@@ -180,7 +209,7 @@ export default function PureSettingPanel({
             saving={saving}
             addLabel="新增设定"
             emptyHint="暂无设定条目"
-            emptyAction={(
+            emptyExtraAction={(
               <button className="btn" onClick={() => onTabChange("extract")}>
                 去「特征提取」由 LLM 抽取
               </button>
@@ -196,7 +225,6 @@ export default function PureSettingPanel({
         >
           <CollapsibleList<StaticCharacter>
             items={characters}
-            identify={(c) => c.name}
             summary={(c) => (
               <>
                 <span style={summaryTitle}>
@@ -240,7 +268,7 @@ export default function PureSettingPanel({
             saving={saving}
             addLabel="新增角色"
             emptyHint="暂无角色"
-            emptyAction={(
+            emptyExtraAction={(
               <button className="btn" onClick={() => onTabChange("extract")}>
                 去「特征提取」由 LLM 抽取
               </button>
@@ -250,51 +278,12 @@ export default function PureSettingPanel({
       )}
 
       {tab === "features" && (
-        <TabCard
-          title="设定特征"
-          subtitle={`${features.length} 条 · 作品级世界观高概念 / 母题`}
-        >
-          <CollapsibleList<SettingFeature>
-            items={features}
-            identify={(f) => f.title}
-            summary={(f) => (
-              <>
-                <span style={summaryTitle}>
-                  {f.title || "（未命名特征）"}
-                </span>
-                {f.description && (
-                  <span style={summaryDesc} className="truncate">
-                    {f.description}
-                  </span>
-                )}
-              </>
-            )}
-            renderEditor={(item, set) => (
-              <>
-                <Field label="高概念 / 母题">
-                  <input className="input" value={item.title}
-                         placeholder="如「太空大航海」「唯心影响现实世界」"
-                         onChange={e => set({ ...item, title: e.target.value })} />
-                </Field>
-                <Field label="一句话解释">
-                  <textarea className="input" value={item.description} rows={3}
-                            onChange={e => set({ ...item, description: e.target.value })}
-                            style={{ lineHeight: 1.65 }} />
-                </Field>
-              </>
-            )}
-            blank={{ title: "", description: "" }}
-            onSave={items => put({ setting_features: items }, "设定特征已保存")}
-            saving={saving}
-            addLabel="新增特征"
-            emptyHint="暂无设定特征"
-            emptyAction={(
-              <button className="btn" onClick={() => onTabChange("extract")}>
-                去「特征提取」由 LLM 综合分析
-              </button>
-            )}
-          />
-        </TabCard>
+        <FeaturesTab
+          features={features}
+          saving={saving}
+          onSave={items => put({ setting_features: items }, "设定特征已保存")}
+          onGoToExtract={() => onTabChange("extract")}
+        />
       )}
 
       {tab === "extract" && loaded && (
@@ -309,55 +298,529 @@ export default function PureSettingPanel({
   );
 }
 
-/* ───────────────────────── Quick input tab ────────────────────────── */
+/* ───────────────────────── Raw text tab ───────────────────────────── */
 
-function QuickInputTab({
-  text, savedText, onChange, saving, onSave, onSaveAndExtract,
+function RawTextTab({
+  refId, entries, saving, onSave,
 }: {
-  text: string; savedText: string;
-  onChange: (s: string) => void;
+  refId: string;
+  entries: RawEntry[];
   saving: boolean;
-  onSave: () => void;
-  onSaveAndExtract: () => void;
+  onSave: (items: RawEntry[]) => void;
 }) {
-  const dirty = text !== savedText;
+  const { toast } = useToast();
+  const { confirm } = useDialog();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [translating, setTranslating] = useState<number | null>(null);
+  const [translateModal, setTranslateModal] = useState<{
+    entryIndex: number;
+    mode: "api" | "web";
+    raw?: string;
+    parseError?: string;
+  } | null>(null);
+  const [importMode, setImportMode] = useState<"merge" | "replace">("merge");
+
+  // Save handler for individual entry translate
+  const applyTranslation = async (entryIndex: number, translated: string) => {
+    const next = entries.slice();
+    if (entryIndex < 0 || entryIndex >= next.length) return;
+    next[entryIndex] = { ...next[entryIndex], content: translated };
+    await onSaveImmediate(next);
+  };
+
+  // Save without going through the list's draft state (used by translate
+  // / import flows where the result should land immediately)
+  const onSaveImmediate = (items: RawEntry[]) =>
+    new Promise<void>((resolve) => {
+      onSave(items);
+      // best-effort — onSave is fire-and-forget upstream
+      setTimeout(resolve, 0);
+    });
+
+  const runTranslateApi = async (entryIndex: number) => {
+    if (!entries[entryIndex]?.content?.trim()) {
+      toast("条目内容为空，无法翻译", "info");
+      return;
+    }
+    setTranslating(entryIndex);
+    try {
+      const r = await apiPost<{ translated: string }>(
+        `/api/references/works/${refId}/pure-setting/translate`,
+        { entry_index: entryIndex },
+        { timeoutMs: 600_000 },
+      );
+      const ok = await confirm({
+        title: "翻译已完成",
+        message: "确认用译文替换原内容吗？此操作可通过编辑撤回。",
+      });
+      if (ok) {
+        await applyTranslation(entryIndex, r.translated);
+        toast("译文已应用", "success");
+      }
+    } catch (e: any) {
+      toast(e?.message || "翻译失败", "error");
+    } finally {
+      setTranslating(null);
+    }
+  };
+
+  const applyPastedTranslation = async () => {
+    if (!translateModal) return;
+    const raw = (translateModal.raw || "").trim();
+    if (!raw) {
+      setTranslateModal({ ...translateModal, parseError: "请先粘贴译文" });
+      return;
+    }
+    await applyTranslation(translateModal.entryIndex, raw);
+    setTranslateModal(null);
+    toast("译文已应用", "success");
+  };
+
+  const exportTxt = () => {
+    // Download the export TXT via a hidden link.
+    const url = `/api/references/works/${refId}/pure-setting/export.txt`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const onImportFile = async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const resp = await fetch(
+        `/api/references/works/${refId}/pure-setting/import?mode=${importMode}`,
+        { method: "POST", body: fd },
+      );
+      if (!resp.ok) throw new Error(await resp.text() || resp.statusText);
+      const r = await resp.json();
+      toast(
+        `导入成功（模式：${importMode === "replace" ? "替换" : "合并"}）：` +
+        `原文 ${r.imported_entries} · 设定 ${r.imported_settings} · ` +
+        `角色 ${r.imported_characters} · 特征 ${r.imported_features}`,
+        "success",
+      );
+      // refresh by no-op save → reload via parent
+      window.location.reload();
+    } catch (e: any) {
+      toast(e?.message || "导入失败", "error");
+    }
+  };
+
   return (
     <TabCard
-      title="快捷输入"
-      subtitle="粘贴 wiki 条目原文，下一步由 LLM 抽取设定 / 角色 / 设定特征"
+      title="原始文本"
+      subtitle={`${entries.length} 个条目 · 多个条目可分开管理；保存后可展开/收起查看`}
+      headerAction={(
+        <div className="flex" style={{ gap: 8 }}>
+          <button className="btn" onClick={exportTxt}
+                  title="导出当前作品所有内容为 TXT 文件">
+            导出 TXT
+          </button>
+          <label className="btn" style={{ cursor: "pointer", marginRight: 0 }}>
+            导入 TXT
+            <input
+              ref={fileInputRef}
+              type="file" accept=".txt,text/plain"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onImportFile(f);
+                e.target.value = "";
+              }} />
+          </label>
+          <select className="select" value={importMode}
+                  onChange={e => setImportMode(e.target.value as any)}
+                  style={{ fontSize: 12, width: "auto" }}
+                  title="导入模式">
+            <option value="merge">合并</option>
+            <option value="replace">替换</option>
+          </select>
+        </div>
+      )}
     >
       <div className="text-xs" style={{
         color: "var(--text-tertiary)", marginBottom: 12, lineHeight: 1.75,
         padding: "10px 12px", background: "var(--bg-surface)",
         borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)",
       }}>
-        支持 SCP / 后室 / 战锤40K 等众创世界观；多个条目可直接拼接，原文超过
-        <strong style={{ color: "var(--text-secondary)" }}> 12000 字</strong> 时自动按段落分段，
-        每段在「特征提取」tab 独立处理。
+        每个条目独立标题 + 正文，可以是一个 SCP 编号、一个房间、一个种族等。
+        条目越独立，提取效果越好。每段正文超过
+        <strong style={{ color: "var(--text-secondary)" }}> 12000 字</strong>
+        时在「特征提取」自动按段落分段。条目正文支持
+        <strong style={{ color: "var(--text-secondary)" }}>原文翻译</strong>，
+        可使用 LLM API 或网页版完成。
       </div>
-      <textarea className="input" value={text}
-                onChange={e => onChange(e.target.value)} rows={20}
-                placeholder="粘贴 wiki 原文..."
-                style={{
-                  width: "100%", boxSizing: "border-box",
-                  fontSize: 13, lineHeight: 1.7,
-                  fontFamily: "var(--font-mono)",
-                }} />
-      <div className="flex items-center" style={{ gap: 12, marginTop: 14 }}>
-        <span className="text-xs" style={{
-          color: dirty ? "var(--gold)" : "var(--text-tertiary)",
-          fontFamily: "var(--font-mono)",
+
+      <CollapsibleList<RawEntry>
+        items={entries}
+        summary={(e, i) => (
+          <>
+            <span style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 11, padding: "2px 8px", borderRadius: 4,
+              background: "var(--bg-surface-2)",
+              color: "var(--text-secondary)",
+              flexShrink: 0, fontWeight: 600,
+            }}>#{i + 1}</span>
+            <span style={summaryTitle}>
+              {e.title || "（未命名条目）"}
+            </span>
+            <span style={{
+              ...summaryDesc, fontFamily: "var(--font-mono)",
+              fontSize: 11,
+            }}>
+              {e.content.length.toLocaleString()} 字
+            </span>
+            {e.content && (
+              <span style={summaryDesc} className="truncate">
+                {e.content.slice(0, 60)}{e.content.length > 60 ? "…" : ""}
+              </span>
+            )}
+          </>
+        )}
+        renderEditor={(item, set, idx) => (
+          <>
+            <Field label="标题">
+              <input className="input" value={item.title}
+                     placeholder="如 SCP-173 / 0号层级 / 阿斯塔特"
+                     onChange={e => set({ ...item, title: e.target.value })} />
+            </Field>
+            <Field label={`正文（${item.content.length.toLocaleString()} 字）`}>
+              <textarea className="input" value={item.content} rows={14}
+                        placeholder="粘贴本条目的 wiki 原文..."
+                        onChange={e => set({ ...item, content: e.target.value })}
+                        style={{
+                          fontFamily: "var(--font-mono)", fontSize: 12,
+                          lineHeight: 1.65,
+                        }} />
+            </Field>
+            <div className="flex items-center" style={{
+              gap: 8, paddingTop: 4,
+            }}>
+              <button className="btn"
+                      onClick={() => runTranslateApi(idx)}
+                      disabled={translating === idx || !item.content.trim()}>
+                {translating === idx ? "翻译中…" : "原文翻译 (API)"}
+              </button>
+              <button className="btn"
+                      onClick={() => setTranslateModal({
+                        entryIndex: idx, mode: "web",
+                      })}
+                      disabled={!item.content.trim()}>
+                原文翻译 (网页版)
+              </button>
+              <span className="text-xs text-muted" style={{ marginLeft: 4 }}>
+                翻译完成后会让你确认是否替换正文
+              </span>
+            </div>
+          </>
+        )}
+        blank={{ title: "", content: "" }}
+        onSave={onSave}
+        saving={saving}
+        addLabel="新增条目"
+        emptyHint="暂无原始文本条目"
+        defaultOpen
+      />
+
+      {translateModal && (
+        <TranslateWebModal
+          refId={refId}
+          state={translateModal}
+          onChange={setTranslateModal}
+          onApply={applyPastedTranslation}
+          onClose={() => setTranslateModal(null)}
+        />
+      )}
+    </TabCard>
+  );
+}
+
+function TranslateWebModal({
+  refId, state, onChange, onApply, onClose,
+}: {
+  refId: string;
+  state: { entryIndex: number; mode: "api" | "web"; raw?: string; parseError?: string };
+  onChange: (s: typeof state) => void;
+  onApply: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div className="side-panel-overlay" onClick={onClose} />
+      <div style={{
+        position: "fixed", inset: 0, zIndex: 100,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        pointerEvents: "none",
+      }}>
+        <div className="card" style={{
+          width: 720, maxHeight: "85vh", overflow: "auto",
+          pointerEvents: "auto", boxShadow: "var(--shadow-lg)",
         }}>
-          {text.length.toLocaleString()} 字{dirty ? " · 未保存" : ""}
-        </span>
-        <div style={{ flex: 1 }} />
-        <button className="btn"
-                disabled={saving || !dirty} onClick={onSave}>
-          {saving ? "保存中..." : "保存原文"}
+          <div className="card-header">
+            <h3>使用大模型网页版翻译 · 条目 #{state.entryIndex + 1}</h3>
+            <button className="btn-icon" onClick={onClose}>×</button>
+          </div>
+          <div className="card-body">
+            <div className="text-xs" style={{
+              color: "var(--text-tertiary)", marginBottom: 12, lineHeight: 1.7,
+            }}>
+              复制下方 prompt 到大模型网页版（ChatGPT / Claude.ai 等），
+              把返回的译文粘贴到下方输入框，点击「应用译文」会让你确认替换原内容。
+            </div>
+            <PromptCopyPanel
+              refId={refId}
+              promptKey="reference.pure_setting_translate"
+              segmentIndex={state.entryIndex}
+              chunked={false}
+              defaultOpen
+              label={`条目 #${state.entryIndex + 1} 的翻译 prompt`}
+            />
+            <Field label="粘贴 LLM 返回的译文">
+              <textarea className="input" rows={10}
+                        value={state.raw || ""}
+                        placeholder="译文..."
+                        onChange={e => onChange({ ...state, raw: e.target.value, parseError: undefined })}
+                        style={{
+                          fontFamily: "var(--font-mono)", fontSize: 12,
+                          lineHeight: 1.65,
+                        }} />
+            </Field>
+            {state.parseError && (
+              <div className="text-xs" style={{ color: "var(--error)", marginTop: 6 }}>
+                {state.parseError}
+              </div>
+            )}
+            <div className="flex" style={{
+              gap: 8, marginTop: 16, justifyContent: "flex-end",
+            }}>
+              <button className="btn" onClick={onClose}>取消</button>
+              <button className="btn-primary" onClick={onApply}
+                      disabled={!state.raw?.trim()}>
+                应用译文
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ───────────────────────── Features tab ───────────────────────────── */
+
+function FeaturesTab({
+  features, saving, onSave, onGoToExtract,
+}: {
+  features: SettingFeature[];
+  saving: boolean;
+  onSave: (items: SettingFeature[]) => void;
+  onGoToExtract: () => void;
+}) {
+  const [draft, setDraft] = useState<SettingFeature[]>(features);
+  const [dirty, setDirty] = useState(false);
+  const [openIdx, setOpenIdx] = useState<Set<number>>(new Set());
+  useEffect(() => { if (!dirty) setDraft(features); }, [features, dirty]);
+
+  const grouped: Record<FeatureCategory, { item: SettingFeature; idx: number }[]> = {
+    "核心冲突": [], "高概念": [], "母题": [],
+  };
+  draft.forEach((f, idx) => {
+    const cat = (FEATURE_CATEGORIES as readonly string[]).includes(f.category)
+      ? (f.category as FeatureCategory) : "高概念";
+    grouped[cat].push({ item: f, idx });
+  });
+
+  const update = (i: number, next: SettingFeature) => {
+    setDraft(prev => prev.map((row, j) => j === i ? next : row));
+    setDirty(true);
+  };
+  const remove = (i: number) => {
+    setDraft(prev => prev.filter((_, j) => j !== i));
+    setOpenIdx(prev => {
+      const next = new Set<number>();
+      prev.forEach(idx => { if (idx < i) next.add(idx); else if (idx > i) next.add(idx - 1); });
+      return next;
+    });
+    setDirty(true);
+  };
+  const add = (cat: FeatureCategory) => {
+    const newItem: SettingFeature = { category: cat, title: "", description: "" };
+    setDraft(prev => [...prev, newItem]);
+    setOpenIdx(prev => new Set([...prev, draft.length]));
+    setDirty(true);
+  };
+  const toggle = (i: number) =>
+    setOpenIdx(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+
+  return (
+    <TabCard
+      title="设定特征"
+      subtitle="作品级世界观特征 · 分为核心冲突 / 高概念 / 母题 三类"
+    >
+      <div className="text-xs" style={{
+        color: "var(--text-tertiary)", marginBottom: 16, lineHeight: 1.8,
+        padding: "12px 14px",
+        background: "var(--bg-surface)",
+        borderRadius: "var(--radius-sm)",
+        border: "1px solid var(--border-subtle)",
+      }}>
+        本 tab 收录的是<strong style={{ color: "var(--text-primary)" }}>整部作品级</strong>的
+        世界观特征。三类一起回答：这部作品在<strong style={{ color: "var(--text-primary)" }}>冲什么、
+        亮点是什么、味道是什么</strong>。新增条目时请先选好分类；也可以到
+        <strong style={{ color: "var(--accent)" }}>「特征提取」tab</strong>由 LLM 综合
+        原始文本 + 设定 + 角色 一并抽取。
+      </div>
+
+      <div className="flex flex-col gap-12">
+        {FEATURE_CATEGORIES.map(cat => {
+          const meta = FEATURE_CAT_META[cat];
+          const items = grouped[cat];
+          return (
+            <div key={cat} style={{
+              border: `1px solid var(--border)`,
+              borderLeft: `3px solid ${meta.color}`,
+              borderRadius: "var(--radius-sm)",
+              background: "var(--bg-card)",
+              overflow: "hidden",
+            }}>
+              <div style={{
+                padding: "10px 14px 8px",
+                background: "var(--bg-surface)",
+                borderBottom: "1px solid var(--border)",
+              }}>
+                <div className="flex items-center" style={{ gap: 8, marginBottom: 4 }}>
+                  <span style={{
+                    fontSize: 14, fontWeight: 700, color: meta.color,
+                    fontFamily: "var(--font-serif)",
+                  }}>{meta.label}</span>
+                  <span className="tag" style={{
+                    fontSize: 11, padding: "1px 8px",
+                    color: items.length > 0 ? meta.color : "var(--text-tertiary)",
+                    border: `1px solid ${items.length > 0 ? meta.color : "var(--border)"}`,
+                    fontFamily: "var(--font-mono)",
+                  }}>{items.length}</span>
+                  <div style={{ flex: 1 }} />
+                  <button className="btn"
+                          onClick={() => add(cat)}
+                          style={{ fontSize: 11, padding: "4px 10px" }}>
+                    + 新增 {meta.label}
+                  </button>
+                </div>
+                <div className="text-xs" style={{
+                  color: "var(--text-tertiary)", lineHeight: 1.65,
+                }}>
+                  {meta.intro}
+                  <span style={{
+                    color: "var(--text-secondary)", marginLeft: 6, fontStyle: "italic",
+                  }}>{meta.example}</span>
+                </div>
+              </div>
+              <div style={{ padding: items.length === 0 ? "16px" : "8px 12px 12px" }}>
+                {items.length === 0 ? (
+                  <div className="text-xs" style={{
+                    color: "var(--text-tertiary)", textAlign: "center",
+                    fontStyle: "italic", padding: "8px 0",
+                  }}>
+                    暂无{meta.label}条目
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-6">
+                    {items.map(({ item, idx }) => (
+                      <div key={idx} style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: "var(--radius-sm)",
+                        background: "var(--bg-surface)",
+                      }}>
+                        <div className="flex items-center" style={{
+                          gap: 8, padding: "8px 12px",
+                        }}>
+                          <button className="btn-ghost"
+                                  onClick={() => toggle(idx)}
+                                  style={{
+                                    display: "flex", alignItems: "center", gap: 8,
+                                    flex: 1, padding: "2px 0", borderRadius: 0,
+                                    minWidth: 0, textAlign: "left",
+                                    justifyContent: "flex-start",
+                                  }}>
+                            <span style={{
+                              transition: "transform 0.15s",
+                              transform: openIdx.has(idx) ? "rotate(90deg)" : "none",
+                              display: "inline-block", fontSize: 10,
+                              color: "var(--text-tertiary)", flexShrink: 0,
+                            }}>▶</span>
+                            <span style={{
+                              fontSize: 13, fontWeight: 600,
+                              color: "var(--text-primary)", flexShrink: 0,
+                            }}>{item.title || "（未命名）"}</span>
+                            {item.description && (
+                              <span style={summaryDesc} className="truncate">
+                                {item.description}
+                              </span>
+                            )}
+                          </button>
+                          <button className="btn-icon" title="删除"
+                                  onClick={() => remove(idx)}
+                                  style={{ width: 28, height: 28, fontSize: 16 }}>×</button>
+                        </div>
+                        {openIdx.has(idx) && (
+                          <div style={{
+                            padding: "12px 14px 14px",
+                            borderTop: "1px solid var(--border)",
+                            display: "flex", flexDirection: "column", gap: 10,
+                          }}>
+                            <Field label="分类">
+                              <select className="select" value={item.category}
+                                      onChange={e => update(idx, { ...item, category: e.target.value })}>
+                                {FEATURE_CATEGORIES.map(o => <option key={o} value={o}>{o}</option>)}
+                              </select>
+                            </Field>
+                            <Field label="标题">
+                              <input className="input" value={item.title}
+                                     placeholder={meta.example.replace("如 ", "")}
+                                     onChange={e => update(idx, { ...item, title: e.target.value })} />
+                            </Field>
+                            <Field label="一句话解释">
+                              <textarea className="input" value={item.description} rows={3}
+                                        onChange={e => update(idx, { ...item, description: e.target.value })}
+                                        style={{ lineHeight: 1.65 }} />
+                            </Field>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center" style={{
+        gap: 10, marginTop: 18, paddingTop: 14,
+        borderTop: "1px solid var(--border-subtle)",
+      }}>
+        <button className="btn" onClick={onGoToExtract}>
+          去「特征提取」由 LLM 综合分析
         </button>
+        <div style={{ flex: 1 }} />
+        <span className="text-xs text-muted">
+          {dirty ? "有未保存的修改" : "已保存"}
+        </span>
         <button className="btn-primary"
-                disabled={saving || !text.trim()} onClick={onSaveAndExtract}>
-          保存并去特征提取 →
+                disabled={saving || !dirty}
+                onClick={() => { onSave(draft); setDirty(false); }}>
+          {saving ? "保存中…" : "保存修改"}
         </button>
       </div>
     </TabCard>
@@ -402,7 +865,6 @@ function ExtractTab({
     } finally {
       setPlanLoading(false);
     }
-    // openChunks intentionally excluded — we only want to default-open on first load
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refId, toast]);
 
@@ -503,7 +965,7 @@ function ExtractTab({
       } else {
         body.setting_features = dedupeBy(
           [...existing.features, ...preview.setting_features],
-          (f) => f.title,
+          (f) => `${f.category}::${f.title}`,
         );
       }
       await apiPut(`/api/references/works/${refId}/pure-setting`, body);
@@ -563,11 +1025,11 @@ function ExtractTab({
       <TabCard title="特征提取" subtitle="所有三类输入都为空">
         <EmptyHero
           title="还没有可提取的内容"
-          message="请到「快捷输入」粘贴 wiki 原文，或在「设定」「角色」tab 手动新增条目。三类输入只要任一非空即可提取。"
+          message="请到「原始文本」粘贴 wiki 原文，或在「设定」「角色」tab 手动新增条目。三类输入只要任一非空即可提取。"
           actions={(
             <>
-              <button className="btn" onClick={() => onGoToTab("quick")}>
-                去「快捷输入」
+              <button className="btn" onClick={() => onGoToTab("raw")}>
+                去「原始文本」
               </button>
               <button className="btn" onClick={() => onGoToTab("settings")}>
                 去「设定」
@@ -599,15 +1061,14 @@ function ExtractTab({
         ) : null
       }
     >
-      {/* 输入材料汇总 */}
       <SourceSummary
         chars={plan.total_chars}
         chunks={plan.total_chunks}
+        entries={plan.entries_count}
         existingSettings={plan.existing_settings_count}
         existingCharacters={plan.existing_characters_count}
       />
 
-      {/* 说明 */}
       <div className="text-xs" style={{
         color: "var(--text-tertiary)",
         margin: "12px 0", lineHeight: 1.75,
@@ -615,8 +1076,9 @@ function ExtractTab({
         每段提供 <strong style={{ color: "var(--accent)" }}>大模型 API</strong>（设置中配置好模型后直接调用）
         与 <strong style={{ color: "var(--accent)" }}>大模型网页版</strong>
         （复制 prompt → 在网页 LLM 运行 → 粘贴 JSON 由系统解析）两种模式。
-        每段 prompt 包含本段 wiki 原文 + 已有设定 + 已有角色，结果先入预览，
-        确认后逐板块入库。
+        每段 prompt 包含本段原文 + 已有设定 + 已有角色，
+        <strong style={{ color: "var(--text-secondary)" }}>设定特征会按核心冲突 / 高概念 / 母题三类输出</strong>。
+        结果先入预览，确认后逐板块入库。
       </div>
 
       <div className="flex flex-col gap-8">
@@ -645,15 +1107,16 @@ function ExtractTab({
 }
 
 function SourceSummary({
-  chars, chunks, existingSettings, existingCharacters,
+  chars, chunks, entries, existingSettings, existingCharacters,
 }: {
-  chars: number; chunks: number;
+  chars: number; chunks: number; entries: number;
   existingSettings: number; existingCharacters: number;
 }) {
   const items = [
-    { label: "快捷输入", value: chars > 0 ? `${chars.toLocaleString()} 字` : "—",
-      sub: chars > 0 ? `${chunks} 段` : "未填写",
-      color: chars > 0 ? "var(--accent)" : "var(--text-tertiary)" },
+    { label: "原始文本",
+      value: entries > 0 ? `${entries} 条 · ${chars.toLocaleString()} 字` : "—",
+      sub: entries > 0 ? `${chunks} 段` : "未填写",
+      color: entries > 0 ? "var(--accent)" : "var(--text-tertiary)" },
     { label: "已有设定", value: existingSettings.toLocaleString(),
       sub: "去重上下文",
       color: existingSettings > 0 ? "var(--jade)" : "var(--text-tertiary)" },
@@ -677,7 +1140,7 @@ function SourceSummary({
           }}>{it.label}</div>
           <div style={{
             fontFamily: "var(--font-mono)",
-            fontSize: 18, fontWeight: 700, color: it.color, lineHeight: 1.2,
+            fontSize: 16, fontWeight: 700, color: it.color, lineHeight: 1.3,
           }}>{it.value}</div>
           <div className="text-xs" style={{
             color: "var(--text-tertiary)", marginTop: 2,
@@ -803,7 +1266,7 @@ function ChunkRow({
                   ? <EmptyLine>未提取到新设定</EmptyLine>
                   : p.settings.map((s, i) => (
                     <div key={i} style={previewRow}>
-                      <CategoryChip category={s.category || "其他"} />
+                      <CategoryChip category={s.category || "其他"} colorMap={SETTING_CAT_COLORS} />
                       <span style={{
                         fontWeight: 600, color: "var(--text-primary)",
                         flexShrink: 0,
@@ -843,7 +1306,7 @@ function ChunkRow({
                   ))}
               </PreviewBlock>
               <PreviewBlock
-                title="设定特征"
+                title="设定特征（核心冲突 / 高概念 / 母题）"
                 count={p.setting_features.length}
                 accent="var(--purple)"
                 onCommit={p.setting_features.length > 0 ? () => onCommitSection("setting_features") : undefined}
@@ -851,17 +1314,37 @@ function ChunkRow({
               >
                 {p.setting_features.length === 0
                   ? <EmptyLine>未提取到新特征</EmptyLine>
-                  : p.setting_features.map((f, i) => (
-                    <div key={i} style={previewRow}>
-                      <span style={{
-                        fontWeight: 700, color: "var(--text-primary)",
-                        flexShrink: 0,
-                      }}>{f.title}</span>
-                      <span style={{
-                        color: "var(--text-secondary)", flex: 1, minWidth: 0,
-                      }}>{f.description}</span>
-                    </div>
-                  ))}
+                  : (() => {
+                      const grouped: Record<string, SettingFeature[]> = {};
+                      p.setting_features.forEach(f => {
+                        const k = f.category || "高概念";
+                        (grouped[k] = grouped[k] || []).push(f);
+                      });
+                      return FEATURE_CATEGORIES.flatMap(cat => {
+                        const items = grouped[cat];
+                        if (!items?.length) return [];
+                        const meta = FEATURE_CAT_META[cat];
+                        return items.map((f, i) => (
+                          <div key={`${cat}-${i}`} style={previewRow}>
+                            <span style={{
+                              fontSize: 11, padding: "2px 8px", borderRadius: 4,
+                              color: meta.color,
+                              border: `1px solid ${meta.color}`,
+                              background: "var(--bg-surface-2)",
+                              flexShrink: 0, fontWeight: 600,
+                            }}>{meta.label}</span>
+                            <span style={{
+                              fontWeight: 700, color: "var(--text-primary)",
+                              flexShrink: 0,
+                            }}>{f.title}</span>
+                            <span style={{
+                              color: "var(--text-secondary)", flex: 1, minWidth: 0,
+                            }}>{f.description}</span>
+                          </div>
+                        ));
+                      });
+                    })()
+                }
               </PreviewBlock>
               <div className="flex" style={{
                 justifyContent: "flex-end", marginTop: 12,
@@ -875,7 +1358,6 @@ function ChunkRow({
             </>
           ) : (
             <>
-              {/* 提取模式切换 */}
               <div style={{
                 display: "inline-flex",
                 background: "var(--bg-surface)",
@@ -974,22 +1456,24 @@ function ChunkRow({
 /* ───────────────────────── Collapsible list ───────────────────────── */
 
 function CollapsibleList<T extends Record<string, any>>({
-  items, identify, summary, renderEditor, blank, onSave, saving,
-  addLabel, emptyHint, emptyAction,
+  items, summary, renderEditor, blank, onSave, saving,
+  addLabel, emptyHint, emptyExtraAction, defaultOpen,
 }: {
   items: T[];
-  identify: (item: T) => string;
-  summary: (item: T) => React.ReactNode;
-  renderEditor: (item: T, set: (next: T) => void) => React.ReactNode;
+  summary: (item: T, index: number) => React.ReactNode;
+  renderEditor: (item: T, set: (next: T) => void, index: number) => React.ReactNode;
   blank: T;
   onSave: (items: T[]) => void;
   saving: boolean;
   addLabel: string;
   emptyHint: string;
-  emptyAction?: React.ReactNode;
+  emptyExtraAction?: React.ReactNode;
+  defaultOpen?: boolean;
 }) {
   const [draft, setDraft] = useState<T[]>(items);
-  const [openIdx, setOpenIdx] = useState<Set<number>>(new Set());
+  const [openIdx, setOpenIdx] = useState<Set<number>>(
+    defaultOpen && items.length > 0 ? new Set([0]) : new Set(),
+  );
   const [dirty, setDirty] = useState(false);
   useEffect(() => { if (!dirty) setDraft(items); }, [items, dirty]);
 
@@ -1023,11 +1507,11 @@ function CollapsibleList<T extends Record<string, any>>({
       {draft.length === 0 ? (
         <EmptyHero
           title={emptyHint}
-          message="点击下方「新增」手动录入，或先到「特征提取」让 LLM 抽取。"
+          message="点击下方「新增」手动录入条目。"
           actions={(
             <>
               <button className="btn-primary" onClick={add}>+ {addLabel}</button>
-              {emptyAction}
+              {emptyExtraAction}
             </>
           )}
         />
@@ -1059,7 +1543,7 @@ function CollapsibleList<T extends Record<string, any>>({
                   <div className="flex items-center" style={{
                     gap: 8, flex: 1, minWidth: 0, fontSize: 13,
                   }}>
-                    {summary(row)}
+                    {summary(row, i)}
                   </div>
                 </button>
                 <button className="btn-icon" title="删除"
@@ -1076,7 +1560,7 @@ function CollapsibleList<T extends Record<string, any>>({
                   background: "var(--bg-surface)",
                   display: "flex", flexDirection: "column", gap: 10,
                 }}>
-                  {renderEditor(row, (next) => update(i, next))}
+                  {renderEditor(row, (next) => update(i, next), i)}
                 </div>
               )}
             </div>
@@ -1240,8 +1724,11 @@ function PreviewBlock({
   );
 }
 
-function CategoryChip({ category }: { category: string }) {
-  const color = CATEGORY_COLORS[category] || "var(--text-tertiary)";
+function CategoryChip({ category, colorMap }: {
+  category: string;
+  colorMap: Record<string, string>;
+}) {
+  const color = colorMap[category] || "var(--text-tertiary)";
   return (
     <span style={{
       fontSize: 11, padding: "2px 8px", borderRadius: 4,

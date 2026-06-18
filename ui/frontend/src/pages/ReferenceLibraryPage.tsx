@@ -805,7 +805,7 @@ function WorkDetail({
   onAfterMerge: () => Promise<void> | void;
 }) {
   const [tab, setTab] = useState<WorkDetailTab>("files");
-  const [pureSettingTab, setPureSettingTab] = useState<PureSettingTab>("quick");
+  const [pureSettingTab, setPureSettingTab] = useState<PureSettingTab>("raw");
   const [whyDraft, setWhyDraft] = useState(sel.user_why_i_like || "");
   const [editingWhy, setEditingWhy] = useState(false);
   const chapterComments = useMemo<ChapterComment[]>(() => {

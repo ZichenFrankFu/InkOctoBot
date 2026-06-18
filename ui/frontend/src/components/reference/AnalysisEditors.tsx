@@ -55,7 +55,7 @@ export function PromptCopyPanel({
   defaultOpen = false,
 }: {
   refId: string;
-  promptKey: "reference.characters" | "reference.settings" | "reference.outline" | "reference.style" | "reference.unified" | "reference.pure_setting";
+  promptKey: "reference.characters" | "reference.settings" | "reference.outline" | "reference.style" | "reference.unified" | "reference.pure_setting" | "reference.pure_setting_translate";
   segmentIndex: number | null;
   label: string;
   /** Allow the multi-chunk endpoint. Defaults to true; pass false to
