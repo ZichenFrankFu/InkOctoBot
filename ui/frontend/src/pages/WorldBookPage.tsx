@@ -13,23 +13,20 @@ interface Props {
   projects: any[];
 }
 
-const BUILTIN_CATEGORIES: { key: string; label: string; icon: string }[] = [
-  { key: "power_system", label: "力量体系", icon: "\u26A1" },
-  { key: "factions", label: "势力", icon: "\u2694" },
-  { key: "geography", label: "地理", icon: "\u2295" },
-  { key: "social_rules", label: "社会规则/习俗", icon: "\u2261" },
-  { key: "history", label: "历史", icon: "\u229E" },
-  { key: "hard_rules", label: "世界观规则", icon: "\u2500" },
-  { key: "other", label: "其他", icon: "\u25CB" },
+const BUILTIN_CATEGORIES: { key: string; label: string }[] = [
+  { key: "power_system", label: "力量体系" },
+  { key: "factions", label: "势力" },
+  { key: "geography", label: "地理" },
+  { key: "social_rules", label: "社会规则/习俗" },
+  { key: "history", label: "历史" },
+  { key: "hard_rules", label: "世界观规则" },
+  { key: "other", label: "其他" },
 ];
 
 function catLabel(cat: string, customCats: { key: string; label: string }[]): string {
   return BUILTIN_CATEGORIES.find(c => c.key === cat)?.label
     || customCats.find(c => c.key === cat)?.label
     || cat;
-}
-function catIcon(cat: string): string {
-  return BUILTIN_CATEGORIES.find(c => c.key === cat)?.icon || "\uD83D\uDCDD";
 }
 
 interface ConsistencyIssue {
@@ -96,7 +93,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
 
   const allCategories = useMemo(() => [
     ...BUILTIN_CATEGORIES,
-    ...customCategories.map(c => ({ ...c, icon: "\u2022" })),
+    ...customCategories,
   ], [customCategories]);
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 320, minSize: 240, maxSize: 450 });
@@ -190,7 +187,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
         project_id: projectId,
         entries_text: entries,
       });
-      // 结构化结果优先（spec: 条目A × 条目B + 冲突内容 + 修改建议）
+      // 结构化结果优先（spec: 条目A 与 条目B + 冲突内容 + 修改建议）
       if (resp.conflicts && resp.conflicts.length > 0) {
         setCheckIssues(resp.conflicts.map((c: any) => ({
           entry1: c.entry_a || "",
@@ -305,7 +302,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   return (
     <div className="page-full">
       <div className="panel-layout">
-        {/* ══════ LEFT PANEL: Navigator (4.1) ══════ */}
+        {/* LEFT PANEL: Navigator (4.1) */}
         <div className="panel" style={{ width: leftPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)" }}>
           <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
             <div className="flex items-center justify-between">
@@ -367,7 +364,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                 className={filterCat === c.key ? "btn-primary" : "btn"}
                 style={{ padding: "4px 10px", fontSize: 11, borderRadius: 12 }}
                 onClick={() => setFilterCat(filterCat === c.key ? "" : c.key)}>
-                {c.icon} {c.label} ({catCounts[c.key] || 0})
+                {c.label} ({catCounts[c.key] || 0})
               </button>
             ))}
             <button className="btn"
@@ -392,7 +389,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
               {customCategories.map(c => (
                 <span key={c.key} style={{ marginLeft: 4, padding: "1px 6px", background: "var(--bg-surface-2)", borderRadius: 8, cursor: "pointer" }}
                   onClick={async () => { if (await confirm({ message: `删除自定义分类「${c.label}」？`, destructive: true })) removeCustomCategory(c.key); }}>
-                  {c.label} &times;
+                  {c.label} 删除
                 </span>
               ))}
             </div>
@@ -434,19 +431,18 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                     <input type="checkbox" checked={selectedIds.has(entry.id)} readOnly
                       style={{ accentColor: "var(--accent)", flexShrink: 0 }} />
                   )}
-                  <span className="report-icon">{catIcon(entry.category)}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="report-name" style={{ fontWeight: 600, color: "var(--text-primary)" }}>
                       {entry.title}
                     </div>
                     <div className="text-xs text-muted truncate">
                       {catLabel(entry.category, customCategories)}
-                      {entry.content ? ` \u00B7 ${entry.content.length > 40 ? entry.content.slice(0, 40) + "..." : entry.content}` : " \u00B7 (空)"}
+                      {entry.content ? `，${entry.content.length > 40 ? entry.content.slice(0, 40) + "..." : entry.content}` : "（空）"}
                     </div>
                   </div>
                   {!batchMode && (
-                    <button className="btn-icon" style={{ fontSize: 14 }}
-                      onClick={e => { e.stopPropagation(); remove(entry.id); }}>&times;</button>
+                    <button className="btn-icon" style={{ fontSize: 11, padding: "2px 6px" }}
+                      onClick={e => { e.stopPropagation(); remove(entry.id); }}>删除</button>
                   )}
                 </div>
               ))
@@ -456,14 +452,14 @@ export default function WorldBookPage({ projectId, projects }: Props) {
 
         <div className="panel-resize-h" {...leftPanel.handleProps} />
 
-        {/* ══════ RIGHT PANEL: Entry Detail (4.2) ══════ */}
+        {/* RIGHT PANEL: Entry Detail (4.2) */}
         <div className="panel flex-1" style={{ background: "var(--bg-app)", overflowY: "auto" }}>
           {/* Consistency check result as TABLE (4.1.1) */}
           {(checkIssues.length > 0 || checkMessage) && (
             <div style={{ margin: "16px 32px 0" }}>
               <div className="flex items-center justify-between mb-8">
                 <span className="label" style={{ marginBottom: 0 }}>一致性检查结果</span>
-                <button className="btn-icon" onClick={() => { setCheckIssues([]); setCheckMessage(null); }} style={{ fontSize: 12 }}>&times;</button>
+                <button className="btn-icon" onClick={() => { setCheckIssues([]); setCheckMessage(null); }} style={{ fontSize: 11, padding: "2px 6px" }}>关闭</button>
               </div>
               {checkMessage ? (
                 <div style={{
@@ -641,7 +637,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                           className={editing.category === c.key ? "btn-primary" : "btn"}
                           style={{ padding: "6px 14px", fontSize: 12, borderRadius: 20 }}
                           onClick={() => u("category", c.key)}>
-                          {c.icon} {c.label}
+                          {c.label}
                         </button>
                       ))}
                     </div>

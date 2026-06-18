@@ -1,11 +1,11 @@
 /**
  * Publishing-platform catalog + per-platform creative profiles.
  *
- * The platform a project targets (起点 / 番茄 / 晋江 / ...) is not just a
- * label — platforms reward different chapter lengths, pacing and opening
- * strategies. `PLATFORM_PROFILES` captures those norms; the generation
- * backend reads the mirrored `analysis/feature_extraction/platform_profiles.py`
- * to steer the AI accordingly.
+ * The platform a project targets (起点 / 番茄 / ...) is not just a label —
+ * platforms reward different chapter lengths, pacing and opening strategies.
+ * `PLATFORM_PROFILES` captures those norms; the generation backend reads the
+ * mirrored `analysis/feature_extraction/platform_profiles.py` to steer the AI
+ * accordingly.
  */
 
 export interface PlatformProfile {
@@ -38,16 +38,6 @@ export const PLATFORM_PROFILES: PlatformProfile[] = [
     openingNote: "首章即抛出爽点或核心钩子，强开局",
     generationHint:
       "番茄读者偏好短章快节奏，单章 1500-2500 字；情节推进密集，爽点前置，少铺垫多冲突。",
-  },
-  {
-    id: "jjwxc",
-    label: "晋江文学",
-    aliases: ["晋江", "jjwxc", "晋江文学城"],
-    chapterWordTarget: [2000, 3500],
-    pacing: "中速",
-    openingNote: "重视人物情感线与细腻笔触的建立",
-    generationHint:
-      "晋江读者重情感与人物刻画，单章 2000-3500 字，节奏中速；细腻描写与情绪铺陈优先。",
   },
   {
     id: "other",

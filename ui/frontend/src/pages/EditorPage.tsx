@@ -11,7 +11,6 @@ import EvalReport from "../components/editor/EvalReport";
 import type { EvalReportData } from "../components/editor/EvalReport";
 import FollowUpQuestions from "../components/shared/FollowUpQuestions";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
-import EditorRightDrawer from "../components/shared/EditorRightDrawer";
 
 const vuid = () => `v_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -130,8 +129,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [content, setContent] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
-  // Right-side inspector drawer (spec §5).
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Last successfully-persisted snapshot per chapter — lets the
   // auto-save skip no-op writes (e.g. right after a chapter switch).
@@ -1318,38 +1315,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   return (
     <div className="page-full">
-      {/* Floating right-drawer trigger (spec §5: PromptInspector +
-          NotificationFeed + deep-links to the learning surfaces) */}
-      <button
-        onClick={() => setDrawerOpen(true)}
-        title="打开右侧 Inspector (Prompt 透视 / 通知 / 导航)"
-        style={{
-          position: "fixed", right: 16, top: 60, zIndex: 800,
-          width: 40, height: 40, borderRadius: "50%",
-          background: "var(--bg-surface)",
-          border: "1px solid var(--border)",
-          boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
-          fontSize: 18, cursor: "pointer",
-        }}
-        aria-label="Open inspector drawer"
-      >
-        
-      </button>
-
-      <EditorRightDrawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        projectId={projectId}
-        chapterId={activeChId}
-        chapterNum={(activeCh as any)?.order || (activeCh as any)?.chapter_num || 1}
-        synopsis={activeCh?.synopsis || ""}
-        characters={activeCh?.characters || []}
-        onNavigate={(page) => {
-          setDrawerOpen(false);
-          onNavigate?.(page);
-        }}
-      />
-
       <div className="editor-layout">
         {/* LEFT PANEL */}
         {leftPanelOpen ? (
@@ -1537,7 +1502,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               }} />}
             {(aiTab === "single" || aiTab === "cluster") && <InspireTab mode={aiTab} steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
-              paused={pipelinePaused} onPauseResume={handlePauseResume} projectId={projectId} chapterId={activeChId}
+              paused={pipelinePaused} onPauseResume={handlePauseResume} projectId={projectId} chapterId={activeChId} chapterNum={chapterNum}
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
               onFetchPrompt={fetchGenPrompt}
               onApplyPaste={applyPlainPaste}
@@ -1547,7 +1512,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId}
-              chapterId={activeChId} manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
+              chapterId={activeChId} chapterNum={chapterNum} manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
               onToggleSkill={toggleSkill} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest} />}
           </div>
         </div>
@@ -2256,18 +2221,203 @@ function formatSkillsUsed(skills?: string[]): string {
     : "本次创作未启用自定义技能";
 }
 
+/** Sections expected by the prompt template — used by RAG预览 to surface
+ *  which loaders actually injected content into the rendered prompt. Mirrors
+ *  the canonical list from components/shared/PromptInspector.tsx. */
+const RAG_PREVIEW_SECTIONS: { title: string; source: string }[] = [
+  { title: "用户特别要求", source: "user_special_requirements" },
+  { title: "本章大纲",     source: "chapter_outline" },
+  { title: "时间与地点",   source: "time_location" },
+  { title: "本章出场角色", source: "characters_block" },
+  { title: "出场角色档案", source: "character_cards" },
+  { title: "世界观设定",   source: "worldbook" },
+  { title: "关联参考",     source: "reference" },
+  { title: "用户写作偏好", source: "user_preferences" },
+  { title: "未回收伏笔",   source: "foreshadowing" },
+  { title: "故事线",       source: "subplots" },
+  { title: "相关灵感",     source: "inspiration" },
+  { title: "客观状态",     source: "storyland_state" },
+  { title: "读者视角记忆", source: "reader_memory" },
+  { title: "已有正文",     source: "existing_content / current_chapter_draft" },
+  { title: "创作技能",     source: "skills" },
+  { title: "平台风格",     source: "platform_directive" },
+];
+
+/** Parse a rendered prompt into `## title` → body sections. Heuristic-based;
+ *  matches the parser used by PromptInspector so RAG预览 surfaces the same view. */
+function parsePromptSections(prompt: string): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!prompt) return out;
+  let curTitle = "", curBody = "";
+  for (const line of prompt.split("\n")) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m) {
+      if (curTitle) out.set(curTitle, curBody);
+      curTitle = m[1];
+      curBody = "";
+    } else if (curTitle) {
+      curBody += line + "\n";
+    }
+  }
+  if (curTitle) out.set(curTitle, curBody);
+  return out;
+}
+
+/** RAG预览 loader-injection panel: fetches the rendered prompt on demand
+ *  (prompt_only=true, no LLM call) and shows which of the 16 sections were
+ *  actually injected — replaces the old floating prompt-inspector ball. */
+function LoaderInjectionPreview({ projectId, chapterId, chapterNum }: {
+  projectId: string; chapterId: string; chapterNum: number;
+}) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [showFull, setShowFull] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!projectId || !chapterId) return;
+    setLoading(true);
+    try {
+      const res = await apiPost<{ status: string; prompt: string }>(
+        "/api/generation/quick-generate",
+        {
+          project_id: projectId, chapter_id: chapterId, chapter_num: chapterNum,
+          synopsis: "", characters: [], prompt_only: true,
+        },
+      );
+      setPrompt(res.prompt || "");
+    } catch (e: any) {
+      toast(`获取 prompt 失败：${e?.message || ""}`, "error");
+    } finally { setLoading(false); }
+  }, [projectId, chapterId, chapterNum, toast]);
+
+  // Lazy-load the rendered prompt the first time the user opens the preview.
+  const onToggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !prompt && !loading) load();
+  };
+
+  const copyAll = () => {
+    if (!prompt) return;
+    navigator.clipboard.writeText(prompt).then(
+      () => toast("已复制完整 prompt", "success"),
+      () => toast("复制失败", "error"),
+    );
+  };
+
+  const sections = parsePromptSections(prompt);
+  const filled = RAG_PREVIEW_SECTIONS.filter(s => (sections.get(s.title) || "").trim().length > 0).length;
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <button onClick={onToggle} style={{
+          flex: 1, textAlign: "left", background: "none", border: "none", padding: "2px 0",
+          cursor: "pointer", fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
+        }}>
+          {open ? "收起" : "展开"} Prompt 注入预览
+          {prompt && <span style={{ marginLeft: 6, color: "var(--text-tertiary)", fontWeight: 400 }}>
+            （{filled}/{RAG_PREVIEW_SECTIONS.length} 已注入 · {prompt.length} 字）
+          </span>}
+        </button>
+        {open && (
+          <>
+            <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+              onClick={load} disabled={loading}
+              title="重新拉取渲染后的 prompt">
+              {loading ? "..." : "刷新"}
+            </button>
+            <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+              onClick={copyAll} disabled={!prompt}
+              title="复制完整 prompt（用于网页版大模型）">
+              复制
+            </button>
+            <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+              onClick={() => setShowFull(s => !s)} disabled={!prompt}>
+              {showFull ? "收起完整" : "看完整"}
+            </button>
+          </>
+        )}
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 6 }}>
+          {loading && !prompt ? (
+            <div className="text-xs text-muted" style={{ padding: "8px 0" }}>渲染 prompt 中...</div>
+          ) : !prompt ? (
+            <div className="text-xs text-muted" style={{ padding: "8px 0" }}>
+              点击「刷新」拉取渲染后的 prompt 以查看 loader 注入状态。
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 3 }}>
+              {RAG_PREVIEW_SECTIONS.map(expected => {
+                const body = (sections.get(expected.title) || "").trim();
+                const present = body.length > 0;
+                return (
+                  <details key={expected.title} style={{
+                    padding: "3px 8px",
+                    background: present ? "var(--bg-surface-2)" : "transparent",
+                    borderLeft: `3px solid ${present ? "var(--accent)" : "var(--border)"}`,
+                    borderRadius: 3,
+                  }}>
+                    <summary style={{
+                      cursor: present ? "pointer" : "default", fontSize: 11,
+                      color: present ? "var(--text-primary)" : "var(--text-tertiary)",
+                    }}>
+                      <strong>{expected.title}</strong>
+                      <span style={{ marginLeft: 8, color: "var(--text-tertiary)", fontSize: 10 }}>
+                        {present ? `${body.length} 字` : "未注入"}
+                      </span>
+                    </summary>
+                    {present && (
+                      <pre style={{
+                        marginTop: 4, padding: 6, background: "var(--bg-surface)",
+                        fontSize: 10, fontFamily: "var(--font-mono)",
+                        maxHeight: 160, overflow: "auto", borderRadius: 3,
+                        whiteSpace: "pre-wrap", wordBreak: "break-word",
+                      }}>{body}</pre>
+                    )}
+                  </details>
+                );
+              })}
+            </div>
+          )}
+
+          {showFull && prompt && (
+            <details open style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", fontSize: 11, fontWeight: 600 }}>完整 prompt</summary>
+              <pre style={{
+                marginTop: 6, padding: 8, background: "var(--bg-surface-2)",
+                fontSize: 10, fontFamily: "var(--font-mono)",
+                maxHeight: 320, overflow: "auto", borderRadius: 4,
+                whiteSpace: "pre-wrap",
+              }}>{prompt}</pre>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Transparency panel: skills used + per-item RAG context (de-selectable).
- *  Shared by the creation tabs and the 评估 tab. */
-function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefresh }: {
+ *  The RAG section doubles as the prompt-loader inspector — the floating ball
+ *  trigger was retired in favour of an inline preview here. */
+function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefresh, projectId, chapterId, chapterNum }: {
   manifest: ContextManifest | null;
   skillSelection: Record<string, boolean>;
   ragExcludes: Set<string>;
   onToggleSkill: (name: string) => void;
   onToggleRagItem: (key: string) => void;
   onRefresh?: () => void;
+  projectId?: string;
+  chapterId?: string;
+  chapterNum?: number;
 }) {
   const [skillOpen, setSkillOpen] = useState(false);
-  const [ragOpen, setRagOpen] = useState(false);
+  const [ragOpen, setRagOpen] = useState(true);
   if (!manifest) return null;
 
   const sectionHeader = (open: boolean, toggle: () => void, text: string,
@@ -2278,7 +2428,7 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
         cursor: "pointer", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)",
         display: "flex", alignItems: "center", gap: 5,
       }}>
-        <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>{open ? "▾" : "▸"}</span>{text}
+        <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>{open ? "[-]" : "[+]"}</span>{text}
       </button>
       {rightEl}
     </div>
@@ -2327,7 +2477,7 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
 
   return (
     <div style={{
-      marginBottom: 6, padding: "8px 10px", background: "var(--bg-surface)",
+      marginBottom: 8, padding: "10px 12px", background: "var(--bg-surface)",
       borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
     }}>
       {sectionHeader(skillOpen, () => setSkillOpen(o => !o), `调用的 skill（${skillCount}）`,
@@ -2339,7 +2489,7 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
           </button>
         ) : undefined)}
       {skillOpen && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0 8px" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0 10px" }}>
           {manifest.default_skills.map(s => chip("d:" + s.name, s.name, true, undefined, s.step || "默认"))}
           {manifest.learned_skills.map(s => chip(
             "l:" + s.name, s.name, skillSelection[s.name] !== false,
@@ -2351,23 +2501,25 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
           {skillCount === 0 && <span className="text-xs text-muted">本次无可调用 skill</span>}
         </div>
       )}
-      {sectionHeader(ragOpen, () => setRagOpen(o => !o),
-        `引用的 RAG 上下文（已启用 ${selCount}/${allKeys.length} 项）`,
-        onRefresh ? (
-          <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
-            onClick={onRefresh}
-            title="重新加载 RAG —— 在角色管理 / 世界书 / 大纲等处更新数据后点此同步">
-            ↻ 刷新
-          </button>
-        ) : undefined)}
+      <div style={{ marginTop: 6 }}>
+        {sectionHeader(ragOpen, () => setRagOpen(o => !o),
+          `RAG 预览（已启用 ${selCount}/${allKeys.length} 项）`,
+          onRefresh ? (
+            <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+              onClick={onRefresh}
+              title="重新加载 RAG —— 在角色管理 / 世界书 / 大纲等处更新数据后点此同步">
+              刷新
+            </button>
+          ) : undefined)}
+      </div>
       {ragOpen && (
-        <div style={{ marginTop: 2 }}>
+        <div style={{ marginTop: 4 }}>
           {manifest.rag.map(cat => {
             const sel = cat.items.filter(it => !ragExcludes.has(`${cat.key}::${it.id}`)).length;
             return (
               <div key={cat.key} style={{ marginTop: 7 }}>
                 <div className="text-xs" style={{ color: "var(--text-tertiary)", marginBottom: 3 }}>
-                  {cat.label}{cat.items.length > 0 ? ` ·已选 ${sel}/${cat.items.length}` : ""}
+                  {cat.label}{cat.items.length > 0 ? `（已选 ${sel}/${cat.items.length}）` : ""}
                 </div>
                 {cat.items.length > 0 ? (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -2380,6 +2532,13 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
               </div>
             );
           })}
+          {projectId && chapterId && (
+            <LoaderInjectionPreview
+              projectId={projectId}
+              chapterId={chapterId}
+              chapterNum={chapterNum || 1}
+            />
+          )}
         </div>
       )}
     </div>
@@ -2453,11 +2612,11 @@ function CostEstimateBlock({ mode, projectId, chapterId }: {
   );
 }
 
-function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, chapterNum, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
   mode: "single" | "cluster";
   steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
-  paused?: boolean; onPauseResume?: () => void; projectId?: string; chapterId?: string;
+  paused?: boolean; onPauseResume?: () => void; projectId?: string; chapterId?: string; chapterNum?: number;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
   onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
   manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
@@ -2789,6 +2948,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
             onToggleSkill={(n) => onToggleSkill?.(n)}
             onToggleRagItem={(k) => onToggleRagItem?.(k)}
             onRefresh={onRefreshManifest}
+            projectId={projectId} chapterId={chapterId} chapterNum={chapterNum}
           />
           <CostEstimateBlock mode={mode} projectId={projectId} chapterId={chapterId} />
           {mode === "single" ? (
@@ -3080,8 +3240,8 @@ function ScoreDots({ score, max }: { score: number; max: number }) {
 
 /** 评估 tab — evaluate the current chapter text on demand (no need to
  *  generate first), or show the result from a pipeline run. */
-function EvalTab({ result, chapterContent, projectId, chapterId, manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefreshManifest }: {
-  result: EvalResult | null; chapterContent: string; projectId: string; chapterId: string;
+function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefreshManifest }: {
+  result: EvalResult | null; chapterContent: string; projectId: string; chapterId: string; chapterNum?: number;
   manifest: ContextManifest | null; skillSelection: Record<string, boolean>; ragExcludes: Set<string>;
   onToggleSkill: (name: string) => void; onToggleRagItem: (key: string) => void;
   onRefreshManifest?: () => void;
@@ -3125,6 +3285,7 @@ function EvalTab({ result, chapterContent, projectId, chapterId, manifest, skill
         manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
         onToggleSkill={onToggleSkill} onToggleRagItem={onToggleRagItem}
         onRefresh={onRefreshManifest}
+        projectId={projectId} chapterId={chapterId} chapterNum={chapterNum}
       />
       <div style={{ marginBottom: 12 }}>
         <button className="btn-primary" style={{ width: "100%" }} onClick={runEval} disabled={evaluating}>
