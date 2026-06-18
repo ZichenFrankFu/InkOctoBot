@@ -172,10 +172,6 @@ export default function CompareWorksPanel({ onSaved }: { onSaved?: () => void })
 
   return (
     <div>
-      <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
-        选择 2-8 部参考作品，对比它们的提取数据并生成一条可保存为技能的洞察。可使用AI大模型API处理，也可复制 Prompt 以使用AI大模型网页版再粘回结果。保存后会出现在「智能体」页面的「自学习成果」标签页。
-      </div>
-
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         {/* LEFT: work picker */}
         <div className="card">

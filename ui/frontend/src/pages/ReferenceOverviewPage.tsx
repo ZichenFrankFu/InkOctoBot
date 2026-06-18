@@ -4,6 +4,8 @@ import { swrHydrate, swrStore } from "../api/swr";
 import type { ReferenceWork, MediaType } from "../api/types";
 import { splitGenres } from "../utils/genre";
 import ReferenceSearchPage from "./ReferenceSearchPage";
+import CompareWorksPanel from "../components/CompareWorksPanel";
+import CommonPatternLearningPanel from "../components/reference/CommonPatternLearningPanel";
 
 const MEDIA_TYPES: { value: MediaType; label: string; color: string }[] = [
   { value: "web_novel", label: "网文", color: "var(--accent)" },
@@ -146,16 +148,20 @@ function readFeatureProgress(w: ReferenceWork): FeatureProgress {
   return { total: readChapterMetrics(w).chapters || sigTotal, ...acc };
 }
 
+type RefTab = "overview" | "search" | "compare_learn" | "index";
+
 interface Props {
   onNavigate?: (tab: string) => void;
   onSelectWork?: (refId: string) => void;
-  /** Open directly on a subtab — "tools" hosts 参考数据库工具. */
-  initialTab?: "overview" | "tools";
+  /** Open directly on a specific tab. */
+  initialTab?: RefTab;
 }
 
 export default function ReferenceOverviewPage({ onNavigate, initialTab }: Props) {
-  // 参考数据库工具 merged in as a subtab (用户需求 #3).
-  const [subTab, setSubTab] = useState<"overview" | "tools">(initialTab || "overview");
+  // 顶部 tab：总览 / 作品搜索 / 作品对比 & 共通点学习 / 索引管理。
+  // 数据库工具 subtab 与 ReferenceSearchPage 内部 tab strip 都已撤销，
+  // 这四个全部平铺在参考总览的顶层。
+  const [subTab, setSubTab] = useState<RefTab>(initialTab || "overview");
   // 秒开: 同步水合上次作品列表，后台刷新（stale-while-revalidate）。
   const [works, setWorks] = useState<ReferenceWork[]>(
     () => swrHydrate<ReferenceWork[]>("ref_overview_works") || [],
@@ -234,23 +240,23 @@ export default function ReferenceOverviewPage({ onNavigate, initialTab }: Props)
             <h2>参考总览</h2>
             <p>参考作品数据库的全局视图 · 共 {stats.total} 部作品</p>
           </div>
-          {subTab === "overview" && (
-            <div className="flex gap-8">
-              <button className="btn" onClick={load}>刷新</button>
-            </div>
-          )}
+          <div className="flex gap-8">
+            <button className="btn" onClick={load}>刷新</button>
+          </div>
         </div>
       </div>
 
-      {/* Subtab strip: 总览 | 数据库工具 (搜索/对比/共通点学习/索引) */}
+      {/* Tab strip: 总览 | 作品搜索 | 作品对比 & 共通点学习 | 索引管理 */}
       <div style={{
         display: "flex", gap: 0,
         borderBottom: "1px solid var(--border)",
         marginBottom: 14,
       }}>
         {([
-          { key: "overview" as const, label: "总览" },
-          { key: "tools"    as const, label: "数据库工具" },
+          { key: "overview"      as const, label: "总览" },
+          { key: "search"        as const, label: "作品搜索" },
+          { key: "compare_learn" as const, label: "作品对比 & 共通点学习" },
+          { key: "index"         as const, label: "索引管理" },
         ]).map(opt => (
           <button
             key={opt.key}
@@ -270,8 +276,19 @@ export default function ReferenceOverviewPage({ onNavigate, initialTab }: Props)
         ))}
       </div>
 
-      {subTab === "tools" ? (
-        <ReferenceSearchPage embedded onNavigate={onNavigate} />
+      {subTab === "search" ? (
+        <ReferenceSearchPage embedded hideTabs initialTab="search" onNavigate={onNavigate} />
+      ) : subTab === "index" ? (
+        <ReferenceSearchPage embedded hideTabs initialTab="index" onNavigate={onNavigate} />
+      ) : subTab === "compare_learn" ? (
+        <div className="flex flex-col" style={{ gap: 18 }}>
+          <CompareWorksPanel />
+          <CommonPatternLearningPanel
+            works={works.map(w => ({
+              ref_id: w.ref_id, title: w.title, creator: w.creator,
+            }))}
+          />
+        </div>
       ) : loading && stats.total === 0 ? (
         <div className="empty-state" style={{ paddingTop: 60 }}><p>加载中...</p></div>
       ) : stats.total === 0 ? (

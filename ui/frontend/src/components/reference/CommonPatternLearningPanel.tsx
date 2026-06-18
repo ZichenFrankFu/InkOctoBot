@@ -57,11 +57,6 @@ export default function CommonPatternLearningPanel({ works }: { works: WorkLite[
 
   return (
     <div>
-      <div style={{ padding: "8px 12px", background: "var(--bg-surface)", borderRadius: 6, marginBottom: 12, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-        选取多部参考作品与一个关注维度，AI 提取它们的共通技法并总结为自学习 skill。
-        学到的 skill 在章节生成时按相关度自动召回注入（与其他 skill 同一链路）。
-      </div>
-
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 280 }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>

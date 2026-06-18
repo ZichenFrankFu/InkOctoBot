@@ -254,8 +254,9 @@ function AppInner() {
         {/* 参考数据库 */}
         {tab === "references-overview" && <ErrorBoundary key="references-overview"><ReferenceOverviewPage onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "references"          && <ErrorBoundary key="references"><ReferenceLibraryPage /></ErrorBoundary>}
-        {/* Legacy alias — 参考数据库工具 merged into 参考总览 as the 数据库工具 subtab */}
-        {tab === "references-search"   && <ErrorBoundary key="references-search"><ReferenceOverviewPage initialTab="tools" onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
+        {/* Legacy alias — 参考数据库工具 平铺到了参考总览的顶层 tab，
+            references-search 路由直接打开「作品搜索」tab */}
+        {tab === "references-search"   && <ErrorBoundary key="references-search"><ReferenceOverviewPage initialTab="search" onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
 
         {/* 灵感数据库 (NEW) */}
         {tab === "inspiration-overview" && <ErrorBoundary key="inspiration-overview"><InspirationOverviewPage /></ErrorBoundary>}

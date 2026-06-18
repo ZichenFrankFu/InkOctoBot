@@ -104,6 +104,8 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
   const loadProgress = useCallback(async (refIds: string[]) => {
     // Fan-out one request per work. With a reasonable library (<500 works)
     // this is fine; we batch in Promise.all to keep latency low.
+    // Merge into existing state so partial refreshes (during polling)
+    // don't wipe out progress for other works.
     const pairs = await Promise.all(refIds.map(async rid => {
       try {
         const r = await apiGet<{ items: IndexProgressRow[] }>(
@@ -112,7 +114,7 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
         return [rid, r.items || []] as const;
       } catch { return [rid, [] as IndexProgressRow[]] as const; }
     }));
-    setProgressByRef(Object.fromEntries(pairs));
+    setProgressByRef(prev => ({ ...prev, ...Object.fromEntries(pairs) }));
   }, []);
 
   const refreshAll = useCallback(async () => {
@@ -124,6 +126,22 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
     if (works.length === 0) return;
     loadProgress(works.map(w => w.ref_id));
   }, [works, loadProgress]);
+
+  // Live progress polling — while any work is being indexed, refresh
+  // its progress row every 1.5s so the UI shows a moving progress bar
+  // instead of jumping from 0 → done at the very end of the build.
+  useEffect(() => {
+    const activeIds = Object.keys(indexing).filter(id => indexing[id]);
+    if (activeIds.length === 0) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      await loadProgress(activeIds);
+    };
+    tick();
+    const t = setInterval(tick, 1500);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [indexing, loadProgress]);
 
   // ── Search actions ──
 
@@ -326,9 +344,6 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
                   {loading ? "搜索中..." : "搜索"}
                 </button>
               </div>
-              <div className="text-xs text-muted" style={{ marginTop: 8, lineHeight: 1.55 }}>
-                提示：作品需先建立索引才能被搜索到。请到「索引管理」 tab 为感兴趣的作品建立索引。
-              </div>
             </div>
           </div>
 
@@ -423,9 +438,6 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
                   为全部作品建索引
                 </button>
               </div>
-              <div className="text-xs text-muted" style={{ marginTop: 8, lineHeight: 1.55 }}>
-                L1（大纲/角色/设定）+ L2（章节摘要）= 默认。L3（正文片段，~10 万字单作品需 1-3 分钟）按需勾选。已索引作品会被自动跳过的部分。
-              </div>
             </div>
           </div>
 
@@ -469,56 +481,88 @@ function IndexRow({ w, rows, indexing, onBuild, onClear, onOpen, topBorder }: {
 }) {
   const byLevel: Record<string, IndexProgressRow> = {};
   for (const r of rows) byLevel[r.level] = r;
+  // Aggregate progress across levels — used by the live progress bar
+  // when this work is currently being indexed.
+  let totalDone = 0, totalTarget = 0;
+  for (const r of rows) {
+    totalDone += r.done || 0;
+    totalTarget += r.total || 0;
+  }
+  const pct = totalTarget > 0 ? Math.min(100, Math.round((totalDone / totalTarget) * 100)) : 0;
   return (
     <div style={{
-      display: "flex", alignItems: "center", gap: 12,
       padding: "12px 16px",
       borderTop: topBorder ? "1px solid var(--border)" : "none",
     }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{w.title}</span>
-          {w.creator && <span className="text-xs text-muted">· {w.creator}</span>}
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{w.title}</span>
+            {w.creator && <span className="text-xs text-muted">· {w.creator}</span>}
+          </div>
+          <div className="flex gap-6" style={{ flexWrap: "wrap" }}>
+            {(["L1", "L2", "L3"] as const).map(lv => {
+              const row = byLevel[lv];
+              const status = row?.status;
+              const meta = STATUS_LABEL[status || ""] || { label: "未索引", color: "var(--text-tertiary)" };
+              return (
+                <span key={lv}
+                  title={row ? `${meta.label} · 已完成 ${row.done}/${row.total || "?"}${row.error ? ` · 错误：${row.error}` : ""}` : "尚未索引"}
+                  className="tag"
+                  style={{
+                    fontSize: 10, padding: "1px 6px",
+                    color: meta.color,
+                    background: "var(--bg-surface-2)",
+                    border: `1px solid ${meta.color}`,
+                  }}
+                >{lv} · {meta.label}{row?.done ? ` (${row.done})` : ""}</span>
+              );
+            })}
+          </div>
         </div>
-        <div className="flex gap-6" style={{ flexWrap: "wrap" }}>
-          {(["L1", "L2", "L3"] as const).map(lv => {
-            const row = byLevel[lv];
-            const status = row?.status;
-            const meta = STATUS_LABEL[status || ""] || { label: "未索引", color: "var(--text-tertiary)" };
-            return (
-              <span key={lv}
-                title={row ? `${meta.label} · 已完成 ${row.done}/${row.total || "?"}${row.error ? ` · 错误：${row.error}` : ""}` : "尚未索引"}
-                className="tag"
-                style={{
-                  fontSize: 10, padding: "1px 6px",
-                  color: meta.color,
-                  background: "var(--bg-surface-2)",
-                  border: `1px solid ${meta.color}`,
-                }}
-              >{lv} · {meta.label}{row?.done ? ` (${row.done})` : ""}</span>
-            );
-          })}
+        <div className="flex gap-6" style={{ flexShrink: 0 }}>
+          <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                  onClick={() => onBuild(false)} disabled={indexing}
+                  title="为本作品建立 L1 + L2 索引（大纲/角色/设定 + 章节摘要）">
+            {indexing ? "索引中..." : "建 L1+L2"}
+          </button>
+          <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
+                  onClick={() => onBuild(true)} disabled={indexing}
+                  title="为本作品建立 L1 + L2 + L3 索引（含正文 1500-字片段）">
+            建 +L3
+          </button>
+          <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }}
+                  onClick={onClear} disabled={indexing}>
+            清除
+          </button>
+          <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} onClick={onOpen}>
+            打开
+          </button>
         </div>
       </div>
-      <div className="flex gap-6" style={{ flexShrink: 0 }}>
-        <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                onClick={() => onBuild(false)} disabled={indexing}
-                title="为本作品建立 L1 + L2 索引（大纲/角色/设定 + 章节摘要）">
-          {indexing ? "索引中..." : "建 L1+L2"}
-        </button>
-        <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                onClick={() => onBuild(true)} disabled={indexing}
-                title="为本作品建立 L1 + L2 + L3 索引（含正文 1500-字片段）">
-          建 +L3
-        </button>
-        <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }}
-                onClick={onClear} disabled={indexing}>
-          清除
-        </button>
-        <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} onClick={onOpen}>
-          打开
-        </button>
-      </div>
+      {/* Live progress bar while this work is actively being indexed. */}
+      {indexing && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{
+            height: 6, background: "var(--bg-surface-2)",
+            borderRadius: 3, overflow: "hidden",
+          }}>
+            <div style={{
+              height: "100%", width: `${pct}%`,
+              background: "var(--accent)",
+              transition: "width 0.3s var(--ease-out)",
+            }} />
+          </div>
+          <div className="flex items-center" style={{
+            gap: 8, marginTop: 4,
+            fontSize: 11, color: "var(--text-tertiary)",
+            fontFamily: "var(--font-mono)",
+          }}>
+            <span>{totalDone.toLocaleString()} / {totalTarget > 0 ? totalTarget.toLocaleString() : "?"}</span>
+            <span style={{ color: "var(--accent)", fontWeight: 700 }}>{pct}%</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
