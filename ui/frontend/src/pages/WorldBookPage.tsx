@@ -54,8 +54,6 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   const [checkIssues, setCheckIssues] = useState<ConsistencyIssue[]>([]);
   const [checkMessage, setCheckMessage] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [batchMode, setBatchMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // AI Assistant dialog state
   const [showAIChat, setShowAIChat] = useState(false);
@@ -307,43 +305,11 @@ export default function WorldBookPage({ projectId, projects }: Props) {
           <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
             <div className="flex items-center justify-between">
               <h3>世界书</h3>
-              <div className="flex gap-4">
-                <button className="btn" style={{ padding: "5px 10px", fontSize: 11 }}
-                  onClick={() => { setBatchMode(!batchMode); setSelectedIds(new Set()); }}>
-                  {batchMode ? "取消" : "批量"}
-                </button>
-                <button className="btn-primary" style={{ padding: "5px 12px", fontSize: 12 }} onClick={create}>
-                  + 新建
-                </button>
-              </div>
+              <button className="btn-primary" style={{ padding: "5px 12px", fontSize: 12 }} onClick={create}>
+                + 新建
+              </button>
             </div>
             <div className="text-xs text-muted">{projName}</div>
-            {batchMode && selectedIds.size > 0 && (
-              <div className="flex gap-4 mt-4">
-                <button className="btn" style={{ fontSize: 11, flex: 1 }}
-                  onClick={() => {
-                    const selected = items.filter(i => selectedIds.has(i.id));
-                    const blob = new Blob([JSON.stringify(selected, null, 2)], { type: "application/json" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url; a.download = `worldbook_${Date.now()}.json`;
-                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                  }}>
-                  导出 ({selectedIds.size})
-                </button>
-                <button className="btn" style={{ fontSize: 11, flex: 1, color: "var(--error)" }}
-                  onClick={async () => {
-                    if (!(await confirm({ message: `确定删除 ${selectedIds.size} 个条目？`, destructive: true }))) return;
-                    for (const id of selectedIds) {
-                      await apiDelete(`/api/data/worldbook/${id}`).catch((e) => toast(e.message || "操作失败", "error"));
-                    }
-                    setSelectedIds(new Set()); setBatchMode(false); load();
-                  }}>
-                  删除 ({selectedIds.size})
-                </button>
-              </div>
-            )}
           </div>
 
           {/* Search */}
@@ -416,21 +382,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
               filtered.map(entry => (
                 <div key={entry.id}
                   className={`report-list-item ${editing?.id === entry.id ? "active" : ""}`}
-                  onClick={() => {
-                    if (batchMode) {
-                      setSelectedIds(prev => {
-                        const next = new Set(prev);
-                        if (next.has(entry.id)) next.delete(entry.id); else next.add(entry.id);
-                        return next;
-                      });
-                    } else {
-                      setEditing(entry); setDirty(false);
-                    }
-                  }}>
-                  {batchMode && (
-                    <input type="checkbox" checked={selectedIds.has(entry.id)} readOnly
-                      style={{ accentColor: "var(--accent)", flexShrink: 0 }} />
-                  )}
+                  onClick={() => { setEditing(entry); setDirty(false); }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="report-name" style={{ fontWeight: 600, color: "var(--text-primary)" }}>
                       {entry.title}
@@ -440,11 +392,9 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                       {entry.content ? `，${entry.content.length > 40 ? entry.content.slice(0, 40) + "..." : entry.content}` : "（空）"}
                     </div>
                   </div>
-                  {!batchMode && (
-                    <button className="btn-icon" style={{ fontSize: 14, padding: "2px 8px", lineHeight: 1 }}
-                      title="删除"
-                      onClick={e => { e.stopPropagation(); remove(entry.id); }}>×</button>
-                  )}
+                  <button className="btn-icon" style={{ fontSize: 14, padding: "2px 8px", lineHeight: 1 }}
+                    title="删除"
+                    onClick={e => { e.stopPropagation(); remove(entry.id); }}>×</button>
                 </div>
               ))
             )}

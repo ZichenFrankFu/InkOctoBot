@@ -92,8 +92,8 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "projects",     icon: "□", label: "开书" },
       { key: "characters",   icon: "♢", label: "角色管理" },
       { key: "worldbook",    icon: "⊕", label: "世界书" },
-      { key: "editor",       icon: "✎", label: "编辑器" },
       { key: "storyline",    icon: "─", label: "剧情线" },
+      { key: "editor",       icon: "✎", label: "编辑器" },
       { key: "storyland",    icon: "◎", label: "故事中世界" },
     ],
   },
@@ -270,7 +270,7 @@ function AppInner() {
         {tab === "editor"        && <ErrorBoundary key="editor"><EditorPage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "characters"    && <ErrorBoundary key="characters"><CharacterManagerPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
         {tab === "worldbook"     && <ErrorBoundary key="worldbook"><WorldBookPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
-        {tab === "storyline"     && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
+        {tab === "storyline"     && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "storyland" && <ErrorBoundary key="storyland"><StorylandPage projectId={activeProject} /></ErrorBoundary>}
 
         {/* 智能体与设置 */}

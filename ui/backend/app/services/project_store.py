@@ -777,6 +777,11 @@ def save_editor_doc(db_path: str, project_id: str,
         # Pending segment syncs — applied after the chapter commit so
         # segment_manager's own connection sees the latest chapter row.
         pending_segment_updates: list[tuple[str, str, str]] = []
+        # chap_num must be UNIQUE per project (project_schema.py UNIQUE
+        # constraint). Numbering it per-volume produced collisions across
+        # multiple volumes ("v1 ch 1" + "v2 ch 1" both got chap_num=1 →
+        # sqlite3.IntegrityError). Number globally, in document order.
+        running_chap_num = 0
         for vol_idx, vol in enumerate(body.get("volumes", []) or []):
             if not isinstance(vol, dict):
                 continue
@@ -784,9 +789,15 @@ def save_editor_doc(db_path: str, project_id: str,
             for ch_idx, ch in enumerate(vol.get("chapters", []) or []):
                 if not isinstance(ch, dict):
                     continue
-                chap_num = int(ch.get("order", ch_idx) or 0) + 1
-                # Stable, project-scoped chapter_id.
-                cid = ch.get("chapter_id") or f"{project_id}_v{vol_num}_c{chap_num:04d}"
+                running_chap_num += 1
+                chap_num = running_chap_num
+                # Stable, project-scoped chapter_id. Prefer the id the
+                # frontend has been tracking (`chapter_id` or `id`) so
+                # text_versions FK + version history stay attached even
+                # when the user reorders chapters. Fall back to a
+                # generated id only for chapters that came in without one.
+                cid = ch.get("chapter_id") or ch.get("id") \
+                    or f"{project_id}_v{vol_num}_c{chap_num:04d}"
                 kept_ids.add(cid)
                 content = ch.get("content", "") or ""
                 word_count = ch.get("word_count")
@@ -807,6 +818,31 @@ def save_editor_doc(db_path: str, project_id: str,
                     "items":         ose.get("items") if isinstance(ose.get("items"), list) else [],
                     "organizations": ose.get("organizations") if isinstance(ose.get("organizations"), list) else [],
                 }
+                # Some prior versions of save_editor_doc numbered per-volume
+                # AND fell back to a generated chapter_id even when the
+                # frontend already had one — so the DB can carry a row at
+                # (project_id, chap_num) whose chapter_id won't match the
+                # one we're about to insert. The ``ON CONFLICT(chapter_id)``
+                # clause won't catch that collision; the writer would 500
+                # with UNIQUE(project_id, chapter_num). Free the slot
+                # explicitly first so this save can land.
+                stale = con.execute(
+                    "SELECT chapter_id FROM chapters "
+                    "WHERE project_id = ? AND chapter_num = ? AND chapter_id <> ?",
+                    (project_id, chap_num, cid),
+                ).fetchone()
+                if stale is not None:
+                    stale_id = stale["chapter_id"]
+                    # Move the displaced chapter to a sentinel chap_num
+                    # outside the valid range so its row isn't lost (the
+                    # delete pass below will tidy up if it really vanished
+                    # from the editor doc, otherwise a later iteration of
+                    # this loop will re-claim its real chap_num).
+                    con.execute(
+                        "UPDATE chapters SET chapter_num = -ABS(chapter_num) "
+                        "WHERE project_id = ? AND chapter_id = ?",
+                        (project_id, stale_id),
+                    )
                 con.execute(
                     """INSERT INTO chapters (
                            chapter_id, project_id, chapter_num, volume,
@@ -859,6 +895,15 @@ def save_editor_doc(db_path: str, project_id: str,
                 "DELETE FROM chapters WHERE chapter_id = ? AND project_id = ?",
                 (cid, project_id),
             )
+        # Any chapters we sentinelled to a negative chap_num to free a
+        # slot, but didn't re-claim, are stale duplicates from the old
+        # buggy numbering — drop them. ON DELETE CASCADE on text_versions
+        # would only fire if a version was attached, which it won't be
+        # since the user can't see those phantom rows.
+        con.execute(
+            "DELETE FROM chapters WHERE project_id = ? AND chapter_num < 0",
+            (project_id,),
+        )
         con.commit()
 
     # Sync chapter_segments after the chapter rows commit so the
@@ -1033,12 +1078,31 @@ def delete_project(db_path: str, project_id: str) -> None:
 def _version_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
     r = _row_to_dict(row)
     diff = json.loads(r.get("diff_json") or "{}") or {}
+    # The frontend's TextVersion interface uses `version` / `text` /
+    # `user_edited`-style source labels; the DB schema uses `version_num`
+    # / `content` / `user_edit`. Surface BOTH spellings so the
+    # version-history panel renders the saved text instead of an empty
+    # box. The `source` mapping is the inverse of insert_version().
+    raw_source = r.get("source") or "ai"
+    source_display = {
+        "ai":        "ai_generated",
+        "user_edit": "user_edited",
+        "rewrite":   "targeted_rewrite",
+    }.get(raw_source, raw_source)
+    # Diff bag may carry the original source label (e.g. auto_saved) that
+    # didn't fit the DB CHECK; prefer it when present so the UI doesn't
+    # mis-categorise auto-saves as user_edits.
+    if isinstance(diff.get("source"), str):
+        source_display = diff["source"]
+    content = r.get("content") or ""
     out = {
         "version_id": r["version_id"],
         "chapter_id": r["chapter_id"],
         "version_num": r.get("version_num") or 1,
-        "source": r.get("source") or "ai",
-        "content": r.get("content") or "",
+        "version":     r.get("version_num") or 1,  # frontend alias
+        "source": source_display,
+        "content": content,
+        "text":    content,                          # frontend alias
         "model_used": r.get("model_used") or "",
         "created_at": r.get("created_at"),
         "ts": r.get("created_at"),
@@ -1075,9 +1139,31 @@ def list_versions(db_path: str, project_id: str,
     return [_version_row_to_payload(r) for r in rows]
 
 
+_SOURCE_TO_DB = {
+    # Frontend labels (TextVersion.source) → DB CHECK domain.
+    "ai_generated":     "ai",
+    "user_edited":      "user_edit",
+    "targeted_rewrite": "rewrite",
+    "outline_chat":     "ai",
+    "auto_saved":       "user_edit",
+    # DB labels — pass through.
+    "ai":               "ai",
+    "user_edit":        "user_edit",
+    "rewrite":          "rewrite",
+}
+
+
 def insert_version(db_path: str, project_id: str,
                    version: dict[str, Any]) -> dict[str, Any]:
     """Append a new version to a chapter's history.
+
+    Accepts both the legacy DB-shaped payload (``version_num`` / ``content``
+    / ``ai`` / ``user_edit`` / ``rewrite``) and the frontend's TextVersion
+    shape (``version`` / ``text`` / ``user_edited`` / ``auto_saved`` / …)
+    so /api/data/versions saves carry the actual chapter text instead of
+    landing as an empty `content` blob. Out-of-domain labels are mapped
+    into the DB CHECK domain; the original is preserved in diff_json so
+    the UI can still distinguish ``auto_saved`` from ``user_edited``.
 
     Requires ``chapter_id`` to exist in the chapters table (FK).
     Auto-increments ``version_num`` per chapter.
@@ -1086,12 +1172,23 @@ def insert_version(db_path: str, project_id: str,
     if not chapter_id:
         raise ValueError("chapter_id is required")
 
-    known_cols = {"version_id", "chapter_id", "version_num", "source",
-                  "content", "model_used", "created_at", "ts"}
+    # Accept text/content interchangeably so the frontend's `text` field
+    # (TextVersion interface) doesn't get dropped on insert.
+    content = version.get("content")
+    if not isinstance(content, str) or not content:
+        content = version.get("text", "") or ""
+
+    raw_source = (version.get("source") or "ai").strip()
+    db_source = _SOURCE_TO_DB.get(raw_source, "ai")
+
+    known_cols = {"version_id", "chapter_id", "version_num", "version",
+                  "source", "content", "text", "model_used",
+                  "created_at", "ts"}
     diff = {k: v for k, v in version.items() if k not in known_cols}
-    source = version.get("source", "ai")
-    if source not in {"ai", "user_edit", "rewrite"}:
-        source = "ai"
+    # Preserve the original (frontend) source label so the next read
+    # round-trip can render it.
+    if raw_source and raw_source != db_source:
+        diff.setdefault("source", raw_source)
 
     with open_db(db_path) as con:
         # Auto-increment per chapter
@@ -1100,15 +1197,15 @@ def insert_version(db_path: str, project_id: str,
             "WHERE chapter_id = ?",
             (chapter_id,),
         ).fetchone()[0]
-        vnum = int(version.get("version_num") or (max_num + 1))
+        vnum = int(version.get("version_num") or version.get("version") or (max_num + 1))
         vid = version.get("version_id") or _nid("ver_")
         con.execute(
             """INSERT INTO text_versions
                (version_id, chapter_id, version_num, source, content,
                 diff_json, model_used, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-            (vid, chapter_id, vnum, source,
-             version.get("content", ""),
+            (vid, chapter_id, vnum, db_source,
+             content,
              json.dumps(diff, ensure_ascii=False),
              version.get("model_used", "")),
         )
