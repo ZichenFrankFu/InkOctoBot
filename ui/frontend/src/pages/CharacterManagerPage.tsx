@@ -82,11 +82,39 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   // Dynamic properties flashcard state
   const [flashcardIndex, setFlashcardIndex] = useState(0);
 
+  // Per-snapshot edit toggles for 关系 / 隐藏身份 sections. Default to
+  // read-only so opening a snapshot doesn't drop straight into a wall of
+  // input boxes. Reset whenever the user switches snapshots so editing
+  // state can't bleed across cards.
+  const [editingRels, setEditingRels] = useState(false);
+  const [editingHidden, setEditingHidden] = useState(false);
+  useEffect(() => { setEditingRels(false); setEditingHidden(false); }, [flashcardIndex, editing?.id]);
+
   // Dynamic section sub-tab: snapshots, relationships, layerB
   const [dynTab, setDynTab] = useState<"snapshots">("snapshots");
 
   // Relationship time filter
   const [relTimeFilter, setRelTimeFilter] = useState("");
+
+  // ── Editor-driven chapter range for the global graph timeline.
+  // We pull from /api/data/editor so the timeline reflects the project's
+  // actual chapter spine (not just chapters that happen to have relationship
+  // markers). This means the timeline is ALWAYS visible once the editor
+  // has chapters, and the user can drag the window to see relationship
+  // states at any point in the story.
+  const [editorChapterCount, setEditorChapterCount] = useState(0);
+  useEffect(() => {
+    const pid = projectId || "default";
+    apiGet<{ volumes: any[] }>(`/api/data/editor?project_id=${pid}`)
+      .then(r => {
+        const count = (r.volumes || []).reduce(
+          (sum, v) => sum + ((v.chapters || []).length),
+          0,
+        );
+        setEditorChapterCount(count);
+      })
+      .catch(() => setEditorChapterCount(0));
+  }, [projectId]);
 
   // Persist char chat state to sessionStorage + backend
   useEffect(() => {
@@ -549,7 +577,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
         <div className="panel" style={{ width: leftPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)" }}>
           <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
             <div className="flex items-center justify-between">
-              <h3>角色管理</h3>
+              <h3>角色卡</h3>
               <div className="flex gap-4">
                 <button className="btn" style={{ padding: "5px 10px", fontSize: 11 }}
                   onClick={() => setShowNamer(true)} title="基于人名库取名">
@@ -657,6 +685,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
               <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
                 <GlobalRelationshipGraph
                   characters={liveCharacters}
+                  editorChapterCount={editorChapterCount}
                   onSelectCharacter={(id) => { setEditing(items.find(c => c.id === id) || null); setRightView("detail"); }}
                   fullHeight
                 />
@@ -924,7 +953,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
                     <h3>角色动态属性</h3>
-                    <span className="text-xs text-muted">时间快照（含关系 · 决策参数）</span>
+                    <span className="text-xs text-muted">时间快照（含关系 / 隐藏身份 / 决策参数）</span>
                   </div>
                 </div>
                 <div className="card-body">
@@ -1018,81 +1047,115 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                 <input className="input" value={snap.notes || ""} onChange={e => updateSnapshot(flashcardIndex, "notes", e.target.value)} placeholder="变化原因或事件..." />
                               </div>
 
-                              {/* ── Snapshot Relationships ── */}
-                              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 4 }}>
-                                <div className="flex items-center justify-between mb-8">
-                                  <label className="label" style={{ marginBottom: 0, fontWeight: 600 }}>关系 ({snapRels.length})</label>
-                                </div>
-                                <div style={{ padding: "6px 8px", marginBottom: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-                                  好感度：越高越喜欢（负=厌恶, 0=不熟, 正=好感）&nbsp;&nbsp;优先级：越低越优先（1=最重要）
-                                </div>
-                                {snapRels.map((rel, relIdx) => (
-                                  <div key={relIdx} style={{ padding: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", marginBottom: 8, border: "1px solid var(--border)" }}>
-                                    <div className="flex items-center justify-between mb-6">
-                                      <span style={{ fontWeight: 600, fontSize: 12, color: "var(--text-primary)" }}>&rarr; {rel.target_name}</span>
-                                      <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => removeSnapshotRel(flashcardIndex, relIdx)}>移除</button>
-                                    </div>
-                                    <div className="field mb-6">
-                                      <input className="input" value={rel.label || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "label", e.target.value)} placeholder="关系标签：师徒、情侣..." style={{ fontSize: 11 }} />
-                                    </div>
-                                    <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "affinity", v)} />
-                                    <ParamSlider name={`优先级 (#${rel.priority})`} value={rel.priority} min={1} max={20} step={1} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "priority", v)} />
-                                    <div className="field mt-6">
-                                      <input className="input" value={rel.notes || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "notes", e.target.value)} placeholder="关系备注..." style={{ fontSize: 11 }} />
-                                    </div>
+                              {/* ── 关系 section ── */}
+                              <SnapSection
+                                title="关系"
+                                count={snapRels.length}
+                                edit={editingRels}
+                                onEditToggle={() => setEditingRels(v => !v)}
+                              >
+                                {snapRels.length === 0 ? (
+                                  <div className="text-xs text-muted" style={{ padding: "8px 4px" }}>
+                                    {editingRels ? "添加角色关系以记录此阶段的人际网络。" : "暂无关系。点击右上角「编辑」添加。"}
                                   </div>
-                                ))}
-                                {/* Add relationship to snapshot */}
-                                {others.length > 0 && (
-                                  <div className="flex gap-6 mt-8">
-                                    <select className="select" style={{ flex: 1, fontSize: 11 }} value={relTarget} onChange={e => setRelTarget(e.target.value)}>
-                                      <option value="">添加角色关系...</option>
-                                      {others.map(o => (
-                                        <option key={o.id} value={o.id}>{o.name}</option>
-                                      ))}
-                                    </select>
-                                    <button className="btn-primary" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => addSnapshotRel(flashcardIndex, relTarget)} disabled={!relTarget}>+ 添加</button>
+                                ) : !editingRels ? (
+                                  // ── Read-only view ──
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                    {snapRels.map((rel, relIdx) => (
+                                      <RelationshipRowView key={relIdx} rel={rel} />
+                                    ))}
                                   </div>
+                                ) : (
+                                  // ── Edit view ──
+                                  <>
+                                    <div style={{ padding: "6px 8px", marginBottom: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+                                      好感度：越高越喜欢（负=厌恶, 0=不熟, 正=好感）&nbsp;&nbsp;优先级：越低越优先（1=最重要）
+                                    </div>
+                                    {snapRels.map((rel, relIdx) => (
+                                      <div key={relIdx} style={{ padding: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 8, border: "1px solid var(--border)" }}>
+                                        <div className="flex items-center justify-between mb-6">
+                                          <span style={{ fontWeight: 600, fontSize: 12, color: "var(--text-primary)" }}>&rarr; {rel.target_name}</span>
+                                          <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => removeSnapshotRel(flashcardIndex, relIdx)}>移除</button>
+                                        </div>
+                                        <div className="field mb-6">
+                                          <input className="input" value={rel.label || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "label", e.target.value)} placeholder="关系标签：师徒、情侣..." style={{ fontSize: 11 }} />
+                                        </div>
+                                        <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "affinity", v)} />
+                                        <ParamSlider name={`优先级 (#${rel.priority})`} value={rel.priority} min={1} max={20} step={1} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "priority", v)} />
+                                        <div className="field mt-6">
+                                          <input className="input" value={rel.notes || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "notes", e.target.value)} placeholder="关系备注..." style={{ fontSize: 11 }} />
+                                        </div>
+                                      </div>
+                                    ))}
+                                    {others.length > 0 && (
+                                      <div className="flex gap-6 mt-8">
+                                        <select className="select" style={{ flex: 1, fontSize: 11 }} value={relTarget} onChange={e => setRelTarget(e.target.value)}>
+                                          <option value="">添加角色关系...</option>
+                                          {others.map(o => (
+                                            <option key={o.id} value={o.id}>{o.name}</option>
+                                          ))}
+                                        </select>
+                                        <button className="btn-primary" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => addSnapshotRel(flashcardIndex, relTarget)} disabled={!relTarget}>+ 添加</button>
+                                      </div>
+                                    )}
+                                  </>
                                 )}
-                              </div>
+                              </SnapSection>
 
-                              {/* ── Snapshot Hidden Identities ── */}
-                              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 12 }}>
-                                <div className="flex items-center justify-between mb-8">
-                                  <label className="label" style={{ marginBottom: 0, fontWeight: 600 }}>
-                                    隐藏身份 / 化名 ({(snap.hidden_identities || []).length})
-                                  </label>
-                                  <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 8px" }}
-                                          onClick={() => addSnapshotHidden(flashcardIndex)}>+ 添加</button>
-                                </div>
-                                <div style={{ padding: "6px 8px", marginBottom: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-                                  化名/伪装身份在此阶段有效；"已知真相"中的角色看穿伪装，其他角色仍以化名认知。
-                                </div>
-                                {(snap.hidden_identities || []).map((h, hIdx) => (
-                                  <div key={hIdx} style={{ padding: 10, background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", marginBottom: 8, border: "1px solid var(--border)" }}>
-                                    <div className="flex items-center justify-between mb-6">
-                                      <input className="input" value={h.name} onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "name", e.target.value)}
-                                             placeholder="化名 / 伪装身份名" style={{ fontSize: 11, fontWeight: 600, flex: 1, marginRight: 6 }} />
-                                      <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 6px" }}
-                                              onClick={() => removeSnapshotHidden(flashcardIndex, hIdx)}>移除</button>
-                                    </div>
-                                    <div className="field mb-6">
-                                      <input className="input" value={(h.revealed_to || []).join("、")}
-                                             onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "revealed_to",
-                                                 e.target.value.split(/[、,，\s]+/).map(s => s.trim()).filter(Boolean))}
-                                             placeholder="已知真相的角色（用、或,分隔）" style={{ fontSize: 11 }} />
-                                    </div>
-                                    <input className="input" value={h.notes || ""}
-                                           onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "notes", e.target.value)}
-                                           placeholder="伪装动机 / 破绽 / 备注..." style={{ fontSize: 11 }} />
+                              {/* ── 隐藏身份 section ── */}
+                              <SnapSection
+                                title="隐藏身份 / 化名"
+                                count={(snap.hidden_identities || []).length}
+                                edit={editingHidden}
+                                onEditToggle={() => setEditingHidden(v => !v)}
+                              >
+                                {(snap.hidden_identities || []).length === 0 ? (
+                                  <div className="text-xs text-muted" style={{ padding: "8px 4px" }}>
+                                    {editingHidden ? "点击「+ 添加」记录化名 / 伪装身份。" : "暂无隐藏身份。点击右上角「编辑」添加。"}
                                   </div>
-                                ))}
-                              </div>
+                                ) : !editingHidden ? (
+                                  // ── Read-only view ──
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                    {(snap.hidden_identities || []).map((h, hIdx) => (
+                                      <HiddenIdentityRowView key={hIdx} hidden={h} />
+                                    ))}
+                                  </div>
+                                ) : (
+                                  // ── Edit view ──
+                                  <>
+                                    <div style={{ padding: "6px 8px", marginBottom: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+                                      化名/伪装身份在此阶段有效；&ldquo;已知真相&rdquo;中的角色看穿伪装，其他角色仍以化名认知。
+                                    </div>
+                                    {(snap.hidden_identities || []).map((h, hIdx) => (
+                                      <div key={hIdx} style={{ padding: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 8, border: "1px solid var(--border)" }}>
+                                        <div className="flex items-center justify-between mb-6">
+                                          <input className="input" value={h.name} onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "name", e.target.value)}
+                                                 placeholder="化名 / 伪装身份名" style={{ fontSize: 11, fontWeight: 600, flex: 1, marginRight: 6 }} />
+                                          <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 6px" }}
+                                                  onClick={() => removeSnapshotHidden(flashcardIndex, hIdx)}>移除</button>
+                                        </div>
+                                        <div className="field mb-6">
+                                          <input className="input" value={(h.revealed_to || []).join("、")}
+                                                 onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "revealed_to",
+                                                     e.target.value.split(/[、,，\s]+/).map(s => s.trim()).filter(Boolean))}
+                                                 placeholder="已知真相的角色（用、或,分隔）" style={{ fontSize: 11 }} />
+                                        </div>
+                                        <input className="input" value={h.notes || ""}
+                                               onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "notes", e.target.value)}
+                                               placeholder="伪装动机 / 破绽 / 备注..." style={{ fontSize: 11 }} />
+                                      </div>
+                                    ))}
+                                    <button className="btn" style={{ fontSize: 11, padding: "4px 12px", marginTop: 4 }}
+                                            onClick={() => addSnapshotHidden(flashcardIndex)}>
+                                      + 添加隐藏身份
+                                    </button>
+                                  </>
+                                )}
+                              </SnapSection>
 
-                              {/* ── Snapshot Layer B ── */}
-                              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 12 }}>
-                                <label className="label" style={{ fontWeight: 600, marginBottom: 8 }}>决策参数 (Layer B)</label>
-                                <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 8, lineHeight: 1.5 }}>
+                              {/* ── 决策参数 section ── */}
+                              <SnapSection title="决策参数" count={5}>
+                                <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 10, lineHeight: 1.5 }}>
                                   量化参数影响 AI 生成时角色在此阶段的行为倾向。
                                 </div>
                                 <ParamSlider name="损失厌恶" value={snapLayerB.loss_aversion ?? DEFAULT_LAYER_B.loss_aversion} min={0} max={5} step={0.1} onChange={v => updateSnapshotLayerB(flashcardIndex, "loss_aversion", v)} />
@@ -1100,7 +1163,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                 <ParamSlider name="风险厌恶(损失)" value={snapLayerB.risk_aversion_loss ?? DEFAULT_LAYER_B.risk_aversion_loss} min={0} max={1} step={0.05} onChange={v => updateSnapshotLayerB(flashcardIndex, "risk_aversion_loss", v)} />
                                 <ParamSlider name="冲动概率" value={snapLayerB.impulse_probability ?? DEFAULT_LAYER_B.impulse_probability} min={0} max={1} step={0.05} onChange={v => updateSnapshotLayerB(flashcardIndex, "impulse_probability", v)} />
                                 <ParamSlider name="社交频率" value={snapLayerB.social_frequency ?? DEFAULT_LAYER_B.social_frequency} min={0} max={10} step={0.5} onChange={v => updateSnapshotLayerB(flashcardIndex, "social_frequency", v)} />
-                              </div>
+                              </SnapSection>
                             </div>
                           );
                         })()}
@@ -1188,6 +1251,169 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   );
 }
 
+/* ── SnapSection ──
+ * Visually grouped section inside the snapshot card. Each section gets
+ * a clear header (title + count badge + optional edit toggle) and a
+ * subtly bordered body so 关系 / 隐藏身份 / 决策参数 don't bleed
+ * into each other the way a thin borderTop divider used to make them. */
+function SnapSection({ title, count, edit, onEditToggle, children }: {
+  title: string;
+  count: number;
+  edit?: boolean;
+  onEditToggle?: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div style={{
+      marginTop: 14,
+      padding: "12px 14px 14px",
+      background: "var(--bg-surface)",
+      borderRadius: 8,
+      border: "1px solid var(--border)",
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        marginBottom: 10,
+        paddingBottom: 8, borderBottom: "1px solid var(--border-subtle)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{
+            width: 3, height: 14, borderRadius: 2,
+            background: "var(--accent)",
+          }} />
+          <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>
+            {title}
+          </span>
+          <span style={{
+            fontSize: 10, padding: "1px 7px", borderRadius: 8,
+            background: "var(--bg-secondary)", color: "var(--text-tertiary)",
+            fontWeight: 600,
+          }}>
+            {count}
+          </span>
+        </div>
+        {onEditToggle && (
+          <button
+            className={edit ? "btn-primary" : "btn"}
+            style={{ fontSize: 11, padding: "3px 12px" }}
+            onClick={onEditToggle}
+          >
+            {edit ? "完成" : "编辑"}
+          </button>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/* ── RelationshipRowView ──
+ * Read-only display of a single relationship row inside the snapshot
+ * card. Click-to-edit lives one level up via the section's 编辑 toggle. */
+function RelationshipRowView({ rel }: { rel: CharacterRelationship }) {
+  const aff = rel.affinity ?? 0;
+  const affColor = aff > 50 ? "var(--jade)" : aff > 0 ? "var(--accent)" : aff > -50 ? "var(--gold)" : "var(--error)";
+  const affBg = aff > 50 ? "var(--jade-subtle)" : aff > 0 ? "var(--accent-subtle)" : aff > -50 ? "var(--gold-subtle)" : "var(--error-subtle, rgba(220,53,69,0.1))";
+  return (
+    <div style={{
+      padding: "10px 12px",
+      background: "var(--bg-surface-2)",
+      borderRadius: 8,
+      border: "1px solid var(--border-subtle)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+        <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>
+          {rel.target_name}
+        </span>
+        {rel.label && (
+          <span className="tag" style={{
+            fontSize: 10, padding: "1px 8px",
+            background: "var(--bg-secondary)", color: "var(--text-secondary)",
+            border: "1px solid var(--border-subtle)",
+          }}>
+            {rel.label}
+          </span>
+        )}
+        <span style={{
+          marginLeft: "auto",
+          fontSize: 10, padding: "2px 8px", borderRadius: 10,
+          background: affBg, color: affColor, fontWeight: 600,
+        }}>
+          好感 {aff > 0 ? "+" : ""}{aff}
+        </span>
+        <span style={{
+          fontSize: 10, padding: "2px 8px", borderRadius: 10,
+          background: "var(--bg-secondary)", color: "var(--text-tertiary)", fontWeight: 600,
+        }}>
+          优先级 #{rel.priority ?? "-"}
+        </span>
+      </div>
+      {/* Affinity bar — centered at 0, extends left for negative, right for positive */}
+      <div style={{
+        position: "relative", height: 4, background: "var(--bg-secondary)",
+        borderRadius: 2, marginBottom: rel.notes ? 6 : 0,
+      }}>
+        <div style={{
+          position: "absolute", top: 0, bottom: 0,
+          left: aff < 0 ? `${50 + aff / 2}%` : "50%",
+          width: `${Math.abs(aff) / 2}%`,
+          background: affColor, borderRadius: 2,
+        }} />
+        <div style={{
+          position: "absolute", top: -2, bottom: -2, left: "50%",
+          width: 1, background: "var(--border)",
+        }} />
+      </div>
+      {rel.notes && (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          {rel.notes}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── HiddenIdentityRowView ──
+ * Read-only display of one hidden identity / alias row. */
+function HiddenIdentityRowView({ hidden }: {
+  hidden: { name: string; revealed_to?: string[]; notes?: string };
+}) {
+  const revealedTo = hidden.revealed_to || [];
+  return (
+    <div style={{
+      padding: "10px 12px",
+      background: "var(--bg-surface-2)",
+      borderRadius: 8,
+      border: "1px solid var(--border-subtle)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>
+          {hidden.name || <span style={{ color: "var(--text-disabled)", fontStyle: "italic", fontWeight: 400 }}>（未命名）</span>}
+        </span>
+      </div>
+      {revealedTo.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: hidden.notes ? 6 : 0 }}>
+          <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>已知真相:</span>
+          {revealedTo.map((name, i) => (
+            <span key={i} className="tag" style={{
+              fontSize: 10, padding: "1px 8px",
+              background: "var(--gold-subtle)", color: "var(--gold)",
+              border: "1px solid transparent",
+            }}>
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
+      {hidden.notes && (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          {hidden.notes}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Parse a chapter marker ("第3章" / "3" / "Ch.4" / "" ) into a chapter
  *  number. Returns null for unparseable values so the timeline can decide
  *  whether to include them in 「全部」or under 「未标注」. */
@@ -1202,14 +1428,16 @@ function parseChapterMarker(raw: string | undefined | null): number | null {
  * the `editing` draft) so relationship edits show up immediately, before
  * 保存. Adds a draggable [from, to] timeline that filters edges + snapshot
  * relationships by the chapter the user set on each relationship. */
-function GlobalRelationshipGraph({ characters, onSelectCharacter, fullHeight }: { characters: Character[]; onSelectCharacter: (id: string) => void; fullHeight?: boolean }) {
+function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectCharacter, fullHeight }: { characters: Character[]; editorChapterCount?: number; onSelectCharacter: (id: string) => void; fullHeight?: boolean }) {
   const [zoom, setZoom] = React.useState(1);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = React.useState({ w: 800, h: 600 });
 
   // Collect every chapter marker referenced by a relationship (top-level
-  // or snapshot) so the timeline range matches the user's actual data —
-  // not an arbitrary 1..100 slider.
+  // or snapshot) so we can highlight them as ticks on the timeline. The
+  // timeline range itself runs 1..editorChapterCount when the editor has
+  // content, so dragging always works (not blocked on the user manually
+  // tagging chapters on every relationship row).
   const allChapterNums = React.useMemo(() => {
     const set = new Set<number>();
     for (const c of characters) {
@@ -1228,8 +1456,13 @@ function GlobalRelationshipGraph({ characters, onSelectCharacter, fullHeight }: 
     }
     return Array.from(set).sort((a, b) => a - b);
   }, [characters]);
-  const chapterMin = allChapterNums[0] ?? 1;
-  const chapterMax = allChapterNums[allChapterNums.length - 1] ?? 1;
+  const derivedMin = allChapterNums[0] ?? 1;
+  const derivedMax = allChapterNums[allChapterNums.length - 1] ?? 1;
+  // Editor chapter count expands the range so the user can drag past the
+  // last tagged chapter (e.g. visualise relationships up to chapter 20
+  // even if only chapters 1, 3, 5 carry markers).
+  const chapterMin = 1;
+  const chapterMax = Math.max(derivedMax, editorChapterCount || 0, 1);
   const hasTimeline = chapterMax > chapterMin;
 
   // Independent state so a user dragging the handles doesn't churn the

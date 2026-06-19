@@ -2079,7 +2079,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
                 )}
               </>
             ) : (
-              <div className="text-xs text-muted">暂无角色，请在「角色管理」中创建</div>
+              <div className="text-xs text-muted">暂无角色，请在「角色卡」中创建</div>
             )}
           </div>
         )}
@@ -2572,7 +2572,7 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
           onRefresh ? (
             <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
               onClick={onRefresh}
-              title="重新加载 RAG —— 在角色管理 / 世界书 / 大纲等处更新数据后点此同步">
+              title="重新加载 RAG —— 在角色卡 / 世界书 / 大纲等处更新数据后点此同步">
               刷新
             </button>
           ) : undefined)}

@@ -98,7 +98,7 @@ const DICT: Record<string, string> = {
   "灵感库":       "Inspiration Library",
   "创作":         "Authoring",
   "开书":         "Projects",
-  "角色管理":     "Characters",
+  "角色卡":       "Characters",
   "世界书":       "Worldbook",
   "编辑器":       "Editor",
   "剧情线":       "Storyline",

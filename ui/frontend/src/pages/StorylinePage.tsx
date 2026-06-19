@@ -1368,7 +1368,7 @@ function CharacterSelector({ label, value, options, onChange }: {
         }}>
           {options.length === 0 ? (
             <div className="text-xs text-muted" style={{ padding: 10 }}>
-              角色管理中暂无角色。
+              角色卡中暂无角色。
             </div>
           ) : (
             options.map(opt => {
