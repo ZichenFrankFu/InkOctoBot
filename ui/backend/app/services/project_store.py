@@ -127,11 +127,13 @@ def upsert_character(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
         "tags", "relationships", "layer_a", "layer_b",
         "created_at", "updated_at",
     }
-    # LOADER_SPEC v3 Batch 5: ``dynamic_snapshots`` lived on extras_json
-    # in earlier versions but the snapshot system now owns its own table
-    # (see ``snapshot_store``). Drop the legacy key so it can't sneak
-    # back in via a stale frontend payload.
-    body = {k: v for k, v in body.items() if k != "dynamic_snapshots"}
+    # ``dynamic_snapshots`` is owned at runtime by snapshot_store (its own
+    # table) for the canonical generation pipeline, but the legacy 角色卡
+    # UI still reads/writes this field directly. We let it pass through
+    # into ``extra_json`` so the snapshot card survives a reload; the
+    # canonical snapshot_store remains the source of truth for the
+    # generation pipeline and is unaffected. A future migration can move
+    # this back into the table without changing this code path.
     extra = {k: v for k, v in body.items() if k not in known_cols}
 
     with open_db(db_path) as con:
