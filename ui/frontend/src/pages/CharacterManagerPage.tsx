@@ -1177,7 +1177,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                       const rowActions = (
                                         <>
                                           <RowIconButton symbol={isEditing ? "✓" : "✎"}
-                                            title={isEditing ? "完成" : "编辑"}
+                                            title={isEditing ? "收起" : "编辑"}
                                             onClick={() => toggleRelEdit(relIdx)} />
                                           <RowIconButton symbol="×"
                                             title="删除"
@@ -1296,7 +1296,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                       const rowActions = (
                                         <>
                                           <RowIconButton symbol={isEditing ? "✓" : "✎"}
-                                            title={isEditing ? "完成" : "编辑"}
+                                            title={isEditing ? "收起" : "编辑"}
                                             onClick={() => toggleHiddenEdit(hIdx)} />
                                           <RowIconButton symbol="×"
                                             title="删除"
@@ -1359,9 +1359,9 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                     className="btn"
                                     style={{ fontSize: 11, padding: "3px 12px" }}
                                     onClick={() => setDecisionPreview(simulateDecisionActions(snapLayerB))}
-                                    title="基于当前参数随机抽 10 个情境，看看角色会怎么选"
+                                    title="基于当前参数计算 10 个性格情境下角色的倾向比例"
                                   >
-                                    {decisionPreview ? "重新抽样" : "随机生成预览"}
+                                    {decisionPreview ? "重新生成" : "效果预览"}
                                   </button>
                                 }
                               >
@@ -1384,7 +1384,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                       marginBottom: 8,
                                     }}>
                                       <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)" }}>
-                                        10 个情境 · 该角色的选择倾向（百分比）
+                                        10 个性格情境 · 角色的选择倾向（百分比）
                                       </span>
                                       <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }}
                                         onClick={() => setDecisionPreview(null)}>
@@ -1504,7 +1504,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                       <div key={r.name} style={{ fontSize: 11, display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
                         <span style={{ color: "var(--text-secondary)" }}>{r.name}</span>
                         <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <span style={{ color: r.value > 0 ? "var(--jade)" : r.value < 0 ? "var(--error)" : "var(--text-disabled)", fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                          <span style={{ color: r.value > 0 ? "var(--accent)" : r.value < 0 ? "var(--jade)" : "var(--text-disabled)", fontFamily: "var(--font-mono)", fontSize: 10 }}>
                             {r.value > 0 ? "+" : ""}{r.value}
                           </span>
                           {r.chapter && <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>@{r.chapter}</span>}
@@ -1739,8 +1739,11 @@ function RelationshipRowView({ rel, actions }: {
   actions?: React.ReactNode;
 }) {
   const aff = rel.affinity ?? 0;
-  const affColor = aff > 50 ? "var(--jade)" : aff > 0 ? "var(--accent)" : aff > -50 ? "var(--gold)" : "var(--error)";
-  const affBg = aff > 50 ? "var(--jade-subtle)" : aff > 0 ? "var(--accent-subtle)" : aff > -50 ? "var(--gold-subtle)" : "var(--error-subtle, rgba(220,53,69,0.1))";
+  // Positive 好感 → red, negative → green, zero → gold.
+  // Same convention as the 全局关系图谱 so the chip color in detail view
+  // matches the arrow color in the graph.
+  const affColor = aff > 0 ? "var(--accent)" : aff < 0 ? "var(--jade)" : "var(--gold)";
+  const affBg = aff > 0 ? "var(--accent-subtle)" : aff < 0 ? "var(--jade-subtle)" : "var(--gold-subtle)";
   return (
     <div style={{
       padding: "10px 12px",
@@ -1862,66 +1865,71 @@ function simulateDecisionActions(layerB: CharacterLayerB): Array<{
   const social = layerB.social_frequency ?? 5;
   const clamp = (x: number) => Math.max(0.02, Math.min(0.98, x));
 
+  // Scenarios are intentionally abstract — they're 性格 dimensions ("how
+  // does this character relate to risk / loss / social signals / impulse")
+  // rather than concrete world events. This keeps the preview useful
+  // across genres (玄幻 / 都市 / 历史 / etc.) without ever feeling
+  // out of place for the project.
   const scenarios: Array<{ txt: string; pB: number; a: string; b: string; reason: string }> = [
     {
-      txt: "陌生人在街上邀约喝一杯",
-      pB: 0.25 + (social / 10) * 0.6 + impulse * 0.1,
-      a: "婉拒离去", b: "欣然前往",
+      txt: "面对一个充满未知的机会",
+      pB: 0.3 + (1 - riskA) * 0.5 + impulse * 0.2,
+      a: "谨慎观察", b: "立刻行动",
+      reason: "风险厌恶 + 冲动",
+    },
+    {
+      txt: "在群体里是否主动表达观点",
+      pB: 0.2 + (social / 10) * 0.7,
+      a: "倾听沉默", b: "主动发言",
       reason: "社交频率主导",
     },
     {
-      txt: "捡到一笔无主散落现金，无人在场",
-      pB: 0.15 + impulse * 0.5 + (1 - riskA) * 0.2,
-      a: "原地等失主 / 上交", b: "悄悄收下",
-      reason: "冲动 vs 风险厌恶",
-    },
-    {
-      txt: "一个高收益但高风险的投资机会",
-      pB: (1 - riskA) * 0.85 + impulse * 0.1,
-      a: "保守观望", b: "全力下注",
-      reason: "风险厌恶决定",
-    },
-    {
-      txt: "失去一件珍贵物品，找回需付出代价",
-      pB: (lossA / 5) * 0.85,
-      a: "接受失去", b: "竭力找回",
-      reason: "损失厌恶主导",
-    },
-    {
-      txt: "目睹街头突发争执",
-      pB: 0.2 + impulse * 0.4 + (social / 10) * 0.3,
-      a: "默默走开", b: "上前介入",
-      reason: "冲动 + 社交频率",
-    },
-    {
-      txt: "长期目标 vs 当下享乐二选一",
-      pB: 0.4 + impulse * 0.3 - (lossA / 5) * 0.15,
-      a: "坚守长期目标", b: "选择当下享乐",
+      txt: "在长远利益与当下回报之间",
+      pB: 0.35 + impulse * 0.4 - (lossA / 5) * 0.1,
+      a: "选择长远", b: "选择当下",
       reason: "冲动 vs 损失厌恶",
     },
     {
-      txt: "一场地下赌局开局，赔率丰厚",
-      pB: impulse * 0.5 + (1 - riskA) * 0.4,
-      a: "起身离场", b: "押上筹码",
-      reason: "风险厌恶 + 冲动",
+      txt: "面对一次确定性的损失",
+      pB: (lossA / 5) * 0.85,
+      a: "接受现实", b: "全力挽回",
+      reason: "损失厌恶主导",
     },
     {
-      txt: "需要在公开场合发言或表态",
-      pB: 0.2 + (social / 10) * 0.7,
-      a: "保持沉默", b: "主动发言",
-      reason: "社交频率",
+      txt: "与陌生人建立联系",
+      pB: 0.2 + (social / 10) * 0.6 + impulse * 0.1,
+      a: "保持距离", b: "热情靠近",
+      reason: "社交频率 + 冲动",
     },
     {
-      txt: "朋友请求一项需要时间的帮助",
-      pB: 0.3 + (social / 10) * 0.5 - (lossA / 5) * 0.1,
-      a: "婉言推辞", b: "全力相助",
-      reason: "社交频率 vs 时间成本",
+      txt: "权衡高回报但高风险的选择",
+      pB: (1 - riskA) * 0.85,
+      a: "规避保守", b: "大胆尝试",
+      reason: "风险厌恶主导",
     },
     {
-      txt: "一项可能危及性命的任务",
-      pB: (1 - riskA) * 0.7 + impulse * 0.25,
-      a: "推让他人", b: "接下任务",
-      reason: "风险厌恶 + 冲动",
+      txt: "在冲突或对立面前",
+      pB: 0.2 + impulse * 0.5 + (1 - riskA) * 0.15,
+      a: "退一步隐忍", b: "正面回应",
+      reason: "冲动 + 风险厌恶",
+    },
+    {
+      txt: "看到他人陷入困境",
+      pB: 0.25 + (social / 10) * 0.5 + impulse * 0.15,
+      a: "默默观望", b: "主动援手",
+      reason: "社交频率 + 冲动",
+    },
+    {
+      txt: "面对自身的失败或挫败",
+      pB: 0.3 + impulse * 0.4 - (lossA / 5) * 0.2,
+      a: "退避反思", b: "立即再来",
+      reason: "冲动 vs 损失厌恶",
+    },
+    {
+      txt: "在维持现状与打破现状之间",
+      pB: 0.3 + impulse * 0.3 + (1 - riskA) * 0.3,
+      a: "维持稳定", b: "主动求变",
+      reason: "冲动 + 风险厌恶",
     },
   ];
   return scenarios.map(s => ({
@@ -2133,17 +2141,16 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
         </div>
         <svg width="100%" height={fullHeight ? "100%" : undefined} viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`} style={fullHeight ? { display: "block", flex: 1, minHeight: 0 } : { display: "block" }} onWheel={handleWheel}>
           <defs>
+            {/* Positive 好感 → red. Negative 好感 → green. Zero → gold.
+                Stroke width on the line carries the magnitude. */}
             <marker id="rel-arrow-pos" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L8,3 L0,6 Z" fill="var(--jade)" opacity="0.8" />
-            </marker>
-            <marker id="rel-arrow-mid" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L8,3 L0,6 Z" fill="var(--accent)" opacity="0.8" />
-            </marker>
-            <marker id="rel-arrow-low" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L8,3 L0,6 Z" fill="var(--gold)" opacity="0.8" />
+              <path d="M0,0 L8,3 L0,6 Z" fill="var(--accent)" opacity="0.85" />
             </marker>
             <marker id="rel-arrow-neg" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L8,3 L0,6 Z" fill="var(--error)" opacity="0.8" />
+              <path d="M0,0 L8,3 L0,6 Z" fill="var(--jade)" opacity="0.85" />
+            </marker>
+            <marker id="rel-arrow-zero" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="var(--gold)" opacity="0.85" />
             </marker>
           </defs>
 
@@ -2178,9 +2185,11 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
             const x2 = to.x - ux * (r2 + 10) + perpX;
             const y2 = to.y - uy * (r2 + 10) + perpY;
 
-            // Edge color based on affinity
-            const color = edge.affinity > 50 ? "var(--jade)" : edge.affinity > 0 ? "var(--accent)" : edge.affinity > -50 ? "var(--gold)" : "var(--error)";
-            const markerId = edge.affinity > 50 ? "rel-arrow-pos" : edge.affinity > 0 ? "rel-arrow-mid" : edge.affinity > -50 ? "rel-arrow-low" : "rel-arrow-neg";
+            // Edge color: positive 好感 → red (accent), negative → green
+            // (jade), zero → gold. Magnitude is read off the stroke
+            // width, not the hue, so the binary semantic stays clean.
+            const color = edge.affinity > 0 ? "var(--accent)" : edge.affinity < 0 ? "var(--jade)" : "var(--gold)";
+            const markerId = edge.affinity > 0 ? "rel-arrow-pos" : edge.affinity < 0 ? "rel-arrow-neg" : "rel-arrow-zero";
             const strokeW = Math.max(1.5, Math.min(3, 1.5 + Math.abs(edge.affinity) / 60));
 
             // Place the affinity badge CLOSE to the source end (~30% along
@@ -2244,10 +2253,9 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
           })}
         </svg>
         <div style={{ display: "flex", gap: 16, justifyContent: "center", alignItems: "center", flexWrap: "wrap", flexShrink: 0, fontSize: 10, color: "var(--text-tertiary)" }}>
-          <span><span style={{ color: "var(--jade)" }}>&#9632;</span> 好感 &gt;50</span>
-          <span><span style={{ color: "var(--accent)" }}>&#9632;</span> 好感 0~50</span>
-          <span><span style={{ color: "var(--gold)" }}>&#9632;</span> 好感 -50~0</span>
-          <span><span style={{ color: "var(--error)" }}>&#9632;</span> 好感 &lt;-50</span>
+          <span><span style={{ color: "var(--accent)" }}>&#9632;</span> 好感 &gt; 0</span>
+          <span><span style={{ color: "var(--gold)" }}>&#9632;</span> 好感 = 0</span>
+          <span><span style={{ color: "var(--jade)" }}>&#9632;</span> 好感 &lt; 0</span>
           <span style={{ marginLeft: 16, color: "var(--text-disabled)" }}>
             点击角色节点跳转到详情{hasTimeline ? " · 顶部拖动时间轴定位到某一章查看好感快照" : ""}
           </span>

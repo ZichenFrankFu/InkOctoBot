@@ -117,8 +117,8 @@ export default function ChapterTimeline({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
       >
-        {/* selected window (range) or marker stripe (single) */}
-        {isRange ? (
+        {/* Range mode: selected window with accent fill bar. */}
+        {isRange && (
           <div
             onPointerDown={onPointerDown("bar")}
             style={{
@@ -130,17 +130,40 @@ export default function ChapterTimeline({
               cursor: "grab",
             }}
           />
-        ) : (
-          <div
-            style={{
-              position: "absolute", top: 0, bottom: 0, left: 0,
-              width: `${xOf(from)}%`, background: "var(--accent-subtle)",
-              pointerEvents: "none",
-            }}
-          />
         )}
-        {/* tick marks */}
-        {marks.map(m => (
+        {/* Single mode: render a clickable tick per chapter so the user
+            picks discretely. No left-fill — a「至 N 章」shaded bar reads
+            as a range and misleads the meaning. */}
+        {!isRange && Array.from({ length: span + 1 }, (_, i) => min + i).map(ch => {
+          const isCurrent = ch === from;
+          const hasData = marks.includes(ch);
+          // Width of each click target = step in %; minimum 8px for touch.
+          const stepPct = 100 / (span + 1);
+          return (
+            <div key={ch}
+              onClick={() => onChange(ch, ch)}
+              title={`第 ${ch} 章${hasData ? " · 有数据" : ""}`}
+              style={{
+                position: "absolute", top: 0, bottom: 0,
+                left: `${xOf(ch)}%`, transform: "translateX(-50%)",
+                width: `max(10px, ${stepPct}%)`,
+                cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                zIndex: isCurrent ? 2 : 1,
+              }}>
+              <div style={{
+                width: isCurrent ? 3 : 1,
+                height: isCurrent ? "100%" : hasData ? 14 : 8,
+                background: isCurrent ? "var(--accent)" : hasData ? "var(--text-secondary)" : "var(--text-tertiary)",
+                borderRadius: 1,
+                opacity: isCurrent ? 1 : 0.6,
+              }} />
+            </div>
+          );
+        })}
+        {/* Range-mode tick marks for data chapters (single mode draws its
+            own per-chapter ticks above). */}
+        {isRange && marks.map(m => (
           <div key={m}
             title={`第 ${m} 章`}
             style={{
@@ -149,29 +172,31 @@ export default function ChapterTimeline({
               transform: "translateX(-0.5px)",
             }} />
         ))}
-        {/* from handle (always rendered; doubles as single-mode handle) */}
-        <div
-          onPointerDown={onPointerDown("from")}
-          title={`${isRange ? "起始" : "当前"}：第 ${from} 章`}
-          style={{
-            position: "absolute", top: -2, bottom: -2,
-            left: `${xOf(from)}%`, width: 10,
-            transform: "translateX(-50%)",
-            background: "var(--accent)",
-            borderRadius: 3, cursor: "ew-resize", boxShadow: "0 0 0 1px var(--bg-surface)",
-          }} />
-        {/* to handle — only in range mode */}
+        {/* Range-mode draggable handles. Single mode's chapter ticks
+            replace the handle — the user clicks a tick to jump. */}
         {isRange && (
-          <div
-            onPointerDown={onPointerDown("to")}
-            title={`结束：第 ${to} 章`}
-            style={{
-              position: "absolute", top: -2, bottom: -2,
-              left: `${xOf(to)}%`, width: 10,
-              transform: "translateX(-50%)",
-              background: "var(--accent)",
-              borderRadius: 3, cursor: "ew-resize", boxShadow: "0 0 0 1px var(--bg-surface)",
-            }} />
+          <>
+            <div
+              onPointerDown={onPointerDown("from")}
+              title={`起始：第 ${from} 章`}
+              style={{
+                position: "absolute", top: -2, bottom: -2,
+                left: `${xOf(from)}%`, width: 10,
+                transform: "translateX(-50%)",
+                background: "var(--accent)",
+                borderRadius: 3, cursor: "ew-resize", boxShadow: "0 0 0 1px var(--bg-surface)",
+              }} />
+            <div
+              onPointerDown={onPointerDown("to")}
+              title={`结束：第 ${to} 章`}
+              style={{
+                position: "absolute", top: -2, bottom: -2,
+                left: `${xOf(to)}%`, width: 10,
+                transform: "translateX(-50%)",
+                background: "var(--accent)",
+                borderRadius: 3, cursor: "ew-resize", boxShadow: "0 0 0 1px var(--bg-surface)",
+              }} />
+          </>
         )}
       </div>
       <div className="flex items-center justify-between" style={{ marginTop: 2, fontSize: 10, color: "var(--text-tertiary)" }}>
