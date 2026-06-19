@@ -5,9 +5,8 @@ import type { StoryNode, StoryEdge, ChapterOutline, Volume, Character } from "..
 
 const uid = () => `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 const COLORS = ["#c0392b", "#2d8c5a", "#3b5998", "#d4a853", "#8e44ad", "#e67e22", "#1abc9c", "#e74c3c"];
-const NODE_W = 200;
+const NODE_W = 220;
 const NODE_H = 120;
-const GAP_X = 80;
 const HEADER_H = 56;
 const TIMELINE_H = 64;
 
@@ -39,7 +38,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   const [edges, setEdges] = useState<StoryEdge[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -151,17 +149,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   };
   const addEpisodeToChapter = useCallback(addEpisodeToChapterImpl, [nodes]);
 
-  // --- Auto layout ---
-  const autoLayout = useCallback(() => {
-    const sorted = [...nodes].sort((a, b) => (a.chapter_num || 999) - (b.chapter_num || 999));
-    setNodes(sorted.map((n, i) => ({
-      ...n,
-      x: 60 + i * (NODE_W + GAP_X),
-      y: 60,
-    })));
-    setDirty(true);
-  }, [nodes]);
-
   // --- Sync one node's 大纲 back to the matching editor chapter ---
   const syncOutlineToEditor = useCallback(async (node: StoryNode) => {
     if (node?.chapter_num == null) return;
@@ -188,8 +175,12 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     }
   }, [projectId, toast]);
 
-  // --- Sync from editor ---
-  const syncFromEditor = useCallback(async () => {
+  // --- Pull editor → storyline for chapters where storyline has nothing.
+  //     Used on mount so the page shows existing editor content even if the
+  //     user has never created 情节 cards. Storyline rows for chapters the
+  //     user already populated are NEVER overwritten — the 同步大纲 button
+  //     is for two-way reconciliation; this is only the missing-fills pass.
+  const pullMissingFromEditor = useCallback(async () => {
     try {
       const pid = projectId || "default";
       const data = await apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${pid}`);
@@ -197,68 +188,152 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
       if (!chapters.length) return;
 
       setNodes(prev => {
-        const updated = [...prev];
-        const newNodes: StoryNode[] = [];
-
+        const merged = [...prev];
+        let changed = false;
         chapters.forEach((ch, idx) => {
           const chNum = idx + 1;
-          const existingIdx = updated.findIndex(n => n.chapter_num === chNum);
-          if (existingIdx >= 0) {
-            // Update ALL fields from editor data
-            updated[existingIdx] = {
-              ...updated[existingIdx],
-              title: ch.title || updated[existingIdx].title,
-              summary: ch.synopsis || updated[existingIdx].summary,
-              time: ch.time || updated[existingIdx].time,
-              location: ch.location || updated[existingIdx].location,
-              characters: ch.characters?.length ? ch.characters : updated[existingIdx].characters,
-            };
-          } else {
-            newNodes.push({
+          const has = merged.some(n => (n.chapter_num || 0) === chNum);
+          if (!has && (ch.synopsis || "").trim()) {
+            merged.push({
               id: uid(),
               title: ch.title || `第${chNum}章`,
               summary: ch.synopsis || "",
-              x: 60 + (chNum - 1) * (NODE_W + GAP_X),
-              y: 60,
+              x: 0, y: 0,
               color: COLORS[(chNum - 1) % COLORS.length],
               chapter_num: chNum,
               characters: ch.characters || [],
-              week: Math.ceil(chNum / 3),
               time: ch.time || "",
               location: ch.location || "",
             });
+            changed = true;
           }
         });
-
-        const allNodes = [...updated, ...newNodes].sort((a, b) => (a.chapter_num || 0) - (b.chapter_num || 0));
-
-        // Create edges for new sequential connections
-        if (newNodes.length > 0) {
-          const newEdges: StoryEdge[] = [];
-          for (let i = 1; i < allNodes.length; i++) {
-            const from = allNodes[i - 1].id;
-            const to = allNodes[i].id;
-            if (!edges.some(e => e.from === from && e.to === to)) {
-              newEdges.push({ id: uid(), from, to, label: "" });
-            }
-          }
-          if (newEdges.length) setEdges(prevEdges => [...prevEdges, ...newEdges]);
-        }
-
-        return allNodes;
+        if (!changed) return prev;
+        return merged.sort((a, b) =>
+          (a.chapter_num || 0) - (b.chapter_num || 0)
+          || (a.x || 0) - (b.x || 0)
+        );
       });
-      setDirty(true);
     } catch (e) {
       console.error(e);
     }
-  }, [edges, projectId]);
+  }, [projectId]);
 
-  // --- Auto-sync from editor on mount ---
+  // --- 同步大纲：bidirectional reconciliation between 故事线 and 编辑器 ──
+  //     · 故事线 is the source of truth for chapters that have 情节 cards
+  //       → merged outline overwrites the editor chapter synopsis.
+  //     · 编辑器 wins for chapters where 故事线 has nothing → its synopsis
+  //       gets pulled in as a new 情节 card.
+  //     This makes the toolbar 「同步大纲」 a single, idempotent operation
+  //     that converges both surfaces to the same state.
+  const syncOutlines = useCallback(async () => {
+    try {
+      const pid = projectId || "default";
+      const data = await apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${pid}`);
+      const volumes = data.volumes || [];
+
+      // Flatten editor chapters with their global index (= chapter_num).
+      const editorChapters: { num: number; title: string; synopsis: string; chap: ChapterOutline }[] = [];
+      {
+        let i = 0;
+        volumes.forEach(v => (v.chapters || []).forEach(c => {
+          i += 1;
+          editorChapters.push({
+            num: i,
+            title: c.title || "",
+            synopsis: c.synopsis || "",
+            chap: c,
+          });
+        }));
+      }
+      if (!editorChapters.length) {
+        toast("编辑器还没有章节", "info");
+        return;
+      }
+
+      // Build the next storyline state synchronously (pull missing in).
+      const merged: StoryNode[] = [...nodes];
+      let pulledIn = 0;
+      editorChapters.forEach(ec => {
+        const has = merged.some(n => (n.chapter_num || 0) === ec.num);
+        if (!has && ec.synopsis.trim()) {
+          merged.push({
+            id: uid(),
+            title: ec.title || `第${ec.num}章`,
+            summary: ec.synopsis,
+            x: 0, y: 0,
+            color: COLORS[(ec.num - 1) % COLORS.length],
+            chapter_num: ec.num,
+            characters: ec.chap.characters || [],
+            time: ec.chap.time || "",
+            location: ec.chap.location || "",
+          });
+          pulledIn += 1;
+        }
+      });
+
+      // Per-chapter merged outline from the (possibly enriched) storyline.
+      const outlineByChap = new Map<number, string>();
+      const grouped = new Map<number, StoryNode[]>();
+      merged.forEach(n => {
+        const k = n.chapter_num || 0;
+        if (!grouped.has(k)) grouped.set(k, []);
+        grouped.get(k)!.push(n);
+      });
+      grouped.forEach((evs, k) => {
+        const sorted = evs.sort((a, b) => (a.x || 0) - (b.x || 0));
+        const out = sorted.map((n, j) => {
+          const head = (n.title || "").trim() || `事件 ${j + 1}`;
+          const body = (n.summary || "").trim();
+          return body ? `${j + 1}. ${head}：${body}` : `${j + 1}. ${head}`;
+        }).join("\n");
+        if (out) outlineByChap.set(k, out);
+      });
+
+      // Push storyline → editor for chapters that have events.
+      let pushedOut = 0;
+      let idx = 0;
+      const nextVolumes = volumes.map(v => ({
+        ...v,
+        chapters: (v.chapters || []).map(c => {
+          idx += 1;
+          const out = outlineByChap.get(idx);
+          if (out && out !== c.synopsis) {
+            pushedOut += 1;
+            return { ...c, synopsis: out };
+          }
+          return c;
+        }),
+      }));
+
+      setNodes(merged.sort((a, b) =>
+        (a.chapter_num || 0) - (b.chapter_num || 0)
+        || (a.x || 0) - (b.x || 0)
+      ));
+      if (pulledIn > 0) setDirty(true);
+      if (pushedOut > 0) {
+        await apiPut(`/api/data/editor`, { project_id: pid, volumes: nextVolumes });
+      }
+
+      if (pulledIn === 0 && pushedOut === 0) {
+        toast("故事线与编辑器章节大纲已同步", "info");
+      } else {
+        const parts: string[] = [];
+        if (pushedOut > 0) parts.push(`${pushedOut} 章写入编辑器`);
+        if (pulledIn > 0) parts.push(`${pulledIn} 章拉入故事线`);
+        toast(`同步完成：${parts.join("，")}`, "success");
+      }
+    } catch (e: any) {
+      toast(e?.message || "同步大纲失败", "error");
+    }
+  }, [projectId, nodes, toast]);
+
+  // --- Auto-pull missing chapters from editor on first load ---
   const syncedOnMount = useRef(false);
   useEffect(() => {
     if (loaded && !syncedOnMount.current) {
       syncedOnMount.current = true;
-      syncFromEditor();
+      pullMissingFromEditor();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
@@ -294,14 +369,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   const onNodeMouseDown = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    if (connecting) {
-      if (connecting !== id) {
-        setEdges(prev => [...prev, { id: uid(), from: connecting, to: id, label: "" }]);
-        setDirty(true);
-      }
-      setConnecting(null);
-      return;
-    }
     const target = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setDragPreview({
       id,
@@ -361,24 +428,16 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   // --- Computed ---
   const sel = useMemo(() => nodes.find(n => n.id === selected), [nodes, selected]);
 
-  // --- Timeline data: grouped by chapter_num so each row represents one
-  //     chapter and the horizontal nodes inside the row are that chapter's
-  //     events (beat-level granularity). Falls back to a 0 bucket for
-  //     un-numbered nodes so they don't get lost.
-  const timeSegments = useMemo(() => {
-    const chapMap = new Map<number, StoryNode[]>();
-    const sorted = [...nodes].sort((a, b) => (a.chapter_num || 0) - (b.chapter_num || 0));
-    sorted.forEach(n => {
-      const key = n.chapter_num || 0;
-      if (!chapMap.has(key)) chapMap.set(key, []);
-      chapMap.get(key)!.push(n);
-    });
-    return Array.from(chapMap.entries()).map(([chap_num, tNodes]) => ({
-      label: chap_num === 0 ? "未指定章节" : `第 ${chap_num} 章`,
-      chap_num,
-      count: tNodes.length,
-      nodeIds: tNodes.map(n => n.id),
-    }));
+  // --- Bottom 故事中时间 strip: one chip per 情节 that has a non-empty
+  //     `time` value (in-story timestamp), ordered along the reading path
+  //     (chapter_num → x). Clicking a chip selects that 情节. Empty when
+  //     no card has filled in 故事中时间.
+  const episodeTimePoints = useMemo(() => {
+    const sorted = [...nodes].sort((a, b) =>
+      (a.chapter_num || 0) - (b.chapter_num || 0)
+      || (a.x || 0) - (b.x || 0)
+    );
+    return sorted.filter(n => (n.time || "").trim().length > 0);
   }, [nodes]);
 
   // --- Merged chapter outline: for each chapter, concat the events'
@@ -423,32 +482,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     }
   }, [projectId, mergedOutlineForChapter, toast]);
 
-  // --- Edge paths (bezier) ---
-  const edgePaths = useMemo(() => {
-    return edges.map((edge, idx) => {
-      const f = nodes.find(n => n.id === edge.from);
-      const t = nodes.find(n => n.id === edge.to);
-      if (!f || !t) return null;
-
-      const x1 = f.x + NODE_W;
-      const y1 = f.y + NODE_H / 2;
-      const x2 = t.x;
-      const y2 = t.y + NODE_H / 2;
-
-      const dx = x2 - x1;
-      let path: string;
-      if (Math.abs(dx) > 50) {
-        const cx = dx * 0.4;
-        path = `M${x1},${y1} C${x1 + cx},${y1} ${x2 - cx},${y2} ${x2},${y2}`;
-      } else {
-        const arcX = Math.max(x1, x2) + 60;
-        path = `M${x1},${y1} C${arcX},${y1} ${arcX},${y2} ${x2},${y2}`;
-      }
-
-      return { ...edge, path, mx: (x1 + x2) / 2, my: Math.min(y1, y2) - 12, idx };
-    }).filter(Boolean) as Array<StoryEdge & { path: string; mx: number; my: number; idx: number }>;
-  }, [edges, nodes]);
-
   if (!loaded) {
     return (
       <div className="loading" style={{ height: "100vh" }}>
@@ -480,34 +513,19 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
             }}
           >
             <h3>剧情线</h3>
-            <div className="flex gap-8">
+            <div className="flex gap-8" style={{ marginLeft: "auto" }}>
               <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }} onClick={addNode}>
                 + 添加情节
               </button>
               <button
                 className="btn"
-                style={{
-                  fontSize: 12,
-                  padding: "5px 14px",
-                  background: connecting ? "var(--jade-subtle)" : undefined,
-                  color: connecting ? "var(--jade)" : undefined,
-                  borderColor: connecting ? "var(--jade)" : undefined,
-                }}
-                onClick={() => setConnecting(connecting ? null : (selected || null))}
-                disabled={!selected}
+                style={{ fontSize: 12, padding: "5px 14px" }}
+                onClick={syncOutlines}
+                title="以故事线为准写入编辑器章节大纲；编辑器有而故事线没有的章节自动拉入故事线"
               >
-                {connecting ? "点击目标..." : "添加连线"}
-              </button>
-              <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={syncFromEditor}>
                 同步大纲
               </button>
-              <button className="btn" style={{ fontSize: 12, padding: "5px 14px" }} onClick={autoLayout}>
-                自动布局
-              </button>
             </div>
-            <span className="text-xs text-muted" style={{ marginLeft: "auto" }}>
-              拖动情节卡可吸附到任一章节行 &middot; 每行情节合并为章节大纲
-            </span>
           </div>
 
           {/* Storyline / foreshadowing summary strip — read-only links to
@@ -573,11 +591,12 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                     }}>
                     {/* ── LEFT: chapter spine card ── */}
                     <div style={{
-                      width: 280, flexShrink: 0,
+                      width: "clamp(220px, 26%, 320px)", flexShrink: 0,
                       padding: "14px 14px 12px",
                       background: "var(--bg-surface-2)",
                       borderRight: "1px solid var(--border)",
                       display: "flex", flexDirection: "column", gap: 8,
+                      minWidth: 0,
                     }}>
                       <div className="flex items-center gap-8">
                         <span style={{
@@ -644,24 +663,22 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)",
                       }}>
                         {merged || (
-                          <span className="text-xs text-muted">
-                            本章暂无情节。从其他章拖动情节卡到本行，或点击 + 添加情节。
-                          </span>
+                          <span className="text-xs text-muted">本章暂无情节。</span>
                         )}
                       </div>
                     </div>
 
                     {/* ── RIGHT: 情节 cards ── */}
                     <div style={{
-                      flex: 1, minHeight: 168, padding: "14px 14px 10px",
+                      flex: 1, minWidth: 0, minHeight: 168, padding: "14px 14px 10px",
                       display: "flex", gap: 10, overflowX: "auto", alignItems: "flex-start",
                     }}>
-                      {chapNodes.length === 0 && (
-                        <div className="text-xs text-muted" style={{
+                      {isDropTarget && chapNodes.length === 0 && (
+                        <div className="text-xs" style={{
                           padding: "20px 12px", lineHeight: 1.6,
-                          alignSelf: "center",
+                          alignSelf: "center", color: "var(--accent)",
                         }}>
-                          {isDropTarget ? "释放即可归属到本章" : "把情节卡拖到这里，或点击下方 + 添加"}
+                          释放即可归属到本章
                         </div>
                       )}
                       {chapNodes.map(n => {
@@ -677,9 +694,9 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             style={{
                               position: "relative",
                               left: "auto", top: "auto",
-                              width: 220, minHeight: NODE_H,
+                              width: NODE_W, minHeight: NODE_H,
                               borderTop: `4px solid ${n.color || "var(--accent)"}`,
-                              cursor: connecting ? "crosshair" : "grab",
+                              cursor: "grab",
                               flexShrink: 0,
                               opacity: isDragging ? 0.35 : 1,
                               transition: "opacity 0.12s",
@@ -724,20 +741,30 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                                 ))}
                               </div>
                             )}
-                            {edges.filter(e => e.from === n.id).length > 0 && (
-                              <div style={{ position: "absolute", bottom: -2, left: "50%", transform: "translateX(-50%)", fontSize: 10, color: "var(--text-disabled)" }}>↓</div>
-                            )}
                           </div>
                         );
                       })}
-                      {/* Per-row 「+ 添加情节」 button */}
+                      {/* Per-row 「+ 添加情节」 button — same footprint as a 情节 card */}
                       <button
                         onClick={() => addEpisodeToChapter(chap_num)}
                         style={{
-                          minWidth: 110, alignSelf: "stretch",
-                          border: "1px dashed var(--border)", borderRadius: 8,
+                          width: NODE_W, minHeight: NODE_H,
+                          flexShrink: 0,
+                          border: "1.5px dashed var(--border)", borderRadius: 8,
                           background: "transparent", color: "var(--text-tertiary)",
-                          cursor: "pointer", fontSize: 12, flexShrink: 0,
+                          cursor: "pointer", fontSize: 13, fontWeight: 500,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          transition: "border-color 0.15s, color 0.15s, background 0.15s",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = "var(--accent)";
+                          e.currentTarget.style.color = "var(--accent)";
+                          e.currentTarget.style.background = "var(--accent-subtle)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = "var(--border)";
+                          e.currentTarget.style.color = "var(--text-tertiary)";
+                          e.currentTarget.style.background = "transparent";
                         }}
                         title={`在 ${labelTop} 添加一张情节卡`}>
                         + 添加情节
@@ -788,7 +815,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                   />
                 </div>
                 <div className="field mb-12">
-                  <label className="label">时间段</label>
+                  <label className="label">故事中时间</label>
                   <input
                     className="input"
                     value={sel.time || ""}
@@ -881,48 +908,22 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                   删除情节
                 </button>
 
-                {/* Edge list */}
-                <div className="mt-24">
-                  <div className="label mb-8">连线</div>
-                  {edges.filter(e => e.from === sel.id || e.to === sel.id).map((edge) => {
-                    const other = edge.from === sel.id
-                      ? nodes.find(n => n.id === edge.to)
-                      : nodes.find(n => n.id === edge.from);
-                    return (
-                      <div
-                        key={edge.id}
-                        className="flex items-center gap-6"
-                        style={{ padding: "4px 0", borderBottom: "1px solid var(--border-subtle)", fontSize: 12 }}
-                      >
-                        <span className="text-muted">{edge.from === sel.id ? "\u2192" : "\u2190"}</span>
-                        <span style={{ flex: 1, color: "var(--text-secondary)" }}>{other?.title || "?"}</span>
-                        <button
-                          className="btn-icon"
-                          style={{ width: 18, height: 18, fontSize: 10 }}
-                          onClick={() => {
-                            setEdges(prev => prev.filter(e => e.id !== edge.id));
-                            setDirty(true);
-                          }}
-                        >
-                          &times;
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
               </>
             ) : (
               <div className="empty-state" style={{ padding: "24px 0" }}>
                 <p>点击情节卡片查看详情</p>
-                <p className="text-xs mt-4">拖动情节卡可吸附到任一章节行</p>
-                <p className="text-xs mt-4">「同步大纲」从编辑器章节同步；「添加连线」串联情节因果</p>
+                <p className="text-xs mt-4" style={{ color: "var(--text-tertiary)" }}>
+                  「同步大纲」可在故事线与编辑器章节大纲之间双向同步
+                </p>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* ======== Week Timeline Bar (bottom) ======== */}
+      {/* ======== 故事中时间 strip (bottom) ========
+          One chip per 情节 with a non-empty 故事中时间, ordered along
+          the reading path. Click navigates to that 情节. */}
       <div
         style={{
           height: TIMELINE_H,
@@ -937,40 +938,51 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
         }}
       >
         <span style={{ fontSize: 11, color: "var(--text-secondary)", marginRight: 12, whiteSpace: "nowrap", fontWeight: 600 }}>
-          时间线
+          故事中时间
         </span>
-        {timeSegments.length === 0 ? (
-          <span style={{ fontSize: 11, color: "var(--text-disabled)" }}>暂无时间数据，在节点详情中设置「时间段」</span>
+        {episodeTimePoints.length === 0 ? (
+          <span style={{ fontSize: 11, color: "var(--text-disabled)" }}>
+            暂无故事中时间，在情节详情中填写「故事中时间」
+          </span>
         ) : (
-          <div style={{ display: "flex", gap: 2, flex: 1, alignItems: "stretch", height: 40 }}>
-            {timeSegments.map(({ label, count, nodeIds }, idx) => {
-              const isActive = sel ? nodeIds.includes(sel.id) : false;
+          <div style={{ display: "flex", gap: 6, alignItems: "stretch", height: 44 }}>
+            {episodeTimePoints.map((n) => {
+              const isActive = sel?.id === n.id;
               return (
                 <div
-                  key={`${label}-${idx}`}
-                  onClick={() => {
-                    if (nodeIds.length > 0) setSelected(nodeIds[0]);
-                  }}
+                  key={n.id}
+                  onClick={() => setSelected(n.id)}
+                  title={`${n.chapter_num ? `第${n.chapter_num}章 · ` : ""}${n.title}`}
                   style={{
-                    flex: count,
-                    minWidth: 48,
+                    minWidth: 110, maxWidth: 200,
                     display: "flex",
                     flexDirection: "column",
-                    alignItems: "center",
+                    alignItems: "flex-start",
                     justifyContent: "center",
                     background: isActive ? "var(--accent-subtle)" : "var(--bg-secondary)",
                     border: isActive ? "1px solid var(--accent)" : "1px solid var(--border-subtle)",
+                    borderLeft: `3px solid ${n.color || "var(--accent)"}`,
                     borderRadius: 6,
                     cursor: "pointer",
                     transition: "all 0.15s",
-                    padding: "0 4px",
+                    padding: "4px 10px",
+                    flexShrink: 0,
                   }}
                 >
-                  <span style={{ fontSize: 10, fontWeight: 700, color: isActive ? "var(--accent)" : "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
-                    {label.length > 6 ? label.slice(0, 6) + "…" : label}
+                  <span style={{
+                    fontSize: 11, fontWeight: 700,
+                    color: isActive ? "var(--accent)" : "var(--text-primary)",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    maxWidth: "100%",
+                  }}>
+                    {n.time}
                   </span>
-                  <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>
-                    {count}情节
+                  <span style={{
+                    fontSize: 9, color: "var(--text-tertiary)",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    maxWidth: "100%",
+                  }}>
+                    {n.chapter_num ? `第${n.chapter_num}章 · ` : ""}{n.title}
                   </span>
                 </div>
               );
