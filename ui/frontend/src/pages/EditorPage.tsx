@@ -1389,7 +1389,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               </div>
               <div style={{ display: "flex", gap: 4 }}>
                 <button className="btn-icon" style={{ fontSize: 11, flex: 1, padding: "3px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} disabled={selectedChIds.size === 0} onClick={exportSelectedChapters}>导出选中</button>
-                <button className="btn-icon" style={{ fontSize: 11, flex: 1, padding: "3px 0", border: "1px solid var(--error)", borderRadius: "var(--radius-sm)", color: "var(--error)" }} disabled={selectedChIds.size === 0} onClick={deleteSelectedChapters}>删除选中</button>
+                <button className="btn-icon" title="删除选中章节" style={{ fontSize: 13, flex: 1, padding: "3px 0", border: "1px solid var(--error)", borderRadius: "var(--radius-sm)", color: "var(--error)", fontWeight: 600 }} disabled={selectedChIds.size === 0} onClick={deleteSelectedChapters}>× 选中</button>
               </div>
             </div>
           )}
@@ -2919,7 +2919,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                         onMouseEnter={e => e.currentTarget.style.color = "var(--error)"}
                         onMouseLeave={e => e.currentTarget.style.color = "var(--text-tertiary)"}
                         title="删除此消息">
-                        × 删除
+                        ×
                       </button>
                     )}
                   </div>

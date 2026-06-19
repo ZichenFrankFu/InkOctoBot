@@ -382,8 +382,8 @@ function DetailView({
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
           <button className="btn" style={{ fontSize: 12, padding: "5px 14px", borderRadius: 14 }}
                   onClick={onEdit}>编辑</button>
-          <button className="btn" style={{ fontSize: 12, padding: "5px 14px", borderRadius: 14, color: "var(--danger)" }}
-                  onClick={onDelete}>删除</button>
+          <button className="btn" title="删除" style={{ fontSize: 14, padding: "5px 14px", borderRadius: 14, color: "var(--danger)", fontWeight: 600 }}
+                  onClick={onDelete}>×</button>
         </div>
       </div>
       <div style={{ marginTop: 6, fontSize: 12, color: "var(--text-secondary)" }}>

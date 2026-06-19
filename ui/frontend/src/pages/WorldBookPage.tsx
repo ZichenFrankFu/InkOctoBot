@@ -355,7 +355,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
               {customCategories.map(c => (
                 <span key={c.key} style={{ marginLeft: 4, padding: "1px 6px", background: "var(--bg-surface-2)", borderRadius: 8, cursor: "pointer" }}
                   onClick={async () => { if (await confirm({ message: `删除自定义分类「${c.label}」？`, destructive: true })) removeCustomCategory(c.key); }}>
-                  {c.label} 删除
+                  {c.label} ×
                 </span>
               ))}
             </div>

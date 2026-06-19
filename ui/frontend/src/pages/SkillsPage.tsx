@@ -404,7 +404,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
             ) : (
               <>
                 <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => handleEditSkill(skill)}>修改</button>
-                <button className="btn" style={{ fontSize: 10, padding: "2px 8px", color: "var(--error)" }} onClick={() => setConfirmDelete(skill.name)}>删除</button>
+                <button className="btn" title="删除" style={{ fontSize: 12, padding: "2px 10px", color: "var(--error)", fontWeight: 600 }} onClick={() => setConfirmDelete(skill.name)}>×</button>
               </>
             )}
           </div>
@@ -974,7 +974,7 @@ export default function SkillsPage({ projects, activeProject }: Props) {
                             <button className="btn" style={{ fontSize: 10, padding: "3px 8px", color: "var(--error)", borderColor: "var(--error)" }} onClick={() => deleteKnowledge(k.id)}>确认删除</button>
                           </>
                         ) : (
-                          <button className="btn" style={{ fontSize: 10, padding: "3px 10px", color: "var(--error)" }} onClick={() => setKnConfirmDelete(k.id)}>删除</button>
+                          <button className="btn" title="删除" style={{ fontSize: 12, padding: "3px 12px", color: "var(--error)", fontWeight: 600 }} onClick={() => setKnConfirmDelete(k.id)}>×</button>
                         )}
                       </div>
                     </div>

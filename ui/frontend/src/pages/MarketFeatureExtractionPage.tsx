@@ -1071,6 +1071,9 @@ function BasicExtractionTab() {
 
       {/* 语言学文本特征 */}
       {hasNlp && <NlpDimsBlock nlp={nlp!} onReanalyze={() => load(true)} busy={computing} />}
+
+      {/* 取名规律 — 按题材聚合的命名画像，是角色卡「取名」生成的依据。 */}
+      <NamingPatternsPanel />
     </>
   );
 }
@@ -1442,8 +1445,6 @@ function NameLibraryView() {
         </div>
       </div></div>
 
-      {/* 取名规律（保留） */}
-      <NamingPatternsPanel />
     </div>
   );
 }
@@ -1962,14 +1963,13 @@ function NlpDimsBlock({ nlp, onReanalyze, busy: parentBusy }: {
                       onClick={() => classify(sel.word, "common_words")}>归为常用词</button>
                   </div>
                 </div>
-                {/* 纠错回环：人名碎片 → 标记完整人名（spec §5）。在例句里看到完整名后填入。 */}
+                {/* 纠错回环：标记完整人名 → 写入人名库 / 排除集（spec §5）。 */}
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
                   fontSize: 11, padding: "6px 8px", marginBottom: 8, borderRadius: 4,
                   background: "var(--bg-surface-2)" }}>
-                  <span style={{ color: "var(--text-tertiary)" }}>是人名碎片？填完整人名（如「{sel.word}」属于）</span>
                   <input className="input" value={fullNameInput} onChange={e => setFullNameInput(e.target.value)}
                     onKeyDown={e => { if (e.key === "Enter") correctName(sel.word, fullNameInput); }}
-                    placeholder={`${sel.word}…`} style={{ width: 110, padding: "3px 8px", fontSize: 11 }} />
+                    placeholder={`完整人名（如 ${sel.word}…）`} style={{ flex: 1, minWidth: 140, padding: "3px 8px", fontSize: 11 }} />
                   <button className="btn" disabled={busy || fullNameInput.trim().length < 2}
                     style={{ fontSize: 10, padding: "3px 10px" }}
                     onClick={() => correctName(sel.word, fullNameInput)}>标记为人名</button>

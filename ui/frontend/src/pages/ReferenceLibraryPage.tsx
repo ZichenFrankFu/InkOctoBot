@@ -374,7 +374,7 @@ export default function ReferenceLibraryPage() {
                 style={{ fontSize: 12, padding: "4px 12px", color: "var(--error)" }}
                 onClick={batchDelete}
               >
-                删除选中 ({selectedIds.size})
+                × 选中 ({selectedIds.size})
               </button>
             )}
           </>
@@ -954,7 +954,7 @@ function WorkDetail({
             {!sel.has_full_text && !isPureSetting && (
               <button className="btn" onClick={onUpload}>上传正文</button>
             )}
-            <button className="btn" style={{ color: "var(--error)" }} onClick={onDelete}>删除</button>
+            <button className="btn" title="删除" style={{ color: "var(--error)", fontWeight: 600, fontSize: 16, padding: "4px 14px" }} onClick={onDelete}>×</button>
           </div>
         </div>
         <div className="flex gap-12 text-xs text-muted" style={{ marginTop: 6, flexWrap: "wrap" }}>

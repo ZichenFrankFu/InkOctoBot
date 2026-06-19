@@ -2,14 +2,29 @@ import React from "react";
 import { apiGet, apiPost } from "../../api/client";
 import { useToast } from "../shared/Toast";
 
-/** 取名：基于人名库按题材/性别/姓氏重组生成一批新名供复制（中文/日文/西方）。
- *  含「性别用字」编辑（增删用于性别启发的字）。 */
+/** 取名：基于人名库按题材/性别/姓氏重组生成一批新名供复制。
+ *  题材选定后展示「取名规律」（来自市场特征提取的统计画像），让用户
+ *  直观看到这批名字遵循的命名特征 —— 名长分布、姓氏分布、典型用字。
+ */
 const KIND_OPTS: [string, string][] = [
   ["chinese", "中文名"], ["japanese", "日文名"], ["western", "西方名"],
 ];
 const GENDER_OPTS: [string, string][] = [
   ["", "不限"], ["male", "男"], ["female", "女"],
 ];
+
+interface NamingPattern {
+  available?: boolean;
+  reason?: string;
+  book_count?: number;
+  name_count?: number;
+  name_length_structure?: { length: number; pct: number }[];
+  surname_distribution?: { surname: string; pct: number }[];
+  given_char_distribution?: { char: string; pct: number }[];
+  typical_char_pairs?: { pair: string; count: number }[];
+  rare_char_rate?: number;
+  note?: string;
+}
 
 export default function NameGeneratorModal({ onClose }: { onClose: () => void }) {
   const { toast } = useToast();
@@ -22,24 +37,20 @@ export default function NameGeneratorModal({ onClose }: { onClose: () => void })
   const [note, setNote] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
-  // 性别用字编辑
-  const [showChars, setShowChars] = React.useState(false);
-  const [maleChars, setMaleChars] = React.useState<string[]>([]);
-  const [femaleChars, setFemaleChars] = React.useState<string[]>([]);
-  const [newMale, setNewMale] = React.useState("");
-  const [newFemale, setNewFemale] = React.useState("");
-
-  const loadChars = React.useCallback(async () => {
-    try {
-      const [m, f] = await Promise.all([
-        apiGet<any>("/api/analysis/wordlist?list=male_name_chars"),
-        apiGet<any>("/api/analysis/wordlist?list=female_name_chars"),
-      ]);
-      setMaleChars((m.items || []).map((i: any) => i.word));
-      setFemaleChars((f.items || []).map((i: any) => i.word));
-    } catch { /* ignore */ }
-  }, []);
-  React.useEffect(() => { if (showChars) loadChars(); }, [showChars, loadChars]);
+  // 取名规律 — 当 category 非空时拉取该题材的命名画像，作为生成依据 + UI 展示。
+  const [pattern, setPattern] = React.useState<NamingPattern | null>(null);
+  const [patternLoading, setPatternLoading] = React.useState(false);
+  React.useEffect(() => {
+    const cat = category.trim();
+    if (!cat) { setPattern(null); return; }
+    let alive = true;
+    setPatternLoading(true);
+    apiGet<NamingPattern>(`/api/analysis/naming-patterns?category=${encodeURIComponent(cat)}`)
+      .then(r => { if (alive) setPattern(r || null); })
+      .catch(() => { if (alive) setPattern(null); })
+      .finally(() => { if (alive) setPatternLoading(false); });
+    return () => { alive = false; };
+  }, [category]);
 
   const gen = async () => {
     setBusy(true);
@@ -59,17 +70,6 @@ export default function NameGeneratorModal({ onClose }: { onClose: () => void })
   };
   const copyAll = () => copy(names.map(n => n.full_name).join("\n"), `${names.length} 个名字`);
 
-  const addChar = async (list: string, ch: string) => {
-    const w = ch.trim();
-    if (!w) return;
-    try { await apiPost("/api/analysis/wordlist/add", { list, word: w }); loadChars(); }
-    catch (e: any) { toast(`添加失败：${e.message}`, "error"); }
-  };
-  const removeChar = async (list: string, ch: string) => {
-    try { await apiPost("/api/analysis/wordlist/remove", { list, word: ch }); loadChars(); }
-    catch (e: any) { toast(`删除失败：${e.message}`, "error"); }
-  };
-
   return (
     <div onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
@@ -80,7 +80,7 @@ export default function NameGeneratorModal({ onClose }: { onClose: () => void })
         background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 10,
       }}>
         <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <h3 style={{ margin: 0, fontSize: 15 }}>取名 · 基于人名库重组生成</h3>
+          <h3 style={{ margin: 0, fontSize: 15 }}>取名 · 按题材取名规律生成</h3>
           <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={onClose}>关闭</button>
         </div>
         <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -115,6 +115,16 @@ export default function NameGeneratorModal({ onClose }: { onClose: () => void })
               style={{ fontSize: 12, padding: "6px 18px" }}>{busy ? "生成中…" : "生成"}</button>
           </div>
 
+          {/* 取名规律 (来自市场特征提取 → 基础特征提取) — 当 category 填了才显示，
+              让用户清楚这批名字是按题材命名画像采样的。 */}
+          {category.trim() && (
+            <NamingPatternPreview
+              pattern={pattern}
+              loading={patternLoading}
+              category={category.trim()}
+            />
+          )}
+
           {note && <div style={{ fontSize: 12, color: "var(--gold)" }}>{note}</div>}
 
           {/* 结果 */}
@@ -137,42 +147,107 @@ export default function NameGeneratorModal({ onClose }: { onClose: () => void })
               </div>
             </>
           )}
-
-          {/* 性别用字编辑 */}
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-              onClick={() => setShowChars(s => !s)}>
-              {showChars ? "▾" : "▸"} 调整性别用字（影响中文名性别判定）
-            </button>
-            {showChars && (
-              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 10 }}>
-                {([["male_name_chars", "男性用字", maleChars, newMale, setNewMale, "var(--cyan)"],
-                   ["female_name_chars", "女性用字", femaleChars, newFemale, setNewFemale, "#f472b6"]] as const).map(
-                  ([list, label, chars, nv, setNv, color]) => (
-                    <div key={list}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                        <span style={{ fontSize: 12, color, fontWeight: 600 }}>{label}</span>
-                        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{chars.length} 字</span>
-                        <input className="input" value={nv} onChange={e => setNv(e.target.value)}
-                          onKeyDown={e => { if (e.key === "Enter" && nv.trim()) { addChar(list, nv.trim()); setNv(""); } }}
-                          placeholder="加字" style={{ width: 70, padding: "3px 8px", fontSize: 12, marginLeft: "auto" }} />
-                        <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                          disabled={!nv.trim()} onClick={() => { addChar(list, nv.trim()); setNv(""); }}>添加</button>
-                      </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 110, overflow: "auto" }}>
-                        {chars.map(c => (
-                          <span key={c} onClick={() => removeChar(list, c)} title="点击删除"
-                            style={{ fontSize: 12, padding: "1px 7px", border: "1px solid var(--border)",
-                              borderRadius: 4, cursor: "pointer", background: "var(--bg-surface-2)" }}>{c}</span>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>点字即删除；改完重新「生成」即按新字表判定性别。</div>
-              </div>
-            )}
-          </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** 取名规律预览 — 顶部小一栏标注「来源：市场特征提取 / 基础特征提取」，
+ *  下面把名长分布 / 姓氏分布 / 典型用字 / 典型搭配 排列出来。
+ *  规律不可用时显示原因（避免用户以为是生成器坏了）。 */
+function NamingPatternPreview({ pattern, loading, category }: {
+  pattern: NamingPattern | null; loading: boolean; category: string;
+}) {
+  return (
+    <div style={{
+      padding: "10px 12px",
+      background: "var(--bg-surface-2)",
+      border: "1px solid var(--border-subtle)",
+      borderRadius: 8,
+      fontSize: 11,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-primary)" }}>
+          取名规律 · {category}
+        </span>
+        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+          数据来源：市场特征提取 / 基础特征提取
+        </span>
+      </div>
+      {loading ? (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>计算中…</div>
+      ) : !pattern ? (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>未能加载该题材的取名规律。</div>
+      ) : pattern.available === false ? (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+          {pattern.reason || "该题材的样本太少，暂时没有可用的命名画像。"}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 16px" }}>
+          {pattern.name_length_structure && pattern.name_length_structure.length > 0 && (
+            <PatternFacet
+              label="名长分布"
+              chips={pattern.name_length_structure.slice(0, 4).map(x => ({
+                k: `${x.length} 字`, v: `${Math.round((x.pct || 0) * 100)}%`,
+              }))}
+            />
+          )}
+          {pattern.surname_distribution && pattern.surname_distribution.length > 0 && (
+            <PatternFacet
+              label="高频姓氏"
+              chips={pattern.surname_distribution.slice(0, 6).map(x => ({
+                k: x.surname, v: `${Math.round((x.pct || 0) * 100)}%`,
+              }))}
+            />
+          )}
+          {pattern.given_char_distribution && pattern.given_char_distribution.length > 0 && (
+            <PatternFacet
+              label="名字高频字"
+              chips={pattern.given_char_distribution.slice(0, 8).map(x => ({
+                k: x.char, v: `${Math.round((x.pct || 0) * 100)}%`,
+              }))}
+            />
+          )}
+          {pattern.typical_char_pairs && pattern.typical_char_pairs.length > 0 && (
+            <PatternFacet
+              label="典型搭配"
+              chips={pattern.typical_char_pairs.slice(0, 6).map(x => ({
+                k: x.pair, v: `${x.count} 次`,
+              }))}
+            />
+          )}
+        </div>
+      )}
+      {pattern && pattern.available !== false && (pattern.book_count || pattern.name_count) && (
+        <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 6 }}>
+          统计自 {pattern.book_count || "—"} 部作品 · {pattern.name_count || "—"} 个名字样本
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PatternFacet({ label, chips }: {
+  label: string; chips: { k: string; v: string }[];
+}) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 4, letterSpacing: 0.3 }}>
+        {label}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+        {chips.map((c, i) => (
+          <span key={i} style={{
+            fontSize: 11, padding: "1px 7px", borderRadius: 8,
+            background: "var(--bg-surface)", border: "1px solid var(--border-subtle)",
+            color: "var(--text-secondary)",
+            display: "inline-flex", alignItems: "center", gap: 4,
+          }}>
+            <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{c.k}</span>
+            <span style={{ color: "var(--text-tertiary)", fontSize: 10 }}>{c.v}</span>
+          </span>
+        ))}
       </div>
     </div>
   );

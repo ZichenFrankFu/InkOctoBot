@@ -1043,7 +1043,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                   }}
                   onClick={() => delNode(sel.id)}
                 >
-                  删除情节
+                  × 删除情节
                 </button>
               </>
             ) : (
