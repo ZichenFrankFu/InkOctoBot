@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useToast } from "./Toast";
 
 interface Props {
@@ -9,6 +9,12 @@ interface Props {
   applyLabel?: string;
   resultPlaceholder?: string;
   title?: string;
+  /** When this key changes (e.g. the live chat input), the panel debounces a
+   *  refresh so the displayed prompt always tracks what the user just typed.
+   *  Pass a stable string — typically `chatInput`. */
+  watchKey?: string;
+  /** Debounce window for `watchKey`-triggered refreshes (ms). Default 400. */
+  debounceMs?: number;
 }
 
 async function copyText(text: string) {
@@ -27,6 +33,7 @@ async function copyText(text: string) {
 
 export default function WebLLMPromptPanel({
   fetchPrompt, onApplyResult, defaultOpen, applyLabel, resultPlaceholder, title,
+  watchKey, debounceMs = 400,
 }: Props) {
   const { toast } = useToast();
   const [open, setOpen] = useState(!!defaultOpen);
@@ -34,15 +41,20 @@ export default function WebLLMPromptPanel({
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  // Hold the latest fetchPrompt in a ref so the debounce timer always calls
+  // the current closure (which has the up-to-date chatInput / market info /
+  // etc. captured), not the one frozen when the timer was scheduled.
+  const fetchRef = useRef(fetchPrompt);
+  useEffect(() => { fetchRef.current = fetchPrompt; }, [fetchPrompt]);
 
-  const load = async () => {
+  const load = async (showError = true) => {
     setLoading(true);
     try {
-      const p = await fetchPrompt();
+      const p = await fetchRef.current();
       setPrompt(p || "");
       setLoaded(true);
     } catch (e: any) {
-      toast(e?.message || "获取 prompt 失败", "error");
+      if (showError) toast(e?.message || "获取 prompt 失败", "error");
     } finally {
       setLoading(false);
     }
@@ -52,6 +64,17 @@ export default function WebLLMPromptPanel({
     if (defaultOpen) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Live refresh: whenever `watchKey` changes (typically the chat input) and
+  // the panel is open, debounce a fetch so the displayed prompt is the one
+  // the user is actually about to send. Errors are swallowed because every
+  // keystroke shouldn't pop a toast.
+  useEffect(() => {
+    if (!open || watchKey === undefined) return;
+    const t = setTimeout(() => { load(false); }, debounceMs);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchKey, open, debounceMs]);
 
   const toggle = () => {
     const next = !open;
@@ -78,7 +101,7 @@ export default function WebLLMPromptPanel({
           <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
             <span className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)" }}>渲染后的 prompt</span>
             <div className="flex gap-6">
-              <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={load} disabled={loading}>
+              <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => load()} disabled={loading}>
                 {loading ? "加载中..." : loaded ? "刷新" : "加载"}
               </button>
               <button

@@ -189,6 +189,91 @@ def chapter_content(chapter_id: int):
     return dict(r)
 
 
+@router.get("/platform_categories")
+def platform_categories(platform: str = Query(...)):
+    """Per-platform 题材/分类 catalog used by the 新建项目 form to restrict
+    free-text genres to the actual taxonomy of the selected publishing
+    platform — keeps the user from typing 「武侠」under 番茄 where the
+    market data doesn't carry that label, and avoids leaking 起点 sub-cats
+    that don't exist on other platforms.
+
+    Returns ``{platform, main_categories, sub_categories}``:
+      - ``main_categories``: ordered list of {key, label, count?, parent?}
+      - ``sub_categories``: same shape but with ``parent`` set when known
+
+    For 起点 the source of truth is the bundled taxonomy
+    (resources/taxonomy/qidian.json) so new books can be filed under
+    canonical 大分类 even when the crawler hasn't seen them yet; for the
+    other platforms we read distinct ``novels.main_category`` /
+    ``rank_lists.rank_sub_cat`` values from the crawler DB so the list
+    matches the panel the user sees in 基础特征提取.
+    """
+    plat = (platform or "").strip().lower()
+    main_out: list[dict] = []
+    sub_out: list[dict] = []
+    seen_main: set[str] = set()
+    seen_sub: set[str] = set()
+
+    # 起点: taxonomy is curated — always include the canonical 大分类 list
+    # even when the crawler DB hasn't surfaced one yet (e.g. a freshly
+    # added 大分类 with no top novels).
+    if plat == "qidian":
+        try:
+            from ..services.market_extractor import taxonomy as _tax
+            tx = _tax.load_qidian()
+            for name in tx.get("main_categories") or []:
+                if name and name not in seen_main:
+                    main_out.append({"key": name, "label": name})
+                    seen_main.add(name)
+            for sub, parent in (tx.get("sub_to_main") or {}).items():
+                if sub and sub not in seen_sub:
+                    sub_out.append({"key": sub, "label": sub, "parent": parent})
+                    seen_sub.add(sub)
+        except Exception as e:
+            logger.warning("taxonomy load failed for qidian: %s", e)
+
+    # Overlay DB-observed categories so users can also pick anything the
+    # crawler actually saw on this platform (covers 番茄 et al + any
+    # qidian 大分类 the taxonomy hasn't been updated for).
+    con = _get_con()
+    if con is not None:
+        with con:
+            if _table_exists(con, "novels"):
+                for r in con.execute(
+                    "SELECT main_category, COUNT(*) AS cnt FROM novels "
+                    "WHERE platform = ? AND main_category IS NOT NULL "
+                    "  AND main_category <> '' "
+                    "GROUP BY main_category ORDER BY cnt DESC",
+                    (platform,),
+                ).fetchall():
+                    name = r["main_category"]
+                    if not name or name in seen_main:
+                        continue
+                    main_out.append({"key": name, "label": name, "count": int(r["cnt"])})
+                    seen_main.add(name)
+            if _table_exists(con, "rank_lists"):
+                for r in con.execute(
+                    "SELECT rank_family, rank_sub_cat, COUNT(*) AS cnt "
+                    "FROM rank_lists WHERE platform = ? "
+                    "GROUP BY rank_family, rank_sub_cat "
+                    "ORDER BY cnt DESC",
+                    (platform,),
+                ).fetchall():
+                    sub = (r["rank_sub_cat"] or "").strip()
+                    fam = (r["rank_family"] or "").strip()
+                    # Only treat rank_sub_cat as a 副分类 when it differs
+                    # from the rank_family (which is the rank list name).
+                    if not sub or sub == fam or sub in seen_sub or sub in seen_main:
+                        continue
+                    sub_out.append({"key": sub, "label": sub,
+                                     "parent": fam or None,
+                                     "count": int(r["cnt"])})
+                    seen_sub.add(sub)
+    return {"platform": platform,
+            "main_categories": main_out,
+            "sub_categories": sub_out}
+
+
 @router.get("/tag_stats")
 def tag_stats(platform: str | None = None, limit: int = Query(default=30, ge=1, le=100)):
     con = _get_con()

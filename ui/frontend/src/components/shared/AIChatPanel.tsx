@@ -400,7 +400,9 @@ export default function AIChatPanel({
           </div>
         )}
 
-        {/* Web-LLM prompt workflow */}
+        {/* Web-LLM prompt workflow — `watchKey` makes the panel live-refresh
+            on each keystroke (debounced) so the prompt the user copies is
+            the prompt that will actually be sent. */}
         {fetchPrompt && (
           <div style={{ marginBottom: 6 }}>
             <WebLLMPromptPanel
@@ -408,6 +410,7 @@ export default function AIChatPanel({
               onApplyResult={onApplyResult}
               applyLabel="作为回复应用"
               resultPlaceholder="把网页 LLM 的回复粘贴到这里"
+              watchKey={input}
             />
           </div>
         )}

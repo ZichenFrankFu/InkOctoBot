@@ -56,6 +56,26 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const [chatLoaded, setChatLoaded] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
 
+  // Items the user has pinned from the trending panel — flows into the
+  // marketing-agent system hint so 「选了 玄幻」/「点过 都市异能」 directly
+  // shapes the next answer. Reset on project / platform switch.
+  const [focusedMarketItems, setFocusedMarketItems] = useState<string[]>([]);
+  const toggleFocusedItem = useCallback((label: string) => {
+    setFocusedMarketItems(prev =>
+      prev.includes(label) ? prev.filter(x => x !== label) : [...prev, label],
+    );
+  }, []);
+
+  // Per-platform 分类/题材 catalog used by the new-project form. Fetched
+  // from /api/db/platform_categories when the form's platform select
+  // changes so users can only file a work under canonical labels for the
+  // platform they picked (e.g. 起点 → 玄幻/都市/…, 番茄 → DB-observed).
+  type CategoryOption = { key: string; label: string; parent?: string | null; count?: number };
+  const [formCategoryOptions, setFormCategoryOptions] = useState<{
+    main: CategoryOption[]; sub: CategoryOption[];
+  }>({ main: [], sub: [] });
+  const [formCategoryLoading, setFormCategoryLoading] = useState(false);
+
   // Trending data — pulled per the active project's publish platform so that
   // hot-topic stats reflect where the user actually plans to publish.
   const [trendingTags, setTrendingTags] = useState<{ tag_name: string; novel_count: number }[]>([]);
@@ -168,6 +188,37 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const [analysis, setAnalysis] = useState<AnalysisPayload | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisStale, setAnalysisStale] = useState(false);
+
+  // Drop pinned items when the project or its platform changes — they no
+  // longer match the analysis being shown.
+  useEffect(() => {
+    setFocusedMarketItems([]);
+  }, [activeProject, activePlatformId]);
+
+  // Load per-platform category catalog whenever the form picks a platform.
+  // Empty platform → empty options (the genre input falls back to free text
+  // so users without a chosen platform aren't blocked).
+  useEffect(() => {
+    if (!formPlatform) {
+      setFormCategoryOptions({ main: [], sub: [] });
+      return;
+    }
+    const prof = platformProfile(formPlatform);
+    if (prof.id === "other") {
+      setFormCategoryOptions({ main: [], sub: [] });
+      return;
+    }
+    setFormCategoryLoading(true);
+    apiGet<{ main_categories: CategoryOption[]; sub_categories: CategoryOption[] }>(
+      `/api/db/platform_categories?platform=${encodeURIComponent(prof.id)}`,
+    )
+      .then(r => setFormCategoryOptions({
+        main: r.main_categories || [],
+        sub: r.sub_categories || [],
+      }))
+      .catch(() => setFormCategoryOptions({ main: [], sub: [] }))
+      .finally(() => setFormCategoryLoading(false));
+  }, [formPlatform]);
 
   useEffect(() => {
     if (studioTab !== "trending") return;
@@ -325,16 +376,36 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
     return lines.join("\n");
   }, [analysis, marketBrief]);
 
+  // Hard cap on conversation-history characters that ride into the prompt.
+  // Keeps the assistant from blowing past the model's context window once
+  // the chat has run long enough to accumulate 20 turns of detailed replies
+  // (rough budget: ~16K tokens once the system hint + market brief are
+  // added on top). The tail end is preserved — the recent turns are the
+  // ones that actually condition the next answer.
+  const MAX_HISTORY_CHARS = 8000;
+
   // Build the prompt (conversation + system hint + market-data RAG) for the
-  // current 开书助手 turn. Shared by send and the web-LLM preview.
+  // current 开书助手 turn. Shared by send and the web-LLM preview, so the
+  // copy-to-web-LLM panel always shows the exact prompt the API send would
+  // use (including focused 题材/标签 the user clicked in the market panel).
   const buildChatPrompt = async (text: string): Promise<{ fullPrompt: string; systemHint: string }> => {
     const config = getAgentConfig(studioTab);
     const recentMessages = chatMessages.filter(m => m.role !== "system").slice(-20);
-    const conversationContext = recentMessages.map(m =>
+    let conversationContext = recentMessages.map(m =>
       `${m.role === "user" ? "用户" : m.agentName || "AI"}：${m.content}`,
     ).join("\n\n");
+    let truncatedNote = "";
+    if (conversationContext.length > MAX_HISTORY_CHARS) {
+      // Keep the tail so the most recent turns survive; mark the truncation
+      // explicitly so the model understands the gap.
+      const tail = conversationContext.slice(-MAX_HISTORY_CHARS);
+      // Snap to the next message boundary so we don't start mid-sentence.
+      const snap = tail.indexOf("\n\n");
+      conversationContext = snap > 0 ? tail.slice(snap + 2) : tail;
+      truncatedNote = `[较早 ${recentMessages.length - chatMessages.length > 0 ? "" : ""}对话已被截断，仅保留最近约 ${MAX_HISTORY_CHARS} 字]\n\n`;
+    }
     const fullPrompt = recentMessages.length > 0
-      ? `以下是对话历史：\n\n${conversationContext}\n\n用户：${text}\n\n请基于以上对话上下文回答用户最新的问题。`
+      ? `以下是对话历史：\n\n${truncatedNote}${conversationContext}\n\n用户：${text}\n\n请基于以上对话上下文回答用户最新的问题。`
       : text;
     const promptKey = studioTab === "trending"
       ? "assistant.book_start_trending"
@@ -350,6 +421,12 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
       const platformNote = activePlatformLabel ? `（${activePlatformLabel}）` : "（全平台）";
       const source = analysis?.panel ? "市场特征提取 · 基础特征提取" : "市场数据库";
       systemHint += `\n\n[市场数据参考${platformNote} · 来源：${source}——以下为真实统计，回答须据此，不要编造市场数据]\n${brief}`;
+    }
+    if (focusedMarketItems.length > 0) {
+      // Surface the user's pinned 题材/标签 explicitly so the agent
+      // weights them in its next answer (rather than re-deriving them from
+      // the full panel). Order is click-order — first-clicked first.
+      systemHint += `\n\n[用户关注的题材/标签]\n${focusedMarketItems.map(s => `· ${s}`).join("\n")}\n请围绕这些题材展开分析，并在追问选项中保留与之相关的选项。`;
     }
     return { fullPrompt, systemHint };
   };
@@ -585,16 +662,39 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                         onKeyDown={e => { if (e.key === "Enter") editingId ? handleUpdate() : handleCreate(); }} />
                     </div>
                     <div className="field" style={{ flex: 1, minWidth: 140 }}>
-                      <label className="label">分类/题材</label>
-                      <input className="input" value={formGenre} onChange={e => setFormGenre(e.target.value)}
-                        placeholder="例：玄幻、都市" />
-                    </div>
-                    <div className="field" style={{ flex: 1, minWidth: 140 }}>
                       <label className="label">发布平台</label>
-                      <select className="select" value={formPlatform} onChange={e => setFormPlatform(e.target.value)} style={{ width: "100%" }}>
+                      <select className="select" value={formPlatform}
+                        onChange={e => {
+                          const next = e.target.value;
+                          setFormPlatform(next);
+                          // Clear genre when platform changes so users don't
+                          // carry over a 起点 大分类 into 番茄 (or vice versa).
+                          const prevProf = platformProfile(formPlatform);
+                          const nextProf = platformProfile(next);
+                          if (prevProf.id !== nextProf.id) setFormGenre("");
+                        }}
+                        style={{ width: "100%" }}>
                         <option value="">未选择</option>
                         {PLATFORMS.map(p => <option key={p} value={p}>{p}</option>)}
                       </select>
+                    </div>
+                    <div className="field" style={{ flex: 2, minWidth: 200 }}>
+                      <label className="label">
+                        分类/题材
+                        {formPlatform && formCategoryOptions.main.length > 0 && (
+                          <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
+                            （仅显示 {platformProfile(formPlatform).label} 的分类）
+                          </span>
+                        )}
+                      </label>
+                      <PlatformGenreSelect
+                        platform={formPlatform}
+                        value={formGenre}
+                        onChange={setFormGenre}
+                        mainOptions={formCategoryOptions.main}
+                        subOptions={formCategoryOptions.sub}
+                        loading={formCategoryLoading}
+                      />
                     </div>
                   </div>
                   <div className="flex gap-12 mb-12" style={{ flexWrap: "wrap" }}>
@@ -800,6 +900,8 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                     analysisStale={analysisStale}
                     trendingLoading={trendingLoading}
                     trendingTags={trendingTags}
+                    focusedItems={focusedMarketItems}
+                    onTogglePin={toggleFocusedItem}
                     onAsk={(prompt) => sendMessage(prompt)}
                     onOpenMarket={() => onNavigate("market-features")}
                   />
@@ -881,7 +983,8 @@ type TrendingAnalysis = {
 
 function TrendingEmptyState({
   activePlatformLabel, activePlatformId, analysis, analysisLoading,
-  analysisStale, trendingLoading, trendingTags, onAsk, onOpenMarket,
+  analysisStale, trendingLoading, trendingTags, focusedItems, onTogglePin,
+  onAsk, onOpenMarket,
 }: {
   activePlatformLabel: string;
   activePlatformId: string;
@@ -890,6 +993,8 @@ function TrendingEmptyState({
   analysisStale: boolean;
   trendingLoading: boolean;
   trendingTags: { tag_name: string; novel_count: number }[];
+  focusedItems: string[];
+  onTogglePin: (label: string) => void;
   onAsk: (prompt: string) => void;
   onOpenMarket: () => void;
 }) {
@@ -918,29 +1023,49 @@ function TrendingEmptyState({
           const trendPct = pctText(r.heat_pct);
           const heatBar = Math.max(2, ((r.avg_heat || 0) / maxHeat) * 100);
           const displayName = r.parent ? `${r.parent}·${r.name}` : r.name;
+          const pinned = focusedItems.includes(displayName);
           return (
-            <button key={r.name}
-              onClick={() => onAsk(`分析一下「${r.name}」这个题材的市场前景、竞争程度和新人友好度`)}
-              style={{
-                display: "flex", alignItems: "center", gap: 8,
-                padding: "5px 10px", borderRadius: 6,
-                background: "var(--bg-surface-2)", border: "1px solid var(--border)",
-                cursor: "pointer", textAlign: "left", width: "100%",
-                transition: "border-color 0.15s",
-              }}>
-              <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {displayName}
-              </span>
-              <span className="font-mono" style={{ fontSize: 10, color: "var(--text-tertiary)", flexShrink: 0 }}>
-                {r.total}部
-              </span>
-              <div style={{ width: 50, height: 4, background: "var(--bg-app)", borderRadius: 2, overflow: "hidden", flexShrink: 0 }}>
-                <div style={{ width: `${heatBar}%`, height: "100%", background: "var(--accent)" }} />
-              </div>
-              <span className="font-mono" style={{ fontSize: 10, color: trendPct.color, fontWeight: 600, minWidth: 36, textAlign: "right", flexShrink: 0 }}>
-                {trendPct.text}
-              </span>
-            </button>
+            <div key={r.name} style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "5px 10px", borderRadius: 6,
+              background: pinned ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+              border: `1px solid ${pinned ? "var(--accent)" : "var(--border)"}`,
+              transition: "background 0.15s, border-color 0.15s",
+            }}>
+              <button
+                onClick={() => onTogglePin(displayName)}
+                title={pinned ? "取消关注（不再传入 system hint）" : "关注此题材，让 AI 围绕它展开分析"}
+                style={{
+                  width: 18, height: 18, padding: 0, flexShrink: 0,
+                  background: pinned ? "var(--accent)" : "transparent",
+                  border: `1px solid ${pinned ? "var(--accent)" : "var(--border)"}`,
+                  borderRadius: 4, cursor: "pointer", fontSize: 11,
+                  color: pinned ? "#fff" : "var(--text-tertiary)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}>
+                {pinned ? "✓" : "+"}
+              </button>
+              <button
+                onClick={() => onAsk(`分析一下「${r.name}」这个题材的市场前景、竞争程度和新人友好度`)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: 0, background: "none", border: "none",
+                  cursor: "pointer", textAlign: "left", flex: 1, minWidth: 0,
+                }}>
+                <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {displayName}
+                </span>
+                <span className="font-mono" style={{ fontSize: 10, color: "var(--text-tertiary)", flexShrink: 0 }}>
+                  {r.total}部
+                </span>
+                <div style={{ width: 50, height: 4, background: "var(--bg-app)", borderRadius: 2, overflow: "hidden", flexShrink: 0 }}>
+                  <div style={{ width: `${heatBar}%`, height: "100%", background: "var(--accent)" }} />
+                </div>
+                <span className="font-mono" style={{ fontSize: 10, color: trendPct.color, fontWeight: 600, minWidth: 36, textAlign: "right", flexShrink: 0 }}>
+                  {trendPct.text}
+                </span>
+              </button>
+            </div>
           );
         })}
       </div>
@@ -958,6 +1083,38 @@ function TrendingEmptyState({
             : "未设置发布平台时显示全平台综合数据，到项目设置中选择平台可获得平台专属市场分析。"}
         </div>
       </div>
+
+      {focusedItems.length > 0 && (
+        <div style={{
+          padding: "8px 10px", background: "var(--accent-subtle)",
+          border: "1px solid var(--accent)", borderRadius: 6, marginBottom: 10,
+        }}>
+          <div className="flex items-center justify-between mb-4">
+            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)" }}>
+              已关注 {focusedItems.length} 个题材（会进入 system hint）
+            </span>
+            <button
+              onClick={() => focusedItems.forEach(i => onTogglePin(i))}
+              className="btn" style={{ fontSize: 10, padding: "1px 8px" }}>
+              清空
+            </button>
+          </div>
+          <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
+            {focusedItems.map(it => (
+              <span key={it}
+                onClick={() => onTogglePin(it)}
+                title="点击移除关注"
+                style={{
+                  fontSize: 11, padding: "2px 8px", borderRadius: 12,
+                  background: "var(--bg-surface)", color: "var(--accent)",
+                  border: "1px solid var(--accent)", cursor: "pointer",
+                }}>
+                {it} ×
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {analysisStale && (
         <div style={{ padding: "6px 10px", background: "var(--gold-subtle, var(--bg-surface-2))", border: "1px solid var(--gold)", borderRadius: 6, marginBottom: 10, fontSize: 11, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
@@ -1047,6 +1204,94 @@ function TrendingEmptyState({
               到市场特征提取运行分析
             </button>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* ── PlatformGenreSelect ──
+ * Restricts the project 题材 input to the catalog of the selected publish
+ * platform. Renders the 大分类 / 类目 first, then the 副分类 / 标签 grouped
+ * by parent so a 起点 author can pick 玄幻·东方玄幻 without having to type.
+ * Falls back to a plain text input when no platform is picked (i.e. the
+ * user genuinely wants free text) or when the platform has no catalog.
+ */
+function PlatformGenreSelect({
+  platform, value, onChange, mainOptions, subOptions, loading,
+}: {
+  platform: string;
+  value: string;
+  onChange: (v: string) => void;
+  mainOptions: { key: string; label: string; count?: number }[];
+  subOptions: { key: string; label: string; parent?: string | null; count?: number }[];
+  loading: boolean;
+}) {
+  const hasCatalog = mainOptions.length > 0 || subOptions.length > 0;
+  // 副分类 grouped by parent 大分类 so 起点's nested taxonomy reads cleanly
+  // in the dropdown / chip list.
+  const subsByParent = useMemo(() => {
+    const out: Record<string, { key: string; label: string; count?: number }[]> = {};
+    for (const s of subOptions) {
+      const p = (s.parent || "其他").trim() || "其他";
+      (out[p] ||= []).push(s);
+    }
+    return out;
+  }, [subOptions]);
+
+  if (!platform || (!loading && !hasCatalog)) {
+    return (
+      <input
+        className="input"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={platform ? "该平台暂无分类数据，可手动填写" : "请先选择发布平台"}
+      />
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="input" style={{ color: "var(--text-tertiary)", fontSize: 12 }}>
+        加载平台分类...
+      </div>
+    );
+  }
+
+  const validValues = new Set([...mainOptions.map(o => o.key), ...subOptions.map(o => o.key)]);
+  const valueValid = !value || validValues.has(value);
+
+  return (
+    <div>
+      <select
+        className="select"
+        value={valueValid ? value : ""}
+        onChange={e => onChange(e.target.value)}
+        style={{ width: "100%" }}>
+        <option value="">未选择</option>
+        {mainOptions.length > 0 && (
+          <optgroup label="大分类">
+            {mainOptions.map(o => (
+              <option key={o.key} value={o.key}>{o.label}</option>
+            ))}
+          </optgroup>
+        )}
+        {Object.entries(subsByParent).map(([parent, items]) => (
+          <optgroup key={parent} label={`副分类 · ${parent}`}>
+            {items.map(o => (
+              <option key={o.key} value={o.key}>
+                {parent !== "其他" ? `${parent}·${o.label}` : o.label}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+      {!valueValid && (
+        <div className="text-xs" style={{
+          color: "var(--gold)", marginTop: 4, lineHeight: 1.5,
+        }}>
+          原题材「{value}」不在所选平台的分类中。请从上方选择，或换一个平台。
         </div>
       )}
     </div>
