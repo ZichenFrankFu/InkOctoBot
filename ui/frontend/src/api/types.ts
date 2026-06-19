@@ -179,6 +179,8 @@ export interface CharacterRelationship {
 // ── Dynamic Property Snapshot (chapter-linked) ──
 export interface DynamicPropertySnapshot {
   chapter: string;        // chapter or in-story time marker
+  /** 转变档位 — one of "动摇" / "试探" / "倾向" (or empty / "无"). */
+  stage?: string;
   personality?: string;
   background?: string;
   speech_style?: string;

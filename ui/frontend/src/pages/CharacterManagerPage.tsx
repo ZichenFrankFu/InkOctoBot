@@ -91,7 +91,9 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const [showAddRelForm, setShowAddRelForm] = useState(false);
   // 决策参数 random sample preview — 10 scenarios where the character
   // picks A vs B based on a probability derived from Layer B params.
-  const [decisionPreview, setDecisionPreview] = useState<Array<{ scenario: string; action: string; reason: string }> | null>(null);
+  const [decisionPreview, setDecisionPreview] = useState<Array<{
+    scenario: string; optionA: string; optionB: string; pB: number; reason: string;
+  }> | null>(null);
   useEffect(() => {
     setEditingRelRows(new Set());
     setEditingHiddenRows(new Set());
@@ -554,29 +556,28 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     setDirty(true);
   };
 
-  // Compute latest affinity/priority rankings across all snapshots
+  // Compute latest affinity rankings across all snapshots (priority dropped)
   const latestRankings = useMemo(() => {
     type RankEntry = { name: string; value: number; chapter: string };
-    if (!editing) return { affinity: [] as RankEntry[], priority: [] as RankEntry[] };
+    if (!editing) return { affinity: [] as RankEntry[] };
     const snaps = editing.dynamic_snapshots || [];
     // Build map: target_id -> latest values
-    const latestByTarget: Record<string, { name: string; affinity: number; priority: number; chapter: string }> = {};
+    const latestByTarget: Record<string, { name: string; affinity: number; chapter: string }> = {};
     // Go through snapshots in order (latest wins)
     for (const snap of snaps) {
       for (const rel of (snap.relationships || [])) {
-        latestByTarget[rel.target_id] = { name: rel.target_name, affinity: rel.affinity, priority: rel.priority, chapter: snap.chapter };
+        latestByTarget[rel.target_id] = { name: rel.target_name, affinity: rel.affinity, chapter: snap.chapter };
       }
     }
     // Fallback to top-level relationships if no snapshots
     if (Object.keys(latestByTarget).length === 0) {
       for (const rel of (editing.relationships || [])) {
-        latestByTarget[rel.target_id] = { name: rel.target_name, affinity: rel.affinity, priority: rel.priority, chapter: rel.chapter || "" };
+        latestByTarget[rel.target_id] = { name: rel.target_name, affinity: rel.affinity, chapter: rel.chapter || "" };
       }
     }
     const entries = Object.values(latestByTarget);
     return {
       affinity: [...entries].sort((a, b) => b.affinity - a.affinity).map(e => ({ name: e.name, value: e.affinity, chapter: e.chapter })),
-      priority: [...entries].sort((a, b) => a.priority - b.priority).map(e => ({ name: e.name, value: e.priority, chapter: e.chapter })),
     };
   }, [editing]);
 
@@ -697,8 +698,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   全局关系图谱
                 </h2>
                 <div style={{ padding: "6px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-                  <strong>好感度：</strong>正值=好感, 0=不熟悉, 负值=厌恶 &nbsp;|&nbsp;
-                  <strong>优先级：</strong>数值越低越优先（1=最重要的人）
+                  <strong>好感度：</strong>正值=好感, 0=不熟悉, 负值=厌恶。拖动顶部时间轴可查看该章节的好感快照。
                 </div>
               </div>
               <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
@@ -1044,22 +1044,31 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                               padding: "12px 14px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-md)",
                               border: "2px solid var(--accent)", position: "relative",
                             }}>
-                              <div className="field mb-8">
-                                <label className="label">章节/时间点</label>
-                                <input className="input" value={snap.chapter} onChange={e => updateSnapshot(flashcardIndex, "chapter", e.target.value)}
-                                  placeholder="例：第5章、三年后" style={{ fontWeight: 600 }} />
+                              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                                <div className="field" style={{ flex: 2, marginBottom: 0 }}>
+                                  <label className="label">章节/时间点</label>
+                                  <input className="input" value={snap.chapter} onChange={e => updateSnapshot(flashcardIndex, "chapter", e.target.value)}
+                                    placeholder="例：第5章、三年后" style={{ fontWeight: 600 }} />
+                                </div>
+                                <div className="field" style={{ flex: 1, marginBottom: 0 }}>
+                                  <label className="label">转变档位</label>
+                                  <select className="select" value={snap.stage || ""}
+                                    onChange={e => updateSnapshot(flashcardIndex, "stage", e.target.value)}
+                                    style={{ width: "100%", fontSize: 12 }}>
+                                    <option value="">未设定</option>
+                                    <option value="动摇">动摇 · 对原状态产生怀疑</option>
+                                    <option value="试探">试探 · 开始尝试新状态</option>
+                                    <option value="倾向">倾向 · 多数行为已偏向新状态</option>
+                                  </select>
+                                </div>
                               </div>
                               <div className="field mb-8">
                                 <label className="label">性格变化</label>
                                 <textarea className="input" value={snap.personality || ""} onChange={e => updateSnapshot(flashcardIndex, "personality", e.target.value)} rows={2} placeholder="此阶段的性格..." />
                               </div>
                               <div className="field mb-8">
-                                <label className="label">背景变化</label>
+                                <label className="label">经历变化</label>
                                 <textarea className="input" value={snap.background || ""} onChange={e => updateSnapshot(flashcardIndex, "background", e.target.value)} rows={2} placeholder="此阶段发生了什么..." />
-                              </div>
-                              <div className="field mb-8">
-                                <label className="label">说话风格变化</label>
-                                <textarea className="input" value={snap.speech_style || ""} onChange={e => updateSnapshot(flashcardIndex, "speech_style", e.target.value)} rows={1} placeholder="说话风格的变化..." />
                               </div>
                               <div className="field mb-12">
                                 <label className="label">备注</label>
@@ -1157,12 +1166,11 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                                 <input className="input" value={rel.label || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "label", e.target.value)} placeholder="关系标签：师徒、情侣..." style={{ fontSize: 11 }} />
                                               </div>
                                               <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "affinity", v)} />
-                                              <ParamSlider name={`优先级 (#${rel.priority})`} value={rel.priority} min={1} max={20} step={1} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "priority", v)} />
                                               <div className="field mt-6">
                                                 <input className="input" value={rel.notes || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "notes", e.target.value)} placeholder="关系备注..." style={{ fontSize: 11 }} />
                                               </div>
                                               <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 8, lineHeight: 1.5 }}>
-                                                好感度：越高越喜欢（负=厌恶, 0=不熟, 正=好感）&nbsp;&nbsp;优先级：越低越优先（1=最重要）
+                                                好感度：越高越喜欢（负=厌恶, 0=不熟, 正=好感）
                                               </div>
                                             </div>
                                           )}
@@ -1235,10 +1243,13 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                                        placeholder="化名 / 伪装身份名" style={{ fontSize: 12, fontWeight: 600 }} />
                                               </div>
                                               <div className="field mb-6">
-                                                <input className="input" value={(h.revealed_to || []).join("、")}
-                                                       onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "revealed_to",
-                                                           e.target.value.split(/[、,，\s]+/).map(s => s.trim()).filter(Boolean))}
-                                                       placeholder="已知真相的角色（用、或,分隔）" style={{ fontSize: 11 }} />
+                                                <label className="label" style={{ fontSize: 10, marginBottom: 4 }}>已知真相的角色</label>
+                                                <CharNamesMultiSelect
+                                                  value={h.revealed_to || []}
+                                                  options={others}
+                                                  onChange={(v) => updateSnapshotHidden(flashcardIndex, hIdx, "revealed_to", v)}
+                                                  placeholder="点击选择已知真相的角色…"
+                                                />
                                               </div>
                                               <input className="input" value={h.notes || ""}
                                                      onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "notes", e.target.value)}
@@ -1288,7 +1299,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                       marginBottom: 8,
                                     }}>
                                       <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)" }}>
-                                        10 次取样 · 该角色会怎么选
+                                        10 个情境 · 该角色的选择倾向（百分比）
                                       </span>
                                       <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }}
                                         onClick={() => setDecisionPreview(null)}>
@@ -1296,10 +1307,14 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                       </button>
                                     </div>
                                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                      {decisionPreview.map((row, i) => (
+                                      {decisionPreview.map((row, i) => {
+                                        const pctB = Math.round(row.pB * 100);
+                                        const pctA = 100 - pctB;
+                                        const leansB = pctB >= 50;
+                                        return (
                                         <div key={i} style={{
                                           display: "flex", alignItems: "flex-start", gap: 8,
-                                          padding: "6px 8px",
+                                          padding: "8px 10px",
                                           background: "var(--bg-surface)", borderRadius: 6,
                                           border: "1px solid var(--border-subtle)",
                                         }}>
@@ -1313,24 +1328,69 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                             {i + 1}
                                           </span>
                                           <div style={{ flex: 1, minWidth: 0 }}>
-                                            <div style={{ fontSize: 11.5, color: "var(--text-primary)", lineHeight: 1.5 }}>
+                                            <div style={{ fontSize: 11.5, color: "var(--text-primary)", lineHeight: 1.5, marginBottom: 6 }}>
                                               {row.scenario}
                                             </div>
-                                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3, flexWrap: "wrap" }}>
-                                              <span style={{
-                                                fontSize: 11, fontWeight: 700, color: "var(--accent)",
-                                                padding: "1px 8px", borderRadius: 8,
-                                                background: "var(--accent-subtle)",
-                                              }}>
-                                                {row.action}
-                                              </span>
-                                              <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-                                                · {row.reason}
-                                              </span>
+                                            {/* Percentage split — two chips with bars under each */}
+                                            <div style={{ display: "flex", gap: 8, alignItems: "stretch", marginBottom: 4 }}>
+                                              <div style={{ flex: pctA, minWidth: 0, opacity: leansB ? 0.55 : 1 }}>
+                                                <div style={{
+                                                  display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                                                  fontSize: 11, marginBottom: 2,
+                                                }}>
+                                                  <span style={{
+                                                    fontWeight: leansB ? 500 : 700,
+                                                    color: leansB ? "var(--text-secondary)" : "var(--text-primary)",
+                                                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                                  }}>{row.optionA}</span>
+                                                  <span style={{
+                                                    fontSize: 10, fontWeight: 700, marginLeft: 6,
+                                                    color: leansB ? "var(--text-tertiary)" : "var(--accent)",
+                                                  }}>{pctA}%</span>
+                                                </div>
+                                                <div style={{
+                                                  height: 4, borderRadius: 2, overflow: "hidden",
+                                                  background: "var(--bg-secondary)",
+                                                }}>
+                                                  <div style={{
+                                                    height: "100%", width: `${pctA}%`,
+                                                    background: leansB ? "var(--text-tertiary)" : "var(--accent)",
+                                                  }} />
+                                                </div>
+                                              </div>
+                                              <div style={{ flex: pctB, minWidth: 0, opacity: leansB ? 1 : 0.55 }}>
+                                                <div style={{
+                                                  display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                                                  fontSize: 11, marginBottom: 2,
+                                                }}>
+                                                  <span style={{
+                                                    fontWeight: leansB ? 700 : 500,
+                                                    color: leansB ? "var(--text-primary)" : "var(--text-secondary)",
+                                                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                                  }}>{row.optionB}</span>
+                                                  <span style={{
+                                                    fontSize: 10, fontWeight: 700, marginLeft: 6,
+                                                    color: leansB ? "var(--accent)" : "var(--text-tertiary)",
+                                                  }}>{pctB}%</span>
+                                                </div>
+                                                <div style={{
+                                                  height: 4, borderRadius: 2, overflow: "hidden",
+                                                  background: "var(--bg-secondary)",
+                                                }}>
+                                                  <div style={{
+                                                    height: "100%", width: `${pctB}%`,
+                                                    background: leansB ? "var(--accent)" : "var(--text-tertiary)",
+                                                  }} />
+                                                </div>
+                                              </div>
+                                            </div>
+                                            <div style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+                                              依据：{row.reason}
                                             </div>
                                           </div>
                                         </div>
-                                      ))}
+                                        );
+                                      })}
                                     </div>
                                   </div>
                                 )}
@@ -1349,39 +1409,23 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </div>
               </div>
 
-              {/* ═══ AFFINITY / PRIORITY RANKINGS (latest values) ═══ */}
-              {(latestRankings.affinity.length > 0 || latestRankings.priority.length > 0) && (
+              {/* ═══ AFFINITY RANKINGS (latest values) ═══ */}
+              {latestRankings.affinity.length > 0 && (
                 <div className="card mb-20">
-                  <div className="card-header"><h3>好感度 & 优先级排序</h3><span className="text-xs text-muted">最新快照值</span></div>
+                  <div className="card-header"><h3>好感度排序</h3><span className="text-xs text-muted">最新快照值</span></div>
                   <div className="card-body">
-                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-                      <div style={{ flex: 1, minWidth: 140 }}>
-                        <div className="text-xs text-muted mb-4">好感度排序（高→低）</div>
-                        {latestRankings.affinity.map(r => (
-                          <div key={r.name} style={{ fontSize: 11, display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
-                            <span style={{ color: "var(--text-secondary)" }}>{r.name}</span>
-                            <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                              <span style={{ color: r.value > 0 ? "var(--jade)" : r.value < 0 ? "var(--error)" : "var(--text-disabled)", fontFamily: "var(--font-mono)", fontSize: 10 }}>
-                                {r.value > 0 ? "+" : ""}{r.value}
-                              </span>
-                              {r.chapter && <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>@{r.chapter}</span>}
-                            </span>
-                          </div>
-                        ))}
+                    <div className="text-xs text-muted mb-4">高 → 低</div>
+                    {latestRankings.affinity.map(r => (
+                      <div key={r.name} style={{ fontSize: 11, display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+                        <span style={{ color: "var(--text-secondary)" }}>{r.name}</span>
+                        <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <span style={{ color: r.value > 0 ? "var(--jade)" : r.value < 0 ? "var(--error)" : "var(--text-disabled)", fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                            {r.value > 0 ? "+" : ""}{r.value}
+                          </span>
+                          {r.chapter && <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>@{r.chapter}</span>}
+                        </span>
                       </div>
-                      <div style={{ flex: 1, minWidth: 140 }}>
-                        <div className="text-xs text-muted mb-4">优先级排序（高→低）</div>
-                        {latestRankings.priority.map(r => (
-                          <div key={r.name} style={{ fontSize: 11, display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
-                            <span style={{ color: "var(--text-secondary)" }}>{r.name}</span>
-                            <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-tertiary)" }}>#{r.value}</span>
-                              {r.chapter && <span style={{ fontSize: 9, color: "var(--text-disabled)" }}>@{r.chapter}</span>}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                    ))}
                   </div>
                 </div>
               )}
@@ -1471,6 +1515,100 @@ function SnapSection({ title, count, headerAction, children }: {
   );
 }
 
+/* ── CharNamesMultiSelect ──
+ * Chip-style multi-select bound to a list of character options. Replaces
+ * the legacy 「已知真相」 free-text input so the user picks from existing
+ * 角色卡 names instead of typing (and risking typos that break the
+ * cross-reference). Allows clicking a chip's × to remove. */
+function CharNamesMultiSelect({
+  value, options, onChange, placeholder,
+}: {
+  value: string[];
+  options: Character[];
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const wrapRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const toggle = (name: string) => {
+    const next = value.includes(name)
+      ? value.filter(v => v !== name)
+      : [...value, name];
+    onChange(next);
+  };
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: "flex", flexWrap: "wrap", gap: 4,
+          minHeight: 32, padding: "4px 8px",
+          background: "var(--bg-surface)",
+          border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+          cursor: "pointer",
+        }}>
+        {value.length === 0 ? (
+          <span className="text-xs text-muted" style={{ lineHeight: "22px" }}>
+            {placeholder || "点击选择角色…"}
+          </span>
+        ) : value.map(name => (
+          <span key={name} className="tag" style={{
+            fontSize: 10, padding: "1px 8px",
+            background: "var(--gold-subtle)", color: "var(--gold)",
+            border: "1px solid transparent",
+          }}>
+            {name}
+            <span onClick={(e) => { e.stopPropagation(); toggle(name); }}
+              style={{ marginLeft: 4, cursor: "pointer", color: "var(--gold)" }}>×</span>
+          </span>
+        ))}
+      </div>
+      {open && (
+        <div style={{
+          position: "absolute", zIndex: 50, left: 0, right: 0, top: "100%",
+          marginTop: 4, background: "var(--bg-surface)",
+          border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+          maxHeight: 240, overflowY: "auto",
+        }}>
+          {options.length === 0 ? (
+            <div className="text-xs text-muted" style={{ padding: 10 }}>
+              当前没有其它角色可供选择。
+            </div>
+          ) : (
+            options.map(opt => {
+              const on = value.includes(opt.name);
+              return (
+                <div key={opt.id}
+                  onClick={() => toggle(opt.name)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "5px 10px", cursor: "pointer",
+                    background: on ? "var(--gold-subtle)" : undefined,
+                  }}>
+                  <input type="checkbox" checked={on} readOnly />
+                  <span style={{ fontSize: 12, fontWeight: 500 }}>{opt.name}</span>
+                  {opt.role && <span className="text-xs text-muted">· {opt.role}</span>}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── RowIconButton ──
  * Compact icon button used inside relationship / hidden-identity rows
  * for per-row edit (✎) and delete (×) actions. */
@@ -1540,12 +1678,6 @@ function RelationshipRowView({ rel }: { rel: CharacterRelationship }) {
         }}>
           好感 {aff > 0 ? "+" : ""}{aff}
         </span>
-        <span style={{
-          fontSize: 10, padding: "2px 8px", borderRadius: 10,
-          background: "var(--bg-secondary)", color: "var(--text-tertiary)", fontWeight: 600,
-        }}>
-          优先级 #{rel.priority ?? "-"}
-        </span>
       </div>
       {/* Affinity bar — centered at 0, extends left for negative, right for positive */}
       <div style={{
@@ -1613,98 +1745,89 @@ function HiddenIdentityRowView({ hidden }: {
   );
 }
 
-/* ── 决策参数 random sample preview ──
- * For each of 10 scenarios, the character picks A or B with a probability
- * derived from Layer B params. The resulting list lets the user see what
- * "this character given these params" actually does without having to
- * reason about loss aversion / risk aversion / impulse intuitively.
+/* ── 决策参数 预览 ──
+ * For each of 10 scenarios we compute the probability that the character
+ * picks option B over option A, given Layer B params. The UI then shows
+ * 「{option}: {%}」 (as a percentage split, not a random sample) so it's
+ * deterministic given the params and easier to read.
  *
  * NOTE: `risk_aversion` here uses the (renamed) `risk_aversion_gain` field
  * — we dropped the separate loss variant from the UI. */
-function simulateDecisionActions(layerB: CharacterLayerB): Array<{ scenario: string; action: string; reason: string }> {
+function simulateDecisionActions(layerB: CharacterLayerB): Array<{
+  scenario: string; optionA: string; optionB: string; pB: number; reason: string;
+}> {
   const lossA = layerB.loss_aversion ?? 2.5;
   const riskA = layerB.risk_aversion_gain ?? 0.5;
   const impulse = layerB.impulse_probability ?? 0.3;
   const social = layerB.social_frequency ?? 5;
   const clamp = (x: number) => Math.max(0.02, Math.min(0.98, x));
-  const flip = (pB: number, optA: string, optB: string) =>
-    Math.random() < pB ? optB : optA;
 
   const scenarios: Array<{ txt: string; pB: number; a: string; b: string; reason: string }> = [
     {
       txt: "陌生人在街上邀约喝一杯",
       pB: 0.25 + (social / 10) * 0.6 + impulse * 0.1,
-      a: "婉拒离去",
-      b: "欣然前往",
+      a: "婉拒离去", b: "欣然前往",
       reason: "社交频率主导",
     },
     {
       txt: "捡到一笔无主散落现金，无人在场",
       pB: 0.15 + impulse * 0.5 + (1 - riskA) * 0.2,
-      a: "原地等失主 / 上交",
-      b: "悄悄收下",
+      a: "原地等失主 / 上交", b: "悄悄收下",
       reason: "冲动 vs 风险厌恶",
     },
     {
       txt: "一个高收益但高风险的投资机会",
       pB: (1 - riskA) * 0.85 + impulse * 0.1,
-      a: "保守观望",
-      b: "全力下注",
+      a: "保守观望", b: "全力下注",
       reason: "风险厌恶决定",
     },
     {
       txt: "失去一件珍贵物品，找回需付出代价",
       pB: (lossA / 5) * 0.85,
-      a: "接受失去",
-      b: "竭力找回",
+      a: "接受失去", b: "竭力找回",
       reason: "损失厌恶主导",
     },
     {
       txt: "目睹街头突发争执",
       pB: 0.2 + impulse * 0.4 + (social / 10) * 0.3,
-      a: "默默走开",
-      b: "上前介入",
+      a: "默默走开", b: "上前介入",
       reason: "冲动 + 社交频率",
     },
     {
       txt: "长期目标 vs 当下享乐二选一",
       pB: 0.4 + impulse * 0.3 - (lossA / 5) * 0.15,
-      a: "坚守长期目标",
-      b: "选择当下享乐",
+      a: "坚守长期目标", b: "选择当下享乐",
       reason: "冲动 vs 损失厌恶",
     },
     {
       txt: "一场地下赌局开局，赔率丰厚",
       pB: impulse * 0.5 + (1 - riskA) * 0.4,
-      a: "起身离场",
-      b: "押上筹码",
+      a: "起身离场", b: "押上筹码",
       reason: "风险厌恶 + 冲动",
     },
     {
       txt: "需要在公开场合发言或表态",
       pB: 0.2 + (social / 10) * 0.7,
-      a: "保持沉默",
-      b: "主动发言",
+      a: "保持沉默", b: "主动发言",
       reason: "社交频率",
     },
     {
       txt: "朋友请求一项需要时间的帮助",
       pB: 0.3 + (social / 10) * 0.5 - (lossA / 5) * 0.1,
-      a: "婉言推辞",
-      b: "全力相助",
+      a: "婉言推辞", b: "全力相助",
       reason: "社交频率 vs 时间成本",
     },
     {
       txt: "一项可能危及性命的任务",
       pB: (1 - riskA) * 0.7 + impulse * 0.25,
-      a: "推让他人",
-      b: "接下任务",
+      a: "推让他人", b: "接下任务",
       reason: "风险厌恶 + 冲动",
     },
   ];
   return scenarios.map(s => ({
     scenario: s.txt,
-    action: flip(clamp(s.pB), s.a, s.b),
+    optionA: s.a, optionB: s.b,
+    pB: clamp(s.pB),
     reason: s.reason,
   }));
 }
@@ -1760,17 +1883,14 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
   const chapterMax = Math.max(derivedMax, editorChapterCount || 0, 1);
   const hasTimeline = chapterMax > chapterMin;
 
-  // Independent state so a user dragging the handles doesn't churn the
-  // entire characters useMemo above.
-  const [tlFrom, setTlFrom] = React.useState<number | null>(null);
-  const [tlTo, setTlTo] = React.useState<number | null>(null);
-  // Re-anchor when the data range changes (new chapter added).
+  // Single-handle chapter focus — drag to show relationship state AT a
+  // specific chapter, not a window. Initial value sits at the latest
+  // tracked chapter so the user lands on "current" state.
+  const [tlChapter, setTlChapter] = React.useState<number | null>(null);
   React.useEffect(() => {
-    setTlFrom(chapterMin);
-    setTlTo(chapterMax);
+    setTlChapter(chapterMax);
   }, [chapterMin, chapterMax]);
-  const effFrom = tlFrom ?? chapterMin;
-  const effTo = tlTo ?? chapterMax;
+  const effChapter = tlChapter ?? chapterMax;
 
   React.useEffect(() => {
     if (!fullHeight || !containerRef.current) return;
@@ -1821,20 +1941,20 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
     };
   });
 
-  // Honour the timeline window when collecting edges. A relationship with
-  // no chapter marker is treated as "always visible" so the graph is still
-  // useful before the user starts tagging chapters. Snapshot relationships
-  // contribute the latest snapshot up to `effTo` (so dragging the window
-  // forward reveals later relationship states).
-  const inWindow = (chapter?: string | null) => {
+  // Show relationships AS OF `effChapter`. A relationship with no
+  // chapter marker is treated as "always visible". A relationship tagged
+  // with chapter N is shown only if N ≤ effChapter (it's already
+  // happened by then). Snapshot relationships contribute the latest
+  // snapshot ≤ effChapter.
+  const upTo = (chapter?: string | null) => {
     const n2 = parseChapterMarker(chapter);
     if (n2 === null) return true;
-    return n2 >= effFrom && n2 <= effTo;
+    return n2 <= effChapter;
   };
   const allEdges: { fromId: string; toId: string; affinity: number; priority: number; notes?: string; chapter?: string; label?: string; source: "top" | "snapshot" }[] = [];
   characters.forEach(c => {
-    // Pick the latest snapshot whose chapter ≤ effTo. If none, fall back
-    // to the top-level relationships.
+    // Pick the latest snapshot whose chapter ≤ effChapter. If none, fall
+    // back to the top-level relationships.
     const snaps = (c.dynamic_snapshots || []).slice().sort((a, b) => {
       const an = parseChapterMarker(a.chapter) ?? -Infinity;
       const bn = parseChapterMarker(b.chapter) ?? -Infinity;
@@ -1842,14 +1962,14 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
     });
     const activeSnap = snaps.filter(s => {
       const sn = parseChapterMarker(s.chapter);
-      return sn !== null && sn <= effTo;
+      return sn !== null && sn <= effChapter;
     }).pop();
     const relsForGraph = activeSnap?.relationships?.length
       ? activeSnap.relationships
       : (c.relationships || []);
     relsForGraph.forEach(rel => {
       if (!positions[rel.target_id]) return;
-      if (!inWindow(rel.chapter)) return;
+      if (!upTo(rel.chapter)) return;
       allEdges.push({
         fromId: c.id, toId: rel.target_id,
         affinity: rel.affinity ?? 0, priority: rel.priority ?? 10,
@@ -1887,10 +2007,16 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
           {hasTimeline ? (
             <div style={{ flex: 1, minWidth: 0 }}>
               <ChapterTimeline
+                mode="single"
                 min={chapterMin} max={chapterMax}
-                from={effFrom} to={effTo}
+                from={effChapter} to={effChapter}
                 marks={allChapterNums}
-                onChange={(f, t) => { setTlFrom(f); setTlTo(t); }}
+                onChange={(f) => { setTlChapter(f); }}
+                label={
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                    第 <b style={{ color: "var(--accent)" }}>{effChapter}</b> 章
+                  </span>
+                }
               />
             </div>
           ) : (
@@ -1958,12 +2084,27 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
             const my = (y1 + y2) / 2 + perpY * 0.5;
 
             const labelText = edge.label || edge.notes?.slice(0, 6) || "";
+            const affLabel = `${edge.affinity > 0 ? "+" : ""}${edge.affinity}`;
 
             return (
               <g key={`${edge.fromId}-${edge.toId}-${idx}`}>
                 <line x1={x1} y1={y1} x2={x2} y2={y2}
                   stroke={color} strokeWidth={strokeW} opacity={0.7}
                   markerEnd={`url(#${markerId})`} />
+                {/* Affinity number badge — always shown so the graph carries
+                    quantitative info, not just a hue. */}
+                <g>
+                  <rect
+                    x={mx - 16} y={labelText ? my + 1 : my - 7}
+                    width={32} height={14} rx={7}
+                    fill="var(--bg-surface)" stroke={color} strokeWidth={0.8}
+                    opacity={0.92}
+                  />
+                  <text x={mx} y={labelText ? my + 11 : my + 3} textAnchor="middle"
+                    fontSize={9.5} fill={color} fontWeight={700}>
+                    {affLabel}
+                  </text>
+                </g>
                 {labelText && (
                   <text x={mx} y={my - 4} textAnchor="middle" fontSize={9}
                     fill={color} fontWeight={500} opacity={0.9}>
@@ -1996,7 +2137,7 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
           <span><span style={{ color: "var(--gold)" }}>&#9632;</span> 好感 -50~0</span>
           <span><span style={{ color: "var(--error)" }}>&#9632;</span> 好感 &lt;-50</span>
           <span style={{ marginLeft: 16, color: "var(--text-disabled)" }}>
-            点击角色节点跳转到详情{hasTimeline ? " · 顶部拖动时间轴查看不同章节" : ""}
+            点击角色节点跳转到详情{hasTimeline ? " · 顶部拖动时间轴定位到某一章查看好感快照" : ""}
           </span>
         </div>
       </div>
