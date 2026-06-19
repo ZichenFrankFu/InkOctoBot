@@ -82,13 +82,32 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   // Dynamic properties flashcard state
   const [flashcardIndex, setFlashcardIndex] = useState(0);
 
-  // Per-snapshot edit toggles for 关系 / 隐藏身份 sections. Default to
-  // read-only so opening a snapshot doesn't drop straight into a wall of
-  // input boxes. Reset whenever the user switches snapshots so editing
+  // Per-row edit toggles inside 关系 / 隐藏身份 sections — each row has
+  // its own ✎/× icons, so the section header just hosts a 「+ 添加」 button.
+  // Reset whenever the user switches snapshots or characters so editing
   // state can't bleed across cards.
-  const [editingRels, setEditingRels] = useState(false);
-  const [editingHidden, setEditingHidden] = useState(false);
-  useEffect(() => { setEditingRels(false); setEditingHidden(false); }, [flashcardIndex, editing?.id]);
+  const [editingRelRows, setEditingRelRows] = useState<Set<number>>(new Set());
+  const [editingHiddenRows, setEditingHiddenRows] = useState<Set<number>>(new Set());
+  const [showAddRelForm, setShowAddRelForm] = useState(false);
+  // 决策参数 random sample preview — 10 scenarios where the character
+  // picks A vs B based on a probability derived from Layer B params.
+  const [decisionPreview, setDecisionPreview] = useState<Array<{ scenario: string; action: string; reason: string }> | null>(null);
+  useEffect(() => {
+    setEditingRelRows(new Set());
+    setEditingHiddenRows(new Set());
+    setShowAddRelForm(false);
+    setDecisionPreview(null);
+  }, [flashcardIndex, editing?.id]);
+  const toggleRelEdit = (idx: number) => setEditingRelRows(prev => {
+    const next = new Set(prev);
+    if (next.has(idx)) next.delete(idx); else next.add(idx);
+    return next;
+  });
+  const toggleHiddenEdit = (idx: number) => setEditingHiddenRows(prev => {
+    const next = new Set(prev);
+    if (next.has(idx)) next.delete(idx); else next.add(idx);
+    return next;
+  });
 
   // Dynamic section sub-tab: snapshots, relationships, layerB
   const [dynTab, setDynTab] = useState<"snapshots">("snapshots");
@@ -1051,118 +1070,270 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                               <SnapSection
                                 title="关系"
                                 count={snapRels.length}
-                                edit={editingRels}
-                                onEditToggle={() => setEditingRels(v => !v)}
+                                headerAction={
+                                  others.length > 0 ? (
+                                    <button
+                                      className={showAddRelForm ? "btn-primary" : "btn"}
+                                      style={{ fontSize: 11, padding: "3px 12px" }}
+                                      onClick={() => setShowAddRelForm(v => !v)}
+                                    >
+                                      {showAddRelForm ? "取消" : "+ 添加"}
+                                    </button>
+                                  ) : null
+                                }
                               >
+                                {showAddRelForm && others.length > 0 && (
+                                  <div style={{
+                                    display: "flex", gap: 6, marginBottom: 10,
+                                    padding: 10, background: "var(--bg-surface-2)",
+                                    borderRadius: 8, border: "1px solid var(--border)",
+                                  }}>
+                                    <select className="select" style={{ flex: 1, fontSize: 11 }} value={relTarget} onChange={e => setRelTarget(e.target.value)}>
+                                      <option value="">选择关系对象...</option>
+                                      {others.map(o => (
+                                        <option key={o.id} value={o.id}>{o.name}</option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      className="btn-primary"
+                                      style={{ fontSize: 11, padding: "4px 12px" }}
+                                      disabled={!relTarget}
+                                      onClick={() => {
+                                        const newIdx = snapRels.length;
+                                        addSnapshotRel(flashcardIndex, relTarget);
+                                        setShowAddRelForm(false);
+                                        setRelTarget("");
+                                        // Open the new row in edit mode so the user can fill it in.
+                                        setEditingRelRows(prev => new Set(prev).add(newIdx));
+                                      }}
+                                    >
+                                      确认
+                                    </button>
+                                  </div>
+                                )}
                                 {snapRels.length === 0 ? (
                                   <div className="text-xs text-muted" style={{ padding: "8px 4px" }}>
-                                    {editingRels ? "添加角色关系以记录此阶段的人际网络。" : "暂无关系。点击右上角「编辑」添加。"}
-                                  </div>
-                                ) : !editingRels ? (
-                                  // ── Read-only view ──
-                                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                                    {snapRels.map((rel, relIdx) => (
-                                      <RelationshipRowView key={relIdx} rel={rel} />
-                                    ))}
+                                    暂无关系。点击右上角「+ 添加」记录角色关系。
                                   </div>
                                 ) : (
-                                  // ── Edit view ──
-                                  <>
-                                    <div style={{ padding: "6px 8px", marginBottom: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-                                      好感度：越高越喜欢（负=厌恶, 0=不熟, 正=好感）&nbsp;&nbsp;优先级：越低越优先（1=最重要）
-                                    </div>
-                                    {snapRels.map((rel, relIdx) => (
-                                      <div key={relIdx} style={{ padding: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 8, border: "1px solid var(--border)" }}>
-                                        <div className="flex items-center justify-between mb-6">
-                                          <span style={{ fontWeight: 600, fontSize: 12, color: "var(--text-primary)" }}>&rarr; {rel.target_name}</span>
-                                          <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => removeSnapshotRel(flashcardIndex, relIdx)}>移除</button>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                    {snapRels.map((rel, relIdx) => {
+                                      const isEditing = editingRelRows.has(relIdx);
+                                      return (
+                                        <div key={relIdx} style={{ position: "relative" }}>
+                                          {/* Per-row icon strip (top-right) */}
+                                          <div style={{
+                                            position: "absolute", top: 8, right: 8,
+                                            display: "flex", gap: 4, zIndex: 1,
+                                          }}>
+                                            <RowIconButton symbol={isEditing ? "✓" : "✎"}
+                                              title={isEditing ? "完成" : "编辑"}
+                                              onClick={() => toggleRelEdit(relIdx)} />
+                                            <RowIconButton symbol="×"
+                                              title="删除"
+                                              color="var(--error)"
+                                              onClick={() => {
+                                                removeSnapshotRel(flashcardIndex, relIdx);
+                                                setEditingRelRows(prev => {
+                                                  const next = new Set<number>();
+                                                  prev.forEach(i => { if (i < relIdx) next.add(i); else if (i > relIdx) next.add(i - 1); });
+                                                  return next;
+                                                });
+                                              }} />
+                                          </div>
+                                          {!isEditing ? (
+                                            <RelationshipRowView rel={rel} />
+                                          ) : (
+                                            <div style={{
+                                              padding: "12px 14px 12px 12px",
+                                              paddingTop: 36,
+                                              background: "var(--bg-surface-2)",
+                                              borderRadius: 8, border: "1px solid var(--accent)",
+                                            }}>
+                                              <div style={{ fontWeight: 700, fontSize: 12, color: "var(--text-primary)", marginBottom: 8 }}>
+                                                &rarr; {rel.target_name}
+                                              </div>
+                                              <div className="field mb-6">
+                                                <input className="input" value={rel.label || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "label", e.target.value)} placeholder="关系标签：师徒、情侣..." style={{ fontSize: 11 }} />
+                                              </div>
+                                              <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "affinity", v)} />
+                                              <ParamSlider name={`优先级 (#${rel.priority})`} value={rel.priority} min={1} max={20} step={1} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "priority", v)} />
+                                              <div className="field mt-6">
+                                                <input className="input" value={rel.notes || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "notes", e.target.value)} placeholder="关系备注..." style={{ fontSize: 11 }} />
+                                              </div>
+                                              <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 8, lineHeight: 1.5 }}>
+                                                好感度：越高越喜欢（负=厌恶, 0=不熟, 正=好感）&nbsp;&nbsp;优先级：越低越优先（1=最重要）
+                                              </div>
+                                            </div>
+                                          )}
                                         </div>
-                                        <div className="field mb-6">
-                                          <input className="input" value={rel.label || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "label", e.target.value)} placeholder="关系标签：师徒、情侣..." style={{ fontSize: 11 }} />
-                                        </div>
-                                        <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "affinity", v)} />
-                                        <ParamSlider name={`优先级 (#${rel.priority})`} value={rel.priority} min={1} max={20} step={1} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "priority", v)} />
-                                        <div className="field mt-6">
-                                          <input className="input" value={rel.notes || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "notes", e.target.value)} placeholder="关系备注..." style={{ fontSize: 11 }} />
-                                        </div>
-                                      </div>
-                                    ))}
-                                    {others.length > 0 && (
-                                      <div className="flex gap-6 mt-8">
-                                        <select className="select" style={{ flex: 1, fontSize: 11 }} value={relTarget} onChange={e => setRelTarget(e.target.value)}>
-                                          <option value="">添加角色关系...</option>
-                                          {others.map(o => (
-                                            <option key={o.id} value={o.id}>{o.name}</option>
-                                          ))}
-                                        </select>
-                                        <button className="btn-primary" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => addSnapshotRel(flashcardIndex, relTarget)} disabled={!relTarget}>+ 添加</button>
-                                      </div>
-                                    )}
-                                  </>
+                                      );
+                                    })}
+                                  </div>
                                 )}
                               </SnapSection>
 
                               {/* ── 隐藏身份 section ── */}
                               <SnapSection
-                                title="隐藏身份 / 化名"
+                                title="隐藏身份"
                                 count={(snap.hidden_identities || []).length}
-                                edit={editingHidden}
-                                onEditToggle={() => setEditingHidden(v => !v)}
+                                headerAction={
+                                  <button
+                                    className="btn"
+                                    style={{ fontSize: 11, padding: "3px 12px" }}
+                                    onClick={() => {
+                                      const newIdx = (snap.hidden_identities || []).length;
+                                      addSnapshotHidden(flashcardIndex);
+                                      // Open the new row in edit mode immediately.
+                                      setEditingHiddenRows(prev => new Set(prev).add(newIdx));
+                                    }}
+                                  >
+                                    + 添加
+                                  </button>
+                                }
                               >
                                 {(snap.hidden_identities || []).length === 0 ? (
                                   <div className="text-xs text-muted" style={{ padding: "8px 4px" }}>
-                                    {editingHidden ? "点击「+ 添加」记录化名 / 伪装身份。" : "暂无隐藏身份。点击右上角「编辑」添加。"}
-                                  </div>
-                                ) : !editingHidden ? (
-                                  // ── Read-only view ──
-                                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                                    {(snap.hidden_identities || []).map((h, hIdx) => (
-                                      <HiddenIdentityRowView key={hIdx} hidden={h} />
-                                    ))}
+                                    暂无隐藏身份。点击右上角「+ 添加」记录化名 / 伪装身份。
                                   </div>
                                 ) : (
-                                  // ── Edit view ──
-                                  <>
-                                    <div style={{ padding: "6px 8px", marginBottom: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-                                      化名/伪装身份在此阶段有效；&ldquo;已知真相&rdquo;中的角色看穿伪装，其他角色仍以化名认知。
-                                    </div>
-                                    {(snap.hidden_identities || []).map((h, hIdx) => (
-                                      <div key={hIdx} style={{ padding: 10, background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 8, border: "1px solid var(--border)" }}>
-                                        <div className="flex items-center justify-between mb-6">
-                                          <input className="input" value={h.name} onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "name", e.target.value)}
-                                                 placeholder="化名 / 伪装身份名" style={{ fontSize: 11, fontWeight: 600, flex: 1, marginRight: 6 }} />
-                                          <button className="btn-ghost" style={{ fontSize: 11, padding: "2px 6px" }}
-                                                  onClick={() => removeSnapshotHidden(flashcardIndex, hIdx)}>移除</button>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                    {(snap.hidden_identities || []).map((h, hIdx) => {
+                                      const isEditing = editingHiddenRows.has(hIdx);
+                                      return (
+                                        <div key={hIdx} style={{ position: "relative" }}>
+                                          <div style={{
+                                            position: "absolute", top: 8, right: 8,
+                                            display: "flex", gap: 4, zIndex: 1,
+                                          }}>
+                                            <RowIconButton symbol={isEditing ? "✓" : "✎"}
+                                              title={isEditing ? "完成" : "编辑"}
+                                              onClick={() => toggleHiddenEdit(hIdx)} />
+                                            <RowIconButton symbol="×"
+                                              title="删除"
+                                              color="var(--error)"
+                                              onClick={() => {
+                                                removeSnapshotHidden(flashcardIndex, hIdx);
+                                                setEditingHiddenRows(prev => {
+                                                  const next = new Set<number>();
+                                                  prev.forEach(i => { if (i < hIdx) next.add(i); else if (i > hIdx) next.add(i - 1); });
+                                                  return next;
+                                                });
+                                              }} />
+                                          </div>
+                                          {!isEditing ? (
+                                            <HiddenIdentityRowView hidden={h} />
+                                          ) : (
+                                            <div style={{
+                                              padding: "12px 14px 12px 12px",
+                                              paddingTop: 36,
+                                              background: "var(--bg-surface-2)",
+                                              borderRadius: 8, border: "1px solid var(--accent)",
+                                            }}>
+                                              <div className="field mb-6">
+                                                <input className="input" value={h.name} onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "name", e.target.value)}
+                                                       placeholder="化名 / 伪装身份名" style={{ fontSize: 12, fontWeight: 600 }} />
+                                              </div>
+                                              <div className="field mb-6">
+                                                <input className="input" value={(h.revealed_to || []).join("、")}
+                                                       onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "revealed_to",
+                                                           e.target.value.split(/[、,，\s]+/).map(s => s.trim()).filter(Boolean))}
+                                                       placeholder="已知真相的角色（用、或,分隔）" style={{ fontSize: 11 }} />
+                                              </div>
+                                              <input className="input" value={h.notes || ""}
+                                                     onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "notes", e.target.value)}
+                                                     placeholder="伪装动机 / 破绽 / 备注..." style={{ fontSize: 11 }} />
+                                              <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 8, lineHeight: 1.5 }}>
+                                                化名 / 伪装身份在此阶段有效；&ldquo;已知真相&rdquo;中的角色看穿伪装，其他角色仍以化名认知。
+                                              </div>
+                                            </div>
+                                          )}
                                         </div>
-                                        <div className="field mb-6">
-                                          <input className="input" value={(h.revealed_to || []).join("、")}
-                                                 onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "revealed_to",
-                                                     e.target.value.split(/[、,，\s]+/).map(s => s.trim()).filter(Boolean))}
-                                                 placeholder="已知真相的角色（用、或,分隔）" style={{ fontSize: 11 }} />
-                                        </div>
-                                        <input className="input" value={h.notes || ""}
-                                               onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "notes", e.target.value)}
-                                               placeholder="伪装动机 / 破绽 / 备注..." style={{ fontSize: 11 }} />
-                                      </div>
-                                    ))}
-                                    <button className="btn" style={{ fontSize: 11, padding: "4px 12px", marginTop: 4 }}
-                                            onClick={() => addSnapshotHidden(flashcardIndex)}>
-                                      + 添加隐藏身份
-                                    </button>
-                                  </>
+                                      );
+                                    })}
+                                  </div>
                                 )}
                               </SnapSection>
 
                               {/* ── 决策参数 section ── */}
-                              <SnapSection title="决策参数" count={5}>
+                              <SnapSection
+                                title="决策参数"
+                                headerAction={
+                                  <button
+                                    className="btn"
+                                    style={{ fontSize: 11, padding: "3px 12px" }}
+                                    onClick={() => setDecisionPreview(simulateDecisionActions(snapLayerB))}
+                                    title="基于当前参数随机抽 10 个情境，看看角色会怎么选"
+                                  >
+                                    {decisionPreview ? "重新抽样" : "随机生成预览"}
+                                  </button>
+                                }
+                              >
                                 <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 10, lineHeight: 1.5 }}>
                                   量化参数影响 AI 生成时角色在此阶段的行为倾向。
                                 </div>
                                 <ParamSlider name="损失厌恶" value={snapLayerB.loss_aversion ?? DEFAULT_LAYER_B.loss_aversion} min={0} max={5} step={0.1} onChange={v => updateSnapshotLayerB(flashcardIndex, "loss_aversion", v)} />
-                                <ParamSlider name="风险厌恶(收益)" value={snapLayerB.risk_aversion_gain ?? DEFAULT_LAYER_B.risk_aversion_gain} min={0} max={1} step={0.05} onChange={v => updateSnapshotLayerB(flashcardIndex, "risk_aversion_gain", v)} />
-                                <ParamSlider name="风险厌恶(损失)" value={snapLayerB.risk_aversion_loss ?? DEFAULT_LAYER_B.risk_aversion_loss} min={0} max={1} step={0.05} onChange={v => updateSnapshotLayerB(flashcardIndex, "risk_aversion_loss", v)} />
+                                <ParamSlider name="风险厌恶" value={snapLayerB.risk_aversion_gain ?? DEFAULT_LAYER_B.risk_aversion_gain} min={0} max={1} step={0.05} onChange={v => updateSnapshotLayerB(flashcardIndex, "risk_aversion_gain", v)} />
                                 <ParamSlider name="冲动概率" value={snapLayerB.impulse_probability ?? DEFAULT_LAYER_B.impulse_probability} min={0} max={1} step={0.05} onChange={v => updateSnapshotLayerB(flashcardIndex, "impulse_probability", v)} />
                                 <ParamSlider name="社交频率" value={snapLayerB.social_frequency ?? DEFAULT_LAYER_B.social_frequency} min={0} max={10} step={0.5} onChange={v => updateSnapshotLayerB(flashcardIndex, "social_frequency", v)} />
+
+                                {decisionPreview && (
+                                  <div style={{
+                                    marginTop: 14, padding: "12px 14px",
+                                    background: "var(--bg-surface-2)", borderRadius: 8,
+                                    border: "1px solid var(--border-subtle)",
+                                  }}>
+                                    <div style={{
+                                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                                      marginBottom: 8,
+                                    }}>
+                                      <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)" }}>
+                                        10 次取样 · 该角色会怎么选
+                                      </span>
+                                      <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px" }}
+                                        onClick={() => setDecisionPreview(null)}>
+                                        收起
+                                      </button>
+                                    </div>
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                      {decisionPreview.map((row, i) => (
+                                        <div key={i} style={{
+                                          display: "flex", alignItems: "flex-start", gap: 8,
+                                          padding: "6px 8px",
+                                          background: "var(--bg-surface)", borderRadius: 6,
+                                          border: "1px solid var(--border-subtle)",
+                                        }}>
+                                          <span style={{
+                                            minWidth: 18, height: 18, borderRadius: "50%",
+                                            background: "var(--bg-secondary)", color: "var(--text-tertiary)",
+                                            fontSize: 10, fontWeight: 700,
+                                            display: "inline-flex", alignItems: "center", justifyContent: "center",
+                                            flexShrink: 0, marginTop: 1,
+                                          }}>
+                                            {i + 1}
+                                          </span>
+                                          <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{ fontSize: 11.5, color: "var(--text-primary)", lineHeight: 1.5 }}>
+                                              {row.scenario}
+                                            </div>
+                                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3, flexWrap: "wrap" }}>
+                                              <span style={{
+                                                fontSize: 11, fontWeight: 700, color: "var(--accent)",
+                                                padding: "1px 8px", borderRadius: 8,
+                                                background: "var(--accent-subtle)",
+                                              }}>
+                                                {row.action}
+                                              </span>
+                                              <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+                                                · {row.reason}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
                               </SnapSection>
                             </div>
                           );
@@ -1253,14 +1424,13 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
 
 /* ── SnapSection ──
  * Visually grouped section inside the snapshot card. Each section gets
- * a clear header (title + count badge + optional edit toggle) and a
- * subtly bordered body so 关系 / 隐藏身份 / 决策参数 don't bleed
+ * a clear header (title + count badge + optional right-side action) and
+ * a subtly bordered body so 关系 / 隐藏身份 / 决策参数 don't bleed
  * into each other the way a thin borderTop divider used to make them. */
-function SnapSection({ title, count, edit, onEditToggle, children }: {
+function SnapSection({ title, count, headerAction, children }: {
   title: string;
-  count: number;
-  edit?: boolean;
-  onEditToggle?: () => void;
+  count?: number;
+  headerAction?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -1284,26 +1454,55 @@ function SnapSection({ title, count, edit, onEditToggle, children }: {
           <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>
             {title}
           </span>
-          <span style={{
-            fontSize: 10, padding: "1px 7px", borderRadius: 8,
-            background: "var(--bg-secondary)", color: "var(--text-tertiary)",
-            fontWeight: 600,
-          }}>
-            {count}
-          </span>
+          {typeof count === "number" && (
+            <span style={{
+              fontSize: 10, padding: "1px 7px", borderRadius: 8,
+              background: "var(--bg-secondary)", color: "var(--text-tertiary)",
+              fontWeight: 600,
+            }}>
+              {count}
+            </span>
+          )}
         </div>
-        {onEditToggle && (
-          <button
-            className={edit ? "btn-primary" : "btn"}
-            style={{ fontSize: 11, padding: "3px 12px" }}
-            onClick={onEditToggle}
-          >
-            {edit ? "完成" : "编辑"}
-          </button>
-        )}
+        {headerAction}
       </div>
       {children}
     </div>
+  );
+}
+
+/* ── RowIconButton ──
+ * Compact icon button used inside relationship / hidden-identity rows
+ * for per-row edit (✎) and delete (×) actions. */
+function RowIconButton({ symbol, onClick, title, color }: {
+  symbol: string; onClick: () => void; title: string; color?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        width: 22, height: 22, padding: 0,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        background: "transparent", border: "1px solid var(--border-subtle)",
+        borderRadius: 6, cursor: "pointer",
+        color: color || "var(--text-tertiary)",
+        fontSize: 12, lineHeight: 1,
+        transition: "background 0.15s, border-color 0.15s, color 0.15s",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = color
+          ? "rgba(220,53,69,0.08)"
+          : "var(--bg-secondary)";
+        e.currentTarget.style.borderColor = color || "var(--border)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
+        e.currentTarget.style.borderColor = "var(--border-subtle)";
+      }}
+    >
+      {symbol}
+    </button>
   );
 }
 
@@ -1414,6 +1613,102 @@ function HiddenIdentityRowView({ hidden }: {
   );
 }
 
+/* ── 决策参数 random sample preview ──
+ * For each of 10 scenarios, the character picks A or B with a probability
+ * derived from Layer B params. The resulting list lets the user see what
+ * "this character given these params" actually does without having to
+ * reason about loss aversion / risk aversion / impulse intuitively.
+ *
+ * NOTE: `risk_aversion` here uses the (renamed) `risk_aversion_gain` field
+ * — we dropped the separate loss variant from the UI. */
+function simulateDecisionActions(layerB: CharacterLayerB): Array<{ scenario: string; action: string; reason: string }> {
+  const lossA = layerB.loss_aversion ?? 2.5;
+  const riskA = layerB.risk_aversion_gain ?? 0.5;
+  const impulse = layerB.impulse_probability ?? 0.3;
+  const social = layerB.social_frequency ?? 5;
+  const clamp = (x: number) => Math.max(0.02, Math.min(0.98, x));
+  const flip = (pB: number, optA: string, optB: string) =>
+    Math.random() < pB ? optB : optA;
+
+  const scenarios: Array<{ txt: string; pB: number; a: string; b: string; reason: string }> = [
+    {
+      txt: "陌生人在街上邀约喝一杯",
+      pB: 0.25 + (social / 10) * 0.6 + impulse * 0.1,
+      a: "婉拒离去",
+      b: "欣然前往",
+      reason: "社交频率主导",
+    },
+    {
+      txt: "捡到一笔无主散落现金，无人在场",
+      pB: 0.15 + impulse * 0.5 + (1 - riskA) * 0.2,
+      a: "原地等失主 / 上交",
+      b: "悄悄收下",
+      reason: "冲动 vs 风险厌恶",
+    },
+    {
+      txt: "一个高收益但高风险的投资机会",
+      pB: (1 - riskA) * 0.85 + impulse * 0.1,
+      a: "保守观望",
+      b: "全力下注",
+      reason: "风险厌恶决定",
+    },
+    {
+      txt: "失去一件珍贵物品，找回需付出代价",
+      pB: (lossA / 5) * 0.85,
+      a: "接受失去",
+      b: "竭力找回",
+      reason: "损失厌恶主导",
+    },
+    {
+      txt: "目睹街头突发争执",
+      pB: 0.2 + impulse * 0.4 + (social / 10) * 0.3,
+      a: "默默走开",
+      b: "上前介入",
+      reason: "冲动 + 社交频率",
+    },
+    {
+      txt: "长期目标 vs 当下享乐二选一",
+      pB: 0.4 + impulse * 0.3 - (lossA / 5) * 0.15,
+      a: "坚守长期目标",
+      b: "选择当下享乐",
+      reason: "冲动 vs 损失厌恶",
+    },
+    {
+      txt: "一场地下赌局开局，赔率丰厚",
+      pB: impulse * 0.5 + (1 - riskA) * 0.4,
+      a: "起身离场",
+      b: "押上筹码",
+      reason: "风险厌恶 + 冲动",
+    },
+    {
+      txt: "需要在公开场合发言或表态",
+      pB: 0.2 + (social / 10) * 0.7,
+      a: "保持沉默",
+      b: "主动发言",
+      reason: "社交频率",
+    },
+    {
+      txt: "朋友请求一项需要时间的帮助",
+      pB: 0.3 + (social / 10) * 0.5 - (lossA / 5) * 0.1,
+      a: "婉言推辞",
+      b: "全力相助",
+      reason: "社交频率 vs 时间成本",
+    },
+    {
+      txt: "一项可能危及性命的任务",
+      pB: (1 - riskA) * 0.7 + impulse * 0.25,
+      a: "推让他人",
+      b: "接下任务",
+      reason: "风险厌恶 + 冲动",
+    },
+  ];
+  return scenarios.map(s => ({
+    scenario: s.txt,
+    action: flip(clamp(s.pB), s.a, s.b),
+    reason: s.reason,
+  }));
+}
+
 /** Parse a chapter marker ("第3章" / "3" / "Ch.4" / "" ) into a chapter
  *  number. Returns null for unparseable values so the timeline can decide
  *  whether to include them in 「全部」or under 「未标注」. */
@@ -1482,8 +1777,9 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
     const measure = () => {
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
-        // Reserve a bit more vertical space for the timeline bar.
-        const reserved = hasTimeline ? 110 : 60;
+        // Top control bar (~ 60px) + bottom legend strip (~ 30px) need
+        // to be reserved; the SVG fills the remaining flex space.
+        const reserved = hasTimeline ? 100 : 50;
         setContainerSize({
           w: Math.max(400, rect.width - 16),
           h: Math.max(300, rect.height - reserved),
@@ -1577,12 +1873,37 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
 
   return (
     <div ref={containerRef} className={fullHeight ? "" : "card"} style={fullHeight ? { height: "100%", display: "flex", flexDirection: "column" } : {}}>
-      <div className={fullHeight ? "" : "card-body"} style={fullHeight ? { flex: 1, display: "flex", flexDirection: "column", padding: "0 8px" } : { padding: 8 }}>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginBottom: 4, flexShrink: 0 }}>
-          <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(prev => Math.min(3, prev + 0.2))}>+</button>
-          <span style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: "22px" }}>{Math.round(zoom * 100)}%</span>
-          <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(prev => Math.max(0.5, prev - 0.2))}>-</button>
-          <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(1)}>重置</button>
+      <div className={fullHeight ? "" : "card-body"} style={fullHeight ? { flex: 1, display: "flex", flexDirection: "column", padding: "0 8px 8px", gap: 6 } : { padding: 8 }}>
+        {/* Control bar — zoom + chapter timeline live together at the top
+            so the timeline doesn't get crushed against the bottom edge. */}
+        <div style={{
+          display: "flex", gap: 12, alignItems: "center",
+          padding: "8px 12px",
+          background: "var(--bg-surface)",
+          border: "1px solid var(--border-subtle)",
+          borderRadius: 8,
+          flexShrink: 0,
+        }}>
+          {hasTimeline ? (
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <ChapterTimeline
+                min={chapterMin} max={chapterMax}
+                from={effFrom} to={effTo}
+                marks={allChapterNums}
+                onChange={(f, t) => { setTlFrom(f); setTlTo(t); }}
+              />
+            </div>
+          ) : (
+            <span className="text-xs text-muted" style={{ flex: 1 }}>
+              编辑器还没有章节，时间轴暂不可用
+            </span>
+          )}
+          <div style={{ display: "flex", gap: 4, flexShrink: 0, alignItems: "center" }}>
+            <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(prev => Math.max(0.5, prev - 0.2))}>−</button>
+            <span style={{ fontSize: 10, color: "var(--text-secondary)", minWidth: 32, textAlign: "center" }}>{Math.round(zoom * 100)}%</span>
+            <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(prev => Math.min(3, prev + 0.2))}>+</button>
+            <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => setZoom(1)}>重置</button>
+          </div>
         </div>
         <svg width="100%" height={fullHeight ? "100%" : undefined} viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`} style={fullHeight ? { display: "block", flex: 1, minHeight: 0 } : { display: "block" }} onWheel={handleWheel}>
           <defs>
@@ -1669,22 +1990,14 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
             );
           })}
         </svg>
-        <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 8, fontSize: 10, color: "var(--text-tertiary)" }}>
+        <div style={{ display: "flex", gap: 16, justifyContent: "center", alignItems: "center", flexWrap: "wrap", flexShrink: 0, fontSize: 10, color: "var(--text-tertiary)" }}>
           <span><span style={{ color: "var(--jade)" }}>&#9632;</span> 好感 &gt;50</span>
           <span><span style={{ color: "var(--accent)" }}>&#9632;</span> 好感 0~50</span>
           <span><span style={{ color: "var(--gold)" }}>&#9632;</span> 好感 -50~0</span>
           <span><span style={{ color: "var(--error)" }}>&#9632;</span> 好感 &lt;-50</span>
-        </div>
-        {hasTimeline && (
-          <ChapterTimeline
-            min={chapterMin} max={chapterMax}
-            from={effFrom} to={effTo}
-            marks={allChapterNums}
-            onChange={(f, t) => { setTlFrom(f); setTlTo(t); }}
-          />
-        )}
-        <div className="text-xs text-muted" style={{ textAlign: "center", marginTop: 4 }}>
-          点击角色节点跳转到详情{hasTimeline ? "；拖动时间轴查看不同章节的关系状态" : ""}
+          <span style={{ marginLeft: 16, color: "var(--text-disabled)" }}>
+            点击角色节点跳转到详情{hasTimeline ? " · 顶部拖动时间轴查看不同章节" : ""}
+          </span>
         </div>
       </div>
     </div>
