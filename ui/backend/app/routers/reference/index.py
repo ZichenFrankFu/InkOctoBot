@@ -89,6 +89,18 @@ async def run_work_index(ref_id: str, body: IndexRunRequest):
             result = await indexer.index_all(ref_id, include_l3=body.include_l3)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except ImportError as e:
+        # Typical: sentence-transformers ↔ transformers version mismatch
+        # (the "cannot import EncoderDecoderCache" path). The embedding
+        # factory auto-falls-back to TF-IDF in this case, so reaching here
+        # means the user picked `local_strict` or even TF-IDF deps are
+        # missing — surface an actionable message instead of a raw 500.
+        raise HTTPException(503,
+            f"embedding 后端不可用：{e}\n"
+            "可在 Settings → 模型设置 切换到 OpenAI / TF-IDF 后端，"
+            "或运行 pip install -U 'transformers>=4.41' 'sentence-transformers>=2.7' "
+            "修复本地环境。",
+        )
     except Exception as e:
         raise HTTPException(500, f"索引失败：{e}")
     try:
