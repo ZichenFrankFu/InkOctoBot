@@ -516,75 +516,91 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   };
 
   const updateSnapshotRel = (snapIdx: number, relIdx: number, key: string, val: any) => {
-    if (!editing) return;
-    const snaps = [...(editing.dynamic_snapshots || [])];
-    const snap = snaps[snapIdx];
-    if (!snap) return;
-    const rels = [...(snap.relationships || [])];
-    rels[relIdx] = { ...rels[relIdx], [key]: val };
-    snaps[snapIdx] = { ...snap, relationships: rels };
-    setEditing({ ...editing, dynamic_snapshots: snaps });
+    // Functional setEditing so two onChange calls in the same tick
+    // (e.g. picking a target writes both target_id and target_name)
+    // compose against the latest queued state instead of stomping each
+    // other from a stale closure.
+    setEditing(prev => {
+      if (!prev) return prev;
+      const snaps = [...(prev.dynamic_snapshots || [])];
+      const snap = snaps[snapIdx];
+      if (!snap) return prev;
+      const rels = [...(snap.relationships || [])];
+      rels[relIdx] = { ...rels[relIdx], [key]: val };
+      snaps[snapIdx] = { ...snap, relationships: rels };
+      return { ...prev, dynamic_snapshots: snaps };
+    });
     setDirty(true);
   };
 
   const removeSnapshotRel = (snapIdx: number, relIdx: number) => {
-    if (!editing) return;
-    const snaps = [...(editing.dynamic_snapshots || [])];
-    const snap = snaps[snapIdx];
-    if (!snap) return;
-    const rels = [...(snap.relationships || [])];
-    rels.splice(relIdx, 1);
-    snaps[snapIdx] = { ...snap, relationships: rels };
-    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setEditing(prev => {
+      if (!prev) return prev;
+      const snaps = [...(prev.dynamic_snapshots || [])];
+      const snap = snaps[snapIdx];
+      if (!snap) return prev;
+      const rels = [...(snap.relationships || [])];
+      rels.splice(relIdx, 1);
+      snaps[snapIdx] = { ...snap, relationships: rels };
+      return { ...prev, dynamic_snapshots: snaps };
+    });
     setDirty(true);
   };
 
   // Snapshot-level hidden identities helpers
   const addSnapshotHidden = (snapIdx: number) => {
-    if (!editing) return;
-    const snaps = [...(editing.dynamic_snapshots || [])];
-    const snap = snaps[snapIdx];
-    if (!snap) return;
-    const list = snap.hidden_identities || [];
-    snaps[snapIdx] = {
-      ...snap,
-      hidden_identities: [...list, { name: "", revealed_to: [], notes: "" }],
-    };
-    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setEditing(prev => {
+      if (!prev) return prev;
+      const snaps = [...(prev.dynamic_snapshots || [])];
+      const snap = snaps[snapIdx];
+      if (!snap) return prev;
+      const list = snap.hidden_identities || [];
+      snaps[snapIdx] = {
+        ...snap,
+        hidden_identities: [...list, { name: "", revealed_to: [], notes: "" }],
+      };
+      return { ...prev, dynamic_snapshots: snaps };
+    });
     setDirty(true);
   };
 
   const updateSnapshotHidden = (snapIdx: number, hIdx: number, key: string, val: any) => {
-    if (!editing) return;
-    const snaps = [...(editing.dynamic_snapshots || [])];
-    const snap = snaps[snapIdx];
-    if (!snap) return;
-    const list = [...(snap.hidden_identities || [])];
-    list[hIdx] = { ...list[hIdx], [key]: val };
-    snaps[snapIdx] = { ...snap, hidden_identities: list };
-    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setEditing(prev => {
+      if (!prev) return prev;
+      const snaps = [...(prev.dynamic_snapshots || [])];
+      const snap = snaps[snapIdx];
+      if (!snap) return prev;
+      const list = [...(snap.hidden_identities || [])];
+      list[hIdx] = { ...list[hIdx], [key]: val };
+      snaps[snapIdx] = { ...snap, hidden_identities: list };
+      return { ...prev, dynamic_snapshots: snaps };
+    });
     setDirty(true);
   };
 
   const removeSnapshotHidden = (snapIdx: number, hIdx: number) => {
-    if (!editing) return;
-    const snaps = [...(editing.dynamic_snapshots || [])];
-    const snap = snaps[snapIdx];
-    if (!snap) return;
-    const list = [...(snap.hidden_identities || [])];
-    list.splice(hIdx, 1);
-    snaps[snapIdx] = { ...snap, hidden_identities: list };
-    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setEditing(prev => {
+      if (!prev) return prev;
+      const snaps = [...(prev.dynamic_snapshots || [])];
+      const snap = snaps[snapIdx];
+      if (!snap) return prev;
+      const list = [...(snap.hidden_identities || [])];
+      list.splice(hIdx, 1);
+      snaps[snapIdx] = { ...snap, hidden_identities: list };
+      return { ...prev, dynamic_snapshots: snaps };
+    });
     setDirty(true);
   };
 
   const updateSnapshotLayerB = (snapIdx: number, key: keyof CharacterLayerB, val: number) => {
-    if (!editing) return;
-    const snaps = [...(editing.dynamic_snapshots || [])];
-    const snap = snaps[snapIdx];
-    if (!snap) return;
-    snaps[snapIdx] = { ...snap, layer_b: { ...(snap.layer_b || DEFAULT_LAYER_B), [key]: val } };
-    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setEditing(prev => {
+      if (!prev) return prev;
+      const snaps = [...(prev.dynamic_snapshots || [])];
+      const snap = snaps[snapIdx];
+      if (!snap) return prev;
+      snaps[snapIdx] = { ...snap, layer_b: { ...(snap.layer_b || DEFAULT_LAYER_B), [key]: val } };
+      return { ...prev, dynamic_snapshots: snaps };
+    });
     setDirty(true);
   };
 
@@ -1204,8 +1220,20 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                                   if (!id) return;
                                                   const t = items.find(c => c.id === id);
                                                   if (!t) return;
-                                                  updateSnapshotRel(flashcardIndex, relIdx, "target_id", id);
-                                                  updateSnapshotRel(flashcardIndex, relIdx, "target_name", t.name);
+                                                  // Set both id + name in a single
+                                                  // functional update so React can
+                                                  // never split them across renders.
+                                                  setEditing(prev => {
+                                                    if (!prev) return prev;
+                                                    const snaps = [...(prev.dynamic_snapshots || [])];
+                                                    const snap = snaps[flashcardIndex];
+                                                    if (!snap) return prev;
+                                                    const rels = [...(snap.relationships || [])];
+                                                    rels[relIdx] = { ...rels[relIdx], target_id: id, target_name: t.name };
+                                                    snaps[flashcardIndex] = { ...snap, relationships: rels };
+                                                    return { ...prev, dynamic_snapshots: snaps };
+                                                  });
+                                                  setDirty(true);
                                                 }}
                                                 style={{ flex: 1, fontSize: 12 }}
                                               >
