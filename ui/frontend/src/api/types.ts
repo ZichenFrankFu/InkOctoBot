@@ -386,6 +386,11 @@ export interface StoryNode {
   time?: string;
   location?: string;
   week?: number;
+  /** Optional: 故事线 / 伏笔 this 情节 belongs to. The drop-down in the
+   *  剧情线 detail panel writes one of these so the chapter spine + the
+   *  thread/foreshadowing chips can highlight related 情节 together. */
+  thread_id?: string;
+  hook_id?: string;
 }
 
 export interface StoryEdge {
