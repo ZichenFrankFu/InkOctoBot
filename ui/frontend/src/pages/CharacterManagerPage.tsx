@@ -88,7 +88,6 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   // state can't bleed across cards.
   const [editingRelRows, setEditingRelRows] = useState<Set<number>>(new Set());
   const [editingHiddenRows, setEditingHiddenRows] = useState<Set<number>>(new Set());
-  const [showAddRelForm, setShowAddRelForm] = useState(false);
   // 决策参数 random sample preview — 10 scenarios where the character
   // picks A vs B based on a probability derived from Layer B params.
   const [decisionPreview, setDecisionPreview] = useState<Array<{
@@ -97,7 +96,6 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   useEffect(() => {
     setEditingRelRows(new Set());
     setEditingHiddenRows(new Set());
-    setShowAddRelForm(false);
     setDecisionPreview(null);
   }, [flashcardIndex, editing?.id]);
   const toggleRelEdit = (idx: number) => setEditingRelRows(prev => {
@@ -358,6 +356,21 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     }
   };
 
+  // Guard for actions that would discard the current 角色卡 draft
+  // (switching characters, toggling rightView, clicking a node in the
+  // global graph). Shows a confirm dialog when there are unsaved edits.
+  const confirmDiscardIfDirty = async (action: () => void) => {
+    if (!dirty) { action(); return; }
+    const ok = await confirm({
+      title: "未保存的更改",
+      message: "当前角色卡有未保存的修改，继续将丢弃这些内容。建议先点击「保存」。",
+      confirmLabel: "丢弃并继续",
+      cancelLabel: "取消",
+      destructive: true,
+    });
+    if (ok) action();
+  };
+
   const remove = async (id: string) => {
     if (!(await confirm({ message: "确定删除该角色？", destructive: true }))) return;
     try {
@@ -481,6 +494,25 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     setEditing({ ...editing, dynamic_snapshots: snaps });
     setDirty(true);
     setRelTarget("");
+  };
+
+  // Add a placeholder row (target not yet picked) — used by the section
+  // header「+ 添加」button so the row appears immediately with target /
+  // label / affinity / notes inputs all on one card.
+  const addEmptySnapshotRel = (snapIdx: number) => {
+    if (!editing) return;
+    const snaps = [...(editing.dynamic_snapshots || [])];
+    const snap = snaps[snapIdx];
+    if (!snap) return;
+    const rels = snap.relationships || [];
+    const newRel: CharacterRelationship = {
+      target_id: "", target_name: "",
+      affinity: 50, priority: (rels.length || 0) + 2,
+      chapter: snap.chapter, notes: "", label: "",
+    };
+    snaps[snapIdx] = { ...snap, relationships: [...rels, newRel] };
+    setEditing({ ...editing, dynamic_snapshots: snaps });
+    setDirty(true);
   };
 
   const updateSnapshotRel = (snapIdx: number, relIdx: number, key: string, val: any) => {
@@ -621,19 +653,20 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
             />
           </div>
 
-          {/* View toggle */}
+          {/* View toggle — both buttons are gated by confirmDiscardIfDirty
+              so a switch with unsaved edits prompts the user first. */}
           <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", display: "flex", gap: 4 }}>
             <button
               className={rightView === "detail" ? "btn-primary" : "btn"}
               style={{ flex: 1, fontSize: 11, padding: "4px 0", borderRadius: 14, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
-              onClick={() => setRightView("detail")}
+              onClick={() => confirmDiscardIfDirty(() => setRightView("detail"))}
             >
               角色详情
             </button>
             <button
               className={rightView === "graph" ? "btn-primary" : "btn"}
               style={{ flex: 1, fontSize: 11, padding: "4px 0", borderRadius: 14, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
-              onClick={() => setRightView("graph")}
+              onClick={() => confirmDiscardIfDirty(() => setRightView("graph"))}
             >
               全局图谱
             </button>
@@ -652,7 +685,16 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 <div
                   key={c.id}
                   className={`report-list-item ${editing?.id === c.id ? "active" : ""}`}
-                  onClick={() => { setEditing(c); setDirty(false); setRightView("detail"); }}
+                  onClick={() => {
+                    // Switching to the same character is a no-op (and
+                    // shouldn't trigger a discard prompt either).
+                    if (editing?.id === c.id) { setRightView("detail"); return; }
+                    confirmDiscardIfDirty(() => {
+                      setEditing(c);
+                      setDirty(false);
+                      setRightView("detail");
+                    });
+                  }}
                 >
                   <div
                     className="char-avatar"
@@ -705,7 +747,18 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 <GlobalRelationshipGraph
                   characters={liveCharacters}
                   editorChapterCount={editorChapterCount}
-                  onSelectCharacter={(id) => { setEditing(items.find(c => c.id === id) || null); setRightView("detail"); }}
+                  onSelectCharacter={(id) => {
+                    // Clicking the currently-edited character should
+                    // preserve the in-flight draft (the bug: previously
+                    // we re-read from `items` and lost unsaved snapshots).
+                    if (editing?.id === id) { setRightView("detail"); return; }
+                    confirmDiscardIfDirty(() => {
+                      const next = liveCharacters.find(c => c.id === id) || null;
+                      setEditing(next);
+                      setDirty(false);
+                      setRightView("detail");
+                    });
+                  }}
                   fullHeight
                 />
               </div>
@@ -1082,44 +1135,21 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                 headerAction={
                                   others.length > 0 ? (
                                     <button
-                                      className={showAddRelForm ? "btn-primary" : "btn"}
+                                      className="btn"
                                       style={{ fontSize: 11, padding: "3px 12px" }}
-                                      onClick={() => setShowAddRelForm(v => !v)}
+                                      onClick={() => {
+                                        // One-step add — drop an empty row in edit mode.
+                                        // User picks target via dropdown in the row itself.
+                                        const newIdx = snapRels.length;
+                                        addEmptySnapshotRel(flashcardIndex);
+                                        setEditingRelRows(prev => new Set(prev).add(newIdx));
+                                      }}
                                     >
-                                      {showAddRelForm ? "取消" : "+ 添加"}
+                                      + 添加
                                     </button>
                                   ) : null
                                 }
                               >
-                                {showAddRelForm && others.length > 0 && (
-                                  <div style={{
-                                    display: "flex", gap: 6, marginBottom: 10,
-                                    padding: 10, background: "var(--bg-surface-2)",
-                                    borderRadius: 8, border: "1px solid var(--border)",
-                                  }}>
-                                    <select className="select" style={{ flex: 1, fontSize: 11 }} value={relTarget} onChange={e => setRelTarget(e.target.value)}>
-                                      <option value="">选择关系对象...</option>
-                                      {others.map(o => (
-                                        <option key={o.id} value={o.id}>{o.name}</option>
-                                      ))}
-                                    </select>
-                                    <button
-                                      className="btn-primary"
-                                      style={{ fontSize: 11, padding: "4px 12px" }}
-                                      disabled={!relTarget}
-                                      onClick={() => {
-                                        const newIdx = snapRels.length;
-                                        addSnapshotRel(flashcardIndex, relTarget);
-                                        setShowAddRelForm(false);
-                                        setRelTarget("");
-                                        // Open the new row in edit mode so the user can fill it in.
-                                        setEditingRelRows(prev => new Set(prev).add(newIdx));
-                                      }}
-                                    >
-                                      确认
-                                    </button>
-                                  </div>
-                                )}
                                 {snapRels.length === 0 ? (
                                   <div className="text-xs text-muted" style={{ padding: "8px 4px" }}>
                                     暂无关系。点击右上角「+ 添加」记录角色关系。
@@ -1128,52 +1158,79 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                                     {snapRels.map((rel, relIdx) => {
                                       const isEditing = editingRelRows.has(relIdx);
-                                      return (
-                                        <div key={relIdx} style={{ position: "relative" }}>
-                                          {/* Per-row icon strip (top-right) */}
-                                          <div style={{
-                                            position: "absolute", top: 8, right: 8,
-                                            display: "flex", gap: 4, zIndex: 1,
-                                          }}>
-                                            <RowIconButton symbol={isEditing ? "✓" : "✎"}
-                                              title={isEditing ? "完成" : "编辑"}
-                                              onClick={() => toggleRelEdit(relIdx)} />
-                                            <RowIconButton symbol="×"
-                                              title="删除"
-                                              color="var(--error)"
-                                              onClick={() => {
-                                                removeSnapshotRel(flashcardIndex, relIdx);
-                                                setEditingRelRows(prev => {
-                                                  const next = new Set<number>();
-                                                  prev.forEach(i => { if (i < relIdx) next.add(i); else if (i > relIdx) next.add(i - 1); });
-                                                  return next;
-                                                });
-                                              }} />
+                                      const rowActions = (
+                                        <>
+                                          <RowIconButton symbol={isEditing ? "✓" : "✎"}
+                                            title={isEditing ? "完成" : "编辑"}
+                                            onClick={() => toggleRelEdit(relIdx)} />
+                                          <RowIconButton symbol="×"
+                                            title="删除"
+                                            color="var(--error)"
+                                            onClick={() => {
+                                              removeSnapshotRel(flashcardIndex, relIdx);
+                                              setEditingRelRows(prev => {
+                                                const next = new Set<number>();
+                                                prev.forEach(i => { if (i < relIdx) next.add(i); else if (i > relIdx) next.add(i - 1); });
+                                                return next;
+                                              });
+                                            }} />
+                                        </>
+                                      );
+                                      if (!isEditing) {
+                                        return (
+                                          <div key={relIdx}>
+                                            <RelationshipRowView rel={rel} actions={rowActions} />
                                           </div>
-                                          {!isEditing ? (
-                                            <RelationshipRowView rel={rel} />
-                                          ) : (
-                                            <div style={{
-                                              padding: "12px 14px 12px 12px",
-                                              paddingTop: 36,
-                                              background: "var(--bg-surface-2)",
-                                              borderRadius: 8, border: "1px solid var(--accent)",
-                                            }}>
-                                              <div style={{ fontWeight: 700, fontSize: 12, color: "var(--text-primary)", marginBottom: 8 }}>
+                                        );
+                                      }
+                                      // ── Edit mode: target picker (if not chosen yet) + label + affinity + notes — all in one card.
+                                      return (
+                                        <div key={relIdx} style={{
+                                          padding: "12px 14px",
+                                          background: "var(--bg-surface-2)",
+                                          borderRadius: 8, border: "1px solid var(--accent)",
+                                        }}>
+                                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                                            {rel.target_id ? (
+                                              <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>
                                                 &rarr; {rel.target_name}
-                                              </div>
-                                              <div className="field mb-6">
-                                                <input className="input" value={rel.label || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "label", e.target.value)} placeholder="关系标签：师徒、情侣..." style={{ fontSize: 11 }} />
-                                              </div>
-                                              <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "affinity", v)} />
-                                              <div className="field mt-6">
-                                                <input className="input" value={rel.notes || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "notes", e.target.value)} placeholder="关系备注..." style={{ fontSize: 11 }} />
-                                              </div>
-                                              <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 8, lineHeight: 1.5 }}>
-                                                好感度：越高越喜欢（负=厌恶, 0=不熟, 正=好感）
-                                              </div>
-                                            </div>
-                                          )}
+                                              </span>
+                                            ) : (
+                                              <select
+                                                className="select"
+                                                value=""
+                                                onChange={e => {
+                                                  const id = e.target.value;
+                                                  if (!id) return;
+                                                  const t = items.find(c => c.id === id);
+                                                  if (!t) return;
+                                                  updateSnapshotRel(flashcardIndex, relIdx, "target_id", id);
+                                                  updateSnapshotRel(flashcardIndex, relIdx, "target_name", t.name);
+                                                }}
+                                                style={{ flex: 1, fontSize: 12 }}
+                                              >
+                                                <option value="">选择关系对象...</option>
+                                                {others.map(o => (
+                                                  <option key={o.id} value={o.id}>{o.name}</option>
+                                                ))}
+                                              </select>
+                                            )}
+                                            <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                                              {rowActions}
+                                            </span>
+                                          </div>
+                                          <div className="field mb-6">
+                                            <label className="label" style={{ fontSize: 10, marginBottom: 4 }}>关系标签</label>
+                                            <input className="input" value={rel.label || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "label", e.target.value)} placeholder="例：师徒、情侣、宿敌..." style={{ fontSize: 11 }} />
+                                          </div>
+                                          <ParamSlider name={`好感度 (${rel.affinity > 0 ? "+" : ""}${rel.affinity})`} value={rel.affinity} min={-100} max={100} step={5} onChange={v => updateSnapshotRel(flashcardIndex, relIdx, "affinity", v)} />
+                                          <div className="field mt-6">
+                                            <label className="label" style={{ fontSize: 10, marginBottom: 4 }}>备注</label>
+                                            <input className="input" value={rel.notes || ""} onChange={e => updateSnapshotRel(flashcardIndex, relIdx, "notes", e.target.value)} placeholder="关系备注..." style={{ fontSize: 11 }} />
+                                          </div>
+                                          <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 8, lineHeight: 1.5 }}>
+                                            好感度：越高越喜欢（负=厌恶, 0=不熟, 正=好感）
+                                          </div>
                                         </div>
                                       );
                                     })}
@@ -1208,57 +1265,57 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                                     {(snap.hidden_identities || []).map((h, hIdx) => {
                                       const isEditing = editingHiddenRows.has(hIdx);
-                                      return (
-                                        <div key={hIdx} style={{ position: "relative" }}>
-                                          <div style={{
-                                            position: "absolute", top: 8, right: 8,
-                                            display: "flex", gap: 4, zIndex: 1,
-                                          }}>
-                                            <RowIconButton symbol={isEditing ? "✓" : "✎"}
-                                              title={isEditing ? "完成" : "编辑"}
-                                              onClick={() => toggleHiddenEdit(hIdx)} />
-                                            <RowIconButton symbol="×"
-                                              title="删除"
-                                              color="var(--error)"
-                                              onClick={() => {
-                                                removeSnapshotHidden(flashcardIndex, hIdx);
-                                                setEditingHiddenRows(prev => {
-                                                  const next = new Set<number>();
-                                                  prev.forEach(i => { if (i < hIdx) next.add(i); else if (i > hIdx) next.add(i - 1); });
-                                                  return next;
-                                                });
-                                              }} />
+                                      const rowActions = (
+                                        <>
+                                          <RowIconButton symbol={isEditing ? "✓" : "✎"}
+                                            title={isEditing ? "完成" : "编辑"}
+                                            onClick={() => toggleHiddenEdit(hIdx)} />
+                                          <RowIconButton symbol="×"
+                                            title="删除"
+                                            color="var(--error)"
+                                            onClick={() => {
+                                              removeSnapshotHidden(flashcardIndex, hIdx);
+                                              setEditingHiddenRows(prev => {
+                                                const next = new Set<number>();
+                                                prev.forEach(i => { if (i < hIdx) next.add(i); else if (i > hIdx) next.add(i - 1); });
+                                                return next;
+                                              });
+                                            }} />
+                                        </>
+                                      );
+                                      if (!isEditing) {
+                                        return (
+                                          <div key={hIdx}>
+                                            <HiddenIdentityRowView hidden={h} actions={rowActions} />
                                           </div>
-                                          {!isEditing ? (
-                                            <HiddenIdentityRowView hidden={h} />
-                                          ) : (
-                                            <div style={{
-                                              padding: "12px 14px 12px 12px",
-                                              paddingTop: 36,
-                                              background: "var(--bg-surface-2)",
-                                              borderRadius: 8, border: "1px solid var(--accent)",
-                                            }}>
-                                              <div className="field mb-6">
-                                                <input className="input" value={h.name} onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "name", e.target.value)}
-                                                       placeholder="化名 / 伪装身份名" style={{ fontSize: 12, fontWeight: 600 }} />
-                                              </div>
-                                              <div className="field mb-6">
-                                                <label className="label" style={{ fontSize: 10, marginBottom: 4 }}>已知真相的角色</label>
-                                                <CharNamesMultiSelect
-                                                  value={h.revealed_to || []}
-                                                  options={others}
-                                                  onChange={(v) => updateSnapshotHidden(flashcardIndex, hIdx, "revealed_to", v)}
-                                                  placeholder="点击选择已知真相的角色…"
-                                                />
-                                              </div>
-                                              <input className="input" value={h.notes || ""}
-                                                     onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "notes", e.target.value)}
-                                                     placeholder="伪装动机 / 破绽 / 备注..." style={{ fontSize: 11 }} />
-                                              <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 8, lineHeight: 1.5 }}>
-                                                化名 / 伪装身份在此阶段有效；&ldquo;已知真相&rdquo;中的角色看穿伪装，其他角色仍以化名认知。
-                                              </div>
-                                            </div>
-                                          )}
+                                        );
+                                      }
+                                      return (
+                                        <div key={hIdx} style={{
+                                          padding: "12px 14px",
+                                          background: "var(--bg-surface-2)",
+                                          borderRadius: 8, border: "1px solid var(--accent)",
+                                        }}>
+                                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                                            <input className="input" value={h.name} onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "name", e.target.value)}
+                                                   placeholder="化名 / 伪装身份名" style={{ fontSize: 12, fontWeight: 600, flex: 1 }} />
+                                            <span style={{ display: "flex", gap: 6 }}>{rowActions}</span>
+                                          </div>
+                                          <div className="field mb-6">
+                                            <label className="label" style={{ fontSize: 10, marginBottom: 4 }}>已知真相的角色</label>
+                                            <CharNamesMultiSelect
+                                              value={h.revealed_to || []}
+                                              options={others}
+                                              onChange={(v) => updateSnapshotHidden(flashcardIndex, hIdx, "revealed_to", v)}
+                                              placeholder="点击选择已知真相的角色…"
+                                            />
+                                          </div>
+                                          <input className="input" value={h.notes || ""}
+                                                 onChange={e => updateSnapshotHidden(flashcardIndex, hIdx, "notes", e.target.value)}
+                                                 placeholder="伪装动机 / 破绽 / 备注..." style={{ fontSize: 11 }} />
+                                          <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 8, lineHeight: 1.5 }}>
+                                            化名 / 伪装身份在此阶段有效；&ldquo;已知真相&rdquo;中的角色看穿伪装，其他角色仍以化名认知。
+                                          </div>
                                         </div>
                                       );
                                     })}
@@ -1646,8 +1703,13 @@ function RowIconButton({ symbol, onClick, title, color }: {
 
 /* ── RelationshipRowView ──
  * Read-only display of a single relationship row inside the snapshot
- * card. Click-to-edit lives one level up via the section's 编辑 toggle. */
-function RelationshipRowView({ rel }: { rel: CharacterRelationship }) {
+ * card. The `actions` slot is rendered at the top-right of the header
+ * row so per-row ✎ / × icons sit inline next to the 好感 chip instead
+ * of overlapping it. */
+function RelationshipRowView({ rel, actions }: {
+  rel: CharacterRelationship;
+  actions?: React.ReactNode;
+}) {
   const aff = rel.affinity ?? 0;
   const affColor = aff > 50 ? "var(--jade)" : aff > 0 ? "var(--accent)" : aff > -50 ? "var(--gold)" : "var(--error)";
   const affBg = aff > 50 ? "var(--jade-subtle)" : aff > 0 ? "var(--accent-subtle)" : aff > -50 ? "var(--gold-subtle)" : "var(--error-subtle, rgba(220,53,69,0.1))";
@@ -1660,7 +1722,7 @@ function RelationshipRowView({ rel }: { rel: CharacterRelationship }) {
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
         <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>
-          {rel.target_name}
+          {rel.target_name || <span style={{ color: "var(--text-disabled)", fontStyle: "italic", fontWeight: 400 }}>（未指定对象）</span>}
         </span>
         {rel.label && (
           <span className="tag" style={{
@@ -1671,12 +1733,14 @@ function RelationshipRowView({ rel }: { rel: CharacterRelationship }) {
             {rel.label}
           </span>
         )}
-        <span style={{
-          marginLeft: "auto",
-          fontSize: 10, padding: "2px 8px", borderRadius: 10,
-          background: affBg, color: affColor, fontWeight: 600,
-        }}>
-          好感 {aff > 0 ? "+" : ""}{aff}
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{
+            fontSize: 10, padding: "2px 8px", borderRadius: 10,
+            background: affBg, color: affColor, fontWeight: 600,
+          }}>
+            好感 {aff > 0 ? "+" : ""}{aff}
+          </span>
+          {actions}
         </span>
       </div>
       {/* Affinity bar — centered at 0, extends left for negative, right for positive */}
@@ -1705,9 +1769,12 @@ function RelationshipRowView({ rel }: { rel: CharacterRelationship }) {
 }
 
 /* ── HiddenIdentityRowView ──
- * Read-only display of one hidden identity / alias row. */
-function HiddenIdentityRowView({ hidden }: {
+ * Read-only display of one hidden identity / alias row. `actions` slot
+ * renders inline at the right of the header so ✎ / × sit cleanly
+ * instead of being overlaid via absolute positioning. */
+function HiddenIdentityRowView({ hidden, actions }: {
   hidden: { name: string; revealed_to?: string[]; notes?: string };
+  actions?: React.ReactNode;
 }) {
   const revealedTo = hidden.revealed_to || [];
   return (
@@ -1721,6 +1788,11 @@ function HiddenIdentityRowView({ hidden }: {
         <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)" }}>
           {hidden.name || <span style={{ color: "var(--text-disabled)", fontStyle: "italic", fontWeight: 400 }}>（未命名）</span>}
         </span>
+        {actions && (
+          <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+            {actions}
+          </span>
+        )}
       </div>
       {revealedTo.length > 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: hidden.notes ? 6 : 0 }}>
@@ -2064,10 +2136,14 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
             const r1 = nodeR(fromChar?.name || "");
             const r2 = nodeR(toChar?.name || "");
 
-            // Offset for parallel edges (A->B and B->A)
+            // Offset for parallel edges (A->B and B->A). When the pair
+            // is bidirectional we widen the gap (14px each side, 28px
+            // total) so the two arrows + affinity badges don't crash
+            // into each other.
             const hasReverse = allEdges.some(e => e.fromId === edge.toId && e.toId === edge.fromId);
-            const perpX = -uy * (hasReverse ? 8 : 0);
-            const perpY = ux * (hasReverse ? 8 : 0);
+            const perp = hasReverse ? 14 : 0;
+            const perpX = -uy * perp;
+            const perpY = ux * perp;
 
             const x1 = from.x + ux * (r1 + 4) + perpX;
             const y1 = from.y + uy * (r1 + 4) + perpY;
@@ -2079,34 +2155,42 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
             const markerId = edge.affinity > 50 ? "rel-arrow-pos" : edge.affinity > 0 ? "rel-arrow-mid" : edge.affinity > -50 ? "rel-arrow-low" : "rel-arrow-neg";
             const strokeW = Math.max(1.5, Math.min(3, 1.5 + Math.abs(edge.affinity) / 60));
 
-            // Label position (midpoint with offset)
-            const mx = (x1 + x2) / 2 + perpX * 0.5;
-            const my = (y1 + y2) / 2 + perpY * 0.5;
+            // Place the affinity badge CLOSE to the source end (~30% along
+            // the edge). For a bidirectional pair this puts A→B's badge
+            // near A and B→A's badge near B — they sit ≈ 40% of the edge
+            // length apart and can't visually collide.
+            const t = 0.32;
+            const ax = x1 + (x2 - x1) * t;
+            const ay = y1 + (y2 - y1) * t;
 
             const labelText = edge.label || edge.notes?.slice(0, 6) || "";
             const affLabel = `${edge.affinity > 0 ? "+" : ""}${edge.affinity}`;
+            // Edge label sits at the midpoint (and only when present);
+            // affinity badge owns the 30% mark so they don't stack.
+            const lmx = (x1 + x2) / 2 + perpX * 0.4;
+            const lmy = (y1 + y2) / 2 + perpY * 0.4;
 
             return (
               <g key={`${edge.fromId}-${edge.toId}-${idx}`}>
                 <line x1={x1} y1={y1} x2={x2} y2={y2}
                   stroke={color} strokeWidth={strokeW} opacity={0.7}
                   markerEnd={`url(#${markerId})`} />
-                {/* Affinity number badge — always shown so the graph carries
-                    quantitative info, not just a hue. */}
+                {/* Affinity number badge — always shown so the graph
+                    carries quantitative info, not just a hue. */}
                 <g>
                   <rect
-                    x={mx - 16} y={labelText ? my + 1 : my - 7}
-                    width={32} height={14} rx={7}
+                    x={ax - 17} y={ay - 7}
+                    width={34} height={14} rx={7}
                     fill="var(--bg-surface)" stroke={color} strokeWidth={0.8}
-                    opacity={0.92}
+                    opacity={0.95}
                   />
-                  <text x={mx} y={labelText ? my + 11 : my + 3} textAnchor="middle"
+                  <text x={ax} y={ay + 3} textAnchor="middle"
                     fontSize={9.5} fill={color} fontWeight={700}>
                     {affLabel}
                   </text>
                 </g>
                 {labelText && (
-                  <text x={mx} y={my - 4} textAnchor="middle" fontSize={9}
+                  <text x={lmx} y={lmy - 3} textAnchor="middle" fontSize={9}
                     fill={color} fontWeight={500} opacity={0.9}>
                     {labelText}
                   </text>
