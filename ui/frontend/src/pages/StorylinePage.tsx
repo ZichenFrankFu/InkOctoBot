@@ -4,7 +4,10 @@ import { useToast } from "../components/shared/Toast";
 import type { StoryNode, StoryEdge, ChapterOutline, Volume, Character } from "../api/types";
 
 const uid = () => `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-const COLORS = ["#c0392b", "#2d8c5a", "#3b5998", "#d4a853", "#8e44ad", "#e67e22", "#1abc9c", "#e74c3c"];
+// Muted ink-painting palette — 6 desaturated tones so per-情节 cards stay
+// distinct without fighting the page's accent / gold / neutral language.
+// Used as the card's top stripe and the bottom strip's left edge ONLY.
+const COLORS = ["#a04545", "#5a8c6f", "#4a6794", "#c08a3e", "#856a9c", "#8b5e3c"];
 const NODE_W = 220;
 const NODE_H = 120;
 const HEADER_H = 56;
@@ -779,12 +782,20 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             {(n.time || n.location) && (
                               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
                                 {n.time && (
-                                  <span style={{ fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10, background: "var(--accent-subtle)", color: "var(--accent)", fontWeight: 500 }}>
+                                  <span style={{
+                                    fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10,
+                                    background: "transparent", color: "var(--text-secondary)",
+                                    border: "1px solid var(--border-subtle)", fontWeight: 500,
+                                  }}>
                                     {n.time}
                                   </span>
                                 )}
                                 {n.location && (
-                                  <span style={{ fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10, background: "var(--jade-subtle)", color: "var(--jade)", fontWeight: 500 }}>
+                                  <span style={{
+                                    fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10,
+                                    background: "transparent", color: "var(--text-secondary)",
+                                    border: "1px solid var(--border-subtle)", fontWeight: 500,
+                                  }}>
                                     {n.location}
                                   </span>
                                 )}
@@ -793,13 +804,23 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             {(thread || hook) && (
                               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
                                 {thread && (
-                                  <span style={{ fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10, background: "var(--accent-subtle)", color: "var(--accent)", fontWeight: 500 }}
+                                  <span style={{
+                                    fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10,
+                                    background: thread.thread_type === "main" ? "var(--accent-subtle)" : "transparent",
+                                    color: thread.thread_type === "main" ? "var(--accent)" : "var(--text-secondary)",
+                                    border: thread.thread_type === "main" ? "1px solid transparent" : "1px solid var(--border-subtle)",
+                                    fontWeight: 500,
+                                  }}
                                     title={thread.description}>
                                     {thread.thread_type === "main" ? "主线" : "支线"} · {thread.name}
                                   </span>
                                 )}
                                 {hook && (
-                                  <span style={{ fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10, background: "var(--gold-subtle)", color: "var(--gold)", fontWeight: 500 }}
+                                  <span style={{
+                                    fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10,
+                                    background: "var(--gold-subtle)", color: "var(--gold)", fontWeight: 500,
+                                    border: "1px solid transparent",
+                                  }}
                                     title={hook.content}>
                                     伏笔 · {(hook.title || hook.content || "").slice(0, 10)}
                                   </span>
@@ -818,7 +839,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                               <div style={{ marginTop: 6, display: "flex", gap: 3, flexWrap: "wrap" }}>
                                 {n.characters!.map((ch, i) => (
                                   <span key={i} style={{
-                                    background: "var(--purple-subtle)", color: "var(--purple)",
+                                    background: "var(--bg-secondary)", color: "var(--text-tertiary)",
                                     padding: "1px 6px", borderRadius: 8, fontSize: 9.5, fontWeight: 500,
                                   }}>
                                     {ch}
@@ -1102,20 +1123,23 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                     flexDirection: "column",
                     alignItems: "flex-start",
                     justifyContent: "center",
-                    background: isActive ? "var(--accent-subtle)" : "var(--bg-secondary)",
-                    border: isActive ? "1px solid var(--accent)" : "1px solid var(--border-subtle)",
-                    borderLeft: `3px solid ${n.color || "var(--accent)"}`,
+                    background: "var(--bg-secondary)",
+                    border: "1px solid var(--border-subtle)",
+                    borderLeft: `3px solid ${n.color || "var(--text-secondary)"}`,
                     borderRadius: 8,
                     cursor: "pointer",
-                    transition: "all 0.15s",
+                    transition: "box-shadow 0.18s ease, transform 0.18s ease",
                     padding: "5px 12px",
                     flexShrink: 0,
-                    boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                    boxShadow: isActive
+                      ? "0 0 0 2px var(--accent), 0 2px 4px rgba(0,0,0,0.06)"
+                      : "none",
+                    transform: isActive ? "translateY(-1px)" : "none",
                   }}
                 >
                   <span style={{
                     fontSize: 11.5, fontWeight: 700,
-                    color: isActive ? "var(--accent)" : "var(--text-primary)",
+                    color: "var(--text-primary)",
                     overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                     maxWidth: "100%",
                   }}>
@@ -1321,10 +1345,12 @@ function CharacterSelector({ label, value, options, onChange }: {
             <span key={name} className="tag"
               style={{
                 fontSize: 10,
-                background: known ? "var(--purple-subtle)" : undefined,
-                color: known ? "var(--purple)" : undefined,
-                borderColor: known ? "var(--purple)" : undefined,
-              }}>
+                background: known ? "var(--bg-secondary)" : "transparent",
+                color: known ? "var(--text-primary)" : "var(--text-tertiary)",
+                borderColor: known ? "var(--border)" : "var(--border-subtle)",
+                fontStyle: known ? "normal" : "italic",
+              }}
+              title={known ? "已登记角色" : "临时角色（未在角色库）"}>
               {name}
               <span onClick={(e) => { e.stopPropagation(); toggle(name); }}
                 style={{ marginLeft: 4, cursor: "pointer", color: "var(--text-tertiary)" }}>×</span>
