@@ -388,6 +388,10 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   // current 开书助手 turn. Shared by send and the web-LLM preview, so the
   // copy-to-web-LLM panel always shows the exact prompt the API send would
   // use (including focused 题材/标签 the user clicked in the market panel).
+  // When `text` is empty (panel preview before the user has typed), we omit
+  // the fake "用户：..." line entirely so the copied prompt reads naturally
+  // — the system_hint + conversation history are enough context for the
+  // LLM to pick up from.
   const buildChatPrompt = async (text: string): Promise<{ fullPrompt: string; systemHint: string }> => {
     const config = getAgentConfig(studioTab);
     const recentMessages = chatMessages.filter(m => m.role !== "system").slice(-20);
@@ -402,11 +406,21 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
       // Snap to the next message boundary so we don't start mid-sentence.
       const snap = tail.indexOf("\n\n");
       conversationContext = snap > 0 ? tail.slice(snap + 2) : tail;
-      truncatedNote = `[较早 ${recentMessages.length - chatMessages.length > 0 ? "" : ""}对话已被截断，仅保留最近约 ${MAX_HISTORY_CHARS} 字]\n\n`;
+      truncatedNote = `[较早对话已被截断，仅保留最近约 ${MAX_HISTORY_CHARS} 字]\n\n`;
     }
-    const fullPrompt = recentMessages.length > 0
-      ? `以下是对话历史：\n\n${truncatedNote}${conversationContext}\n\n用户：${text}\n\n请基于以上对话上下文回答用户最新的问题。`
-      : text;
+    const trimmedText = text.trim();
+    let fullPrompt: string;
+    if (recentMessages.length > 0 && trimmedText) {
+      fullPrompt = `以下是对话历史：\n\n${truncatedNote}${conversationContext}\n\n用户：${trimmedText}\n\n请基于以上对话上下文回答用户最新的问题。`;
+    } else if (recentMessages.length > 0) {
+      // Preview mode without a typed message — surface the history only.
+      fullPrompt = `以下是对话历史：\n\n${truncatedNote}${conversationContext}\n\n请基于以上对话上下文，按你的 Agent 角色给出下一轮回答。`;
+    } else if (trimmedText) {
+      fullPrompt = trimmedText;
+    } else {
+      // First-turn preview before any input — let the LLM open the conversation.
+      fullPrompt = "请基于 system 中的市场数据与平台信息，以你的 Agent 角色主动开启对话。";
+    }
     const promptKey = studioTab === "trending"
       ? "assistant.book_start_trending"
       : "assistant.book_start_brainstorm";
@@ -432,7 +446,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   };
 
   const fetchChatPrompt = async (): Promise<string> => {
-    const { fullPrompt, systemHint } = await buildChatPrompt(chatInput.trim() || "（用户尚未输入问题）");
+    const { fullPrompt, systemHint } = await buildChatPrompt(chatInput);
     const r = await apiPost<{ prompt: string }>("/api/generation/quick-generate", {
       project_id: activeProject || "default",
       chapter_id: `studio_${studioTab}`,

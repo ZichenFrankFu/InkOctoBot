@@ -355,22 +355,67 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   }, [activeChId]);
 
   const handleSaveOutline = useCallback(async () => {
+    if (!activeChId) {
+      toast("没有可保存的章节", "error");
+      return;
+    }
     setSaveStatus("saving");
     const uv = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
-    try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv }); setSaveStatus("saved"); toast("已保存", "success"); } catch (e: any) { setSaveStatus("unsaved"); toast(e.message || "保存失败", "error"); }
+    try {
+      await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv });
+      setVolumes(uv);
+      persistedRef.current = { chId: activeChId, content, title: titleVal };
+      setSaveStatus("saved");
+      toast("已保存", "success");
+    } catch (e: any) {
+      setSaveStatus("unsaved");
+      toast(e.message || "保存失败", "error");
+    }
   }, [volumes, activeChId, content, titleVal, projectId, toast]);
 
-  // Ctrl+S / Cmd+S triggers manual save with toast
+  // Ctrl/Cmd + S: save the chapter outline AND commit a version snapshot so
+  // the user has a stable rollback point per explicit save (not just the
+  // 60s auto-version backup). Short content is skipped with a confirm to
+  // keep the "saved 0-char text_versions" disaster from re-occurring.
+  const handleSaveAndCommit = useCallback(async () => {
+    if (!activeChId) {
+      toast("没有可保存的章节", "error");
+      return;
+    }
+    const chars = content.trim().length;
+    // Persist the editor state first — same path as 自动保存 + manual button.
+    await handleSaveOutline();
+    if (chars === 0) return;        // nothing to snapshot
+    if (chars < MIN_SAVE_CHARS && !confirmShortSave(chars)) return;
+    const newVersion: TextVersion = {
+      version_id: vuid(), chapter_id: activeChId,
+      version: versionHistory.filter(v => v.chapter_id === activeChId).length + 1,
+      source: "user_edited", text: content,
+      synopsis: activeCh?.synopsis || "",
+      created_at: new Date().toISOString(),
+    };
+    setVersionHistory(prev => [...prev, newVersion]);
+    try {
+      await apiPost("/api/data/versions", {
+        project_id: projectId || "default", version: newVersion,
+      });
+      toast(`已保存并提交版本 v${newVersion.version}`, "success");
+    } catch (e: any) {
+      toast(`版本提交失败：${e?.message || ""}`, "error");
+    }
+  }, [activeChId, content, projectId, versionHistory, activeCh, handleSaveOutline, toast]);
+
+  // Ctrl+S / Cmd+S triggers save + commit (snapshot a version) with toast
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
-        handleSaveOutline();
+        handleSaveAndCommit();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleSaveOutline]);
+  }, [handleSaveAndCommit]);
 
   const handleMouseUp = () => {
     const el = textRef.current; if (!el) return;
@@ -1475,7 +1520,27 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
           </div>
           <div className="flex items-center justify-between" style={{ padding: "6px 28px", borderTop: "1px solid var(--border)", background: "var(--bg-surface)", flexShrink: 0 }}>
             <div className="flex items-center gap-12 text-xs text-muted"><span>{words.toLocaleString()} 字</span><span>写作 {elapsed} 分钟</span></div>
-            <div className="flex items-center gap-8 text-xs"><span style={{ color: saveStatus === "saved" ? "var(--jade)" : saveStatus === "saving" ? "var(--gold)" : "var(--text-tertiary)" }}>{saveStatus === "saved" ? "已保存" : saveStatus === "saving" ? "保存中..." : "未保存"}</span></div>
+            <div className="flex items-center gap-8 text-xs">
+              <span style={{ color: saveStatus === "saved" ? "var(--jade)" : saveStatus === "saving" ? "var(--gold)" : "var(--text-tertiary)" }}>
+                {saveStatus === "saved" ? "已保存" : saveStatus === "saving" ? "保存中..." : "未保存"}
+              </span>
+              <button
+                className="btn"
+                style={{ fontSize: 11, padding: "3px 10px" }}
+                onClick={handleSaveOutline}
+                disabled={!activeChId || saveStatus === "saving"}
+                title="只保存编辑器状态（不创建版本）">
+                保存
+              </button>
+              <button
+                className="btn-primary"
+                style={{ fontSize: 11, padding: "3px 12px" }}
+                onClick={handleSaveAndCommit}
+                disabled={!activeChId || saveStatus === "saving"}
+                title="保存并提交版本快照（Ctrl/⌘ + S）">
+                保存并提交（Ctrl+S）
+              </button>
+            </div>
           </div>
         </div>
         {rightPanelOpen && <div className="panel-resize-h" {...rightPanel.handleProps} />}

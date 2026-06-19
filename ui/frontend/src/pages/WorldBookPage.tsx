@@ -441,8 +441,9 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                     </div>
                   </div>
                   {!batchMode && (
-                    <button className="btn-icon" style={{ fontSize: 11, padding: "2px 6px" }}
-                      onClick={e => { e.stopPropagation(); remove(entry.id); }}>删除</button>
+                    <button className="btn-icon" style={{ fontSize: 14, padding: "2px 8px", lineHeight: 1 }}
+                      title="删除"
+                      onClick={e => { e.stopPropagation(); remove(entry.id); }}>×</button>
                   )}
                 </div>
               ))

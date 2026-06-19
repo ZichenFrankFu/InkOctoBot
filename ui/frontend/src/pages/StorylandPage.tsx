@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client";
 import { useToast } from "../components/shared/Toast";
 import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
+import ChapterTimeline from "../components/shared/ChapterTimeline";
 
 // 故事中世界（Storyland）页面 — spec 6.4.5 三 tab：
 // 1. Storyland 状态：创世入口/审阅区、实体管理、SPO 事实（时间线/按章节）
@@ -9,6 +10,32 @@ import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
 // 3. 故事线：主线/支线 + 伏笔（规模/超期提示），新建/编辑/删除
 
 type TabKey = "state" | "memory" | "plotline";
+
+interface ChapterRef { chapter_id: string; chapter_num: number; title: string; }
+
+/** Hook: pulls the project's chapter list from /api/data/editor and
+ *  derives the {min, max, marks} the chapter-timeline needs. Re-fetches
+ *  when the project changes; consumers don't need to know the wire
+ *  format. */
+function useProjectChapters(projectId: string) {
+  const [chapters, setChapters] = useState<ChapterRef[]>([]);
+  useEffect(() => {
+    apiGet<any>(`/api/data/editor?project_id=${encodeURIComponent(projectId)}`)
+      .then(doc => {
+        const list: ChapterRef[] = [];
+        (doc?.volumes || []).forEach((v: any) => (v.chapters || []).forEach((c: any) => {
+          list.push({
+            chapter_id: c.id || c.chapter_id,
+            chapter_num: c.chapter_num || list.length + 1,
+            title: c.title || "",
+          });
+        }));
+        setChapters(list);
+      })
+      .catch(() => setChapters([]));
+  }, [projectId]);
+  return chapters;
+}
 
 interface Entity {
   entity_id: string; name: string; entity_type: string;
@@ -53,53 +80,83 @@ const THREAD_STATUS_LABEL: Record<string, string> = {
   resolution: "完结", dormant: "搁置",
 };
 
-const sectionStyle: React.CSSProperties = {
-  background: "var(--bg-surface)", borderRadius: 8,
-  border: "1px solid var(--border-subtle)", padding: "14px 16px",
-  marginBottom: 14,
-};
-const h2Style: React.CSSProperties = {
-  fontSize: 13, fontWeight: 600, color: "var(--text-primary)",
-  marginBottom: 10, display: "flex", alignItems: "center", gap: 8,
-};
+/** Section header styled like the other pages — small accent-coloured
+ *  divider with optional right-aligned actions. */
+function SectionHeader({ title, count, action }: {
+  title: string; count?: number; action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between" style={{
+      padding: "10px 16px", borderBottom: "1px solid var(--border)",
+    }}>
+      <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>
+        {title}
+        {count !== undefined && (
+          <span className="text-xs text-muted" style={{ marginLeft: 6, fontWeight: 400 }}>
+            ({count})
+          </span>
+        )}
+      </h3>
+      {action}
+    </div>
+  );
+}
 
 export default function StorylandPage({ projectId }: { projectId: string }) {
   const { toast } = useToast();
   const pid = projectId || "default";
   const [tab, setTab] = useState<TabKey>("state");
+  const chapters = useProjectChapters(pid);
 
   return (
-    <div style={{ padding: 16, maxWidth: 1100, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 14 }}>
-        <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-primary)" }}>故事中世界</div>
-        <div style={{ display: "flex", gap: 4 }}>
-          {([["state", "Storyland 状态"], ["memory", "读者视角记忆"], ["plotline", "故事线"]] as [TabKey, string][]).map(([k, label]) => (
-            <button key={k} className="btn"
-              style={{
-                fontSize: 12, padding: "4px 14px",
-                background: tab === k ? "var(--accent-subtle, rgba(99,102,241,0.15))" : undefined,
-                color: tab === k ? "var(--accent)" : undefined,
-                borderColor: tab === k ? "var(--accent)" : undefined,
-              }}
-              onClick={() => setTab(k)}>{label}</button>
-          ))}
+    <div className="page-container" style={{ maxWidth: 1100 }}>
+      <div className="page-header" style={{ paddingBottom: 12 }}>
+        <div className="page-header-row">
+          <div>
+            <h2 className="font-serif">故事中世界</h2>
+            <p>跨章节的 Storyland 状态 · 读者视角记忆 · 故事线 / 伏笔</p>
+          </div>
         </div>
       </div>
-      {tab === "state" && <StateTab projectId={pid} toast={toast} />}
-      {tab === "memory" && <MemoryTab projectId={pid} toast={toast} />}
-      {tab === "plotline" && <PlotlineTab projectId={pid} toast={toast} />}
+
+      <div className="tab-bar-underline" style={{ marginBottom: 14 }}>
+        {([["state", "Storyland 状态"], ["memory", "读者视角记忆"], ["plotline", "故事线"]] as [TabKey, string][]).map(([k, label]) => (
+          <button key={k}
+            className={`tab-item ${tab === k ? "active" : ""}`}
+            onClick={() => setTab(k)}>{label}</button>
+        ))}
+      </div>
+
+      {tab === "state" && <StateTab projectId={pid} chapters={chapters} toast={toast} />}
+      {tab === "memory" && <MemoryTab projectId={pid} chapters={chapters} toast={toast} />}
+      {tab === "plotline" && <PlotlineTab projectId={pid} chapters={chapters} toast={toast} />}
     </div>
   );
 }
 
 // ─────────────── Tab 1: Storyland 状态 ───────────────
 
-function StateTab({ projectId, toast }: { projectId: string; toast: (m: string, t?: any) => void }) {
+function StateTab({ projectId, chapters, toast }: {
+  projectId: string;
+  chapters: ChapterRef[];
+  toast: (m: string, t?: any) => void;
+}) {
   const [entities, setEntities] = useState<Entity[]>([]);
   const [facts, setFacts] = useState<Fact[]>([]);
-  const [chapterFilter, setChapterFilter] = useState<string>("");
+  // Single-handle timeline scope for SPO facts. `chapterFocus === 0` means
+  // "all chapters" — matches the legacy「留空」behaviour.
+  const [chapterFocus, setChapterFocus] = useState<number>(0);
   const [proposal, setProposal] = useState<GenesisProposal | null>(null);
   const [genesisRunning, setGenesisRunning] = useState(false);
+
+  // Drive the timeline's range from the project's actual chapter list so
+  // it grows automatically as the user adds chapter outlines / commits
+  // chapters. Marks are every chapter that exists.
+  const chapterMin = 1;
+  const chapterMax = chapters.length > 0
+    ? Math.max(...chapters.map(c => c.chapter_num || 0))
+    : 1;
+  const chapterMarks = useMemo(() => chapters.map(c => c.chapter_num), [chapters]);
 
   const reload = useCallback(async () => {
     try {
@@ -107,7 +164,7 @@ function StateTab({ projectId, toast }: { projectId: string; toast: (m: string, 
         apiGet<{ items: Entity[] }>(`/api/entities?project_id=${projectId}`).catch(() => ({ items: [] })),
         apiGet<{ items: Fact[] }>(
           `/api/storyland/state?project_id=${projectId}` +
-          (chapterFilter ? `&chapter_num=${chapterFilter}` : ""),
+          (chapterFocus > 0 ? `&chapter_num=${chapterFocus}` : ""),
         ),
         apiGet<GenesisProposal>(`/api/genesis/proposal?project_id=${projectId}`),
       ]);
@@ -115,7 +172,7 @@ function StateTab({ projectId, toast }: { projectId: string; toast: (m: string, 
       setFacts(f.items || []);
       setProposal(g.proposal_id ? g : null);
     } catch (err: any) { toast(err.message || "加载失败", "error"); }
-  }, [projectId, chapterFilter]);
+  }, [projectId, chapterFocus]);
 
   useEffect(() => { reload(); }, [reload]);
 
@@ -208,107 +265,149 @@ function StateTab({ projectId, toast }: { projectId: string; toast: (m: string, 
         onCommit={commitGenesis}
         minChars={20}
       />
-      <div style={sectionStyle}>
-        <div style={h2Style}>
-          创世（从角色卡 + 世界书生成舞台全貌）
-          <button className="btn" style={{ fontSize: 11, padding: "3px 12px", marginLeft: "auto" }}
-            onClick={openGenesisDialog} disabled={genesisRunning}>
-            {genesisRunning ? "准备中..." : proposal ? "重新创世" : "运行创世"}
-          </button>
-        </div>
-        {!proposal && (
-          <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-            单次 LLM 调用按五步顺序（物质基础、结构骨架、实体落位、宏观状态、文化风气）补全舞台。
-            生成内容标记为 AI 生成，须经审阅确认后才入库。
-          </div>
-        )}
-        {proposal && (
-          <div>
-            <div style={{ fontSize: 12, color: "var(--gold)", marginBottom: 8 }}>
-              审阅区 — 舞台：{proposal.stage || "（未指定）"}；不需要的条目可移除，确认后整体入库。
+      <div className="card mb-16">
+        <SectionHeader title="创世（从角色卡 + 世界书生成舞台全貌）"
+          action={
+            <button className="btn" style={{ fontSize: 11, padding: "3px 12px" }}
+              onClick={openGenesisDialog} disabled={genesisRunning}>
+              {genesisRunning ? "准备中..." : proposal ? "重新创世" : "运行创世"}
+            </button>
+          } />
+        <div className="card-body">
+          {!proposal && (
+            <div className="text-xs text-muted" style={{ lineHeight: 1.6 }}>
+              单次 LLM 调用按五步顺序（物质基础、结构骨架、实体落位、宏观状态、文化风气）补全舞台。
+              生成内容标记为 AI 生成，须经审阅确认后才入库。
             </div>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>实体（{proposal.entities?.length || 0}）</div>
-            {(proposal.entities || []).map(e => (
-              <div key={e.name} style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0", fontSize: 11, borderBottom: "1px solid var(--border-subtle)" }}>
-                <span style={{ padding: "1px 6px", borderRadius: 8, background: "var(--bg-secondary)" }}>{ENTITY_TYPE_LABEL[e.entity_type] || e.entity_type}</span>
-                <span style={{ fontWeight: 600 }}>{e.name}</span>
-                <span style={{ color: "var(--text-tertiary)", flex: 1 }}>{e.description}</span>
-                <button className="btn" style={{ fontSize: 10, padding: "1px 8px", color: "var(--error)" }}
-                  onClick={() => dropProposalEntity(e.name)}>移除</button>
+          )}
+          {proposal && (
+            <div>
+              <div style={{ fontSize: 12, color: "var(--gold)", marginBottom: 10 }}>
+                审阅区 — 舞台：{proposal.stage || "（未指定）"}；不需要的条目可移除，确认后整体入库。
               </div>
-            ))}
-            <div style={{ fontSize: 12, fontWeight: 600, margin: "8px 0 4px" }}>事实（{proposal.facts?.length || 0}）</div>
-            {(proposal.facts || []).map((f, i) => (
-              <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0", fontSize: 11, borderBottom: "1px solid var(--border-subtle)" }}>
-                <span style={{ color: "var(--text-tertiary)" }}>步骤{f.step}</span>
-                <span>{f.subject} <span style={{ color: "var(--accent)" }}>{f.predicate}</span> {f.object}</span>
-                <span style={{ color: "var(--text-disabled)", flex: 1 }}>{f.basis}</span>
-                <button className="btn" style={{ fontSize: 10, padding: "1px 8px", color: "var(--error)" }}
-                  onClick={() => dropProposalFact(i)}>移除</button>
-              </div>
-            ))}
-            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <button className="btn-primary" style={{ fontSize: 11, padding: "4px 16px" }} onClick={applyGenesis}>确认入库</button>
-              <button className="btn" style={{ fontSize: 11, padding: "4px 16px" }} onClick={discardGenesis}>丢弃</button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div style={sectionStyle}>
-        <div style={h2Style}>
-          实体（{entities.length}）
-        </div>
-        {entities.length === 0 && <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无实体。运行创世或提交章节后自动产生。</div>}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
-          {entities.map(e => {
-            let isGenesis = false;
-            try { isGenesis = JSON.parse(e.metadata_json || "{}").origin === "genesis"; } catch {}
-            return (
-              <div key={e.entity_id} style={{ border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "8px 10px", fontSize: 11 }}>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3 }}>
-                  <span style={{ fontWeight: 600, fontSize: 12 }}>{e.name}</span>
-                  <span style={{ padding: "1px 6px", borderRadius: 8, background: "var(--bg-secondary)", fontSize: 9 }}>{ENTITY_TYPE_LABEL[e.entity_type] || e.entity_type}</span>
-                  {(isGenesis || e.auto_created === 1) && (
-                    <span style={{ padding: "1px 6px", borderRadius: 8, background: "var(--gold-subtle, rgba(212,168,83,0.12))", color: "var(--gold)", fontSize: 9 }}>AI生成</span>
-                  )}
-                  <button className="btn" style={{ fontSize: 9, padding: "0 6px", marginLeft: "auto", color: "var(--error)" }}
-                    onClick={() => deleteEntity(e.entity_id)}>删</button>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>实体（{proposal.entities?.length || 0}）</div>
+              {(proposal.entities || []).map(e => (
+                <div key={e.name} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0", fontSize: 11, borderBottom: "1px solid var(--border)" }}>
+                  <span className="tag" style={{ fontSize: 9 }}>{ENTITY_TYPE_LABEL[e.entity_type] || e.entity_type}</span>
+                  <span style={{ fontWeight: 600 }}>{e.name}</span>
+                  <span style={{ color: "var(--text-tertiary)", flex: 1 }}>{e.description}</span>
+                  <button className="btn-icon" title="移除" style={{ fontSize: 13, color: "var(--text-tertiary)" }}
+                    onClick={() => dropProposalEntity(e.name)}>×</button>
                 </div>
-                <div style={{ color: "var(--text-tertiary)" }}>{e.description || "（无描述）"}</div>
-                {e.introduced_chapter !== null && (
-                  <div style={{ color: "var(--text-disabled)", fontSize: 9, marginTop: 2 }}>
-                    {e.introduced_chapter === 0 ? "初始生成" : `第${e.introduced_chapter}章引入`}
-                  </div>
-                )}
+              ))}
+              <div style={{ fontSize: 12, fontWeight: 600, margin: "10px 0 4px" }}>事实（{proposal.facts?.length || 0}）</div>
+              {(proposal.facts || []).map((f, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0", fontSize: 11, borderBottom: "1px solid var(--border)" }}>
+                  <span className="text-xs text-muted">步骤{f.step}</span>
+                  <span>{f.subject} <span style={{ color: "var(--accent)" }}>{f.predicate}</span> {f.object}</span>
+                  <span style={{ color: "var(--text-disabled)", flex: 1 }}>{f.basis}</span>
+                  <button className="btn-icon" title="移除" style={{ fontSize: 13, color: "var(--text-tertiary)" }}
+                    onClick={() => dropProposalFact(i)}>×</button>
+                </div>
+              ))}
+              <div className="flex gap-8" style={{ marginTop: 12 }}>
+                <button className="btn-primary" onClick={applyGenesis}>确认入库</button>
+                <button className="btn" onClick={discardGenesis}>丢弃</button>
               </div>
-            );
-          })}
+            </div>
+          )}
         </div>
       </div>
 
-      <div style={sectionStyle}>
-        <div style={h2Style}>
-          客观事实（SPO）
-          <input className="input" placeholder="按章节查看（留空=当前全部）"
-            value={chapterFilter}
-            onChange={e => setChapterFilter(e.target.value.replace(/[^0-9]/g, ""))}
-            style={{ fontSize: 11, width: 180, marginLeft: "auto" }} />
+      <div className="card mb-16">
+        <SectionHeader title="实体" count={entities.length} />
+        <div className="card-body">
+          {entities.length === 0 && (
+            <div className="empty-state" style={{ padding: "16px 0" }}>
+              <p>暂无实体。运行创世或提交章节后自动产生。</p>
+            </div>
+          )}
+          {entities.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
+              {entities.map(e => {
+                let isGenesis = false;
+                try { isGenesis = JSON.parse(e.metadata_json || "{}").origin === "genesis"; } catch { /* noop */ }
+                return (
+                  <div key={e.entity_id} style={{
+                    border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+                    padding: "10px 12px", background: "var(--bg-surface)",
+                  }}>
+                    <div className="flex items-center gap-6" style={{ marginBottom: 4 }}>
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>{e.name}</span>
+                      <span className="tag" style={{ fontSize: 10 }}>{ENTITY_TYPE_LABEL[e.entity_type] || e.entity_type}</span>
+                      {(isGenesis || e.auto_created === 1) && (
+                        <span className="tag" style={{ fontSize: 10, background: "var(--gold-subtle)", color: "var(--gold)", borderColor: "var(--gold)" }}>AI生成</span>
+                      )}
+                      <button className="btn-icon" title="删除" style={{ marginLeft: "auto", fontSize: 13, color: "var(--text-tertiary)" }}
+                        onClick={() => deleteEntity(e.entity_id)}>×</button>
+                    </div>
+                    <div className="text-xs" style={{ color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+                      {e.description || "（无描述）"}
+                    </div>
+                    {e.introduced_chapter !== null && (
+                      <div className="text-xs" style={{ color: "var(--text-disabled)", marginTop: 4 }}>
+                        {e.introduced_chapter === 0 ? "初始生成" : `第${e.introduced_chapter}章引入`}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
-        {facts.length === 0 && <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无事实。</div>}
-        {facts.map(f => (
-          <div key={f.triple_id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0", fontSize: 11, borderBottom: "1px solid var(--border-subtle)" }}>
-            <span style={{ color: "var(--text-disabled)", width: 70 }}>
-              {f.valid_from_chapter === 0 ? "初始" : `第${f.valid_from_chapter}章起`}
+      </div>
+
+      <div className="card">
+        <SectionHeader
+          title="客观事实（SPO）"
+          count={facts.length}
+          action={chapters.length === 0 ? (
+            <span className="text-xs text-muted">无已建章节</span>
+          ) : (
+            <span className="text-xs text-muted">
+              {chapterFocus > 0 ? `仅看 第${chapterFocus}章 的事实` : "全部章节"}
             </span>
-            <span style={{ fontWeight: 600 }}>{f.subject}</span>
-            <span style={{ color: "var(--accent)" }}>{f.predicate}</span>
-            <span>{f.object}</span>
-            {f.valid_to_chapter !== null && (
-              <span style={{ color: "var(--text-disabled)", marginLeft: "auto" }}>已于第{f.valid_to_chapter}章失效</span>
-            )}
-          </div>
-        ))}
+          )}
+        />
+        <div className="card-body">
+          {chapters.length > 0 && (
+            <ChapterTimeline
+              mode="single"
+              min={chapterMin} max={chapterMax}
+              from={chapterFocus || chapterMin}
+              to={chapterFocus || chapterMin}
+              marks={chapterMarks}
+              onChange={(f) => setChapterFocus(f === chapterMin && chapterFocus === 0 ? chapterMin : f)}
+              label="按章节查看"
+            />
+          )}
+          {chapters.length > 0 && (
+            <div className="flex gap-6" style={{ marginTop: 4, marginBottom: 8 }}>
+              <button className="btn" style={{ fontSize: 10, padding: "1px 8px" }}
+                onClick={() => setChapterFocus(0)}
+                title="清空章节过滤">查看全部</button>
+            </div>
+          )}
+          {facts.length === 0 && <div className="text-xs text-muted">暂无事实。</div>}
+          {facts.map(f => (
+            <div key={f.triple_id} style={{
+              display: "flex", gap: 10, alignItems: "center", padding: "5px 0",
+              fontSize: 12, borderBottom: "1px solid var(--border)",
+            }}>
+              <span className="text-xs" style={{ color: "var(--text-tertiary)", width: 80 }}>
+                {f.valid_from_chapter === 0 ? "初始" : `第${f.valid_from_chapter}章起`}
+              </span>
+              <span style={{ fontWeight: 600 }}>{f.subject}</span>
+              <span style={{ color: "var(--accent)" }}>{f.predicate}</span>
+              <span>{f.object}</span>
+              {f.valid_to_chapter !== null && (
+                <span className="text-xs" style={{ color: "var(--text-disabled)", marginLeft: "auto" }}>
+                  已于第{f.valid_to_chapter}章失效
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -316,22 +415,30 @@ function StateTab({ projectId, toast }: { projectId: string; toast: (m: string, 
 
 // ─────────────── Tab 2: 读者视角记忆 ───────────────
 
-function MemoryTab({ projectId, toast }: { projectId: string; toast: (m: string, t?: any) => void }) {
-  const [chapters, setChapters] = useState<{ chapter_id: string; chapter_num: number; title: string }[]>([]);
-  const [selected, setSelected] = useState<string>("");
+function MemoryTab({ projectId, chapters, toast }: {
+  projectId: string;
+  chapters: ChapterRef[];
+  toast: (m: string, t?: any) => void;
+}) {
+  // Single-handle chapter timeline for picking the章节 — auto-tracks the
+  // last chapter on first load so the page lands on the most useful view.
+  const chapterMin = 1;
+  const chapterMax = chapters.length > 0
+    ? Math.max(...chapters.map(c => c.chapter_num || 0))
+    : 1;
+  const chapterMarks = useMemo(() => chapters.map(c => c.chapter_num), [chapters]);
+  const [chapterNum, setChapterNum] = useState<number>(0);
+  // Sync to the latest chapter once the list arrives.
+  useEffect(() => {
+    if (chapters.length > 0 && chapterNum === 0) {
+      setChapterNum(chapters[chapters.length - 1].chapter_num || 1);
+    }
+  }, [chapters, chapterNum]);
+  const selectedChapter = chapters.find(c => c.chapter_num === chapterNum);
+  const selected = selectedChapter?.chapter_id || "";
+
   const [view, setView] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    apiGet<any>(`/api/data/editor?project_id=${encodeURIComponent(projectId)}`).then(doc => {
-      const list: any[] = [];
-      (doc?.volumes || []).forEach((v: any) => (v.chapters || []).forEach((c: any) => {
-        list.push({ chapter_id: c.id || c.chapter_id, chapter_num: c.chapter_num || list.length + 1, title: c.title || "" });
-      }));
-      setChapters(list);
-      if (list.length && !selected) setSelected(list[list.length - 1].chapter_id);
-    }).catch(() => setChapters([]));
-  }, [projectId]);
 
   useEffect(() => {
     if (!selected) return;
@@ -340,45 +447,72 @@ function MemoryTab({ projectId, toast }: { projectId: string; toast: (m: string,
       .then(setView)
       .catch((e: any) => { setView(null); toast(e.message || "加载失败", "error"); })
       .finally(() => setLoading(false));
-  }, [selected]);
+  }, [selected, toast]);
 
   return (
     <div>
-      <div style={sectionStyle}>
-        <div style={h2Style}>
-          按章节查看读者视角记忆
-          <select className="select" value={selected} onChange={e => setSelected(e.target.value)}
-            style={{ fontSize: 11, marginLeft: "auto", minWidth: 200 }}>
-            {chapters.length === 0 && <option value="">（无已建章节）</option>}
-            {chapters.map(c => (
-              <option key={c.chapter_id} value={c.chapter_id}>第{c.chapter_num}章 {c.title}</option>
-            ))}
-          </select>
-        </div>
-        <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 8 }}>
-          展示生成第 K 章时读者的记忆状态（前 K-1 章的累积）：L1 刚刚发生、L2 近期摘要、L3 相似召回、L4 标志性事件。
-        </div>
-        {loading && <div style={{ fontSize: 11 }}>加载中...</div>}
-        {!loading && view && (
-          <div>
-            {(view.tabs || []).map((t: any, i: number) => (
-              <div key={i} style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", marginBottom: 4 }}>{t.label || t.name || `板块${i + 1}`}</div>
-                <pre style={{ fontSize: 11, whiteSpace: "pre-wrap", color: "var(--text-secondary)", background: "var(--bg-secondary)", borderRadius: 6, padding: "8px 10px", maxHeight: 320, overflow: "auto" }}>
-                  {typeof t.content === "string" ? t.content : JSON.stringify(t.content ?? t, null, 2)}
-                </pre>
-              </div>
-            ))}
-            {!view.tabs && (
-              <pre style={{ fontSize: 11, whiteSpace: "pre-wrap", color: "var(--text-secondary)", background: "var(--bg-secondary)", borderRadius: 6, padding: "8px 10px", maxHeight: 480, overflow: "auto" }}>
-                {JSON.stringify(view, null, 2)}
-              </pre>
-            )}
+      <div className="card">
+        <SectionHeader
+          title="按章节查看读者视角记忆"
+          action={selectedChapter ? (
+            <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+              第{selectedChapter.chapter_num}章 {selectedChapter.title}
+            </span>
+          ) : undefined}
+        />
+        <div className="card-body">
+          <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.6 }}>
+            展示生成第 K 章时读者的记忆状态（前 K-1 章的累积）：L1 刚刚发生、L2 近期摘要、L3 相似召回、L4 标志性事件。
           </div>
-        )}
-        {!loading && !view && selected && (
-          <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>该章节暂无记忆快照（需先 commit 一次）。</div>
-        )}
+          {chapters.length === 0 ? (
+            <div className="empty-state" style={{ padding: "16px 0" }}>
+              <p>暂无已建章节。请先在编辑器中添加章节。</p>
+            </div>
+          ) : (
+            <ChapterTimeline
+              mode="single"
+              min={chapterMin} max={chapterMax}
+              from={chapterNum || chapterMin}
+              to={chapterNum || chapterMin}
+              marks={chapterMarks}
+              onChange={(f) => setChapterNum(f)}
+              label="章节"
+            />
+          )}
+          {loading && <div className="text-xs text-muted" style={{ marginTop: 8 }}>加载中...</div>}
+          {!loading && view && (
+            <div style={{ marginTop: 12 }}>
+              {(view.tabs || []).map((t: any, i: number) => (
+                <div key={i} style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", marginBottom: 4 }}>
+                    {t.label || t.name || `板块${i + 1}`}
+                  </div>
+                  <pre className="font-mono" style={{
+                    fontSize: 11, whiteSpace: "pre-wrap", color: "var(--text-secondary)",
+                    background: "var(--bg-surface)", borderRadius: "var(--radius-sm)",
+                    padding: "8px 10px", maxHeight: 320, overflow: "auto", margin: 0,
+                  }}>
+                    {typeof t.content === "string" ? t.content : JSON.stringify(t.content ?? t, null, 2)}
+                  </pre>
+                </div>
+              ))}
+              {!view.tabs && (
+                <pre className="font-mono" style={{
+                  fontSize: 11, whiteSpace: "pre-wrap", color: "var(--text-secondary)",
+                  background: "var(--bg-surface)", borderRadius: "var(--radius-sm)",
+                  padding: "8px 10px", maxHeight: 480, overflow: "auto", margin: 0,
+                }}>
+                  {JSON.stringify(view, null, 2)}
+                </pre>
+              )}
+            </div>
+          )}
+          {!loading && !view && selected && (
+            <div className="text-xs text-muted" style={{ marginTop: 8 }}>
+              该章节暂无记忆快照（需先 commit 一次）。
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -386,12 +520,24 @@ function MemoryTab({ projectId, toast }: { projectId: string; toast: (m: string,
 
 // ─────────────── Tab 3: 故事线（主线/支线 + 伏笔） ───────────────
 
-function PlotlineTab({ projectId, toast }: { projectId: string; toast: (m: string, t?: any) => void }) {
+function PlotlineTab({ projectId, chapters, toast }: {
+  projectId: string;
+  chapters: ChapterRef[];
+  toast: (m: string, t?: any) => void;
+}) {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [hooks, setHooks] = useState<Hook[]>([]);
   const [currentChapter, setCurrentChapter] = useState<number>(0);
   const [newThread, setNewThread] = useState({ name: "", description: "", thread_type: "sub" as "main" | "sub" });
   const [newHook, setNewHook] = useState({ description: "", scale: "event_clue", origin_chapter: 1 });
+
+  // Timeline range mirrors the project's actual chapters so 「当前章号」
+  // becomes a drag instead of a typed number.
+  const chapterMin = 1;
+  const chapterMax = chapters.length > 0
+    ? Math.max(...chapters.map(c => c.chapter_num || 0))
+    : 1;
+  const chapterMarks = useMemo(() => chapters.map(c => c.chapter_num), [chapters]);
 
   const reload = useCallback(async () => {
     try {
@@ -437,28 +583,35 @@ function PlotlineTab({ projectId, toast }: { projectId: string; toast: (m: strin
   const doneHooks = hooks.filter(h => ["resolved", "abandoned"].includes(h.status));
 
   const renderThread = (t: Thread) => (
-    <div key={t.thread_id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "5px 0", fontSize: 11, borderBottom: "1px solid var(--border-subtle)" }}>
-      <span style={{ padding: "1px 6px", borderRadius: 8, fontSize: 9, background: t.thread_type === "main" ? "var(--accent-subtle, rgba(99,102,241,0.15))" : "var(--bg-secondary)", color: t.thread_type === "main" ? "var(--accent)" : "var(--text-secondary)" }}>
+    <div key={t.thread_id} style={{
+      display: "flex", gap: 10, alignItems: "center", padding: "6px 0",
+      fontSize: 12, borderBottom: "1px solid var(--border)",
+    }}>
+      <span className="tag" style={{
+        fontSize: 10,
+        background: t.thread_type === "main" ? "var(--accent-subtle)" : undefined,
+        color: t.thread_type === "main" ? "var(--accent)" : undefined,
+        borderColor: t.thread_type === "main" ? "var(--accent)" : undefined,
+      }}>
         {t.thread_type === "main" ? "主线" : "支线"}
       </span>
       <span style={{ fontWeight: 600 }}>{t.name}</span>
       <span style={{ color: "var(--text-tertiary)", flex: 1 }}>{t.description}</span>
-      <span style={{ color: "var(--text-disabled)" }}>{THREAD_STATUS_LABEL[t.status] || t.status}</span>
-      <span style={{ color: "var(--text-disabled)" }}>
+      <span className="text-xs" style={{ color: "var(--text-disabled)" }}>
         第{t.start_chapter}章起{t.last_advanced_chapter ? ` · 最近第${t.last_advanced_chapter}章推进` : ""}
       </span>
-      <select className="select" style={{ fontSize: 10 }} value={t.status}
+      <select className="select" style={{ fontSize: 11, padding: "2px 6px" }} value={t.status}
         onChange={async e => {
           try { await apiPut(`/api/storyland/subplots/${t.thread_id}`, { status: e.target.value }); reload(); }
           catch (err: any) { toast(err.message || "更新失败", "error"); }
         }}>
         {Object.entries(THREAD_STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
       </select>
-      <button className="btn" style={{ fontSize: 9, padding: "1px 8px", color: "var(--error)" }}
+      <button className="btn-icon" title="删除" style={{ fontSize: 13, color: "var(--text-tertiary)" }}
         onClick={async () => {
           try { await apiDelete(`/api/storyland/subplots/${t.thread_id}`); reload(); }
           catch (err: any) { toast(err.message || "删除失败", "error"); }
-        }}>删除</button>
+        }}>×</button>
     </div>
   );
 
@@ -466,21 +619,20 @@ function PlotlineTab({ projectId, toast }: { projectId: string; toast: (m: strin
     const overdue = isOverdue(h);
     return (
       <div key={h.id} style={{
-        display: "flex", gap: 8, alignItems: "center", padding: "5px 0",
-        fontSize: 11, borderBottom: "1px solid var(--border-subtle)",
+        display: "flex", gap: 10, alignItems: "center", padding: "6px 8px",
+        fontSize: 12, borderBottom: "1px solid var(--border)",
         borderLeft: overdue ? "3px solid var(--error)" : "3px solid transparent",
-        paddingLeft: 6,
       }}>
-        <span style={{ padding: "1px 6px", borderRadius: 8, fontSize: 9, background: "var(--bg-secondary)" }}>{SCALE_LABEL[h.scale] || h.scale}</span>
+        <span className="tag" style={{ fontSize: 10 }}>{SCALE_LABEL[h.scale] || h.scale}</span>
         <span style={{ flex: 1 }}>{h.content}</span>
-        <span style={{ color: overdue ? "var(--error)" : "var(--text-disabled)" }}>
+        <span className="text-xs" style={{ color: overdue ? "var(--error)" : "var(--text-disabled)" }}>
           {HOOK_STATUS_LABEL[h.status] || h.status}{overdue ? " · 应回收" : ""}
         </span>
-        <span style={{ color: "var(--text-disabled)" }}>
+        <span className="text-xs" style={{ color: "var(--text-disabled)" }}>
           第{h.origin_chapter}章埋{h.expected_payoff_chapter ? ` · 预期第${h.expected_payoff_chapter}章前收` : " · 不限期"}
         </span>
         {!["resolved", "abandoned"].includes(h.status) && (
-          <button className="btn" style={{ fontSize: 9, padding: "1px 8px" }}
+          <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
             onClick={async () => {
               try {
                 await apiPost(`/api/data/foreshadowing/${h.id}/fully-resolve`, { chapter_num: currentChapter || null });
@@ -488,70 +640,89 @@ function PlotlineTab({ projectId, toast }: { projectId: string; toast: (m: strin
               } catch (err: any) { toast(err.message || "操作失败", "error"); }
             }}>标记已回收</button>
         )}
-        <button className="btn" style={{ fontSize: 9, padding: "1px 8px", color: "var(--error)" }}
+        <button className="btn-icon" title="删除" style={{ fontSize: 13, color: "var(--text-tertiary)" }}
           onClick={async () => {
             try { await apiDelete(`/api/storyland/hooks/${h.id}`); reload(); }
             catch (err: any) { toast(err.message || "删除失败", "error"); }
-          }}>删除</button>
+          }}>×</button>
       </div>
     );
   };
 
   return (
     <div>
-      <div style={sectionStyle}>
-        <div style={h2Style}>
-          主线 / 支线（{threads.length}）
-          <input className="input" placeholder="当前章号（超期判断用）" value={currentChapter || ""}
-            onChange={e => setCurrentChapter(parseInt(e.target.value) || 0)}
-            style={{ fontSize: 11, width: 160, marginLeft: "auto" }} />
-        </div>
-        {mains.length === 0 && (
-          <div style={{ fontSize: 11, color: "var(--gold)", marginBottom: 6 }}>
-            尚未设定主线（每个项目有且仅有一条主线）。
+      <div className="card mb-16">
+        <SectionHeader
+          title="主线 / 支线"
+          count={threads.length}
+          action={
+            <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+              当前章 <strong style={{ color: "var(--accent)" }}>{currentChapter || "—"}</strong>
+            </span>
+          } />
+        <div className="card-body">
+          {chapters.length > 0 && (
+            <ChapterTimeline
+              mode="single"
+              min={chapterMin} max={chapterMax}
+              from={currentChapter || chapterMin}
+              to={currentChapter || chapterMin}
+              marks={chapterMarks}
+              onChange={(f) => setCurrentChapter(f)}
+              label="当前章节（用于伏笔超期判断）"
+            />
+          )}
+          {mains.length === 0 && (
+            <div className="text-xs" style={{ color: "var(--gold)", marginBottom: 8 }}>
+              尚未设定主线（每个项目有且仅有一条主线）。
+            </div>
+          )}
+          {mains.map(renderThread)}
+          {subs.map(renderThread)}
+          <div className="flex gap-6" style={{ marginTop: 12, alignItems: "center" }}>
+            <select className="select" style={{ fontSize: 11 }} value={newThread.thread_type}
+              onChange={e => setNewThread({ ...newThread, thread_type: e.target.value as any })}>
+              <option value="sub">支线</option>
+              <option value="main">主线</option>
+            </select>
+            <input className="input" placeholder="故事线名称" value={newThread.name}
+              onChange={e => setNewThread({ ...newThread, name: e.target.value })}
+              style={{ fontSize: 12, width: 160 }} />
+            <input className="input" placeholder="一段话概述（这条线讲什么）" value={newThread.description}
+              onChange={e => setNewThread({ ...newThread, description: e.target.value })}
+              style={{ fontSize: 12, flex: 1 }} />
+            <button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px" }} onClick={createThread}>新建</button>
           </div>
-        )}
-        {mains.map(renderThread)}
-        {subs.map(renderThread)}
-        <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>
-          <select className="select" style={{ fontSize: 11 }} value={newThread.thread_type}
-            onChange={e => setNewThread({ ...newThread, thread_type: e.target.value as any })}>
-            <option value="sub">支线</option>
-            <option value="main">主线</option>
-          </select>
-          <input className="input" placeholder="故事线名称" value={newThread.name}
-            onChange={e => setNewThread({ ...newThread, name: e.target.value })}
-            style={{ fontSize: 11, width: 160 }} />
-          <input className="input" placeholder="一段话概述（这条线讲什么）" value={newThread.description}
-            onChange={e => setNewThread({ ...newThread, description: e.target.value })}
-            style={{ fontSize: 11, flex: 1 }} />
-          <button className="btn-primary" style={{ fontSize: 11, padding: "3px 14px" }} onClick={createThread}>新建</button>
         </div>
       </div>
 
-      <div style={sectionStyle}>
-        <div style={h2Style}>未回收伏笔（{activeHooks.length}）</div>
-        {activeHooks.length === 0 && <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>暂无未回收伏笔。</div>}
-        {activeHooks.map(renderHook)}
-        <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>
-          <select className="select" style={{ fontSize: 11 }} value={newHook.scale}
-            onChange={e => setNewHook({ ...newHook, scale: e.target.value })}>
-            {Object.entries(SCALE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
-          <input className="input" type="number" min={1} value={newHook.origin_chapter}
-            onChange={e => setNewHook({ ...newHook, origin_chapter: parseInt(e.target.value) || 1 })}
-            style={{ fontSize: 11, width: 90 }} title="埋设章节" />
-          <input className="input" placeholder="伏笔概述（含待揭示的真相）" value={newHook.description}
-            onChange={e => setNewHook({ ...newHook, description: e.target.value })}
-            style={{ fontSize: 11, flex: 1 }} />
-          <button className="btn-primary" style={{ fontSize: 11, padding: "3px 14px" }} onClick={createHook}>埋设</button>
+      <div className="card mb-16">
+        <SectionHeader title="未回收伏笔" count={activeHooks.length} />
+        <div className="card-body">
+          {activeHooks.length === 0 && <div className="text-xs text-muted">暂无未回收伏笔。</div>}
+          {activeHooks.map(renderHook)}
+          <div className="flex gap-6" style={{ marginTop: 12, alignItems: "center" }}>
+            <select className="select" style={{ fontSize: 11 }} value={newHook.scale}
+              onChange={e => setNewHook({ ...newHook, scale: e.target.value })}>
+              {Object.entries(SCALE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+            <input className="input" type="number" min={1} value={newHook.origin_chapter}
+              onChange={e => setNewHook({ ...newHook, origin_chapter: parseInt(e.target.value) || 1 })}
+              style={{ fontSize: 12, width: 90 }} title="埋设章节" />
+            <input className="input" placeholder="伏笔概述（含待揭示的真相）" value={newHook.description}
+              onChange={e => setNewHook({ ...newHook, description: e.target.value })}
+              style={{ fontSize: 12, flex: 1 }} />
+            <button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px" }} onClick={createHook}>埋设</button>
+          </div>
         </div>
       </div>
 
       {doneHooks.length > 0 && (
-        <div style={sectionStyle}>
-          <div style={h2Style}>已回收 / 已放弃（{doneHooks.length}）</div>
-          {doneHooks.map(renderHook)}
+        <div className="card">
+          <SectionHeader title="已回收 / 已放弃" count={doneHooks.length} />
+          <div className="card-body">
+            {doneHooks.map(renderHook)}
+          </div>
         </div>
       )}
     </div>

@@ -4,6 +4,7 @@ import { useResizable } from "../hooks/useResizable";
 import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
+import ChapterTimeline from "../components/shared/ChapterTimeline";
 import SnapshotStageEditor from "../components/characters/SnapshotStageEditor";
 import NameGeneratorModal from "../components/characters/NameGeneratorModal";
 import type { Character, CharacterLayerB, CharacterRelationship, DynamicPropertySnapshot } from "../api/types";
@@ -43,8 +44,6 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const [search, setSearch] = useState("");
   const [relTarget, setRelTarget] = useState("");
   const [rightView, setRightView] = useState<"detail" | "graph">("detail");
-  const [batchMode, setBatchMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showNamer, setShowNamer] = useState(false);   // 取名弹窗
 
   // Warn before leaving with unsaved changes
@@ -265,6 +264,16 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     const q = search.toLowerCase();
     return items.filter(c => c.name.toLowerCase().includes(q) || c.role?.toLowerCase().includes(q));
   }, [items, search]);
+
+  // Live view of the cast for the 全局图谱 — overlays the in-progress
+  // `editing` draft onto the persisted `items` list so relationship edits
+  // show up on the graph immediately (without waiting for 保存). The graph
+  // also depends on the per-character `relationships` array; using `items`
+  // alone leaves it stale until the user clicks 保存.
+  const liveCharacters = useMemo(() => {
+    if (!editing) return items;
+    return items.map(c => c.id === editing.id ? editing : c);
+  }, [items, editing]);
 
   const create = async () => {
     try {
@@ -546,42 +555,12 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   onClick={() => setShowNamer(true)} title="基于人名库取名">
                   取名
                 </button>
-                <button className="btn" style={{ padding: "5px 10px", fontSize: 11 }}
-                  onClick={() => { setBatchMode(!batchMode); setSelectedIds(new Set()); }}>
-                  {batchMode ? "取消" : "批量"}
-                </button>
                 <button className="btn-primary" style={{ padding: "5px 12px", fontSize: 12 }} onClick={create}>
                   + 新建
                 </button>
               </div>
             </div>
             <div className="text-xs text-muted">{projName}</div>
-            {batchMode && selectedIds.size > 0 && (
-              <div className="flex gap-4 mt-4">
-                <button className="btn" style={{ fontSize: 11, flex: 1 }}
-                  onClick={() => {
-                    const selected = items.filter(c => selectedIds.has(c.id));
-                    const blob = new Blob([JSON.stringify(selected, null, 2)], { type: "application/json" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url; a.download = `characters_${Date.now()}.json`;
-                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                  }}>
-                  导出 ({selectedIds.size})
-                </button>
-                <button className="btn" style={{ fontSize: 11, flex: 1, color: "var(--error)" }}
-                  onClick={async () => {
-                    if (!(await confirm({ message: `确定删除 ${selectedIds.size} 个角色？`, destructive: true }))) return;
-                    for (const id of selectedIds) {
-                      await apiDelete(`/api/data/characters/${id}`).catch((e: any) => toast(e.message || "操作失败", "error"));
-                    }
-                    setSelectedIds(new Set()); setBatchMode(false); load();
-                  }}>
-                  删除 ({selectedIds.size})
-                </button>
-              </div>
-            )}
           </div>
 
           {/* Search */}
@@ -625,22 +604,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 <div
                   key={c.id}
                   className={`report-list-item ${editing?.id === c.id ? "active" : ""}`}
-                  onClick={() => {
-                    if (batchMode) {
-                      setSelectedIds(prev => {
-                        const next = new Set(prev);
-                        if (next.has(c.id)) next.delete(c.id); else next.add(c.id);
-                        return next;
-                      });
-                    } else {
-                      setEditing(c); setDirty(false); setRightView("detail");
-                    }
-                  }}
+                  onClick={() => { setEditing(c); setDirty(false); setRightView("detail"); }}
                 >
-                  {batchMode && (
-                    <input type="checkbox" checked={selectedIds.has(c.id)} readOnly
-                      style={{ accentColor: "var(--accent)", flexShrink: 0 }} />
-                  )}
                   <div
                     className="char-avatar"
                     style={{
@@ -658,15 +623,14 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                       {c.role || "角色"}
                     </div>
                   </div>
-                  {!batchMode && (
-                    <button
-                      className="btn-icon"
-                      style={{ fontSize: 14 }}
-                      onClick={e => { e.stopPropagation(); remove(c.id); }}
-                    >
-                      &times;
-                    </button>
-                  )}
+                  <button
+                    className="btn-icon"
+                    style={{ fontSize: 14 }}
+                    title="删除"
+                    onClick={e => { e.stopPropagation(); remove(c.id); }}
+                  >
+                    &times;
+                  </button>
                 </div>
               ))
             )}
@@ -691,7 +655,11 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </div>
               </div>
               <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
-                <GlobalRelationshipGraph characters={items} onSelectCharacter={(id) => { setEditing(items.find(c => c.id === id) || null); setRightView("detail"); }} fullHeight />
+                <GlobalRelationshipGraph
+                  characters={liveCharacters}
+                  onSelectCharacter={(id) => { setEditing(items.find(c => c.id === id) || null); setRightView("detail"); }}
+                  fullHeight
+                />
               </div>
             </div>
           ) : !editing ? (
@@ -1220,25 +1188,80 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   );
 }
 
-/* ---- Global Relationship Graph (all characters, directed edges with labels) ---- */
+/** Parse a chapter marker ("第3章" / "3" / "Ch.4" / "" ) into a chapter
+ *  number. Returns null for unparseable values so the timeline can decide
+ *  whether to include them in 「全部」or under 「未标注」. */
+function parseChapterMarker(raw: string | undefined | null): number | null {
+  if (!raw) return null;
+  const m = String(raw).match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/* ---- Global Relationship Graph (all characters, directed edges with labels) ----
+ * Live: takes the parent's already-merged characters array (which folds in
+ * the `editing` draft) so relationship edits show up immediately, before
+ * 保存. Adds a draggable [from, to] timeline that filters edges + snapshot
+ * relationships by the chapter the user set on each relationship. */
 function GlobalRelationshipGraph({ characters, onSelectCharacter, fullHeight }: { characters: Character[]; onSelectCharacter: (id: string) => void; fullHeight?: boolean }) {
   const [zoom, setZoom] = React.useState(1);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = React.useState({ w: 800, h: 600 });
+
+  // Collect every chapter marker referenced by a relationship (top-level
+  // or snapshot) so the timeline range matches the user's actual data —
+  // not an arbitrary 1..100 slider.
+  const allChapterNums = React.useMemo(() => {
+    const set = new Set<number>();
+    for (const c of characters) {
+      for (const rel of (c.relationships || [])) {
+        const n = parseChapterMarker(rel.chapter);
+        if (n !== null) set.add(n);
+      }
+      for (const snap of (c.dynamic_snapshots || [])) {
+        const sn = parseChapterMarker(snap.chapter);
+        if (sn !== null) set.add(sn);
+        for (const rel of (snap.relationships || [])) {
+          const rn = parseChapterMarker(rel.chapter);
+          if (rn !== null) set.add(rn);
+        }
+      }
+    }
+    return Array.from(set).sort((a, b) => a - b);
+  }, [characters]);
+  const chapterMin = allChapterNums[0] ?? 1;
+  const chapterMax = allChapterNums[allChapterNums.length - 1] ?? 1;
+  const hasTimeline = chapterMax > chapterMin;
+
+  // Independent state so a user dragging the handles doesn't churn the
+  // entire characters useMemo above.
+  const [tlFrom, setTlFrom] = React.useState<number | null>(null);
+  const [tlTo, setTlTo] = React.useState<number | null>(null);
+  // Re-anchor when the data range changes (new chapter added).
+  React.useEffect(() => {
+    setTlFrom(chapterMin);
+    setTlTo(chapterMax);
+  }, [chapterMin, chapterMax]);
+  const effFrom = tlFrom ?? chapterMin;
+  const effTo = tlTo ?? chapterMax;
 
   React.useEffect(() => {
     if (!fullHeight || !containerRef.current) return;
     const measure = () => {
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
-        setContainerSize({ w: Math.max(400, rect.width - 16), h: Math.max(300, rect.height - 60) });
+        // Reserve a bit more vertical space for the timeline bar.
+        const reserved = hasTimeline ? 110 : 60;
+        setContainerSize({
+          w: Math.max(400, rect.width - 16),
+          h: Math.max(300, rect.height - reserved),
+        });
       }
     };
     measure();
     const obs = new ResizeObserver(measure);
     obs.observe(containerRef.current);
     return () => obs.disconnect();
-  }, [fullHeight]);
+  }, [fullHeight, hasTimeline]);
 
   if (characters.length <= 1) {
     return (
@@ -1269,21 +1292,41 @@ function GlobalRelationshipGraph({ characters, onSelectCharacter, fullHeight }: 
     };
   });
 
-  // Collect ALL directed edges
-  const allEdges: { fromId: string; toId: string; affinity: number; priority: number; notes?: string; chapter?: string; label?: string }[] = [];
+  // Honour the timeline window when collecting edges. A relationship with
+  // no chapter marker is treated as "always visible" so the graph is still
+  // useful before the user starts tagging chapters. Snapshot relationships
+  // contribute the latest snapshot up to `effTo` (so dragging the window
+  // forward reveals later relationship states).
+  const inWindow = (chapter?: string | null) => {
+    const n2 = parseChapterMarker(chapter);
+    if (n2 === null) return true;
+    return n2 >= effFrom && n2 <= effTo;
+  };
+  const allEdges: { fromId: string; toId: string; affinity: number; priority: number; notes?: string; chapter?: string; label?: string; source: "top" | "snapshot" }[] = [];
   characters.forEach(c => {
-    (c.relationships || []).forEach(rel => {
-      if (positions[rel.target_id]) {
-        allEdges.push({
-          fromId: c.id,
-          toId: rel.target_id,
-          affinity: rel.affinity ?? 0,
-          priority: rel.priority ?? 10,
-          notes: rel.notes,
-          chapter: rel.chapter,
-          label: rel.label,
-        });
-      }
+    // Pick the latest snapshot whose chapter ≤ effTo. If none, fall back
+    // to the top-level relationships.
+    const snaps = (c.dynamic_snapshots || []).slice().sort((a, b) => {
+      const an = parseChapterMarker(a.chapter) ?? -Infinity;
+      const bn = parseChapterMarker(b.chapter) ?? -Infinity;
+      return an - bn;
+    });
+    const activeSnap = snaps.filter(s => {
+      const sn = parseChapterMarker(s.chapter);
+      return sn !== null && sn <= effTo;
+    }).pop();
+    const relsForGraph = activeSnap?.relationships?.length
+      ? activeSnap.relationships
+      : (c.relationships || []);
+    relsForGraph.forEach(rel => {
+      if (!positions[rel.target_id]) return;
+      if (!inWindow(rel.chapter)) return;
+      allEdges.push({
+        fromId: c.id, toId: rel.target_id,
+        affinity: rel.affinity ?? 0, priority: rel.priority ?? 10,
+        notes: rel.notes, chapter: rel.chapter, label: rel.label,
+        source: activeSnap?.relationships?.length ? "snapshot" : "top",
+      });
     });
   });
 
@@ -1399,13 +1442,22 @@ function GlobalRelationshipGraph({ characters, onSelectCharacter, fullHeight }: 
           <span><span style={{ color: "var(--gold)" }}>&#9632;</span> 好感 -50~0</span>
           <span><span style={{ color: "var(--error)" }}>&#9632;</span> 好感 &lt;-50</span>
         </div>
+        {hasTimeline && (
+          <ChapterTimeline
+            min={chapterMin} max={chapterMax}
+            from={effFrom} to={effTo}
+            marks={allChapterNums}
+            onChange={(f, t) => { setTlFrom(f); setTlTo(t); }}
+          />
+        )}
         <div className="text-xs text-muted" style={{ textAlign: "center", marginTop: 4 }}>
-          点击角色节点跳转到详情
+          点击角色节点跳转到详情{hasTimeline ? "；拖动时间轴查看不同章节的关系状态" : ""}
         </div>
       </div>
     </div>
   );
 }
+
 
 /* ---- Single Character Relationship Graph (3.2.4) ---- */
 function SingleCharRelGraph({ character, allCharacters, onSelectCharacter }: {
