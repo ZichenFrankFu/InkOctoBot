@@ -96,6 +96,32 @@ def test_dynamic_snapshots_round_trip() -> None:
     assert s1["stage"] == "倾向"
 
 
+def test_decision_seed_round_trip() -> None:
+    """The 决策参数 ``decision_seed`` toggle lives on the snapshot. Both
+    a numeric seed and an explicit ``None`` must round-trip so the
+    user's choice ("locked at N" vs "fresh random each generation")
+    survives reload."""
+    db = _fresh_db()
+    saved = project_store.upsert_character(db, {
+        "project_id": "p1",
+        "name": "苏歌",
+        "dynamic_snapshots": [
+            {"chapter": "第1章", "decision_seed": 42424},
+            {"chapter": "第3章", "decision_seed": None},
+        ],
+    })
+    snaps = saved.get("dynamic_snapshots") or []
+    assert len(snaps) == 2
+    assert snaps[0]["decision_seed"] == 42424
+    assert snaps[1]["decision_seed"] is None
+
+    reload = project_store.get_character(db, saved["id"])
+    snaps = (reload or {}).get("dynamic_snapshots") or []
+    assert len(snaps) == 2
+    assert snaps[0]["decision_seed"] == 42424
+    assert snaps[1]["decision_seed"] is None
+
+
 def test_upsert_preserves_snapshots_on_unrelated_field_change() -> None:
     """Re-saving a character with a tweaked top-level field must not
     drop the snapshots that were attached on the previous write."""

@@ -181,6 +181,11 @@ export interface DynamicPropertySnapshot {
   chapter: string;        // chapter or in-story time marker
   /** 转变档位 — one of "动摇" / "试探" / "倾向" (or empty / "无"). */
   stage?: string;
+  /** Fixed random seed for the 决策参数 sampling at generation time.
+   *  When set, the generation pipeline must seed its RNG so the same
+   *  inputs reproduce the same decisions. ``null`` / undefined means
+   *  use a fresh random seed each generation (non-reproducible). */
+  decision_seed?: number | null;
   personality?: string;
   background?: string;
   speech_style?: string;

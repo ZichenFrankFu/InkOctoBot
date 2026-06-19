@@ -459,11 +459,15 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     setFlashcardIndex(snaps.length);
   };
 
-  const updateSnapshot = (idx: number, key: string, val: string) => {
-    if (!editing) return;
-    const snaps = [...(editing.dynamic_snapshots || [])];
-    snaps[idx] = { ...snaps[idx], [key]: val };
-    setEditing({ ...editing, dynamic_snapshots: snaps });
+  const updateSnapshot = (idx: number, key: string, val: any) => {
+    // Functional setEditing so consecutive in-tick updates compose
+    // against the latest queued state instead of overwriting each other.
+    setEditing(prev => {
+      if (!prev) return prev;
+      const snaps = [...(prev.dynamic_snapshots || [])];
+      snaps[idx] = { ...snaps[idx], [key]: val };
+      return { ...prev, dynamic_snapshots: snaps };
+    });
     setDirty(true);
   };
 
@@ -1176,7 +1180,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                       const isEditing = editingRelRows.has(relIdx);
                                       const rowActions = (
                                         <>
-                                          <RowIconButton symbol={isEditing ? "✓" : "✎"}
+                                          <RowIconButton symbol={isEditing ? "^" : "✎"}
                                             title={isEditing ? "收起" : "编辑"}
                                             onClick={() => toggleRelEdit(relIdx)} />
                                           <RowIconButton symbol="×"
@@ -1295,7 +1299,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                       const isEditing = editingHiddenRows.has(hIdx);
                                       const rowActions = (
                                         <>
-                                          <RowIconButton symbol={isEditing ? "✓" : "✎"}
+                                          <RowIconButton symbol={isEditing ? "^" : "✎"}
                                             title={isEditing ? "收起" : "编辑"}
                                             onClick={() => toggleHiddenEdit(hIdx)} />
                                           <RowIconButton symbol="×"
@@ -1373,6 +1377,65 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                 <ParamSlider name="冲动概率" value={snapLayerB.impulse_probability ?? DEFAULT_LAYER_B.impulse_probability} min={0} max={1} step={0.05} onChange={v => updateSnapshotLayerB(flashcardIndex, "impulse_probability", v)} />
                                 <ParamSlider name="社交频率" value={snapLayerB.social_frequency ?? DEFAULT_LAYER_B.social_frequency} min={0} max={10} step={0.5} onChange={v => updateSnapshotLayerB(flashcardIndex, "social_frequency", v)} />
 
+                                {/* ── 固定随机种子 ──
+                                    勾上后，生成时该角色的随机决策都用这颗种子，
+                                    同样的输入永远抽到同样的选择 → 可复现 */}
+                                <div style={{
+                                  marginTop: 12, padding: "10px 12px",
+                                  background: "var(--bg-surface)", borderRadius: 6,
+                                  border: "1px solid var(--border-subtle)",
+                                }}>
+                                  <label style={{
+                                    display: "flex", alignItems: "center", gap: 8,
+                                    cursor: "pointer", fontSize: 12,
+                                    color: "var(--text-primary)", fontWeight: 600,
+                                  }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={snap.decision_seed != null}
+                                      onChange={e => {
+                                        if (e.target.checked) {
+                                          updateSnapshot(flashcardIndex, "decision_seed", Math.floor(Math.random() * 1_000_000));
+                                        } else {
+                                          updateSnapshot(flashcardIndex, "decision_seed", null);
+                                        }
+                                      }}
+                                      style={{ accentColor: "var(--accent)" }}
+                                    />
+                                    固定随机种子
+                                    {snap.decision_seed != null && (
+                                      <input
+                                        type="number"
+                                        value={snap.decision_seed}
+                                        onChange={e => {
+                                          const v = parseInt(e.target.value, 10);
+                                          updateSnapshot(flashcardIndex, "decision_seed", Number.isFinite(v) ? v : 0);
+                                        }}
+                                        className="input"
+                                        style={{ width: 120, fontSize: 11, padding: "3px 8px", marginLeft: 4 }}
+                                      />
+                                    )}
+                                    {snap.decision_seed != null && (
+                                      <button className="btn-ghost"
+                                        style={{ fontSize: 10, padding: "2px 8px", marginLeft: "auto" }}
+                                        onClick={() => updateSnapshot(flashcardIndex, "decision_seed", Math.floor(Math.random() * 1_000_000))}
+                                        title="重新生成一个种子"
+                                      >
+                                        重抽
+                                      </button>
+                                    )}
+                                  </label>
+                                  <div style={{
+                                    fontSize: 10, color: "var(--text-tertiary)",
+                                    marginTop: 6, lineHeight: 1.6,
+                                  }}>
+                                    勾上后 AI 生成时角色的随机决策会以这颗种子为锚 ——
+                                    {snap.decision_seed != null
+                                      ? "同样的章节、同样的种子，每次生成都会得到同样的行动序列，便于复现某次满意的稿子。"
+                                      : "不勾则每次生成抽不同的随机种子，结果不固定。"}
+                                  </div>
+                                </div>
+
                                 {decisionPreview && (
                                   <div style={{
                                     marginTop: 14, padding: "12px 14px",
@@ -1390,6 +1453,15 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                         onClick={() => setDecisionPreview(null)}>
                                         收起
                                       </button>
+                                    </div>
+                                    <div style={{
+                                      padding: "8px 10px", marginBottom: 10,
+                                      background: "var(--accent-subtle)", borderRadius: 6,
+                                      borderLeft: "3px solid var(--accent)",
+                                      fontSize: 10.5, lineHeight: 1.6, color: "var(--text-secondary)",
+                                    }}>
+                                      下表展示的是「当前参数下，角色面对每类情境时偏向 A / B 选项的概率」。生成正文时，AI 会按这些概率为该角色随机抽取行动；
+                                      如需让随机结果可复现，请在下方开启「固定随机种子」。
                                     </div>
                                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                                       {decisionPreview.map((row, i) => {
@@ -1920,7 +1992,7 @@ function simulateDecisionActions(layerB: CharacterLayerB): Array<{
       reason: "社交频率 + 冲动",
     },
     {
-      txt: "面对自身的失败或挫败",
+      txt: "面对挫折",
       pB: 0.3 + impulse * 0.4 - (lossA / 5) * 0.2,
       a: "退避反思", b: "立即再来",
       reason: "冲动 vs 损失厌恶",
