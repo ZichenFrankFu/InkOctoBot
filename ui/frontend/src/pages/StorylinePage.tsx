@@ -30,6 +30,18 @@ const THREAD_STATUS_LABEL: Record<string, string> = {
   setup: "开启", building: "推进", climax: "高潮",
   resolution: "完结", dormant: "搁置",
 };
+// 编辑入口（情节详情）暴露给用户的精简状态选项；legacy 数值在 UI 中
+// 用 fallback option 显示原值，但不强制用户继续使用。
+const THREAD_STATUS_EDIT: Record<string, string> = {
+  setup: "开启", building: "推进", resolution: "完结",
+};
+const HOOK_STATUS_EDIT: Record<string, string> = {
+  open: "埋设", progressing: "推进", resolved: "已回收",
+};
+// 故事中时间结构化输入：天 + 时段（固定字典）。Free-text 容易写出
+// 「第3天 黄昏」/「第3天·黄昏」/「Day3-dusk」等不一致格式，影响时间
+// 轴的去重和高亮 grouping。
+const TIME_PERIODS = ["清晨", "上午", "正午", "午后", "黄昏", "夜", "深夜"];
 
 // ── Lightweight types for storyland data (主线/支线 + 伏笔) shown in the
 //    top summary strip and the per-chapter chips. We only need the
@@ -519,6 +531,17 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     setDirty(true);
   };
 
+  // --- Status edit (lives on the thread/hook globally, but the UI for
+  //     it is reached through the 情节详情 panel). ---
+  const updateThreadStatus = useCallback(async (id: string, status: string) => {
+    try { await apiPut(`/api/storyland/subplots/${id}`, { status }); await reloadThreadsHooks(); }
+    catch (e: any) { toast(e?.message || "更新失败", "error"); }
+  }, [reloadThreadsHooks, toast]);
+  const updateHookStatus = useCallback(async (id: string, status: string) => {
+    try { await apiPut(`/api/storyland/hooks/${id}`, { status }); await reloadThreadsHooks(); }
+    catch (e: any) { toast(e?.message || "更新失败", "error"); }
+  }, [reloadThreadsHooks, toast]);
+
   // --- Drag with row-snap ---
   // Each chapter row exposes its bounds via a ref keyed by chap_num so the
   // drop-target detection on mouseUp doesn't need elementFromPoint walking.
@@ -657,6 +680,36 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
 
   // --- Computed ---
   const sel = useMemo(() => nodes.find(n => n.id === selected), [nodes, selected]);
+
+  // ── 详情面板用的辅助派生 ──
+  // 章节号下拉：项目中所有已知章号（来自 editor 大纲）。
+  // 故事中时间：结构化 "第N天·时段" → 拆 day / period 双控件。
+  // 地点：复用项目中已出现过的地点，加 「新增」 escape。
+  // 所属故事线：主线先于支线，并保留各自创建顺序。
+  const chapterOptions = useMemo(
+    () => Array.from(chapterTitles.keys()).sort((a, b) => a - b),
+    [chapterTitles],
+  );
+  const uniqueLocations = useMemo(() => {
+    const s = new Set<string>();
+    nodes.forEach(n => {
+      const v = (n.location || "").trim();
+      if (v) s.add(v);
+    });
+    return Array.from(s).sort();
+  }, [nodes]);
+  const sortedThreadsForPanel = useMemo(() => {
+    return [...threads].sort((a, b) =>
+      a.thread_type === "main" && b.thread_type === "sub" ? -1 :
+      a.thread_type === "sub" && b.thread_type === "main" ? 1 : 0
+    );
+  }, [threads]);
+  const parseStoryTime = (t: string | undefined): { day: string; period: string } => {
+    const m = (t || "").match(/^第(\d+)天·(.+)$/);
+    return m ? { day: m[1], period: m[2] } : { day: "", period: "" };
+  };
+  const formatStoryTime = (day: string, period: string): string =>
+    day && period ? `第${day}天·${period}` : (day ? `第${day}天` : "");
 
   // --- 故事线 / 伏笔 多选筛选 ──
   // Empty set = highlight none (default — all lanes visible equally).
@@ -1702,35 +1755,30 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                 <SectionHeader>时空</SectionHeader>
                 <div className="field mb-12">
                   <label className="label">章节号</label>
-                  <input
-                    className="input"
-                    type="number"
+                  <select
+                    className="select"
                     value={sel.chapter_num ?? ""}
                     onChange={e => updateNode(sel.id, "chapter_num", e.target.value ? +e.target.value : undefined)}
-                    style={{ width: 100 }}
-                  />
+                    style={{ width: "100%", fontSize: 12 }}>
+                    <option value="">未指定</option>
+                    {chapterOptions.map(n => (
+                      <option key={n} value={n}>
+                        第{n}章{chapterTitles.get(n) ? ` · ${chapterTitles.get(n)}` : ""}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <div className="field mb-12">
-                  <label className="label">故事中时间</label>
-                  <input
-                    className="input"
-                    value={sel.time || ""}
-                    onChange={e => updateNode(sel.id, "time", e.target.value)}
-                    placeholder="例：第3天·黄昏（与故事中世界保持一致的格式）"
-                  />
-                  <div className="text-xs" style={{ color: "var(--text-tertiary)", marginTop: 4, lineHeight: 1.4 }}>
-                    用「第N天·时段」格式；同一时间的多张情节卡会在下方时间轴合并为一个点，并在选中时整组高亮。
-                  </div>
-                </div>
-                <div className="field mb-12">
-                  <label className="label">地点</label>
-                  <input
-                    className="input"
-                    value={sel.location || ""}
-                    onChange={e => updateNode(sel.id, "location", e.target.value)}
-                    placeholder="例：云隐山·剑庐"
-                  />
-                </div>
+                <StoryTimeField
+                  value={sel.time || ""}
+                  parse={parseStoryTime}
+                  format={formatStoryTime}
+                  onChange={(v) => updateNode(sel.id, "time", v)}
+                />
+                <LocationField
+                  value={sel.location || ""}
+                  options={uniqueLocations}
+                  onChange={(v) => updateNode(sel.id, "location", v)}
+                />
 
                 <SectionHeader>归属</SectionHeader>
                 <div className="field mb-12">
@@ -1742,42 +1790,65 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                   />
                 </div>
                 <div className="field mb-12">
-                  <label className="label">所属故事线（可多选）</label>
-                  {threads.length === 0 ? (
-                    <div className="text-xs text-muted">（故事中世界尚未创建故事线）</div>
+                  <label className="label">所属故事线（可多选；主线置顶）</label>
+                  {sortedThreadsForPanel.length === 0 ? (
+                    <div className="text-xs text-muted">（尚未创建故事线；在「故事线与伏笔总览」中新增）</div>
                   ) : (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                      {threads.map((t, ti) => {
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {sortedThreadsForPanel.map((t) => {
                         const on = readThreadIds(sel).includes(t.thread_id);
-                        const color = COLORS[ti % COLORS.length];
+                        const isMain = t.thread_type === "main";
+                        const color = isMain ? "var(--jade)" : "var(--text-secondary)";
+                        const bg = isMain ? "var(--jade-subtle)" : "var(--bg-secondary)";
                         return (
-                          <button key={t.thread_id}
-                            onClick={() => {
-                              const cur = readThreadIds(sel);
-                              const next = cur.includes(t.thread_id)
-                                ? cur.filter(id => id !== t.thread_id)
-                                : [...cur, t.thread_id];
-                              updateNode(sel.id, "thread_ids", next);
-                              // Drop the legacy singular field to keep
-                              // data consistent on save.
-                              updateNode(sel.id, "thread_id", undefined);
-                            }}
-                            title={t.description || (t.thread_type === "main" ? "主线" : "支线")}
-                            style={{
-                              fontSize: 11, padding: "3px 10px",
-                              borderRadius: 12, cursor: "pointer",
-                              border: `1.5px solid ${color}`,
-                              background: on ? color : "transparent",
-                              color: on ? "#fff" : color,
-                              fontWeight: 600,
-                              display: "inline-flex", alignItems: "center", gap: 5,
-                            }}>
-                            <span style={{
-                              width: 6, height: 6, borderRadius: "50%",
-                              background: on ? "#fff" : color,
-                            }} />
-                            {t.thread_type === "main" ? "主" : "支"}·{t.name}
-                          </button>
+                          <div key={t.thread_id} style={{
+                            display: "flex", alignItems: "center", gap: 4,
+                          }}>
+                            <button
+                              onClick={() => {
+                                const cur = readThreadIds(sel);
+                                const next = cur.includes(t.thread_id)
+                                  ? cur.filter(id => id !== t.thread_id)
+                                  : [...cur, t.thread_id];
+                                updateNode(sel.id, "thread_ids", next);
+                                updateNode(sel.id, "thread_id", undefined);
+                              }}
+                              title={t.description || (isMain ? "主线" : "支线")}
+                              style={{
+                                fontSize: 11, padding: "4px 10px",
+                                borderRadius: 12, cursor: "pointer",
+                                border: `1.5px solid ${color}`,
+                                background: on ? color : bg,
+                                color: on ? "#fff" : color,
+                                fontWeight: 600,
+                                display: "inline-flex", alignItems: "center", gap: 5,
+                                flex: 1, justifyContent: "flex-start",
+                              }}>
+                              <span style={{
+                                width: 6, height: 6, borderRadius: "50%",
+                                background: on ? "#fff" : color,
+                              }} />
+                              {isMain ? "主" : "支"}·{t.name}
+                            </button>
+                            {on && (
+                              <select
+                                value={t.status}
+                                onChange={e => updateThreadStatus(t.thread_id, e.target.value)}
+                                title="设置故事线状态"
+                                style={{
+                                  fontSize: 11, padding: "3px 8px", height: 26,
+                                  border: `1px solid ${color}`, borderRadius: 8,
+                                  background: bg, color: color, cursor: "pointer",
+                                }}>
+                                {!Object.keys(THREAD_STATUS_EDIT).includes(t.status) && t.status && (
+                                  <option value={t.status}>{THREAD_STATUS_LABEL[t.status] || t.status}</option>
+                                )}
+                                {Object.entries(THREAD_STATUS_EDIT).map(([k, v]) => (
+                                  <option key={k} value={k}>{v}</option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
                         );
                       })}
                     </div>
@@ -1786,39 +1857,73 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                 <div className="field mb-12">
                   <label className="label">所属伏笔（可多选）</label>
                   {hooks.length === 0 ? (
-                    <div className="text-xs text-muted">（故事中世界尚未埋设伏笔）</div>
+                    <div className="text-xs text-muted">（尚未埋设伏笔；在「故事线与伏笔总览」中新增）</div>
                   ) : (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                      {hooks.map((h, hi) => {
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {hooks.map((h) => {
                         const on = readHookIds(sel).includes(h.id);
-                        const color = COLORS[(hi + threads.length) % COLORS.length];
-                        const label = (h.title || h.content || "（无内容）").slice(0, 14);
+                        const label = (h.title || h.content || "（无内容）").slice(0, 18);
+                        const isResolved = h.status === "resolved";
                         return (
-                          <button key={h.id}
-                            onClick={() => {
-                              const cur = readHookIds(sel);
-                              const next = cur.includes(h.id)
-                                ? cur.filter(id => id !== h.id)
-                                : [...cur, h.id];
-                              updateNode(sel.id, "hook_ids", next);
-                              updateNode(sel.id, "hook_id", undefined);
-                            }}
-                            title={h.content}
-                            style={{
-                              fontSize: 11, padding: "3px 10px",
-                              borderRadius: 12, cursor: "pointer",
-                              border: `1.5px solid ${color}`,
-                              background: on ? color : "transparent",
-                              color: on ? "#fff" : color,
-                              fontWeight: 600,
-                              display: "inline-flex", alignItems: "center", gap: 5,
-                            }}>
-                            <span style={{
-                              width: 6, height: 6, borderRadius: "50%",
-                              background: on ? "#fff" : color,
-                            }} />
-                            伏·{label}
-                          </button>
+                          <div key={h.id} style={{
+                            display: "flex", alignItems: "center", gap: 4,
+                          }}>
+                            <button
+                              onClick={() => {
+                                const cur = readHookIds(sel);
+                                const next = cur.includes(h.id)
+                                  ? cur.filter(id => id !== h.id)
+                                  : [...cur, h.id];
+                                updateNode(sel.id, "hook_ids", next);
+                                updateNode(sel.id, "hook_id", undefined);
+                              }}
+                              title={h.content}
+                              style={{
+                                fontSize: 11, padding: "4px 10px",
+                                borderRadius: 12, cursor: "pointer",
+                                border: "1.5px solid var(--gold)",
+                                background: on ? "var(--gold)" : "var(--gold-subtle)",
+                                color: on ? "#fff" : "var(--gold)",
+                                fontWeight: 600,
+                                display: "inline-flex", alignItems: "center", gap: 5,
+                                flex: 1, justifyContent: "flex-start",
+                              }}>
+                              <span style={{
+                                width: 6, height: 6, borderRadius: "50%",
+                                background: on ? "#fff" : "var(--gold)",
+                              }} />
+                              伏·{label}
+                            </button>
+                            {on && (
+                              <span style={{
+                                fontSize: 10, padding: "3px 8px", height: 26,
+                                border: "1px solid var(--gold)", borderRadius: 8,
+                                background: "var(--gold-subtle)", color: "var(--gold)",
+                                display: "inline-flex", alignItems: "center", gap: 6,
+                                whiteSpace: "nowrap",
+                              }} title="伏笔状态（推进态由系统在章节推进时自动管理）">
+                                {HOOK_STATUS_EDIT[h.status] || HOOK_STATUS_LABEL[h.status] || h.status}
+                                {!isResolved && (
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        await apiPost(`/api/data/foreshadowing/${h.id}/fully-resolve`, { chapter_num: sel.chapter_num || null });
+                                        await reloadThreadsHooks();
+                                      } catch (err: any) { toast(err?.message || "回收失败", "error"); }
+                                    }}
+                                    title="标记已回收"
+                                    style={{
+                                      border: "none", background: "transparent",
+                                      color: "var(--gold)", cursor: "pointer",
+                                      padding: 0, fontSize: 10, fontWeight: 700,
+                                      textDecoration: "underline",
+                                    }}>
+                                    回收
+                                  </button>
+                                )}
+                              </span>
+                            )}
+                          </div>
                         );
                       })}
                     </div>
@@ -2244,6 +2349,109 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 }
 
 
+/* ── StoryTimeField ──
+ * 结构化「第N天·时段」输入，替代 free-text — 避免出现「第3天 黄昏」/
+ * 「Day3」等异构写法导致时间轴去重失败。Day 是 number input (≥1)，
+ * 时段是 TIME_PERIODS 固定下拉。任一为空 → 写空字符串 (即「未指定」)。 */
+function StoryTimeField({ value, parse, format, onChange }: {
+  value: string;
+  parse: (t: string) => { day: string; period: string };
+  format: (day: string, period: string) => string;
+  onChange: (v: string) => void;
+}) {
+  const { day, period } = parse(value);
+  const setDay = (d: string) => onChange(format(d, period));
+  const setPeriod = (p: string) => onChange(format(day, p));
+  return (
+    <div className="field mb-12">
+      <label className="label">故事中时间</label>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>第</span>
+        <input className="input" type="number" min={1}
+          value={day} placeholder="N"
+          onChange={e => setDay(e.target.value)}
+          style={{ width: 70, fontSize: 12 }} />
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>天 ·</span>
+        <select className="select" value={period}
+          onChange={e => setPeriod(e.target.value)}
+          style={{ fontSize: 12, flex: 1 }}>
+          <option value="">时段</option>
+          {TIME_PERIODS.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+      </div>
+      <div className="text-xs" style={{ color: "var(--text-tertiary)", marginTop: 4, lineHeight: 1.4 }}>
+        用「第N天·时段」结构；同一时间的多张情节卡会在下方时间轴合并为一个点。
+      </div>
+    </div>
+  );
+}
+
+
+/* ── LocationField ──
+ * 单值受限地点选择：dropdown 列出当前项目里已出现过的地点，外加
+ * 「+ 新增地点…」escape。新增模式下展开一行 text input，回车 / 失焦
+ * 保存。若用户在 dropdown 选了已存在的地点，立即写回；选了「+ 新增…」
+ * 进入 inline 输入。比 free-text 减少拼写歧义。 */
+function LocationField({ value, options, onChange }: {
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+}) {
+  const [adding, setAdding] = React.useState(false);
+  const [draft, setDraft] = React.useState("");
+
+  React.useEffect(() => {
+    // 如果当前 value 既非空又不在 options 里（legacy 自定义值），
+    // 用户应当看到这个值仍被选中，dropdown 加一条额外 option。
+  }, [value, options]);
+
+  const inOptions = !value || options.includes(value);
+
+  const commitNew = () => {
+    const v = draft.trim();
+    if (v) onChange(v);
+    setDraft("");
+    setAdding(false);
+  };
+
+  return (
+    <div className="field mb-12">
+      <label className="label">地点</label>
+      {adding ? (
+        <div style={{ display: "flex", gap: 4 }}>
+          <input className="input" autoFocus
+            placeholder="新地点名（回车确认）"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onBlur={commitNew}
+            onKeyDown={e => {
+              if (e.key === "Enter") commitNew();
+              if (e.key === "Escape") { setDraft(""); setAdding(false); }
+            }}
+            style={{ fontSize: 12, flex: 1 }} />
+          <button className="btn-ghost"
+            onClick={() => { setDraft(""); setAdding(false); }}
+            style={{ fontSize: 11, padding: "4px 10px" }}>取消</button>
+        </div>
+      ) : (
+        <select className="select"
+          value={value}
+          onChange={e => {
+            if (e.target.value === "__new__") setAdding(true);
+            else onChange(e.target.value);
+          }}
+          style={{ width: "100%", fontSize: 12 }}>
+          <option value="">未指定</option>
+          {!inOptions && <option value={value}>{value}</option>}
+          {options.map(l => <option key={l} value={l}>{l}</option>)}
+          <option value="__new__">+ 新增地点…</option>
+        </select>
+      )}
+    </div>
+  );
+}
+
+
 /* ── ThreadSummaryStrip ──
  * Compact CRUD area shown above the timeline. Each row is
  *   [label] [chip…] [+ 新增 inline-form-toggle]
@@ -2296,10 +2504,6 @@ function ThreadSummaryStrip({ projectId, threads, hooks, reload, toast }: {
     try { await apiDelete(`/api/storyland/hooks/${id}`); await reload(); }
     catch (e: any) { toast(e.message || "删除失败", "error"); }
   };
-  const updateThreadStatus = async (id: string, status: string) => {
-    try { await apiPut(`/api/storyland/subplots/${id}`, { status }); await reload(); }
-    catch (e: any) { toast(e.message || "更新失败", "error"); }
-  };
 
   // Color tokens — NEVER red.
   const mainBg = "var(--jade-subtle)", mainFg = "var(--jade)", mainBorder = "var(--jade)";
@@ -2307,7 +2511,7 @@ function ThreadSummaryStrip({ projectId, threads, hooks, reload, toast }: {
   const hookBg = "var(--gold-subtle)", hookFg = "var(--gold)", hookBorder = "var(--gold)";
 
   const threadChip = (t: Thread, isMain: boolean) => (
-    <span key={t.thread_id} className="tag" title={t.description}
+    <span key={t.thread_id} className="tag" title={t.description || ""}
       style={{
         fontSize: 10, padding: "1px 4px 1px 8px",
         background: isMain ? mainBg : subBg,
@@ -2315,17 +2519,12 @@ function ThreadSummaryStrip({ projectId, threads, hooks, reload, toast }: {
         border: `1px solid ${isMain ? mainBorder : subBorder}`,
         display: "inline-flex", alignItems: "center", gap: 4,
       }}>
-      {t.name}
-      <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>第{t.start_chapter}章起</span>
-      <select value={t.status}
-        onChange={e => updateThreadStatus(t.thread_id, e.target.value)}
-        style={{
-          fontSize: 9, padding: "0 4px", height: 16,
-          border: "none", background: "transparent",
-          color: isMain ? mainFg : subFg, cursor: "pointer",
-        }}>
-        {Object.entries(THREAD_STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-      </select>
+      <span style={{ fontWeight: 600 }}>{t.name}</span>
+      {t.description && (
+        <span style={{ fontSize: 9, color: "var(--text-tertiary)", opacity: 0.9 }}>
+          {t.description.slice(0, 28)}{t.description.length > 28 ? "…" : ""}
+        </span>
+      )}
       <button onClick={() => delThread(t.thread_id)} title="删除"
         style={{
           border: "none", background: "transparent", padding: "0 4px",
@@ -2335,26 +2534,32 @@ function ThreadSummaryStrip({ projectId, threads, hooks, reload, toast }: {
     </span>
   );
 
-  const hookChip = (h: Hook) => (
-    <span key={h.id} className="tag" title={h.content}
-      style={{
-        fontSize: 10, padding: "1px 4px 1px 8px",
-        background: hookBg, color: hookFg,
-        border: `1px solid ${hookBorder}`,
-        display: "inline-flex", alignItems: "center", gap: 4,
-      }}>
-      {(h.title || h.content || "").slice(0, 18)}
-      <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>
-        {h.expected_payoff_chapter ? `收于第${h.expected_payoff_chapter}章` : "不限期"}
-      </span>
-      <button onClick={() => delHook(h.id)} title="删除"
+  const hookChip = (h: Hook) => {
+    const name = (h.title || h.content || "").slice(0, 18);
+    const descr = h.title && h.content ? h.content : "";
+    return (
+      <span key={h.id} className="tag" title={h.content}
         style={{
-          border: "none", background: "transparent", padding: "0 4px",
-          fontSize: 11, lineHeight: 1, cursor: "pointer",
-          color: hookFg, opacity: 0.7,
-        }}>×</button>
-    </span>
-  );
+          fontSize: 10, padding: "1px 4px 1px 8px",
+          background: hookBg, color: hookFg,
+          border: `1px solid ${hookBorder}`,
+          display: "inline-flex", alignItems: "center", gap: 4,
+        }}>
+        <span style={{ fontWeight: 600 }}>{name}</span>
+        {descr && (
+          <span style={{ fontSize: 9, color: "var(--text-tertiary)", opacity: 0.9 }}>
+            {descr.slice(0, 28)}{descr.length > 28 ? "…" : ""}
+          </span>
+        )}
+        <button onClick={() => delHook(h.id)} title="删除"
+          style={{
+            border: "none", background: "transparent", padding: "0 4px",
+            fontSize: 11, lineHeight: 1, cursor: "pointer",
+            color: hookFg, opacity: 0.7,
+          }}>×</button>
+      </span>
+    );
+  };
 
   const newRowForm = (kind: "main" | "sub" | "hook") => (
     <div className="flex" style={{ gap: 4, alignItems: "center" }}>
@@ -2476,29 +2681,57 @@ function CharacterSelector({ label, value, options, onChange }: {
       <div
         onClick={() => setOpen(o => !o)}
         style={{
-          display: "flex", flexWrap: "wrap", gap: 4,
-          minHeight: 32, padding: "4px 8px",
-          background: "var(--bg-surface)",
-          border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+          display: "flex", flexWrap: "wrap", gap: 6,
+          minHeight: 38, padding: "6px 10px",
+          background: open ? "var(--bg-surface)" : "var(--bg-card, var(--bg-surface))",
+          border: `1px solid ${open ? "var(--accent)" : "var(--border)"}`,
+          borderRadius: 8,
           cursor: "pointer",
+          transition: "border-color 0.15s, background 0.15s",
+          alignItems: "center",
         }}>
         {value.length === 0 ? (
-          <span className="text-xs text-muted">点击选择 / 添加角色…</span>
+          <span style={{
+            fontSize: 12, color: "var(--text-tertiary)",
+            display: "inline-flex", alignItems: "center", gap: 6,
+          }}>
+            <span style={{ fontSize: 14, lineHeight: 1, opacity: 0.7 }}>+</span>
+            点击选择角色...
+          </span>
         ) : value.map(name => {
           const known = options.find(o => o.name === name);
           return (
-            <span key={name} className="tag"
+            <span key={name}
               style={{
-                fontSize: 10,
+                fontSize: 11, padding: "3px 4px 3px 10px",
                 background: known ? "var(--bg-secondary)" : "transparent",
                 color: known ? "var(--text-primary)" : "var(--text-tertiary)",
-                borderColor: known ? "var(--border)" : "var(--border-subtle)",
+                border: `1px solid ${known ? "var(--border)" : "var(--border-subtle)"}`,
+                borderRadius: 12,
                 fontStyle: known ? "normal" : "italic",
+                fontWeight: 500,
+                display: "inline-flex", alignItems: "center", gap: 4,
               }}
               title={known ? "已登记角色" : "临时角色（未在角色库）"}>
+              {known && (
+                <span style={{
+                  width: 16, height: 16, borderRadius: "50%",
+                  background: "var(--accent-subtle)", color: "var(--accent)",
+                  fontSize: 10, fontWeight: 700,
+                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  marginRight: 2,
+                }}>
+                  {name.slice(0, 1)}
+                </span>
+              )}
               {name}
-              <span onClick={(e) => { e.stopPropagation(); toggle(name); }}
-                style={{ marginLeft: 4, cursor: "pointer", color: "var(--text-tertiary)" }}>×</span>
+              <button onClick={(e) => { e.stopPropagation(); toggle(name); }}
+                title="移除"
+                style={{
+                  border: "none", background: "transparent", padding: "0 4px",
+                  cursor: "pointer", color: "var(--text-tertiary)",
+                  fontSize: 12, lineHeight: 1,
+                }}>×</button>
             </span>
           );
         })}
@@ -2507,13 +2740,13 @@ function CharacterSelector({ label, value, options, onChange }: {
         <div style={{
           position: "absolute", zIndex: 50, left: 0, right: 0, top: "100%",
           marginTop: 4, background: "var(--bg-surface)",
-          border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-          maxHeight: 260, overflowY: "auto",
+          border: "1px solid var(--border)", borderRadius: 8,
+          boxShadow: "0 8px 20px rgba(0,0,0,0.12)",
+          maxHeight: 280, overflowY: "auto",
         }}>
           {options.length === 0 ? (
-            <div className="text-xs text-muted" style={{ padding: 10 }}>
-              角色卡中暂无角色。
+            <div className="text-xs text-muted" style={{ padding: 12, textAlign: "center" }}>
+              角色卡中暂无角色 — 请到「角色管理」创建。
             </div>
           ) : (
             options.map(opt => {
@@ -2522,30 +2755,60 @@ function CharacterSelector({ label, value, options, onChange }: {
                 <div key={opt.id}
                   onClick={() => toggle(opt.name)}
                   style={{
-                    display: "flex", alignItems: "center", gap: 8,
-                    padding: "5px 10px", cursor: "pointer",
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "7px 12px", cursor: "pointer",
                     background: on ? "var(--accent-subtle)" : undefined,
+                    borderLeft: on ? "3px solid var(--accent)" : "3px solid transparent",
+                    transition: "background 0.12s",
+                  }}
+                  onMouseEnter={e => { if (!on) e.currentTarget.style.background = "var(--bg-secondary)"; }}
+                  onMouseLeave={e => { if (!on) e.currentTarget.style.background = ""; }}>
+                  <span style={{
+                    width: 26, height: 26, borderRadius: "50%",
+                    background: on ? "var(--accent)" : "var(--bg-secondary)",
+                    color: on ? "#fff" : "var(--text-primary)",
+                    fontSize: 12, fontWeight: 700,
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    flexShrink: 0,
                   }}>
-                  <input type="checkbox" checked={on} readOnly />
-                  <span style={{ fontSize: 12, fontWeight: 500 }}>{opt.name}</span>
-                  {opt.role && <span className="text-xs text-muted">· {opt.role}</span>}
+                    {opt.name.slice(0, 1)}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+                      {opt.name}
+                    </div>
+                    {opt.role && (
+                      <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 1 }}>
+                        {opt.role}
+                      </div>
+                    )}
+                  </div>
+                  {on && (
+                    <span style={{
+                      fontSize: 10, color: "var(--accent)", fontWeight: 700,
+                    }}>✓</span>
+                  )}
                 </div>
               );
             })
           )}
-          <div style={{ borderTop: "1px solid var(--border)", padding: 8, display: "flex", gap: 6 }}>
+          <div style={{
+            borderTop: "1px solid var(--border)",
+            padding: "8px 10px", display: "flex", gap: 6,
+            background: "var(--bg-secondary)",
+          }}>
             <input
               className="input" value={customInput}
               onChange={e => setCustomInput(e.target.value)}
-              placeholder="临时角色名（不在角色库）"
-              style={{ flex: 1, fontSize: 11, padding: "3px 8px" }}
+              placeholder="+ 临时角色名（不在角色库中）"
+              style={{ flex: 1, fontSize: 11, padding: "4px 8px" }}
               onKeyDown={e => {
                 if (e.key === "Enter" && customInput.trim()) {
                   toggle(customInput.trim());
                   setCustomInput("");
                 }
               }} />
-            <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
+            <button className="btn" style={{ fontSize: 10, padding: "2px 12px" }}
               disabled={!customInput.trim()}
               onClick={() => { toggle(customInput.trim()); setCustomInput(""); }}>
               添加
