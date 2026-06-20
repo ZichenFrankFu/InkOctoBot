@@ -7,7 +7,9 @@ const uid = () => `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 // Muted ink-painting palette — 6 desaturated tones so per-情节 cards stay
 // distinct without fighting the page's accent / gold / neutral language.
 // Used as the card's top stripe and the bottom strip's left edge ONLY.
-const COLORS = ["#a04545", "#5a8c6f", "#4a6794", "#c08a3e", "#856a9c", "#8b5e3c"];
+// Red is reserved for the SELECTED state (var(--accent)), so the
+// reddish 朱砂 is intentionally absent.
+const COLORS = ["#5a8c6f", "#4a6794", "#c08a3e", "#856a9c", "#8b5e3c", "#3b7a8c"];
 const NODE_W = 220;
 const NODE_H = 120;
 const HEADER_H = 56;
@@ -417,6 +419,12 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   const cardRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const rowsContainerRef = useRef<HTMLDivElement | null>(null);
   const [cardRects, setCardRects] = useState<Map<string, { cx: number; top: number; bottom: number; left: number; right: number }>>(new Map());
+
+  // ── 缩放 ──
+  // CSS `zoom` scales both layout AND visuals, so scrollbars, getBounding
+  // ClientRect, and the SVG overlay all stay in sync with the rendered
+  // size — no need to divide measured coords by the zoom factor.
+  const [zoom, setZoom] = useState(1);
   const [dragOverChapter, setDragOverChapter] = useState<number | null>(null);
   const [dragPreview, setDragPreview] = useState<{
     id: string; clientX: number; clientY: number;
@@ -712,7 +720,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
       cancelAnimationFrame(raf);
       obs.disconnect();
     };
-  }, [nodes, lanes, activeLaneKeys]);
+  }, [nodes, lanes, activeLaneKeys, zoom]);
 
   // Pre-compute connector paths for the active lanes — each path connects
   // consecutive cards (by chapter then x) belonging to that lane.
@@ -862,7 +870,23 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
             }}>
               {nodes.length} 情节 · {chapterTitles.size || 0} 章
             </span>
-            <div className="flex gap-8" style={{ marginLeft: "auto" }}>
+            <div className="flex gap-8" style={{ marginLeft: "auto", alignItems: "center" }}>
+              {/* Zoom controls — scale the rows canvas via CSS zoom so
+                  layout + SVG measurements scale together. */}
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <button className="btn" style={{ fontSize: 11, padding: "4px 9px" }}
+                  onClick={() => setZoom(z => Math.max(0.4, +(z - 0.1).toFixed(2)))}
+                  title="缩小">−</button>
+                <span style={{ fontSize: 10, color: "var(--text-tertiary)", minWidth: 36, textAlign: "center" }}>
+                  {Math.round(zoom * 100)}%
+                </span>
+                <button className="btn" style={{ fontSize: 11, padding: "4px 9px" }}
+                  onClick={() => setZoom(z => Math.min(2, +(z + 0.1).toFixed(2)))}
+                  title="放大">+</button>
+                <button className="btn" style={{ fontSize: 10, padding: "4px 9px" }}
+                  onClick={() => setZoom(1)}
+                  title="100%">重置</button>
+              </div>
               <button className="btn-primary" style={{ fontSize: 12, padding: "6px 14px" }} onClick={addNode}>
                 + 添加情节
               </button>
@@ -906,7 +930,13 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
             style={{
               position: "relative",
               padding: "24px 20px", minHeight: "100%",
+              // max-content so the column expands to the widest row.
+              // Canvas scrolls horizontally when total width > viewport.
+              // zoom = CSS scaling that ALSO scales layout, so scrollbars
+              // and getBoundingClientRect stay in sync.
+              width: "max-content", minWidth: "calc(100% - 0px)",
               display: "flex", flexDirection: "column", gap: 16,
+              zoom,
             }}
           >
             {/* SVG overlay — draws bezier curves from each card's
@@ -974,6 +1004,11 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                     data-chapter-num={chap_num}
                     style={{
                       display: "flex", alignItems: "stretch",
+                      // Row takes natural width — wider rows extend
+                      // past the canvas so the WHOLE canvas scrolls
+                      // horizontally, instead of each row scrolling
+                      // individually inside its own cards box.
+                      width: "max-content", minWidth: "100%",
                       background: isDropTarget ? "var(--accent-subtle)" : "var(--bg-surface)",
                       border: `1px solid ${isDropTarget ? "var(--accent)" : "var(--border-subtle)"}`,
                       borderRadius: 12,
@@ -1098,10 +1133,9 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         the gutter so the user can trace a thread or 伏笔
                         across chapters at a glance. ── */}
                     <div style={{
-                      flex: 1, minWidth: 0, minHeight: 184,
+                      minHeight: 184,
                       padding: "16px 18px",
                       display: "flex",
-                      overflowX: "auto",
                       gap: 10,
                     }}>
                       {isDropTarget && chapNodes.length === 0 && (
