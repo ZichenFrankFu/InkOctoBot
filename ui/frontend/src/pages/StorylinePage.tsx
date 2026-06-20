@@ -120,13 +120,15 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   const [hooks, setHooks] = useState<Hook[]>([]);
   const [locationEntities, setLocationEntities] = useState<Array<{ entity_id: string; name: string; description?: string }>>([]);
   const [chapterTitles, setChapterTitles] = useState<Map<number, string>>(new Map());
+  const [chapterStatuses, setChapterStatuses] = useState<Map<number, string>>(new Map());
 
   const reloadThreadsHooks = useCallback(async () => {
     const pid = projectId || "default";
     try {
+      // include_resolved=true 让 已回收 view 也能看见用户回收过的伏笔
       const [t, h] = await Promise.all([
         apiGet<{ items: Thread[] }>(`/api/storyland/subplots?project_id=${pid}`),
-        apiGet<{ items: Hook[] }>(`/api/data/foreshadowing/${pid}`),
+        apiGet<{ items: Hook[] }>(`/api/data/foreshadowing/${pid}?include_resolved=true`),
       ]);
       setThreads(t.items || []);
       setHooks(h.items || []);
@@ -153,14 +155,17 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${pid}`)
       .then(r => {
         const titles = new Map<number, string>();
+        const statuses = new Map<number, string>();
         let i = 0;
         (r.volumes || []).forEach(v => (v.chapters || []).forEach(c => {
           i += 1;
           if (c.title) titles.set(i, c.title);
+          if (c.status) statuses.set(i, c.status);
         }));
         setChapterTitles(titles);
+        setChapterStatuses(statuses);
       })
-      .catch(() => setChapterTitles(new Map()));
+      .catch(() => { setChapterTitles(new Map()); setChapterStatuses(new Map()); });
   }, [projectId, reloadThreadsHooks, reloadLocations]);
 
   // Warn before leaving with unsaved changes
@@ -1182,6 +1187,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
             threads={threads} hooks={hooks}
             nodes={nodes}
             chapterTitles={chapterTitles}
+            chapterStatuses={chapterStatuses}
             reload={reloadThreadsHooks}
             toast={toast} />
 
@@ -1458,8 +1464,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         // the stacked color stripes at the top of the card.
                         const _tids = readThreadIds(n);
                         const _hids = readHookIds(n);
-                        const thread = _tids.length ? threads.find(t => t.thread_id === _tids[0]) : undefined;
-                        const hook = _hids.length ? hooks.find(h => h.id === _hids[0]) : undefined;
                         const stripes = nodeStripes(n);
                         // Two independent states on a card:
                         //  · isSelected → red 2px border (picked via click)
@@ -1556,30 +1560,36 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                                 )}
                               </div>
                             )}
-                            {(thread || hook) && (
+                            {(_tids.length > 0 || _hids.length > 0) && (
                               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
-                                {thread && (
-                                  <span style={{
-                                    fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10,
-                                    background: thread.thread_type === "main" ? "var(--jade-subtle)" : "transparent",
-                                    color: thread.thread_type === "main" ? "var(--jade)" : "var(--text-secondary)",
-                                    border: thread.thread_type === "main" ? "1px solid var(--jade)" : "1px solid var(--border-subtle)",
-                                    fontWeight: 500,
-                                  }}
-                                    title={thread.description}>
-                                    {thread.thread_type === "main" ? "主线" : "支线"} · {thread.name}
-                                  </span>
-                                )}
-                                {hook && (
-                                  <span style={{
-                                    fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10,
-                                    background: "var(--gold-subtle)", color: "var(--gold)", fontWeight: 500,
-                                    border: "1px solid transparent",
-                                  }}
-                                    title={hook.content}>
-                                    伏笔 · {(hook.title || hook.content || "").slice(0, 10)}
-                                  </span>
-                                )}
+                                {_tids.map(tid => {
+                                  const t = threads.find(tt => tt.thread_id === tid);
+                                  if (!t) return null;
+                                  return (
+                                    <span key={`t-${tid}`} style={{
+                                      fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10,
+                                      background: t.thread_type === "main" ? "var(--jade-subtle)" : "transparent",
+                                      color: t.thread_type === "main" ? "var(--jade)" : "var(--text-secondary)",
+                                      border: t.thread_type === "main" ? "1px solid var(--jade)" : "1px solid var(--border-subtle)",
+                                      fontWeight: 500,
+                                    }} title={t.description}>
+                                      {t.thread_type === "main" ? "主线" : "支线"} · {t.name}
+                                    </span>
+                                  );
+                                })}
+                                {_hids.map(hid => {
+                                  const h = hooks.find(hh => hh.id === hid);
+                                  if (!h) return null;
+                                  return (
+                                    <span key={`h-${hid}`} style={{
+                                      fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10,
+                                      background: "var(--gold-subtle)", color: "var(--gold)", fontWeight: 500,
+                                      border: "1px solid transparent",
+                                    }} title={h.content}>
+                                      伏笔 · {(h.title || h.content || "").slice(0, 10)}
+                                    </span>
+                                  );
+                                })}
                               </div>
                             )}
                             <div style={{
@@ -1788,9 +1798,9 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                   />
                 </div>
                 <div className="field mb-12">
-                  <label className="label">所属故事线（可多选；主线置顶）</label>
+                  <label className="label">所属故事线</label>
                   {sortedThreadsForPanel.length === 0 ? (
-                    <div className="text-xs text-muted">（尚未创建故事线；在「故事线与伏笔总览」中新增）</div>
+                    <div className="text-xs text-muted">尚未创建故事线</div>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {sortedThreadsForPanel.map((t) => {
@@ -1840,9 +1850,9 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                   )}
                 </div>
                 <div className="field mb-12">
-                  <label className="label">所属伏笔（可多选）</label>
+                  <label className="label">所属伏笔</label>
                   {hooks.filter(h => !["resolved", "abandoned"].includes(h.status)).length === 0 ? (
-                    <div className="text-xs text-muted">（暂无活跃伏笔；在「故事线与伏笔总览」中新增）</div>
+                    <div className="text-xs text-muted">暂无活跃伏笔</div>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {hooks.filter(h => !["resolved", "abandoned"].includes(h.status)).map((h) => {
@@ -2347,9 +2357,9 @@ function WheelNumberInput({ value, onChange, min, max, placeholder, width, step 
 
 
 /* ── ChapterNumField ──
- * 章节号 = number input；focus 后 mouse wheel 上下调节。下方显示对应
- * 章节标题（如果存在）作为 helper text，让用户直观看到自己选的章
- * 节是哪一章；支持任意章号（不局限于现有 editor 章节）。 */
+ * 章节号 stepper：左 − / 中数字 + "第 N 章" / 右 +。
+ * 中部 input 支持：直接键盘输入；focus 后滚轮加减；点击聚焦后大字号
+ * 显示当前章号。下方显示对应章节标题（来自 editor 大纲）作 helper. */
 function ChapterNumField({ value, chapterTitles, maxChapter, onChange }: {
   value: number | undefined;
   chapterTitles: Map<number, string>;
@@ -2357,38 +2367,122 @@ function ChapterNumField({ value, chapterTitles, maxChapter, onChange }: {
   onChange: (v: number | undefined) => void;
 }) {
   const title = value ? chapterTitles.get(value) : undefined;
+  const upperBound = maxChapter ? maxChapter + 50 : undefined;
+  const dec = () => {
+    if (value === undefined) { onChange(1); return; }
+    if (value > 1) onChange(value - 1);
+  };
+  const inc = () => {
+    if (value === undefined) { onChange(1); return; }
+    const next = value + 1;
+    if (upperBound !== undefined) onChange(Math.min(upperBound, next));
+    else onChange(next);
+  };
   return (
     <div className="field mb-12">
-      <label className="label">
-        章节号 <span className="text-xs" style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>· 滚轮 / 输入</span>
-      </label>
-      <WheelNumberInput value={value}
-        min={1} max={maxChapter ? maxChapter + 50 : undefined}
-        placeholder="例：3"
-        width={120}
-        onChange={onChange} />
-      {value ? (
-        <div className="text-xs" style={{ color: "var(--text-tertiary)", marginTop: 6, lineHeight: 1.4 }}>
-          第 {value} 章{title ? ` · ${title}` : (
-            <span style={{ color: "var(--text-disabled)", fontStyle: "italic" }}>
-              （编辑器中无此章节，可在「+ 添加章节」中创建）
-            </span>
-          )}
+      <label className="label">章节号</label>
+      <div style={{
+        display: "inline-flex", alignItems: "stretch",
+        height: 44, borderRadius: 10, overflow: "hidden",
+        border: "1px solid var(--border)",
+        background: "var(--bg-card, var(--bg-surface))",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+      }}>
+        <button
+          onClick={dec}
+          disabled={!value || value <= 1}
+          title="上一章"
+          style={{
+            width: 40, border: "none",
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+            cursor: (!value || value <= 1) ? "not-allowed" : "pointer",
+            fontSize: 18, fontWeight: 600,
+            opacity: (!value || value <= 1) ? 0.4 : 1,
+            borderRight: "1px solid var(--border)",
+          }}>−</button>
+        <div style={{
+          flex: 1, minWidth: 140,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          gap: 4,
+        }}>
+          <span style={{ fontSize: 11, color: "var(--text-tertiary)", fontWeight: 500 }}>第</span>
+          <input type="text" inputMode="numeric" pattern="[0-9]*"
+            value={value ?? ""}
+            placeholder="—"
+            onChange={e => {
+              const v = e.target.value.replace(/[^0-9]/g, "");
+              if (!v) { onChange(undefined); return; }
+              let n = +v;
+              n = Math.max(1, n);
+              if (upperBound !== undefined) n = Math.min(upperBound, n);
+              onChange(n);
+            }}
+            onWheel={e => {
+              if (document.activeElement !== e.currentTarget) return;
+              e.preventDefault();
+              const cur = value ?? 0;
+              const delta = e.deltaY < 0 ? 1 : -1;
+              let next = cur + delta;
+              next = Math.max(1, next);
+              if (upperBound !== undefined) next = Math.min(upperBound, next);
+              onChange(next);
+            }}
+            style={{
+              border: "none", background: "transparent",
+              fontSize: 20, fontWeight: 700,
+              color: value ? "var(--accent)" : "var(--text-disabled)",
+              textAlign: "center", width: 64, padding: 0, outline: "none",
+            }} />
+          <span style={{ fontSize: 11, color: "var(--text-tertiary)", fontWeight: 500 }}>章</span>
         </div>
-      ) : (
-        <div className="text-xs" style={{ color: "var(--text-disabled)", marginTop: 6 }}>未指定</div>
-      )}
+        <button
+          onClick={inc}
+          title="下一章"
+          style={{
+            width: 40, border: "none",
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+            cursor: "pointer",
+            fontSize: 18, fontWeight: 600,
+            borderLeft: "1px solid var(--border)",
+          }}>+</button>
+      </div>
+      <div style={{
+        marginTop: 6, fontSize: 11, lineHeight: 1.5,
+        color: value ? "var(--text-secondary)" : "var(--text-disabled)",
+        minHeight: 18,
+      }}>
+        {!value ? (
+          <span style={{ fontStyle: "italic" }}>未指定章节</span>
+        ) : title ? (
+          <span><strong style={{ color: "var(--text-primary)" }}>{title}</strong></span>
+        ) : (
+          <span style={{ color: "var(--text-disabled)", fontStyle: "italic" }}>
+            编辑器中尚无此章
+          </span>
+        )}
+      </div>
     </div>
   );
 }
 
 
 /* ── StoryTimeField ──
- * 多模式故事中时间输入：精确日期 / 第N天 / 季节。任一字段都可空，
- * 满足用户既需要精确时间也需要模糊大致范围（"冬天"/"第3天"）的需求。
- * Period (凌晨/上午/下午/夜晚) 在所有模式都可附加。format/parse 保持
- * 输出为单一 string 写回 node.time，供时间轴 grouping 使用。 */
-type StoryTimeMode = "precise" | "dayN" | "season";
+ * 两种故事中时间模式：
+ *   · 精确日期：年 / 月 / 日 — 任一可空
+ *   · 第N天 + 季节：N (number) + 季节 (春/夏/秋/冬，可空)
+ * 时段（凌晨/上午/下午/夜晚）所有模式都可附加，且可空。
+ *
+ * 写入 node.time 的字符串协议（多张 情节 卡可据此 grouping）：
+ *   precise:  "{Y}年{M}月{D}日[·{period}]"
+ *   dayN:     "[{season}]第{N}天[·{period}]" 或仅 "{season}"
+ *   仅时段:   "·{period}"   (头部为空时仍保留前导 · 让 parse 还能识别)
+ *
+ * Mode 切换 bug：useEffect 不再无条件同步 mode；只有当 parsed value
+ * 有实质内容（year/month/day/season 之一）时才更新 mode；否则保留
+ * 用户当前的 mode 选择，避免「先选时段后无法切换 tab」的循环。 */
+type StoryTimeMode = "precise" | "dayN";
 type StoryTimePeriod = "凌晨" | "上午" | "下午" | "夜晚" | "";
 const NEW_TIME_PERIODS: StoryTimePeriod[] = ["凌晨", "上午", "下午", "夜晚"];
 const SEASONS = ["春", "夏", "秋", "冬"] as const;
@@ -2398,20 +2492,31 @@ function parseStoryTimeNew(s: string): {
   season?: typeof SEASONS[number]; period: StoryTimePeriod;
 } {
   s = (s || "").trim();
-  const periodRe = /·(凌晨|上午|下午|夜晚)$/;
+  // 兼容 "·凌晨" 与 legacy 裸 "凌晨"。
+  const periodRe = /·?(凌晨|上午|下午|夜晚)$/;
   const pm = s.match(periodRe);
   const period = (pm?.[1] || "") as StoryTimePeriod;
-  const body = pm ? s.slice(0, pm.index!) : s;
-  // "第N天"
-  const dayN = body.match(/^第(\d+)天$/);
-  if (dayN) return { mode: "dayN", day: +dayN[1], period };
-  // "春/夏/秋/冬" + optional "天" suffix
+  let body = pm ? s.slice(0, pm.index) : s;
+  // 去除中间的 · 分隔符
+  body = body.replace(/·$/, "");
+
+  // [season]第N天 或单独 season（兼容 "春" 或 "春天"）
+  const dn = body.match(/^(春|夏|秋|冬)?(?:第(\d+)天)?$/);
+  if (dn && (dn[1] || dn[2])) {
+    return {
+      mode: "dayN",
+      season: dn[1] as any,
+      day: dn[2] ? +dn[2] : undefined,
+      period,
+    };
+  }
   for (const season of SEASONS) {
-    if (body === season || body === `${season}天`) {
-      return { mode: "season", season, period };
+    if (body === `${season}天`) {
+      return { mode: "dayN", season, period };
     }
   }
-  // precise: "YYYY年M月D日" with any field optional
+
+  // 精确：YYYY年M月D日 (各可空)
   const pm2 = body.match(/^(?:(\d+)年)?(?:(\d+)月)?(?:(\d+)日)?$/);
   if (pm2) {
     return {
@@ -2429,14 +2534,22 @@ function formatStoryTimeNew(v: {
   mode: StoryTimeMode; year?: number; month?: number; day?: number;
   season?: typeof SEASONS[number]; period: StoryTimePeriod;
 }): string {
-  const tail = v.period ? `·${v.period}` : "";
-  if (v.mode === "dayN") return v.day ? `第${v.day}天${tail}` : (v.period || "");
-  if (v.mode === "season") return v.season ? `${v.season}天${tail}` : (v.period || "");
-  const parts: string[] = [];
-  if (v.year) parts.push(`${v.year}年`);
-  if (v.month) parts.push(`${v.month}月`);
-  if (v.day) parts.push(`${v.day}日`);
-  return parts.join("") + tail;
+  const periodSuffix = v.period ? `·${v.period}` : "";
+  let head = "";
+  if (v.mode === "dayN") {
+    const seasonPart = v.season || "";
+    const dayPart = v.day ? `第${v.day}天` : "";
+    head = seasonPart + dayPart;
+  } else {
+    const parts: string[] = [];
+    if (v.year) parts.push(`${v.year}年`);
+    if (v.month) parts.push(`${v.month}月`);
+    if (v.day) parts.push(`${v.day}日`);
+    head = parts.join("");
+  }
+  // 头部为空但有 period → 保留前导 · 让 parser 还能识别为「仅时段」
+  if (!head && periodSuffix) return periodSuffix;
+  return head + periodSuffix;
 }
 
 function StoryTimeField({ value, onChange }: {
@@ -2446,15 +2559,18 @@ function StoryTimeField({ value, onChange }: {
   const parsed = parseStoryTimeNew(value);
   const [mode, setMode] = React.useState<StoryTimeMode>(parsed.mode);
 
-  // 当 value 从外部变化时（如选了另一张卡），同步 mode
+  // 只有 value 带实质 head 字段（年/月/日/季节）时才反向同步 mode。
+  // 仅 period 的情况保留用户当前模式选择，避免切 tab 后被 parse fallback
+  // 重置回 precise 的死循环。
   React.useEffect(() => {
     const p = parseStoryTimeNew(value);
-    setMode(p.mode);
+    const hasContent = !!(p.year || p.month || p.day || p.season);
+    if (hasContent) setMode(p.mode);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
   const setField = (patch: Partial<typeof parsed>) => {
-    const next = { ...parsed, ...patch };
+    const next = { ...parsed, mode, ...patch };
     onChange(formatStoryTimeNew(next));
   };
 
@@ -2473,15 +2589,15 @@ function StoryTimeField({ value, onChange }: {
         display: "inline-flex", border: "1px solid var(--border)",
         borderRadius: 8, padding: 1, marginBottom: 8,
       }}>
-        {(["precise", "dayN", "season"] as StoryTimeMode[]).map(m => (
+        {(["precise", "dayN"] as StoryTimeMode[]).map(m => (
           <button key={m}
             onClick={() => {
               setMode(m);
-              // 切换模式时只保留 period，其他字段清空
+              // 切换模式时只保留 period，其他字段清空。
               onChange(formatStoryTimeNew({ mode: m, period: parsed.period }));
             }}
             style={tabStyle(mode === m)}>
-            {m === "precise" ? "精确日期" : m === "dayN" ? "第N天" : "季节"}
+            {m === "precise" ? "精确日期" : "第N天"}
           </button>
         ))}
       </div>
@@ -2500,34 +2616,31 @@ function StoryTimeField({ value, onChange }: {
         </div>
       )}
       {mode === "dayN" && (
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>第</span>
           <WheelNumberInput value={parsed.day} placeholder="N" width={80} min={1}
             onChange={v => setField({ day: v })} />
           <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>天</span>
-        </div>
-      )}
-      {mode === "season" && (
-        <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8, padding: 1 }}>
-          {SEASONS.map(s => (
-            <button key={s}
-              onClick={() => setField({ season: s })}
-              style={{
-                fontSize: 12, padding: "4px 12px",
-                border: "none", borderRadius: 6,
-                background: parsed.season === s ? "var(--accent)" : "transparent",
-                color: parsed.season === s ? "#fff" : "var(--text-secondary)",
-                cursor: "pointer", fontWeight: 600,
-              }}>
-              {s}天
-            </button>
-          ))}
+          <div style={{
+            display: "inline-flex", border: "1px solid var(--border)",
+            borderRadius: 8, padding: 1, marginLeft: 8,
+          }}>
+            <button onClick={() => setField({ season: undefined })}
+              style={tabStyle(!parsed.season)}>—</button>
+            {SEASONS.map(s => (
+              <button key={s}
+                onClick={() => setField({ season: s })}
+                style={tabStyle(parsed.season === s)}>
+                {s}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
       <div style={{ marginTop: 8 }}>
         <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 4 }}>
-          时段（可选 · 大致范围）
+          时段（可空）
         </div>
         <div style={{
           display: "inline-flex", border: "1px solid var(--border)",
@@ -2876,12 +2989,17 @@ function HookStatusChipToggle({ color, value, onResolve }: {
  *
  * Colors: 主线 = jade, 支线 = neutral, 伏笔 = gold. Red reserved for
  * the selected card border + the time-axis highlight overlay only. */
-function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, reload, toast }: {
+const CHAPTER_STATUS_LABEL: Record<string, string> = {
+  draft: "草稿", generating: "生成中", review: "待审", final: "终稿",
+};
+
+function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, chapterStatuses, reload, toast }: {
   projectId: string;
   threads: Thread[];
   hooks: Hook[];
   nodes: StoryNode[];
   chapterTitles: Map<number, string>;
+  chapterStatuses: Map<number, string>;
   reload: () => Promise<void>;
   toast: (m: string, t?: any) => void;
 }) {
@@ -3023,15 +3141,38 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, r
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  {related.map(c => (
-                    <div key={c.num} style={{ fontSize: 10.5, color: "var(--text-secondary)" }}>
-                      <span style={{ fontWeight: 600, color: fg }}>第{c.num}章</span>
-                      {c.title && <span style={{ marginLeft: 6 }}>· {c.title}</span>}
-                      <span style={{ marginLeft: 8, color: "var(--text-tertiary)" }}>
-                        {c.episodes.length} 情节
-                      </span>
-                    </div>
-                  ))}
+                  {related.map(c => {
+                    const stat = chapterStatuses.get(c.num);
+                    return (
+                      <div key={c.num} style={{
+                        fontSize: 10.5, color: "var(--text-secondary)",
+                        display: "flex", alignItems: "center", gap: 6,
+                      }}>
+                        <span style={{ fontWeight: 600, color: fg }}>第{c.num}章</span>
+                        {c.title && <span>· {c.title}</span>}
+                        <span style={{ color: "var(--text-tertiary)" }}>
+                          · {c.episodes.length} 情节
+                        </span>
+                        <span style={{ flex: 1 }} />
+                        {stat && (
+                          <span style={{
+                            fontSize: 9, padding: "1px 6px", borderRadius: 8,
+                            background: stat === "final" ? "var(--jade-subtle)"
+                              : stat === "review" ? "var(--gold-subtle)"
+                              : stat === "generating" ? "var(--accent-subtle)"
+                              : "var(--bg-secondary)",
+                            color: stat === "final" ? "var(--jade)"
+                              : stat === "review" ? "var(--gold)"
+                              : stat === "generating" ? "var(--accent)"
+                              : "var(--text-tertiary)",
+                            fontWeight: 600,
+                          }}>
+                            {CHAPTER_STATUS_LABEL[stat] || stat}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -3048,6 +3189,10 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, r
       const hids = n.hook_ids || (n.hook_id ? [n.hook_id] : []);
       return hids.includes(h.id);
     });
+    // Inactive view → dim the chip + dashed border so the user can see
+    // at a glance these are no longer in play. allowDelete is the same
+    // flag the strip uses to mark inactive entries.
+    const isInactive = allowDelete;
     return (
       <div key={h.id} style={{ display: "inline-flex", flexDirection: "column", gap: 4 }}>
         <span
@@ -3055,23 +3200,31 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, r
           title="点击展开 / 收起"
           style={{
             fontSize: 10, padding: "2px 6px 2px 10px",
-            background: "transparent", color: hookFg,
-            border: `1px solid ${hookBorder}`, borderRadius: 12,
+            background: "transparent",
+            color: isInactive ? "var(--text-tertiary)" : hookFg,
+            border: isInactive
+              ? "1px dashed var(--text-tertiary)"
+              : `1px solid ${hookBorder}`,
+            borderRadius: 12,
             cursor: "pointer",
             display: "inline-flex", alignItems: "center", gap: 4,
             fontWeight: 600,
+            opacity: isInactive ? 0.75 : 1,
+            textDecoration: isInactive ? "line-through" : undefined,
+            textDecorationThickness: isInactive ? "1px" : undefined,
           }}>
           {name}
-          <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 2 }}>
+          <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 2, textDecoration: "none" }}>
             {expanded ? "▾" : "▸"}
           </span>
           {allowDelete && (
             <button onClick={(e) => { e.stopPropagation(); delHook(h.id); }}
-              title="彻底删除（仅 inactive 视图可见）"
+              title="彻底删除（已回收伏笔，操作不可撤销）"
               style={{
                 border: "none", background: "transparent", padding: "0 2px",
                 fontSize: 11, lineHeight: 1, cursor: "pointer",
-                color: hookFg, opacity: 0.55,
+                color: "var(--error)", opacity: 0.7,
+                textDecoration: "none",
               }}>×</button>
           )}
         </span>
@@ -3106,20 +3259,43 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, r
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  {related.map(c => (
-                    <div key={c.num} style={{ fontSize: 10.5, color: "var(--text-secondary)" }}>
-                      <span style={{ fontWeight: 600, color: hookFg }}>第{c.num}章</span>
-                      {c.title && <span style={{ marginLeft: 6 }}>· {c.title}</span>}
-                      <span style={{ marginLeft: 8, color: "var(--text-tertiary)" }}>
-                        {c.episodes.length} 情节
-                      </span>
-                    </div>
-                  ))}
+                  {related.map(c => {
+                    const stat = chapterStatuses.get(c.num);
+                    return (
+                      <div key={c.num} style={{
+                        fontSize: 10.5, color: "var(--text-secondary)",
+                        display: "flex", alignItems: "center", gap: 6,
+                      }}>
+                        <span style={{ fontWeight: 600, color: hookFg }}>第{c.num}章</span>
+                        {c.title && <span>· {c.title}</span>}
+                        <span style={{ color: "var(--text-tertiary)" }}>
+                          · {c.episodes.length} 情节
+                        </span>
+                        <span style={{ flex: 1 }} />
+                        {stat && (
+                          <span style={{
+                            fontSize: 9, padding: "1px 6px", borderRadius: 8,
+                            background: stat === "final" ? "var(--jade-subtle)"
+                              : stat === "review" ? "var(--gold-subtle)"
+                              : stat === "generating" ? "var(--accent-subtle)"
+                              : "var(--bg-secondary)",
+                            color: stat === "final" ? "var(--jade)"
+                              : stat === "review" ? "var(--gold)"
+                              : stat === "generating" ? "var(--accent)"
+                              : "var(--text-tertiary)",
+                            fontWeight: 600,
+                          }}>
+                            {CHAPTER_STATUS_LABEL[stat] || stat}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 6 }}>
                 状态：{HOOK_STATUS_LABEL[h.status] || h.status}
-                {h.expected_payoff_chapter
+                {h.status !== "resolved" && h.expected_payoff_chapter
                   ? ` · 预期第${h.expected_payoff_chapter}章前回收`
                   : ""}
               </div>

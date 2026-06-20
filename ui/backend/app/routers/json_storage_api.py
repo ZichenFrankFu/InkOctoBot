@@ -296,10 +296,15 @@ import logging as _fs_logging
 _fs_log = _fs_logging.getLogger("inkoctobot.routers.foreshadowing_legacy")
 
 @router.get("/foreshadowing/{project_id}")
-def get_foreshadowing(project_id: str):
+def get_foreshadowing(project_id: str, include_resolved: bool = False):
+    """Active hooks by default; pass include_resolved=true to also surface
+    hooks the user 已 fully-resolved (needed for the 故事线 page's 已回收
+    view so the inactive list isn't always empty)."""
     return {
         "project_id": project_id,
-        "items": project_store.list_foreshadowing_legacy(_db(), project_id),
+        "items": project_store.list_foreshadowing_legacy(
+            _db(), project_id, include_resolved=include_resolved,
+        ),
         "source": "pending_hooks",
     }
 

@@ -1236,37 +1236,53 @@ def delete_version(db_path: str, version_id: str) -> None:
 # 大纲 tab by reading from pending_hooks.
 
 
-def list_foreshadowing_legacy(db_path: str, project_id: str) -> list[dict]:
-    """Return open hooks shaped like the legacy {items: [...]} blob.
+def list_foreshadowing_legacy(
+    db_path: str, project_id: str, *, include_resolved: bool = False,
+) -> list[dict]:
+    """Return hooks shaped like the legacy {items: [...]} blob.
 
-    Hooks the user authoritatively closed via ``fully_resolve_hook`` are
-    filtered out so the loader can't re-surface them even if the
-    auto-detector would otherwise re-open the same hook.
+    By default returns ONLY active hooks — those the user has 已
+    fully-resolved (user_marked_fully_resolved=1) are filtered out so
+    the prompt loader can't re-surface them even if the auto-detector
+    would otherwise re-open the same hook.
+
+    ``include_resolved=True`` (used by the 故事线 page's 已回收 view)
+    drops that filter so resolved hooks show in the inactive list.
     """
+    where = "WHERE project_id = ?"
+    if not include_resolved:
+        where += " AND COALESCE(user_marked_fully_resolved, 0) = 0"
     with open_db(db_path) as con:
         try:
             rows = con.execute(
                 "SELECT hook_id, description, origin_chapter, "
                 "expected_payoff_chapter, status, importance, "
-                "COALESCE(scale, 'event_clue') AS scale "
-                "FROM pending_hooks WHERE project_id = ? "
-                "AND COALESCE(user_marked_fully_resolved, 0) = 0 "
+                "COALESCE(scale, 'event_clue') AS scale, "
+                "COALESCE(user_marked_fully_resolved, 0) AS user_resolved "
+                f"FROM pending_hooks {where} "
                 "ORDER BY origin_chapter",
                 (project_id,),
             ).fetchall()
         except sqlite3.OperationalError:
             return []
-    return [{
-        "id": r["hook_id"],
-        "title": r["description"][:30],
-        "content": r["description"],
-        "chapter_ids": [],
-        "origin_chapter": r["origin_chapter"],
-        "expected_payoff_chapter": r["expected_payoff_chapter"],
-        "status": r["status"],
-        "importance": r["importance"],
-        "scale": r["scale"],
-    } for r in rows]
+    out = []
+    for r in rows:
+        # If the user marked the hook fully resolved, the canonical status
+        # client-side is "resolved" regardless of the auto-detector's
+        # tracking field.
+        status = "resolved" if r["user_resolved"] else r["status"]
+        out.append({
+            "id": r["hook_id"],
+            "title": r["description"][:30],
+            "content": r["description"],
+            "chapter_ids": [],
+            "origin_chapter": r["origin_chapter"],
+            "expected_payoff_chapter": r["expected_payoff_chapter"],
+            "status": status,
+            "importance": r["importance"],
+            "scale": r["scale"],
+        })
+    return out
 
 
 def fully_resolve_hook(
