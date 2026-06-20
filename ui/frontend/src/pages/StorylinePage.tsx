@@ -562,21 +562,18 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     return keys;
   }, [readThreadIds, readHookIds]);
 
-  /** Color stripes for the card's top accent. When NO 故事线 / 伏笔 is
-   *  selected in the filter, ALL cards render a single neutral gray
-   *  stripe — color is reserved as a signal for "active lane membership".
-   *  When at least one lane is active, cards show one stripe per owned
-   *  lane (multiple if the node belongs to several). Orphan / no-lane
-   *  cards fall back to the same gray. */
+  /** Color stripes for the card's top accent. Driven by the card's own
+   *  thread/hook membership, not the filter state:
+   *    · 1 stripe per assigned 故事线/伏笔 (multi-stack if several)
+   *    · single neutral gray stripe when the card is orphan (no lane)
+   *  The filter only affects which lanes get SVG connector lines — it
+   *  never repaints the cards themselves. */
   const nodeStripes = useCallback((n: StoryNode): string[] => {
-    if (activeLaneKeys.size === 0) {
-      return ["var(--text-tertiary)"];
-    }
     const colors = nodeLaneKeys(n)
       .map(k => lanes.find(l => l.key === k)?.color)
       .filter((c): c is string => !!c && c !== "var(--text-tertiary)");
     return colors.length > 0 ? colors : ["var(--text-tertiary)"];
-  }, [lanes, nodeLaneKeys, activeLaneKeys]);
+  }, [lanes, nodeLaneKeys]);
 
   /** 智能排序 —— barycenter / Sugiyama-style sweep.
    *  Rewrites each card's `x` so cards with shared lanes line up across
@@ -1734,8 +1731,8 @@ function LaneFilterStrip({ lanes, activeKeys, onToggle, onClear, onSmartSort }: 
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
           {activeKeys.size === 0
-            ? "未选 → 卡片为灰色 / 不画连线"
-            : `已选 ${activeKeys.size} 条 → 卡片着色 + 连线`}
+            ? "未选 → 不画连线（卡片仍按所属 lane 上色）"
+            : `已选 ${activeKeys.size} 条 → 仅画这几条 lane 的连线`}
         </span>
         {onSmartSort && (
           <button className="btn"
