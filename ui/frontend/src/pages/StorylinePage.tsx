@@ -43,6 +43,10 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   const [edges, setEdges] = useState<StoryEdge[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  // Time-axis highlight: an in-story moment chosen via the bottom
+  // scrubber. Independent of `selected` — picking a time does NOT pick a
+  // card; instead every card at that time gets a light-red overlay.
+  const [highlightedTime, setHighlightedTime] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
@@ -888,9 +892,9 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   // --- Bottom 故事中时间 strip: group cards by their `time` value so the
   //     timeline has ONE tick per unique in-story moment, regardless of
   //     how many 情节 happen at it. Each slot keeps the list of cards that
-  //     share that moment — clicking a tick selects the first card AND
-  //     marks every other card sharing the time as a "twin" for the
-  //     canvas to highlight (see twinIds below).
+  //     share that moment — clicking a tick sets `highlightedTime`, and
+  //     `timeHighlightIds` (below) drives the light-red overlay on every
+  //     card in that slot. Tick clicks do NOT touch card selection.
   const normTime = (t: string | undefined): string => (t || "").trim();
   const timeSlots = useMemo(() => {
     const sorted = [...nodes].sort((a, b) =>
@@ -909,19 +913,18 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     return slots;
   }, [nodes]);
 
-  /** All other cards that share `time` with the currently selected card —
-   *  these get a gold "twin highlight" so the user can see at a glance
-   *  every 情节 happening at the same in-story moment. The selected card
-   *  itself keeps its red accent ring; twins get a different look so the
-   *  two states are visually distinct. */
-  const twinIds = useMemo(() => {
-    if (!sel) return new Set<string>();
-    const t = normTime(sel.time);
-    if (!t) return new Set<string>();
-    const slot = timeSlots.find(s => s.time === t);
+  /** Cards in the slot currently highlighted by the bottom time scrubber.
+   *  These get a light-red `--accent-subtle` background overlay so a
+   *  whole moment lights up at once — distinct from the SELECTED card,
+   *  which keeps its red BORDER. The two states are independent: clicking
+   *  a time tick does NOT select any card, and clicking a card does NOT
+   *  move the time highlight. */
+  const timeHighlightIds = useMemo(() => {
+    if (!highlightedTime) return new Set<string>();
+    const slot = timeSlots.find(s => s.time === highlightedTime);
     if (!slot) return new Set<string>();
-    return new Set(slot.nodes.filter(n => n.id !== sel.id).map(n => n.id));
-  }, [sel, timeSlots]);
+    return new Set(slot.nodes.map(n => n.id));
+  }, [highlightedTime, timeSlots]);
 
   // --- Merged chapter outline: for each chapter, concat the events'
   //     summaries into a numbered outline. Surfaced under each chapter
@@ -1297,7 +1300,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         .map(n => {
                         const isDragging = dragPreview?.id === n.id;
                         const isSelected = selected === n.id;
-                        const isTwin = twinIds.has(n.id);
+                        const isTimeHighlighted = timeHighlightIds.has(n.id);
                         // The card-side chips only show the first assigned
                         // thread / hook (acts as a label); the full
                         // multi-lane membership is communicated through
@@ -1307,18 +1310,15 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         const thread = _tids.length ? threads.find(t => t.thread_id === _tids[0]) : undefined;
                         const hook = _hids.length ? hooks.find(h => h.id === _hids[0]) : undefined;
                         const stripes = nodeStripes(n);
-                        // Twin highlight: gold ring on cards that share
-                        // 故事中时间 with the currently selected card —
-                        // distinct from the red accent ring used on the
-                        // selected card itself. Uses --gold (visually
-                        // distinct from the muted lane palette).
-                        const twinShadow = "0 0 0 2px var(--gold), 0 0 0 4px var(--gold-subtle), 0 4px 12px rgba(0,0,0,0.08)";
+                        // Two independent states on a card:
+                        //  · isSelected → red 2px border (picked via click)
+                        //  · isTimeHighlighted → light-red bg overlay
+                        //    (picked via the bottom time scrubber; whole
+                        //    slot lights up so the user sees every 情节
+                        //    happening at that in-story moment)
                         const baseShadow = "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)";
-                        const restingShadow = isSelected
-                          ? "0 0 0 2px var(--accent), 0 4px 12px rgba(0,0,0,0.08)"
-                          : isTwin
-                            ? twinShadow
-                            : baseShadow;
+                        const selectedShadow = "0 0 0 2px var(--accent), 0 4px 12px rgba(0,0,0,0.08)";
+                        const hoverShadow = "0 4px 10px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04)";
                         return (
                           <div
                             key={n.id}
@@ -1326,7 +1326,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             onMouseDown={(e) => onNodeMouseDown(n.id, e)}
                             onClick={() => setSelected(n.id)}
                             className={`timeline-node ${isSelected ? "selected" : ""}`}
-                            title={isTwin ? `与「${sel?.title || "选中卡"}」同时间发生` : undefined}
+                            title={isTimeHighlighted ? `「${highlightedTime}」时段` : undefined}
                             style={{
                               position: "relative",
                               left: "auto", top: "auto",
@@ -1341,22 +1341,20 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                               cursor: "grab",
                               flexShrink: 0,
                               opacity: isDragging ? 0.35 : 1,
-                              background: isTwin && !isSelected ? "var(--gold-subtle)" : "var(--bg-card)",
+                              background: isTimeHighlighted ? "var(--accent-subtle)" : "var(--bg-card)",
                               overflow: "hidden",
-                              boxShadow: restingShadow,
+                              boxShadow: isSelected ? selectedShadow : baseShadow,
                               transition: "transform 0.15s ease, box-shadow 0.15s ease, opacity 0.12s, background 0.18s",
                             }}
                             onMouseEnter={(e) => {
                               if (isDragging || isSelected) return;
                               e.currentTarget.style.transform = "translateY(-2px)";
-                              e.currentTarget.style.boxShadow = isTwin
-                                ? twinShadow
-                                : "0 4px 10px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04)";
+                              e.currentTarget.style.boxShadow = hoverShadow;
                             }}
                             onMouseLeave={(e) => {
                               if (isSelected) return;
                               e.currentTarget.style.transform = "translateY(0)";
-                              e.currentTarget.style.boxShadow = isTwin ? twinShadow : baseShadow;
+                              e.currentTarget.style.boxShadow = baseShadow;
                             }}
                           >
                             {/* Stacked lane-color stripes — one 4px band
@@ -1768,13 +1766,14 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
       {/* ======== 故事中时间 PR-style scrub bar (bottom) ========
           Horizontal track with one tick per UNIQUE 故事中时间 (multi-card
           moments collapse onto a single tick). A circular playhead sits
-          at the slot containing the currently-selected card. Click /
-          drag → selects the first card in that slot; every other card
-          in the slot gets a gold twin-highlight on the canvas. */}
+          at the currently-highlighted slot. Click / drag → SET
+          highlightedTime (does NOT select any card); every card at that
+          time gets a light-red overlay on the canvas. The card-selection
+          and time-highlight states are independent. */}
       <StoryTimeScrubber
         slots={timeSlots}
-        selectedId={selected}
-        onSelect={setSelected}
+        highlightedTime={highlightedTime}
+        onHighlight={setHighlightedTime}
       />
 
       {/* Drag-preview ghost — shadows the dragged 情节 card under the cursor
@@ -1831,10 +1830,10 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
  * plus a circular playhead at the currently-selected tick. Drag the
  * playhead (or click anywhere on the track) to snap to the nearest
  * tick → setSelected. Pan the track horizontally when ticks overflow. */
-function StoryTimeScrubber({ slots, selectedId, onSelect }: {
+function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
   slots: { time: string; nodes: StoryNode[] }[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
+  highlightedTime: string | null;
+  onHighlight: (time: string | null) => void;
 }) {
   const STEP = 92;
   const PAD = 24;
@@ -1844,19 +1843,19 @@ function StoryTimeScrubber({ slots, selectedId, onSelect }: {
   // Pan-with-grab when the user middle-clicks / holds the empty bar.
   const panStart = React.useRef<{ x: number; scroll: number } | null>(null);
 
-  const selectedIdx = slots.findIndex(s => s.nodes.some(n => n.id === selectedId));
-  const cur = selectedIdx >= 0 ? slots[selectedIdx] : null;
+  const highlightedIdx = slots.findIndex(s => s.time === highlightedTime);
+  const cur = highlightedIdx >= 0 ? slots[highlightedIdx] : null;
 
-  // Keep the playhead in view when the selection changes from outside.
+  // Keep the playhead in view when the highlight changes from outside.
   React.useEffect(() => {
-    if (selectedIdx < 0 || !scrollRef.current) return;
-    const handleX = PAD + selectedIdx * STEP;
+    if (highlightedIdx < 0 || !scrollRef.current) return;
+    const handleX = PAD + highlightedIdx * STEP;
     const view = scrollRef.current;
     const left = view.scrollLeft;
     const right = left + view.clientWidth;
     if (handleX < left + 40) view.scrollTo({ left: Math.max(0, handleX - 40), behavior: "smooth" });
     else if (handleX > right - 40) view.scrollTo({ left: handleX - view.clientWidth + 40, behavior: "smooth" });
-  }, [selectedIdx]);
+  }, [highlightedIdx]);
 
   const snapToPointer = (clientX: number) => {
     if (!trackInnerRef.current) return;
@@ -1865,7 +1864,7 @@ function StoryTimeScrubber({ slots, selectedId, onSelect }: {
     const idx = Math.round(x / STEP);
     const clamped = Math.max(0, Math.min(slots.length - 1, idx));
     const slot = slots[clamped];
-    if (slot && slot.nodes[0]) onSelect(slot.nodes[0].id);
+    if (slot) onHighlight(slot.time);
   };
 
   const onPointerDownTrack = (e: React.PointerEvent) => {
@@ -1921,9 +1920,21 @@ function StoryTimeScrubber({ slots, selectedId, onSelect }: {
           <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-secondary)", letterSpacing: 0.4 }}>
             故事中时间
           </span>
+          {cur && (
+            <button
+              onClick={() => onHighlight(null)}
+              title="清除时间高亮"
+              style={{
+                marginLeft: 4, border: "none", background: "transparent",
+                color: "var(--text-tertiary)", cursor: "pointer",
+                fontSize: 11, padding: "0 4px", lineHeight: 1,
+              }}>
+              ×
+            </button>
+          )}
         </div>
         <span style={{
-          fontSize: 12, fontWeight: 600, color: cur ? "var(--text-primary)" : "var(--text-disabled)",
+          fontSize: 12, fontWeight: 600, color: cur ? "var(--accent)" : "var(--text-disabled)",
           fontStyle: cur ? "normal" : "italic",
           overflow: "hidden", textOverflow: "ellipsis",
           maxWidth: 200,
@@ -1970,7 +1981,7 @@ function StoryTimeScrubber({ slots, selectedId, onSelect }: {
             {/* Time labels above the track */}
             {slots.map((s, i) => {
               const x = PAD + i * STEP;
-              const isCurrent = i === selectedIdx;
+              const isCurrent = i === highlightedIdx;
               return (
                 <div key={`label-${s.time}`} style={{
                   position: "absolute",
@@ -1992,7 +2003,7 @@ function StoryTimeScrubber({ slots, selectedId, onSelect }: {
             {/* Tick marks on the track */}
             {slots.map((s, i) => {
               const x = PAD + i * STEP;
-              const isCurrent = i === selectedIdx;
+              const isCurrent = i === highlightedIdx;
               return (
                 <div key={`tick-${s.time}`} style={{
                   position: "absolute",
@@ -2009,7 +2020,7 @@ function StoryTimeScrubber({ slots, selectedId, onSelect }: {
             {/* Chapter/episode count sub-label below tick */}
             {slots.map((s, i) => {
               const x = PAD + i * STEP;
-              const isCurrent = i === selectedIdx;
+              const isCurrent = i === highlightedIdx;
               const firstNode = s.nodes[0];
               const chapText = firstNode.chapter_num ? `第${firstNode.chapter_num}章` : "";
               const countText = s.nodes.length > 1 ? `${s.nodes.length} 情节` : "";
@@ -2031,11 +2042,11 @@ function StoryTimeScrubber({ slots, selectedId, onSelect }: {
                 </div>
               );
             })}
-            {/* Circular playhead at the selected tick */}
-            {selectedIdx >= 0 && (
+            {/* Circular playhead at the highlighted tick */}
+            {highlightedIdx >= 0 && (
               <div style={{
                 position: "absolute",
-                left: PAD + selectedIdx * STEP, top: TRACK_Y,
+                left: PAD + highlightedIdx * STEP, top: TRACK_Y,
                 transform: "translate(-50%, -50%)",
                 width: 16, height: 16, borderRadius: "50%",
                 background: "var(--accent)",
