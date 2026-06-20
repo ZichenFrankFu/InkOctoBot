@@ -412,6 +412,11 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   // cursor; `x` is overwritten with the cursor's horizontal position
   // relative to that row, so re-ordering inside a row is also a drag.
   const rowRefs = useRef<Map<number, HTMLDivElement | null>>(new Map());
+  // Card-level refs (used by the SVG overlay to measure exact
+  // bottom-center / top-center positions for cross-row connectors).
+  const cardRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const rowsContainerRef = useRef<HTMLDivElement | null>(null);
+  const [cardRects, setCardRects] = useState<Map<string, { cx: number; top: number; bottom: number }>>(new Map());
   const [dragOverChapter, setDragOverChapter] = useState<number | null>(null);
   const [dragPreview, setDragPreview] = useState<{
     id: string; clientX: number; clientY: number;
@@ -480,6 +485,20 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   // --- Computed ---
   const sel = useMemo(() => nodes.find(n => n.id === selected), [nodes, selected]);
 
+  // --- 故事线 / 伏笔 多选筛选 ──
+  // Empty set = highlight none (default — all lanes visible equally).
+  // Non-empty = those lanes get sorted first, drawn boldly, and the
+  // SVG overlay only renders their connections.
+  const [activeLaneKeys, setActiveLaneKeys] = useState<Set<string>>(new Set());
+  const toggleLane = useCallback((key: string) => {
+    setActiveLaneKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+  const clearLanes = useCallback(() => setActiveLaneKeys(new Set()), []);
+
   // --- Thread / 伏笔 lane mapping ──
   // Each 故事线 (thread) and 伏笔 (hook) becomes a "lane" that holds a
   // unique color across the whole page. Cards belonging to that lane
@@ -534,6 +553,80 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
       .map(k => lanes.find(l => l.key === k)?.color)
       .filter((c): c is string => !!c && c !== "var(--text-tertiary)");
   }, [lanes, nodeLaneKeys]);
+
+  // ── Measure card positions for the SVG connection overlay ──
+  // After every render that may have changed the layout, walk the
+  // card-ref map and capture each card's bottom-center / top-center in
+  // the rowsContainer's coordinate space. Throttled via animation frame
+  // so rapid drag updates don't thrash.
+  useEffect(() => {
+    let raf = 0;
+    const measure = () => {
+      const container = rowsContainerRef.current;
+      if (!container) return;
+      const cRect = container.getBoundingClientRect();
+      const next = new Map<string, { cx: number; top: number; bottom: number }>();
+      cardRefs.current.forEach((el, id) => {
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        next.set(id, {
+          cx: r.left + r.width / 2 - cRect.left,
+          top: r.top - cRect.top,
+          bottom: r.bottom - cRect.top,
+        });
+      });
+      setCardRects(prev => {
+        if (prev.size !== next.size) return next;
+        for (const [k, v] of next) {
+          const p = prev.get(k);
+          if (!p || Math.abs(p.cx - v.cx) > 0.5 || Math.abs(p.top - v.top) > 0.5 || Math.abs(p.bottom - v.bottom) > 0.5) {
+            return next;
+          }
+        }
+        return prev;
+      });
+    };
+    raf = requestAnimationFrame(measure);
+    const obs = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(measure);
+    });
+    if (rowsContainerRef.current) obs.observe(rowsContainerRef.current);
+    return () => {
+      cancelAnimationFrame(raf);
+      obs.disconnect();
+    };
+  }, [nodes, lanes, activeLaneKeys]);
+
+  // Pre-compute connector paths for the active lanes — each path connects
+  // consecutive cards (by chapter then x) belonging to that lane.
+  const connectorPaths = useMemo(() => {
+    const paths: Array<{ d: string; color: string; key: string }> = [];
+    if (cardRects.size === 0) return paths;
+    const lanesToDraw = activeLaneKeys.size > 0
+      ? lanes.filter(l => activeLaneKeys.has(l.key))
+      : lanes.filter(l => l.type !== "orphan");
+    lanesToDraw.forEach(lane => {
+      const laneCards = nodes
+        .filter(n => nodeLaneKeys(n).includes(lane.key))
+        .sort((a, b) =>
+          (a.chapter_num || 0) - (b.chapter_num || 0) ||
+          (a.x || 0) - (b.x || 0),
+        );
+      for (let i = 0; i < laneCards.length - 1; i++) {
+        const a = cardRects.get(laneCards[i].id);
+        const b = cardRects.get(laneCards[i + 1].id);
+        if (!a || !b) continue;
+        // Smooth bezier from a's bottom-center to b's top-center.
+        const x1 = a.cx, y1 = a.bottom;
+        const x2 = b.cx, y2 = b.top;
+        const mid = (y1 + y2) / 2;
+        const d = `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`;
+        paths.push({ d, color: lane.color, key: `${lane.key}:${laneCards[i].id}-${laneCards[i + 1].id}` });
+      }
+    });
+    return paths;
+  }, [cardRects, activeLaneKeys, lanes, nodes, nodeLaneKeys]);
 
   // --- Bottom 故事中时间 strip: one chip per 情节 that has a non-empty
   //     `time` value (in-story timestamp), ordered along the reading path
@@ -655,15 +748,68 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
               RIGHT column hosts the horizontally laid-out 情节 cards.
               Cards are draggable — release on a different row to re-assign
               their chapter_num (auto snap). */}
-          <div style={{ padding: "24px 20px", minHeight: "100%", display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Lane multi-select strip — pick which 故事线/伏笔 lines
+              to highlight + connect. Empty selection = show all lanes
+              equally (default). Active selection sorts those lanes
+              first and draws connectors only for them. */}
+          <LaneFilterStrip
+            lanes={lanes}
+            activeKeys={activeLaneKeys}
+            onToggle={toggleLane}
+            onClear={clearLanes}
+          />
+
+          <div
+            ref={rowsContainerRef}
+            style={{
+              position: "relative",
+              padding: "24px 20px", minHeight: "100%",
+              display: "flex", flexDirection: "column", gap: 16,
+            }}
+          >
+            {/* SVG overlay — draws bezier curves from each card's
+                bottom-center to the next-same-lane card's top-center.
+                pointerEvents none so it doesn't steal clicks/drag. */}
+            <svg
+              style={{
+                position: "absolute", left: 0, top: 0,
+                width: "100%", height: "100%",
+                pointerEvents: "none", zIndex: 1,
+              }}
+            >
+              {connectorPaths.map(p => (
+                <path key={p.key} d={p.d}
+                  stroke={p.color} strokeWidth={2.4}
+                  fill="none" opacity={0.85}
+                  strokeLinecap="round" />
+              ))}
+            </svg>
             {(() => {
               // Group nodes by chapter_num so each row = one chapter. Sort
               // within a row by (primary lane → x) so 故事线 1 cards always
               // sit in column 0, 故事线 2 in column 1, etc. — cards in the
               // same lane stack chronologically by stored x.
               const chapGroups = new Map<number, StoryNode[]>();
+              // Sort priority within a row:
+              //  · 选中的 lane 排到最前（按用户选中的顺序虚拟权重 by
+              //    index)
+              //  · 其次按 lanes 的全局顺序
+              //  · 最后按 x 保留用户拖动微调
+              const activeOrder = (n: StoryNode) => {
+                if (activeLaneKeys.size === 0) return 1e6;
+                const keys = nodeLaneKeys(n);
+                let best = 1e6;
+                keys.forEach(k => {
+                  if (activeLaneKeys.has(k)) {
+                    const idx = lanes.findIndex(l => l.key === k);
+                    if (idx >= 0 && idx < best) best = idx;
+                  }
+                });
+                return best;
+              };
               const sorted = [...nodes].sort((a, b) =>
                 (a.chapter_num || 0) - (b.chapter_num || 0)
+                || activeOrder(a) - activeOrder(b)
                 || nodePrimaryLaneIdx(a) - nodePrimaryLaneIdx(b)
                 || (a.x || 0) - (b.x || 0),
               );
@@ -870,17 +1016,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             display: "flex", gap: 10, alignItems: "center",
                             paddingLeft: 6,
                           }}>
-                            {/* Connector — vertical bar along the LEFT of
-                                this column. Same lane in adjacent rows →
-                                visually continuous line. */}
-                            {!isOrphan && (anyBefore || anyAfter || cardsInLane.length) && (
-                              <div style={{
-                                position: "absolute", left: 0, top: 0, bottom: 0,
-                                width: 3, borderRadius: 2,
-                                background: lane.color, opacity: 0.55,
-                                pointerEvents: "none",
-                              }} />
-                            )}
                             {passThrough ? (
                               // Pass-through placeholder: matches NODE_W so
                               // downstream rows' columns still align.
@@ -901,6 +1036,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         return (
                           <div
                             key={n.id}
+                            ref={(el) => { cardRefs.current.set(n.id, el); }}
                             onMouseDown={(e) => onNodeMouseDown(n.id, e)}
                             onClick={() => setSelected(n.id)}
                             className={`timeline-node ${isSelected ? "selected" : ""}`}
@@ -1187,34 +1323,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                   </select>
                 </div>
 
-                <SectionHeader>外观</SectionHeader>
-                <div className="field mb-12">
-                  <label className="label">情节卡颜色</label>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {COLORS.map(c => {
-                      const on = sel.color === c;
-                      return (
-                        <div
-                          key={c}
-                          onClick={() => updateNode(sel.id, "color", c)}
-                          title={c}
-                          style={{
-                            width: 26, height: 26,
-                            borderRadius: 8,
-                            background: c,
-                            cursor: "pointer",
-                            boxShadow: on
-                              ? `0 0 0 2px var(--bg-surface), 0 0 0 4px ${c}`
-                              : "0 1px 2px rgba(0,0,0,0.1)",
-                            transition: "box-shadow 0.18s ease, transform 0.18s ease",
-                            transform: on ? "scale(1.08)" : "scale(1)",
-                          }}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
-
                 <button
                   className="btn w-full mt-16"
                   style={{
@@ -1381,6 +1489,69 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
 /* ── SectionHeader ──
  * Small uppercase group label used to break the right-panel form into
  * 基本 / 时空 / 归属 / 外观 buckets. */
+/* ── LaneFilterStrip ──
+ * Multi-select chip strip for 故事线/伏笔 lanes. Clicking a chip toggles
+ * its key in the parent's activeLaneKeys set. When at least one lane is
+ * active, the canvas:
+ *   · sorts cards so active lanes appear first within each row
+ *   · only draws SVG connectors for active lanes
+ *   · cards that DON'T own any active lane render faded
+ * Empty selection = neutral mode (show all lanes equally, all connectors). */
+function LaneFilterStrip({ lanes, activeKeys, onToggle, onClear }: {
+  lanes: Array<{ key: string; type: "thread" | "hook" | "orphan"; color: string; label: string }>;
+  activeKeys: Set<string>;
+  onToggle: (key: string) => void;
+  onClear: () => void;
+}) {
+  const real = lanes.filter(l => l.type !== "orphan");
+  if (real.length === 0) return null;
+  return (
+    <div style={{
+      padding: "8px 16px", display: "flex", alignItems: "center",
+      gap: 8, flexWrap: "wrap",
+      background: "var(--bg-surface)", borderBottom: "1px solid var(--border)",
+    }}>
+      <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", letterSpacing: 0.3 }}>
+        故事线 / 伏笔
+      </span>
+      {real.map(lane => {
+        const on = activeKeys.has(lane.key);
+        return (
+          <button key={lane.key}
+            onClick={() => onToggle(lane.key)}
+            title={lane.label}
+            style={{
+              fontSize: 11, padding: "3px 10px",
+              borderRadius: 12, cursor: "pointer",
+              border: `1.5px solid ${lane.color}`,
+              background: on ? lane.color : "transparent",
+              color: on ? "#fff" : lane.color,
+              fontWeight: 600,
+              display: "inline-flex", alignItems: "center", gap: 6,
+              transition: "background 0.15s, color 0.15s",
+            }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: "50%",
+              background: on ? "#fff" : lane.color,
+            }} />
+            {lane.label}
+          </button>
+        );
+      })}
+      {activeKeys.size > 0 && (
+        <button className="btn-ghost"
+          onClick={onClear}
+          style={{ fontSize: 10, padding: "2px 10px", marginLeft: 4 }}>
+          清除筛选
+        </button>
+      )}
+      <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-tertiary)" }}>
+        {activeKeys.size === 0 ? "未选 = 显示全部 / 不画连线" : `已选 ${activeKeys.size} 条 → 排序 + 连线`}
+      </span>
+    </div>
+  );
+}
+
 function SectionHeader({ children }: { children: React.ReactNode }) {
   return (
     <div style={{
