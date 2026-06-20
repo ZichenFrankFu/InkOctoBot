@@ -167,6 +167,56 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     return () => clearTimeout(t);
   }, [dirty, nodes, edges, loaded, projectId]);
 
+  // --- Add 章节 ---
+  // Appends a new chapter to the editor's last volume, then mirrors the
+  // chapter title into chapterTitles so a fresh empty row appears in the
+  // canvas immediately (no need to wait for a manual reload).
+  const addChapter = useCallback(async () => {
+    const pid = projectId || "default";
+    try {
+      const data = await apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${pid}`);
+      const volumes = (data.volumes || []).map(v => ({
+        ...v,
+        chapters: [...(v.chapters || [])],
+      })) as any[];
+      let chCount = 0;
+      volumes.forEach((v: any) => { chCount += (v.chapters || []).length; });
+      const nextNum = chCount + 1;
+      const newId = `ch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      if (volumes.length === 0) {
+        volumes.push({
+          id: `vol_${Date.now().toString(36)}`,
+          project_id: pid,
+          title: "第一卷",
+          order: 0,
+          chapters: [{ id: newId, title: `第${nextNum}章`, synopsis: "", characters: [], order: 0 }],
+        });
+      } else {
+        const lastVol = volumes[volumes.length - 1];
+        const lastOrder = (lastVol.chapters || []).reduce(
+          (m: number, c: any) => Math.max(m, c.order || 0), 0,
+        );
+        lastVol.chapters.push({
+          id: newId,
+          volume_id: lastVol.id,
+          title: `第${nextNum}章`,
+          synopsis: "",
+          characters: [],
+          order: lastOrder + 1,
+        });
+      }
+      await apiPut(`/api/data/editor`, { project_id: pid, volumes });
+      setChapterTitles(prev => {
+        const next = new Map(prev);
+        next.set(nextNum, `第${nextNum}章`);
+        return next;
+      });
+      toast(`已新增 第${nextNum}章`, "success");
+    } catch (e: any) {
+      toast(e?.message || "添加章节失败", "error");
+    }
+  }, [projectId, toast]);
+
   // --- Add 情节 ---
   // Global toolbar action: drop a new 情节 into the latest chapter.
   const addNode = useCallback(() => {
@@ -668,6 +718,31 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     return lanes.filter(l => usedKeys.has(l.key));
   }, [lanes, nodes, nodeLaneKeys]);
 
+  // ── Auto-trigger 智能排序 only on lane-membership changes ──
+  // A signature of every node's (thread_ids + hook_ids). When this
+  // string changes between renders, exactly one card switched lanes
+  // (or got created / deleted) → re-run smartSortNodes. Manual drags
+  // only move x, which isn't in the signature, so dragging never
+  // triggers an auto-resort.
+  const laneSignature = useMemo(() => {
+    return nodes.map(n => {
+      const t = readThreadIds(n).join(",");
+      const h = readHookIds(n).join(",");
+      return `${n.id}:${t}|${h}`;
+    }).sort().join(";");
+  }, [nodes, readThreadIds, readHookIds]);
+  const prevLaneSig = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevLaneSig.current === null) {
+      prevLaneSig.current = laneSignature;
+      return;
+    }
+    if (prevLaneSig.current !== laneSignature) {
+      prevLaneSig.current = laneSignature;
+      smartSortNodes();
+    }
+  }, [laneSignature, smartSortNodes]);
+
   // ── Measure card positions for the SVG connection overlay ──
   // After every render that may have changed the layout, walk the
   // card-ref map and capture each card's bottom-center / top-center in
@@ -884,6 +959,10 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                   onClick={() => setZoom(1)}
                   title="100%">重置</button>
               </div>
+              <button className="btn" style={{ fontSize: 12, padding: "6px 14px" }} onClick={addChapter}
+                title="在末尾新建一章（同步进编辑器卷/章 结构）">
+                + 添加章节
+              </button>
               <button className="btn-primary" style={{ fontSize: 12, padding: "6px 14px" }} onClick={addNode}>
                 + 添加情节
               </button>
@@ -1547,89 +1626,16 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
         </div>
       </div>
 
-      {/* ======== 故事中时间 strip (bottom) ========
-          One chip per 情节 with a non-empty 故事中时间, ordered along
-          the reading path. Click navigates to that 情节. */}
-      <div
-        style={{
-          height: TIMELINE_H,
-          flexShrink: 0,
-          background: "var(--bg-surface)",
-          borderTop: "1px solid var(--border)",
-          display: "flex",
-          alignItems: "center",
-          gap: 0,
-          padding: "0 20px",
-          overflowX: "auto",
-          boxShadow: "0 -1px 0 rgba(0,0,0,0.02)",
-        }}
-      >
-        <div style={{
-          display: "flex", alignItems: "center", gap: 6,
-          marginRight: 16, whiteSpace: "nowrap", flexShrink: 0,
-        }}>
-          <span style={{
-            width: 6, height: 6, borderRadius: "50%",
-            background: "var(--accent)", display: "inline-block",
-          }} />
-          <span style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600, letterSpacing: 0.4 }}>
-            故事中时间
-          </span>
-        </div>
-        {episodeTimePoints.length === 0 ? (
-          <span style={{ fontSize: 11, color: "var(--text-disabled)", fontStyle: "italic" }}>
-            暂无故事中时间，在情节详情中填写「故事中时间」
-          </span>
-        ) : (
-          <div style={{ display: "flex", gap: 8, alignItems: "stretch", height: 48 }}>
-            {episodeTimePoints.map((n) => {
-              const isActive = sel?.id === n.id;
-              return (
-                <div
-                  key={n.id}
-                  onClick={() => setSelected(n.id)}
-                  title={`${n.chapter_num ? `第${n.chapter_num}章 · ` : ""}${n.title}`}
-                  style={{
-                    minWidth: 120, maxWidth: 220,
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "flex-start",
-                    justifyContent: "center",
-                    background: "var(--bg-secondary)",
-                    border: "1px solid var(--border-subtle)",
-                    borderLeft: `3px solid ${n.color || "var(--text-secondary)"}`,
-                    borderRadius: 8,
-                    cursor: "pointer",
-                    transition: "box-shadow 0.18s ease, transform 0.18s ease",
-                    padding: "5px 12px",
-                    flexShrink: 0,
-                    boxShadow: isActive
-                      ? "0 0 0 2px var(--accent), 0 2px 4px rgba(0,0,0,0.06)"
-                      : "none",
-                    transform: isActive ? "translateY(-1px)" : "none",
-                  }}
-                >
-                  <span style={{
-                    fontSize: 11.5, fontWeight: 700,
-                    color: "var(--text-primary)",
-                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                    maxWidth: "100%",
-                  }}>
-                    {n.time}
-                  </span>
-                  <span style={{
-                    fontSize: 9.5, color: "var(--text-tertiary)",
-                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                    maxWidth: "100%", marginTop: 1,
-                  }}>
-                    {n.chapter_num ? `第${n.chapter_num}章 · ` : ""}{n.title}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+      {/* ======== 故事中时间 PR-style scrub bar (bottom) ========
+          Horizontal track with one tick per 情节 that has a non-empty
+          time. A circular playhead sits at the currently-selected
+          tick; dragging or clicking moves the playhead → setSelected.
+          Above the playhead, the current node's 故事中时间 label. */}
+      <StoryTimeScrubber
+        points={episodeTimePoints}
+        selectedId={selected}
+        onSelect={setSelected}
+      />
 
       {/* Drag-preview ghost — shadows the dragged 情节 card under the cursor
           so the user has clear feedback about what they're moving. Rendered
@@ -1679,6 +1685,228 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
  *   · only draws SVG connectors for active lanes
  *   · cards that DON'T own any active lane render faded
  * Empty selection = neutral mode (show all lanes equally, all connectors). */
+/* ── StoryTimeScrubber ──
+ * PR-style scrub bar for the bottom 故事中时间 strip. Renders a
+ * horizontal track + one tick per 情节 that has a non-empty `time`,
+ * plus a circular playhead at the currently-selected tick. Drag the
+ * playhead (or click anywhere on the track) to snap to the nearest
+ * tick → setSelected. Pan the track horizontally when ticks overflow. */
+function StoryTimeScrubber({ points, selectedId, onSelect }: {
+  points: StoryNode[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const STEP = 92;
+  const PAD = 24;
+  const trackInnerRef = React.useRef<HTMLDivElement>(null);
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const dragging = React.useRef(false);
+  // Pan-with-grab when the user middle-clicks / holds the empty bar.
+  const panStart = React.useRef<{ x: number; scroll: number } | null>(null);
+
+  const selectedIdx = points.findIndex(p => p.id === selectedId);
+  const cur = selectedIdx >= 0 ? points[selectedIdx] : null;
+
+  // Keep the playhead in view when the selection changes from outside.
+  React.useEffect(() => {
+    if (selectedIdx < 0 || !scrollRef.current) return;
+    const handleX = PAD + selectedIdx * STEP;
+    const view = scrollRef.current;
+    const left = view.scrollLeft;
+    const right = left + view.clientWidth;
+    if (handleX < left + 40) view.scrollTo({ left: Math.max(0, handleX - 40), behavior: "smooth" });
+    else if (handleX > right - 40) view.scrollTo({ left: handleX - view.clientWidth + 40, behavior: "smooth" });
+  }, [selectedIdx]);
+
+  const snapToPointer = (clientX: number) => {
+    if (!trackInnerRef.current) return;
+    const rect = trackInnerRef.current.getBoundingClientRect();
+    const x = clientX - rect.left - PAD;
+    const idx = Math.round(x / STEP);
+    const clamped = Math.max(0, Math.min(points.length - 1, idx));
+    if (points[clamped]) onSelect(points[clamped].id);
+  };
+
+  const onPointerDownTrack = (e: React.PointerEvent) => {
+    // Middle button or Alt-drag = pan; otherwise treat as scrub.
+    if (e.button === 1 || e.altKey) {
+      panStart.current = { x: e.clientX, scroll: scrollRef.current?.scrollLeft || 0 };
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      return;
+    }
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragging.current = true;
+    snapToPointer(e.clientX);
+  };
+  const onPointerMoveTrack = (e: React.PointerEvent) => {
+    if (panStart.current && scrollRef.current) {
+      const dx = e.clientX - panStart.current.x;
+      scrollRef.current.scrollLeft = panStart.current.scroll - dx;
+      return;
+    }
+    if (!dragging.current) return;
+    snapToPointer(e.clientX);
+  };
+  const onPointerUpTrack = (e: React.PointerEvent) => {
+    if ((e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) {
+      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* noop */ }
+    }
+    dragging.current = false;
+    panStart.current = null;
+  };
+
+  const TIMELINE_H = 76;
+  const TRACK_Y = 50;
+  return (
+    <div style={{
+      height: TIMELINE_H, flexShrink: 0,
+      background: "var(--bg-surface)",
+      borderTop: "1px solid var(--border)",
+      display: "flex", alignItems: "stretch",
+      boxShadow: "0 -1px 0 rgba(0,0,0,0.02)",
+    }}>
+      <div style={{
+        display: "flex", flexDirection: "column", alignItems: "flex-start",
+        gap: 2, padding: "8px 16px", whiteSpace: "nowrap", flexShrink: 0,
+        borderRight: "1px solid var(--border-subtle)", minWidth: 140,
+        justifyContent: "center",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: "var(--accent)", display: "inline-block",
+          }} />
+          <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-secondary)", letterSpacing: 0.4 }}>
+            故事中时间
+          </span>
+        </div>
+        <span style={{
+          fontSize: 12, fontWeight: 600, color: cur ? "var(--text-primary)" : "var(--text-disabled)",
+          fontStyle: cur ? "normal" : "italic",
+          overflow: "hidden", textOverflow: "ellipsis",
+          maxWidth: 200,
+        }} title={cur ? `${cur.time}${cur.chapter_num ? ` · 第${cur.chapter_num}章` : ""} · ${cur.title}` : undefined}>
+          {cur ? cur.time : "—"}
+        </span>
+      </div>
+
+      {points.length === 0 ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", padding: "0 16px" }}>
+          <span style={{ fontSize: 11, color: "var(--text-disabled)", fontStyle: "italic" }}>
+            暂无故事中时间，在情节详情中填写「故事中时间」
+          </span>
+        </div>
+      ) : (
+        <div
+          ref={scrollRef}
+          style={{
+            flex: 1, minWidth: 0, position: "relative",
+            overflowX: "auto", overflowY: "hidden",
+            cursor: dragging.current ? "grabbing" : "default",
+          }}
+          onPointerDown={onPointerDownTrack}
+          onPointerMove={onPointerMoveTrack}
+          onPointerUp={onPointerUpTrack}
+        >
+          <div
+            ref={trackInnerRef}
+            style={{
+              position: "relative",
+              width: PAD * 2 + Math.max(0, points.length - 1) * STEP,
+              minWidth: "100%",
+              height: TIMELINE_H,
+              touchAction: "none",
+              userSelect: "none",
+            }}
+          >
+            {/* Horizontal track line */}
+            <div style={{
+              position: "absolute",
+              top: TRACK_Y, left: PAD, right: PAD, height: 2,
+              background: "var(--border)", borderRadius: 1,
+            }} />
+            {/* Time labels above the track */}
+            {points.map((p, i) => {
+              const x = PAD + i * STEP;
+              const isCurrent = p.id === selectedId;
+              return (
+                <div key={`label-${p.id}`} style={{
+                  position: "absolute",
+                  left: x, top: 6,
+                  transform: "translateX(-50%)",
+                  fontSize: 10,
+                  fontWeight: isCurrent ? 700 : 500,
+                  color: isCurrent ? "var(--accent)" : "var(--text-tertiary)",
+                  whiteSpace: "nowrap",
+                  pointerEvents: "none",
+                  maxWidth: STEP + 20,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }} title={p.time}>
+                  {p.time}
+                </div>
+              );
+            })}
+            {/* Tick marks on the track */}
+            {points.map((p, i) => {
+              const x = PAD + i * STEP;
+              const isCurrent = p.id === selectedId;
+              return (
+                <div key={`tick-${p.id}`} style={{
+                  position: "absolute",
+                  left: x, top: TRACK_Y - 5,
+                  transform: "translateX(-50%)",
+                  width: 2, height: 12,
+                  background: isCurrent ? "var(--accent)" : "var(--text-tertiary)",
+                  opacity: isCurrent ? 1 : 0.6,
+                  pointerEvents: "none",
+                  borderRadius: 1,
+                }} />
+              );
+            })}
+            {/* Chapter/title sub-label below tick */}
+            {points.map((p, i) => {
+              const x = PAD + i * STEP;
+              const isCurrent = p.id === selectedId;
+              return (
+                <div key={`sub-${p.id}`} style={{
+                  position: "absolute",
+                  left: x, top: TRACK_Y + 12,
+                  transform: "translateX(-50%)",
+                  fontSize: 9,
+                  color: isCurrent ? "var(--accent)" : "var(--text-disabled)",
+                  whiteSpace: "nowrap",
+                  pointerEvents: "none",
+                  maxWidth: STEP + 20,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}>
+                  {p.chapter_num ? `第${p.chapter_num}章` : ""}{p.title ? ` · ${p.title.slice(0, 8)}` : ""}
+                </div>
+              );
+            })}
+            {/* Circular playhead at the selected tick */}
+            {selectedIdx >= 0 && (
+              <div style={{
+                position: "absolute",
+                left: PAD + selectedIdx * STEP, top: TRACK_Y,
+                transform: "translate(-50%, -50%)",
+                width: 16, height: 16, borderRadius: "50%",
+                background: "var(--accent)",
+                border: "2px solid var(--bg-surface)",
+                boxShadow: "0 0 0 1px var(--accent), 0 2px 6px rgba(0,0,0,0.18)",
+                cursor: "grab",
+                pointerEvents: "none",
+              }} />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LaneFilterStrip({ lanes, activeKeys, onToggle, onClear, onSmartSort }: {
   lanes: Array<{ key: string; type: "thread" | "hook" | "orphan"; color: string; label: string }>;
   activeKeys: Set<string>;
