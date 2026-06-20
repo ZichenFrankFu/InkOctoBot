@@ -45,6 +45,42 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   const [selected, setSelected] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
+
+  // ── 详情面板 宽度 + 折叠 (persisted) ──
+  // Resize via the splitter handle on the panel's left edge; collapsed
+  // state hides the panel entirely behind a thin re-open strip so the
+  // canvas takes the full width.
+  const [detailWidth, setDetailWidth] = useState<number>(() => {
+    const v = parseInt(localStorage.getItem("storyline_detail_width") || "300");
+    return isNaN(v) ? 300 : Math.max(240, Math.min(720, v));
+  });
+  const [detailCollapsed, setDetailCollapsed] = useState<boolean>(
+    () => localStorage.getItem("storyline_detail_collapsed") === "1",
+  );
+  useEffect(() => { localStorage.setItem("storyline_detail_width", String(detailWidth)); }, [detailWidth]);
+  useEffect(() => { localStorage.setItem("storyline_detail_collapsed", detailCollapsed ? "1" : "0"); }, [detailCollapsed]);
+  const [resizingDetail, setResizingDetail] = useState(false);
+  useEffect(() => {
+    if (!resizingDetail) return;
+    const onMove = (e: MouseEvent) => {
+      const rect = pageRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const next = rect.right - e.clientX;
+      setDetailWidth(Math.max(240, Math.min(720, next)));
+    };
+    const onUp = () => setResizingDetail(false);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [resizingDetail]);
 
   // Extra data feeding the content layer of the timeline (visuals unchanged):
   //  · characters[] → CharacterSelector options (角色管理 ↔ 出场角色)
@@ -849,17 +885,43 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     return paths;
   }, [cardRects, activeLaneKeys, lanes, nodes, nodeLaneKeys]);
 
-  // --- Bottom 故事中时间 strip: one chip per 情节 that has a non-empty
-  //     `time` value (in-story timestamp), ordered along the reading path
-  //     (chapter_num → x). Clicking a chip selects that 情节. Empty when
-  //     no card has filled in 故事中时间.
-  const episodeTimePoints = useMemo(() => {
+  // --- Bottom 故事中时间 strip: group cards by their `time` value so the
+  //     timeline has ONE tick per unique in-story moment, regardless of
+  //     how many 情节 happen at it. Each slot keeps the list of cards that
+  //     share that moment — clicking a tick selects the first card AND
+  //     marks every other card sharing the time as a "twin" for the
+  //     canvas to highlight (see twinIds below).
+  const normTime = (t: string | undefined): string => (t || "").trim();
+  const timeSlots = useMemo(() => {
     const sorted = [...nodes].sort((a, b) =>
       (a.chapter_num || 0) - (b.chapter_num || 0)
       || (a.x || 0) - (b.x || 0)
     );
-    return sorted.filter(n => (n.time || "").trim().length > 0);
+    const map = new Map<string, StoryNode[]>();
+    sorted.forEach(n => {
+      const t = normTime(n.time);
+      if (!t) return;
+      if (!map.has(t)) map.set(t, []);
+      map.get(t)!.push(n);
+    });
+    const slots: { time: string; nodes: StoryNode[] }[] = [];
+    map.forEach((ns, t) => slots.push({ time: t, nodes: ns }));
+    return slots;
   }, [nodes]);
+
+  /** All other cards that share `time` with the currently selected card —
+   *  these get a gold "twin highlight" so the user can see at a glance
+   *  every 情节 happening at the same in-story moment. The selected card
+   *  itself keeps its red accent ring; twins get a different look so the
+   *  two states are visually distinct. */
+  const twinIds = useMemo(() => {
+    if (!sel) return new Set<string>();
+    const t = normTime(sel.time);
+    if (!t) return new Set<string>();
+    const slot = timeSlots.find(s => s.time === t);
+    if (!slot) return new Set<string>();
+    return new Set(slot.nodes.filter(n => n.id !== sel.id).map(n => n.id));
+  }, [sel, timeSlots]);
 
   // --- Merged chapter outline: for each chapter, concat the events'
   //     summaries into a numbered outline. Surfaced under each chapter
@@ -913,22 +975,24 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   }
 
   return (
-    <div className="page-full" style={{ flexDirection: "column", display: "flex", height: "100%", overflow: "hidden" }}>
+    <div ref={pageRef} className="page-full" style={{ flexDirection: "column", display: "flex", height: "100%", overflow: "hidden" }}>
       <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
         {/* ======== Canvas ======== */}
         <div ref={canvasRef} style={{ flex: 1, minWidth: 0, overflow: "auto", background: "var(--bg-app)", position: "relative" }}>
-          {/* Toolbar */}
+          {/* Toolbar — wraps to a second row on narrow viewports so the
+              buttons never overlap the title or each other. */}
           <div
             className="panel-header"
             style={{
               position: "sticky",
               top: 0,
               zIndex: 10,
-              height: HEADER_H,
+              minHeight: HEADER_H,
               gap: 10,
               display: "flex",
               alignItems: "center",
-              padding: "0 20px",
+              flexWrap: "wrap",
+              padding: "10px 20px",
               background: "var(--bg-surface)",
               borderBottom: "1px solid var(--border)",
               boxShadow: "0 1px 0 rgba(0,0,0,0.02)",
@@ -942,7 +1006,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
             }}>
               {nodes.length} 情节 · {chapterTitles.size || 0} 章
             </span>
-            <div className="flex gap-8" style={{ marginLeft: "auto", alignItems: "center" }}>
+            <div className="flex gap-8" style={{ marginLeft: "auto", alignItems: "center", flexWrap: "wrap" }}>
               {/* Zoom controls — scale the rows canvas via CSS zoom so
                   layout + SVG measurements scale together. */}
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -1233,6 +1297,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         .map(n => {
                         const isDragging = dragPreview?.id === n.id;
                         const isSelected = selected === n.id;
+                        const isTwin = twinIds.has(n.id);
                         // The card-side chips only show the first assigned
                         // thread / hook (acts as a label); the full
                         // multi-lane membership is communicated through
@@ -1242,6 +1307,18 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         const thread = _tids.length ? threads.find(t => t.thread_id === _tids[0]) : undefined;
                         const hook = _hids.length ? hooks.find(h => h.id === _hids[0]) : undefined;
                         const stripes = nodeStripes(n);
+                        // Twin highlight: gold ring on cards that share
+                        // 故事中时间 with the currently selected card —
+                        // distinct from the red accent ring used on the
+                        // selected card itself. Uses --gold (visually
+                        // distinct from the muted lane palette).
+                        const twinShadow = "0 0 0 2px var(--gold), 0 0 0 4px var(--gold-subtle), 0 4px 12px rgba(0,0,0,0.08)";
+                        const baseShadow = "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)";
+                        const restingShadow = isSelected
+                          ? "0 0 0 2px var(--accent), 0 4px 12px rgba(0,0,0,0.08)"
+                          : isTwin
+                            ? twinShadow
+                            : baseShadow;
                         return (
                           <div
                             key={n.id}
@@ -1249,6 +1326,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             onMouseDown={(e) => onNodeMouseDown(n.id, e)}
                             onClick={() => setSelected(n.id)}
                             className={`timeline-node ${isSelected ? "selected" : ""}`}
+                            title={isTwin ? `与「${sel?.title || "选中卡"}」同时间发生` : undefined}
                             style={{
                               position: "relative",
                               left: "auto", top: "auto",
@@ -1263,22 +1341,22 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                               cursor: "grab",
                               flexShrink: 0,
                               opacity: isDragging ? 0.35 : 1,
-                              background: "var(--bg-card)",
+                              background: isTwin && !isSelected ? "var(--gold-subtle)" : "var(--bg-card)",
                               overflow: "hidden",
-                              boxShadow: isSelected
-                                ? "0 0 0 2px var(--accent), 0 4px 12px rgba(0,0,0,0.08)"
-                                : "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)",
-                              transition: "transform 0.15s ease, box-shadow 0.15s ease, opacity 0.12s",
+                              boxShadow: restingShadow,
+                              transition: "transform 0.15s ease, box-shadow 0.15s ease, opacity 0.12s, background 0.18s",
                             }}
                             onMouseEnter={(e) => {
                               if (isDragging || isSelected) return;
                               e.currentTarget.style.transform = "translateY(-2px)";
-                              e.currentTarget.style.boxShadow = "0 4px 10px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04)";
+                              e.currentTarget.style.boxShadow = isTwin
+                                ? twinShadow
+                                : "0 4px 10px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04)";
                             }}
                             onMouseLeave={(e) => {
                               if (isSelected) return;
                               e.currentTarget.style.transform = "translateY(0)";
-                              e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)";
+                              e.currentTarget.style.boxShadow = isTwin ? twinShadow : baseShadow;
                             }}
                           >
                             {/* Stacked lane-color stripes — one 4px band
@@ -1411,11 +1489,53 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
         </div>
 
         {/* ======== Detail Panel ======== */}
+        {detailCollapsed ? (
+          // Collapsed: thin re-open strip on the right edge. Keeps the
+          // detail UI one click away without consuming horizontal room.
+          <button
+            onClick={() => setDetailCollapsed(false)}
+            title="展开 情节详情"
+            style={{
+              width: 28, flexShrink: 0,
+              border: "none", borderLeft: "1px solid var(--border)",
+              background: "var(--bg-surface)",
+              color: "var(--text-tertiary)",
+              cursor: "pointer", padding: 0,
+              writingMode: "vertical-rl",
+              fontSize: 11, letterSpacing: 4,
+              transition: "background 0.15s, color 0.15s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "var(--accent-subtle)";
+              e.currentTarget.style.color = "var(--accent)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "var(--bg-surface)";
+              e.currentTarget.style.color = "var(--text-tertiary)";
+            }}>
+            ‹ 情节详情
+          </button>
+        ) : (
+        <>
+        {/* Splitter handle — drag to resize the detail panel width. */}
+        <div
+          onMouseDown={(e) => { e.preventDefault(); setResizingDetail(true); }}
+          title="拖动调整宽度"
+          style={{
+            width: 4, flexShrink: 0,
+            background: resizingDetail ? "var(--accent)" : "var(--border)",
+            cursor: "col-resize",
+            transition: "background 0.12s",
+          }}
+          onMouseEnter={(e) => { if (!resizingDetail) e.currentTarget.style.background = "var(--accent-subtle)"; }}
+          onMouseLeave={(e) => { if (!resizingDetail) e.currentTarget.style.background = "var(--border)"; }}
+        />
         <div
           className="panel"
           style={{
-            width: 300,
-            minWidth: 300,
+            width: detailWidth,
+            minWidth: 240,
+            maxWidth: 720,
             flexShrink: 0,
             background: "var(--bg-surface)",
             borderLeft: "1px solid var(--border)",
@@ -1425,7 +1545,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
         >
           <div className="panel-header" style={{
             display: "flex", alignItems: "center", gap: 10,
-            padding: "0 20px", height: HEADER_H,
+            padding: "0 12px 0 20px", height: HEADER_H,
             borderBottom: "1px solid var(--border)",
           }}>
             {sel && (
@@ -1436,7 +1556,21 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                 flexShrink: 0,
               }} />
             )}
-            <h3 className="font-serif" style={{ letterSpacing: 0.5 }}>情节详情</h3>
+            <h3 className="font-serif" style={{ letterSpacing: 0.5, flex: 1, minWidth: 0 }}>情节详情</h3>
+            <button
+              onClick={() => setDetailCollapsed(true)}
+              title="收起面板"
+              style={{
+                border: "none", background: "transparent",
+                color: "var(--text-tertiary)",
+                cursor: "pointer", fontSize: 16, lineHeight: 1,
+                padding: "4px 8px", borderRadius: 6,
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent)"; e.currentTarget.style.background = "var(--accent-subtle)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-tertiary)"; e.currentTarget.style.background = "transparent"; }}>
+              ›
+            </button>
           </div>
           <div className="panel-body" style={{ padding: "16px 18px" }}>
             {sel ? (
@@ -1478,8 +1612,11 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                     className="input"
                     value={sel.time || ""}
                     onChange={e => updateNode(sel.id, "time", e.target.value)}
-                    placeholder="例：第一纪元 121年·秋"
+                    placeholder="例：第3天·黄昏（与故事中世界保持一致的格式）"
                   />
+                  <div className="text-xs" style={{ color: "var(--text-tertiary)", marginTop: 4, lineHeight: 1.4 }}>
+                    用「第N天·时段」格式；同一时间的多张情节卡会在下方时间轴合并为一个点，并在选中时整组高亮。
+                  </div>
                 </div>
                 <div className="field mb-12">
                   <label className="label">地点</label>
@@ -1624,15 +1761,18 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
             )}
           </div>
         </div>
+        </>
+        )}
       </div>
 
       {/* ======== 故事中时间 PR-style scrub bar (bottom) ========
-          Horizontal track with one tick per 情节 that has a non-empty
-          time. A circular playhead sits at the currently-selected
-          tick; dragging or clicking moves the playhead → setSelected.
-          Above the playhead, the current node's 故事中时间 label. */}
+          Horizontal track with one tick per UNIQUE 故事中时间 (multi-card
+          moments collapse onto a single tick). A circular playhead sits
+          at the slot containing the currently-selected card. Click /
+          drag → selects the first card in that slot; every other card
+          in the slot gets a gold twin-highlight on the canvas. */}
       <StoryTimeScrubber
-        points={episodeTimePoints}
+        slots={timeSlots}
         selectedId={selected}
         onSelect={setSelected}
       />
@@ -1691,8 +1831,8 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
  * plus a circular playhead at the currently-selected tick. Drag the
  * playhead (or click anywhere on the track) to snap to the nearest
  * tick → setSelected. Pan the track horizontally when ticks overflow. */
-function StoryTimeScrubber({ points, selectedId, onSelect }: {
-  points: StoryNode[];
+function StoryTimeScrubber({ slots, selectedId, onSelect }: {
+  slots: { time: string; nodes: StoryNode[] }[];
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
@@ -1704,8 +1844,8 @@ function StoryTimeScrubber({ points, selectedId, onSelect }: {
   // Pan-with-grab when the user middle-clicks / holds the empty bar.
   const panStart = React.useRef<{ x: number; scroll: number } | null>(null);
 
-  const selectedIdx = points.findIndex(p => p.id === selectedId);
-  const cur = selectedIdx >= 0 ? points[selectedIdx] : null;
+  const selectedIdx = slots.findIndex(s => s.nodes.some(n => n.id === selectedId));
+  const cur = selectedIdx >= 0 ? slots[selectedIdx] : null;
 
   // Keep the playhead in view when the selection changes from outside.
   React.useEffect(() => {
@@ -1723,8 +1863,9 @@ function StoryTimeScrubber({ points, selectedId, onSelect }: {
     const rect = trackInnerRef.current.getBoundingClientRect();
     const x = clientX - rect.left - PAD;
     const idx = Math.round(x / STEP);
-    const clamped = Math.max(0, Math.min(points.length - 1, idx));
-    if (points[clamped]) onSelect(points[clamped].id);
+    const clamped = Math.max(0, Math.min(slots.length - 1, idx));
+    const slot = slots[clamped];
+    if (slot && slot.nodes[0]) onSelect(slot.nodes[0].id);
   };
 
   const onPointerDownTrack = (e: React.PointerEvent) => {
@@ -1786,12 +1927,12 @@ function StoryTimeScrubber({ points, selectedId, onSelect }: {
           fontStyle: cur ? "normal" : "italic",
           overflow: "hidden", textOverflow: "ellipsis",
           maxWidth: 200,
-        }} title={cur ? `${cur.time}${cur.chapter_num ? ` · 第${cur.chapter_num}章` : ""} · ${cur.title}` : undefined}>
-          {cur ? cur.time : "—"}
+        }} title={cur ? `${cur.time} · ${cur.nodes.length} 情节` : undefined}>
+          {cur ? `${cur.time}${cur.nodes.length > 1 ? ` · ${cur.nodes.length} 情节` : ""}` : "—"}
         </span>
       </div>
 
-      {points.length === 0 ? (
+      {slots.length === 0 ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", padding: "0 16px" }}>
           <span style={{ fontSize: 11, color: "var(--text-disabled)", fontStyle: "italic" }}>
             暂无故事中时间，在情节详情中填写「故事中时间」
@@ -1813,7 +1954,7 @@ function StoryTimeScrubber({ points, selectedId, onSelect }: {
             ref={trackInnerRef}
             style={{
               position: "relative",
-              width: PAD * 2 + Math.max(0, points.length - 1) * STEP,
+              width: PAD * 2 + Math.max(0, slots.length - 1) * STEP,
               minWidth: "100%",
               height: TIMELINE_H,
               touchAction: "none",
@@ -1827,11 +1968,11 @@ function StoryTimeScrubber({ points, selectedId, onSelect }: {
               background: "var(--border)", borderRadius: 1,
             }} />
             {/* Time labels above the track */}
-            {points.map((p, i) => {
+            {slots.map((s, i) => {
               const x = PAD + i * STEP;
-              const isCurrent = p.id === selectedId;
+              const isCurrent = i === selectedIdx;
               return (
-                <div key={`label-${p.id}`} style={{
+                <div key={`label-${s.time}`} style={{
                   position: "absolute",
                   left: x, top: 6,
                   transform: "translateX(-50%)",
@@ -1843,17 +1984,17 @@ function StoryTimeScrubber({ points, selectedId, onSelect }: {
                   maxWidth: STEP + 20,
                   overflow: "hidden",
                   textOverflow: "ellipsis",
-                }} title={p.time}>
-                  {p.time}
+                }} title={s.time}>
+                  {s.time}
                 </div>
               );
             })}
             {/* Tick marks on the track */}
-            {points.map((p, i) => {
+            {slots.map((s, i) => {
               const x = PAD + i * STEP;
-              const isCurrent = p.id === selectedId;
+              const isCurrent = i === selectedIdx;
               return (
-                <div key={`tick-${p.id}`} style={{
+                <div key={`tick-${s.time}`} style={{
                   position: "absolute",
                   left: x, top: TRACK_Y - 5,
                   transform: "translateX(-50%)",
@@ -1865,12 +2006,16 @@ function StoryTimeScrubber({ points, selectedId, onSelect }: {
                 }} />
               );
             })}
-            {/* Chapter/title sub-label below tick */}
-            {points.map((p, i) => {
+            {/* Chapter/episode count sub-label below tick */}
+            {slots.map((s, i) => {
               const x = PAD + i * STEP;
-              const isCurrent = p.id === selectedId;
+              const isCurrent = i === selectedIdx;
+              const firstNode = s.nodes[0];
+              const chapText = firstNode.chapter_num ? `第${firstNode.chapter_num}章` : "";
+              const countText = s.nodes.length > 1 ? `${s.nodes.length} 情节` : "";
+              const label = [chapText, countText].filter(Boolean).join(" · ");
               return (
-                <div key={`sub-${p.id}`} style={{
+                <div key={`sub-${s.time}`} style={{
                   position: "absolute",
                   left: x, top: TRACK_Y + 12,
                   transform: "translateX(-50%)",
@@ -1882,7 +2027,7 @@ function StoryTimeScrubber({ points, selectedId, onSelect }: {
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                 }}>
-                  {p.chapter_num ? `第${p.chapter_num}章` : ""}{p.title ? ` · ${p.title.slice(0, 8)}` : ""}
+                  {label}
                 </div>
               );
             })}
@@ -1957,11 +2102,6 @@ function LaneFilterStrip({ lanes, activeKeys, onToggle, onClear, onSmartSort }: 
         </button>
       )}
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-          {activeKeys.size === 0
-            ? "未选 → 不画连线（卡片仍按所属 lane 上色）"
-            : `已选 ${activeKeys.size} 条 → 仅画这几条 lane 的连线`}
-        </span>
         {onSmartSort && (
           <button className="btn"
             onClick={onSmartSort}
