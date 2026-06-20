@@ -7,7 +7,7 @@ import ChapterTimeline from "../components/shared/ChapterTimeline";
 // 故事中世界（Storyland）页面 — 双 tab：
 // 1. Storyland 状态：创世入口/审阅区、实体管理、SPO 事实（时间线/按章节）
 // 2. 读者视角记忆：按章节查看 L1-L4
-// 注：原「故事线」tab 已迁至 剧情线 page 的「故事线 / 伏笔 管理」tab，
+// 注：原「故事线」tab 已迁至 故事线 page 的「故事线与伏笔总览」section，
 //    将故事线 / 伏笔的 CRUD 与可视化时间线放在一起更聚拢。
 
 type TabKey = "state" | "memory";

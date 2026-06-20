@@ -92,7 +92,7 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
       { key: "projects",     icon: "□", label: "开书" },
       { key: "characters",   icon: "♢", label: "角色卡" },
       { key: "worldbook",    icon: "⊕", label: "世界书" },
-      { key: "storyline",    icon: "─", label: "剧情线" },
+      { key: "storyline",    icon: "─", label: "故事线" },
       { key: "editor",       icon: "✎", label: "编辑器" },
       { key: "storyland",    icon: "◎", label: "故事中世界" },
     ],

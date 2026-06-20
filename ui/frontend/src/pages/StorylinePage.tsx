@@ -31,8 +31,6 @@ const THREAD_STATUS_LABEL: Record<string, string> = {
   resolution: "完结", dormant: "搁置",
 };
 
-type StorylineTab = "timeline" | "management";
-
 // ── Lightweight types for storyland data (主线/支线 + 伏笔) shown in the
 //    top summary strip and the per-chapter chips. We only need the
 //    display-side fields; backend payloads carry more.
@@ -112,7 +110,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   const [threads, setThreads] = useState<Thread[]>([]);
   const [hooks, setHooks] = useState<Hook[]>([]);
   const [chapterTitles, setChapterTitles] = useState<Map<number, string>>(new Map());
-  const [tab, setTab] = useState<StorylineTab>("timeline");
 
   const reloadThreadsHooks = useCallback(async () => {
     const pid = projectId || "default";
@@ -1057,32 +1054,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
 
   return (
     <div ref={pageRef} className="page-full" style={{ flexDirection: "column", display: "flex", height: "100%", overflow: "hidden" }}>
-      {/* Top-level tab bar — 时间线 vs 故事线/伏笔管理 (CRUD).
-          The 管理 tab replaces the 故事线 tab that used to live in
-          故事中世界. */}
-      <div className="tab-bar-underline" style={{
-        flexShrink: 0, padding: "0 20px",
-        background: "var(--bg-surface)", borderBottom: "1px solid var(--border)",
-      }}>
-        <button className={`tab-item ${tab === "timeline" ? "active" : ""}`}
-          onClick={() => setTab("timeline")}>时间线</button>
-        <button className={`tab-item ${tab === "management" ? "active" : ""}`}
-          onClick={() => setTab("management")}>故事线 / 伏笔 管理</button>
-      </div>
-
-      {tab === "management" && (
-        <ThreadHookManager
-          projectId={projectId || "default"}
-          threads={threads}
-          hooks={hooks}
-          chapterTitles={chapterTitles}
-          reload={reloadThreadsHooks}
-          toast={toast}
-        />
-      )}
-
-      {tab === "timeline" && (
-      <>
       <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
         {/* ======== Canvas ======== */}
         <div ref={canvasRef} style={{ flex: 1, minWidth: 0, overflow: "auto", background: "var(--bg-app)", position: "relative" }}>
@@ -1105,7 +1076,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
               boxShadow: "0 1px 0 rgba(0,0,0,0.02)",
             }}
           >
-            <h3 className="font-serif" style={{ letterSpacing: 0.5 }}>剧情线</h3>
+            <h3 className="font-serif" style={{ letterSpacing: 0.5 }}>故事线</h3>
             <span className="text-xs" style={{
               marginLeft: 12, color: "var(--text-tertiary)",
               padding: "2px 10px", borderRadius: 10,
@@ -1148,10 +1119,13 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
             </div>
           </div>
 
-          {/* Storyline / foreshadowing summary strip — read-only links to
-              故事中世界 so the user can see主线/支线/伏笔 概览 而不切页 */}
-          <ThreadSummaryStrip threads={threads} hooks={hooks}
-            onOpenStoryland={() => onNavigate?.("storyland")} />
+          {/* 故事线 / 伏笔 总览 + CRUD —— 直接在本页 inline 编辑，
+              不再跳到 故事中世界 page。 */}
+          <ThreadSummaryStrip
+            projectId={projectId || "default"}
+            threads={threads} hooks={hooks}
+            reload={reloadThreadsHooks}
+            toast={toast} />
 
           {/* Vertical Timeline — one row per chapter (chapter_num).
               LEFT column of each row is the chapter spine card: chapter
@@ -1310,9 +1284,9 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             <span key={t.thread_id} className="tag" title={`${t.thread_type === "main" ? "主线" : "支线"}：${t.description}`}
                               style={{
                                 fontSize: 10, padding: "2px 8px", borderRadius: 10,
-                                background: t.thread_type === "main" ? "var(--accent-subtle)" : "var(--bg-surface)",
-                                color: t.thread_type === "main" ? "var(--accent)" : "var(--text-secondary)",
-                                borderColor: t.thread_type === "main" ? "var(--accent)" : "var(--border)",
+                                background: t.thread_type === "main" ? "var(--jade-subtle)" : "var(--bg-surface)",
+                                color: t.thread_type === "main" ? "var(--jade)" : "var(--text-secondary)",
+                                borderColor: t.thread_type === "main" ? "var(--jade)" : "var(--border)",
                                 fontWeight: 500,
                               }}>
                               {t.thread_type === "main" ? "主" : "支"} · {t.name}
@@ -1444,6 +1418,10 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             ref={(el) => { cardRefs.current.set(n.id, el); }}
                             onMouseDown={(e) => onNodeMouseDown(n.id, e)}
                             onClick={() => setSelected(n.id)}
+                            onDoubleClick={() => {
+                              setSelected(n.id);
+                              if (detailCollapsed) setDetailCollapsed(false);
+                            }}
                             className={`timeline-node ${isSelected ? "selected" : ""}`}
                             title={isTimeHighlighted ? `「${highlightedTime}」时段` : undefined}
                             style={{
@@ -1525,9 +1503,9 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                                 {thread && (
                                   <span style={{
                                     fontSize: 9.5, padding: "1.5px 7px", borderRadius: 10,
-                                    background: thread.thread_type === "main" ? "var(--accent-subtle)" : "transparent",
-                                    color: thread.thread_type === "main" ? "var(--accent)" : "var(--text-secondary)",
-                                    border: thread.thread_type === "main" ? "1px solid transparent" : "1px solid var(--border-subtle)",
+                                    background: thread.thread_type === "main" ? "var(--jade-subtle)" : "transparent",
+                                    color: thread.thread_type === "main" ? "var(--jade)" : "var(--text-secondary)",
+                                    border: thread.thread_type === "main" ? "1px solid var(--jade)" : "1px solid var(--border-subtle)",
                                     fontWeight: 500,
                                   }}
                                     title={thread.description}>
@@ -1935,8 +1913,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
           </div>
         );
       })()}
-      </>
-      )}
     </div>
   );
 }
@@ -1986,14 +1962,21 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
     else if (handleX > right - 40) view.scrollTo({ left: handleX - view.clientWidth + 40, behavior: "smooth" });
   }, [highlightedIdx]);
 
-  const snapToPointer = (clientX: number) => {
+  /** Resolve a slot under `clientX` and apply highlight semantics.
+   *  In `toggle` mode (initial pointer down) we deselect the slot if it
+   *  is already the current highlight — so click→same-tick→clear works.
+   *  In `set` mode (drag-scrub) we always commit the slot under cursor
+   *  so dragging doesn't accidentally clear by returning to the start. */
+  const snapToPointer = (clientX: number, mode: "toggle" | "set") => {
     if (!trackInnerRef.current) return;
     const rect = trackInnerRef.current.getBoundingClientRect();
     const x = clientX - rect.left - PAD;
     const idx = Math.round(x / STEP);
     const clamped = Math.max(0, Math.min(slots.length - 1, idx));
     const slot = slots[clamped];
-    if (slot) onHighlight(slot.time);
+    if (!slot) return;
+    if (mode === "toggle" && highlightedTime === slot.time) onHighlight(null);
+    else onHighlight(slot.time);
   };
 
   const onPointerDownTrack = (e: React.PointerEvent) => {
@@ -2006,7 +1989,7 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragging.current = true;
-    snapToPointer(e.clientX);
+    snapToPointer(e.clientX, "toggle");
   };
   const onPointerMoveTrack = (e: React.PointerEvent) => {
     if (panStart.current && scrollRef.current) {
@@ -2015,7 +1998,7 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
       return;
     }
     if (!dragging.current) return;
-    snapToPointer(e.clientX);
+    snapToPointer(e.clientX, "set");
   };
   const onPointerUpTrack = (e: React.PointerEvent) => {
     if ((e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) {
@@ -2049,18 +2032,6 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
           <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-secondary)", letterSpacing: 0.4 }}>
             故事中时间
           </span>
-          {cur && (
-            <button
-              onClick={() => onHighlight(null)}
-              title="清除时间高亮"
-              style={{
-                marginLeft: 4, border: "none", background: "transparent",
-                color: "var(--text-tertiary)", cursor: "pointer",
-                fontSize: 11, padding: "0 4px", lineHeight: 1,
-              }}>
-              ×
-            </button>
-          )}
         </div>
         <span style={{
           fontSize: 12, fontWeight: 600, color: cur ? "var(--accent)" : "var(--text-disabled)",
@@ -2274,19 +2245,168 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 
 /* ── ThreadSummaryStrip ──
- * Shown above the timeline. Read-only at-a-glance row of the user's
- * main / sub storylines and currently-open foreshadowing items. Click
- * → 故事中世界 to edit (the storyline page itself stays focused on
- * chapter beats — threads live with the rest of the storyland state). */
-function ThreadSummaryStrip({ threads, hooks, onOpenStoryland }: {
+ * Compact CRUD area shown above the timeline. Each row is
+ *   [label] [chip…] [+ 新增 inline-form-toggle]
+ * Chips carry inline status dropdown + ×-delete; 「+ 新增」 expands a
+ * tiny inline form (name / description / scale / origin chapter).
+ *
+ * Color rules: 主线 = jade green, 支线 = neutral gray, 伏笔 = gold.
+ * RED is reserved for the canvas's selected-card border and time-axis
+ * highlight overlay — never used as a lane/hook identity color. */
+function ThreadSummaryStrip({ projectId, threads, hooks, reload, toast }: {
+  projectId: string;
   threads: Thread[];
   hooks: Hook[];
-  onOpenStoryland?: () => void;
+  reload: () => Promise<void>;
+  toast: (m: string, t?: any) => void;
 }) {
   const mains = threads.filter(t => t.thread_type === "main");
   const subs = threads.filter(t => t.thread_type === "sub");
   const openHooks = hooks.filter(h => !["resolved", "abandoned"].includes(h.status));
-  if (threads.length === 0 && openHooks.length === 0) return null;
+
+  const [adding, setAdding] = useState<null | "main" | "sub" | "hook">(null);
+  const [newThread, setNewThread] = useState<{ name: string; description: string }>({ name: "", description: "" });
+  const [newHook, setNewHook] = useState<{ description: string; scale: string; origin_chapter: number }>({
+    description: "", scale: "event_clue", origin_chapter: 1,
+  });
+
+  const createThread = async (kind: "main" | "sub") => {
+    if (!newThread.name.trim()) { toast("故事线名称必填", "error"); return; }
+    try {
+      await apiPost("/api/storyland/subplots", { project_id: projectId, thread_type: kind, ...newThread });
+      setNewThread({ name: "", description: "" });
+      setAdding(null);
+      await reload();
+    } catch (e: any) { toast(e.message || "创建失败", "error"); }
+  };
+  const createHook = async () => {
+    if (!newHook.description.trim()) { toast("伏笔概述必填", "error"); return; }
+    try {
+      await apiPost("/api/storyland/hooks", { project_id: projectId, ...newHook });
+      setNewHook({ description: "", scale: "event_clue", origin_chapter: 1 });
+      setAdding(null);
+      await reload();
+    } catch (e: any) { toast(e.message || "创建失败", "error"); }
+  };
+  const delThread = async (id: string) => {
+    try { await apiDelete(`/api/storyland/subplots/${id}`); await reload(); }
+    catch (e: any) { toast(e.message || "删除失败", "error"); }
+  };
+  const delHook = async (id: string) => {
+    try { await apiDelete(`/api/storyland/hooks/${id}`); await reload(); }
+    catch (e: any) { toast(e.message || "删除失败", "error"); }
+  };
+  const updateThreadStatus = async (id: string, status: string) => {
+    try { await apiPut(`/api/storyland/subplots/${id}`, { status }); await reload(); }
+    catch (e: any) { toast(e.message || "更新失败", "error"); }
+  };
+
+  // Color tokens — NEVER red.
+  const mainBg = "var(--jade-subtle)", mainFg = "var(--jade)", mainBorder = "var(--jade)";
+  const subBg = "var(--bg-secondary)", subFg = "var(--text-secondary)", subBorder = "var(--border)";
+  const hookBg = "var(--gold-subtle)", hookFg = "var(--gold)", hookBorder = "var(--gold)";
+
+  const threadChip = (t: Thread, isMain: boolean) => (
+    <span key={t.thread_id} className="tag" title={t.description}
+      style={{
+        fontSize: 10, padding: "1px 4px 1px 8px",
+        background: isMain ? mainBg : subBg,
+        color: isMain ? mainFg : subFg,
+        border: `1px solid ${isMain ? mainBorder : subBorder}`,
+        display: "inline-flex", alignItems: "center", gap: 4,
+      }}>
+      {t.name}
+      <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>第{t.start_chapter}章起</span>
+      <select value={t.status}
+        onChange={e => updateThreadStatus(t.thread_id, e.target.value)}
+        style={{
+          fontSize: 9, padding: "0 4px", height: 16,
+          border: "none", background: "transparent",
+          color: isMain ? mainFg : subFg, cursor: "pointer",
+        }}>
+        {Object.entries(THREAD_STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+      </select>
+      <button onClick={() => delThread(t.thread_id)} title="删除"
+        style={{
+          border: "none", background: "transparent", padding: "0 4px",
+          fontSize: 11, lineHeight: 1, cursor: "pointer",
+          color: isMain ? mainFg : "var(--text-tertiary)", opacity: 0.7,
+        }}>×</button>
+    </span>
+  );
+
+  const hookChip = (h: Hook) => (
+    <span key={h.id} className="tag" title={h.content}
+      style={{
+        fontSize: 10, padding: "1px 4px 1px 8px",
+        background: hookBg, color: hookFg,
+        border: `1px solid ${hookBorder}`,
+        display: "inline-flex", alignItems: "center", gap: 4,
+      }}>
+      {(h.title || h.content || "").slice(0, 18)}
+      <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>
+        {h.expected_payoff_chapter ? `收于第${h.expected_payoff_chapter}章` : "不限期"}
+      </span>
+      <button onClick={() => delHook(h.id)} title="删除"
+        style={{
+          border: "none", background: "transparent", padding: "0 4px",
+          fontSize: 11, lineHeight: 1, cursor: "pointer",
+          color: hookFg, opacity: 0.7,
+        }}>×</button>
+    </span>
+  );
+
+  const newRowForm = (kind: "main" | "sub" | "hook") => (
+    <div className="flex" style={{ gap: 4, alignItems: "center" }}>
+      {kind === "hook" ? (
+        <>
+          <select value={newHook.scale}
+            onChange={e => setNewHook({ ...newHook, scale: e.target.value })}
+            style={{ fontSize: 10, padding: "1px 6px", height: 22 }}>
+            {Object.entries(SCALE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+          <input type="number" min={1} value={newHook.origin_chapter}
+            onChange={e => setNewHook({ ...newHook, origin_chapter: parseInt(e.target.value) || 1 })}
+            title="埋设章节" className="input"
+            style={{ fontSize: 10, padding: "1px 6px", height: 22, width: 70 }} />
+          <input className="input" placeholder="伏笔概述" value={newHook.description}
+            onChange={e => setNewHook({ ...newHook, description: e.target.value })}
+            onKeyDown={e => { if (e.key === "Enter") createHook(); }}
+            style={{ fontSize: 10, padding: "1px 6px", height: 22, width: 220 }} autoFocus />
+          <button className="btn-primary" onClick={createHook}
+            style={{ fontSize: 10, padding: "1px 10px", height: 22 }}>埋设</button>
+        </>
+      ) : (
+        <>
+          <input className="input" placeholder={`${kind === "main" ? "主线" : "支线"}名称`}
+            value={newThread.name}
+            onChange={e => setNewThread({ ...newThread, name: e.target.value })}
+            style={{ fontSize: 10, padding: "1px 6px", height: 22, width: 130 }} autoFocus />
+          <input className="input" placeholder="一段话概述" value={newThread.description}
+            onChange={e => setNewThread({ ...newThread, description: e.target.value })}
+            onKeyDown={e => { if (e.key === "Enter") createThread(kind); }}
+            style={{ fontSize: 10, padding: "1px 6px", height: 22, width: 220 }} />
+          <button className="btn-primary" onClick={() => createThread(kind)}
+            style={{ fontSize: 10, padding: "1px 10px", height: 22 }}>新建</button>
+        </>
+      )}
+      <button onClick={() => setAdding(null)} className="btn-ghost"
+        style={{ fontSize: 10, padding: "1px 6px", height: 22 }}>取消</button>
+    </div>
+  );
+
+  const addBtn = (kind: "main" | "sub" | "hook", label: string) => (
+    <button onClick={() => setAdding(kind)}
+      style={{
+        fontSize: 10, padding: "1px 10px", height: 22,
+        border: "1px dashed var(--border)", borderRadius: 10,
+        color: "var(--text-tertiary)", background: "transparent",
+        cursor: "pointer",
+      }}>
+      + {label}
+    </button>
+  );
+
   return (
     <div style={{
       padding: "8px 16px",
@@ -2294,57 +2414,26 @@ function ThreadSummaryStrip({ threads, hooks, onOpenStoryland }: {
       borderBottom: "1px solid var(--border)",
       fontSize: 11,
     }}>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center mb-4">
         <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>
           故事线与伏笔总览
         </span>
-        {onOpenStoryland && (
-          <button className="btn" style={{ fontSize: 10, padding: "1px 8px" }}
-            onClick={onOpenStoryland}>
-            到 故事中世界 管理
-          </button>
-        )}
       </div>
-      {mains.length > 0 && (
-        <div className="flex gap-6 mb-4" style={{ flexWrap: "wrap" }}>
-          <span className="text-xs text-muted" style={{ width: 36 }}>主线</span>
-          {mains.map(t => (
-            <span key={t.thread_id} className="tag" title={t.description}
-              style={{
-                fontSize: 10, background: "var(--accent-subtle)",
-                color: "var(--accent)", border: "1px solid var(--accent)",
-              }}>
-              {t.name} · 第{t.start_chapter}章起
-            </span>
-          ))}
-        </div>
-      )}
-      {subs.length > 0 && (
-        <div className="flex gap-6 mb-4" style={{ flexWrap: "wrap" }}>
-          <span className="text-xs text-muted" style={{ width: 36 }}>支线</span>
-          {subs.map(t => (
-            <span key={t.thread_id} className="tag" title={t.description}
-              style={{ fontSize: 10 }}>
-              {t.name} · 第{t.start_chapter}章起
-            </span>
-          ))}
-        </div>
-      )}
-      {openHooks.length > 0 && (
-        <div className="flex gap-6" style={{ flexWrap: "wrap" }}>
-          <span className="text-xs text-muted" style={{ width: 36 }}>伏笔</span>
-          {openHooks.map(h => (
-            <span key={h.id} className="tag" title={h.content}
-              style={{
-                fontSize: 10, background: "var(--gold-subtle)",
-                color: "var(--gold)", border: "1px solid var(--gold)",
-              }}>
-              {(h.title || h.content || "").slice(0, 18)}
-              {h.expected_payoff_chapter ? ` · 收于第${h.expected_payoff_chapter}章` : " · 不限期"}
-            </span>
-          ))}
-        </div>
-      )}
+      <div className="flex gap-6 mb-4" style={{ flexWrap: "wrap", alignItems: "center" }}>
+        <span className="text-xs text-muted" style={{ width: 36, flexShrink: 0 }}>主线</span>
+        {mains.map(t => threadChip(t, true))}
+        {adding === "main" ? newRowForm("main") : addBtn("main", "主线")}
+      </div>
+      <div className="flex gap-6 mb-4" style={{ flexWrap: "wrap", alignItems: "center" }}>
+        <span className="text-xs text-muted" style={{ width: 36, flexShrink: 0 }}>支线</span>
+        {subs.map(t => threadChip(t, false))}
+        {adding === "sub" ? newRowForm("sub") : addBtn("sub", "支线")}
+      </div>
+      <div className="flex gap-6" style={{ flexWrap: "wrap", alignItems: "center" }}>
+        <span className="text-xs text-muted" style={{ width: 36, flexShrink: 0 }}>伏笔</span>
+        {openHooks.map(hookChip)}
+        {adding === "hook" ? newRowForm("hook") : addBtn("hook", "伏笔")}
+      </div>
     </div>
   );
 }
@@ -2468,228 +2557,3 @@ function CharacterSelector({ label, value, options, onChange }: {
   );
 }
 
-
-/* ── ThreadHookManager ──
- * Migrated 故事中世界 → 故事线 tab. CRUD for 主线/支线 + 伏笔.
- * Lives inside the 剧情线 page as the「故事线 / 伏笔 管理」tab so
- * threads and hooks are managed alongside the timeline that visualises
- * them. After every create / update / delete it calls `reload()` so the
- * timeline tab refreshes its lane chips and connectors automatically. */
-function ThreadHookManager({ projectId, threads, hooks, chapterTitles, reload, toast }: {
-  projectId: string;
-  threads: Thread[];
-  hooks: Hook[];
-  chapterTitles: Map<number, string>;
-  reload: () => Promise<void>;
-  toast: (m: string, t?: any) => void;
-}) {
-  const [currentChapter, setCurrentChapter] = useState<number>(0);
-  const [newThread, setNewThread] = useState<{ name: string; description: string; thread_type: "main" | "sub" }>({
-    name: "", description: "", thread_type: "sub",
-  });
-  const [newHook, setNewHook] = useState<{ description: string; scale: string; origin_chapter: number }>({
-    description: "", scale: "event_clue", origin_chapter: 1,
-  });
-
-  const chapterMin = 1;
-  const chapterMax = chapterTitles.size > 0
-    ? Math.max(...Array.from(chapterTitles.keys()))
-    : 1;
-  const chapterMarks = useMemo(
-    () => Array.from(chapterTitles.keys()).sort((a, b) => a - b),
-    [chapterTitles],
-  );
-
-  useEffect(() => {
-    const maxOrigin = Math.max(0, ...hooks.map(h => h.origin_chapter || 0));
-    setCurrentChapter(c => c || maxOrigin);
-  }, [hooks]);
-
-  const createThread = async () => {
-    if (!newThread.name.trim()) { toast("故事线名称必填", "error"); return; }
-    try {
-      await apiPost("/api/storyland/subplots", { project_id: projectId, ...newThread });
-      setNewThread({ name: "", description: "", thread_type: "sub" });
-      await reload();
-    } catch (e: any) { toast(e.message || "创建失败", "error"); }
-  };
-
-  const createHook = async () => {
-    if (!newHook.description.trim()) { toast("伏笔概述必填", "error"); return; }
-    try {
-      await apiPost("/api/storyland/hooks", { project_id: projectId, ...newHook });
-      setNewHook({ description: "", scale: "event_clue", origin_chapter: 1 });
-      await reload();
-    } catch (e: any) { toast(e.message || "创建失败", "error"); }
-  };
-
-  const isOverdue = (h: Hook) =>
-    h.expected_payoff_chapter !== null && h.scale !== "world_truth"
-    && currentChapter > 0 && currentChapter >= (h.expected_payoff_chapter || 0)
-    && !["resolved", "abandoned"].includes(h.status);
-
-  const mains = threads.filter(t => t.thread_type === "main");
-  const subs = threads.filter(t => t.thread_type === "sub");
-  const activeHooks = hooks.filter(h => !["resolved", "abandoned"].includes(h.status));
-  const doneHooks = hooks.filter(h => ["resolved", "abandoned"].includes(h.status));
-
-  const renderThread = (t: Thread) => (
-    <div key={t.thread_id} style={{
-      display: "flex", gap: 10, alignItems: "center", padding: "6px 0",
-      fontSize: 12, borderBottom: "1px solid var(--border)",
-    }}>
-      <span className="tag" style={{
-        fontSize: 10,
-        background: t.thread_type === "main" ? "var(--accent-subtle)" : undefined,
-        color: t.thread_type === "main" ? "var(--accent)" : undefined,
-        borderColor: t.thread_type === "main" ? "var(--accent)" : undefined,
-      }}>
-        {t.thread_type === "main" ? "主线" : "支线"}
-      </span>
-      <span style={{ fontWeight: 600 }}>{t.name}</span>
-      <span style={{ color: "var(--text-tertiary)", flex: 1 }}>{t.description}</span>
-      <span className="text-xs" style={{ color: "var(--text-disabled)" }}>
-        第{t.start_chapter}章起{t.last_advanced_chapter ? ` · 最近第${t.last_advanced_chapter}章推进` : ""}
-      </span>
-      <select className="select" style={{ fontSize: 11, padding: "2px 6px" }} value={t.status}
-        onChange={async e => {
-          try { await apiPut(`/api/storyland/subplots/${t.thread_id}`, { status: e.target.value }); await reload(); }
-          catch (err: any) { toast(err.message || "更新失败", "error"); }
-        }}>
-        {Object.entries(THREAD_STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-      </select>
-      <button className="btn-icon" title="删除" style={{ fontSize: 13, color: "var(--text-tertiary)" }}
-        onClick={async () => {
-          try { await apiDelete(`/api/storyland/subplots/${t.thread_id}`); await reload(); }
-          catch (err: any) { toast(err.message || "删除失败", "error"); }
-        }}>×</button>
-    </div>
-  );
-
-  const renderHook = (h: Hook) => {
-    const overdue = isOverdue(h);
-    return (
-      <div key={h.id} style={{
-        display: "flex", gap: 10, alignItems: "center", padding: "6px 8px",
-        fontSize: 12, borderBottom: "1px solid var(--border)",
-        borderLeft: overdue ? "3px solid var(--error)" : "3px solid transparent",
-      }}>
-        <span className="tag" style={{ fontSize: 10 }}>{SCALE_LABEL[h.scale] || h.scale}</span>
-        <span style={{ flex: 1 }}>{h.content}</span>
-        <span className="text-xs" style={{ color: overdue ? "var(--error)" : "var(--text-disabled)" }}>
-          {HOOK_STATUS_LABEL[h.status] || h.status}{overdue ? " · 应回收" : ""}
-        </span>
-        <span className="text-xs" style={{ color: "var(--text-disabled)" }}>
-          第{h.origin_chapter}章埋{h.expected_payoff_chapter ? ` · 预期第${h.expected_payoff_chapter}章前收` : " · 不限期"}
-        </span>
-        {!["resolved", "abandoned"].includes(h.status) && (
-          <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
-            onClick={async () => {
-              try {
-                await apiPost(`/api/data/foreshadowing/${h.id}/fully-resolve`, { chapter_num: currentChapter || null });
-                await reload();
-              } catch (err: any) { toast(err.message || "操作失败", "error"); }
-            }}>标记已回收</button>
-        )}
-        <button className="btn-icon" title="删除" style={{ fontSize: 13, color: "var(--text-tertiary)" }}
-          onClick={async () => {
-            try { await apiDelete(`/api/storyland/hooks/${h.id}`); await reload(); }
-            catch (err: any) { toast(err.message || "删除失败", "error"); }
-          }}>×</button>
-      </div>
-    );
-  };
-
-  const cardHeader = (title: string, count: number, action?: React.ReactNode) => (
-    <div className="flex items-center justify-between" style={{
-      padding: "10px 16px", borderBottom: "1px solid var(--border)",
-    }}>
-      <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>
-        {title}
-        <span className="text-xs text-muted" style={{ marginLeft: 6, fontWeight: 400 }}>
-          ({count})
-        </span>
-      </h3>
-      {action}
-    </div>
-  );
-
-  return (
-    <div style={{
-      flex: 1, minHeight: 0, overflow: "auto",
-      padding: "16px 20px", maxWidth: 1100, margin: "0 auto", width: "100%",
-    }}>
-      <div className="card mb-16">
-        {cardHeader("主线 / 支线", threads.length,
-          <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
-            当前章 <strong style={{ color: "var(--accent)" }}>{currentChapter || "—"}</strong>
-          </span>
-        )}
-        <div className="card-body">
-          {chapterMarks.length > 0 && (
-            <ChapterTimeline
-              mode="single"
-              min={chapterMin} max={chapterMax}
-              from={currentChapter || chapterMin}
-              to={currentChapter || chapterMin}
-              marks={chapterMarks}
-              onChange={(f: number) => setCurrentChapter(f)}
-              label="当前章节（用于伏笔超期判断）"
-            />
-          )}
-          {mains.length === 0 && (
-            <div className="text-xs" style={{ color: "var(--gold)", marginBottom: 8 }}>
-              尚未设定主线（每个项目有且仅有一条主线）。
-            </div>
-          )}
-          {mains.map(renderThread)}
-          {subs.map(renderThread)}
-          <div className="flex gap-6" style={{ marginTop: 12, alignItems: "center" }}>
-            <select className="select" style={{ fontSize: 11 }} value={newThread.thread_type}
-              onChange={e => setNewThread({ ...newThread, thread_type: e.target.value as any })}>
-              <option value="sub">支线</option>
-              <option value="main">主线</option>
-            </select>
-            <input className="input" placeholder="故事线名称" value={newThread.name}
-              onChange={e => setNewThread({ ...newThread, name: e.target.value })}
-              style={{ fontSize: 12, width: 160 }} />
-            <input className="input" placeholder="一段话概述（这条线讲什么）" value={newThread.description}
-              onChange={e => setNewThread({ ...newThread, description: e.target.value })}
-              style={{ fontSize: 12, flex: 1 }} />
-            <button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px" }} onClick={createThread}>新建</button>
-          </div>
-        </div>
-      </div>
-
-      <div className="card mb-16">
-        {cardHeader("未回收伏笔", activeHooks.length)}
-        <div className="card-body">
-          {activeHooks.length === 0 && <div className="text-xs text-muted">暂无未回收伏笔。</div>}
-          {activeHooks.map(renderHook)}
-          <div className="flex gap-6" style={{ marginTop: 12, alignItems: "center" }}>
-            <select className="select" style={{ fontSize: 11 }} value={newHook.scale}
-              onChange={e => setNewHook({ ...newHook, scale: e.target.value })}>
-              {Object.entries(SCALE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-            <input className="input" type="number" min={1} value={newHook.origin_chapter}
-              onChange={e => setNewHook({ ...newHook, origin_chapter: parseInt(e.target.value) || 1 })}
-              style={{ fontSize: 12, width: 90 }} title="埋设章节" />
-            <input className="input" placeholder="伏笔概述（含待揭示的真相）" value={newHook.description}
-              onChange={e => setNewHook({ ...newHook, description: e.target.value })}
-              style={{ fontSize: 12, flex: 1 }} />
-            <button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px" }} onClick={createHook}>埋设</button>
-          </div>
-        </div>
-      </div>
-
-      {doneHooks.length > 0 && (
-        <div className="card">
-          {cardHeader("已回收 / 已放弃", doneHooks.length)}
-          <div className="card-body">
-            {doneHooks.map(renderHook)}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
