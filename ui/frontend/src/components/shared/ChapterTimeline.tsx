@@ -131,13 +131,13 @@ export default function ChapterTimeline({
             }}
           />
         )}
-        {/* Single mode: render a clickable tick per chapter so the user
-            picks discretely. No left-fill — a「至 N 章」shaded bar reads
-            as a range and misleads the meaning. */}
+        {/* Single mode: render a clickable tick per chapter (background
+            scaffold) + one draggable CIRCULAR handle riding on top at
+            the current chapter. No left-fill — a「至 N 章」shaded bar
+            reads as a range and misleads the meaning. */}
         {!isRange && Array.from({ length: span + 1 }, (_, i) => min + i).map(ch => {
           const isCurrent = ch === from;
           const hasData = marks.includes(ch);
-          // Width of each click target = step in %; minimum 8px for touch.
           const stepPct = 100 / (span + 1);
           return (
             <div key={ch}
@@ -149,18 +149,39 @@ export default function ChapterTimeline({
                 width: `max(10px, ${stepPct}%)`,
                 cursor: "pointer",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                zIndex: isCurrent ? 2 : 1,
+                zIndex: 1,
               }}>
               <div style={{
-                width: isCurrent ? 3 : 1,
-                height: isCurrent ? "100%" : hasData ? 14 : 8,
-                background: isCurrent ? "var(--accent)" : hasData ? "var(--text-secondary)" : "var(--text-tertiary)",
+                width: 1,
+                height: hasData ? 14 : 8,
+                background: hasData ? "var(--text-secondary)" : "var(--text-tertiary)",
                 borderRadius: 1,
-                opacity: isCurrent ? 1 : 0.6,
+                opacity: isCurrent ? 0 : 0.6,
               }} />
             </div>
           );
         })}
+        {/* Single-mode draggable thumb — a circular accent knob centered
+            on the current chapter. Drag it OR click a tick to jump. */}
+        {!isRange && (
+          <div
+            onPointerDown={onPointerDown("from")}
+            title={`当前：第 ${from} 章`}
+            style={{
+              position: "absolute",
+              left: `${xOf(from)}%`,
+              top: "50%",
+              transform: "translate(-50%, -50%)",
+              width: 18, height: 18,
+              borderRadius: "50%",
+              background: "var(--accent)",
+              border: "2px solid var(--bg-surface)",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.18), 0 0 0 1px var(--accent)",
+              cursor: "grab",
+              touchAction: "none",
+              zIndex: 3,
+            }} />
+        )}
         {/* Range-mode tick marks for data chapters (single mode draws its
             own per-chapter ticks above). */}
         {isRange && marks.map(m => (

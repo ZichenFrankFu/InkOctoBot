@@ -1253,39 +1253,45 @@ function WeightedBars({ rows, color, k = 12 }: { rows: any[]; color: string; k?:
   );
 }
 
-/** 取名规律统计：按题材加权命名画像（描述性，非打分依据）。spec §5。 */
+/** 取名特征：跨题材 / 按题材加权命名画像（描述性，非打分依据）。spec §5。
+ *  默认题材为「全部」（聚合所有题材），用户也可以下拉切到具体题材。 */
 function NamingPatternsPanel() {
   const { toast } = useToast();
   const [cats, setCats] = React.useState<any[]>([]);
+  // "" → 全部题材（聚合）；具体值 → 该题材
   const [cat, setCat] = React.useState<string>("");
   const [data, setData] = React.useState<any>(null);
   const [pos, setPos] = React.useState<"first" | "last" | "all">("first");
 
   React.useEffect(() => {
     apiGet<{ categories: any[] }>("/api/analysis/naming-patterns/categories")
-      .then(r => { setCats(r.categories || []); if (!cat && r.categories?.[0]) setCat(r.categories[0].category); })
+      .then(r => setCats(r.categories || []))
       .catch(() => { });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   React.useEffect(() => {
-    if (!cat) { setData(null); return; }
     apiGet<any>(`/api/analysis/naming-patterns?category=${encodeURIComponent(cat)}`)
-      .then(setData).catch((e: any) => toast(`加载取名规律失败：${e.message}`, "error"));
+      .then(setData).catch((e: any) => toast(`加载取名特征失败：${e.message}`, "error"));
   }, [cat, toast]);
 
-  if (cats.length === 0) {
-    return <Empty msg="人名库尚无带题材的人名 — 先在『名单』里点『刷新人名库』，让 NER 从市场库新增书抽取带题材的人名。" />;
-  }
   const nls = data?.name_length_structure || {};
+  const totalNames = cats.reduce((s, c) => s + (c.standard_count || 0), 0);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>题材</span>
-        <select className="select" value={cat} onChange={e => setCat(e.target.value)}
-          style={{ fontSize: 12, padding: "5px 10px" }}>
-          {cats.map(c => <option key={c.category} value={c.category}>{c.category}（{c.standard_count}）</option>)}
-        </select>
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <h3 style={{ margin: 0 }}>取名特征</h3>
+          <span className="text-xs text-muted">按题材加权的命名画像 · 角色卡「取名」生成依据</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>题材</span>
+          <select className="select" value={cat} onChange={e => setCat(e.target.value)}
+            style={{ fontSize: 12, padding: "5px 10px" }}>
+            <option value="">全部{totalNames ? `（${totalNames}）` : ""}</option>
+            {cats.map(c => <option key={c.category} value={c.category}>{c.category}（{c.standard_count}）</option>)}
+          </select>
+        </div>
       </div>
+      <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {!data?.available ? (
         <Empty msg={data?.reason || "该题材暂无足够数据。"} />
       ) : (
@@ -1335,6 +1341,7 @@ function NamingPatternsPanel() {
           </div>
         </>
       )}
+      </div>
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 import ChapterTimeline from "../components/shared/ChapterTimeline";
+import Checkbox from "../components/shared/Checkbox";
 import SnapshotStageEditor from "../components/characters/SnapshotStageEditor";
 import NameGeneratorModal from "../components/characters/NameGeneratorModal";
 import type { Character, CharacterLayerB, CharacterRelationship, DynamicPropertySnapshot } from "../api/types";
@@ -173,9 +174,78 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     }
   }, [editing?.id]);
 
-  // Shared system_hint construction — used by both "send" and the web-LLM prompt preview
+  // Shared system_hint construction — used by both "send" and the web-LLM
+  // prompt preview. Includes the FULL state of the angle: top-level
+  // 人设 + 最新快照（性格 / 经历 / 转变档位）+ 关系 + 隐藏身份 +
+  // 决策参数。Without these the AI is making suggestions for a stranger.
   const buildCharChatSystemHint = useCallback(async () => {
     if (!editing) return "";
+    const lines: string[] = [];
+    lines.push(`你是一个专业的小说角色设计师。当前正在设计角色「${editing.name}」（定位：${editing.role || "配角"}）。`);
+    lines.push("");
+    lines.push("【顶层人设】");
+    lines.push(`- 性格：${editing.personality || "未设定"}`);
+    lines.push(`- 背景：${editing.background || "未设定"}`);
+    lines.push(`- 说话风格：${editing.speech_style || "未设定"}`);
+    const anyEditing = editing as any;
+    if (anyEditing.description) lines.push(`- 描述：${anyEditing.description}`);
+    if ((editing.tags || []).length) lines.push(`- 标签：${(editing.tags || []).join("、")}`);
+
+    // 当前章节决策参数（来自最新快照的 layer_b，没有就用顶层）
+    const snaps = editing.dynamic_snapshots || [];
+    const latestSnap = snaps.length ? snaps[snaps.length - 1] : null;
+    const layerB = latestSnap?.layer_b || editing.layer_b;
+    if (layerB) {
+      lines.push("");
+      lines.push("【决策参数 (Layer B)】");
+      lines.push(`- 损失厌恶：${layerB.loss_aversion ?? "—"}`);
+      lines.push(`- 风险厌恶：${layerB.risk_aversion_gain ?? "—"}`);
+      lines.push(`- 冲动概率：${layerB.impulse_probability ?? "—"}`);
+      lines.push(`- 社交频率：${layerB.social_frequency ?? "—"}`);
+    }
+
+    // 时间快照（按章节顺序）
+    if (snaps.length) {
+      lines.push("");
+      lines.push(`【时间快照 (${snaps.length} 个)】`);
+      snaps.forEach((s, i) => {
+        const stage = s.stage ? `（${s.stage}）` : "";
+        lines.push(`${i + 1}. ${s.chapter || `快照${i + 1}`}${stage}`);
+        if (s.personality) lines.push(`   · 性格变化：${s.personality}`);
+        if (s.background) lines.push(`   · 经历变化：${s.background}`);
+        if (s.notes) lines.push(`   · 备注：${s.notes}`);
+        const rels = s.relationships || [];
+        if (rels.length) {
+          rels.forEach(r => {
+            const lbl = r.label ? `「${r.label}」` : "";
+            lines.push(`   · 关系：→ ${r.target_name}${lbl} 好感 ${(r.affinity ?? 0) > 0 ? "+" : ""}${r.affinity ?? 0}${r.notes ? `（${r.notes}）` : ""}`);
+          });
+        }
+        const hids = s.hidden_identities || [];
+        if (hids.length) {
+          hids.forEach(h => {
+            const reveals = (h.revealed_to || []).join("、");
+            lines.push(`   · 隐藏身份：${h.name}${reveals ? `（已知真相：${reveals}）` : ""}${h.notes ? ` — ${h.notes}` : ""}`);
+          });
+        }
+      });
+    }
+
+    // 顶层关系（没有快照时是唯一信源）
+    const topRels = editing.relationships || [];
+    if (topRels.length && !snaps.length) {
+      lines.push("");
+      lines.push("【关系】");
+      topRels.forEach(r => {
+        const lbl = r.label ? `「${r.label}」` : "";
+        lines.push(`- → ${r.target_name}${lbl} 好感 ${(r.affinity ?? 0) > 0 ? "+" : ""}${r.affinity ?? 0}${r.notes ? `（${r.notes}）` : ""}`);
+      });
+    }
+
+    lines.push("");
+    lines.push(`请根据用户的需求提供角色设计建议、润色人设、或生成新的角色信息。如果用户要求生成完整人设，请以 JSON 格式输出：{"personality":"...","background":"...","speech_style":"..."}。否则用自然语言回答。`);
+    const fallback = lines.join("\n");
+
     return renderPrompt(
       "assistant.character",
       {
@@ -184,8 +254,9 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
         personality: editing.personality || "未设定",
         background: editing.background || "未设定",
         speech_style: editing.speech_style || "未设定",
+        full_context: fallback,
       },
-      `你是一个专业的小说角色设计师。当前正在设计角色「${editing.name}」（定位：${editing.role || "配角"}）。\n已有信息：\n- 性格：${editing.personality || "未设定"}\n- 背景：${editing.background || "未设定"}\n- 说话风格：${editing.speech_style || "未设定"}\n\n请根据用户的需求提供角色设计建议、润色人设、或生成新的角色信息。如果用户要求生成完整人设，请以 JSON 格式输出：{"personality":"...","background":"...","speech_style":"..."}。否则用自然语言回答。`,
+      fallback,
     );
   }, [editing]);
 
@@ -1385,24 +1456,21 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                   background: "var(--bg-surface)", borderRadius: 6,
                                   border: "1px solid var(--border-subtle)",
                                 }}>
-                                  <label style={{
+                                  <div style={{
                                     display: "flex", alignItems: "center", gap: 8,
-                                    cursor: "pointer", fontSize: 12,
-                                    color: "var(--text-primary)", fontWeight: 600,
+                                    fontSize: 12, color: "var(--text-primary)", fontWeight: 600,
                                   }}>
-                                    <input
-                                      type="checkbox"
+                                    <Checkbox
                                       checked={snap.decision_seed != null}
-                                      onChange={e => {
-                                        if (e.target.checked) {
+                                      onChange={(next) => {
+                                        if (next) {
                                           updateSnapshot(flashcardIndex, "decision_seed", Math.floor(Math.random() * 1_000_000));
                                         } else {
                                           updateSnapshot(flashcardIndex, "decision_seed", null);
                                         }
                                       }}
-                                      style={{ accentColor: "var(--accent)" }}
+                                      label="固定随机种子"
                                     />
-                                    固定随机种子
                                     {snap.decision_seed != null && (
                                       <input
                                         type="number"
@@ -1424,7 +1492,7 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                                         重抽
                                       </button>
                                     )}
-                                  </label>
+                                  </div>
                                   <div style={{
                                     fontSize: 10, color: "var(--text-tertiary)",
                                     marginTop: 6, lineHeight: 1.6,
@@ -1604,15 +1672,19 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </div>
               )}
 
-              {/* Save button at bottom */}
-              <div style={{ marginTop: 24, display: "flex", justifyContent: "flex-end" }}>
+              {/* Centered, full-row save bar at the bottom. */}
+              <div style={{ marginTop: 24, padding: "12px 0", display: "flex", justifyContent: "center" }}>
                 <button
                   className="btn-primary"
                   onClick={save}
                   disabled={!dirty}
-                  style={{ opacity: dirty ? 1 : 0.5, padding: "10px 32px", fontSize: 14 }}
+                  style={{
+                    minWidth: 220, padding: "10px 32px",
+                    fontSize: 14, fontWeight: 600,
+                    opacity: dirty ? 1 : 0.5,
+                  }}
                 >
-                  {dirty ? "保存角色" : "已保存"}
+                  {dirty ? "保存当前角色" : "已保存"}
                 </button>
               </div>
             </div>
@@ -1816,6 +1888,10 @@ function RelationshipRowView({ rel, actions }: {
   // matches the arrow color in the graph.
   const affColor = aff > 0 ? "var(--accent)" : aff < 0 ? "var(--jade)" : "var(--gold)";
   const affBg = aff > 0 ? "var(--accent-subtle)" : aff < 0 ? "var(--jade-subtle)" : "var(--gold-subtle)";
+  // Bar endpoint (where the fill stops) — this is also where the 好感
+  // chip sits, so the number and its visual position match instead of
+  // floating to the right edge regardless of value.
+  const endPct = aff === 0 ? 50 : aff > 0 ? 50 + aff / 2 : 50 + aff / 2;
   return (
     <div style={{
       padding: "10px 12px",
@@ -1836,31 +1912,52 @@ function RelationshipRowView({ rel, actions }: {
             {rel.label}
           </span>
         )}
-        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+        {actions && (
+          <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+            {actions}
+          </span>
+        )}
+      </div>
+      {/* Affinity bar with the 好感 chip floating at the fill endpoint —
+          chip position ↔ bar value match 1:1. Bar lane sits below the chip
+          so the chip's bottom edge "kisses" the bar's top. */}
+      <div style={{ position: "relative", marginTop: 8, marginBottom: rel.notes ? 18 : 8 }}>
+        {/* Chip floats at endPct. transform centers it on that point but
+            also clamps to the lane edges so positive-100 / negative-100
+            don't drift past the bar. */}
+        <div style={{
+          position: "absolute",
+          left: `${Math.max(8, Math.min(92, endPct))}%`,
+          transform: "translate(-50%, -100%)",
+          top: -2,
+          pointerEvents: "none",
+        }}>
           <span style={{
             fontSize: 10, padding: "2px 8px", borderRadius: 10,
-            background: affBg, color: affColor, fontWeight: 600,
+            background: affBg, color: affColor, fontWeight: 700,
+            whiteSpace: "nowrap",
+            border: `1px solid ${affColor}`,
           }}>
             好感 {aff > 0 ? "+" : ""}{aff}
           </span>
-          {actions}
-        </span>
-      </div>
-      {/* Affinity bar — centered at 0, extends left for negative, right for positive */}
-      <div style={{
-        position: "relative", height: 4, background: "var(--bg-secondary)",
-        borderRadius: 2, marginBottom: rel.notes ? 6 : 0,
-      }}>
+        </div>
+        {/* Bar lane */}
         <div style={{
-          position: "absolute", top: 0, bottom: 0,
-          left: aff < 0 ? `${50 + aff / 2}%` : "50%",
-          width: `${Math.abs(aff) / 2}%`,
-          background: affColor, borderRadius: 2,
-        }} />
-        <div style={{
-          position: "absolute", top: -2, bottom: -2, left: "50%",
-          width: 1, background: "var(--border)",
-        }} />
+          position: "relative", height: 6, background: "var(--bg-secondary)",
+          borderRadius: 3,
+        }}>
+          <div style={{
+            position: "absolute", top: 0, bottom: 0,
+            left: aff < 0 ? `${50 + aff / 2}%` : "50%",
+            width: `${Math.abs(aff) / 2}%`,
+            background: affColor, borderRadius: 3,
+          }} />
+          {/* Center tick */}
+          <div style={{
+            position: "absolute", top: -2, bottom: -2, left: "50%",
+            width: 1, background: "var(--border)",
+          }} />
+        </div>
       </div>
       {rel.notes && (
         <div style={{ fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.5 }}>

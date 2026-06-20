@@ -4,6 +4,7 @@ import { useResizable } from "../hooks/useResizable";
 import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { WorldBookEntry, WorldBookCategory } from "../api/types";
+import ConsistencyCheckModal from "../components/worldbook/ConsistencyCheckModal";
 import TagAutocomplete from "../components/shared/TagAutocomplete";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 import { renderPrompt } from "../utils/promptTemplate";
@@ -50,9 +51,33 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   const [filterCat, setFilterCat] = useState<string>("");
   const [editing, setEditing] = useState<WorldBookEntry | null>(null);
   const [dirty, setDirty] = useState(false);
+
+  // Warn before leaving with unsaved changes (browser tab close / refresh).
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
+
+  // In-app guard for actions that would discard the current draft
+  // (switching to another entry in the list, etc.).
+  const confirmDiscardIfDirty = useCallback(async (action: () => void) => {
+    if (!dirty) { action(); return; }
+    const ok = await confirm({
+      title: "未保存的更改",
+      message: "当前条目有未保存的修改，继续将丢弃这些内容。建议先点击「保存」。",
+      confirmLabel: "丢弃并继续",
+      cancelLabel: "取消",
+      destructive: true,
+    });
+    if (ok) action();
+  }, [dirty, confirm]);
+
   const [checking, setChecking] = useState(false);
   const [checkIssues, setCheckIssues] = useState<ConsistencyIssue[]>([]);
   const [checkMessage, setCheckMessage] = useState<string | null>(null);
+  const [showConsistency, setShowConsistency] = useState(false);
   const [search, setSearch] = useState("");
 
   // AI Assistant dialog state
@@ -221,22 +246,55 @@ export default function WorldBookPage({ projectId, projects }: Props) {
 
   const buildAIChatSystemHint = useCallback(async (): Promise<string> => {
     if (!editing) return "";
+    // Sibling entries in the same category — they're the most relevant
+    // cross-reference context for the editor, and shipping them in the
+    // hint lets the AI catch consistency issues without an extra round
+    // trip. Cap at 12 to keep the prompt size sane.
+    const SAME_CAT_CAP = 12;
+    const others = items
+      .filter(e => e.id !== editing.id)
+      .sort((a, b) => (a.category === editing.category ? -1 : 0)
+                   - (b.category === editing.category ? -1 : 0))
+      .slice(0, SAME_CAT_CAP);
+
+    const lines: string[] = [];
+    lines.push(`你是 AI 设定助手。当前正在编辑世界书条目「${editing.title}」（分类：${catLabel(editing.category, customCategories)}）。`);
+    lines.push("");
+    lines.push("【当前条目】");
+    lines.push(`- 标题：${editing.title}`);
+    lines.push(`- 分类：${catLabel(editing.category, customCategories)}`);
+    if (editing.tags && (editing.tags as any).length) {
+      lines.push(`- 标签：${(editing.tags as any).join("、")}`);
+    }
+    lines.push(`- 内容：${editing.content || "（空）"}`);
+
+    if (others.length) {
+      lines.push("");
+      lines.push(`【本作其它已记录的设定条目（${others.length}/${items.length - 1}）】`);
+      others.forEach(o => {
+        const body = (o.content || "").replace(/\s+/g, " ").slice(0, 140);
+        lines.push(`- [${catLabel(o.category, customCategories)}] ${o.title}${body ? `：${body}${body.length >= 140 ? "…" : ""}` : ""}`);
+      });
+    }
+
+    lines.push("");
+    lines.push(`帮助用户完善设定，回答设定相关问题，并在能看出冲突或缺口时主动指出。如果用户确认了某些内容，可以提供快速补全建议。
+回答后主动追加一个追问来帮助用户进一步完善设定。
+追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
+用自然语言回答，不要使用 JSON 格式。`);
+    const fallback = lines.join("\n");
+
     return renderPrompt(
       "assistant.worldbook",
       {
         entry_title: editing.title,
         category: catLabel(editing.category, customCategories),
         content: editing.content || "（空）",
+        full_context: fallback,
       },
-      `你是AI设定助手。当前正在编辑世界书条目「${editing.title}」（分类：${catLabel(editing.category, customCategories)}）。
-已有内容：${editing.content || "（空）"}
-
-帮助用户完善设定，回答设定相关问题。如果用户确认了某些内容，可以提供快速补全建议。
-回答后主动追加一个追问来帮助用户进一步完善设定。
-追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
-用自然语言回答，不要使用JSON格式。`,
+      fallback,
     );
-  }, [editing, customCategories]);
+  }, [editing, customCategories, items]);
 
   const fetchAIChatPrompt = useCallback(async (): Promise<string> => {
     const systemHint = await buildAIChatSystemHint();
@@ -361,12 +419,15 @@ export default function WorldBookPage({ projectId, projects }: Props) {
             </div>
           )}
 
-          {/* Consistency check button (4.1.1) */}
+          {/* Consistency check — opens a UniversalLLMDialog-style modal
+              with both API mode and 网页版 paste-back mode (mirrors the
+              advanced extraction tab's two-mode picker). */}
           <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
-            <button className="btn w-full" onClick={runConsistencyCheck}
-              disabled={checking || items.length === 0}
+            <button className="btn w-full"
+              onClick={() => setShowConsistency(true)}
+              disabled={items.length === 0}
               style={{ justifyContent: "center" }}>
-              {checking ? "检查中..." : "一致性检查"}
+              一致性检查
             </button>
           </div>
 
@@ -382,7 +443,10 @@ export default function WorldBookPage({ projectId, projects }: Props) {
               filtered.map(entry => (
                 <div key={entry.id}
                   className={`report-list-item ${editing?.id === entry.id ? "active" : ""}`}
-                  onClick={() => { setEditing(entry); setDirty(false); }}>
+                  onClick={() => {
+                    if (editing?.id === entry.id) return;
+                    confirmDiscardIfDirty(() => { setEditing(entry); setDirty(false); });
+                  }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="report-name" style={{ fontWeight: 600, color: "var(--text-primary)" }}>
                       {entry.title}
@@ -463,10 +527,11 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                     style={{ fontSize: 12 }} onClick={() => setShowAIChat(!showAIChat)}>
                     {showAIChat ? "收起 AI" : "AI 设定助手"}
                   </button>
-                  <button className="btn-primary" onClick={save} disabled={!dirty}
-                    style={{ opacity: dirty ? 1 : 0.5 }}>
-                    {dirty ? "保存" : "已保存"}
-                  </button>
+                  {dirty && (
+                    <span className="text-xs" style={{ color: "var(--gold)", fontWeight: 600 }}>
+                      · 未保存
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -615,10 +680,41 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                     style={{ fontFamily: "var(--font-serif)", lineHeight: 1.8, fontSize: 14, userSelect: "text" }} />
                 </div>
               </div>
+
+              {/* Centered, full-row save bar at the bottom. */}
+              <div style={{
+                marginTop: 16, padding: "12px 0",
+                display: "flex", justifyContent: "center",
+              }}>
+                <button
+                  className="btn-primary"
+                  onClick={save}
+                  disabled={!dirty}
+                  style={{
+                    minWidth: 220, padding: "10px 32px",
+                    fontSize: 14, fontWeight: 600,
+                    opacity: dirty ? 1 : 0.5,
+                  }}
+                >
+                  {dirty ? "保存当前条目" : "已保存"}
+                </button>
+              </div>
             </div>
           )}
         </div>
       </div>
+
+      <ConsistencyCheckModal
+        open={showConsistency}
+        onClose={() => setShowConsistency(false)}
+        projectId={projectId || "default"}
+        entries={items}
+        catLabel={(k?: string) => catLabel(k as any, customCategories)}
+        onResult={({ issues, message }) => {
+          setCheckIssues(issues);
+          setCheckMessage(message);
+        }}
+      />
     </div>
   );
 }
