@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { apiGet, apiPut } from "../api/client";
+import { apiGet, apiPut, apiPost, apiDelete } from "../api/client";
 import { useToast } from "../components/shared/Toast";
+import ChapterTimeline from "../components/shared/ChapterTimeline";
 import type { StoryNode, StoryEdge, ChapterOutline, Volume, Character } from "../api/types";
 
 const uid = () => `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -14,6 +15,23 @@ const NODE_W = 220;
 const NODE_H = 120;
 const HEADER_H = 56;
 const TIMELINE_H = 64;
+
+// ── 故事线 / 伏笔 管理 tab 用的中文枚举映射 ──
+//    与 故事中世界 (legacy 入口) 保持一致。
+const SCALE_LABEL: Record<string, string> = {
+  boomerang: "回旋镖(≤3章)", event_clue: "事件线索(≤20章)",
+  grand_plan: "大计划(≤100章)", world_truth: "世界真相",
+};
+const HOOK_STATUS_LABEL: Record<string, string> = {
+  open: "埋设", progressing: "推进中", pressured: "超期/待推进",
+  near_payoff: "临近回收", resolved: "已回收", abandoned: "已放弃",
+};
+const THREAD_STATUS_LABEL: Record<string, string> = {
+  setup: "开启", building: "推进", climax: "高潮",
+  resolution: "完结", dormant: "搁置",
+};
+
+type StorylineTab = "timeline" | "management";
 
 // ── Lightweight types for storyland data (主线/支线 + 伏笔) shown in the
 //    top summary strip and the per-chapter chips. We only need the
@@ -94,18 +112,26 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   const [threads, setThreads] = useState<Thread[]>([]);
   const [hooks, setHooks] = useState<Hook[]>([]);
   const [chapterTitles, setChapterTitles] = useState<Map<number, string>>(new Map());
+  const [tab, setTab] = useState<StorylineTab>("timeline");
+
+  const reloadThreadsHooks = useCallback(async () => {
+    const pid = projectId || "default";
+    try {
+      const [t, h] = await Promise.all([
+        apiGet<{ items: Thread[] }>(`/api/storyland/subplots?project_id=${pid}`),
+        apiGet<{ items: Hook[] }>(`/api/data/foreshadowing/${pid}`),
+      ]);
+      setThreads(t.items || []);
+      setHooks(h.items || []);
+    } catch (_e) { /* silent */ }
+  }, [projectId]);
 
   useEffect(() => {
     const pid = projectId || "default";
     apiGet<{ items: Character[] }>(`/api/data/characters?project_id=${pid}`)
       .then(r => setCharacters(r.items || []))
       .catch(() => setCharacters([]));
-    apiGet<{ items: Thread[] }>(`/api/storyland/subplots?project_id=${pid}`)
-      .then(r => setThreads(r.items || []))
-      .catch(() => setThreads([]));
-    apiGet<{ items: Hook[] }>(`/api/data/foreshadowing/${pid}`)
-      .then(r => setHooks(r.items || []))
-      .catch(() => setHooks([]));
+    reloadThreadsHooks();
     apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${pid}`)
       .then(r => {
         const titles = new Map<number, string>();
@@ -117,7 +143,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
         setChapterTitles(titles);
       })
       .catch(() => setChapterTitles(new Map()));
-  }, [projectId]);
+  }, [projectId, reloadThreadsHooks]);
 
   // Warn before leaving with unsaved changes
   useEffect(() => {
@@ -515,62 +541,114 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   // ClientRect, and the SVG overlay all stay in sync with the rendered
   // size — no need to divide measured coords by the zoom factor.
   const [zoom, setZoom] = useState(1);
-  const [dragOverChapter, setDragOverChapter] = useState<number | null>(null);
-  const [dragPreview, setDragPreview] = useState<{
-    id: string; clientX: number; clientY: number;
+  // ── 拖拽 — 阈值激活 + 预览 placeholder ──
+  //  · `mousedown` 只记录起点，并不立刻进入拖拽态（避免轻微抖动触发排序）
+  //  · 当 cursor 移动距离 > DRAG_THRESHOLD 时，drag 才正式 active
+  //  · active 之后：原卡片从 row 渲染中移除（露出空位的视觉），目标位置
+  //    插入一个淡灰色虚影 placeholder；其他卡片自然 flex 重排
+  //  · 松手 → 若 active，commit reorder (覆写 x 序号 + 改 chapter_num)
+  //           若未 active（即没超阈值），仅算 click → 仅 setSelected
+  type DragState = {
+    id: string;
+    startX: number; startY: number;
+    clientX: number; clientY: number;
     offX: number; offY: number;
-  } | null>(null);
+    active: boolean;
+    targetChapter: number | null;
+    targetIndex: number;
+  };
+  const DRAG_THRESHOLD = 6;
+  const REORDER_STEP = 240;
+  const dragRef = useRef<DragState | null>(null);
+  const [dragSnap, setDragSnap] = useState<DragState | null>(null);
+  // Keep `nodes` accessible inside drag listeners without re-subscribing
+  // every move tick — read via ref instead of closure capture.
+  const nodesRef = useRef(nodes);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
 
   const onNodeMouseDown = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    e.preventDefault();
     const target = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setDragPreview({
+    const ds: DragState = {
       id,
+      startX: e.clientX, startY: e.clientY,
       clientX: e.clientX, clientY: e.clientY,
       offX: e.clientX - target.left,
       offY: e.clientY - target.top,
-    });
+      active: false,
+      targetChapter: null,
+      targetIndex: 0,
+    };
+    dragRef.current = ds;
+    setDragSnap(ds);
     setSelected(id);
   };
 
   useEffect(() => {
-    if (!dragPreview) return;
-    /** Resolve which chapter row the pointer is currently over (if any).
-     *  We walk the row-ref map and compare the pointer's clientY against
-     *  each row's bounding rect — O(rows) but rows are at most a couple
-     *  dozen, so the cost is invisible. */
-    const chapterAtPoint = (clientX: number, clientY: number): number | null => {
-      let hit: number | null = null;
-      for (const [chap_num, el] of rowRefs.current) {
-        if (!el) continue;
-        const r = el.getBoundingClientRect();
-        if (clientY >= r.top && clientY <= r.bottom
-            && clientX >= r.left && clientX <= r.right) {
-          hit = chap_num;
-          break;
-        }
-      }
-      return hit;
-    };
+    if (!dragSnap) return;
     const onMove = (e: MouseEvent) => {
-      setDragPreview(prev => prev && { ...prev, clientX: e.clientX, clientY: e.clientY });
-      setDragOverChapter(chapterAtPoint(e.clientX, e.clientY));
+      const cur = dragRef.current;
+      if (!cur) return;
+      const dx = e.clientX - cur.startX;
+      const dy = e.clientY - cur.startY;
+      if (!cur.active && Math.hypot(dx, dy) > DRAG_THRESHOLD) cur.active = true;
+      cur.clientX = e.clientX;
+      cur.clientY = e.clientY;
+      if (cur.active) {
+        const ns = nodesRef.current;
+        let targetChapter: number | null = null;
+        let targetIndex = 0;
+        for (const [chap_num, el] of rowRefs.current) {
+          if (!el) continue;
+          const r = el.getBoundingClientRect();
+          if (e.clientY >= r.top && e.clientY <= r.bottom
+              && e.clientX >= r.left && e.clientX <= r.right) {
+            targetChapter = chap_num;
+            const peers = ns
+              .filter(n => (n.chapter_num || 0) === chap_num && n.id !== cur.id)
+              .sort((a, b) => (a.x || 0) - (b.x || 0));
+            let idx = peers.length;
+            for (let i = 0; i < peers.length; i++) {
+              const cel = cardRefs.current.get(peers[i].id);
+              if (!cel) continue;
+              const cr = cel.getBoundingClientRect();
+              if (e.clientX < cr.left + cr.width / 2) { idx = i; break; }
+            }
+            targetIndex = idx;
+            break;
+          }
+        }
+        cur.targetChapter = targetChapter;
+        cur.targetIndex = targetIndex;
+      }
+      setDragSnap({ ...cur });
     };
-    const onUp = (e: MouseEvent) => {
-      const target = chapterAtPoint(e.clientX, e.clientY);
-      if (target !== null) {
-        const row = rowRefs.current.get(target);
-        const xInRow = row
-          ? Math.max(0, e.clientX - row.getBoundingClientRect().left)
-          : 0;
-        setNodes(prev => prev.map(n => n.id === dragPreview.id
-          ? { ...n, chapter_num: target, x: xInRow, y: 0 }
-          : n));
+    const onUp = () => {
+      const cur = dragRef.current;
+      if (cur && cur.active && cur.targetChapter !== null) {
+        const targetChap = cur.targetChapter;
+        const targetIdx = cur.targetIndex;
+        const draggedId = cur.id;
+        setNodes(allNodes => {
+          const peers = allNodes
+            .filter(n => (n.chapter_num || 0) === targetChap && n.id !== draggedId)
+            .sort((a, b) => (a.x || 0) - (b.x || 0));
+          const dragged = allNodes.find(n => n.id === draggedId);
+          if (!dragged) return allNodes;
+          const newOrder = [...peers];
+          newOrder.splice(targetIdx, 0, dragged);
+          const xMap = new Map<string, number>();
+          newOrder.forEach((n, i) => xMap.set(n.id, i * REORDER_STEP));
+          return allNodes.map(n => {
+            if (n.id === draggedId) return { ...n, chapter_num: targetChap, x: xMap.get(n.id) ?? 0, y: 0 };
+            if (xMap.has(n.id)) return { ...n, x: xMap.get(n.id)! };
+            return n;
+          });
+        });
         setDirty(true);
       }
-      setDragPreview(null);
-      setDragOverChapter(null);
+      dragRef.current = null;
+      setDragSnap(null);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -578,7 +656,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [dragPreview]);
+  }, [dragSnap !== null]);
 
   // --- Computed ---
   const sel = useMemo(() => nodes.find(n => n.id === selected), [nodes, selected]);
@@ -979,6 +1057,32 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
 
   return (
     <div ref={pageRef} className="page-full" style={{ flexDirection: "column", display: "flex", height: "100%", overflow: "hidden" }}>
+      {/* Top-level tab bar — 时间线 vs 故事线/伏笔管理 (CRUD).
+          The 管理 tab replaces the 故事线 tab that used to live in
+          故事中世界. */}
+      <div className="tab-bar-underline" style={{
+        flexShrink: 0, padding: "0 20px",
+        background: "var(--bg-surface)", borderBottom: "1px solid var(--border)",
+      }}>
+        <button className={`tab-item ${tab === "timeline" ? "active" : ""}`}
+          onClick={() => setTab("timeline")}>时间线</button>
+        <button className={`tab-item ${tab === "management" ? "active" : ""}`}
+          onClick={() => setTab("management")}>故事线 / 伏笔 管理</button>
+      </div>
+
+      {tab === "management" && (
+        <ThreadHookManager
+          projectId={projectId || "default"}
+          threads={threads}
+          hooks={hooks}
+          chapterTitles={chapterTitles}
+          reload={reloadThreadsHooks}
+          toast={toast}
+        />
+      )}
+
+      {tab === "timeline" && (
+      <>
       <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
         {/* ======== Canvas ======== */}
         <div ref={canvasRef} style={{ flex: 1, minWidth: 0, overflow: "auto", background: "var(--bg-app)", position: "relative" }}>
@@ -1139,7 +1243,8 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                   && !["resolved", "abandoned"].includes(h.status),
                 );
                 const labelTop = chap_num === 0 ? "未指定" : `第 ${chap_num} 章`;
-                const isDropTarget = dragOverChapter === chap_num;
+                const isActiveDrag = !!(dragSnap && dragSnap.active);
+                const isDropTarget = isActiveDrag && dragSnap?.targetChapter === chap_num;
                 return (
                   <div
                     key={chap_num}
@@ -1290,15 +1395,29 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         </div>
                       )}
                       {/* Cards laid out as a single flex row, sorted by
-                          stored x. Manual order via drag, lane semantics
-                          via the SVG connectors above. 智能排序 button
-                          rewrites x values to minimise crossings — but
-                          the user can always drag to override. */}
-                      {chapNodes
-                        .slice()
-                        .sort((a, b) => (a.x || 0) - (b.x || 0))
-                        .map(n => {
-                        const isDragging = dragPreview?.id === n.id;
+                          stored x. During an active drag the dragged
+                          card is filtered out of its row and replaced by
+                          a dashed 淡灰色虚影 placeholder at the proposed
+                          drop index — flex naturally re-flows the other
+                          cards so the user sees the new order before
+                          releasing. Manual order via drag; lane semantics
+                          via the SVG connectors above. */}
+                      {(() => {
+                        const sortedCards = chapNodes
+                          .slice()
+                          .sort((a, b) => (a.x || 0) - (b.x || 0))
+                          .filter(n => !(isActiveDrag && dragSnap!.id === n.id));
+                        const placeholder = (
+                          <div key="__drop__" style={{
+                            width: NODE_W, minHeight: NODE_H, flexShrink: 0,
+                            borderRadius: 10,
+                            border: "2px dashed var(--text-tertiary)",
+                            background: "var(--bg-secondary)",
+                            opacity: 0.55,
+                            transition: "opacity 0.12s",
+                          }} />
+                        );
+                        const renderCard = (n: StoryNode) => {
                         const isSelected = selected === n.id;
                         const isTimeHighlighted = timeHighlightIds.has(n.id);
                         // The card-side chips only show the first assigned
@@ -1340,14 +1459,13 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                               padding: "12px 14px 10px",
                               cursor: "grab",
                               flexShrink: 0,
-                              opacity: isDragging ? 0.35 : 1,
                               background: isTimeHighlighted ? "var(--accent-subtle)" : "var(--bg-card)",
                               overflow: "hidden",
                               boxShadow: isSelected ? selectedShadow : baseShadow,
-                              transition: "transform 0.15s ease, box-shadow 0.15s ease, opacity 0.12s, background 0.18s",
+                              transition: "transform 0.15s ease, box-shadow 0.15s ease, background 0.18s",
                             }}
                             onMouseEnter={(e) => {
-                              if (isDragging || isSelected) return;
+                              if (isSelected) return;
                               e.currentTarget.style.transform = "translateY(-2px)";
                               e.currentTarget.style.boxShadow = hoverShadow;
                             }}
@@ -1450,7 +1568,17 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             )}
                           </div>
                         );
-                      })}
+                        };
+                        const out: React.ReactNode[] = [];
+                        sortedCards.forEach((n, i) => {
+                          if (isDropTarget && dragSnap!.targetIndex === i) out.push(placeholder);
+                          out.push(renderCard(n));
+                        });
+                        if (isDropTarget && dragSnap!.targetIndex >= sortedCards.length) {
+                          out.push(placeholder);
+                        }
+                        return out;
+                      })()}
                       {/* Per-row 「+ 添加情节」 button — same footprint as a 情节 card */}
                       <button
                         onClick={() => addEpisodeToChapter(chap_num)}
@@ -1776,17 +1904,16 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
         onHighlight={setHighlightedTime}
       />
 
-      {/* Drag-preview ghost — shadows the dragged 情节 card under the cursor
-          so the user has clear feedback about what they're moving. Rendered
-          as `position: fixed` so it floats above all other UI. */}
-      {dragPreview && (() => {
-        const ghost = nodes.find(n => n.id === dragPreview.id);
+      {/* Drag-preview ghost — only renders once the threshold is exceeded
+          (dragSnap.active). Floats with cursor as `position: fixed`. */}
+      {dragSnap && dragSnap.active && (() => {
+        const ghost = nodes.find(n => n.id === dragSnap.id);
         if (!ghost) return null;
         return (
           <div style={{
             position: "fixed", zIndex: 999, pointerEvents: "none",
-            left: dragPreview.clientX - dragPreview.offX,
-            top: dragPreview.clientY - dragPreview.offY,
+            left: dragSnap.clientX - dragSnap.offX,
+            top: dragSnap.clientY - dragSnap.offY,
             width: 220,
             background: "var(--bg-surface)",
             border: "1px solid var(--accent)",
@@ -1808,6 +1935,8 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
           </div>
         );
       })()}
+      </>
+      )}
     </div>
   );
 }
@@ -2332,6 +2461,232 @@ function CharacterSelector({ label, value, options, onChange }: {
               onClick={() => { toggle(customInput.trim()); setCustomInput(""); }}>
               添加
             </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* ── ThreadHookManager ──
+ * Migrated 故事中世界 → 故事线 tab. CRUD for 主线/支线 + 伏笔.
+ * Lives inside the 剧情线 page as the「故事线 / 伏笔 管理」tab so
+ * threads and hooks are managed alongside the timeline that visualises
+ * them. After every create / update / delete it calls `reload()` so the
+ * timeline tab refreshes its lane chips and connectors automatically. */
+function ThreadHookManager({ projectId, threads, hooks, chapterTitles, reload, toast }: {
+  projectId: string;
+  threads: Thread[];
+  hooks: Hook[];
+  chapterTitles: Map<number, string>;
+  reload: () => Promise<void>;
+  toast: (m: string, t?: any) => void;
+}) {
+  const [currentChapter, setCurrentChapter] = useState<number>(0);
+  const [newThread, setNewThread] = useState<{ name: string; description: string; thread_type: "main" | "sub" }>({
+    name: "", description: "", thread_type: "sub",
+  });
+  const [newHook, setNewHook] = useState<{ description: string; scale: string; origin_chapter: number }>({
+    description: "", scale: "event_clue", origin_chapter: 1,
+  });
+
+  const chapterMin = 1;
+  const chapterMax = chapterTitles.size > 0
+    ? Math.max(...Array.from(chapterTitles.keys()))
+    : 1;
+  const chapterMarks = useMemo(
+    () => Array.from(chapterTitles.keys()).sort((a, b) => a - b),
+    [chapterTitles],
+  );
+
+  useEffect(() => {
+    const maxOrigin = Math.max(0, ...hooks.map(h => h.origin_chapter || 0));
+    setCurrentChapter(c => c || maxOrigin);
+  }, [hooks]);
+
+  const createThread = async () => {
+    if (!newThread.name.trim()) { toast("故事线名称必填", "error"); return; }
+    try {
+      await apiPost("/api/storyland/subplots", { project_id: projectId, ...newThread });
+      setNewThread({ name: "", description: "", thread_type: "sub" });
+      await reload();
+    } catch (e: any) { toast(e.message || "创建失败", "error"); }
+  };
+
+  const createHook = async () => {
+    if (!newHook.description.trim()) { toast("伏笔概述必填", "error"); return; }
+    try {
+      await apiPost("/api/storyland/hooks", { project_id: projectId, ...newHook });
+      setNewHook({ description: "", scale: "event_clue", origin_chapter: 1 });
+      await reload();
+    } catch (e: any) { toast(e.message || "创建失败", "error"); }
+  };
+
+  const isOverdue = (h: Hook) =>
+    h.expected_payoff_chapter !== null && h.scale !== "world_truth"
+    && currentChapter > 0 && currentChapter >= (h.expected_payoff_chapter || 0)
+    && !["resolved", "abandoned"].includes(h.status);
+
+  const mains = threads.filter(t => t.thread_type === "main");
+  const subs = threads.filter(t => t.thread_type === "sub");
+  const activeHooks = hooks.filter(h => !["resolved", "abandoned"].includes(h.status));
+  const doneHooks = hooks.filter(h => ["resolved", "abandoned"].includes(h.status));
+
+  const renderThread = (t: Thread) => (
+    <div key={t.thread_id} style={{
+      display: "flex", gap: 10, alignItems: "center", padding: "6px 0",
+      fontSize: 12, borderBottom: "1px solid var(--border)",
+    }}>
+      <span className="tag" style={{
+        fontSize: 10,
+        background: t.thread_type === "main" ? "var(--accent-subtle)" : undefined,
+        color: t.thread_type === "main" ? "var(--accent)" : undefined,
+        borderColor: t.thread_type === "main" ? "var(--accent)" : undefined,
+      }}>
+        {t.thread_type === "main" ? "主线" : "支线"}
+      </span>
+      <span style={{ fontWeight: 600 }}>{t.name}</span>
+      <span style={{ color: "var(--text-tertiary)", flex: 1 }}>{t.description}</span>
+      <span className="text-xs" style={{ color: "var(--text-disabled)" }}>
+        第{t.start_chapter}章起{t.last_advanced_chapter ? ` · 最近第${t.last_advanced_chapter}章推进` : ""}
+      </span>
+      <select className="select" style={{ fontSize: 11, padding: "2px 6px" }} value={t.status}
+        onChange={async e => {
+          try { await apiPut(`/api/storyland/subplots/${t.thread_id}`, { status: e.target.value }); await reload(); }
+          catch (err: any) { toast(err.message || "更新失败", "error"); }
+        }}>
+        {Object.entries(THREAD_STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+      </select>
+      <button className="btn-icon" title="删除" style={{ fontSize: 13, color: "var(--text-tertiary)" }}
+        onClick={async () => {
+          try { await apiDelete(`/api/storyland/subplots/${t.thread_id}`); await reload(); }
+          catch (err: any) { toast(err.message || "删除失败", "error"); }
+        }}>×</button>
+    </div>
+  );
+
+  const renderHook = (h: Hook) => {
+    const overdue = isOverdue(h);
+    return (
+      <div key={h.id} style={{
+        display: "flex", gap: 10, alignItems: "center", padding: "6px 8px",
+        fontSize: 12, borderBottom: "1px solid var(--border)",
+        borderLeft: overdue ? "3px solid var(--error)" : "3px solid transparent",
+      }}>
+        <span className="tag" style={{ fontSize: 10 }}>{SCALE_LABEL[h.scale] || h.scale}</span>
+        <span style={{ flex: 1 }}>{h.content}</span>
+        <span className="text-xs" style={{ color: overdue ? "var(--error)" : "var(--text-disabled)" }}>
+          {HOOK_STATUS_LABEL[h.status] || h.status}{overdue ? " · 应回收" : ""}
+        </span>
+        <span className="text-xs" style={{ color: "var(--text-disabled)" }}>
+          第{h.origin_chapter}章埋{h.expected_payoff_chapter ? ` · 预期第${h.expected_payoff_chapter}章前收` : " · 不限期"}
+        </span>
+        {!["resolved", "abandoned"].includes(h.status) && (
+          <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
+            onClick={async () => {
+              try {
+                await apiPost(`/api/data/foreshadowing/${h.id}/fully-resolve`, { chapter_num: currentChapter || null });
+                await reload();
+              } catch (err: any) { toast(err.message || "操作失败", "error"); }
+            }}>标记已回收</button>
+        )}
+        <button className="btn-icon" title="删除" style={{ fontSize: 13, color: "var(--text-tertiary)" }}
+          onClick={async () => {
+            try { await apiDelete(`/api/storyland/hooks/${h.id}`); await reload(); }
+            catch (err: any) { toast(err.message || "删除失败", "error"); }
+          }}>×</button>
+      </div>
+    );
+  };
+
+  const cardHeader = (title: string, count: number, action?: React.ReactNode) => (
+    <div className="flex items-center justify-between" style={{
+      padding: "10px 16px", borderBottom: "1px solid var(--border)",
+    }}>
+      <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>
+        {title}
+        <span className="text-xs text-muted" style={{ marginLeft: 6, fontWeight: 400 }}>
+          ({count})
+        </span>
+      </h3>
+      {action}
+    </div>
+  );
+
+  return (
+    <div style={{
+      flex: 1, minHeight: 0, overflow: "auto",
+      padding: "16px 20px", maxWidth: 1100, margin: "0 auto", width: "100%",
+    }}>
+      <div className="card mb-16">
+        {cardHeader("主线 / 支线", threads.length,
+          <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+            当前章 <strong style={{ color: "var(--accent)" }}>{currentChapter || "—"}</strong>
+          </span>
+        )}
+        <div className="card-body">
+          {chapterMarks.length > 0 && (
+            <ChapterTimeline
+              mode="single"
+              min={chapterMin} max={chapterMax}
+              from={currentChapter || chapterMin}
+              to={currentChapter || chapterMin}
+              marks={chapterMarks}
+              onChange={(f: number) => setCurrentChapter(f)}
+              label="当前章节（用于伏笔超期判断）"
+            />
+          )}
+          {mains.length === 0 && (
+            <div className="text-xs" style={{ color: "var(--gold)", marginBottom: 8 }}>
+              尚未设定主线（每个项目有且仅有一条主线）。
+            </div>
+          )}
+          {mains.map(renderThread)}
+          {subs.map(renderThread)}
+          <div className="flex gap-6" style={{ marginTop: 12, alignItems: "center" }}>
+            <select className="select" style={{ fontSize: 11 }} value={newThread.thread_type}
+              onChange={e => setNewThread({ ...newThread, thread_type: e.target.value as any })}>
+              <option value="sub">支线</option>
+              <option value="main">主线</option>
+            </select>
+            <input className="input" placeholder="故事线名称" value={newThread.name}
+              onChange={e => setNewThread({ ...newThread, name: e.target.value })}
+              style={{ fontSize: 12, width: 160 }} />
+            <input className="input" placeholder="一段话概述（这条线讲什么）" value={newThread.description}
+              onChange={e => setNewThread({ ...newThread, description: e.target.value })}
+              style={{ fontSize: 12, flex: 1 }} />
+            <button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px" }} onClick={createThread}>新建</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="card mb-16">
+        {cardHeader("未回收伏笔", activeHooks.length)}
+        <div className="card-body">
+          {activeHooks.length === 0 && <div className="text-xs text-muted">暂无未回收伏笔。</div>}
+          {activeHooks.map(renderHook)}
+          <div className="flex gap-6" style={{ marginTop: 12, alignItems: "center" }}>
+            <select className="select" style={{ fontSize: 11 }} value={newHook.scale}
+              onChange={e => setNewHook({ ...newHook, scale: e.target.value })}>
+              {Object.entries(SCALE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+            <input className="input" type="number" min={1} value={newHook.origin_chapter}
+              onChange={e => setNewHook({ ...newHook, origin_chapter: parseInt(e.target.value) || 1 })}
+              style={{ fontSize: 12, width: 90 }} title="埋设章节" />
+            <input className="input" placeholder="伏笔概述（含待揭示的真相）" value={newHook.description}
+              onChange={e => setNewHook({ ...newHook, description: e.target.value })}
+              style={{ fontSize: 12, flex: 1 }} />
+            <button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px" }} onClick={createHook}>埋设</button>
+          </div>
+        </div>
+      </div>
+
+      {doneHooks.length > 0 && (
+        <div className="card">
+          {cardHeader("已回收 / 已放弃", doneHooks.length)}
+          <div className="card-body">
+            {doneHooks.map(renderHook)}
           </div>
         </div>
       )}

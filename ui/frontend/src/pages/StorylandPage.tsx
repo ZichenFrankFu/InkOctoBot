@@ -4,12 +4,13 @@ import { useToast } from "../components/shared/Toast";
 import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
 import ChapterTimeline from "../components/shared/ChapterTimeline";
 
-// 故事中世界（Storyland）页面 — spec 6.4.5 三 tab：
+// 故事中世界（Storyland）页面 — 双 tab：
 // 1. Storyland 状态：创世入口/审阅区、实体管理、SPO 事实（时间线/按章节）
 // 2. 读者视角记忆：按章节查看 L1-L4
-// 3. 故事线：主线/支线 + 伏笔（规模/超期提示），新建/编辑/删除
+// 注：原「故事线」tab 已迁至 剧情线 page 的「故事线 / 伏笔 管理」tab，
+//    将故事线 / 伏笔的 CRUD 与可视化时间线放在一起更聚拢。
 
-type TabKey = "state" | "memory" | "plotline";
+type TabKey = "state" | "memory";
 
 interface ChapterRef { chapter_id: string; chapter_num: number; title: string; }
 
@@ -47,16 +48,6 @@ interface Fact {
   predicate: string; object: string;
   valid_from_chapter: number; valid_to_chapter: number | null;
 }
-interface Hook {
-  id: string; title: string; content: string; status: string;
-  importance: string; scale: string;
-  origin_chapter: number | null; expected_payoff_chapter: number | null;
-}
-interface Thread {
-  thread_id: string; name: string; description: string; status: string;
-  thread_type: "main" | "sub"; start_chapter: number;
-  last_advanced_chapter: number | null;
-}
 interface GenesisProposal {
   proposal_id: string | null; stage?: string;
   entities?: { name: string; entity_type: string; description: string }[];
@@ -66,18 +57,6 @@ interface GenesisProposal {
 const ENTITY_TYPE_LABEL: Record<string, string> = {
   character: "角色", location: "地点", item: "物品",
   organization: "组织", concept: "概念",
-};
-const SCALE_LABEL: Record<string, string> = {
-  boomerang: "回旋镖(≤3章)", event_clue: "事件线索(≤20章)",
-  grand_plan: "大计划(≤100章)", world_truth: "世界真相",
-};
-const HOOK_STATUS_LABEL: Record<string, string> = {
-  open: "埋设", progressing: "推进中", pressured: "超期/待推进",
-  near_payoff: "临近回收", resolved: "已回收", abandoned: "已放弃",
-};
-const THREAD_STATUS_LABEL: Record<string, string> = {
-  setup: "开启", building: "推进", climax: "高潮",
-  resolution: "完结", dormant: "搁置",
 };
 
 /** Section header styled like the other pages — small accent-coloured
@@ -120,7 +99,7 @@ export default function StorylandPage({ projectId }: { projectId: string }) {
       </div>
 
       <div className="tab-bar-underline" style={{ marginBottom: 14 }}>
-        {([["state", "Storyland 状态"], ["memory", "读者视角记忆"], ["plotline", "故事线"]] as [TabKey, string][]).map(([k, label]) => (
+        {([["state", "Storyland 状态"], ["memory", "读者视角记忆"]] as [TabKey, string][]).map(([k, label]) => (
           <button key={k}
             className={`tab-item ${tab === k ? "active" : ""}`}
             onClick={() => setTab(k)}>{label}</button>
@@ -129,7 +108,6 @@ export default function StorylandPage({ projectId }: { projectId: string }) {
 
       {tab === "state" && <StateTab projectId={pid} chapters={chapters} toast={toast} />}
       {tab === "memory" && <MemoryTab projectId={pid} chapters={chapters} toast={toast} />}
-      {tab === "plotline" && <PlotlineTab projectId={pid} chapters={chapters} toast={toast} />}
     </div>
   );
 }
@@ -518,213 +496,3 @@ function MemoryTab({ projectId, chapters, toast }: {
   );
 }
 
-// ─────────────── Tab 3: 故事线（主线/支线 + 伏笔） ───────────────
-
-function PlotlineTab({ projectId, chapters, toast }: {
-  projectId: string;
-  chapters: ChapterRef[];
-  toast: (m: string, t?: any) => void;
-}) {
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const [hooks, setHooks] = useState<Hook[]>([]);
-  const [currentChapter, setCurrentChapter] = useState<number>(0);
-  const [newThread, setNewThread] = useState({ name: "", description: "", thread_type: "sub" as "main" | "sub" });
-  const [newHook, setNewHook] = useState({ description: "", scale: "event_clue", origin_chapter: 1 });
-
-  // Timeline range mirrors the project's actual chapters so 「当前章号」
-  // becomes a drag instead of a typed number.
-  const chapterMin = 1;
-  const chapterMax = chapters.length > 0
-    ? Math.max(...chapters.map(c => c.chapter_num || 0))
-    : 1;
-  const chapterMarks = useMemo(() => chapters.map(c => c.chapter_num), [chapters]);
-
-  const reload = useCallback(async () => {
-    try {
-      const [t, h] = await Promise.all([
-        apiGet<{ items: Thread[] }>(`/api/storyland/subplots?project_id=${projectId}`),
-        apiGet<{ items: Hook[] }>(`/api/data/foreshadowing/${projectId}`),
-      ]);
-      setThreads(t.items || []);
-      setHooks(h.items || []);
-      const maxOrigin = Math.max(0, ...(h.items || []).map(x => x.origin_chapter || 0));
-      setCurrentChapter(c => c || maxOrigin);
-    } catch (e: any) { toast(e.message || "加载失败", "error"); }
-  }, [projectId]);
-
-  useEffect(() => { reload(); }, [reload]);
-
-  const createThread = async () => {
-    if (!newThread.name.trim()) { toast("故事线名称必填", "error"); return; }
-    try {
-      await apiPost("/api/storyland/subplots", { project_id: projectId, ...newThread });
-      setNewThread({ name: "", description: "", thread_type: "sub" });
-      reload();
-    } catch (e: any) { toast(e.message || "创建失败", "error"); }
-  };
-
-  const createHook = async () => {
-    if (!newHook.description.trim()) { toast("伏笔概述必填", "error"); return; }
-    try {
-      await apiPost("/api/storyland/hooks", { project_id: projectId, ...newHook });
-      setNewHook({ description: "", scale: "event_clue", origin_chapter: 1 });
-      reload();
-    } catch (e: any) { toast(e.message || "创建失败", "error"); }
-  };
-
-  const isOverdue = (h: Hook) =>
-    h.expected_payoff_chapter !== null && h.scale !== "world_truth" &&
-    currentChapter > 0 && currentChapter >= h.expected_payoff_chapter &&
-    !["resolved", "abandoned"].includes(h.status);
-
-  const mains = threads.filter(t => t.thread_type === "main");
-  const subs = threads.filter(t => t.thread_type === "sub");
-  const activeHooks = hooks.filter(h => !["resolved", "abandoned"].includes(h.status));
-  const doneHooks = hooks.filter(h => ["resolved", "abandoned"].includes(h.status));
-
-  const renderThread = (t: Thread) => (
-    <div key={t.thread_id} style={{
-      display: "flex", gap: 10, alignItems: "center", padding: "6px 0",
-      fontSize: 12, borderBottom: "1px solid var(--border)",
-    }}>
-      <span className="tag" style={{
-        fontSize: 10,
-        background: t.thread_type === "main" ? "var(--accent-subtle)" : undefined,
-        color: t.thread_type === "main" ? "var(--accent)" : undefined,
-        borderColor: t.thread_type === "main" ? "var(--accent)" : undefined,
-      }}>
-        {t.thread_type === "main" ? "主线" : "支线"}
-      </span>
-      <span style={{ fontWeight: 600 }}>{t.name}</span>
-      <span style={{ color: "var(--text-tertiary)", flex: 1 }}>{t.description}</span>
-      <span className="text-xs" style={{ color: "var(--text-disabled)" }}>
-        第{t.start_chapter}章起{t.last_advanced_chapter ? ` · 最近第${t.last_advanced_chapter}章推进` : ""}
-      </span>
-      <select className="select" style={{ fontSize: 11, padding: "2px 6px" }} value={t.status}
-        onChange={async e => {
-          try { await apiPut(`/api/storyland/subplots/${t.thread_id}`, { status: e.target.value }); reload(); }
-          catch (err: any) { toast(err.message || "更新失败", "error"); }
-        }}>
-        {Object.entries(THREAD_STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-      </select>
-      <button className="btn-icon" title="删除" style={{ fontSize: 13, color: "var(--text-tertiary)" }}
-        onClick={async () => {
-          try { await apiDelete(`/api/storyland/subplots/${t.thread_id}`); reload(); }
-          catch (err: any) { toast(err.message || "删除失败", "error"); }
-        }}>×</button>
-    </div>
-  );
-
-  const renderHook = (h: Hook) => {
-    const overdue = isOverdue(h);
-    return (
-      <div key={h.id} style={{
-        display: "flex", gap: 10, alignItems: "center", padding: "6px 8px",
-        fontSize: 12, borderBottom: "1px solid var(--border)",
-        borderLeft: overdue ? "3px solid var(--error)" : "3px solid transparent",
-      }}>
-        <span className="tag" style={{ fontSize: 10 }}>{SCALE_LABEL[h.scale] || h.scale}</span>
-        <span style={{ flex: 1 }}>{h.content}</span>
-        <span className="text-xs" style={{ color: overdue ? "var(--error)" : "var(--text-disabled)" }}>
-          {HOOK_STATUS_LABEL[h.status] || h.status}{overdue ? " · 应回收" : ""}
-        </span>
-        <span className="text-xs" style={{ color: "var(--text-disabled)" }}>
-          第{h.origin_chapter}章埋{h.expected_payoff_chapter ? ` · 预期第${h.expected_payoff_chapter}章前收` : " · 不限期"}
-        </span>
-        {!["resolved", "abandoned"].includes(h.status) && (
-          <button className="btn" style={{ fontSize: 10, padding: "2px 10px" }}
-            onClick={async () => {
-              try {
-                await apiPost(`/api/data/foreshadowing/${h.id}/fully-resolve`, { chapter_num: currentChapter || null });
-                reload();
-              } catch (err: any) { toast(err.message || "操作失败", "error"); }
-            }}>标记已回收</button>
-        )}
-        <button className="btn-icon" title="删除" style={{ fontSize: 13, color: "var(--text-tertiary)" }}
-          onClick={async () => {
-            try { await apiDelete(`/api/storyland/hooks/${h.id}`); reload(); }
-            catch (err: any) { toast(err.message || "删除失败", "error"); }
-          }}>×</button>
-      </div>
-    );
-  };
-
-  return (
-    <div>
-      <div className="card mb-16">
-        <SectionHeader
-          title="主线 / 支线"
-          count={threads.length}
-          action={
-            <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
-              当前章 <strong style={{ color: "var(--accent)" }}>{currentChapter || "—"}</strong>
-            </span>
-          } />
-        <div className="card-body">
-          {chapters.length > 0 && (
-            <ChapterTimeline
-              mode="single"
-              min={chapterMin} max={chapterMax}
-              from={currentChapter || chapterMin}
-              to={currentChapter || chapterMin}
-              marks={chapterMarks}
-              onChange={(f) => setCurrentChapter(f)}
-              label="当前章节（用于伏笔超期判断）"
-            />
-          )}
-          {mains.length === 0 && (
-            <div className="text-xs" style={{ color: "var(--gold)", marginBottom: 8 }}>
-              尚未设定主线（每个项目有且仅有一条主线）。
-            </div>
-          )}
-          {mains.map(renderThread)}
-          {subs.map(renderThread)}
-          <div className="flex gap-6" style={{ marginTop: 12, alignItems: "center" }}>
-            <select className="select" style={{ fontSize: 11 }} value={newThread.thread_type}
-              onChange={e => setNewThread({ ...newThread, thread_type: e.target.value as any })}>
-              <option value="sub">支线</option>
-              <option value="main">主线</option>
-            </select>
-            <input className="input" placeholder="故事线名称" value={newThread.name}
-              onChange={e => setNewThread({ ...newThread, name: e.target.value })}
-              style={{ fontSize: 12, width: 160 }} />
-            <input className="input" placeholder="一段话概述（这条线讲什么）" value={newThread.description}
-              onChange={e => setNewThread({ ...newThread, description: e.target.value })}
-              style={{ fontSize: 12, flex: 1 }} />
-            <button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px" }} onClick={createThread}>新建</button>
-          </div>
-        </div>
-      </div>
-
-      <div className="card mb-16">
-        <SectionHeader title="未回收伏笔" count={activeHooks.length} />
-        <div className="card-body">
-          {activeHooks.length === 0 && <div className="text-xs text-muted">暂无未回收伏笔。</div>}
-          {activeHooks.map(renderHook)}
-          <div className="flex gap-6" style={{ marginTop: 12, alignItems: "center" }}>
-            <select className="select" style={{ fontSize: 11 }} value={newHook.scale}
-              onChange={e => setNewHook({ ...newHook, scale: e.target.value })}>
-              {Object.entries(SCALE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-            <input className="input" type="number" min={1} value={newHook.origin_chapter}
-              onChange={e => setNewHook({ ...newHook, origin_chapter: parseInt(e.target.value) || 1 })}
-              style={{ fontSize: 12, width: 90 }} title="埋设章节" />
-            <input className="input" placeholder="伏笔概述（含待揭示的真相）" value={newHook.description}
-              onChange={e => setNewHook({ ...newHook, description: e.target.value })}
-              style={{ fontSize: 12, flex: 1 }} />
-            <button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px" }} onClick={createHook}>埋设</button>
-          </div>
-        </div>
-      </div>
-
-      {doneHooks.length > 0 && (
-        <div className="card">
-          <SectionHeader title="已回收 / 已放弃" count={doneHooks.length} />
-          <div className="card-body">
-            {doneHooks.map(renderHook)}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
