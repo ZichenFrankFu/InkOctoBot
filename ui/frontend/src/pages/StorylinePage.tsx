@@ -416,7 +416,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   // bottom-center / top-center positions for cross-row connectors).
   const cardRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const rowsContainerRef = useRef<HTMLDivElement | null>(null);
-  const [cardRects, setCardRects] = useState<Map<string, { cx: number; top: number; bottom: number }>>(new Map());
+  const [cardRects, setCardRects] = useState<Map<string, { cx: number; top: number; bottom: number; left: number; right: number }>>(new Map());
   const [dragOverChapter, setDragOverChapter] = useState<number | null>(null);
   const [dragPreview, setDragPreview] = useState<{
     id: string; clientX: number; clientY: number;
@@ -529,15 +529,30 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     return list;
   }, [threads, hooks]);
 
+  /** Normalize the (possibly legacy singular) thread/hook fields on a
+   *  node to flat arrays — callers can stop worrying about which shape
+   *  the row currently has. */
+  const readThreadIds = useCallback((n: StoryNode): string[] => {
+    if (n.thread_ids && n.thread_ids.length) return n.thread_ids;
+    if (n.thread_id) return [n.thread_id];
+    return [];
+  }, []);
+  const readHookIds = useCallback((n: StoryNode): string[] => {
+    if (n.hook_ids && n.hook_ids.length) return n.hook_ids;
+    if (n.hook_id) return [n.hook_id];
+    return [];
+  }, []);
+
   /** All lane keys a node belongs to (zero → ["__orphan__"]; otherwise
-   *  thread key first, then hook key). */
+   *  thread keys first, then hook keys). Cards can belong to multiple
+   *  threads + multiple hooks now. */
   const nodeLaneKeys = useCallback((n: StoryNode): string[] => {
     const keys: string[] = [];
-    if (n.thread_id) keys.push(`t:${n.thread_id}`);
-    if (n.hook_id) keys.push(`h:${n.hook_id}`);
+    readThreadIds(n).forEach(id => keys.push(`t:${id}`));
+    readHookIds(n).forEach(id => keys.push(`h:${id}`));
     if (keys.length === 0) keys.push("__orphan__");
     return keys;
-  }, []);
+  }, [readThreadIds, readHookIds]);
 
   /** Primary lane index (used for sorting within a row). */
   const nodePrimaryLaneIdx = useCallback((n: StoryNode): number => {
@@ -565,7 +580,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
       const container = rowsContainerRef.current;
       if (!container) return;
       const cRect = container.getBoundingClientRect();
-      const next = new Map<string, { cx: number; top: number; bottom: number }>();
+      const next = new Map<string, { cx: number; top: number; bottom: number; left: number; right: number }>();
       cardRefs.current.forEach((el, id) => {
         if (!el) return;
         const r = el.getBoundingClientRect();
@@ -573,13 +588,20 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
           cx: r.left + r.width / 2 - cRect.left,
           top: r.top - cRect.top,
           bottom: r.bottom - cRect.top,
+          left: r.left - cRect.left,
+          right: r.right - cRect.left,
         });
       });
       setCardRects(prev => {
         if (prev.size !== next.size) return next;
         for (const [k, v] of next) {
           const p = prev.get(k);
-          if (!p || Math.abs(p.cx - v.cx) > 0.5 || Math.abs(p.top - v.top) > 0.5 || Math.abs(p.bottom - v.bottom) > 0.5) {
+          if (!p
+              || Math.abs(p.cx - v.cx) > 0.5
+              || Math.abs(p.top - v.top) > 0.5
+              || Math.abs(p.bottom - v.bottom) > 0.5
+              || Math.abs(p.left - v.left) > 0.5
+              || Math.abs(p.right - v.right) > 0.5) {
             return next;
           }
         }
@@ -614,15 +636,40 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
           (a.x || 0) - (b.x || 0),
         );
       for (let i = 0; i < laneCards.length - 1; i++) {
-        const a = cardRects.get(laneCards[i].id);
-        const b = cardRects.get(laneCards[i + 1].id);
+        const nodeA = laneCards[i];
+        const nodeB = laneCards[i + 1];
+        const a = cardRects.get(nodeA.id);
+        const b = cardRects.get(nodeB.id);
         if (!a || !b) continue;
-        // Smooth bezier from a's bottom-center to b's top-center.
-        const x1 = a.cx, y1 = a.bottom;
-        const x2 = b.cx, y2 = b.top;
-        const mid = (y1 + y2) / 2;
-        const d = `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`;
-        paths.push({ d, color: lane.color, key: `${lane.key}:${laneCards[i].id}-${laneCards[i + 1].id}` });
+        const sameRow = (nodeA.chapter_num || 0) === (nodeB.chapter_num || 0);
+        let d: string;
+        if (sameRow) {
+          // SAME CHAPTER — line lives in the horizontal gap BETWEEN the
+          // two cards: right-edge / vertical-center of left card →
+          // left-edge / vertical-center of right card. Tiny S-curve so
+          // multiple parallel same-row connectors don't sit on top of
+          // each other; the dx/3 control offset keeps the bow shallow
+          // enough that it never re-enters either card's hitbox.
+          const leftCard = a.left < b.left ? a : b;
+          const rightCard = a.left < b.left ? b : a;
+          const x1 = leftCard.right;
+          const y1 = (leftCard.top + leftCard.bottom) / 2;
+          const x2 = rightCard.left;
+          const y2 = (rightCard.top + rightCard.bottom) / 2;
+          const dx = Math.max(8, (x2 - x1) / 3);
+          d = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+        } else {
+          // CROSS-CHAPTER — line lives in the vertical gap BETWEEN rows:
+          // bottom-center of A → top-center of B. The bezier control
+          // points sit at the midpoint y so the horizontal sweep happens
+          // entirely in the inter-row gap (where no card lives), not
+          // inside either row's card area.
+          const x1 = a.cx, y1 = a.bottom;
+          const x2 = b.cx, y2 = b.top;
+          const mid = (y1 + y2) / 2;
+          d = `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`;
+        }
+        paths.push({ d, color: lane.color, key: `${lane.key}:${nodeA.id}-${nodeB.id}` });
       }
     });
     return paths;
@@ -1027,8 +1074,14 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             ) : cardsInLane.map(n => {
                         const isDragging = dragPreview?.id === n.id;
                         const isSelected = selected === n.id;
-                        const thread = n.thread_id ? threads.find(t => t.thread_id === n.thread_id) : undefined;
-                        const hook = n.hook_id ? hooks.find(h => h.id === n.hook_id) : undefined;
+                        // The card-side chips only show the first assigned
+                        // thread / hook (acts as a label); the full
+                        // multi-lane membership is communicated through
+                        // the stacked color stripes at the top of the card.
+                        const _tids = readThreadIds(n);
+                        const _hids = readHookIds(n);
+                        const thread = _tids.length ? threads.find(t => t.thread_id === _tids[0]) : undefined;
+                        const hook = _hids.length ? hooks.find(h => h.id === _hids[0]) : undefined;
                         const stripes = nodeStripes(n);
                         const fallbackStripe = stripes.length === 0
                           ? (n.color || "var(--accent)")
@@ -1295,32 +1348,87 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                   />
                 </div>
                 <div className="field mb-12">
-                  <label className="label">所属故事线</label>
-                  <select className="select" value={sel.thread_id || ""}
-                    onChange={e => updateNode(sel.id, "thread_id", e.target.value || undefined)}
-                    style={{ width: "100%", fontSize: 12 }}>
-                    <option value="">未指定</option>
-                    {threads.length === 0 && <option disabled>（故事中世界尚未创建故事线）</option>}
-                    {threads.map(t => (
-                      <option key={t.thread_id} value={t.thread_id}>
-                        {t.thread_type === "main" ? "主线" : "支线"} · {t.name}
-                      </option>
-                    ))}
-                  </select>
+                  <label className="label">所属故事线（可多选）</label>
+                  {threads.length === 0 ? (
+                    <div className="text-xs text-muted">（故事中世界尚未创建故事线）</div>
+                  ) : (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {threads.map((t, ti) => {
+                        const on = readThreadIds(sel).includes(t.thread_id);
+                        const color = COLORS[ti % COLORS.length];
+                        return (
+                          <button key={t.thread_id}
+                            onClick={() => {
+                              const cur = readThreadIds(sel);
+                              const next = cur.includes(t.thread_id)
+                                ? cur.filter(id => id !== t.thread_id)
+                                : [...cur, t.thread_id];
+                              updateNode(sel.id, "thread_ids", next);
+                              // Drop the legacy singular field to keep
+                              // data consistent on save.
+                              updateNode(sel.id, "thread_id", undefined);
+                            }}
+                            title={t.description || (t.thread_type === "main" ? "主线" : "支线")}
+                            style={{
+                              fontSize: 11, padding: "3px 10px",
+                              borderRadius: 12, cursor: "pointer",
+                              border: `1.5px solid ${color}`,
+                              background: on ? color : "transparent",
+                              color: on ? "#fff" : color,
+                              fontWeight: 600,
+                              display: "inline-flex", alignItems: "center", gap: 5,
+                            }}>
+                            <span style={{
+                              width: 6, height: 6, borderRadius: "50%",
+                              background: on ? "#fff" : color,
+                            }} />
+                            {t.thread_type === "main" ? "主" : "支"}·{t.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
                 <div className="field mb-12">
-                  <label className="label">所属伏笔</label>
-                  <select className="select" value={sel.hook_id || ""}
-                    onChange={e => updateNode(sel.id, "hook_id", e.target.value || undefined)}
-                    style={{ width: "100%", fontSize: 12 }}>
-                    <option value="">未指定</option>
-                    {hooks.length === 0 && <option disabled>（故事中世界尚未埋设伏笔）</option>}
-                    {hooks.map(h => (
-                      <option key={h.id} value={h.id}>
-                        {(h.title || h.content || "").slice(0, 26) || "（无内容）"}
-                      </option>
-                    ))}
-                  </select>
+                  <label className="label">所属伏笔（可多选）</label>
+                  {hooks.length === 0 ? (
+                    <div className="text-xs text-muted">（故事中世界尚未埋设伏笔）</div>
+                  ) : (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {hooks.map((h, hi) => {
+                        const on = readHookIds(sel).includes(h.id);
+                        const color = COLORS[(hi + threads.length) % COLORS.length];
+                        const label = (h.title || h.content || "（无内容）").slice(0, 14);
+                        return (
+                          <button key={h.id}
+                            onClick={() => {
+                              const cur = readHookIds(sel);
+                              const next = cur.includes(h.id)
+                                ? cur.filter(id => id !== h.id)
+                                : [...cur, h.id];
+                              updateNode(sel.id, "hook_ids", next);
+                              updateNode(sel.id, "hook_id", undefined);
+                            }}
+                            title={h.content}
+                            style={{
+                              fontSize: 11, padding: "3px 10px",
+                              borderRadius: 12, cursor: "pointer",
+                              border: `1.5px solid ${color}`,
+                              background: on ? color : "transparent",
+                              color: on ? "#fff" : color,
+                              fontWeight: 600,
+                              display: "inline-flex", alignItems: "center", gap: 5,
+                            }}>
+                            <span style={{
+                              width: 6, height: 6, borderRadius: "50%",
+                              background: on ? "#fff" : color,
+                            }} />
+                            伏·{label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <button
