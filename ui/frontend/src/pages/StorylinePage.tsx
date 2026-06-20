@@ -569,6 +569,16 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
       .filter((c): c is string => !!c && c !== "var(--text-tertiary)");
   }, [lanes, nodeLaneKeys]);
 
+  /** Lanes that have at least one card in the project. Rendering all
+   *  rows with the SAME used-lane column order keeps lane X coordinates
+   *  constant across rows — so vertical connectors are truly vertical
+   *  and don't drift through other cards. */
+  const usedLanes = useMemo(() => {
+    const usedKeys = new Set<string>();
+    nodes.forEach(n => nodeLaneKeys(n).forEach(k => usedKeys.add(k)));
+    return lanes.filter(l => usedKeys.has(l.key));
+  }, [lanes, nodes, nodeLaneKeys]);
+
   // ── Measure card positions for the SVG connection overlay ──
   // After every render that may have changed the layout, walk the
   // card-ref map and capture each card's bottom-center / top-center in
@@ -1032,30 +1042,16 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                           释放即可归属到本章
                         </div>
                       )}
-                      {/* Per-lane column. We render a column for every lane
-                          that appears in any chapter so columns align across
-                          rows; empty columns shrink to a thin connector
-                          gutter. */}
-                      {lanes.map(lane => {
+                      {/* One column per USED lane, in every row, so X
+                          positions are constant — vertical SVG connectors
+                          stay vertical, and a card stacked over a multi-
+                          row connector lives in a DIFFERENT lane column
+                          and therefore doesn't sit in the connector's
+                          path. */}
+                      {usedLanes.map(lane => {
                         const cardsInLane = chapNodes.filter(
                           n => nodeLaneKeys(n)[0] === lane.key
                         );
-                        // Is this lane carried "through" this chapter even
-                        // though no card lives here? Yes if a card in an
-                        // earlier AND later chapter owns this lane — we
-                        // draw a pass-through gutter so the connector
-                        // doesn't break.
-                        const anyBefore = nodes.some(n =>
-                          (n.chapter_num || 0) < chap_num
-                          && nodeLaneKeys(n).includes(lane.key));
-                        const anyAfter = nodes.some(n =>
-                          (n.chapter_num || 0) > chap_num
-                          && nodeLaneKeys(n).includes(lane.key));
-                        const passThrough = cardsInLane.length === 0
-                          && anyBefore && anyAfter
-                          && lane.type !== "orphan";
-                        if (cardsInLane.length === 0 && !passThrough) return null;
-                        const isOrphan = lane.type === "orphan";
                         return (
                           <div key={lane.key} style={{
                             position: "relative",
@@ -1063,9 +1059,13 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                             display: "flex", gap: 10, alignItems: "center",
                             paddingLeft: 6,
                           }}>
-                            {passThrough ? (
-                              // Pass-through placeholder: matches NODE_W so
-                              // downstream rows' columns still align.
+                            {cardsInLane.length === 0 ? (
+                              // Always reserve a NODE_W-sized empty slot so
+                              // X coordinates are globally fixed for this
+                              // lane across every row. Without this, lanes
+                              // collapse when a row has no card → cards
+                              // shift left and connectors start diagonal
+                              // through other cards.
                               <div style={{
                                 width: NODE_W, minHeight: NODE_H,
                                 opacity: 0,
