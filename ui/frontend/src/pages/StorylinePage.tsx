@@ -554,25 +554,109 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     return keys;
   }, [readThreadIds, readHookIds]);
 
-  /** Primary lane index (used for sorting within a row). */
-  const nodePrimaryLaneIdx = useCallback((n: StoryNode): number => {
-    const k = nodeLaneKeys(n)[0];
-    const idx = lanes.findIndex(l => l.key === k);
-    return idx >= 0 ? idx : lanes.length - 1;
-  }, [lanes, nodeLaneKeys]);
-
-  /** Color stripes (one per owned lane) — multiple if the node belongs
-   *  to several. Used as a stacked top accent on each card. */
+  /** Color stripes for the card's top accent. When NO 故事线 / 伏笔 is
+   *  selected in the filter, ALL cards render a single neutral gray
+   *  stripe — color is reserved as a signal for "active lane membership".
+   *  When at least one lane is active, cards show one stripe per owned
+   *  lane (multiple if the node belongs to several). Orphan / no-lane
+   *  cards fall back to the same gray. */
   const nodeStripes = useCallback((n: StoryNode): string[] => {
-    return nodeLaneKeys(n)
+    if (activeLaneKeys.size === 0) {
+      return ["var(--text-tertiary)"];
+    }
+    const colors = nodeLaneKeys(n)
       .map(k => lanes.find(l => l.key === k)?.color)
       .filter((c): c is string => !!c && c !== "var(--text-tertiary)");
-  }, [lanes, nodeLaneKeys]);
+    return colors.length > 0 ? colors : ["var(--text-tertiary)"];
+  }, [lanes, nodeLaneKeys, activeLaneKeys]);
 
-  /** Lanes that have at least one card in the project. Rendering all
-   *  rows with the SAME used-lane column order keeps lane X coordinates
-   *  constant across rows — so vertical connectors are truly vertical
-   *  and don't drift through other cards. */
+  /** 智能排序 —— barycenter / Sugiyama-style sweep.
+   *  Rewrites each card's `x` so cards with shared lanes line up across
+   *  rows as much as possible. The algorithm allows breaking the
+   *  "same-lane same column" rule when sticking to it forces a
+   *  connector through another card; cards just settle into positions
+   *  that minimise the sum of squared edge x-distances. After this,
+   *  the user can still drag any card to override.
+   */
+  const smartSortNodes = useCallback(() => {
+    if (nodes.length < 2) return;
+    // Per-lane sorted card chains.
+    const chains = new Map<string, StoryNode[]>();
+    nodes.forEach(n => {
+      nodeLaneKeys(n).forEach(k => {
+        if (!chains.has(k)) chains.set(k, []);
+        chains.get(k)!.push(n);
+      });
+    });
+    chains.forEach(arr => arr.sort((a, b) =>
+      (a.chapter_num || 0) - (b.chapter_num || 0)
+      || (a.x || 0) - (b.x || 0)));
+
+    // Group by chapter row.
+    const rows = new Map<number, StoryNode[]>();
+    nodes.forEach(n => {
+      const ch = n.chapter_num || 0;
+      if (!rows.has(ch)) rows.set(ch, []);
+      rows.get(ch)!.push(n);
+    });
+    const rowKeys = [...rows.keys()].sort((a, b) => a - b);
+
+    // Working x map seeded with current values.
+    const xs = new Map<string, number>();
+    nodes.forEach(n => xs.set(n.id, n.x || 0));
+    const STEP = 240;
+
+    const neighborsOf = (n: StoryNode, side: "prev" | "next" | "both"): StoryNode[] => {
+      const out: StoryNode[] = [];
+      nodeLaneKeys(n).forEach(k => {
+        const lane = chains.get(k) || [];
+        const idx = lane.findIndex(x => x.id === n.id);
+        if (idx < 0) return;
+        if ((side === "prev" || side === "both") && idx > 0) out.push(lane[idx - 1]);
+        if ((side === "next" || side === "both") && idx < lane.length - 1) out.push(lane[idx + 1]);
+      });
+      return out;
+    };
+
+    const barycenter = (n: StoryNode, side: "prev" | "next" | "both"): number => {
+      const ns = neighborsOf(n, side);
+      if (ns.length === 0) return xs.get(n.id) || 0;
+      const sum = ns.reduce((s, p) => s + (xs.get(p.id) || 0), 0);
+      return sum / ns.length;
+    };
+
+    // Sugiyama-style sweep: top→bottom then bottom→top, iterate.
+    for (let iter = 0; iter < 10; iter++) {
+      let changed = false;
+      const sweep = (dir: "down" | "up") => {
+        const order = dir === "down" ? rowKeys : [...rowKeys].reverse();
+        const side = dir === "down" ? "prev" : "next";
+        order.forEach(rk => {
+          const cards = rows.get(rk)!;
+          const ranked = cards
+            .map(c => ({ c, b: barycenter(c, side) }))
+            .sort((a, b) => a.b - b.b);
+          ranked.forEach((r, i) => {
+            const newX = i * STEP;
+            if (Math.abs((xs.get(r.c.id) || 0) - newX) > 0.5) {
+              xs.set(r.c.id, newX);
+              changed = true;
+            }
+          });
+        });
+      };
+      sweep("down");
+      sweep("up");
+      if (!changed) break;
+    }
+
+    setNodes(prev => prev.map(n => ({ ...n, x: xs.get(n.id) ?? n.x })));
+    setDirty(true);
+  }, [nodes, nodeLaneKeys]);
+
+  /** Lanes that have at least one card in the project. Used to drive
+   *  the LaneFilterStrip — only show lanes the user actually has cards
+   *  in (avoid empty chips for every thread the project defines). */
   const usedLanes = useMemo(() => {
     const usedKeys = new Set<string>();
     nodes.forEach(n => nodeLaneKeys(n).forEach(k => usedKeys.add(k)));
@@ -810,10 +894,11 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
               equally (default). Active selection sorts those lanes
               first and draws connectors only for them. */}
           <LaneFilterStrip
-            lanes={lanes}
+            lanes={usedLanes}
             activeKeys={activeLaneKeys}
             onToggle={toggleLane}
             onClear={clearLanes}
+            onSmartSort={smartSortNodes}
           />
 
           <div
@@ -847,27 +932,12 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
               // sit in column 0, 故事线 2 in column 1, etc. — cards in the
               // same lane stack chronologically by stored x.
               const chapGroups = new Map<number, StoryNode[]>();
-              // Sort priority within a row:
-              //  · 选中的 lane 排到最前（按用户选中的顺序虚拟权重 by
-              //    index)
-              //  · 其次按 lanes 的全局顺序
-              //  · 最后按 x 保留用户拖动微调
-              const activeOrder = (n: StoryNode) => {
-                if (activeLaneKeys.size === 0) return 1e6;
-                const keys = nodeLaneKeys(n);
-                let best = 1e6;
-                keys.forEach(k => {
-                  if (activeLaneKeys.has(k)) {
-                    const idx = lanes.findIndex(l => l.key === k);
-                    if (idx >= 0 && idx < best) best = idx;
-                  }
-                });
-                return best;
-              };
+              // Sort priority within a row: chapter → x. User's stored
+              // `x` is the source of truth — drag updates x, 智能排序
+              // rewrites x. This way manual reordering is respected and
+              // the auto-sort doesn't fight the user back.
               const sorted = [...nodes].sort((a, b) =>
                 (a.chapter_num || 0) - (b.chapter_num || 0)
-                || activeOrder(a) - activeOrder(b)
-                || nodePrimaryLaneIdx(a) - nodePrimaryLaneIdx(b)
                 || (a.x || 0) - (b.x || 0),
               );
               sorted.forEach(n => {
@@ -1042,36 +1112,15 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                           释放即可归属到本章
                         </div>
                       )}
-                      {/* One column per USED lane, in every row, so X
-                          positions are constant — vertical SVG connectors
-                          stay vertical, and a card stacked over a multi-
-                          row connector lives in a DIFFERENT lane column
-                          and therefore doesn't sit in the connector's
-                          path. */}
-                      {usedLanes.map(lane => {
-                        const cardsInLane = chapNodes.filter(
-                          n => nodeLaneKeys(n)[0] === lane.key
-                        );
-                        return (
-                          <div key={lane.key} style={{
-                            position: "relative",
-                            flexShrink: 0,
-                            display: "flex", gap: 10, alignItems: "center",
-                            paddingLeft: 6,
-                          }}>
-                            {cardsInLane.length === 0 ? (
-                              // Always reserve a NODE_W-sized empty slot so
-                              // X coordinates are globally fixed for this
-                              // lane across every row. Without this, lanes
-                              // collapse when a row has no card → cards
-                              // shift left and connectors start diagonal
-                              // through other cards.
-                              <div style={{
-                                width: NODE_W, minHeight: NODE_H,
-                                opacity: 0,
-                                pointerEvents: "none",
-                              }} />
-                            ) : cardsInLane.map(n => {
+                      {/* Cards laid out as a single flex row, sorted by
+                          stored x. Manual order via drag, lane semantics
+                          via the SVG connectors above. 智能排序 button
+                          rewrites x values to minimise crossings — but
+                          the user can always drag to override. */}
+                      {chapNodes
+                        .slice()
+                        .sort((a, b) => (a.x || 0) - (b.x || 0))
+                        .map(n => {
                         const isDragging = dragPreview?.id === n.id;
                         const isSelected = selected === n.id;
                         // The card-side chips only show the first assigned
@@ -1083,9 +1132,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         const thread = _tids.length ? threads.find(t => t.thread_id === _tids[0]) : undefined;
                         const hook = _hids.length ? hooks.find(h => h.id === _hids[0]) : undefined;
                         const stripes = nodeStripes(n);
-                        const fallbackStripe = stripes.length === 0
-                          ? (n.color || "var(--accent)")
-                          : null;
                         return (
                           <div
                             key={n.id}
@@ -1100,7 +1146,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                               // Multi-color stripes are rendered as inline
                               // sub-divs below; reserve borderTop only as a
                               // fallback when the card has no lane (orphan).
-                              borderTop: fallbackStripe ? `4px solid ${fallbackStripe}` : undefined,
+                              borderTop: undefined,
                               paddingTop: stripes.length > 0 ? 4 + stripes.length * 4 : 12,
                               borderRadius: 10,
                               padding: "12px 14px 10px",
@@ -1216,9 +1262,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                                 ))}
                               </div>
                             )}
-                          </div>
-                        );
-                      })}
                           </div>
                         );
                       })}
@@ -1605,11 +1648,12 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
  *   · only draws SVG connectors for active lanes
  *   · cards that DON'T own any active lane render faded
  * Empty selection = neutral mode (show all lanes equally, all connectors). */
-function LaneFilterStrip({ lanes, activeKeys, onToggle, onClear }: {
+function LaneFilterStrip({ lanes, activeKeys, onToggle, onClear, onSmartSort }: {
   lanes: Array<{ key: string; type: "thread" | "hook" | "orphan"; color: string; label: string }>;
   activeKeys: Set<string>;
   onToggle: (key: string) => void;
   onClear: () => void;
+  onSmartSort?: () => void;
 }) {
   const real = lanes.filter(l => l.type !== "orphan");
   if (real.length === 0) return null;
@@ -1653,8 +1697,20 @@ function LaneFilterStrip({ lanes, activeKeys, onToggle, onClear }: {
           清除筛选
         </button>
       )}
-      <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-tertiary)" }}>
-        {activeKeys.size === 0 ? "未选 = 显示全部 / 不画连线" : `已选 ${activeKeys.size} 条 → 排序 + 连线`}
+      <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+          {activeKeys.size === 0
+            ? "未选 → 卡片为灰色 / 不画连线"
+            : `已选 ${activeKeys.size} 条 → 卡片着色 + 连线`}
+        </span>
+        {onSmartSort && (
+          <button className="btn"
+            onClick={onSmartSort}
+            style={{ fontSize: 11, padding: "3px 12px" }}
+            title="按所属故事线 / 伏笔 自动重排卡片位置，尽量减少连线穿过其他卡片">
+            智能排序
+          </button>
+        )}
       </span>
     </div>
   );
