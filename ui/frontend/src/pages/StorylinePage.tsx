@@ -2468,6 +2468,91 @@ function ChapterNumField({ value, chapterTitles, maxChapter, onChange }: {
 }
 
 
+/* ── DateStepperRow ──
+ * 单行 stepper：[label] [− N +]。复用于 故事中时间·精确日期 模式的
+ * 年/月/日，外观与 章节号 控件一致。空值显示为「—」。 */
+function DateStepperRow({ label, value, onChange, min, max }: {
+  label: string;
+  value: number | undefined;
+  onChange: (v: number | undefined) => void;
+  min?: number;
+  max?: number;
+}) {
+  const clamp = (n: number): number => {
+    if (min !== undefined) n = Math.max(min, n);
+    if (max !== undefined) n = Math.min(max, n);
+    return n;
+  };
+  const dec = () => {
+    if (value === undefined) { onChange(min ?? 1); return; }
+    if (min === undefined || value > min) onChange(clamp(value - 1));
+  };
+  const inc = () => {
+    if (value === undefined) { onChange(min ?? 1); return; }
+    if (max === undefined || value < max) onChange(clamp(value + 1));
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{
+        fontSize: 11, color: "var(--text-tertiary)", width: 48,
+        flexShrink: 0, fontWeight: 500,
+      }}>{label}</span>
+      <div style={{
+        display: "inline-flex", alignItems: "stretch",
+        height: 36, borderRadius: 8, overflow: "hidden",
+        border: "1px solid var(--border)",
+        background: "var(--bg-card, var(--bg-surface))",
+        flex: 1,
+      }}>
+        <button onClick={dec}
+          disabled={value !== undefined && min !== undefined && value <= min}
+          style={{
+            width: 36, border: "none",
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+            cursor: (value !== undefined && min !== undefined && value <= min) ? "not-allowed" : "pointer",
+            fontSize: 16, fontWeight: 600,
+            opacity: (value !== undefined && min !== undefined && value <= min) ? 0.4 : 1,
+            borderRight: "1px solid var(--border)",
+          }}>−</button>
+        <input type="text" inputMode="numeric" pattern="[0-9]*"
+          value={value ?? ""}
+          placeholder="—"
+          onChange={e => {
+            const v = e.target.value.replace(/[^0-9]/g, "");
+            if (!v) { onChange(undefined); return; }
+            onChange(clamp(+v));
+          }}
+          onWheel={e => {
+            if (document.activeElement !== e.currentTarget) return;
+            e.preventDefault();
+            const cur = value ?? (min ?? 1);
+            const delta = e.deltaY < 0 ? 1 : -1;
+            onChange(clamp(cur + delta));
+          }}
+          style={{
+            flex: 1, border: "none", background: "transparent",
+            fontSize: 16, fontWeight: 700,
+            color: value !== undefined ? "var(--accent)" : "var(--text-disabled)",
+            textAlign: "center", padding: 0, outline: "none", minWidth: 0,
+          }} />
+        <button onClick={inc}
+          disabled={value !== undefined && max !== undefined && value >= max}
+          style={{
+            width: 36, border: "none",
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+            cursor: (value !== undefined && max !== undefined && value >= max) ? "not-allowed" : "pointer",
+            fontSize: 16, fontWeight: 600,
+            opacity: (value !== undefined && max !== undefined && value >= max) ? 0.4 : 1,
+            borderLeft: "1px solid var(--border)",
+          }}>+</button>
+      </div>
+    </div>
+  );
+}
+
+
 /* ── StoryTimeField ──
  * 两种故事中时间模式：
  *   · 精确日期：年 / 月 / 日 — 任一可空
@@ -2586,8 +2671,8 @@ function StoryTimeField({ value, onChange }: {
     <div className="field mb-12">
       <label className="label">故事中时间</label>
       <div style={{
-        display: "inline-flex", border: "1px solid var(--border)",
-        borderRadius: 8, padding: 1, marginBottom: 8,
+        display: "flex", border: "1px solid var(--border)",
+        borderRadius: 8, padding: 1, marginBottom: 10, width: "100%",
       }}>
         {(["precise", "dayN"] as StoryTimeMode[]).map(m => (
           <button key={m}
@@ -2596,44 +2681,53 @@ function StoryTimeField({ value, onChange }: {
               // 切换模式时只保留 period，其他字段清空。
               onChange(formatStoryTimeNew({ mode: m, period: parsed.period }));
             }}
-            style={tabStyle(mode === m)}>
+            style={{
+              ...tabStyle(mode === m),
+              flex: 1, padding: "6px 10px",
+            }}>
             {m === "precise" ? "精确日期" : "第N天"}
           </button>
         ))}
       </div>
 
       {mode === "precise" && (
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-          <WheelNumberInput value={parsed.year} placeholder="年" width={70} min={1}
-            onChange={v => setField({ year: v })} />
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>年</span>
-          <WheelNumberInput value={parsed.month} placeholder="月" width={60} min={1} max={12}
-            onChange={v => setField({ month: v })} />
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>月</span>
-          <WheelNumberInput value={parsed.day} placeholder="日" width={60} min={1} max={31}
-            onChange={v => setField({ day: v })} />
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>日</span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <DateStepperRow label="年"
+            value={parsed.year}
+            onChange={v => setField({ year: v })}
+            min={1} />
+          <DateStepperRow label="月"
+            value={parsed.month}
+            onChange={v => setField({ month: v })}
+            min={1} max={12} />
+          <DateStepperRow label="日"
+            value={parsed.day}
+            onChange={v => setField({ day: v })}
+            min={1} max={31} />
         </div>
       )}
       {mode === "dayN" && (
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>第</span>
-          <WheelNumberInput value={parsed.day} placeholder="N" width={80} min={1}
-            onChange={v => setField({ day: v })} />
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>天</span>
-          <div style={{
-            display: "inline-flex", border: "1px solid var(--border)",
-            borderRadius: 8, padding: 1, marginLeft: 8,
-          }}>
-            <button onClick={() => setField({ season: undefined })}
-              style={tabStyle(!parsed.season)}>—</button>
-            {SEASONS.map(s => (
-              <button key={s}
-                onClick={() => setField({ season: s })}
-                style={tabStyle(parsed.season === s)}>
-                {s}
-              </button>
-            ))}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <DateStepperRow label="第 N 天"
+            value={parsed.day}
+            onChange={v => setField({ day: v })}
+            min={1} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: "var(--text-tertiary)", width: 48 }}>季节</span>
+            <div style={{
+              display: "flex", border: "1px solid var(--border)",
+              borderRadius: 8, padding: 1, flex: 1,
+            }}>
+              <button onClick={() => setField({ season: undefined })}
+                style={{ ...tabStyle(!parsed.season), flex: 1 }}>—</button>
+              {SEASONS.map(s => (
+                <button key={s}
+                  onClick={() => setField({ season: s })}
+                  style={{ ...tabStyle(parsed.season === s), flex: 1 }}>
+                  {s}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -2937,7 +3031,7 @@ function HookStatusChipToggle({ color, value, onResolve }: {
   const stages: Array<["open" | "progressing" | "resolved", string]> = [
     ["open", "埋设"],
     ["progressing", "推进"],
-    ["resolved", "已回收"],
+    ["resolved", "回收"],
   ];
   const currentStage = value === "resolved" ? "resolved"
     : value === "progressing" || value === "pressured" || value === "near_payoff" ? "progressing"
@@ -3068,6 +3162,13 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, c
   const delHook = async (id: string) => {
     try { await apiDelete(`/api/storyland/hooks/${id}`); await reload(); }
     catch (e: any) { toast(e.message || "删除失败", "error"); }
+  };
+  const reactivateHook = async (id: string) => {
+    try {
+      await apiPost(`/api/data/foreshadowing/${id}/reactivate`, {});
+      await reload();
+      toast("伏笔已重新激活", "success");
+    } catch (e: any) { toast(e?.message || "重新激活失败", "error"); }
   };
 
   // Color tokens — NEVER red.
@@ -3210,22 +3311,28 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, c
             display: "inline-flex", alignItems: "center", gap: 4,
             fontWeight: 600,
             opacity: isInactive ? 0.75 : 1,
-            textDecoration: isInactive ? "line-through" : undefined,
-            textDecorationThickness: isInactive ? "1px" : undefined,
           }}>
           {name}
-          <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 2, textDecoration: "none" }}>
+          <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 2 }}>
             {expanded ? "▾" : "▸"}
           </span>
-          {allowDelete && (
-            <button onClick={(e) => { e.stopPropagation(); delHook(h.id); }}
-              title="彻底删除（已回收伏笔，操作不可撤销）"
-              style={{
-                border: "none", background: "transparent", padding: "0 2px",
-                fontSize: 11, lineHeight: 1, cursor: "pointer",
-                color: "var(--error)", opacity: 0.7,
-                textDecoration: "none",
-              }}>×</button>
+          {isInactive && (
+            <>
+              <button onClick={(e) => { e.stopPropagation(); reactivateHook(h.id); }}
+                title="重新激活伏笔（清除回收章节的回收事件，埋设 / 推进保留）"
+                style={{
+                  border: "none", background: "transparent", padding: "0 4px",
+                  fontSize: 10, lineHeight: 1, cursor: "pointer",
+                  color: "var(--jade)", fontWeight: 700,
+                }}>↺</button>
+              <button onClick={(e) => { e.stopPropagation(); delHook(h.id); }}
+                title="彻底删除（操作不可撤销）"
+                style={{
+                  border: "none", background: "transparent", padding: "0 2px",
+                  fontSize: 11, lineHeight: 1, cursor: "pointer",
+                  color: "var(--error)", opacity: 0.7,
+                }}>×</button>
+            </>
           )}
         </span>
         {expanded && (
@@ -3295,9 +3402,15 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, c
               )}
               <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 6 }}>
                 状态：{HOOK_STATUS_LABEL[h.status] || h.status}
-                {h.status !== "resolved" && h.expected_payoff_chapter
-                  ? ` · 预期第${h.expected_payoff_chapter}章前回收`
-                  : ""}
+                {h.status !== "resolved" && h.expected_payoff_chapter && (
+                  <>
+                    {" · "}
+                    <span style={{ color: "var(--gold)", fontWeight: 600 }}>
+                      推荐 {Math.max(0, (h.expected_payoff_chapter || 0) - (h.origin_chapter || 0))} 章内回收
+                    </span>
+                    {h.origin_chapter ? ` (第${h.origin_chapter}章起 → 第${h.expected_payoff_chapter}章前)` : ""}
+                  </>
+                )}
               </div>
             </div>
           </div>

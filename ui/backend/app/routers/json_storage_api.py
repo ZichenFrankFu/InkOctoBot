@@ -386,6 +386,21 @@ def fully_resolve_foreshadowing(hook_id: str, body: dict = Body(default={})):
     )
     return {"ok": True, "hook": saved}
 
+
+@router.post("/foreshadowing/{hook_id}/reactivate")
+def reactivate_foreshadowing(hook_id: str):
+    """Undo a fully-resolve: clear the user_marked_fully_resolved flag,
+    drop the 'resolve' hook_event so the close 章节 no longer carries
+    that marker (埋设 / 推进 events stay), and recompute status as
+    'progressing' if any earlier progress/mention exists, else 'open'.
+    Returns 404 if the hook id is unknown."""
+    saved = project_store.reactivate_hook(_db(), hook_id)
+    if not saved:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"hook {hook_id} not found")
+    _fs_log.info("user reactivated hook %s -> status=%s", hook_id, saved.get("status"))
+    return {"ok": True, "hook": saved}
+
 # ═══ Editor (DB-backed: project_blobs + chapters table) ═══
 @router.get("/editor")
 def get_editor_data(project_id: str = "default"):

@@ -1322,6 +1322,65 @@ def fully_resolve_hook(
     return _row_to_dict(row) if row else {}
 
 
+def reactivate_hook(db_path: str, hook_id: str) -> dict[str, Any]:
+    """Undo a user fully-resolve: clear the resolve flag, blank the close
+    chapter / notes, and recompute the status from earlier hook_events
+    so 埋设 / 推进 history stays intact (only the 回收 event is dropped).
+
+    Status rules:
+      · If there is any earlier 'progress'/'mention' event → status
+        becomes 'progressing'
+      · Otherwise → 'open' (just 埋设)
+
+    Returns the post-update hook row (or {} if no such hook exists).
+    """
+    with open_db(db_path) as con:
+        # 1) Decide the next status by inspecting earlier events.
+        rows = con.execute(
+            "SELECT action FROM hook_events "
+            "WHERE hook_id = ? AND action != 'resolve' "
+            "ORDER BY chapter_num",
+            (hook_id,),
+        ).fetchall()
+        had_progress = any(
+            (r["action"] if hasattr(r, "keys") else r[0]) in (
+                "progress", "mention", "pressured", "near_payoff",
+            )
+            for r in rows
+        )
+        next_status = "progressing" if had_progress else "open"
+
+        # 2) Flip the hook row back.
+        cur = con.execute(
+            "UPDATE pending_hooks "
+            "SET user_marked_fully_resolved = 0, "
+            "    user_resolved_at_chapter = NULL, "
+            "    user_resolve_notes = '', "
+            "    status = ? "
+            "WHERE hook_id = ?",
+            (next_status, hook_id),
+        )
+        if cur.rowcount == 0:
+            return {}
+
+        # 3) Drop the matching 'resolve' hook_events so the 回收 章节 no
+        #    longer carries that marker. 埋设/推进 events stay intact.
+        con.execute(
+            "DELETE FROM hook_events WHERE hook_id = ? AND action = 'resolve'",
+            (hook_id,),
+        )
+        con.commit()
+
+        row = con.execute(
+            "SELECT hook_id, project_id, description, status, "
+            "       origin_chapter, importance, "
+            "       user_marked_fully_resolved, user_resolved_at_chapter "
+            "FROM pending_hooks WHERE hook_id = ?",
+            (hook_id,),
+        ).fetchone()
+    return _row_to_dict(row) if row else {}
+
+
 # ─────────────── chapter_summaries anchor toggle ──────────────────
 
 
