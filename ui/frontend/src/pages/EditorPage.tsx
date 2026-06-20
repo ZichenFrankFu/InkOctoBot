@@ -1525,20 +1525,12 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                 {saveStatus === "saved" ? "已保存" : saveStatus === "saving" ? "保存中..." : "未保存"}
               </span>
               <button
-                className="btn"
-                style={{ fontSize: 11, padding: "3px 10px" }}
-                onClick={handleSaveOutline}
-                disabled={!activeChId || saveStatus === "saving"}
-                title="只保存编辑器状态（不创建版本）">
-                保存
-              </button>
-              <button
                 className="btn-primary"
                 style={{ fontSize: 11, padding: "3px 12px" }}
                 onClick={handleSaveAndCommit}
                 disabled={!activeChId || saveStatus === "saving"}
-                title="保存并提交版本快照（Ctrl/⌘ + S）">
-                保存并提交（Ctrl+S）
+                title="保存并提交版本快照">
+                保存
               </button>
             </div>
           </div>

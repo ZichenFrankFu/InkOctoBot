@@ -105,12 +105,61 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
       .catch(() => setLoaded(true));
   }, [projectId]);
 
+  // --- Push character union (storyline → editor) ──
+  // For each chapter the storyline knows about, replace the editor
+  // chapter.characters with the UNION of characters across the chapter's
+  // 情节 cards. The user wants「保持一致」 — storyline is the source of
+  // truth when it has events for the chapter; chapters with no 情节 are
+  // left alone (don't wipe the editor's own picks).
+  const pushCharactersToEditor = useCallback(async () => {
+    try {
+      const pid = projectId || "default";
+      const data = await apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${pid}`);
+      let idx = 0;
+      let changed = false;
+      const nextVolumes = (data.volumes || []).map(v => ({
+        ...v,
+        chapters: (v.chapters || []).map(c => {
+          idx += 1;
+          const chapterNodes = nodes.filter(n => (n.chapter_num || 0) === idx);
+          if (chapterNodes.length === 0) return c;
+          const union = new Set<string>();
+          chapterNodes.forEach(n => (n.characters || []).forEach(name => {
+            const s = (name || "").trim();
+            if (s) union.add(s);
+          }));
+          const next = Array.from(union).sort();
+          const prev = (c.characters || []).slice().sort();
+          if (JSON.stringify(next) !== JSON.stringify(prev)) {
+            changed = true;
+            return { ...c, characters: next };
+          }
+          return c;
+        }),
+      }));
+      if (changed) {
+        await apiPut(`/api/data/editor`, { project_id: pid, volumes: nextVolumes });
+      }
+    } catch (e: any) {
+      // Silent — pushing characters is a side effect; surfacing this error
+      // would interrupt the autosave UX.
+      console.warn("pushCharactersToEditor failed:", e);
+    }
+  }, [projectId, nodes]);
+
   // --- Auto-save ---
   useEffect(() => {
     if (!loaded || !dirty) return;
-    const t = setTimeout(() => {
+    const t = setTimeout(async () => {
       const pid = projectId || "default";
-      apiPut(`/api/data/storyline`, { project_id: pid, nodes, edges }).catch((e: any) => toast(e.message || "操作失败", "error"));
+      try {
+        await apiPut(`/api/data/storyline`, { project_id: pid, nodes, edges });
+        // Mirror character union to editor so 大纲 tab stays in sync
+        // with whatever characters the user assigned to 情节 cards.
+        await pushCharactersToEditor();
+      } catch (e: any) {
+        toast(e.message || "操作失败", "error");
+      }
       setDirty(false);
     }, 2000);
     return () => clearTimeout(t);
@@ -431,6 +480,61 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   // --- Computed ---
   const sel = useMemo(() => nodes.find(n => n.id === selected), [nodes, selected]);
 
+  // --- Thread / 伏笔 lane mapping ──
+  // Each 故事线 (thread) and 伏笔 (hook) becomes a "lane" that holds a
+  // unique color across the whole page. Cards belonging to that lane
+  // render with that color stripe, and within each chapter row they
+  // sort to the lane's column position so cards of the same lane line
+  // up vertically across rows. The final "orphan" lane catches any
+  // 情节 that hasn't been assigned to anything.
+  const lanes = useMemo(() => {
+    const list: Array<{
+      key: string;
+      type: "thread" | "hook" | "orphan";
+      color: string;
+      label: string;
+    }> = [];
+    threads.forEach((t, i) => list.push({
+      key: `t:${t.thread_id}`,
+      type: "thread",
+      color: COLORS[i % COLORS.length],
+      label: `${t.thread_type === "main" ? "主线" : "支线"}·${t.name}`,
+    }));
+    hooks.forEach((h, i) => list.push({
+      key: `h:${h.id}`,
+      type: "hook",
+      color: COLORS[(i + threads.length) % COLORS.length],
+      label: `伏笔·${(h.title || h.content || "").slice(0, 10)}`,
+    }));
+    list.push({ key: "__orphan__", type: "orphan", color: "var(--text-tertiary)", label: "未归属" });
+    return list;
+  }, [threads, hooks]);
+
+  /** All lane keys a node belongs to (zero → ["__orphan__"]; otherwise
+   *  thread key first, then hook key). */
+  const nodeLaneKeys = useCallback((n: StoryNode): string[] => {
+    const keys: string[] = [];
+    if (n.thread_id) keys.push(`t:${n.thread_id}`);
+    if (n.hook_id) keys.push(`h:${n.hook_id}`);
+    if (keys.length === 0) keys.push("__orphan__");
+    return keys;
+  }, []);
+
+  /** Primary lane index (used for sorting within a row). */
+  const nodePrimaryLaneIdx = useCallback((n: StoryNode): number => {
+    const k = nodeLaneKeys(n)[0];
+    const idx = lanes.findIndex(l => l.key === k);
+    return idx >= 0 ? idx : lanes.length - 1;
+  }, [lanes, nodeLaneKeys]);
+
+  /** Color stripes (one per owned lane) — multiple if the node belongs
+   *  to several. Used as a stacked top accent on each card. */
+  const nodeStripes = useCallback((n: StoryNode): string[] => {
+    return nodeLaneKeys(n)
+      .map(k => lanes.find(l => l.key === k)?.color)
+      .filter((c): c is string => !!c && c !== "var(--text-tertiary)");
+  }, [lanes, nodeLaneKeys]);
+
   // --- Bottom 故事中时间 strip: one chip per 情节 that has a non-empty
   //     `time` value (in-story timestamp), ordered along the reading path
   //     (chapter_num → x). Clicking a chip selects that 情节. Empty when
@@ -554,10 +658,13 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
           <div style={{ padding: "24px 20px", minHeight: "100%", display: "flex", flexDirection: "column", gap: 16 }}>
             {(() => {
               // Group nodes by chapter_num so each row = one chapter. Sort
-              // within a row by stored x so the user's drag order is honoured.
+              // within a row by (primary lane → x) so 故事线 1 cards always
+              // sit in column 0, 故事线 2 in column 1, etc. — cards in the
+              // same lane stack chronologically by stored x.
               const chapGroups = new Map<number, StoryNode[]>();
               const sorted = [...nodes].sort((a, b) =>
                 (a.chapter_num || 0) - (b.chapter_num || 0)
+                || nodePrimaryLaneIdx(a) - nodePrimaryLaneIdx(b)
                 || (a.x || 0) - (b.x || 0),
               );
               sorted.forEach(n => {
@@ -711,33 +818,86 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                       </div>
                     </div>
 
-                    {/* ── RIGHT: 情节 cards (centered horizontally & vertically;
-                        inner margin:auto centers when content fits, falls
-                        back to left-aligned scroll when it overflows). ── */}
+                    {/* ── RIGHT: 情节 cards arranged by lane.
+                        Each 故事线/伏笔 owns one column across all rows so
+                        cards of the same lane line up vertically. Cards
+                        sharing a lane get a colored connector line in
+                        the gutter so the user can trace a thread or 伏笔
+                        across chapters at a glance. ── */}
                     <div style={{
                       flex: 1, minWidth: 0, minHeight: 184,
                       padding: "16px 18px",
                       display: "flex",
                       overflowX: "auto",
+                      gap: 10,
                     }}>
-                      <div style={{
-                        display: "flex", gap: 14,
-                        margin: "auto",
-                        alignItems: "center",
-                      }}>
                       {isDropTarget && chapNodes.length === 0 && (
                         <div className="text-xs" style={{
-                          padding: "0 8px", lineHeight: 1.6,
+                          padding: "0 8px", lineHeight: 1.6, alignSelf: "center",
                           color: "var(--accent)", fontWeight: 600,
                         }}>
                           释放即可归属到本章
                         </div>
                       )}
-                      {chapNodes.map(n => {
+                      {/* Per-lane column. We render a column for every lane
+                          that appears in any chapter so columns align across
+                          rows; empty columns shrink to a thin connector
+                          gutter. */}
+                      {lanes.map(lane => {
+                        const cardsInLane = chapNodes.filter(
+                          n => nodeLaneKeys(n)[0] === lane.key
+                        );
+                        // Is this lane carried "through" this chapter even
+                        // though no card lives here? Yes if a card in an
+                        // earlier AND later chapter owns this lane — we
+                        // draw a pass-through gutter so the connector
+                        // doesn't break.
+                        const anyBefore = nodes.some(n =>
+                          (n.chapter_num || 0) < chap_num
+                          && nodeLaneKeys(n).includes(lane.key));
+                        const anyAfter = nodes.some(n =>
+                          (n.chapter_num || 0) > chap_num
+                          && nodeLaneKeys(n).includes(lane.key));
+                        const passThrough = cardsInLane.length === 0
+                          && anyBefore && anyAfter
+                          && lane.type !== "orphan";
+                        if (cardsInLane.length === 0 && !passThrough) return null;
+                        const isOrphan = lane.type === "orphan";
+                        return (
+                          <div key={lane.key} style={{
+                            position: "relative",
+                            flexShrink: 0,
+                            display: "flex", gap: 10, alignItems: "center",
+                            paddingLeft: 6,
+                          }}>
+                            {/* Connector — vertical bar along the LEFT of
+                                this column. Same lane in adjacent rows →
+                                visually continuous line. */}
+                            {!isOrphan && (anyBefore || anyAfter || cardsInLane.length) && (
+                              <div style={{
+                                position: "absolute", left: 0, top: 0, bottom: 0,
+                                width: 3, borderRadius: 2,
+                                background: lane.color, opacity: 0.55,
+                                pointerEvents: "none",
+                              }} />
+                            )}
+                            {passThrough ? (
+                              // Pass-through placeholder: matches NODE_W so
+                              // downstream rows' columns still align.
+                              <div style={{
+                                width: NODE_W, minHeight: NODE_H,
+                                opacity: 0,
+                                pointerEvents: "none",
+                              }} />
+                            ) : cardsInLane.map(n => {
                         const isDragging = dragPreview?.id === n.id;
                         const isSelected = selected === n.id;
                         const thread = n.thread_id ? threads.find(t => t.thread_id === n.thread_id) : undefined;
                         const hook = n.hook_id ? hooks.find(h => h.id === n.hook_id) : undefined;
+                        const stripes = nodeStripes(n);
+                        const fallbackStripe = stripes.length === 0
+                          ? (n.color || "var(--accent)")
+                          : null;
                         return (
                           <div
                             key={n.id}
@@ -748,13 +908,18 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                               position: "relative",
                               left: "auto", top: "auto",
                               width: NODE_W, minHeight: NODE_H,
-                              borderTop: `4px solid ${n.color || "var(--accent)"}`,
+                              // Multi-color stripes are rendered as inline
+                              // sub-divs below; reserve borderTop only as a
+                              // fallback when the card has no lane (orphan).
+                              borderTop: fallbackStripe ? `4px solid ${fallbackStripe}` : undefined,
+                              paddingTop: stripes.length > 0 ? 4 + stripes.length * 4 : 12,
                               borderRadius: 10,
                               padding: "12px 14px 10px",
                               cursor: "grab",
                               flexShrink: 0,
                               opacity: isDragging ? 0.35 : 1,
                               background: "var(--bg-card)",
+                              overflow: "hidden",
                               boxShadow: isSelected
                                 ? "0 0 0 2px var(--accent), 0 4px 12px rgba(0,0,0,0.08)"
                                 : "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)",
@@ -771,6 +936,21 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                               e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)";
                             }}
                           >
+                            {/* Stacked lane-color stripes — one 4px band
+                                per lane the card belongs to (thread first,
+                                then hook). When the card has none, the
+                                fallback borderTop above kicks in. */}
+                            {stripes.length > 0 && (
+                              <div style={{
+                                position: "absolute", top: 0, left: 0, right: 0,
+                                display: "flex", flexDirection: "column",
+                                pointerEvents: "none",
+                              }}>
+                                {stripes.map((c, i) => (
+                                  <div key={i} style={{ height: 4, background: c }} />
+                                ))}
+                              </div>
+                            )}
                             <div className="font-serif" style={{
                               fontSize: 13.5, fontWeight: 600, color: "var(--text-primary)",
                               marginBottom: 6, lineHeight: 1.35,
@@ -850,6 +1030,9 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                           </div>
                         );
                       })}
+                          </div>
+                        );
+                      })}
                       {/* Per-row 「+ 添加情节」 button — same footprint as a 情节 card */}
                       <button
                         onClick={() => addEpisodeToChapter(chap_num)}
@@ -877,7 +1060,6 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                         <span style={{ fontSize: 18, lineHeight: 1, fontWeight: 300 }}>+</span>
                         <span>添加情节</span>
                       </button>
-                      </div>
                     </div>
                   </div>
                 );
