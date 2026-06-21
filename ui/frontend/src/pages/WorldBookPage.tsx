@@ -355,11 +355,21 @@ export default function WorldBookPage({ projectId, projects }: Props) {
     setAiChatLoading(false);
   };
 
+  // 默认（editing 为空）只展示世界书 entry 列表，铺满整页。
+  // 用户点击某个 entry → 列表收窄为 leftPanel.size，右边展开 详情。
+  const showDetailColumn = editing !== null;
+
   return (
     <div className="page-full">
       <div className="panel-layout">
         {/* LEFT PANEL: Navigator (4.1) */}
-        <div className="panel" style={{ width: leftPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)" }}>
+        <div className="panel" style={{
+          width: showDetailColumn ? leftPanel.size : "100%",
+          flex: showDetailColumn ? "0 0 auto" : "1 1 auto",
+          flexShrink: 0,
+          background: "var(--bg-surface)",
+          borderRight: showDetailColumn ? "1px solid var(--border)" : "none",
+        }}>
           <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
             <div className="flex items-center justify-between">
               <h3>世界书</h3>
@@ -465,9 +475,10 @@ export default function WorldBookPage({ projectId, projects }: Props) {
           </div>
         </div>
 
-        <div className="panel-resize-h" {...leftPanel.handleProps} />
+        {showDetailColumn && <div className="panel-resize-h" {...leftPanel.handleProps} />}
 
-        {/* RIGHT PANEL: Entry Detail (4.2) */}
+        {/* RIGHT PANEL: Entry Detail (4.2) — only after the user picks an entry */}
+        {showDetailColumn && (
         <div className="panel flex-1" style={{ background: "var(--bg-app)", overflowY: "auto" }}>
           {/* Consistency check result as TABLE (4.1.1) */}
           {(checkIssues.length > 0 || checkMessage) && (
@@ -702,6 +713,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
             </div>
           )}
         </div>
+        )}
       </div>
 
       <ConsistencyCheckModal

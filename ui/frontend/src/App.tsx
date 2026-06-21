@@ -164,7 +164,9 @@ function AppInner() {
   return (
     <div className="app-layout">
       <a href="#main-content" className="sr-only">Skip to main content</a>
-      <aside className="sidebar" style={{ width: collapsed ? 56 : sidebarW }} role="navigation" aria-label="Main navigation">
+      <aside className={`sidebar${collapsed ? " collapsed" : ""}`}
+        style={{ width: collapsed ? 40 : sidebarW }}
+        role="navigation" aria-label="Main navigation">
         <div className="sidebar-brand" style={collapsed ? { padding: "14px 0", textAlign: "center" } : undefined}>
           <h1 style={collapsed ? { margin: 0 } : undefined}>
             <img src="/favicon.svg" alt="InkOctoBot" style={{ width: 24, height: 24, verticalAlign: "middle", marginRight: collapsed ? 0 : 6 }} />
@@ -179,7 +181,7 @@ function AppInner() {
           onClick={() => setSearchOpen(true)}
           aria-label="Search (Ctrl+K)"
           title="搜索 (Ctrl+K)"
-          style={{ margin: collapsed ? "10px auto 6px" : "10px 8px 6px", width: collapsed ? 38 : "auto", padding: collapsed ? "5px 0" : "5px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 30 }}
+          style={{ margin: collapsed ? "10px auto 6px" : "10px 8px 6px", width: collapsed ? 28 : "auto", padding: collapsed ? "5px 0" : "5px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 30 }}
         >
           <span style={{ fontSize: 12, opacity: 0.6 }}>&#x2315;</span>
           {!collapsed && (

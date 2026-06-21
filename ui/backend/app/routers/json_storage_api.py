@@ -18,7 +18,8 @@ import json, time, uuid, os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, File, UploadFile
+from fastapi.responses import FileResponse
 from ..services import project_store
 from ..services.project_paths import get_db_path
 from ..settings import settings
@@ -160,6 +161,106 @@ def update_character(cid: str, body: dict = Body(...)):
 @router.delete("/characters/{cid}")
 def delete_character(cid: str):
     project_store.delete_character(_db(), cid)
+    return {"ok": True}
+
+
+# ─── Character avatar (upload + serve) ───
+
+def _avatar_dir() -> Path:
+    """Avatars live next to the database in <data_dir>/avatars/."""
+    from pathlib import Path as _P
+    return _P(_db()).resolve().parent / "avatars"
+
+
+_ALLOWED_AVATAR_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+@router.post("/characters/{cid}/avatar")
+async def upload_character_avatar(cid: str, file: UploadFile = File(...)):
+    """Save the uploaded image as the character's avatar. Replaces any
+    previously-uploaded avatar (delete-old + write-new is atomic for the
+    UI flow). The avatar lives next to the DB as
+    ``<data_dir>/avatars/{cid}{.ext}`` and is served by the GET sibling
+    below. The character's ``avatar_url`` extra-field is then updated
+    so list / detail / graph all pick up the new image after a reload."""
+    char = project_store.get_character(_db(), cid)
+    if not char:
+        raise HTTPException(status_code=404, detail=f"character {cid} not found")
+
+    ext = ""
+    if file.filename:
+        from pathlib import Path as _P
+        ext = _P(file.filename).suffix.lower()
+    if ext not in _ALLOWED_AVATAR_EXT:
+        # Fall back to content-type sniff.
+        ct = (file.content_type or "").lower()
+        if "png" in ct:
+            ext = ".png"
+        elif "jpeg" in ct or "jpg" in ct:
+            ext = ".jpg"
+        elif "webp" in ct:
+            ext = ".webp"
+        elif "gif" in ct:
+            ext = ".gif"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="unsupported image type (need png / jpg / webp / gif)",
+            )
+
+    avatar_dir = _avatar_dir()
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+
+    # Drop any previous avatar regardless of extension so we don't leak
+    # stale files when the user re-uploads a different format.
+    for existing in avatar_dir.glob(f"{cid}.*"):
+        try:
+            existing.unlink()
+        except OSError:
+            pass
+
+    target = avatar_dir / f"{cid}{ext}"
+    blob = await file.read()
+    target.write_bytes(blob)
+
+    # Persist the URL so frontend can render the avatar after reload.
+    url = f"/api/data/characters/{cid}/avatar"
+    body = dict(char)
+    body["avatar_url"] = url
+    project_store.upsert_character(_db(), body)
+    return {"ok": True, "avatar_url": url}
+
+
+@router.get("/characters/{cid}/avatar")
+def get_character_avatar(cid: str):
+    """Stream the avatar bytes. 404 when the user hasn't uploaded yet."""
+    avatar_dir = _avatar_dir()
+    for ext in _ALLOWED_AVATAR_EXT:
+        candidate = avatar_dir / f"{cid}{ext}"
+        if candidate.exists():
+            media = "image/png" if ext == ".png" \
+                else "image/jpeg" if ext in (".jpg", ".jpeg") \
+                else "image/webp" if ext == ".webp" \
+                else "image/gif"
+            return FileResponse(str(candidate), media_type=media)
+    raise HTTPException(status_code=404, detail=f"avatar not found for {cid}")
+
+
+@router.delete("/characters/{cid}/avatar")
+def delete_character_avatar(cid: str):
+    """Remove the uploaded avatar (the character falls back to the
+    auto-generated 文字 头像 again). Idempotent."""
+    avatar_dir = _avatar_dir()
+    for existing in avatar_dir.glob(f"{cid}.*"):
+        try:
+            existing.unlink()
+        except OSError:
+            pass
+    char = project_store.get_character(_db(), cid)
+    if char and char.get("avatar_url"):
+        body = dict(char)
+        body["avatar_url"] = ""
+        project_store.upsert_character(_db(), body)
     return {"ok": True}
 
 

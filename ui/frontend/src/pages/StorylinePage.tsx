@@ -85,7 +85,9 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     return isNaN(v) ? 300 : Math.max(240, Math.min(720, v));
   });
   const [detailCollapsed, setDetailCollapsed] = useState<boolean>(
-    () => localStorage.getItem("storyline_detail_collapsed") === "1",
+    // 默认收起：除非 localStorage 显式存了 "0"（用户上次展开过），
+    // 否则打开 故事线 page 时 情节详情 默认折叠，把横向空间留给时间线。
+    () => localStorage.getItem("storyline_detail_collapsed") !== "0",
   );
   useEffect(() => { localStorage.setItem("storyline_detail_width", String(detailWidth)); }, [detailWidth]);
   useEffect(() => { localStorage.setItem("storyline_detail_collapsed", detailCollapsed ? "1" : "0"); }, [detailCollapsed]);

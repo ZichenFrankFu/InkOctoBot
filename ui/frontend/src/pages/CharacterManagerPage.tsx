@@ -712,12 +712,23 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     return rels.filter(r => r.chapter && r.chapter.includes(relTimeFilter));
   }, [editing, relTimeFilter]);
 
+  // 默认（editing 为空且 view 是 detail）只展示角色列表，铺满整页；
+  // 用户点击某个角色 或 切到 全局图谱 view → 列表收窄为 leftPanel.size，
+  // 右边展开 详情 / 图谱。
+  const showDetailColumn = editing !== null || rightView === "graph";
+
   return (
     <div className="page-full">
       {showNamer && <NameGeneratorModal onClose={() => setShowNamer(false)} />}
       <div className="panel-layout">
         {/* ======== LEFT PANEL: Character List ======== */}
-        <div className="panel" style={{ width: leftPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)" }}>
+        <div className="panel" style={{
+          width: showDetailColumn ? leftPanel.size : "100%",
+          flex: showDetailColumn ? "0 0 auto" : "1 1 auto",
+          flexShrink: 0,
+          background: "var(--bg-surface)",
+          borderRight: showDetailColumn ? "1px solid var(--border)" : "none",
+        }}>
           <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
             <div className="flex items-center justify-between">
               <h3>角色卡</h3>
@@ -790,11 +801,17 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   <div
                     className="char-avatar"
                     style={{
-                      background: c.role === "主角" ? "var(--accent-subtle)" : c.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)",
+                      background: (c as any).avatar_url ? "var(--bg-secondary)"
+                        : c.role === "主角" ? "var(--accent-subtle)"
+                        : c.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)",
                       color: c.role === "主角" ? "var(--accent)" : c.role === "反派" ? "var(--purple)" : "var(--jade)",
+                      overflow: "hidden",
                     }}
                   >
-                    {c.name.charAt(0)}
+                    {(c as any).avatar_url ? (
+                      <img src={(c as any).avatar_url} alt={c.name}
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ) : c.name.charAt(0)}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="truncate" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
@@ -818,10 +835,13 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
           </div>
         </div>
 
-        {/* Resize handle */}
-        <div className="panel-resize-h" {...leftPanel.handleProps} />
+        {/* Resize handle — only when the detail column is open. */}
+        {showDetailColumn && <div className="panel-resize-h" {...leftPanel.handleProps} />}
 
-        {/* ======== RIGHT PANEL ======== */}
+        {/* ======== RIGHT PANEL — rendered only after the user picks
+            a character or switches to the global graph view. ======== */}
+        {showDetailColumn && (
+        <>
         <div className="panel flex-1" style={{ background: "var(--bg-app)", overflowY: rightView === "graph" ? "hidden" : "auto" }}>
           {rightView === "graph" ? (
             /* ======== GLOBAL RELATIONSHIP GRAPH (full column) ======== */
@@ -1049,6 +1069,12 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
               <div className="card mb-20">
                 <div className="card-header"><h3>角色固定属性</h3><span className="text-xs text-muted">不随时间/章节变化</span></div>
                 <div className="card-body">
+                  {/* Avatar — upload or AI generate (placeholder for now). */}
+                  <CharacterAvatarField
+                    character={editing}
+                    onChange={(url) => u("avatar_url" as any, url)}
+                    toast={toast}
+                  />
                   {/* A) 姓名, 性别, 年龄 (Not Null) */}
                   <div className="flex gap-12 mb-12" style={{ flexWrap: "wrap" }}>
                     <div className="field" style={{ flex: 2, minWidth: 120 }}>
@@ -1690,6 +1716,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
             </div>
           )}
         </div>
+        </>
+        )}
       </div>
     </div>
   );
@@ -2405,18 +2433,44 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
             );
           })}
 
-          {/* Character nodes */}
+          {/* Character nodes — when an avatar_url is present the node
+              renders the image clipped to a circle; otherwise we fall
+              back to the legacy 颜色 + name text. */}
           {characters.map(c => {
             const pos = positions[c.id];
             if (!pos) return null;
             const r = nodeR(c.name);
             const fillColor = c.role === "主角" ? "var(--accent-subtle)" : c.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)";
+            const avatar = (c as any).avatar_url as string | undefined;
+            const clipId = `clip-${c.id}`;
             return (
               <g key={c.id} style={{ cursor: "pointer" }} onClick={() => onSelectCharacter(c.id)}>
-                <circle cx={pos.x} cy={pos.y} r={r} fill={fillColor} stroke="var(--border-hover)" strokeWidth={1.5} />
-                <text x={pos.x} y={pos.y + 5} textAnchor="middle" fontSize={12} fontWeight={500} fill="var(--text-primary)">
-                  {c.name}
-                </text>
+                {avatar ? (
+                  <>
+                    <defs>
+                      <clipPath id={clipId}>
+                        <circle cx={pos.x} cy={pos.y} r={r} />
+                      </clipPath>
+                    </defs>
+                    <image href={avatar} x={pos.x - r} y={pos.y - r}
+                      width={r * 2} height={r * 2}
+                      preserveAspectRatio="xMidYMid slice"
+                      clipPath={`url(#${clipId})`} />
+                    <circle cx={pos.x} cy={pos.y} r={r}
+                      fill="none" stroke="var(--border-hover)" strokeWidth={1.5} />
+                    <text x={pos.x} y={pos.y + r + 12} textAnchor="middle"
+                      fontSize={11} fontWeight={600} fill="var(--text-primary)">
+                      {c.name}
+                    </text>
+                  </>
+                ) : (
+                  <>
+                    <circle cx={pos.x} cy={pos.y} r={r} fill={fillColor} stroke="var(--border-hover)" strokeWidth={1.5} />
+                    <text x={pos.x} y={pos.y + 5} textAnchor="middle" fontSize={12} fontWeight={500} fill="var(--text-primary)">
+                      {c.name}
+                    </text>
+                  </>
+                )}
               </g>
             );
           })}
@@ -2545,6 +2599,128 @@ function ParamSlider({
         onChange={e => onChange(+e.target.value)}
       />
       <span className="param-value">{value.toFixed(step < 1 ? 2 : 0)}</span>
+    </div>
+  );
+}
+
+
+/* ── CharacterAvatarField ──
+ * 圆形头像 + 上传/生成/移除 三个按钮。上传走 multipart POST 到
+ * /api/data/characters/{id}/avatar；生成目前是 placeholder（toast
+ * 提示 "敬请期待"），后续会接 AI 出图服务。移除会调 DELETE 同路径并
+ * 把 avatar_url 清空，角色卡列表 / 详情 / 全局图谱 fall back 回 文字
+ * 头像（首字 + role 色调）。 */
+function CharacterAvatarField({ character, onChange, toast }: {
+  character: Character;
+  onChange: (url: string) => void;
+  toast: (m: string, t?: any) => void;
+}) {
+  const fileRef = React.useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = React.useState(false);
+
+  const onPickFile = () => fileRef.current?.click();
+
+  const onFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const id = character.id;
+    if (!id) {
+      toast("请先保存角色后再上传头像", "info");
+      return;
+    }
+    if (f.size > 5 * 1024 * 1024) {
+      toast("图片过大（>5MB），请压缩后再上传", "error");
+      return;
+    }
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", f);
+      const res = await fetch(`/api/data/characters/${id}/avatar`, {
+        method: "POST", body: form,
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(t || `上传失败 (${res.status})`);
+      }
+      const data = await res.json();
+      // Cache-bust so the new image loads immediately even though the
+      // URL string didn't change.
+      onChange(`${data.avatar_url}?t=${Date.now()}`);
+      toast("头像已上传", "success");
+    } catch (err: any) {
+      toast(err?.message || "上传失败", "error");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const onRemove = async () => {
+    if (!character.id) return;
+    try {
+      const res = await fetch(`/api/data/characters/${character.id}/avatar`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
+      onChange("");
+      toast("头像已移除", "success");
+    } catch (err: any) {
+      toast(err?.message || "移除失败", "error");
+    }
+  };
+
+  const onGenerate = () => {
+    toast("AI 头像生成功能正在开发中", "info");
+  };
+
+  const avatarUrl = (character as any).avatar_url;
+  const initial = (character.name || "?").charAt(0);
+  const roleBg = character.role === "主角" ? "var(--accent-subtle)"
+    : character.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)";
+  const roleFg = character.role === "主角" ? "var(--accent)"
+    : character.role === "反派" ? "var(--purple)" : "var(--jade)";
+
+  return (
+    <div className="field mb-12" style={{ display: "flex", alignItems: "center", gap: 14 }}>
+      <div style={{
+        width: 72, height: 72, borderRadius: "50%",
+        background: avatarUrl ? "var(--bg-secondary)" : roleBg,
+        color: roleFg,
+        border: "1px solid var(--border)",
+        overflow: "hidden", flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: 28, fontWeight: 700,
+      }}>
+        {avatarUrl ? (
+          <img src={avatarUrl} alt={character.name}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        ) : initial}
+      </div>
+      <div style={{ flex: 1 }}>
+        <label className="label">头像</label>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif"
+            style={{ display: "none" }} onChange={onFileSelected} />
+          <button className="btn" style={{ fontSize: 11, padding: "5px 12px" }}
+            onClick={onPickFile} disabled={uploading}>
+            {uploading ? "上传中..." : (avatarUrl ? "更换图片" : "上传图片")}
+          </button>
+          <button className="btn" style={{ fontSize: 11, padding: "5px 12px" }}
+            onClick={onGenerate} title="即将上线 — AI 头像生成">
+            AI 生成
+          </button>
+          {avatarUrl && (
+            <button className="btn" style={{
+              fontSize: 11, padding: "5px 12px",
+              color: "var(--error)", borderColor: "var(--error)",
+            }} onClick={onRemove}>
+              × 移除
+            </button>
+          )}
+        </div>
+        <div className="text-xs text-muted" style={{ marginTop: 4 }}>
+          PNG / JPG / WebP / GIF · 上限 5MB
+        </div>
+      </div>
     </div>
   );
 }

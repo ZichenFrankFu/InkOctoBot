@@ -248,6 +248,22 @@ body {
   opacity: 1;
 }
 
+/* Collapsed sidebar — shrink horizontal padding so the rail is just a
+ * hair wider than the icon, per the user's request for "比符号略宽一
+ * 点点". The icon stays centered via the inline justifyContent: center
+ * applied in App.tsx. */
+.sidebar.collapsed .nav-btn {
+  padding: 9px 2px;
+  gap: 0;
+}
+.sidebar.collapsed .nav-btn .nav-icon {
+  width: 100%;
+  margin: 0;
+}
+.sidebar.collapsed .sidebar-section-label {
+  display: none;
+}
+
 .sidebar-footer {
   padding: 14px 16px;
   border-top: 1px solid var(--border);

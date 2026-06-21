@@ -154,6 +154,11 @@ export interface Character {
   layer_b?: CharacterLayerB;
   relationships?: CharacterRelationship[];
   dynamic_snapshots?: DynamicPropertySnapshot[];
+  /** Avatar image (uploaded or AI-generated). Path returned by the
+   *  upload endpoint, fetchable via the same path. Used as the avatar
+   *  in 角色卡 list / 详情 / 全局关系图谱 nodes. Empty / undefined =
+   *  fall back to the colored 文字头像 (first character of name). */
+  avatar_url?: string;
 }
 
 export interface CharacterLayerB {
