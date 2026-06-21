@@ -1556,7 +1556,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               allChapters={volumes.flatMap(v => (v.chapters || []).map(c => ({ id: c.id, title: c.title })))}
               onUpdateChapter={(field, value) => {
                 setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
-              }} />}
+              }}
+              onNavigate={onNavigate} />}
             {(aiTab === "single" || aiTab === "cluster") && <InspireTab mode={aiTab} steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
               paused={pipelinePaused} onPauseResume={handlePauseResume} projectId={projectId} chapterId={activeChId} chapterNum={chapterNum}
@@ -1676,14 +1677,40 @@ function PickRow({ label, sub, on, color, onClick }: {
   );
 }
 
-function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, onUpdateChapter, allChapters }: {
+function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, onUpdateChapter, allChapters, onNavigate }: {
   synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; projectId: string;
   chapter?: ChapterOutline | null; onUpdateChapter?: (field: string, value: any) => void;
   allChapters?: { id: string; title: string }[];
+  onNavigate?: (tab: string) => void;
 }) {
   const { toast } = useToast();
   const [time, setTime] = useState(chapter?.time || "");
   const [location, setLocation] = useState(chapter?.location || "");
+
+  // ── 编辑器关联区只读 + 自动同步到 故事线 ──
+  // 关联角色 / 参考作品 / 灵感 / 伏笔 / 时间 / 地点 的源头都已迁到
+  // 故事线 page；编辑器只展示当前章节的快照，并提供一键跳转。
+  // 用户点击任一只读 chip → 跳转 故事线 page 修改。
+  const READONLY = true;
+  const goEditInStoryline = useCallback(() => {
+    if (onNavigate) onNavigate("storyline");
+    else toast("请打开 故事线 page 修改", "info");
+  }, [onNavigate, toast]);
+
+  // 章节剧情大纲 debounced 自动保存（1.5s 静止后写回 editor → 同步
+  // 进 故事线 章节大纲）。
+  const lastSavedSynRef = useRef(synopsis);
+  const onSaveRef = useRef(onSave);
+  useEffect(() => { onSaveRef.current = onSave; }, [onSave]);
+  useEffect(() => { lastSavedSynRef.current = synopsis; }, [chapter?.id]);
+  useEffect(() => {
+    if (synopsis === lastSavedSynRef.current) return;
+    const t = setTimeout(() => {
+      onSaveRef.current();
+      lastSavedSynRef.current = synopsis;
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [synopsis]);
 
   // Sync when chapter changes (user switches active chapter)
   useEffect(() => {
@@ -1717,21 +1744,30 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
     return () => clearTimeout(t);
   }, [foreshadow, projectId]);
 
-  const addForeshadow = () => setForeshadow(prev => [
-    { id: `fs_${Date.now()}`, title: "新伏笔", content: "",
-      chapter_ids: chapter?.id ? [chapter.id] : [] },
-    ...prev,
-  ]);
-  const updateForeshadow = (id: string, patch: Partial<{ title: string; content: string }>) =>
+  const addForeshadow = () => {
+    if (READONLY) { goEditInStoryline(); return; }
+    setForeshadow(prev => [
+      { id: `fs_${Date.now()}`, title: "新伏笔", content: "",
+        chapter_ids: chapter?.id ? [chapter.id] : [] },
+      ...prev,
+    ]);
+  };
+  const updateForeshadow = (id: string, patch: Partial<{ title: string; content: string }>) => {
+    if (READONLY) { goEditInStoryline(); return; }
     setForeshadow(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
-  const deleteForeshadow = (id: string) =>
+  };
+  const deleteForeshadow = (id: string) => {
+    if (READONLY) { goEditInStoryline(); return; }
     setForeshadow(prev => prev.filter(f => f.id !== id));
-  const toggleFsChapter = (id: string, chId: string) =>
+  };
+  const toggleFsChapter = (id: string, chId: string) => {
+    if (READONLY) { goEditInStoryline(); return; }
     setForeshadow(prev => prev.map(f => {
       if (f.id !== id) return f;
       const has = f.chapter_ids.includes(chId);
       return { ...f, chapter_ids: has ? f.chapter_ids.filter(x => x !== chId) : [...f.chapter_ids, chId] };
     }));
+  };
   const [refSearch, setRefSearch] = useState("");
   const [eventSearch, setEventSearch] = useState("");
   const [inspSearch, setInspSearch] = useState("");
@@ -1856,6 +1892,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   }, [projectId, chapter?.id]);
 
   const toggleChar = (id: string) => {
+    if (READONLY) { goEditInStoryline(); return; }
     setCharacters(prev => {
       const next = prev.map(c => c.id === id ? { ...c, selected: !c.selected } : c);
       const selectedNames = next.filter(c => c.selected).map(c => c.name);
@@ -1869,11 +1906,11 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
     refEvents.some(e => e.ref_id === refId && e.name === name);
 
   const toggleRef = (id: string) => {
+    if (READONLY) { goEditInStoryline(); return; }
     setReferences(prev => {
       const next = prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r);
       const selectedIds = next.filter(r => r.selected).map(r => r.id);
       onUpdateChapter?.("references", selectedIds);
-      // Unlinking a work drops the chronicle events linked from it.
       const stillSel = new Set(selectedIds);
       const pruned = refEvents.filter(e => stillSel.has(e.ref_id));
       if (pruned.length !== refEvents.length) onUpdateChapter?.("referenced_events", pruned);
@@ -1881,12 +1918,14 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
     });
   };
   const toggleEvent = (refId: string, workTitle: string, ev: { name: string; description: string; chapter: string }) => {
+    if (READONLY) { goEditInStoryline(); return; }
     const next = isEventLinked(refId, ev.name)
       ? refEvents.filter(e => !(e.ref_id === refId && e.name === ev.name))
       : [...refEvents, { ref_id: refId, work_title: workTitle, name: ev.name, description: ev.description, chapter: ev.chapter }];
     onUpdateChapter?.("referenced_events", next);
   };
   const toggleInspiration = (it: { id: string; category: string; title: string; content: string }) => {
+    if (READONLY) { goEditInStoryline(); return; }
     const next = refInsps.some(i => i.id === it.id)
       ? refInsps.filter(i => i.id !== it.id)
       : [...refInsps, it];
@@ -2028,12 +2067,33 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       </div>
       )}
 
+      {/* ─── READ-ONLY ZONE ─── 关联角色 / 参考作品 / 灵感 / 伏笔 /
+          时间 / 地点 全部只读；任何 chip/输入交互一律跳转 故事线 page。
+          只有 上方 的 章节剧情大纲 / AI 大纲助手 仍可编辑。修改后
+          1.5s 自动同步到 故事线 章节大纲。 */}
+      <div style={{
+        marginTop: 10, padding: "6px 10px",
+        background: "var(--bg-surface-2)",
+        border: "1px dashed var(--border)", borderRadius: "var(--radius-sm)",
+        fontSize: 11, color: "var(--text-secondary)",
+        display: "flex", alignItems: "center", gap: 8,
+      }}>
+        <span style={{ flex: 1 }}>
+          以下关联信息只读；修改请到 <strong>故事线</strong> page。
+        </span>
+        <button className="btn-primary" style={{ fontSize: 11, padding: "3px 12px" }}
+          onClick={goEditInStoryline}>
+          打开 故事线 →
+        </button>
+      </div>
+
       {/* 关联角色 — cohesive collapsible section (header attached to panel) */}
       <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
         <button className="btn-ghost" onClick={() => setShowCharLink(v => !v)}
           style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
             background: showCharLink ? "var(--bg-surface-2)" : "transparent" }}>
           {showCharLink ? "▾ " : "▸ "}关联角色{selectedChars.length > 0 ? ` · 已选 ${selectedChars.length}` : ""}
+          <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
         </button>
         {showCharLink && (
           <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
@@ -2056,6 +2116,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
                         <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                           <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--purple-subtle)", color: "var(--purple)", whiteSpace: "nowrap" }}>{c.name}</span>
                           <input className="input" value={alias}
+                            readOnly={READONLY} onClick={READONLY ? goEditInStoryline : undefined}
                             onChange={e => {
                               const next = { ...(chapter?.character_aliases || {}) };
                               if (e.target.value.trim()) next[c.name] = e.target.value;
@@ -2063,7 +2124,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
                               onUpdateChapter?.("character_aliases", next);
                             }}
                             placeholder="隐藏身份（如：神秘女人）"
-                            style={{ flex: 1, fontSize: 10, padding: "2px 8px", height: 22 }} />
+                            style={{ flex: 1, fontSize: 10, padding: "2px 8px", height: 22, cursor: READONLY ? "pointer" : "text" }} />
                         </div>
                       );
                     })}
@@ -2083,6 +2144,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
             background: showRefLink ? "var(--bg-surface-2)" : "transparent" }}>
           {showRefLink ? "▾ " : "▸ "}关联参考作品{references.length > 0 ? ` · 已选 ${selectedRefs.length}/${references.length}` : ""}
+          <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
         </button>
         {showRefLink && (
           <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
@@ -2150,6 +2212,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
             background: showInspLink ? "var(--bg-surface-2)" : "transparent" }}>
           {showInspLink ? "▾ " : "▸ "}关联灵感{inspirations.length > 0 ? ` · 已选 ${refInsps.length}/${inspirations.length}` : ""}
+          <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
         </button>
         {showInspLink && (
           <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
@@ -2183,12 +2246,15 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
             background: showForeshadow ? "var(--bg-surface-2)" : "transparent" }}>
           {showForeshadow ? "▾ " : "▸ "}伏笔{foreshadow.length > 0 ? ` · ${foreshadow.length}` : ""}
+          <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
         </button>
         {showForeshadow && (
           <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 12px", marginBottom: 8 }} onClick={addForeshadow}>
-              + 新建伏笔
-            </button>
+            {!READONLY && (
+              <button className="btn" style={{ fontSize: 11, padding: "3px 12px", marginBottom: 8 }} onClick={addForeshadow}>
+                + 新建伏笔
+              </button>
+            )}
             {foreshadow.length === 0 ? (
               <div className="text-xs text-muted">暂无伏笔。新建后可关联多个章节——任一关联章节生成时都会带上该伏笔。</div>
             ) : (
@@ -2197,16 +2263,16 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
                   <div key={f.id} style={{ border: "1px solid var(--border)", borderRadius: 4, padding: 8 }}>
                     <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
                       <input className="input" value={f.title}
+                        readOnly={READONLY} onClick={READONLY ? goEditInStoryline : undefined}
                         onChange={e => updateForeshadow(f.id, { title: e.target.value })}
-                        placeholder="伏笔标题" style={{ flex: 1, fontSize: 12, padding: "3px 8px" }} />
-                      <button onClick={() => deleteForeshadow(f.id)}
-                        style={{ background: "none", border: "none", color: "var(--text-disabled)", cursor: "pointer", fontSize: 15 }}
-                        title="删除伏笔">&times;</button>
+                        placeholder="伏笔标题"
+                        style={{ flex: 1, fontSize: 12, padding: "3px 8px", cursor: READONLY ? "pointer" : "text" }} />
                     </div>
                     <textarea className="input" value={f.content}
+                      readOnly={READONLY} onClick={READONLY ? goEditInStoryline : undefined}
                       onChange={e => updateForeshadow(f.id, { content: e.target.value })}
                       placeholder="伏笔内容（埋设了什么、计划如何回收）" rows={2}
-                      style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", marginBottom: 4, boxSizing: "border-box" }} />
+                      style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", marginBottom: 4, boxSizing: "border-box", cursor: READONLY ? "pointer" : "text" }} />
                     <div className="text-xs text-muted" style={{ marginBottom: 3 }}>关联章节（点击切换；关联为双向）：</div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                       {(allChapters || []).map(ch => {
@@ -2237,12 +2303,26 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
 
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <div className="field" style={{ flex: 1 }}>
-          <label className="label">时间</label>
-          <input className="input" value={time} onChange={e => { setTime(e.target.value); onUpdateChapter?.("time", e.target.value); }} placeholder="例：第3天·黄昏" style={{ fontSize: 12 }} />
+          <label className="label">
+            时间
+            <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
+          </label>
+          <input className="input" value={time}
+            readOnly={READONLY} onClick={READONLY ? goEditInStoryline : undefined}
+            onChange={e => { setTime(e.target.value); onUpdateChapter?.("time", e.target.value); }}
+            placeholder="例：第3天·黄昏"
+            style={{ fontSize: 12, cursor: READONLY ? "pointer" : "text" }} />
         </div>
         <div className="field" style={{ flex: 1 }}>
-          <label className="label">地点</label>
-          <input className="input" value={location} onChange={e => { setLocation(e.target.value); onUpdateChapter?.("location", e.target.value); }} placeholder="例：云隐山·剑庐" style={{ fontSize: 12 }} />
+          <label className="label">
+            地点
+            <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
+          </label>
+          <input className="input" value={location}
+            readOnly={READONLY} onClick={READONLY ? goEditInStoryline : undefined}
+            onChange={e => { setLocation(e.target.value); onUpdateChapter?.("location", e.target.value); }}
+            placeholder="例：云隐山·剑庐"
+            style={{ fontSize: 12, cursor: READONLY ? "pointer" : "text" }} />
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
@@ -2278,26 +2358,43 @@ function formatSkillsUsed(skills?: string[]): string {
     : "本次创作未启用自定义技能";
 }
 
+/** Look up the actual prompt section whose `## title` *contains* one of
+ *  the candidate substrings. The 后端 loaders嵌的标题里常带括号补充
+ *  («参考作品综合», «相关灵感（用户灵感库）», «Storyland 客观状态
+ *  （截至第 N 章）» 等），所以严格相等匹配会全部 miss。 */
+const sectionMatch = (sections: Map<string, string>, candidates: string[]): string => {
+  for (const [title, body] of sections) {
+    for (const c of candidates) {
+      if (title === c || title.includes(c)) return body;
+    }
+  }
+  return "";
+};
+
 /** Sections expected by the prompt template — used by RAG预览 to surface
  *  which loaders actually injected content into the rendered prompt. Mirrors
  *  the canonical list from components/shared/PromptInspector.tsx. */
-const RAG_PREVIEW_SECTIONS: { title: string; source: string }[] = [
-  { title: "用户特别要求", source: "user_special_requirements" },
-  { title: "本章大纲",     source: "chapter_outline" },
-  { title: "时间与地点",   source: "time_location" },
-  { title: "本章出场角色", source: "characters_block" },
-  { title: "出场角色档案", source: "character_cards" },
-  { title: "世界观设定",   source: "worldbook" },
-  { title: "关联参考",     source: "reference" },
-  { title: "用户写作偏好", source: "user_preferences" },
-  { title: "未回收伏笔",   source: "foreshadowing" },
-  { title: "故事线",       source: "subplots" },
-  { title: "相关灵感",     source: "inspiration" },
-  { title: "客观状态",     source: "storyland_state" },
-  { title: "读者视角记忆", source: "reader_memory" },
-  { title: "已有正文",     source: "existing_content / current_chapter_draft" },
-  { title: "创作技能",     source: "skills" },
-  { title: "平台风格",     source: "platform_directive" },
+/** RAG 预览 section list — title 显示给用户看；matches 列出会出现在
+ *  实际渲染 prompt `## …` 标题里的子串。匹配时只要任一 substring 命中
+ *  就算注入成功，避免 loader 标题后缀（括号补充、章号、源标记）让前
+ *  端误判为「未注入」。 */
+const RAG_PREVIEW_SECTIONS: { title: string; source: string; matches: string[] }[] = [
+  { title: "用户特别要求", source: "user_special_requirements", matches: ["用户特别要求"] },
+  { title: "本章大纲",     source: "chapter_outline",           matches: ["本章大纲"] },
+  { title: "时间与地点",   source: "time_location",             matches: ["时间与地点"] },
+  { title: "本章出场角色", source: "characters_block",          matches: ["本章出场角色", "出场角色"] },
+  { title: "出场角色档案", source: "character_cards",           matches: ["出场角色档案", "角色档案"] },
+  { title: "世界观设定",   source: "worldbook",                 matches: ["世界观设定", "世界书"] },
+  { title: "关联参考作品", source: "reference",                 matches: ["参考作品综合", "关联参考", "参考作品"] },
+  { title: "用户写作偏好", source: "user_preferences",          matches: ["用户写作偏好"] },
+  { title: "关联伏笔",     source: "foreshadowing",             matches: ["关联伏笔", "伏笔"] },
+  { title: "当前涉及的故事线", source: "subplots",              matches: ["当前涉及的故事线", "故事线"] },
+  { title: "相关灵感",     source: "inspiration",               matches: ["相关灵感", "灵感库"] },
+  { title: "Storyland 客观状态", source: "storyland_state",     matches: ["Storyland 客观状态", "客观状态", "storyland"] },
+  { title: "读者视角记忆", source: "reader_memory",             matches: ["读者视角记忆"] },
+  { title: "已有正文",     source: "existing_content / current_chapter_draft", matches: ["已有正文", "正文草稿", "前几章正文"] },
+  { title: "创作技能",     source: "skills",                    matches: ["创作技能", "技能"] },
+  { title: "平台风格",     source: "platform_directive",        matches: ["平台风格", "平台指令"] },
 ];
 
 /** Parse a rendered prompt into `## title` → body sections. Heuristic-based;
@@ -2365,7 +2462,9 @@ function LoaderInjectionPreview({ projectId, chapterId, chapterNum }: {
   };
 
   const sections = parsePromptSections(prompt);
-  const filled = RAG_PREVIEW_SECTIONS.filter(s => (sections.get(s.title) || "").trim().length > 0).length;
+  const filled = RAG_PREVIEW_SECTIONS.filter(
+    s => sectionMatch(sections, s.matches).trim().length > 0,
+  ).length;
 
   return (
     <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}>
@@ -2410,7 +2509,7 @@ function LoaderInjectionPreview({ projectId, chapterId, chapterNum }: {
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 3 }}>
               {RAG_PREVIEW_SECTIONS.map(expected => {
-                const body = (sections.get(expected.title) || "").trim();
+                const body = sectionMatch(sections, expected.matches).trim();
                 const present = body.length > 0;
                 return (
                   <details key={expected.title} style={{

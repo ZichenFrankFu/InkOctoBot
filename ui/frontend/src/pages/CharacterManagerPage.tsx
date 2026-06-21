@@ -2682,48 +2682,56 @@ function CharacterAvatarField({ character, onChange, toast }: {
     : character.role === "反派" ? "var(--purple)" : "var(--jade)";
 
   return (
-    <div className="field mb-12" style={{ display: "flex", alignItems: "center", gap: 14 }}>
+    <div className="field mb-12">
+      {/* 「头像」标题文本居中：先放 label，再水平居中 avatar 圆 + 控件。*/}
+      <label className="label" style={{ display: "block", textAlign: "center", marginBottom: 8 }}>
+        头像
+      </label>
       <div style={{
-        width: 72, height: 72, borderRadius: "50%",
-        background: avatarUrl ? "var(--bg-secondary)" : roleBg,
-        color: roleFg,
-        border: "1px solid var(--border)",
-        overflow: "hidden", flexShrink: 0,
         display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 28, fontWeight: 700, lineHeight: 1,
-        userSelect: "none",
+        gap: 14, flexWrap: "wrap",
       }}>
-        {avatarUrl ? (
-          <img src={avatarUrl} alt={character.name}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        ) : (
-          <span style={{ lineHeight: 1, display: "inline-block" }}>{initial}</span>
-        )}
-      </div>
-      <div style={{ flex: 1 }}>
-        <label className="label">头像</label>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif"
-            style={{ display: "none" }} onChange={onFileSelected} />
-          <button className="btn" style={{ fontSize: 11, padding: "5px 12px" }}
-            onClick={onPickFile} disabled={uploading}>
-            {uploading ? "上传中..." : (avatarUrl ? "更换图片" : "上传图片")}
-          </button>
-          <button className="btn" style={{ fontSize: 11, padding: "5px 12px" }}
-            onClick={onGenerate} title="即将上线 — AI 头像生成">
-            AI 生成
-          </button>
-          {avatarUrl && (
-            <button className="btn" style={{
-              fontSize: 11, padding: "5px 12px",
-              color: "var(--error)", borderColor: "var(--error)",
-            }} onClick={onRemove}>
-              × 移除
-            </button>
+        <div style={{
+          width: 72, height: 72, borderRadius: "50%",
+          background: avatarUrl ? "var(--bg-secondary)" : roleBg,
+          color: roleFg,
+          border: "1px solid var(--border)",
+          overflow: "hidden", flexShrink: 0,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 28, fontWeight: 700, lineHeight: 1,
+          userSelect: "none",
+        }}>
+          {avatarUrl ? (
+            <img src={avatarUrl} alt={character.name}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          ) : (
+            <span style={{ lineHeight: 1, display: "inline-block" }}>{initial}</span>
           )}
         </div>
-        <div className="text-xs text-muted" style={{ marginTop: 4 }}>
-          PNG / JPG / WebP / GIF · 上限 5MB
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif"
+              style={{ display: "none" }} onChange={onFileSelected} />
+            <button className="btn" style={{ fontSize: 11, padding: "5px 12px" }}
+              onClick={onPickFile} disabled={uploading}>
+              {uploading ? "上传中..." : (avatarUrl ? "更换图片" : "上传图片")}
+            </button>
+            <button className="btn" style={{ fontSize: 11, padding: "5px 12px" }}
+              onClick={onGenerate} title="即将上线 — AI 头像生成">
+              AI 生成
+            </button>
+            {avatarUrl && (
+              <button className="btn" style={{
+                fontSize: 11, padding: "5px 12px",
+                color: "var(--error)", borderColor: "var(--error)",
+              }} onClick={onRemove}>
+                × 移除
+              </button>
+            )}
+          </div>
+          <div className="text-xs text-muted">
+            PNG / JPG / WebP / GIF · 上限 5MB
+          </div>
         </div>
       </div>
     </div>
