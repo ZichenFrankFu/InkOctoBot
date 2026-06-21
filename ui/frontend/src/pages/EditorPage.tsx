@@ -1545,7 +1545,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 面板">&#9654;</button>
           </div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
-            {([["outline", "大纲"], ["single", "单智能体创作"], ["cluster", "集群式智能体创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
+            {([["outline", "RAG"], ["single", "单智能体创作"], ["cluster", "集群式智能体创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
             ))}
           </div>
@@ -1553,6 +1553,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             {aiTab === "outline" && <OutlineTab synopsis={activeCh?.synopsis || ""} onChange={updateSynopsis} onSave={handleSaveOutline}
               onStartGeneration={() => { setAiTab("single"); setTimeout(() => { if (!generating) runPlainAgent(); }, 300); }} projectId={projectId}
               chapter={activeCh}
+              chapterNum={chapterNum}
               allChapters={volumes.flatMap(v => (v.chapters || []).map(c => ({ id: c.id, title: c.title })))}
               onUpdateChapter={(field, value) => {
                 setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
@@ -1725,9 +1726,10 @@ function PickRow({ label, sub, on, color, onClick }: {
   );
 }
 
-function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, onUpdateChapter, allChapters, onNavigate }: {
+function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, chapterNum, onUpdateChapter, allChapters, onNavigate }: {
   synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; projectId: string;
   chapter?: ChapterOutline | null; onUpdateChapter?: (field: string, value: any) => void;
+  chapterNum?: number;
   allChapters?: { id: string; title: string }[];
   onNavigate?: (tab: string) => void;
 }) {
@@ -2118,35 +2120,28 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       {/* ─── READ-ONLY ZONE ─── 关联角色 / 参考作品 / 灵感 / 伏笔 /
           时间 / 地点 全部只读且全部展开；编辑请到 故事线 page。
           剧情大纲 1.5s 静止后自动同步到 故事线 章节大纲。 */}
-      {/* 引导横幅 — 卡片化设计，左侧 icon + 双行说明 + 右侧 CTA。 */}
+      {/* 引导横幅 — 单行紧凑设计：左 ↗ + 一行说明 + 右 CTA。 */}
       <div style={{
-        marginTop: 12, padding: "12px 14px",
-        background: "linear-gradient(135deg, var(--accent-subtle) 0%, var(--bg-surface-2) 100%)",
+        marginTop: 12, padding: "8px 12px",
+        background: "var(--accent-subtle)",
         border: "1px solid var(--accent)",
-        borderRadius: 10,
-        display: "flex", alignItems: "center", gap: 12,
-        boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+        borderRadius: 8,
+        display: "flex", alignItems: "center", gap: 10,
+        fontSize: 11.5,
       }}>
-        <div style={{
-          width: 36, height: 36, borderRadius: 10,
-          background: "var(--accent)", color: "#fff",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 18, fontWeight: 700, flexShrink: 0, lineHeight: 1,
-        }}>↗</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text-primary)", marginBottom: 2 }}>
-            关联信息已迁至 故事线 page
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-            下方 角色 / 参考作品 / 灵感 / 伏笔 / 时间 / 地点 仅展示；点击右侧按钮跳转到 故事线 编辑。
-          </div>
-        </div>
+        <span style={{
+          fontSize: 12, fontWeight: 700, color: "var(--accent)",
+          lineHeight: 1, flexShrink: 0,
+        }}>↗</span>
+        <span style={{ flex: 1, color: "var(--text-secondary)" }}>
+          关联信息只读 — 编辑请至 <strong style={{ color: "var(--text-primary)" }}>故事线</strong>
+        </span>
         <button className="btn-primary" onClick={goEditInStoryline}
           style={{
-            fontSize: 12, padding: "8px 16px", whiteSpace: "nowrap",
+            fontSize: 11, padding: "4px 12px", whiteSpace: "nowrap",
             fontWeight: 600, flexShrink: 0,
           }}>
-          打开 故事线 →
+          打开
         </button>
       </div>
 
@@ -2280,13 +2275,18 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
           </ReadOnlyEditorSection>
         </div>
       </div>
+      {/* 所有 RAG loader 的实时内容 — 每个 loader 默认收起，点击展开
+          查看 prompt 中实际注入的文本，方便用户在创作前自检上下文。 */}
+      {projectId && chapter?.id && (
+        <RAGLoaderList projectId={projectId}
+          chapterId={chapter.id}
+          chapterNum={chapterNum || 1} />
+      )}
+
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button className="btn-primary" style={{ flex: 1 }} onClick={onSave}>保存</button>
         <button className="btn-primary" style={{ flex: 1, background: "var(--jade, #34a853)", border: "none" }} onClick={onStartGeneration}>开始生成</button>
       </div>
-      <p className="text-xs text-muted mt-12" style={{ lineHeight: 1.6 }}>
-        用上方 AI 大纲助手与 AI 讨论大纲，满意后点击「写入大纲」。关联角色、参考作品的编年史事件与灵感库后，Pipeline 生成时 AI 将参考相关信息。
-      </p>
     </div>
   );
 }
@@ -2371,6 +2371,120 @@ function parsePromptSections(prompt: string): Map<string, string> {
   if (curTitle) out.set(curTitle, curBody);
   return out;
 }
+
+/** RAGLoaderList — RAG tab 的主要内容块。开局自动拉一次渲染后的
+ *  prompt，把 16 个 loader 的 `## …` 段落各自渲染成 collapsible details
+ *  (默认全部收起)；可以「刷新」重新拉。与旧 LoaderInjectionPreview 不
+ *  同：默认渲染、没有总折叠开关、视觉风格更接近主面板。 */
+function RAGLoaderList({ projectId, chapterId, chapterNum }: {
+  projectId: string; chapterId: string; chapterNum: number;
+}) {
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [loaded, setLoaded] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!projectId || !chapterId) return;
+    setLoading(true);
+    try {
+      const res = await apiPost<{ status: string; prompt: string }>(
+        "/api/generation/quick-generate",
+        { project_id: projectId, chapter_id: chapterId, chapter_num: chapterNum,
+          synopsis: "", characters: [], prompt_only: true },
+      );
+      setPrompt(res.prompt || "");
+      setLoaded(true);
+    } catch (e: any) {
+      toast(`获取 RAG 失败：${e?.message || ""}`, "error");
+    } finally { setLoading(false); }
+  }, [projectId, chapterId, chapterNum, toast]);
+
+  useEffect(() => {
+    setLoaded(false);
+    setPrompt("");
+    if (projectId && chapterId) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, chapterId, chapterNum]);
+
+  const sections = parsePromptSections(prompt);
+  const filled = RAG_PREVIEW_SECTIONS.filter(
+    s => sectionMatch(sections, s.matches).trim().length > 0,
+  ).length;
+
+  return (
+    <div style={{
+      marginTop: 16, padding: "12px 14px",
+      background: "var(--bg-surface)",
+      border: "1px solid var(--border)", borderRadius: 10,
+    }}>
+      <div style={{
+        display: "flex", alignItems: "baseline", gap: 8,
+        marginBottom: 10, paddingBottom: 8,
+        borderBottom: "1px solid var(--border-subtle)",
+      }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>
+          RAG 注入内容
+        </span>
+        <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+          · {loaded ? `${filled}/${RAG_PREVIEW_SECTIONS.length} 已注入 · ${prompt.length} 字` : "拉取中…"}
+        </span>
+        <span style={{ flex: 1 }} />
+        <button className="btn" style={{ fontSize: 11, padding: "3px 12px" }}
+          onClick={load} disabled={loading}
+          title="重新渲染当前章节的 RAG prompt">
+          {loading ? "刷新中..." : "刷新"}
+        </button>
+      </div>
+      {!loaded && loading ? (
+        <div className="text-xs text-muted" style={{ padding: "12px 0", textAlign: "center" }}>
+          正在渲染 RAG prompt...
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {RAG_PREVIEW_SECTIONS.map(expected => {
+            const body = sectionMatch(sections, expected.matches).trim();
+            const present = body.length > 0;
+            return (
+              <details key={expected.title} style={{
+                padding: "6px 10px",
+                background: present ? "var(--bg-surface-2)" : "transparent",
+                borderLeft: `3px solid ${present ? "var(--accent)" : "var(--border)"}`,
+                borderRadius: 4,
+              }}>
+                <summary style={{
+                  cursor: present ? "pointer" : "default",
+                  fontSize: 11.5,
+                  color: present ? "var(--text-primary)" : "var(--text-tertiary)",
+                  display: "flex", alignItems: "center", gap: 8,
+                }}>
+                  <strong>{expected.title}</strong>
+                  <span style={{ flex: 1 }} />
+                  <span style={{
+                    fontSize: 10, color: present ? "var(--accent)" : "var(--text-disabled)",
+                    fontWeight: 600,
+                  }}>
+                    {present ? `${body.length} 字` : "未注入"}
+                  </span>
+                </summary>
+                {present && (
+                  <pre style={{
+                    marginTop: 8, padding: 8, background: "var(--bg-app)",
+                    fontSize: 11, lineHeight: 1.6, fontFamily: "var(--font-mono)",
+                    color: "var(--text-secondary)",
+                    maxHeight: 280, overflow: "auto", borderRadius: 4,
+                    whiteSpace: "pre-wrap", wordBreak: "break-word",
+                  }}>{body}</pre>
+                )}
+              </details>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 /** RAG预览 loader-injection panel: fetches the rendered prompt on demand
  *  (prompt_only=true, no LLM call) and shows which of the 16 sections were
@@ -3052,15 +3166,19 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
       {/* Generation controls */}
       {!generating && !waitingForConfirm && (
         <div style={{ marginBottom: 6 }}>
-          <ContextPanel
-            manifest={manifest || null}
-            skillSelection={skillSelection || {}}
-            ragExcludes={ragExcludes || new Set()}
-            onToggleSkill={(n) => onToggleSkill?.(n)}
-            onToggleRagItem={(k) => onToggleRagItem?.(k)}
-            onRefresh={onRefreshManifest}
-            projectId={projectId} chapterId={chapterId} chapterNum={chapterNum}
-          />
+          {/* 单智能体 (single) 模式不再展示 调用的 skill / RAG 预览 /
+              Prompt 注入预览 — 这些已迁到 RAG tab，避免双份冗余。 */}
+          {mode === "cluster" && (
+            <ContextPanel
+              manifest={manifest || null}
+              skillSelection={skillSelection || {}}
+              ragExcludes={ragExcludes || new Set()}
+              onToggleSkill={(n) => onToggleSkill?.(n)}
+              onToggleRagItem={(k) => onToggleRagItem?.(k)}
+              onRefresh={onRefreshManifest}
+              projectId={projectId} chapterId={chapterId} chapterNum={chapterNum}
+            />
+          )}
           <CostEstimateBlock mode={mode} projectId={projectId} chapterId={chapterId} />
           {mode === "single" ? (
             <>

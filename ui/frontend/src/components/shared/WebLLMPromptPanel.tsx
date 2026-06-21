@@ -83,32 +83,80 @@ export default function WebLLMPromptPanel({
   };
 
   return (
-    <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+    <div style={{
+      border: "1px solid var(--border)",
+      borderRadius: 10,
+      overflow: "hidden",
+      background: open ? "var(--bg-surface)" : "transparent",
+      transition: "background 0.15s",
+    }}>
       <button
         onClick={toggle}
         style={{
-          width: "100%", display: "flex", alignItems: "center", gap: 6, padding: "6px 10px",
-          background: open ? "var(--bg-surface-2, var(--bg-surface))" : "transparent",
-          border: "none", borderBottom: open ? "1px solid var(--border)" : "none",
-          cursor: "pointer", fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", textAlign: "left",
+          width: "100%", display: "flex", alignItems: "center", gap: 8,
+          padding: "8px 12px",
+          background: open ? "var(--bg-surface-2)" : "transparent",
+          border: "none",
+          borderBottom: open ? "1px solid var(--border)" : "none",
+          cursor: "pointer", fontSize: 11.5, fontWeight: 600,
+          color: "var(--text-secondary)", textAlign: "left",
+          transition: "background 0.15s",
         }}
       >
-        <span style={{ fontSize: 9 }}>{open ? "▾" : "▸"}</span>
-        <span style={{ flex: 1 }}>{title || "AI prompt · 复制到网页 LLM / 解析返回结果"}</span>
+        <span style={{
+          width: 18, height: 18, borderRadius: 4,
+          background: open ? "var(--accent)" : "var(--bg-secondary)",
+          color: open ? "#fff" : "var(--text-tertiary)",
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          fontSize: 11, fontWeight: 700, flexShrink: 0,
+        }}>
+          {open ? "▾" : "▸"}
+        </span>
+        <span style={{ flex: 1 }}>
+          {title || "AI prompt · 复制到网页 LLM / 解析返回结果"}
+        </span>
       </button>
       {open && (
-        <div style={{ padding: 10, background: "var(--bg-surface)" }}>
-          <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-            <span className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)" }}>渲染后的 prompt</span>
-            <div className="flex gap-6">
-              <button className="btn" style={{ fontSize: 10, padding: "2px 8px" }} onClick={() => load()} disabled={loading}>
+        <div style={{ padding: 12, background: "var(--bg-surface)" }}>
+          {/* ━━━ 1. 渲染后的 prompt — 显示 + 复制 ━━━ */}
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            marginBottom: 8,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{
+                width: 20, height: 20, borderRadius: "50%",
+                background: "var(--accent-subtle)", color: "var(--accent)",
+                fontSize: 10, fontWeight: 700,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+              }}>1</span>
+              <span style={{
+                fontSize: 11.5, fontWeight: 600, color: "var(--text-primary)",
+              }}>渲染后的 prompt</span>
+              {loaded && prompt && (
+                <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                  · {prompt.length} 字
+                </span>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                className="btn"
+                style={{ fontSize: 10.5, padding: "3px 10px" }}
+                onClick={() => load()} disabled={loading}
+                title="重新拉取最新 prompt"
+              >
                 {loading ? "加载中..." : loaded ? "刷新" : "加载"}
               </button>
               <button
-                className="btn"
-                style={{ fontSize: 10, padding: "2px 8px" }}
+                className="btn-primary"
+                style={{ fontSize: 10.5, padding: "3px 12px" }}
                 disabled={!prompt}
-                onClick={async () => { await copyText(prompt); toast("已复制 prompt，可粘贴到网页 LLM", "success"); }}
+                onClick={async () => {
+                  await copyText(prompt);
+                  toast("已复制 prompt", "success");
+                }}
+                title="复制完整 prompt 到剪贴板"
               >
                 复制
               </button>
@@ -117,36 +165,60 @@ export default function WebLLMPromptPanel({
           <pre
             className="font-mono"
             style={{
-              margin: 0, padding: 8, fontSize: 11, lineHeight: 1.55,
-              background: "var(--bg-app)", borderRadius: 4, color: "var(--text-secondary)",
-              maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word",
+              margin: 0, padding: 10, fontSize: 11, lineHeight: 1.6,
+              background: "var(--bg-app)", borderRadius: 6,
+              border: "1px solid var(--border-subtle)",
+              color: "var(--text-secondary)",
+              maxHeight: 240, overflow: "auto",
+              whiteSpace: "pre-wrap", wordBreak: "break-word",
             }}
           >
             {loading && !loaded ? "加载中..." : (loaded ? (prompt || "（空）") : "点击「加载」生成 prompt")}
           </pre>
+          {/* ━━━ 2. 粘贴回 — 解析网页 LLM 返回的结果 ━━━ */}
           {onApplyResult && (
-            <div style={{ marginTop: 8 }}>
-              <div className="text-xs" style={{ fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
-                解析网页 LLM 返回结果
-              </div>
-              <textarea
-                className="input"
-                value={pasteText}
-                onChange={e => setPasteText(e.target.value)}
-                placeholder={resultPlaceholder || "把网页 LLM 返回的内容粘贴到这里"}
-                rows={4}
-                style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", lineHeight: 1.5, boxSizing: "border-box" }}
-              />
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+            <div style={{ marginTop: 12 }}>
+              <div style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                marginBottom: 6,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{
+                    width: 20, height: 20, borderRadius: "50%",
+                    background: "var(--jade-subtle)", color: "var(--jade)",
+                    fontSize: 10, fontWeight: 700,
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  }}>2</span>
+                  <span style={{
+                    fontSize: 11.5, fontWeight: 600, color: "var(--text-primary)",
+                  }}>解析网页 LLM 返回结果</span>
+                </div>
                 <button
                   className="btn-primary"
-                  style={{ fontSize: 10, padding: "3px 12px" }}
+                  style={{
+                    fontSize: 10.5, padding: "3px 14px",
+                    background: pasteText.trim() ? "var(--jade, #34a853)" : undefined,
+                    border: pasteText.trim() ? "none" : undefined,
+                  }}
                   disabled={!pasteText.trim()}
                   onClick={() => { onApplyResult(pasteText); setPasteText(""); }}
                 >
                   {applyLabel || "应用结果"}
                 </button>
               </div>
+              <textarea
+                className="input"
+                value={pasteText}
+                onChange={e => setPasteText(e.target.value)}
+                placeholder={resultPlaceholder || "把网页 LLM 返回的内容粘贴到这里"}
+                rows={5}
+                style={{
+                  width: "100%", fontSize: 11, padding: 10, lineHeight: 1.55,
+                  resize: "vertical", boxSizing: "border-box",
+                  border: "1px solid var(--border-subtle)", borderRadius: 6,
+                  background: "var(--bg-app)",
+                }}
+              />
             </div>
           )}
         </div>
