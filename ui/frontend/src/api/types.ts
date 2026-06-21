@@ -400,6 +400,15 @@ export interface StoryNode {
   hook_id?: string;
   thread_ids?: string[];
   hook_ids?: string[];
+  /** Per-情节 status w.r.t. each thread / hook the card belongs to.
+   *  Keys = thread_id / hook_id; values = status keys. Thread values:
+   *  "setup" | "building" | "resolution" (开启 / 推进 / 完结).
+   *  Hook values: "open" | "progressing" | "resolved" (埋设 / 推进 / 回收).
+   *  Missing key → defaults to "setup" / "open". A 情节 marking a hook
+   *  as "resolved" greys out only that card's chip — the global hook
+   *  stays active unless the user also fully-resolves in the 总览栏. */
+  thread_statuses?: Record<string, string>;
+  hook_statuses?: Record<string, string>;
 }
 
 export interface StoryEdge {
