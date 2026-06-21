@@ -2118,7 +2118,10 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
   onHighlight: (time: string | null) => void;
 }) {
   const STEP = 92;
-  const PAD = 24;
+  // PAD = inner-track horizontal padding. Bumped from 24 → 56 so the
+  // first / last tick labels (centered on their tick) don't get clipped
+  // by the scroll container's left edge before the user scrolls.
+  const PAD = 56;
   const trackInnerRef = React.useRef<HTMLDivElement>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const dragging = React.useRef(false);
@@ -2185,8 +2188,11 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
     panStart.current = null;
   };
 
-  const TIMELINE_H = 76;
-  const TRACK_Y = 50;
+  // 缩短轴高 + 把 track 推到上 1/3：原 (76, 50) → (68, 30)。这样
+  // 整条轴占用更少底部空间（视觉上「往上一些」），同时 track 下方
+  // 仍有 ~30px 给「第N章 · X 情节」副标签。
+  const TIMELINE_H = 68;
+  const TRACK_Y = 30;
   return (
     <div style={{
       height: TIMELINE_H, flexShrink: 0,
@@ -2255,15 +2261,24 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
               top: TRACK_Y, left: PAD, right: PAD, height: 2,
               background: "var(--border)", borderRadius: 1,
             }} />
-            {/* Time labels above the track */}
+            {/* Time labels above the track. First / last labels anchor
+                to the tick's left / right edge instead of centering, so
+                long text doesn't get clipped at the scroll boundary. */}
             {slots.map((s, i) => {
               const x = PAD + i * STEP;
               const isCurrent = i === highlightedIdx;
+              const isFirst = i === 0;
+              const isLast = i === slots.length - 1;
+              const transform = isFirst ? "none"
+                : isLast ? "translateX(-100%)"
+                : "translateX(-50%)";
+              const textAlign: React.CSSProperties["textAlign"] = isFirst ? "left"
+                : isLast ? "right" : "center";
               return (
                 <div key={`label-${s.time}`} style={{
                   position: "absolute",
-                  left: x, top: 6,
-                  transform: "translateX(-50%)",
+                  left: x, top: 4,
+                  transform,
                   fontSize: 10,
                   fontWeight: isCurrent ? 700 : 500,
                   color: isCurrent ? "var(--accent)" : "var(--text-tertiary)",
@@ -2272,6 +2287,7 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
                   maxWidth: STEP + 20,
                   overflow: "hidden",
                   textOverflow: "ellipsis",
+                  textAlign,
                 }} title={s.time}>
                   {s.time}
                 </div>
@@ -2294,7 +2310,9 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
                 }} />
               );
             })}
-            {/* Chapter/episode count sub-label below tick */}
+            {/* Chapter/episode count sub-label below tick — same edge
+                anchoring as the time labels so first/last sub-text isn't
+                clipped either. */}
             {slots.map((s, i) => {
               const x = PAD + i * STEP;
               const isCurrent = i === highlightedIdx;
@@ -2302,11 +2320,18 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
               const chapText = firstNode.chapter_num ? `第${firstNode.chapter_num}章` : "";
               const countText = s.nodes.length > 1 ? `${s.nodes.length} 情节` : "";
               const label = [chapText, countText].filter(Boolean).join(" · ");
+              const isFirst = i === 0;
+              const isLast = i === slots.length - 1;
+              const transform = isFirst ? "none"
+                : isLast ? "translateX(-100%)"
+                : "translateX(-50%)";
+              const textAlign: React.CSSProperties["textAlign"] = isFirst ? "left"
+                : isLast ? "right" : "center";
               return (
                 <div key={`sub-${s.time}`} style={{
                   position: "absolute",
                   left: x, top: TRACK_Y + 12,
-                  transform: "translateX(-50%)",
+                  transform,
                   fontSize: 9,
                   color: isCurrent ? "var(--accent)" : "var(--text-disabled)",
                   whiteSpace: "nowrap",
@@ -2314,6 +2339,7 @@ function StoryTimeScrubber({ slots, highlightedTime, onHighlight }: {
                   maxWidth: STEP + 20,
                   overflow: "hidden",
                   textOverflow: "ellipsis",
+                  textAlign,
                 }}>
                   {label}
                 </div>
@@ -3197,6 +3223,16 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, c
 
   const [hookView, setHookView] = useState<"active" | "inactive">("active");
   const [adding, setAdding] = useState<null | "main" | "sub" | "hook">(null);
+  /** Search filter for the overview chips. Applies to thread name/desc
+   *  and hook title/content. Each row independently shrinks down to
+   *  matches; rows with zero matches stay collapsed-empty but still
+   *  show their label + 「+ 新增」 button. */
+  const [chipSearch, setChipSearch] = useState("");
+  const matchesSearch = useCallback((haystacks: Array<string | undefined>) => {
+    const q = chipSearch.trim().toLowerCase();
+    if (!q) return true;
+    return haystacks.some(s => (s || "").toLowerCase().includes(q));
+  }, [chipSearch]);
   const [newThread, setNewThread] = useState<{ name: string; description: string }>({ name: "", description: "" });
   const [newHook, setNewHook] = useState<{ description: string; scale: string; origin_chapter: number; title: string }>({
     title: "", description: "", scale: "event_clue", origin_chapter: 1,
@@ -3675,6 +3711,55 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, c
     </button>
   );
 
+  // Filter chips by the search box; mains / subs / hooks each draw from
+  // these filtered lists so the user can quickly home in on what they
+  // want when the project accumulates many 故事线 / 伏笔.
+  const filteredMains = mains.filter(t => matchesSearch([t.name, t.description]));
+  const filteredSubs = subs.filter(t => matchesSearch([t.name, t.description]));
+  const filteredActiveHooks = activeHooks.filter(h => matchesSearch([h.title, h.content]));
+  const filteredInactiveHooks = inactiveHooks.filter(h => matchesSearch([h.title, h.content]));
+
+  /** Row layout: [label] [scrollable chip strip…] [+ 新增] right-aligned.
+   *  The chip strip uses `overflow-x: auto` with a thin scrollbar so a
+   *  long list of 主线 / 支线 / 伏笔 doesn't force the new button off
+   *  the right edge of the row. */
+  const renderRow = (
+    label: string,
+    leadingExtras: React.ReactNode | null,
+    chips: React.ReactNode[],
+    addAction: React.ReactNode | null,
+  ) => (
+    <div className="flex" style={{
+      gap: 8, alignItems: "center", marginBottom: 8,
+      minHeight: 28,
+    }}>
+      <span className="text-xs text-muted" style={{ width: 36, flexShrink: 0 }}>
+        {label}
+      </span>
+      {leadingExtras}
+      <div style={{
+        flex: 1, minWidth: 0,
+        overflowX: "auto", overflowY: "hidden",
+        display: "flex", gap: 6, alignItems: "flex-start",
+        paddingBottom: 2,
+      }}>
+        {chips.length === 0 ? (
+          <span style={{
+            fontSize: 10, color: "var(--text-disabled)", fontStyle: "italic",
+            alignSelf: "center",
+          }}>
+            {chipSearch ? "无匹配" : "（暂无）"}
+          </span>
+        ) : chips}
+      </div>
+      {addAction && (
+        <div style={{ flexShrink: 0, marginLeft: "auto" }}>
+          {addAction}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div style={{
       padding: "10px 16px",
@@ -3682,53 +3767,75 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, c
       borderBottom: "1px solid var(--border)",
       fontSize: 11,
     }}>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8 }}>
         <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>
           故事线与伏笔总览
         </span>
-      </div>
-      <div className="flex gap-6 mb-6" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
-        <span className="text-xs text-muted" style={{ width: 36, flexShrink: 0, paddingTop: 4 }}>主线</span>
-        {mains.map(t => renderThreadChip(t, true))}
-        {adding !== "main" && addBtn("main", "主线")}
-      </div>
-      {adding === "main" && newEntryCard("main")}
-      <div className="flex gap-6 mb-6" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
-        <span className="text-xs text-muted" style={{ width: 36, flexShrink: 0, paddingTop: 4 }}>支线</span>
-        {subs.map(t => renderThreadChip(t, false))}
-        {adding !== "sub" && addBtn("sub", "支线")}
-      </div>
-      {adding === "sub" && newEntryCard("sub")}
-      <div className="flex gap-6" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
-        <span className="text-xs text-muted" style={{ width: 36, flexShrink: 0, paddingTop: 4 }}>伏笔</span>
-        <div style={{
-          display: "inline-flex", border: "1px solid var(--border)",
-          borderRadius: 8, padding: 1, height: 22,
-        }}>
-          <button onClick={() => setHookView("active")}
-            style={{
-              fontSize: 10, padding: "0 10px",
-              border: "none", borderRadius: 6,
-              background: hookView === "active" ? "var(--gold)" : "transparent",
-              color: hookView === "active" ? "#fff" : "var(--text-tertiary)",
-              cursor: "pointer", fontWeight: 600,
-            }}>
-            活跃 {activeHooks.length > 0 && `· ${activeHooks.length}`}
-          </button>
-          <button onClick={() => setHookView("inactive")}
-            style={{
-              fontSize: 10, padding: "0 10px",
-              border: "none", borderRadius: 6,
-              background: hookView === "inactive" ? "var(--text-tertiary)" : "transparent",
-              color: hookView === "inactive" ? "#fff" : "var(--text-tertiary)",
-              cursor: "pointer", fontWeight: 600,
-            }}>
-            已回收 {inactiveHooks.length > 0 && `· ${inactiveHooks.length}`}
-          </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, justifyContent: "flex-end", maxWidth: 320 }}>
+          <input
+            className="input"
+            placeholder="搜索 名称 / 概述..."
+            value={chipSearch}
+            onChange={e => setChipSearch(e.target.value)}
+            style={{ fontSize: 11, padding: "3px 10px", height: 24, flex: 1 }}
+          />
+          {chipSearch && (
+            <button onClick={() => setChipSearch("")} title="清除搜索"
+              style={{
+                border: "none", background: "transparent",
+                color: "var(--text-tertiary)", cursor: "pointer",
+                fontSize: 12, padding: "0 4px",
+              }}>×</button>
+          )}
         </div>
-        {(hookView === "active" ? activeHooks : inactiveHooks).map(h => renderHookChip(h, hookView === "inactive"))}
-        {adding !== "hook" && hookView === "active" && addBtn("hook", "伏笔")}
       </div>
+      {renderRow(
+        "主线",
+        null,
+        filteredMains.map(t => renderThreadChip(t, true)),
+        adding !== "main" ? addBtn("main", "主线") : null,
+      )}
+      {adding === "main" && newEntryCard("main")}
+      {renderRow(
+        "支线",
+        null,
+        filteredSubs.map(t => renderThreadChip(t, false)),
+        adding !== "sub" ? addBtn("sub", "支线") : null,
+      )}
+      {adding === "sub" && newEntryCard("sub")}
+      {renderRow(
+        "伏笔",
+        (
+          <div style={{
+            display: "inline-flex", border: "1px solid var(--border)",
+            borderRadius: 8, padding: 1, height: 22, flexShrink: 0,
+          }}>
+            <button onClick={() => setHookView("active")}
+              style={{
+                fontSize: 10, padding: "0 10px",
+                border: "none", borderRadius: 6,
+                background: hookView === "active" ? "var(--gold)" : "transparent",
+                color: hookView === "active" ? "#fff" : "var(--text-tertiary)",
+                cursor: "pointer", fontWeight: 600,
+              }}>
+              活跃 {activeHooks.length > 0 && `· ${activeHooks.length}`}
+            </button>
+            <button onClick={() => setHookView("inactive")}
+              style={{
+                fontSize: 10, padding: "0 10px",
+                border: "none", borderRadius: 6,
+                background: hookView === "inactive" ? "var(--text-tertiary)" : "transparent",
+                color: hookView === "inactive" ? "#fff" : "var(--text-tertiary)",
+                cursor: "pointer", fontWeight: 600,
+              }}>
+              已回收 {inactiveHooks.length > 0 && `· ${inactiveHooks.length}`}
+            </button>
+          </div>
+        ),
+        (hookView === "active" ? filteredActiveHooks : filteredInactiveHooks)
+          .map(h => renderHookChip(h, hookView === "inactive")),
+        adding !== "hook" && hookView === "active" ? addBtn("hook", "伏笔") : null,
+      )}
       {adding === "hook" && newEntryCard("hook")}
     </div>
   );

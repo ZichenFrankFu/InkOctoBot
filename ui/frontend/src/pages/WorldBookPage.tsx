@@ -441,7 +441,12 @@ export default function WorldBookPage({ projectId, projects }: Props) {
             </button>
           </div>
 
-          {/* Entry list */}
+          {/* Entry list / grid. While the panel is wide (no detail
+              column open) the entries are rendered as a category-grouped
+              grid — every category is a block, every entry a card with
+              a content preview. Once the user picks an entry the panel
+              collapses and we fall back to the linear list because grid
+              cards look cramped in the narrow column. */}
           <div className="panel-body">
             {loading ? (
               <div className="loading"><div className="loading-spinner" /></div>
@@ -449,7 +454,8 @@ export default function WorldBookPage({ projectId, projects }: Props) {
               <div className="empty-state" style={{ padding: 32 }}>
                 <p>{filterCat || search ? "没有匹配的条目" : "暂无条目"}</p>
               </div>
-            ) : (
+            ) : showDetailColumn ? (
+              // ──── linear list (compact / split view) ────
               filtered.map(entry => (
                 <div key={entry.id}
                   className={`report-list-item ${editing?.id === entry.id ? "active" : ""}`}
@@ -471,6 +477,121 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                     onClick={e => { e.stopPropagation(); remove(entry.id); }}>×</button>
                 </div>
               ))
+            ) : (
+              // ──── category-grouped grid (default full-width view) ────
+              (() => {
+                const groups = new Map<string, typeof filtered>();
+                filtered.forEach(entry => {
+                  const key = entry.category || "other";
+                  if (!groups.has(key)) groups.set(key, []);
+                  groups.get(key)!.push(entry);
+                });
+                // Sort categories so any with a known label appear in
+                // allCategories order; unknown keys fall to the end.
+                const knownOrder = new Map(allCategories.map((c, i) => [c.key, i]));
+                const sortedKeys = Array.from(groups.keys()).sort((a, b) => {
+                  const ai = knownOrder.has(a) ? knownOrder.get(a)! : 9999;
+                  const bi = knownOrder.has(b) ? knownOrder.get(b)! : 9999;
+                  return ai - bi;
+                });
+                return (
+                  <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 16 }}>
+                    {sortedKeys.map(catKey => {
+                      const entries = groups.get(catKey) || [];
+                      return (
+                        <div key={catKey}>
+                          <div style={{
+                            display: "flex", alignItems: "baseline", gap: 8,
+                            marginBottom: 8, paddingBottom: 6,
+                            borderBottom: "1px solid var(--border-subtle)",
+                          }}>
+                            <h4 style={{
+                              fontSize: 13, fontWeight: 700, color: "var(--text-primary)",
+                              margin: 0,
+                            }}>
+                              {catLabel(catKey, customCategories)}
+                            </h4>
+                            <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                              {entries.length} 条
+                            </span>
+                          </div>
+                          <div style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                            gap: 10,
+                          }}>
+                            {entries.map(entry => (
+                              <div key={entry.id}
+                                onClick={() => confirmDiscardIfDirty(() => { setEditing(entry); setDirty(false); })}
+                                style={{
+                                  position: "relative",
+                                  background: "var(--bg-card, var(--bg-surface))",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: 10,
+                                  padding: "10px 12px",
+                                  cursor: "pointer",
+                                  transition: "border-color 0.15s, transform 0.15s",
+                                  minHeight: 86,
+                                  display: "flex", flexDirection: "column", gap: 4,
+                                }}
+                                onMouseEnter={e => {
+                                  e.currentTarget.style.borderColor = "var(--accent)";
+                                  e.currentTarget.style.transform = "translateY(-1px)";
+                                }}
+                                onMouseLeave={e => {
+                                  e.currentTarget.style.borderColor = "var(--border)";
+                                  e.currentTarget.style.transform = "translateY(0)";
+                                }}>
+                                <div style={{
+                                  display: "flex", alignItems: "center", gap: 6,
+                                }}>
+                                  <span style={{
+                                    fontSize: 13, fontWeight: 600,
+                                    color: "var(--text-primary)",
+                                    overflow: "hidden", textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap", flex: 1,
+                                  }} title={entry.title}>
+                                    {entry.title || "（未命名）"}
+                                  </span>
+                                  <button className="btn-icon"
+                                    title="删除"
+                                    onClick={e => { e.stopPropagation(); remove(entry.id); }}
+                                    style={{
+                                      fontSize: 13, lineHeight: 1, padding: "2px 6px",
+                                      color: "var(--text-tertiary)",
+                                    }}>×</button>
+                                </div>
+                                <div style={{
+                                  fontSize: 11, lineHeight: 1.5,
+                                  color: entry.content ? "var(--text-secondary)" : "var(--text-disabled)",
+                                  fontStyle: entry.content ? "normal" : "italic",
+                                  overflow: "hidden",
+                                  display: "-webkit-box",
+                                  WebkitLineClamp: 3, WebkitBoxOrient: "vertical",
+                                }}>
+                                  {entry.content || "（空）"}
+                                </div>
+                                {(entry.tags && (entry.tags as any).length > 0) && (
+                                  <div style={{
+                                    display: "flex", gap: 4, flexWrap: "wrap",
+                                    marginTop: "auto",
+                                  }}>
+                                    {((entry.tags as any) as string[]).slice(0, 4).map((tag, ti) => (
+                                      <span key={ti} className="tag" style={{
+                                        fontSize: 9, padding: "1px 6px",
+                                      }}>{tag}</span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()
             )}
           </div>
         </div>

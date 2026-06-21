@@ -1289,7 +1289,10 @@ textarea.input {
   justify-content: center;
   font-size: 18px;
   font-weight: 700;
+  line-height: 1;
+  text-align: center;
   flex-shrink: 0;
+  user-select: none;
 }
 
 .param-slider {

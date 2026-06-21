@@ -811,7 +811,9 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                     {(c as any).avatar_url ? (
                       <img src={(c as any).avatar_url} alt={c.name}
                         style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    ) : c.name.charAt(0)}
+                    ) : (
+                      <span style={{ lineHeight: 1, display: "inline-block" }}>{c.name.charAt(0)}</span>
+                    )}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="truncate" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
@@ -2688,12 +2690,15 @@ function CharacterAvatarField({ character, onChange, toast }: {
         border: "1px solid var(--border)",
         overflow: "hidden", flexShrink: 0,
         display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 28, fontWeight: 700,
+        fontSize: 28, fontWeight: 700, lineHeight: 1,
+        userSelect: "none",
       }}>
         {avatarUrl ? (
           <img src={avatarUrl} alt={character.name}
             style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        ) : initial}
+        ) : (
+          <span style={{ lineHeight: 1, display: "inline-block" }}>{initial}</span>
+        )}
       </div>
       <div style={{ flex: 1 }}>
         <label className="label">头像</label>
