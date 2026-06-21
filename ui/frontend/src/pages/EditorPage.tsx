@@ -1657,6 +1657,54 @@ function chipStyle(on: boolean, color: string, bg: string): React.CSSProperties 
 }
 
 /** A selectable row in a searchable pick-list (works / events / inspirations). */
+/* ── ReadOnlyEditorSection ──
+ * Editor 大纲 tab 下 关联角色 / 参考作品 / 灵感 / 伏笔 / 时间 / 地点
+ * 等"已迁至 故事线 page"区块的标准卡片：左侧 vertical 彩条 + 标题
+ * + 计数 + 自定义内容。没有 collapsible toggle、没有输入框样式，
+ * 保持单纯展示。 */
+function ReadOnlyEditorSection({ title, count, color, children }: {
+  title: string;
+  count?: number;
+  color: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div style={{
+      marginTop: 8, padding: "10px 12px",
+      background: "var(--bg-surface)",
+      border: "1px solid var(--border)",
+      borderRadius: 8,
+      position: "relative",
+    }}>
+      <div style={{
+        position: "absolute", left: 0, top: 0, bottom: 0,
+        width: 3, background: color, opacity: 0.8,
+        borderRadius: "8px 0 0 8px",
+      }} />
+      <div style={{
+        display: "flex", alignItems: "baseline", gap: 6,
+        marginBottom: 8,
+      }}>
+        <span style={{
+          fontSize: 11, fontWeight: 700, color,
+          letterSpacing: 0.3,
+        }}>
+          {title}
+        </span>
+        {count !== undefined && count > 0 && (
+          <span style={{
+            fontSize: 10, color: "var(--text-tertiary)", fontWeight: 500,
+          }}>
+            · {count}
+          </span>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+
 function PickRow({ label, sub, on, color, onClick }: {
   label: string; sub?: string; on: boolean; color: string; onClick: () => void;
 }) {
@@ -2068,261 +2116,168 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       )}
 
       {/* ─── READ-ONLY ZONE ─── 关联角色 / 参考作品 / 灵感 / 伏笔 /
-          时间 / 地点 全部只读；任何 chip/输入交互一律跳转 故事线 page。
-          只有 上方 的 章节剧情大纲 / AI 大纲助手 仍可编辑。修改后
-          1.5s 自动同步到 故事线 章节大纲。 */}
+          时间 / 地点 全部只读且全部展开；编辑请到 故事线 page。
+          剧情大纲 1.5s 静止后自动同步到 故事线 章节大纲。 */}
+      {/* 引导横幅 — 卡片化设计，左侧 icon + 双行说明 + 右侧 CTA。 */}
       <div style={{
-        marginTop: 10, padding: "6px 10px",
-        background: "var(--bg-surface-2)",
-        border: "1px dashed var(--border)", borderRadius: "var(--radius-sm)",
-        fontSize: 11, color: "var(--text-secondary)",
-        display: "flex", alignItems: "center", gap: 8,
+        marginTop: 12, padding: "12px 14px",
+        background: "linear-gradient(135deg, var(--accent-subtle) 0%, var(--bg-surface-2) 100%)",
+        border: "1px solid var(--accent)",
+        borderRadius: 10,
+        display: "flex", alignItems: "center", gap: 12,
+        boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
       }}>
-        <span style={{ flex: 1 }}>
-          以下关联信息只读；修改请到 <strong>故事线</strong> page。
-        </span>
-        <button className="btn-primary" style={{ fontSize: 11, padding: "3px 12px" }}
-          onClick={goEditInStoryline}>
+        <div style={{
+          width: 36, height: 36, borderRadius: 10,
+          background: "var(--accent)", color: "#fff",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 18, fontWeight: 700, flexShrink: 0, lineHeight: 1,
+        }}>↗</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text-primary)", marginBottom: 2 }}>
+            关联信息已迁至 故事线 page
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+            下方 角色 / 参考作品 / 灵感 / 伏笔 / 时间 / 地点 仅展示；点击右侧按钮跳转到 故事线 编辑。
+          </div>
+        </div>
+        <button className="btn-primary" onClick={goEditInStoryline}
+          style={{
+            fontSize: 12, padding: "8px 16px", whiteSpace: "nowrap",
+            fontWeight: 600, flexShrink: 0,
+          }}>
           打开 故事线 →
         </button>
       </div>
 
-      {/* 关联角色 — cohesive collapsible section (header attached to panel) */}
-      <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
-        <button className="btn-ghost" onClick={() => setShowCharLink(v => !v)}
-          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
-            background: showCharLink ? "var(--bg-surface-2)" : "transparent" }}>
-          {showCharLink ? "▾ " : "▸ "}关联角色{selectedChars.length > 0 ? ` · 已选 ${selectedChars.length}` : ""}
-          <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
-        </button>
-        {showCharLink && (
-          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
-            {characters.length > 0 ? (
-              <>
-                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                  {characters.map(c => (
-                    <button key={c.id} onClick={() => toggleChar(c.id)}
-                      style={chipStyle(c.selected, "var(--purple)", "var(--purple-subtle)")}>
-                      {c.name}
-                    </button>
-                  ))}
-                </div>
-                {selectedChars.length > 0 && (
-                  <div style={{ marginTop: 8 }}>
-                    <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--purple)" }}>隐藏身份（可选）</div>
-                    {selectedChars.map(c => {
-                      const alias = (chapter?.character_aliases || {})[c.name] || "";
-                      return (
-                        <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                          <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--purple-subtle)", color: "var(--purple)", whiteSpace: "nowrap" }}>{c.name}</span>
-                          <input className="input" value={alias}
-                            readOnly={READONLY} onClick={READONLY ? goEditInStoryline : undefined}
-                            onChange={e => {
-                              const next = { ...(chapter?.character_aliases || {}) };
-                              if (e.target.value.trim()) next[c.name] = e.target.value;
-                              else delete next[c.name];
-                              onUpdateChapter?.("character_aliases", next);
-                            }}
-                            placeholder="隐藏身份（如：神秘女人）"
-                            style={{ flex: 1, fontSize: 10, padding: "2px 8px", height: 22, cursor: READONLY ? "pointer" : "text" }} />
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="text-xs text-muted">暂无角色，请在「角色卡」中创建</div>
-            )}
+      {/* 关联角色 */}
+      <ReadOnlyEditorSection title="关联角色" count={selectedChars.length}
+        color="var(--purple)">
+        {selectedChars.length === 0 ? (
+          <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>未关联角色</span>
+        ) : (
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+            {selectedChars.map(c => {
+              const alias = (chapter?.character_aliases || {})[c.name];
+              return (
+                <span key={c.id} style={{
+                  fontSize: 11, padding: "3px 10px",
+                  background: "var(--purple-subtle)", color: "var(--purple)",
+                  border: "1px solid var(--purple)", borderRadius: 12,
+                  fontWeight: 500,
+                }}>
+                  {c.name}{alias ? ` → ${alias}` : ""}
+                </span>
+              );
+            })}
           </div>
         )}
-      </div>
+      </ReadOnlyEditorSection>
 
-      {/* 关联参考作品 — collapsible; count shown on the collapsed title */}
-      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
-        <button className="btn-ghost" onClick={() => setShowRefLink(v => !v)}
-          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
-            background: showRefLink ? "var(--bg-surface-2)" : "transparent" }}>
-          {showRefLink ? "▾ " : "▸ "}关联参考作品{references.length > 0 ? ` · 已选 ${selectedRefs.length}/${references.length}` : ""}
-          <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
-        </button>
-        {showRefLink && (
-          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
-            {references.length > 0 ? (
-              <>
-                <input className="input" value={refSearch} onChange={e => setRefSearch(e.target.value)}
-                  placeholder="搜索参考作品标题..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
-                <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-                  {filteredRefs.map(r => (
-                    <PickRow key={r.id} label={r.title}
-                      sub={r.events.length > 0 ? `${r.events.length} 事件` : "无事件"}
-                      on={r.selected} color="var(--jade)" onClick={() => toggleRef(r.id)} />
-                  ))}
-                  {filteredRefs.length === 0 && (
-                    <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配作品</div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="text-xs text-muted">暂无参考作品，请在「参考作品详情」中导入</div>
-            )}
-
-            {/* 编年史事件 — per selected work; each row = 章节 tag + 事件名,
-                click「详情」to expand details (the column is narrow). */}
+      {/* 关联参考作品 */}
+      <ReadOnlyEditorSection title="关联参考作品" count={selectedRefs.length}
+        color="var(--jade)">
+        {selectedRefs.length === 0 ? (
+          <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>未关联参考作品</span>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {selectedRefs.map(r => {
-              const eq = eventSearch.trim().toLowerCase();
-              const evs = r.events.filter(ev => !eq
-                || ev.name.toLowerCase().includes(eq)
-                || ev.description.toLowerCase().includes(eq)
-                || ev.chapter.toLowerCase().includes(eq));
               const linkedN = refEvents.filter(e => e.ref_id === r.id).length;
               return (
-                <div key={r.id} style={{ marginTop: 10 }}>
-                  <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--gold)" }}>
-                    「{r.title}」编年史事件{linkedN > 0 ? ` · 已选 ${linkedN}` : ""}
-                  </div>
-                  {r.events.length > 0 ? (
-                    <>
-                      <input className="input" value={eventSearch} onChange={e => setEventSearch(e.target.value)}
-                        placeholder="搜索章节 / 事件名..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
-                      <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-                        {evs.map((ev, i) => (
-                          <EventRow key={i} ev={ev}
-                            on={isEventLinked(r.id, ev.name)}
-                            onToggle={() => toggleEvent(r.id, r.title, ev)} />
-                        ))}
-                        {evs.length === 0 && (
-                          <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配事件</div>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-xs text-muted">该作品暂无编年史事件，请先在参考作品详情中提取剧情大纲</div>
+                <div key={r.id} style={{
+                  fontSize: 11, padding: "4px 10px",
+                  background: "var(--jade-subtle)",
+                  border: "1px solid var(--jade)", borderRadius: 8,
+                  display: "flex", alignItems: "center", gap: 6,
+                }}>
+                  <span style={{ color: "var(--jade)", fontWeight: 600, flex: 1 }}>
+                    {r.title}
+                  </span>
+                  {linkedN > 0 && (
+                    <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+                      · {linkedN} 事件
+                    </span>
                   )}
                 </div>
               );
             })}
           </div>
         )}
-      </div>
+      </ReadOnlyEditorSection>
 
-      {/* 关联灵感 — collapsible; count shown on the collapsed title */}
-      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
-        <button className="btn-ghost" onClick={() => setShowInspLink(v => !v)}
-          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
-            background: showInspLink ? "var(--bg-surface-2)" : "transparent" }}>
-          {showInspLink ? "▾ " : "▸ "}关联灵感{inspirations.length > 0 ? ` · 已选 ${refInsps.length}/${inspirations.length}` : ""}
-          <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
-        </button>
-        {showInspLink && (
-          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
-            {inspirations.length > 0 ? (
-              <>
-                <input className="input" value={inspSearch} onChange={e => setInspSearch(e.target.value)}
-                  placeholder="搜索灵感..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
-                <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-                  {filteredInsps.map(it => (
-                    <PickRow key={it.id}
-                      label={it.title || it.content.slice(0, 16) || "未命名灵感"}
-                      sub={it.title ? it.content.slice(0, 14) : undefined}
-                      on={refInsps.some(i => i.id === it.id)} color="var(--accent)"
-                      onClick={() => toggleInspiration(it)} />
-                  ))}
-                  {filteredInsps.length === 0 && (
-                    <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配灵感</div>
-                  )}
+      {/* 关联灵感 */}
+      <ReadOnlyEditorSection title="关联灵感" count={refInsps.length}
+        color="var(--accent)">
+        {refInsps.length === 0 ? (
+          <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>未关联灵感</span>
+        ) : (
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+            {refInsps.map(it => (
+              <span key={it.id} style={{
+                fontSize: 11, padding: "3px 10px",
+                background: "var(--accent-subtle)", color: "var(--accent)",
+                border: "1px solid var(--accent)", borderRadius: 12,
+                fontWeight: 500,
+              }} title={it.content}>
+                {it.title || it.content.slice(0, 16) || "未命名灵感"}
+              </span>
+            ))}
+          </div>
+        )}
+      </ReadOnlyEditorSection>
+
+      {/* 伏笔 */}
+      <ReadOnlyEditorSection title="伏笔" count={foreshadow.length}
+        color="var(--gold)">
+        {foreshadow.length === 0 ? (
+          <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>暂无伏笔</span>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {foreshadow.map(f => (
+              <div key={f.id} style={{
+                padding: "6px 10px",
+                background: "var(--gold-subtle)",
+                border: "1px solid var(--gold)", borderRadius: 8,
+              }}>
+                <div style={{
+                  fontSize: 11, fontWeight: 600, color: "var(--gold)",
+                  marginBottom: f.content ? 3 : 0,
+                }}>
+                  {f.title || "未命名伏笔"}
                 </div>
-              </>
-            ) : (
-              <div className="text-xs text-muted">灵感库为空，请在「灵感搜索 → 灵感库」中添加</div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* 伏笔 — collapsible CRUD section; each 伏笔 links chapters bidirectionally */}
-      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
-        <button className="btn-ghost" onClick={() => setShowForeshadow(v => !v)}
-          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
-            background: showForeshadow ? "var(--bg-surface-2)" : "transparent" }}>
-          {showForeshadow ? "▾ " : "▸ "}伏笔{foreshadow.length > 0 ? ` · ${foreshadow.length}` : ""}
-          <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
-        </button>
-        {showForeshadow && (
-          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
-            {!READONLY && (
-              <button className="btn" style={{ fontSize: 11, padding: "3px 12px", marginBottom: 8 }} onClick={addForeshadow}>
-                + 新建伏笔
-              </button>
-            )}
-            {foreshadow.length === 0 ? (
-              <div className="text-xs text-muted">暂无伏笔。新建后可关联多个章节——任一关联章节生成时都会带上该伏笔。</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {foreshadow.map(f => (
-                  <div key={f.id} style={{ border: "1px solid var(--border)", borderRadius: 4, padding: 8 }}>
-                    <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
-                      <input className="input" value={f.title}
-                        readOnly={READONLY} onClick={READONLY ? goEditInStoryline : undefined}
-                        onChange={e => updateForeshadow(f.id, { title: e.target.value })}
-                        placeholder="伏笔标题"
-                        style={{ flex: 1, fontSize: 12, padding: "3px 8px", cursor: READONLY ? "pointer" : "text" }} />
-                    </div>
-                    <textarea className="input" value={f.content}
-                      readOnly={READONLY} onClick={READONLY ? goEditInStoryline : undefined}
-                      onChange={e => updateForeshadow(f.id, { content: e.target.value })}
-                      placeholder="伏笔内容（埋设了什么、计划如何回收）" rows={2}
-                      style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", marginBottom: 4, boxSizing: "border-box", cursor: READONLY ? "pointer" : "text" }} />
-                    <div className="text-xs text-muted" style={{ marginBottom: 3 }}>关联章节（点击切换；关联为双向）：</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                      {(allChapters || []).map(ch => {
-                        const on = f.chapter_ids.includes(ch.id);
-                        return (
-                          <span key={ch.id} onClick={() => toggleFsChapter(f.id, ch.id)}
-                            style={{
-                              fontSize: 10, padding: "2px 8px", borderRadius: 10, cursor: "pointer", userSelect: "none",
-                              background: on ? "var(--accent-subtle)" : "transparent",
-                              color: on ? "var(--accent)" : "var(--text-tertiary)",
-                              border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
-                            }}>
-                            {ch.title || "未命名"}
-                          </span>
-                        );
-                      })}
-                      {(allChapters || []).length === 0 && (
-                        <span className="text-xs text-muted">暂无章节</span>
-                      )}
-                    </div>
+                {f.content && (
+                  <div style={{
+                    fontSize: 10.5, color: "var(--text-secondary)",
+                    lineHeight: 1.5, whiteSpace: "pre-wrap",
+                  }}>
+                    {f.content}
                   </div>
-                ))}
+                )}
               </div>
-            )}
+            ))}
           </div>
         )}
-      </div>
+      </ReadOnlyEditorSection>
 
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <div className="field" style={{ flex: 1 }}>
-          <label className="label">
-            时间
-            <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
-          </label>
-          <input className="input" value={time}
-            readOnly={READONLY} onClick={READONLY ? goEditInStoryline : undefined}
-            onChange={e => { setTime(e.target.value); onUpdateChapter?.("time", e.target.value); }}
-            placeholder="例：第3天·黄昏"
-            style={{ fontSize: 12, cursor: READONLY ? "pointer" : "text" }} />
+      {/* 时间 + 地点 — two-column display */}
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <div style={{ flex: 1 }}>
+          <ReadOnlyEditorSection title="时间" color="var(--text-secondary)">
+            {time ? (
+              <span style={{ fontSize: 12, color: "var(--text-primary)" }}>{time}</span>
+            ) : (
+              <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>未指定</span>
+            )}
+          </ReadOnlyEditorSection>
         </div>
-        <div className="field" style={{ flex: 1 }}>
-          <label className="label">
-            地点
-            <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>只读</span>
-          </label>
-          <input className="input" value={location}
-            readOnly={READONLY} onClick={READONLY ? goEditInStoryline : undefined}
-            onChange={e => { setLocation(e.target.value); onUpdateChapter?.("location", e.target.value); }}
-            placeholder="例：云隐山·剑庐"
-            style={{ fontSize: 12, cursor: READONLY ? "pointer" : "text" }} />
+        <div style={{ flex: 1 }}>
+          <ReadOnlyEditorSection title="地点" color="var(--text-secondary)">
+            {location ? (
+              <span style={{ fontSize: 12, color: "var(--text-primary)" }}>{location}</span>
+            ) : (
+              <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>未指定</span>
+            )}
+          </ReadOnlyEditorSection>
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>

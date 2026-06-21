@@ -2682,57 +2682,99 @@ function CharacterAvatarField({ character, onChange, toast }: {
     : character.role === "反派" ? "var(--purple)" : "var(--jade)";
 
   return (
-    <div className="field mb-12">
-      {/* 「头像」标题文本居中：先放 label，再水平居中 avatar 圆 + 控件。*/}
-      <label className="label" style={{ display: "block", textAlign: "center", marginBottom: 8 }}>
-        头像
-      </label>
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "center",
-        gap: 14, flexWrap: "wrap",
-      }}>
+    <div className="field mb-12" style={{ display: "flex", justifyContent: "center" }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+        {/* 头像本体 — 上传后用 hover overlay 暴露「更换 / 移除」，
+            没有头像时展示「+ 添加头像」placeholder。 */}
         <div style={{
-          width: 72, height: 72, borderRadius: "50%",
+          position: "relative",
+          width: 96, height: 96, borderRadius: "50%",
           background: avatarUrl ? "var(--bg-secondary)" : roleBg,
           color: roleFg,
-          border: "1px solid var(--border)",
-          overflow: "hidden", flexShrink: 0,
+          border: avatarUrl ? "1px solid var(--border)" : `1.5px dashed ${roleFg}`,
+          overflow: "hidden",
           display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 28, fontWeight: 700, lineHeight: 1,
-          userSelect: "none",
-        }}>
+          fontSize: 36, fontWeight: 700, lineHeight: 1, userSelect: "none",
+          cursor: "pointer",
+          transition: "border-color 0.15s, box-shadow 0.15s",
+        }}
+          onClick={!avatarUrl ? onPickFile : undefined}
+          onMouseEnter={e => {
+            const o = e.currentTarget.querySelector("[data-hover-overlay]") as HTMLElement | null;
+            if (o) o.style.opacity = "1";
+          }}
+          onMouseLeave={e => {
+            const o = e.currentTarget.querySelector("[data-hover-overlay]") as HTMLElement | null;
+            if (o) o.style.opacity = "0";
+          }}
+        >
           {avatarUrl ? (
-            <img src={avatarUrl} alt={character.name}
-              style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <>
+              <img src={avatarUrl} alt={character.name}
+                style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              {/* hover overlay 仅在已上传时展示 */}
+              <div data-hover-overlay style={{
+                position: "absolute", inset: 0,
+                background: "rgba(0, 0, 0, 0.55)",
+                color: "#fff",
+                display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center", gap: 4,
+                opacity: 0, transition: "opacity 0.18s",
+              }}>
+                <button onClick={(e) => { e.stopPropagation(); onPickFile(); }}
+                  disabled={uploading}
+                  style={{
+                    border: "none", background: "transparent", color: "#fff",
+                    fontSize: 11, cursor: "pointer", padding: "2px 8px",
+                    fontWeight: 600,
+                  }}>
+                  {uploading ? "上传中..." : "更换"}
+                </button>
+                <button onClick={(e) => { e.stopPropagation(); onRemove(); }}
+                  style={{
+                    border: "none", background: "transparent",
+                    color: "rgba(255,180,180,0.95)",
+                    fontSize: 11, cursor: "pointer", padding: "2px 8px",
+                    fontWeight: 600,
+                  }}>
+                  移除
+                </button>
+              </div>
+            </>
           ) : (
             <span style={{ lineHeight: 1, display: "inline-block" }}>{initial}</span>
           )}
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif"
-              style={{ display: "none" }} onChange={onFileSelected} />
-            <button className="btn" style={{ fontSize: 11, padding: "5px 12px" }}
-              onClick={onPickFile} disabled={uploading}>
-              {uploading ? "上传中..." : (avatarUrl ? "更换图片" : "上传图片")}
-            </button>
-            <button className="btn" style={{ fontSize: 11, padding: "5px 12px" }}
-              onClick={onGenerate} title="即将上线 — AI 头像生成">
-              AI 生成
-            </button>
-            {avatarUrl && (
-              <button className="btn" style={{
-                fontSize: 11, padding: "5px 12px",
-                color: "var(--error)", borderColor: "var(--error)",
-              }} onClick={onRemove}>
-                × 移除
-              </button>
-            )}
+        {/* 「头像」二字只在没有头像时显示 — 上传后头像本体即标题 */}
+        {!avatarUrl && (
+          <div style={{
+            fontSize: 11, color: "var(--text-tertiary)", fontWeight: 500,
+            textAlign: "center", lineHeight: 1.4,
+          }}>
+            添加头像
           </div>
-          <div className="text-xs text-muted">
+        )}
+        {/* 操作按钮 — 没有头像时显示「上传」+「AI 生成」；已上传后只
+            留「AI 生成」作为重新出图入口（更换 / 移除 在 hover overlay） */}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center" }}>
+          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif"
+            style={{ display: "none" }} onChange={onFileSelected} />
+          {!avatarUrl && (
+            <button className="btn-primary" style={{ fontSize: 11, padding: "5px 14px" }}
+              onClick={onPickFile} disabled={uploading}>
+              {uploading ? "上传中..." : "上传图片"}
+            </button>
+          )}
+          <button className="btn" style={{ fontSize: 11, padding: "5px 14px" }}
+            onClick={onGenerate} title="即将上线 — AI 头像生成">
+            AI 生成
+          </button>
+        </div>
+        {!avatarUrl && (
+          <div className="text-xs text-muted" style={{ textAlign: "center", lineHeight: 1.4 }}>
             PNG / JPG / WebP / GIF · 上限 5MB
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

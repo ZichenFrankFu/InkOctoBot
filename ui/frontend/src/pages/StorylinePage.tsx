@@ -121,6 +121,7 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
   const [threads, setThreads] = useState<Thread[]>([]);
   const [hooks, setHooks] = useState<Hook[]>([]);
   const [locationEntities, setLocationEntities] = useState<Array<{ entity_id: string; name: string; description?: string }>>([]);
+  const [referenceWorks, setReferenceWorks] = useState<Array<{ id: string; title: string; description?: string }>>([]);
   const [chapterTitles, setChapterTitles] = useState<Map<number, string>>(new Map());
   const [chapterStatuses, setChapterStatuses] = useState<Map<number, string>>(new Map());
 
@@ -152,6 +153,13 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
     apiGet<{ items: Character[] }>(`/api/data/characters?project_id=${pid}`)
       .then(r => setCharacters(r.items || []))
       .catch(() => setCharacters([]));
+    apiGet<{ items: any[] }>("/api/references/works")
+      .then(r => setReferenceWorks((r.items || []).map((w: any) => ({
+        id: w.ref_id || w.id,
+        title: w.title || w.name || "未命名",
+        description: w.description || w.author || "",
+      }))))
+      .catch(() => setReferenceWorks([]));
     reloadThreadsHooks();
     reloadLocations();
     apiGet<{ volumes: Volume[] }>(`/api/data/editor?project_id=${pid}`)
@@ -216,16 +224,31 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
           idx += 1;
           const chapterNodes = nodes.filter(n => (n.chapter_num || 0) === idx);
           if (chapterNodes.length === 0) return c;
-          const union = new Set<string>();
+          // union characters across the 情节 cards
+          const charUnion = new Set<string>();
           chapterNodes.forEach(n => (n.characters || []).forEach(name => {
             const s = (name || "").trim();
-            if (s) union.add(s);
+            if (s) charUnion.add(s);
           }));
-          const next = Array.from(union).sort();
-          const prev = (c.characters || []).slice().sort();
-          if (JSON.stringify(next) !== JSON.stringify(prev)) {
+          // union reference_ids across the 情节 cards
+          const refUnion = new Set<string>();
+          chapterNodes.forEach(n => ((n as any).reference_ids || []).forEach((id: string) => {
+            const s = (id || "").trim();
+            if (s) refUnion.add(s);
+          }));
+          const nextChars = Array.from(charUnion).sort();
+          const prevChars = (c.characters || []).slice().sort();
+          const nextRefs = Array.from(refUnion).sort();
+          const prevRefs = ((c as any).references || []).slice().sort();
+          const charsChanged = JSON.stringify(nextChars) !== JSON.stringify(prevChars);
+          const refsChanged = JSON.stringify(nextRefs) !== JSON.stringify(prevRefs);
+          if (charsChanged || refsChanged) {
             changed = true;
-            return { ...c, characters: next };
+            return {
+              ...c,
+              characters: charsChanged ? nextChars : c.characters,
+              references: refsChanged ? nextRefs : (c as any).references,
+            };
           }
           return c;
         }),
@@ -1897,6 +1920,14 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
                     value={sel.characters || []}
                     options={characters}
                     onChange={(v) => updateNode(sel.id, "characters", v)}
+                  />
+                </div>
+                <div className="field mb-12">
+                  <ReferenceSelector
+                    label="关联参考作品"
+                    value={(sel as any).reference_ids || []}
+                    options={referenceWorks}
+                    onChange={(v) => updateNode(sel.id, "reference_ids", v)}
                   />
                 </div>
                 <div className="field mb-12">
@@ -3837,6 +3868,168 @@ function ThreadSummaryStrip({ projectId, threads, hooks, nodes, chapterTitles, c
         adding !== "hook" && hookView === "active" ? addBtn("hook", "伏笔") : null,
       )}
       {adding === "hook" && newEntryCard("hook")}
+    </div>
+  );
+}
+
+
+/* ── ReferenceSelector ──
+ * 参考作品 多选 + 搜索 selector — mirror CharacterSelector 的视觉
+ * 与交互。选项来自 /api/references/works；选中的参考作品作为 chip
+ * 显示，点击 × 移除；下拉面板顶部有搜索框，支持按标题 + 描述/作者
+ * 过滤。 */
+function ReferenceSelector({ label, value, options, onChange }: {
+  label: string;
+  value: string[];
+  options: Array<{ id: string; title: string; description?: string }>;
+  onChange: (next: string[]) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [search, setSearch] = React.useState("");
+  const wrapRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const toggle = (id: string) => {
+    const next = value.includes(id) ? value.filter(v => v !== id) : [...value, id];
+    onChange(next);
+  };
+
+  const filtered = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter(o =>
+      o.title.toLowerCase().includes(q)
+      || (o.description || "").toLowerCase().includes(q)
+    );
+  }, [options, search]);
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <label className="label">{label}</label>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: "flex", flexWrap: "wrap", gap: 6,
+          minHeight: 38, padding: "6px 10px",
+          background: open ? "var(--bg-surface)" : "var(--bg-card, var(--bg-surface))",
+          border: `1px solid ${open ? "var(--accent)" : "var(--border)"}`,
+          borderRadius: 8,
+          cursor: "pointer",
+          transition: "border-color 0.15s, background 0.15s",
+          alignItems: "center",
+        }}>
+        {value.length === 0 ? (
+          <span style={{
+            fontSize: 12, color: "var(--text-tertiary)",
+            display: "inline-flex", alignItems: "center", gap: 6,
+          }}>
+            <span style={{ fontSize: 14, lineHeight: 1, opacity: 0.7 }}>+</span>
+            点击选择参考作品...
+          </span>
+        ) : value.map(id => {
+          const w = options.find(o => o.id === id);
+          if (!w) return null;
+          return (
+            <span key={id} style={{
+              fontSize: 11, padding: "3px 4px 3px 10px",
+              background: "var(--jade-subtle)",
+              color: "var(--jade)",
+              border: "1px solid var(--jade)",
+              borderRadius: 12,
+              fontWeight: 500,
+              display: "inline-flex", alignItems: "center", gap: 4,
+            }} title={w.description || w.title}>
+              {w.title}
+              <button onClick={(e) => { e.stopPropagation(); toggle(id); }}
+                title="移除"
+                style={{
+                  border: "none", background: "transparent", padding: "0 4px",
+                  cursor: "pointer", color: "var(--jade)",
+                  fontSize: 12, lineHeight: 1,
+                }}>×</button>
+            </span>
+          );
+        })}
+      </div>
+      {open && (
+        <div style={{
+          position: "absolute", zIndex: 50, left: 0, right: 0, top: "100%",
+          marginTop: 4, background: "var(--bg-surface)",
+          border: "1px solid var(--border)", borderRadius: 8,
+          boxShadow: "0 8px 20px rgba(0,0,0,0.12)",
+          maxHeight: 320, display: "flex", flexDirection: "column",
+        }}>
+          <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
+            <input className="input" autoFocus
+              placeholder="搜索参考作品标题 / 简介"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === "Escape") setOpen(false); }}
+              style={{ fontSize: 12, width: "100%" }} />
+          </div>
+          <div style={{ overflowY: "auto", flex: 1 }}>
+            {options.length === 0 ? (
+              <div className="text-xs text-muted" style={{ padding: 12, textAlign: "center" }}>
+                参考库中暂无作品 — 请到「参考作品详情」页面导入。
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="text-xs text-muted" style={{ padding: 12, textAlign: "center" }}>
+                无匹配作品
+              </div>
+            ) : (
+              filtered.map(opt => {
+                const on = value.includes(opt.id);
+                return (
+                  <div key={opt.id}
+                    onClick={() => toggle(opt.id)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "8px 12px", cursor: "pointer",
+                      background: on ? "var(--jade-subtle)" : undefined,
+                      borderLeft: on ? "3px solid var(--jade)" : "3px solid transparent",
+                      transition: "background 0.12s",
+                    }}
+                    onMouseEnter={e => { if (!on) e.currentTarget.style.background = "var(--bg-secondary)"; }}
+                    onMouseLeave={e => { if (!on) e.currentTarget.style.background = ""; }}>
+                    <span style={{
+                      width: 22, height: 22, borderRadius: 5,
+                      background: on ? "var(--jade-subtle)" : "var(--bg-secondary)",
+                      color: on ? "var(--jade)" : "var(--text-tertiary)",
+                      fontSize: 11, fontWeight: 700,
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      flexShrink: 0,
+                    }}>
+                      ◆
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+                        {opt.title}
+                      </div>
+                      {opt.description && (
+                        <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 1 }}>
+                          {opt.description.slice(0, 40)}
+                        </div>
+                      )}
+                    </div>
+                    {on && (
+                      <span style={{
+                        fontSize: 10, color: "var(--jade)", fontWeight: 700,
+                      }}>✓</span>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

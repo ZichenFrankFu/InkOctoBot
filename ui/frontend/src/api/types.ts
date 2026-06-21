@@ -414,6 +414,10 @@ export interface StoryNode {
    *  stays active unless the user also fully-resolves in the 总览栏. */
   thread_statuses?: Record<string, string>;
   hook_statuses?: Record<string, string>;
+  /** Associated reference works (参考作品) — IDs of works in the
+   *  /api/references/works registry. Mirrors the editor chapter's
+   *  `references` field; storyline page is now the source of truth. */
+  reference_ids?: string[];
 }
 
 export interface StoryEdge {
