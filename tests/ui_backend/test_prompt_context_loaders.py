@@ -42,6 +42,93 @@ class TestPlatformMarketPlaceholder(unittest.TestCase):
         self.assertEqual(platform_market.load("p1", exclude={"platform"}), "")
 
 
+class TestPlatformMarketDataDriven(unittest.TestCase):
+    """Confirms the loader resolves the project's platform string against
+    REAL stored data only — no hardcoded alias table — and pulls
+    content from market-extractor outputs (category_aggregated_stats /
+    compute_cache opening_nlp).
+
+    Three fuzzy-matcher tiers:
+    1. project="起点中文网", data="起点"  → stored ⊂ project match
+    2. project="起点",       data="起点"  → exact match
+    3. project="qidian",     data="起点"  → no overlap → loader skips
+    """
+
+    def setUp(self) -> None:
+        import os, sqlite3, tempfile, time, json
+        from storage.market_extractor_schema import ensure_market_extractor_tables
+        from storage.project_schema import (
+            ensure_creation_tables, _ensure_projects_market_columns,
+        )
+        from ui.backend.app.services import project_store as ps
+
+        self._ps = ps
+        self.db = os.path.join(tempfile.mkdtemp(), "pm.db")
+        with sqlite3.connect(self.db) as con:
+            ensure_creation_tables(con)
+            _ensure_projects_market_columns(con)
+            ensure_market_extractor_tables(con)
+            con.execute(
+                "INSERT INTO category_aggregated_stats(stats_id, platform, "
+                "category, source_works_count, "
+                "opening_hook_type_distribution_json, "
+                "chapter_word_count_stats_json) "
+                "VALUES('cas_1', '起点', '玄幻', 10, ?, ?)",
+                (json.dumps({"金手指开场": 5, "高潮开场": 3}, ensure_ascii=False),
+                 json.dumps({"mean": 3200, "p25": 2800, "p50": 3200,
+                              "p75": 3600}, ensure_ascii=False)))
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS compute_cache ("
+                "cache_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL, "
+                "version_key TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)"
+            )
+            con.execute(
+                "INSERT INTO compute_cache VALUES('opening_nlp:起点', ?, '', ?)",
+                (json.dumps({
+                    "available": True, "sample_count": 50, "unique_novels": 20,
+                    "word_count_summary": {"mean": 2900, "min": 1500, "max": 4500},
+                    "dialogue_ratio": {"mean": 0.28},
+                }, ensure_ascii=False), time.time()))
+            con.commit()
+        self._patcher = mock.patch(
+            "ui.backend.app.services.project_paths.get_db_path",
+            return_value=self.db,
+        )
+        self._patcher.start()
+
+    def tearDown(self) -> None:
+        self._patcher.stop()
+
+    def test_label_matches_stored_short(self) -> None:
+        """project saved with full label still finds the short-form data."""
+        self._ps.upsert_project(self.db, {
+            "id": "p1", "name": "a", "platform": "起点中文网", "category": "玄幻",
+        })
+        out = platform_market.load("p1")
+        self.assertIn("平台风格基线", out)
+        self.assertIn("金手指开场", out)
+        self.assertIn("开篇字数", out)
+
+    def test_exact_match(self) -> None:
+        self._ps.upsert_project(self.db, {
+            "id": "p2", "name": "b", "platform": "起点", "category": "玄幻",
+        })
+        out = platform_market.load("p2")
+        self.assertIn("平台风格基线", out)
+
+    def test_no_overlap_returns_empty(self) -> None:
+        """No hardcoded alias table — a project value with zero overlap
+        against any stored identifier MUST skip the loader."""
+        self._ps.upsert_project(self.db, {
+            "id": "p3", "name": "c", "platform": "qidian", "category": "玄幻",
+        })
+        self.assertEqual(platform_market.load("p3"), "")
+
+    def test_no_platform_set(self) -> None:
+        self._ps.upsert_project(self.db, {"id": "p4", "name": "d"})
+        self.assertEqual(platform_market.load("p4"), "")
+
+
 class TestCharacterCardsLoaderBaseline(unittest.TestCase):
     """Smoke tests for the rewritten loader — stable path only.
 

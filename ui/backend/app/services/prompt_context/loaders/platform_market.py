@@ -1,20 +1,21 @@
 """Platform market directive loader.
 
-Reads from the ``platform_profiles`` table populated by the market
-extractor (services/market_extractor). The latest active profile for
-the project's (platform, category) is consumed verbatim — no LLM call
-at prompt-build time.
+Reads ONLY from real extracted features — no hardcoded platform style
+descriptions, no static alias tables. Every value the loader emits to
+the prompt comes from a row the market-extractor pipeline actually
+persisted.
 
-When the project has a platform set but the synthesizer hasn't run
-(no usable ``platform_profiles`` row), the loader falls back to a
-condensed digest assembled from the raw market-extractor outputs:
+Three data sources, in priority order:
 
-  · ``category_aggregated_stats`` rows ("高级特征提取" 结果) — distribution
-    of opening hooks, protagonist powers, worldview, style, tone, plus
-    chapter / dialogue / power-growth stats and genre vocabulary.
-  · ``compute_cache`` entry under ``opening_nlp:<platform>``
-    ("基础特征提取" 结果) — first-chapter NLP measurements (dialogue
-    ratio, sentence length, opening / closing hook taxonomy).
+  · ``platform_profiles``                  (synthesized profile — Phase 4)
+  · ``category_aggregated_stats``          (高级特征提取 cross-work aggregate)
+  · ``compute_cache[opening_nlp:<platform>]`` (基础特征提取 NLP measurements)
+
+Name resolution is also data-driven (``_data_driven_platform_matches``):
+the loader inspects which platform identifiers each source has actually
+stored, then case-insensitively matches them against the project's
+platform string (exact > stored ⊂ project > project ⊂ stored). No
+hardcoded mapping between display labels and crawler-side identifiers.
 
 Truncates each subsection so the rendered body stays under
 ``LOADER_BUDGETS["platform_directive"]["max"]`` — the budget allocator
@@ -22,8 +23,8 @@ will further clip when the global RAG budget is tight.
 
 Returns ``None`` only when:
 - the project has no platform set, or
-- neither a profile nor any market-extractor data exist for the
-  platform.
+- the project's platform string doesn't overlap any stored identifier
+  (i.e. no extractor data exists for this platform).
 """
 from __future__ import annotations
 
@@ -112,6 +113,90 @@ def _coerce_payload_field(raw) -> str:
     return text
 
 
+def _data_driven_platform_matches(
+    db_path: str, project_platform: str,
+) -> list[str]:
+    """Discover every stored platform identifier that matches the
+    project's platform string, purely from real extracted data.
+
+    No hardcoded alias table — we scan the three places the market
+    extractor actually persists platform-keyed rows:
+
+      · ``platform_profiles.platform``        (synthesized profile)
+      · ``category_aggregated_stats.platform``(aggregated stats)
+      · ``compute_cache`` keys of the form ``opening_nlp:<platform>``
+        (basic NLP cache)
+
+    Then match the stored values against ``project_platform`` with three
+    tiers of decreasing strictness (exact > project-contains-stored >
+    stored-contains-project, all case-insensitive). Ordering is preserved
+    so the loader tries the strongest match first.
+
+    Returns ``[]`` when none of the stored values overlap — the loader
+    surfaces a "no real data for this platform" hint to the user instead
+    of falling back to anything synthesized.
+    """
+    if not (project_platform or "").strip():
+        return []
+    pp = project_platform.strip().lower()
+
+    stored: list[str] = []
+    seen: set[str] = set()
+
+    def _push(v: object) -> None:
+        s = str(v or "").strip()
+        if not s or s.lower() in seen:
+            return
+        stored.append(s)
+        seen.add(s.lower())
+
+    try:
+        with sqlite3.connect(db_path) as con:
+            for sql in (
+                "SELECT DISTINCT platform FROM platform_profiles "
+                "WHERE platform IS NOT NULL AND platform != ''",
+                "SELECT DISTINCT platform FROM category_aggregated_stats "
+                "WHERE platform IS NOT NULL AND platform != ''",
+            ):
+                try:
+                    for (v,) in con.execute(sql).fetchall():
+                        _push(v)
+                except sqlite3.OperationalError:
+                    continue
+            try:
+                rows = con.execute(
+                    "SELECT cache_key FROM compute_cache "
+                    "WHERE cache_key LIKE 'opening_nlp:%'"
+                ).fetchall()
+                for (key,) in rows:
+                    if not isinstance(key, str) or ":" not in key:
+                        continue
+                    suffix = key.split(":", 1)[1]
+                    if suffix and suffix != "all":
+                        _push(suffix)
+            except sqlite3.OperationalError:
+                pass
+    except sqlite3.OperationalError:
+        return []
+
+    exact: list[str] = []
+    project_contains: list[str] = []
+    stored_contains: list[str] = []
+    for v in stored:
+        vl = v.lower()
+        if vl == pp:
+            exact.append(v)
+        elif vl in pp:
+            # The stored value is shorter than (and contained in) the
+            # project's value — e.g. project="起点中文网", stored="起点".
+            project_contains.append(v)
+        elif pp in vl:
+            # The project's value is contained in the stored value —
+            # e.g. project="起点", stored="起点中文网".
+            stored_contains.append(v)
+    return exact + project_contains + stored_contains
+
+
 def _load_active_profile(db_path: str, platform: str, category: str) -> str:
     """Return a usable platform-directive body for the latest non-
     superseded profile (any confidence except ``'low'``).
@@ -125,9 +210,9 @@ def _load_active_profile(db_path: str, platform: str, category: str) -> str:
       3. Any profile for the platform — last resort, picks whichever
          row has the highest profile_version regardless of category.
 
-    Each tier is repeated for every platform alias (``platform`` may
-    be the user-facing label "起点中文网" while the profile row stored
-    the crawler's short form "起点").
+    Each tier is tried with every platform name actually stored in the
+    DB that matches the project's value via ``_data_driven_platform_matches``
+    — no hardcoded alias table; we just look at what's there.
 
     Prefer ``loader_payload`` (the 1000-char prose blob synthesized for
     direct prompt injection). When that column is empty (e.g. older
@@ -136,9 +221,6 @@ def _load_active_profile(db_path: str, platform: str, category: str) -> str:
     ``style_baseline`` + ``pacing_guidance`` so the user still gets a
     usable block.
     """
-    # Local import to avoid a circular dependency at module load.
-    from ui.backend.app.services.platform_aliases import platform_candidates
-
     base_select = (
         "SELECT loader_payload, profile_summary, "
         "       style_baseline, signature_devices_description, "
@@ -148,8 +230,9 @@ def _load_active_profile(db_path: str, platform: str, category: str) -> str:
         "AND superseded_by_profile_id IS NULL "
         "AND (confidence_label IS NULL OR confidence_label != 'low') "
     )
+    matches = _data_driven_platform_matches(db_path, platform)
     candidates: list[tuple[str, tuple]] = []
-    for plat_alias in platform_candidates(platform):
+    for plat_alias in matches:
         if category:
             candidates.append((
                 base_select + "AND category = ? ORDER BY profile_version DESC LIMIT 1",
@@ -180,8 +263,8 @@ def _load_active_profile(db_path: str, platform: str, category: str) -> str:
     if not row:
         logger.debug(
             "platform_directive: no active profile for platform=%r category=%r "
-            "(tried aliases: %s)",
-            platform, category, platform_candidates(platform))
+            "(data-driven matches: %s)",
+            platform, category, matches)
         return ""
     payload = (row["loader_payload"] or "").strip()
     if payload:
@@ -266,15 +349,18 @@ def _load_aggregated_stats(
 ) -> dict | None:
     """Pull the latest ``category_aggregated_stats`` row, preferring an
     exact (platform, category) match. Falls back to platform-only when
-    the project's category is blank or no exact row exists, and tries
-    every platform alias so a project saved as "起点中文网" still finds
-    a stats row stored as "起点" / "qidian".
-    """
-    from ui.backend.app.services.platform_aliases import platform_candidates
+    the project's category is blank or no exact row exists.
 
+    Platform name matching is data-driven via
+    ``_data_driven_platform_matches`` — every stored platform value
+    that overlaps the project's value is tried, in match-strength order.
+    """
+    matches = _data_driven_platform_matches(db_path, platform)
+    if not matches:
+        return None
     candidates: list[tuple[str, tuple]] = []
     base = "SELECT * FROM category_aggregated_stats WHERE platform = ? "
-    for plat_alias in platform_candidates(platform):
+    for plat_alias in matches:
         if category:
             candidates.append((
                 base + "AND category = ? ORDER BY aggregated_at DESC LIMIT 1",
@@ -298,16 +384,18 @@ def _load_aggregated_stats(
 
 def _load_opening_nlp_cache(db_path: str, platform: str) -> dict | None:
     """Read the cached ``opening_nlp:<platform>`` payload written by the
-    "基础特征提取" tab. Tries every platform alias (the tab caches under
-    whatever the crawler stored; the project may carry a different
-    label), then falls back to the platform-agnostic ``opening_nlp:all``
-    entry.
-    """
-    from ui.backend.app.services.platform_aliases import platform_candidates
+    "基础特征提取" tab. Each cache key's platform suffix is matched
+    against the project's value via ``_data_driven_platform_matches``,
+    so projects saved with the human label still find a cache row
+    written under whatever crawler-side identifier the tab used.
 
+    Falls back to the platform-agnostic ``opening_nlp:all`` entry when
+    no platform-specific row matches.
+    """
+    matches = _data_driven_platform_matches(db_path, platform)
     cache_keys: list[str] = []
     seen: set[str] = set()
-    for plat_alias in platform_candidates(platform):
+    for plat_alias in matches:
         key = f"opening_nlp:{plat_alias}"
         if key not in seen:
             cache_keys.append(key)
