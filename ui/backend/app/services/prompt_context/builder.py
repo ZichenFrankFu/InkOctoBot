@@ -643,6 +643,14 @@ def single_agent_vars(
         )
 
     tl: list[str] = []
+    # 故事线 → 编辑器 同步路径把同一章下所有 情节卡 的 time / location
+    # 按 「；」 合并写入 chapter.time / chapter.location。这里加一行说明，
+    # 让 Writer 看到字段是 "每个情节对应的时间地点（以「；」分隔）" 而不是
+    # "整章只有一个时间地点"。
+    note = (
+        "下列时间 / 地点对应本章每一个情节卡片，以「；」分隔；如某情节未填，"
+        "该位置将缺失。"
+    )
     if time_setting:
         tl.append(f"时间：{time_setting}")
     if location:
@@ -650,7 +658,9 @@ def single_agent_vars(
     # Skip the block entirely when both are blank — otherwise the
     # prompt carries an empty `## 时间与地点\n` heading that confuses
     # both the LLM and the frontend's "已注入" detector.
-    blocks["time_location"] = section("时间与地点", "\n".join(tl)) if tl else ""
+    blocks["time_location"] = (
+        section("时间与地点", note + "\n" + "\n".join(tl)) if tl else ""
+    )
 
     aliases = character_aliases or {}
     if characters:

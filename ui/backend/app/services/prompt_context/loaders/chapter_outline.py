@@ -22,21 +22,15 @@ _TITLE = "本章大纲"
 
 def _build_body(fields: dict) -> str:
     synopsis = (fields.get("synopsis") or "").strip()
-    time_setting = (fields.get("time_setting") or "").strip()
-    location = (fields.get("location") or "").strip()
     entities = fields.get("on_stage_entities") or {}
 
     parts: list[str] = []
     parts.append("### 主线")
     parts.append(synopsis or "（暂无大纲）")
 
-    if time_setting or location:
-        parts.append("\n### 时间地点")
-        if time_setting:
-            parts.append(f"时间：{time_setting}")
-        if location:
-            parts.append(f"地点：{location}")
-
+    # 时间 / 地点 由 single_agent_vars 的 time_location block 单独注入，
+    # 这里不再重复显示，避免「大纲 → 时间地点」与「时间与地点」section
+    # 同时出现造成冗余。
     ent_lines: list[str] = []
     for label, key in [
         ("涉及地点", "locations"),
@@ -71,9 +65,10 @@ def plan(
         for k in ("characters", "locations", "items", "organizations")
     )
     synopsis = (fields.get("synopsis") or "").strip()
-    time_setting = (fields.get("time_setting") or "").strip()
-    location = (fields.get("location") or "").strip()
-    if not (synopsis or time_setting or location or has_any_entity):
+    # 时间 / 地点 现在由 time_location block 独立注入，不再算 chapter_outline
+    # 的触发条件。当 chapter 只有 time/location、没有大纲也没有其他实体时，
+    # 这个 loader 直接跳过。
+    if not (synopsis or has_any_entity):
         return None
 
     body = _build_body(fields)

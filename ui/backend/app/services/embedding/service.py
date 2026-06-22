@@ -52,6 +52,46 @@ _AFFECTED_TABLES = [
 ]
 
 
+class EmbeddingBackendUnavailable(RuntimeError):
+    """Raised when the local embedding stack (sentence-transformers /
+    transformers / torch) is installed but broken at import time.
+
+    Common case: the user's transformers version no longer exports
+    ``EncoderDecoderCache`` (removed/renamed in newer releases), so
+    sentence-transformers' ``trainer`` import chain raises. Callers
+    that can degrade gracefully (commit_pipeline sub-tasks, prompt
+    loaders) catch this and skip themselves; callers that need
+    embeddings to function escalate to a 503.
+
+    Hold the original cause in ``__cause__`` so the operator log still
+    shows the underlying ImportError for diagnosis.
+    """
+
+
+_BACKEND_BROKEN_MARKERS = (
+    "EncoderDecoderCache",
+    "cannot import name",
+    "transformers.trainer",
+)
+
+
+def _looks_like_broken_backend(exc: BaseException) -> bool:
+    """Heuristic: is *this* exception the broken-transformers signature?
+
+    sentence-transformers wraps the underlying ImportError in its own
+    RuntimeError sometimes, so we check both the message and the chain.
+    """
+    cur: BaseException | None = exc
+    while cur is not None:
+        msg = str(cur)
+        if isinstance(cur, ImportError) and any(m in msg for m in _BACKEND_BROKEN_MARKERS):
+            return True
+        if any(m in msg for m in _BACKEND_BROKEN_MARKERS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 @dataclass
 class SwitchResult:
     """Returned by ``EmbeddingService.switch_model``."""
@@ -242,7 +282,19 @@ class EmbeddingService:
                 self._model, device=device, fp16=(device == "cuda"),
             )
         if not self._provider.is_loaded:
-            self._provider.load()
+            try:
+                self._provider.load()
+            except Exception as e:
+                # Detect the broken-transformers / EncoderDecoderCache import
+                # chain and surface a distinct exception so callers can
+                # decide whether to skip the task or escalate to the user.
+                # Anything else just re-raises as before.
+                if _looks_like_broken_backend(e):
+                    raise EmbeddingBackendUnavailable(
+                        "本地 embedding 后端无法加载（sentence-transformers / "
+                        "transformers 版本不兼容）：" + str(e)
+                    ) from e
+                raise
             # OOM fallback warnings only exist after load(); copy them
             # up so the API surface can hand them to the user.
             extra = getattr(self._provider, "load_warnings", None) or []

@@ -77,6 +77,15 @@ def _load_active_profile(db_path: str, platform: str, category: str) -> str:
     """Return a usable platform-directive body for the latest non-
     superseded profile (any confidence except ``'low'``).
 
+    Lookup order:
+      1. Exact match — ``platform = X AND category = Y``.
+      2. Platform-wide profile — ``platform = X AND category = ''``.
+         The MarketFeatureExtractionPage currently always submits with
+         ``category=""``, so most users land here even when their
+         project has a category set.
+      3. Any profile for the platform — last resort, picks whichever
+         row has the highest profile_version regardless of category.
+
     Prefer ``loader_payload`` (the 1000-char prose blob synthesized for
     direct prompt injection). When that column is empty (e.g. older
     rows, or the LLM forgot the field), fall back to a concatenation of
@@ -84,25 +93,47 @@ def _load_active_profile(db_path: str, platform: str, category: str) -> str:
     ``style_baseline`` + ``pacing_guidance`` so the user still gets a
     usable block.
     """
+    base_select = (
+        "SELECT loader_payload, profile_summary, "
+        "       style_baseline, signature_devices_description, "
+        "       pacing_guidance, confidence_label, category "
+        "FROM platform_profiles "
+        "WHERE platform = ? "
+        "AND superseded_by_profile_id IS NULL "
+        "AND (confidence_label IS NULL OR confidence_label != 'low') "
+    )
+    candidates: list[tuple[str, tuple]] = []
+    if category:
+        candidates.append((
+            base_select + "AND category = ? ORDER BY profile_version DESC LIMIT 1",
+            (platform, category),
+        ))
+    # Platform-wide profile (category='') — what the manual extractor saves.
+    candidates.append((
+        base_select + "AND (category = '' OR category IS NULL) "
+        "ORDER BY profile_version DESC LIMIT 1",
+        (platform,),
+    ))
+    # Last resort — any profile for the platform.
+    candidates.append((
+        base_select + "ORDER BY profile_version DESC LIMIT 1",
+        (platform,),
+    ))
+
+    row = None
     try:
         with sqlite3.connect(db_path) as con:
             con.row_factory = sqlite3.Row
-            row = con.execute(
-                "SELECT loader_payload, profile_summary, "
-                "       style_baseline, signature_devices_description, "
-                "       pacing_guidance, confidence_label "
-                "FROM platform_profiles "
-                "WHERE platform = ? AND category = ? "
-                "AND superseded_by_profile_id IS NULL "
-                "AND (confidence_label IS NULL OR confidence_label != 'low') "
-                "ORDER BY profile_version DESC LIMIT 1",
-                (platform, category),
-            ).fetchone()
+            for sql, params in candidates:
+                row = con.execute(sql, params).fetchone()
+                if row:
+                    break
     except sqlite3.OperationalError:
         return ""
     if not row:
         logger.debug(
-            "platform_directive: no active profile for %s/%s", platform, category)
+            "platform_directive: no active profile for platform=%r category=%r",
+            platform, category)
         return ""
     payload = (row["loader_payload"] or "").strip()
     if payload:
@@ -136,10 +167,11 @@ def plan(project_id: str, exclude: set | None = None) -> LoaderPlan | None:
         return None
 
     platform, category = _resolve_project_platform_category(db_path, project_id)
-    if not platform or not category:
+    # Allow a category-less project to still pick up the platform-wide
+    # profile (the manual-submit path always writes with category='').
+    if not platform:
         logger.debug(
-            "platform_directive: project %s missing platform=%r / category=%r",
-            project_id, platform, category)
+            "platform_directive: project %s has no platform set", project_id)
         return None
 
     payload = _load_active_profile(db_path, platform, category)

@@ -69,11 +69,31 @@ async def run(ctx: "SubTaskContext") -> dict[str, Any]:
     chapter_num = _resolve_chapter_num(ctx)
 
     # Embed via the shared EmbeddingService so model-key + cache stay
-    # in lockstep with the rest of the system.
+    # in lockstep with the rest of the system. If the local backend
+    # (sentence-transformers / transformers) is broken at import time
+    # — typically the EncoderDecoderCache mismatch on Windows envs —
+    # skip the task without retrying. Re-enqueueing every 60 s would
+    # spam the log; the user needs to fix their pip env once.
     from ui.backend.app.services.embedding import get_embedding_service
+    from ui.backend.app.services.embedding.service import (
+        EmbeddingBackendUnavailable,
+    )
     svc = get_embedding_service()
     model = svc.get_current_model()
-    raw = svc.embed_batch(chunks)
+    try:
+        raw = svc.embed_batch(chunks)
+    except EmbeddingBackendUnavailable as e:
+        logger.warning(
+            "chromadb_indexer: embedding backend unavailable, skipping. "
+            "Fix with `pip install -U \"transformers>=4.41\" "
+            "\"sentence-transformers>=2.7\"` or switch to a remote embedding "
+            "provider in Settings. Original error: %s", e,
+        )
+        return {
+            "status": "skipped",
+            "reason": "embedding_backend_unavailable",
+            "detail": str(e),
+        }
     import numpy as np
     embeddings = [np.frombuffer(b, dtype="float32").tolist() for b in raw if b]
     if len(embeddings) != len(chunks):

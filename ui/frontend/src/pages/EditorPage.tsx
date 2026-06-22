@@ -1511,7 +1511,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 面板">&#9654;</button>
           </div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
-            {([["outline", "RAG"], ["single", "单智能体创作"], ["cluster", "集群式智能体创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
+            {/* 多智能体（cluster / 导演模式）pipeline 已暂时下线，留给下一阶段
+                重做；当前 tab 仅保留：RAG / 单智能体 / 重写 / 评估。 */}
+            {([["outline", "RAG"], ["single", "智能体创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
             ))}
           </div>
@@ -2570,10 +2572,13 @@ type ContextManifest = {
   writing_knowledge: { id: string; title: string }[];
 };
 
-/** Normalize a persisted aiTab value (migrates the old "inspire" tab). */
+/** Normalize a persisted aiTab value. Cluster / 导演 multi-agent mode
+ *  is offline this iteration — any prior session that landed on cluster
+ *  falls back to single. */
 function normalizeAiTab(v: any): "outline" | "single" | "cluster" | "rewrite" | "eval" {
   if (v === "inspire" || v === "single") return "single";
-  if (v === "cluster" || v === "rewrite" || v === "eval") return v;
+  if (v === "cluster") return "single";
+  if (v === "rewrite" || v === "eval") return v;
   return "outline";
 }
 
