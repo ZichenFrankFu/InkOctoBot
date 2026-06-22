@@ -37,7 +37,13 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formName, setFormName] = useState("");
+  // 主分类 (大分类). Stored as `project.genre` for backward compat —
+  // the legacy schema column does double-duty as the top-level taxonomy.
   const [formGenre, setFormGenre] = useState("");
+  // 副分类. Stored as `project.category` (added by the
+  // _ensure_projects_market_columns migration). Sub options surfaced in
+  // the form are filtered to those whose `parent` matches `formGenre`.
+  const [formCategory, setFormCategory] = useState("");
   const [formPlatform, setFormPlatform] = useState("");
   const [formGender, setFormGender] = useState("");
   const [formSerialStatus, setFormSerialStatus] = useState("ongoing");
@@ -273,11 +279,14 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const handleCreate = async () => {
     if (!formName.trim()) return;
     const res = await apiPost<Project>("/api/data/projects", {
-      name: formName.trim(), genre: formGenre.trim() || undefined,
+      name: formName.trim(),
+      genre: formGenre.trim() || undefined,
+      category: formCategory.trim() || undefined,
       platform: formPlatform || undefined, gender_target: formGender || undefined,
       serial_status: formSerialStatus || undefined, synopsis: formSynopsis || undefined,
     });
-    setFormName(""); setFormGenre(""); setFormPlatform(""); setFormGender("");
+    setFormName(""); setFormGenre(""); setFormCategory("");
+    setFormPlatform(""); setFormGender("");
     setFormSerialStatus("ongoing"); setFormSynopsis(""); setShowForm(false);
     load();
     if (res?.id) onSelectProject(res.id);
@@ -286,11 +295,14 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const handleUpdate = async () => {
     if (!editingId || !formName.trim()) return;
     await apiPut(`/api/data/projects/${editingId}`, {
-      name: formName.trim(), genre: formGenre.trim() || undefined,
+      name: formName.trim(),
+      genre: formGenre.trim() || undefined,
+      category: formCategory.trim() || undefined,
       platform: formPlatform || undefined, gender_target: formGender || undefined,
       serial_status: formSerialStatus || undefined, synopsis: formSynopsis || undefined,
     });
-    setEditingId(null); setFormName(""); setFormGenre(""); setFormPlatform("");
+    setEditingId(null); setFormName(""); setFormGenre(""); setFormCategory("");
+    setFormPlatform("");
     setFormGender(""); setFormSerialStatus("ongoing"); setFormSynopsis(""); load();
   };
 
@@ -304,6 +316,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
   const startEdit = (p: Project, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingId(p.id); setFormName(p.name); setFormGenre(p.genre || "");
+    setFormCategory((p as any).category || "");
     setFormPlatform((p as any).platform || ""); setFormGender((p as any).gender_target || "");
     setFormSerialStatus((p as any).serial_status || "ongoing");
     setFormSynopsis((p as any).synopsis || ""); setShowForm(false);
@@ -311,6 +324,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
   const cancelForm = () => {
     setShowForm(false); setEditingId(null); setFormName(""); setFormGenre("");
+    setFormCategory("");
     setFormPlatform(""); setFormGender(""); setFormSerialStatus("ongoing"); setFormSynopsis("");
   };
 
@@ -681,31 +695,55 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                         onChange={e => {
                           const next = e.target.value;
                           setFormPlatform(next);
-                          // Clear genre when platform changes so users don't
-                          // carry over a 起点 大分类 into 番茄 (or vice versa).
+                          // Clear genre + category when platform changes so
+                          // users don't carry a 起点 主分类 into 番茄.
                           const prevProf = platformProfile(formPlatform);
                           const nextProf = platformProfile(next);
-                          if (prevProf.id !== nextProf.id) setFormGenre("");
+                          if (prevProf.id !== nextProf.id) {
+                            setFormGenre("");
+                            setFormCategory("");
+                          }
                         }}
                         style={{ width: "100%" }}>
                         <option value="">未选择</option>
                         {PLATFORMS.map(p => <option key={p} value={p}>{p}</option>)}
                       </select>
                     </div>
-                    <div className="field" style={{ flex: 2, minWidth: 200 }}>
+                    <div className="field" style={{ flex: 1, minWidth: 140 }}>
                       <label className="label">
-                        分类/题材
+                        主分类
                         {formPlatform && formCategoryOptions.main.length > 0 && (
                           <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
-                            （仅显示 {platformProfile(formPlatform).label} 的分类）
+                            （{platformProfile(formPlatform).label}）
                           </span>
                         )}
                       </label>
-                      <PlatformGenreSelect
+                      <PlatformMainCategorySelect
                         platform={formPlatform}
                         value={formGenre}
-                        onChange={setFormGenre}
+                        onChange={(v) => {
+                          setFormGenre(v);
+                          // 主分类 改变 → 副分类 清空，避免遗留不匹配的副类。
+                          setFormCategory("");
+                        }}
                         mainOptions={formCategoryOptions.main}
+                        loading={formCategoryLoading}
+                      />
+                    </div>
+                    <div className="field" style={{ flex: 1, minWidth: 140 }}>
+                      <label className="label">
+                        副分类
+                        {formGenre && (
+                          <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
+                            （限 {formGenre} 下）
+                          </span>
+                        )}
+                      </label>
+                      <PlatformSubCategorySelect
+                        platform={formPlatform}
+                        mainCategory={formGenre}
+                        value={formCategory}
+                        onChange={setFormCategory}
                         subOptions={formCategoryOptions.sub}
                         loading={formCategoryLoading}
                       />
@@ -1225,57 +1263,38 @@ function TrendingEmptyState({
 }
 
 
-/* ── PlatformGenreSelect ──
- * Restricts the project 题材 input to the catalog of the selected publish
- * platform. Renders the 大分类 / 类目 first, then the 副分类 / 标签 grouped
- * by parent so a 起点 author can pick 玄幻·东方玄幻 without having to type.
- * Falls back to a plain text input when no platform is picked (i.e. the
- * user genuinely wants free text) or when the platform has no catalog.
+/* ── PlatformMainCategorySelect ──
+ * 主分类 (大分类) 单选 — 平台未选时退化为自由文本，平台已选但目录还没
+ * 加载则显示占位提示。所选值会驱动 PlatformSubCategorySelect 的过滤。
  */
-function PlatformGenreSelect({
-  platform, value, onChange, mainOptions, subOptions, loading,
+function PlatformMainCategorySelect({
+  platform, value, onChange, mainOptions, loading,
 }: {
   platform: string;
   value: string;
   onChange: (v: string) => void;
   mainOptions: { key: string; label: string; count?: number }[];
-  subOptions: { key: string; label: string; parent?: string | null; count?: number }[];
   loading: boolean;
 }) {
-  const hasCatalog = mainOptions.length > 0 || subOptions.length > 0;
-  // 副分类 grouped by parent 大分类 so 起点's nested taxonomy reads cleanly
-  // in the dropdown / chip list.
-  const subsByParent = useMemo(() => {
-    const out: Record<string, { key: string; label: string; count?: number }[]> = {};
-    for (const s of subOptions) {
-      const p = (s.parent || "其他").trim() || "其他";
-      (out[p] ||= []).push(s);
-    }
-    return out;
-  }, [subOptions]);
-
-  if (!platform || (!loading && !hasCatalog)) {
+  if (!platform || (!loading && mainOptions.length === 0)) {
     return (
       <input
         className="input"
         value={value}
         onChange={e => onChange(e.target.value)}
-        placeholder={platform ? "该平台暂无分类数据，可手动填写" : "请先选择发布平台"}
+        placeholder={platform ? "该平台暂无主分类数据，可手动填写" : "请先选择发布平台"}
       />
     );
   }
-
   if (loading) {
     return (
       <div className="input" style={{ color: "var(--text-tertiary)", fontSize: 12 }}>
-        加载平台分类...
+        加载...
       </div>
     );
   }
-
-  const validValues = new Set([...mainOptions.map(o => o.key), ...subOptions.map(o => o.key)]);
+  const validValues = new Set(mainOptions.map(o => o.key));
   const valueValid = !value || validValues.has(value);
-
   return (
     <div>
       <select
@@ -1284,28 +1303,89 @@ function PlatformGenreSelect({
         onChange={e => onChange(e.target.value)}
         style={{ width: "100%" }}>
         <option value="">未选择</option>
-        {mainOptions.length > 0 && (
-          <optgroup label="大分类">
-            {mainOptions.map(o => (
-              <option key={o.key} value={o.key}>{o.label}</option>
-            ))}
-          </optgroup>
-        )}
-        {Object.entries(subsByParent).map(([parent, items]) => (
-          <optgroup key={parent} label={`副分类 · ${parent}`}>
-            {items.map(o => (
-              <option key={o.key} value={o.key}>
-                {parent !== "其他" ? `${parent}·${o.label}` : o.label}
-              </option>
-            ))}
-          </optgroup>
+        {mainOptions.map(o => (
+          <option key={o.key} value={o.key}>{o.label}</option>
         ))}
       </select>
       {!valueValid && (
         <div className="text-xs" style={{
           color: "var(--gold)", marginTop: 4, lineHeight: 1.5,
         }}>
-          原题材「{value}」不在所选平台的分类中。请从上方选择，或换一个平台。
+          原主分类「{value}」不在所选平台的目录中，请重新选择。
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── PlatformSubCategorySelect ──
+ * 副分类 单选 — 仅显示所属主分类 (parent === mainCategory) 的副分类。
+ * 主分类未选时禁用，但已选副分类值会保留显示作为弱提示。
+ */
+function PlatformSubCategorySelect({
+  platform, mainCategory, value, onChange, subOptions, loading,
+}: {
+  platform: string;
+  mainCategory: string;
+  value: string;
+  onChange: (v: string) => void;
+  subOptions: { key: string; label: string; parent?: string | null; count?: number }[];
+  loading: boolean;
+}) {
+  // Filter strictly by parent === mainCategory; subs without a known
+  // parent ("其他") only show when there's no main category to scope by.
+  const filtered = useMemo(() => {
+    if (!mainCategory) return [];
+    return subOptions.filter(s => (s.parent || "").trim() === mainCategory);
+  }, [subOptions, mainCategory]);
+
+  if (!platform) {
+    return (
+      <input className="input" value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="请先选择发布平台" disabled />
+    );
+  }
+  if (!mainCategory) {
+    return (
+      <input className="input" value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="请先选择主分类" disabled />
+    );
+  }
+  if (loading) {
+    return (
+      <div className="input" style={{ color: "var(--text-tertiary)", fontSize: 12 }}>
+        加载...
+      </div>
+    );
+  }
+  if (filtered.length === 0) {
+    return (
+      <input className="input" value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={`「${mainCategory}」下暂无副分类，可手动填写`} />
+    );
+  }
+  const validValues = new Set(filtered.map(o => o.key));
+  const valueValid = !value || validValues.has(value);
+  return (
+    <div>
+      <select
+        className="select"
+        value={valueValid ? value : ""}
+        onChange={e => onChange(e.target.value)}
+        style={{ width: "100%" }}>
+        <option value="">未选择</option>
+        {filtered.map(o => (
+          <option key={o.key} value={o.key}>{o.label}</option>
+        ))}
+      </select>
+      {!valueValid && (
+        <div className="text-xs" style={{
+          color: "var(--gold)", marginTop: 4, lineHeight: 1.5,
+        }}>
+          原副分类「{value}」不属于「{mainCategory}」，请重新选择。
         </div>
       )}
     </div>

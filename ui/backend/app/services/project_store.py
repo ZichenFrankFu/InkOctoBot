@@ -988,6 +988,12 @@ def _project_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
         "model_preset": r.get("model_preset") or "balanced",
         "created_at": r.get("created_at"),
         "updated_at": r.get("updated_at"),
+        # Dedicated columns added by _ensure_projects_market_columns.
+        # Prefer the real column; fall back to whatever's in
+        # style_profile_json.extra (legacy projects that were saved
+        # before upsert_project knew about these fields).
+        "platform": r.get("platform") or extra.get("platform") or "",
+        "category": r.get("category") or extra.get("category") or "",
     }
     # Restore frontend-only keys stashed in style_profile_json.
     for k, v in extra.items():
@@ -1023,11 +1029,24 @@ def upsert_project(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
         "id", "name", "genre", "description", "status",
         "current_chapter", "current_volume", "world_book_path",
         "model_preset", "created_at", "updated_at",
+        # These three live in their own columns (added by
+        # _ensure_projects_market_columns), but the frontend ships them
+        # in the same flat body — keep them out of the ``extra`` blob so
+        # the platform_market loader can read the real columns.
+        "platform", "category",
     }
     extra = {k: v for k, v in body.items() if k not in known_cols}
     status = body.get("status", "planning")
     if status not in {"planning", "writing", "paused", "completed"}:
         status = "planning"
+
+    platform = str(body.get("platform") or "").strip()
+    # 副分类 / 主分类 — frontend now sends both. Older projects only
+    # carry a single ``genre`` which historically conflated the two; we
+    # keep that backward compatibility by leaving ``genre`` as whatever
+    # the caller sends, and only mirroring 副分类 into the dedicated
+    # ``category`` column (used by the platform_market loader).
+    category = str(body.get("category") or "").strip()
 
     with open_db(db_path) as con:
         con.execute(
@@ -1060,6 +1079,22 @@ def upsert_project(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
              json.dumps(extra, ensure_ascii=False),
              body.get("model_preset", "balanced")),
         )
+        # Platform + category live in dedicated columns added by the
+        # _ensure_projects_market_columns migration. Update them separately
+        # so the legacy INSERT statement above (which doesn't list them)
+        # doesn't need touching — and so projects on a schema without the
+        # migration silently degrade instead of crashing.
+        try:
+            con.execute(
+                "UPDATE projects SET platform = ?, category = ? "
+                "WHERE project_id = ?",
+                (platform, category, pid),
+            )
+        except sqlite3.OperationalError:
+            # platform / category columns don't exist on this schema —
+            # the values are still preserved in style_profile_json.extra
+            # so a later migration can backfill them.
+            pass
         con.commit()
     saved = get_project(db_path, pid)
     if saved is None:  # pragma: no cover

@@ -206,5 +206,68 @@ class TestProjectMemory(unittest.TestCase):
             project_store.add_project_memory(self.db, "p1", "  ")
 
 
+class TestProjectsPlatformCategory(unittest.TestCase):
+    """upsert_project must persist platform + category into the dedicated
+    columns so the platform_market loader's project lookup works.
+
+    Regression: previously these two fields fell into the catch-all
+    ``style_profile_json`` extra blob, leaving ``projects.platform`` /
+    ``projects.category`` empty → loader skipped silently.
+    """
+
+    def setUp(self) -> None:
+        from storage.project_schema import _ensure_projects_market_columns
+
+        self.db = os.path.join(tempfile.mkdtemp(), "p.db")
+        con = sqlite3.connect(self.db)
+        con.execute("PRAGMA foreign_keys=ON")
+        ensure_creation_tables(con)
+        _ensure_projects_market_columns(con)
+        con.commit()
+        con.close()
+
+    def test_upsert_writes_platform_and_category_columns(self) -> None:
+        project_store.upsert_project(self.db, {
+            "id": "p1", "name": "test", "platform": "起点",
+            "genre": "玄幻", "category": "东方玄幻",
+        })
+        with sqlite3.connect(self.db) as con:
+            con.row_factory = sqlite3.Row
+            row = con.execute(
+                "SELECT platform, category, genre FROM projects "
+                "WHERE project_id = 'p1'"
+            ).fetchone()
+        self.assertEqual(row["platform"], "起点")
+        self.assertEqual(row["category"], "东方玄幻")
+        self.assertEqual(row["genre"], "玄幻")
+
+    def test_get_project_returns_platform_and_category(self) -> None:
+        project_store.upsert_project(self.db, {
+            "id": "p1", "name": "test", "platform": "番茄",
+            "category": "都市生活",
+        })
+        proj = project_store.get_project(self.db, "p1")
+        self.assertIsNotNone(proj)
+        self.assertEqual(proj["platform"], "番茄")
+        self.assertEqual(proj["category"], "都市生活")
+
+    def test_upsert_does_not_double_stash_in_style_profile(self) -> None:
+        """``platform`` / ``category`` must NOT land in ``style_profile_json``
+        — that's what the regression was."""
+        import json
+        project_store.upsert_project(self.db, {
+            "id": "p1", "name": "test", "platform": "起点",
+            "category": "都市", "custom_field": "should-be-in-extra",
+        })
+        with sqlite3.connect(self.db) as con:
+            (raw,) = con.execute(
+                "SELECT style_profile_json FROM projects WHERE project_id='p1'"
+            ).fetchone()
+        extra = json.loads(raw or "{}")
+        self.assertNotIn("platform", extra)
+        self.assertNotIn("category", extra)
+        self.assertEqual(extra.get("custom_field"), "should-be-in-extra")
+
+
 if __name__ == "__main__":
     unittest.main()

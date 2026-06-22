@@ -50,24 +50,46 @@ _TOP_N_VOCAB = 12              # top-N genre vocabulary terms
 
 
 def _resolve_project_platform_category(db_path: str, project_id: str) -> tuple[str, str]:
+    """Pull (platform, category) for ``project_id`` from the projects row.
+
+    The dedicated columns are added by ``_ensure_projects_market_columns``
+    and written by ``project_store.upsert_project``. Legacy projects
+    (created before upsert wrote them) only have these values stashed in
+    ``style_profile_json``'s extra blob — fall back to that so older
+    rows still resolve without a separate backfill migration.
+
+    Returns ``("", "")`` when the row is missing or the columns are
+    absent on the schema.
+    """
     try:
         with sqlite3.connect(db_path) as con:
             con.row_factory = sqlite3.Row
-            # The projects table may not have platform/category columns
-            # in older schemas — wrap in try so loader skips cleanly.
             row = con.execute(
                 "SELECT * FROM projects WHERE project_id = ?",
                 (project_id,),
             ).fetchone()
-        if not row:
-            return "", ""
-        d = dict(row)
-        return (
-            str(d.get("platform") or "").strip(),
-            str(d.get("category") or d.get("genre") or "").strip(),
-        )
     except sqlite3.OperationalError:
         return "", ""
+    if not row:
+        return "", ""
+    d = dict(row)
+    platform = str(d.get("platform") or "").strip()
+    category = str(d.get("category") or "").strip()
+    if not platform or not category:
+        # Legacy fallback: pull from style_profile_json.extra.
+        try:
+            extra = json.loads(d.get("style_profile_json") or "{}") or {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            extra = {}
+        if not platform:
+            platform = str(extra.get("platform") or "").strip()
+        if not category:
+            category = str(extra.get("category") or "").strip()
+    if not category:
+        # Last fallback: legacy ``genre`` column did double-duty as a
+        # category label.
+        category = str(d.get("genre") or "").strip()
+    return platform, category
 
 
 def _coerce_payload_field(raw) -> str:
