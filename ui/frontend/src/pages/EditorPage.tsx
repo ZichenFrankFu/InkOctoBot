@@ -2774,7 +2774,12 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
                     <RAGLoaderRow key={expected.title}
                       title={expected.title}
                       hint={expected.hint}
-                      body={body} present={present} color={color} />
+                      body={body} present={present} color={color}
+                      diagnoseUrl={
+                        expected.source === "platform_directive" && projectId
+                          ? `/api/generation/diagnose/platform-directive/${projectId}`
+                          : undefined
+                      } />
                   ))}
                 </div>
               </div>
@@ -2787,12 +2792,28 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
 }
 
 /** Single row in RAGLoaderList — default-expanded; summary footer shows
- *  ^ when open and ▾ when collapsed; future toggling is purely visual via
- *  the native <details> element. */
-function RAGLoaderRow({ title, hint, body, present, color }: {
+ *  ▴ when open and ▾ when collapsed. The optional `diagnoseUrl` exposes
+ *  a "诊断" toggle that fetches a JSON dump from the backend explaining
+ *  why the loader was empty (used by the 平台风格 row — answers the
+ *  recurring "市场特征提取 tabs work but loader says 未注入" question). */
+function RAGLoaderRow({ title, hint, body, present, color, diagnoseUrl }: {
   title: string; hint: string; body: string; present: boolean; color: string;
+  diagnoseUrl?: string;
 }) {
   const [open, setOpen] = useState(true);
+  const [diag, setDiag] = useState<any>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const { toast } = useToast();
+  const loadDiag = useCallback(async () => {
+    if (!diagnoseUrl) return;
+    setDiagLoading(true);
+    try {
+      const r = await apiGet<any>(diagnoseUrl);
+      setDiag(r);
+    } catch (e: any) {
+      toast(`诊断失败：${e?.message || ""}`, "error");
+    } finally { setDiagLoading(false); }
+  }, [diagnoseUrl, toast]);
   return (
     <details open={open}
       onToggle={e => setOpen((e.currentTarget as HTMLDetailsElement).open)}
@@ -2816,6 +2837,16 @@ function RAGLoaderRow({ title, hint, body, present, color }: {
         }} />
         <strong>{title}</strong>
         <span style={{ flex: 1 }} />
+        {diagnoseUrl && (
+          <button onClick={e => { e.preventDefault(); e.stopPropagation(); loadDiag(); }}
+            style={{
+              fontSize: 9, padding: "1px 6px", borderRadius: 8,
+              border: "1px solid var(--border)", background: "transparent",
+              color: "var(--text-tertiary)", cursor: "pointer", flexShrink: 0,
+            }} title="查看 loader 真实看到的数据">
+            {diagLoading ? "..." : "诊断"}
+          </button>
+        )}
         <span style={{
           fontSize: 10, color: present ? color : "var(--text-disabled)",
           fontWeight: 600, flexShrink: 0,
@@ -2847,6 +2878,15 @@ function RAGLoaderRow({ title, hint, body, present, color }: {
             ↳ {hint}
           </div>
         )
+      )}
+      {diag && (
+        <pre style={{
+          marginTop: 6, padding: 8, background: "var(--bg-app)",
+          fontSize: 10, lineHeight: 1.5, fontFamily: "var(--font-mono)",
+          color: "var(--text-secondary)",
+          maxHeight: 280, overflow: "auto", borderRadius: 4,
+          whiteSpace: "pre-wrap", wordBreak: "break-word",
+        }}>{JSON.stringify(diag, null, 2)}</pre>
       )}
     </details>
   );

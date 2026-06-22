@@ -339,6 +339,22 @@ def health():
     return {"status": "ok", "router": "generation"}
 
 
+@router.get("/diagnose/platform-directive/{project_id}")
+def diagnose_platform_directive(project_id: str) -> dict:
+    """Debug "loader says 未注入 but the 市场特征提取 tabs show data".
+
+    Returns the trail of values the platform_directive loader sees for
+    this project: resolved platform/category, every stored platform
+    identifier discovered across the project DB + crawler DB, the
+    matched alias list, and which source (synthesized profile / aggregated
+    stats / opening_nlp cache / analysis_run trend cache / crawler-DB
+    direct aggregate) had content. Hitting this endpoint reveals exactly
+    where the chain breaks.
+    """
+    from ui.backend.app.services.prompt_context.loaders import platform_market
+    return platform_market.diagnose(project_id)
+
+
 @router.get("/cost-estimate")
 def cost_estimate(
     project_id: str = "",

@@ -847,3 +847,66 @@ def plan(project_id: str, exclude: set | None = None) -> LoaderPlan | None:
 def load(project_id: str, exclude: set | None = None) -> str:
     p = plan(project_id, exclude)
     return p.render(p.target) if p else ""
+
+
+def diagnose(project_id: str) -> dict:
+    """Step-by-step report on what the loader sees for ``project_id``.
+
+    Returns a JSON-serializable dict listing the project's resolved
+    platform / category, every stored platform identifier found in
+    each data source, the matched aliases, and per-source flags telling
+    whether ``_build_from_market_data`` was able to read content. Use
+    this to debug "loader says 未注入 but I have data" — the report
+    reveals which source the project's platform string failed to match.
+    """
+    try:
+        from ui.backend.app.services.project_paths import get_db_path
+        db_path = get_db_path()
+    except Exception as e:
+        return {"error": f"could not resolve project db: {e}"}
+    crawler_db = _crawler_db_path()
+
+    platform, category = _resolve_project_platform_category(db_path, project_id)
+    stored = _scan_stored_platforms(db_path, crawler_db)
+    matches = _data_driven_platform_matches(db_path, platform, crawler_db)
+
+    profile_body = _load_active_profile(db_path, platform, category) if platform else ""
+    aggregated = _load_aggregated_stats(db_path, platform, category) if platform else None
+    opening_nlp = _load_opening_nlp_cache(db_path, platform) if platform else None
+    trend = _load_analysis_run_cache(db_path, platform) if platform else None
+    crawler_agg = (
+        _load_crawler_aggregates(crawler_db, matches, category)
+        if (crawler_db and matches) else {}
+    )
+
+    rendered = ""
+    if platform:
+        body = profile_body or _build_from_market_data(db_path, platform, category)
+        if body:
+            rendered = section(_TITLE, body)
+
+    return {
+        "project_id":          project_id,
+        "project_db_path":     db_path,
+        "crawler_db_path":     crawler_db or "(not configured / file missing)",
+        "project_platform":    platform,
+        "project_category":    category,
+        "stored_platforms":    stored,
+        "matched_aliases":     matches,
+        "sources": {
+            "platform_profiles":          {"present": bool(profile_body),
+                                            "preview": (profile_body or "")[:160]},
+            "category_aggregated_stats":  {"present": bool(aggregated),
+                                            "keys": sorted((aggregated or {}).keys())[:8]},
+            "opening_nlp_cache":          {"present": bool(opening_nlp),
+                                            "sample_count": (opening_nlp or {}).get("sample_count")},
+            "analysis_run_v4_cache":      {"present": bool(trend),
+                                            "tag_rollup_n": len((trend or {}).get("tag_rollup") or [])},
+            "crawler_db_aggregates":      {"present": bool(crawler_agg),
+                                            "novel_count": crawler_agg.get("novel_count"),
+                                            "main_categories": len(crawler_agg.get("main_categories") or []),
+                                            "top_tags": len(crawler_agg.get("top_tags") or [])},
+        },
+        "rendered_length": len(rendered),
+        "rendered_preview": rendered[:600],
+    }
