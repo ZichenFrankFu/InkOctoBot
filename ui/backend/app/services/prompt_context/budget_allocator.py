@@ -54,7 +54,7 @@ LOADER_BUDGETS: dict[str, dict[str, int]] = {
     # tier 3 — 补充
     "reference":                  {"min":  800, "target": 2400, "max": 3600, "tier": 3},
     "inspiration":                {"min":  200, "target":  600, "max":  900, "tier": 3},
-    "platform_directive":         {"min":  150, "target":  400, "max":  600, "tier": 3},
+    "platform_directive":         {"min":  200, "target":  900, "max": 1400, "tier": 3},
     "user_preferences":           {"min":  200, "target":  500, "max":  800, "tier": 3},
     # tier 4 — 系统
     "market_overview":            {"min":  600, "target": 1500, "max": 2000, "tier": 4},
