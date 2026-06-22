@@ -9,9 +9,15 @@ Returns ``None`` when:
 - the project has no platform / category set, or
 - no profile exists for that pair, or
 - the latest profile is confidence='low' (per spec § 五).
+
+Confidence labels we surface: ``high``, ``medium`` (auto-extracted
+profile that passed holdout similarity), ``manual`` (user-submitted via
+the Web-LLM workflow), and ``NULL`` (auto-extracted but holdout was
+never scored). Only ``low`` is filtered out.
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 
@@ -47,22 +53,79 @@ def _resolve_project_platform_category(db_path: str, project_id: str) -> tuple[s
         return "", ""
 
 
+def _coerce_payload_field(raw) -> str:
+    """``style_baseline`` / ``pacing_guidance`` may be stored as either
+    plain prose or a JSON blob; render either as a single line."""
+    if not raw:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    if text.startswith("{") or text.startswith("["):
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            return text
+        if isinstance(obj, dict):
+            return "；".join(f"{k}：{v}" for k, v in obj.items() if v)
+        if isinstance(obj, list):
+            return "；".join(str(x) for x in obj if x)
+    return text
+
+
 def _load_active_profile(db_path: str, platform: str, category: str) -> str:
-    """Return the loader_payload for the latest non-superseded profile
-    with confidence in {'high', 'medium'}. Empty string if none."""
+    """Return a usable platform-directive body for the latest non-
+    superseded profile (any confidence except ``'low'``).
+
+    Prefer ``loader_payload`` (the 1000-char prose blob synthesized for
+    direct prompt injection). When that column is empty (e.g. older
+    rows, or the LLM forgot the field), fall back to a concatenation of
+    ``profile_summary`` + ``signature_devices_description`` +
+    ``style_baseline`` + ``pacing_guidance`` so the user still gets a
+    usable block.
+    """
     try:
         with sqlite3.connect(db_path) as con:
+            con.row_factory = sqlite3.Row
             row = con.execute(
-                "SELECT loader_payload FROM platform_profiles "
+                "SELECT loader_payload, profile_summary, "
+                "       style_baseline, signature_devices_description, "
+                "       pacing_guidance, confidence_label "
+                "FROM platform_profiles "
                 "WHERE platform = ? AND category = ? "
                 "AND superseded_by_profile_id IS NULL "
-                "AND (confidence_label IS NULL OR confidence_label IN ('high', 'medium')) "
+                "AND (confidence_label IS NULL OR confidence_label != 'low') "
                 "ORDER BY profile_version DESC LIMIT 1",
                 (platform, category),
             ).fetchone()
     except sqlite3.OperationalError:
         return ""
-    return (row[0] or "").strip() if row else ""
+    if not row:
+        logger.debug(
+            "platform_directive: no active profile for %s/%s", platform, category)
+        return ""
+    payload = (row["loader_payload"] or "").strip()
+    if payload:
+        return payload
+    # Synthesize a fallback body from the structured fields.
+    parts: list[str] = []
+    summary = (row["profile_summary"] or "").strip()
+    if summary:
+        parts.append(summary)
+    devices = (row["signature_devices_description"] or "").strip()
+    if devices:
+        parts.append(f"代表手法：{devices}")
+    style = _coerce_payload_field(row["style_baseline"])
+    if style:
+        parts.append(f"风格基线：{style}")
+    pacing = _coerce_payload_field(row["pacing_guidance"])
+    if pacing:
+        parts.append(f"节奏指南：{pacing}")
+    if not parts:
+        logger.debug(
+            "platform_directive: profile exists for %s/%s but all body fields blank",
+            platform, category)
+    return "\n".join(parts).strip()
 
 
 def plan(project_id: str, exclude: set | None = None) -> LoaderPlan | None:
@@ -74,6 +137,9 @@ def plan(project_id: str, exclude: set | None = None) -> LoaderPlan | None:
 
     platform, category = _resolve_project_platform_category(db_path, project_id)
     if not platform or not category:
+        logger.debug(
+            "platform_directive: project %s missing platform=%r / category=%r",
+            project_id, platform, category)
         return None
 
     payload = _load_active_profile(db_path, platform, category)

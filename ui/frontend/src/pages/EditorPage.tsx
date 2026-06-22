@@ -104,23 +104,9 @@ function formatSceneDirectorOutput(result: any): string {
   return output;
 }
 
-// MIN_SAVE_CHARS — physical guard against the "saved 0-char text_versions"
-// disaster the user hit (see docs/UI_REDESIGN_SPEC.md §3). If the editor
-// content is below this, save-paths confirm before writing. 50 chars is
-// well below any real chapter and well above any conceivable empty paste.
-const MIN_SAVE_CHARS = 50;
-
-/** Returns true if the user wants to save anyway, false to abort. */
-function confirmShortSave(chars: number): boolean {
-  return window.confirm(
-    ` 内容只有 ${chars} 字 (< ${MIN_SAVE_CHARS} 字推荐下限)。\n\n` +
-    `这是过去几次"text_versions 0 字符"灾难的根因。常见原因：\n` +
-    `  • LLM 调用其实没返回内容\n` +
-    `  • 粘贴到了错误的输入框\n` +
-    `  • 编辑器内容被清空后误点了保存\n\n` +
-    `仍然要保存吗？`
-  );
-}
+// Chapter-content save / existing_content loader 没有字数下限 — 用户
+// 显式禁用了之前的 MIN_SAVE_CHARS 守卫，所以即使 0 字内容也会写入
+// text_versions / chapter row。
 
 export default function EditorPage({ projectId, onNavigate }: { projectId: string; onNavigate?: (tab: string) => void }) {
   const { toast } = useToast();
@@ -316,10 +302,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     if (autoVersionTimer.current) clearTimeout(autoVersionTimer.current);
     autoVersionTimer.current = setTimeout(() => {
       if (content === lastAutoVersionContent.current) return;
-      // Skip when content is below the save-disaster floor — auto-save
-      // runs silently in the background so it can't even prompt the
-      // user; just never write below MIN_SAVE_CHARS.
-      if (content.trim().length < MIN_SAVE_CHARS) return;
       lastAutoVersionContent.current = content;
       const newVersion: TextVersion = {
         version_id: vuid(), chapter_id: activeChId,
@@ -386,7 +368,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     // Persist the editor state first — same path as 自动保存 + manual button.
     await handleSaveOutline();
     if (chars === 0) return;        // nothing to snapshot
-    if (chars < MIN_SAVE_CHARS && !confirmShortSave(chars)) return;
     const newVersion: TextVersion = {
       version_id: vuid(), chapter_id: activeChId,
       version: versionHistory.filter(v => v.chapter_id === activeChId).length + 1,
@@ -1279,17 +1260,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       };
       setVersionHistory(prev => [...prev, prevVersion]);
     }
-    // Char-count guard before persisting an "AI version" — the
-    // recurring "saved 0 chars" path. Empty/short LLM output should
-    // not silently produce a text_versions row.
-    const finalChars = (finalText || "").trim().length;
-    if (finalChars < MIN_SAVE_CHARS) {
-      if (!confirmShortSave(finalChars)) {
-        toast("已取消保存（内容过短）", "error");
-        setMergePreview(null);
-        return;
-      }
-    }
     setContent(finalText);
     // Save AI version
     const aiVersion: TextVersion = {
@@ -1422,10 +1392,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                 onClick={() => {
                   // Save current state as a version
                   if (!activeChId || !content) return;
-                  // Char-count guard — prevents the 0-char text_versions
-                  // disaster (see MIN_SAVE_CHARS docstring above).
-                  const chars = content.trim().length;
-                  if (chars < MIN_SAVE_CHARS && !confirmShortSave(chars)) return;
                   const newVersion: TextVersion = {
                     version_id: vuid(), chapter_id: activeChId,
                     version: versionHistory.filter(v => v.chapter_id === activeChId).length + 1,
@@ -1667,7 +1633,7 @@ function EventRow({ ev, on, onToggle }: {
         }}>{ev.name}</span>
         {ev.description && (
           <span onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
-            {expanded ? "收起 ^" : "详情 ▾"}
+            {expanded ? "收起 ▴" : "详情 ▾"}
           </span>
         )}
       </div>
@@ -1947,7 +1913,7 @@ function ReferenceLinkSection({
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-          {expanded ? "^" : "▾"}
+          {expanded ? "▴" : "▾"}
         </span>
       </button>
       {!expanded ? (
@@ -2158,7 +2124,7 @@ function CharacterRefRow({ c, on, onToggle }: {
         }}>{c.name}</span>
         {c.description && (
           <span onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
-            {expanded ? "收起 ^" : "详情 ▾"}
+            {expanded ? "收起 ▴" : "详情 ▾"}
           </span>
         )}
       </div>
@@ -2187,7 +2153,7 @@ function EntryRow({ e, on, onToggle }: {
         }}>{e.title}</span>
         {e.content && (
           <span onClick={() => setExpanded(x => !x)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
-            {expanded ? "收起 ^" : "详情 ▾"}
+            {expanded ? "收起 ▴" : "详情 ▾"}
           </span>
         )}
       </div>
@@ -2855,7 +2821,7 @@ function RAGLoaderRow({ title, hint, body, present, color }: {
           fontSize: 11, color: "var(--text-tertiary)", flexShrink: 0,
           width: 12, textAlign: "center",
         }}>
-          {open ? "^" : "▾"}
+          {open ? "▴" : "▾"}
         </span>
       </summary>
       {present ? (

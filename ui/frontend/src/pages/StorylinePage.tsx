@@ -225,22 +225,35 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
           }));
           const nextChars = Array.from(charUnion).sort();
           const prevChars = (c.characters || []).slice().sort();
-          // Time / location: pick from the FIRST 情节 card that has a value.
-          // Aggregating multiple cards as "x → y" runs into ordering issues
-          // and the loader only accepts a single string anyway.
-          const firstTime = chapterNodes.map(n => (n.time || "").trim()).find(Boolean) || "";
-          const firstLoc = chapterNodes.map(n => (n.location || "").trim()).find(Boolean) || "";
+          // Time / location: union the non-empty values from EVERY 情节
+          // card in the chapter, preserving card order, de-duping repeats.
+          // The loader renders them as a single line each, so we join with
+          // "；". 允许部分情节卡为空：那些卡片直接跳过，剩下的依然合并。
+          const collect = (key: "time" | "location") => {
+            const seen = new Set<string>();
+            const out: string[] = [];
+            for (const n of chapterNodes) {
+              const v = (n[key] || "").trim();
+              if (!v || seen.has(v)) continue;
+              seen.add(v);
+              out.push(v);
+            }
+            return out.join("；");
+          };
+          const nextTime = collect("time");
+          const nextLoc = collect("location");
           const charsChanged = JSON.stringify(nextChars) !== JSON.stringify(prevChars);
-          const timeChanged = firstTime !== ((c.time || "").trim());
-          const locChanged = firstLoc !== ((c.location || "").trim());
+          const timeChanged = nextTime !== ((c.time || "").trim());
+          const locChanged = nextLoc !== ((c.location || "").trim());
           if (!charsChanged && !timeChanged && !locChanged) return c;
           changed = true;
           const next: any = { ...c };
           if (charsChanged) next.characters = nextChars;
-          // Only overwrite when the storyline has a value — never wipe the
-          // editor's own picks just because all 情节 cards are blank.
-          if (timeChanged && firstTime) next.time = firstTime;
-          if (locChanged && firstLoc) next.location = firstLoc;
+          // Only overwrite when the storyline has at least one value —
+          // never wipe the editor's own picks just because every 情节
+          // card is blank.
+          if (timeChanged && nextTime) next.time = nextTime;
+          if (locChanged && nextLoc) next.location = nextLoc;
           return next;
         }),
       }));

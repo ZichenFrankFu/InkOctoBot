@@ -663,9 +663,11 @@ def single_agent_vars(
         blocks["characters_block"] = ""
 
     existing = (existing_content or "").strip()
+    # 用户显式要求 已有正文 loader 无字数下限 —— 只要 chapter.content 非空
+    # 就注入。完全空时仍跳过（避免给 prompt 写一个空 section）。
     blocks["existing_content"] = (
         section("已有正文（需在此基础上续写，保持风格一致）", existing[-800:])
-        if len(existing) > 10
+        if existing
         else ""
     )
 
