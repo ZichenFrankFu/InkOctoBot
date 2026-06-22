@@ -568,6 +568,7 @@ def single_agent_vars(
     skills: list[str] | None = None,
     referenced_events: list[dict] | None = None,
     referenced_inspirations: list[dict] | None = None,
+    referenced_settings: list[dict] | None = None,
     db_path: str | None = None,
     chapter_id: str = "",
     rag_excludes: list[str] | None = None,
@@ -613,6 +614,8 @@ def single_agent_vars(
                 referenced_events = _cf.get("referenced_events") or []
             if not referenced_inspirations:
                 referenced_inspirations = _cf.get("referenced_inspirations") or []
+            if not referenced_settings:
+                referenced_settings = _cf.get("referenced_settings") or []
         except Exception as _e:
             logger.debug("single_agent_vars chapter fallback skipped: %s", _e)
 
@@ -665,5 +668,6 @@ def single_agent_vars(
     blocks["skills_block"] = ""
     blocks["referenced_materials"] = build_referenced_materials_block(
         referenced_events, referenced_inspirations, db_path or "",
+        settings=referenced_settings,
     )
     return blocks

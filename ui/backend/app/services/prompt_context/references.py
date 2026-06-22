@@ -186,15 +186,23 @@ def build_referenced_materials_block(
     events: list[dict] | None,
     inspirations: list[dict] | None,
     db_path: str = "",
+    settings: list[dict] | None = None,
 ) -> str:
-    """Build the chapter's reference block from its 大纲-tab linked events
-    and inspirations. Each referenced work is enriched from the reference
-    database with its full-book plot outline, character roster and
-    rhythm / payoff / hook profile."""
+    """Build the chapter's reference block from its 大纲-tab linked events,
+    settings and inspirations. Each referenced work is enriched from the
+    reference database with its full-book plot outline, character roster
+    and rhythm / payoff / hook profile."""
     by_work: dict[str, list[dict]] = {}
     for e in (events or []):
         rid = str(e.get("ref_id") or e.get("work_title") or e.get("ref_title") or "")
         by_work.setdefault(rid, []).append(e)
+    settings_by_work: dict[str, list[dict]] = {}
+    for s in (settings or []):
+        rid = str(s.get("ref_id") or s.get("work_title") or "")
+        settings_by_work.setdefault(rid, []).append(s)
+    # Make sure works that only have settings (no events) still get a block.
+    for rid in settings_by_work:
+        by_work.setdefault(rid, [])
     rdb = None
     if db_path and by_work:
         try:
@@ -204,7 +212,8 @@ def build_referenced_materials_block(
             rdb = None
     blocks: list[str] = []
     for rid, evs in by_work.items():
-        wt = str(evs[0].get("work_title") or evs[0].get("ref_title") or rid).strip()
+        first = evs[0] if evs else (settings_by_work.get(rid) or [{}])[0]
+        wt = str(first.get("work_title") or first.get("ref_title") or rid).strip()
         seg = [f"《{wt}》"]
         work = None
         if rdb is not None:
@@ -231,6 +240,15 @@ def build_referenced_materials_block(
             ev_lines.append(f"- {head}：{desc}" if desc else f"- {head}")
         if ev_lines:
             seg.append("关联事件（user 选取）：\n" + "\n".join(ev_lines))
+        se_lines: list[str] = []
+        for s in settings_by_work.get(rid, []):
+            lab = str(s.get("label") or "").strip()
+            content = str(s.get("content") or "").strip()
+            if not lab and not content:
+                continue
+            se_lines.append(f"- {lab}：{content}" if lab else f"- {content}")
+        if se_lines:
+            seg.append("关联设定（user 选取）：\n" + "\n".join(se_lines))
         if len(seg) > 1:
             blocks.append("\n".join(seg))
     insp_lines: list[str] = []

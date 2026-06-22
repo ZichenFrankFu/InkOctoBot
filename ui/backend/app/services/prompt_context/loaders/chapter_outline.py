@@ -39,7 +39,6 @@ def _build_body(fields: dict) -> str:
 
     ent_lines: list[str] = []
     for label, key in [
-        ("出场角色", "characters"),
         ("涉及地点", "locations"),
         ("涉及物品", "items"),
         ("涉及组织", "organizations"),

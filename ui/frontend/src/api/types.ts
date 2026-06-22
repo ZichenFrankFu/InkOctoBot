@@ -276,6 +276,8 @@ export interface ChapterOutline {
   references?: string[];
   /** Chronicle events linked from reference works (denormalized text). */
   referenced_events?: { ref_id: string; work_title: string; name: string; description: string; chapter?: string }[];
+  /** Setting / worldview items linked from reference works (denormalized text). */
+  referenced_settings?: { ref_id: string; work_title: string; label: string; content: string }[];
   /** Inspirations linked from the 灵感库 (denormalized text). */
   referenced_inspirations?: { id: string; category: string; title: string; content: string }[];
   /** Map of real character name -> alias for hidden identity (e.g. "李悦" -> "神秘女人") */
@@ -418,10 +420,6 @@ export interface StoryNode {
    *  stays active unless the user also fully-resolves in the 总览栏. */
   thread_statuses?: Record<string, string>;
   hook_statuses?: Record<string, string>;
-  /** Associated reference works (参考作品) — IDs of works in the
-   *  /api/references/works registry. Mirrors the editor chapter's
-   *  `references` field; storyline page is now the source of truth. */
-  reference_ids?: string[];
 }
 
 export interface StoryEdge {

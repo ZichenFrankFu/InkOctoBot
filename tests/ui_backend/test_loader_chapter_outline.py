@@ -80,7 +80,10 @@ class TestChapterOutlineLoader(unittest.TestCase):
         self.assertIn("决战幽冥谷", out)
         self.assertIn("时间：神武 5012 春", out)
         self.assertIn("地点：幽冥谷主洞", out)
-        self.assertIn("出场角色：张远, 李清漪", out)
+        # 出场角色 is intentionally NOT in chapter_outline — it has its
+        # own dedicated `characters_block` in single_agent_vars, so the
+        # 大纲 only carries non-character entities.
+        self.assertNotIn("出场角色：", out)
         self.assertIn("涉及地点：幽冥谷, 青云山", out)
         self.assertIn("涉及物品：玉佩", out)
         self.assertIn("涉及组织：玄阴宗", out)

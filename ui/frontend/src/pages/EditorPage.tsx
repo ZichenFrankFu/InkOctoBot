@@ -1609,6 +1609,40 @@ function workEvents(plotJson: any): { name: string; description: string; chapter
   return out;
 }
 
+/** Flatten a reference work's settings_json into a flat (label, content) list. */
+function workSettings(settingsJson: any): { label: string; content: string }[] {
+  let s: any = settingsJson;
+  if (typeof settingsJson === "string") {
+    try { s = JSON.parse(settingsJson); } catch { return []; }
+  }
+  const out: { label: string; content: string }[] = [];
+  if (s && typeof s === "object" && !Array.isArray(s)) {
+    for (const [label, value] of Object.entries(s)) {
+      const lab = String(label || "").trim();
+      if (!lab) continue;
+      let body = "";
+      if (typeof value === "string") body = value;
+      else if (Array.isArray(value)) body = value.map(v => String(v)).join("；");
+      else if (value && typeof value === "object") {
+        body = Object.entries(value).map(([k, v]) => `${k}: ${v}`).join("；");
+      } else if (value != null) body = String(value);
+      body = body.trim();
+      if (body) out.push({ label: lab, content: body });
+    }
+  } else if (Array.isArray(s)) {
+    s.forEach((item, i) => {
+      if (typeof item === "string" && item.trim()) {
+        out.push({ label: `条目${i + 1}`, content: item.trim() });
+      } else if (item && typeof item === "object") {
+        const lab = String((item as any).label || (item as any).name || (item as any).title || `条目${i + 1}`);
+        const body = String((item as any).content || (item as any).description || (item as any).value || "");
+        if (body.trim()) out.push({ label: lab, content: body.trim() });
+      }
+    });
+  }
+  return out;
+}
+
 /** A selectable chronicle-event row: 章节 tag + 事件名, with click-to-expand
  *  details — keeps each row compact in the narrow AI 助手 column. */
 function EventRow({ ev, on, onToggle }: {
@@ -1640,6 +1674,39 @@ function EventRow({ ev, on, onToggle }: {
       {expanded && ev.description && (
         <div style={{ padding: "0 8px 5px 25px", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
           {ev.description}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A selectable setting/worldview row — label tag + content preview, with
+ *  click-to-expand details for the full setting description. */
+function SettingRow({ s, on, onToggle }: {
+  s: { label: string; content: string };
+  on: boolean; onToggle: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--indigo)", fontWeight: 700 }}>{on ? "✓" : "○"}</span>
+        <span style={{
+          fontSize: 9, padding: "0 5px", flexShrink: 0, borderRadius: 3,
+          color: "var(--indigo)", border: "1px solid var(--indigo)",
+        }}>{s.label}</span>
+        <span onClick={onToggle} style={{
+          flex: 1, minWidth: 0, cursor: "pointer",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          fontWeight: on ? 600 : 400, color: on ? "var(--indigo)" : "var(--text-secondary)",
+        }}>{s.content.slice(0, 40)}{s.content.length > 40 ? "…" : ""}</span>
+        <span onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
+          {expanded ? "收起 ▲" : "详情 ▼"}
+        </span>
+      </div>
+      {expanded && (
+        <div style={{ padding: "0 8px 5px 25px", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          {s.content}
         </div>
       )}
     </div>
@@ -1716,12 +1783,219 @@ function PickRow({ label, sub, on, color, onClick }: {
       borderBottom: "1px solid var(--border)",
       background: on ? "var(--bg-surface)" : "transparent",
     }}>
-      <span style={{ width: 11, flexShrink: 0, color, fontWeight: 700 }}>{on ? "" : ""}</span>
+      <span style={{ width: 11, flexShrink: 0, color, fontWeight: 700 }}>{on ? "✓" : "○"}</span>
       <span style={{
         flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
         fontWeight: on ? 600 : 400, color: on ? color : "var(--text-secondary)",
       }}>{label}</span>
       {sub && <span className="text-xs text-muted" style={{ flexShrink: 0 }}>{sub}</span>}
+    </div>
+  );
+}
+
+/** ReferenceLinkSection — 编辑器内可编辑的关联参考作品区域。
+ *  上半：作品列表（搜索 + 多选）；下半：每部已选作品分两栏展示「具体
+ *  情节」（events）与「具体设定」（settings），用户可勾选具体条目，
+ *  选中项会通过 referenced_materials loader 注入到 prompt。 */
+function ReferenceLinkSection({
+  references, selectedRefs, refEvents, refSettings,
+  toggleRef, toggleEvent, toggleSetting,
+  isEventLinked, isSettingLinked,
+  refSearch, setRefSearch, eventSearch, setEventSearch,
+}: {
+  references: { id: string; title: string; selected: boolean;
+                 events: { name: string; description: string; chapter: string }[];
+                 settings: { label: string; content: string }[]; }[];
+  selectedRefs: { id: string; title: string; selected: boolean;
+                  events: { name: string; description: string; chapter: string }[];
+                  settings: { label: string; content: string }[]; }[];
+  refEvents: { ref_id: string; work_title: string; name: string; description: string; chapter?: string }[];
+  refSettings: { ref_id: string; work_title: string; label: string; content: string }[];
+  toggleRef: (id: string) => void;
+  toggleEvent: (refId: string, workTitle: string,
+                 ev: { name: string; description: string; chapter: string }) => void;
+  toggleSetting: (refId: string, workTitle: string,
+                   s: { label: string; content: string }) => void;
+  isEventLinked: (refId: string, name: string) => boolean;
+  isSettingLinked: (refId: string, label: string) => boolean;
+  refSearch: string; setRefSearch: (v: string) => void;
+  eventSearch: string; setEventSearch: (v: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const refQ = refSearch.trim().toLowerCase();
+  const filteredRefs = references.filter(r => !refQ || r.title.toLowerCase().includes(refQ));
+  const totalLinked = refEvents.length + refSettings.length;
+  return (
+    <div style={{
+      marginTop: 8, padding: "10px 12px",
+      background: "var(--bg-surface)",
+      border: "1px solid var(--border)",
+      borderRadius: 8,
+      position: "relative",
+    }}>
+      <div style={{
+        position: "absolute", left: 0, top: 0, bottom: 0,
+        width: 3, background: "var(--jade)", opacity: 0.8,
+        borderRadius: "8px 0 0 8px",
+      }} />
+      <button onClick={() => setExpanded(e => !e)} style={{
+        all: "unset", cursor: "pointer", width: "100%",
+        display: "flex", alignItems: "baseline", gap: 6,
+        marginBottom: expanded ? 8 : 0,
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--jade)", letterSpacing: 0.3 }}>
+          关联参考作品
+        </span>
+        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+          · {selectedRefs.length} 部 · {refEvents.length} 情节 · {refSettings.length} 设定
+        </span>
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>
+          {expanded ? "收起 ▲" : "展开 ▼"}
+        </span>
+      </button>
+      {!expanded ? (
+        selectedRefs.length === 0 ? (
+          <span className="text-xs text-muted" style={{ fontStyle: "italic", display: "block", marginTop: 4 }}>
+            未关联参考作品 — 点击「展开」选择作品并挑选具体情节 / 设定
+          </span>
+        ) : (
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 4 }}>
+            {selectedRefs.map(r => {
+              const evN = refEvents.filter(e => e.ref_id === r.id).length;
+              const seN = refSettings.filter(s => s.ref_id === r.id).length;
+              return (
+                <span key={r.id} style={{
+                  fontSize: 11, padding: "3px 10px",
+                  background: "var(--jade-subtle)", color: "var(--jade)",
+                  border: "1px solid var(--jade)", borderRadius: 12,
+                  fontWeight: 500,
+                }} title={`${evN} 情节 · ${seN} 设定`}>
+                  {r.title}
+                  {(evN + seN) > 0 && (
+                    <span style={{ fontSize: 9, marginLeft: 4, opacity: 0.7 }}>
+                      ·{evN}/{seN}
+                    </span>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        )
+      ) : (
+        <div>
+          {/* 作品多选 */}
+          <div style={{ marginBottom: 10 }}>
+            <input className="input" value={refSearch} onChange={e => setRefSearch(e.target.value)}
+              placeholder="搜索作品标题..." style={{ fontSize: 11, padding: "4px 8px", marginBottom: 4 }} />
+            {references.length === 0 ? (
+              <div className="text-xs text-muted" style={{ padding: 8 }}>
+                参考库为空，请到「参考作品详情」导入
+              </div>
+            ) : (
+              <div style={{
+                maxHeight: 160, overflowY: "auto",
+                border: "1px solid var(--border)", borderRadius: 4,
+              }}>
+                {filteredRefs.map(r => (
+                  <PickRow key={r.id} label={r.title}
+                    sub={`${r.events.length} 情节 · ${r.settings.length} 设定`}
+                    on={r.selected} color="var(--jade)"
+                    onClick={() => toggleRef(r.id)} />
+                ))}
+                {filteredRefs.length === 0 && (
+                  <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配</div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 每部已选作品的具体事件 / 设定 */}
+          {selectedRefs.length > 0 && (
+            <input className="input" value={eventSearch} onChange={e => setEventSearch(e.target.value)}
+              placeholder="搜索章节 / 情节 / 设定名..." style={{ fontSize: 11, padding: "4px 8px", marginBottom: 8 }} />
+          )}
+          {selectedRefs.map(r => {
+            const eq = eventSearch.trim().toLowerCase();
+            const evs = r.events.filter(ev => !eq
+              || ev.name.toLowerCase().includes(eq)
+              || ev.description.toLowerCase().includes(eq)
+              || ev.chapter.toLowerCase().includes(eq));
+            const ses = r.settings.filter(s => !eq
+              || s.label.toLowerCase().includes(eq)
+              || s.content.toLowerCase().includes(eq));
+            const evLinked = refEvents.filter(e => e.ref_id === r.id).length;
+            const seLinked = refSettings.filter(s => s.ref_id === r.id).length;
+            return (
+              <div key={r.id} style={{
+                marginBottom: 10, padding: "6px 8px",
+                background: "var(--bg-surface-2)",
+                border: "1px solid var(--border)", borderRadius: 6,
+              }}>
+                <div style={{
+                  fontSize: 11, fontWeight: 700, color: "var(--jade)",
+                  marginBottom: 6, display: "flex", alignItems: "baseline", gap: 6,
+                }}>
+                  「{r.title}」
+                  <span style={{ fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>
+                    · 已选 {evLinked} 情节 · {seLinked} 设定
+                  </span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {/* 情节 */}
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: "var(--gold)", marginBottom: 3 }}>
+                      具体情节
+                    </div>
+                    {r.events.length === 0 ? (
+                      <div className="text-xs text-muted" style={{ padding: 4, fontSize: 10 }}>
+                        无情节 — 请先在参考作品详情中提取剧情大纲
+                      </div>
+                    ) : evs.length === 0 ? (
+                      <div className="text-xs text-muted" style={{ padding: 4, fontSize: 10 }}>无匹配</div>
+                    ) : (
+                      <div style={{
+                        maxHeight: 180, overflowY: "auto",
+                        border: "1px solid var(--border)", borderRadius: 4,
+                      }}>
+                        {evs.map((ev, i) => (
+                          <EventRow key={i} ev={ev}
+                            on={isEventLinked(r.id, ev.name)}
+                            onToggle={() => toggleEvent(r.id, r.title, ev)} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {/* 设定 */}
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: "var(--indigo)", marginBottom: 3 }}>
+                      具体设定
+                    </div>
+                    {r.settings.length === 0 ? (
+                      <div className="text-xs text-muted" style={{ padding: 4, fontSize: 10 }}>
+                        无设定 — 请先在参考作品详情中提取世界设定
+                      </div>
+                    ) : ses.length === 0 ? (
+                      <div className="text-xs text-muted" style={{ padding: 4, fontSize: 10 }}>无匹配</div>
+                    ) : (
+                      <div style={{
+                        maxHeight: 180, overflowY: "auto",
+                        border: "1px solid var(--border)", borderRadius: 4,
+                      }}>
+                        {ses.map((s, i) => (
+                          <SettingRow key={i} s={s}
+                            on={isSettingLinked(r.id, s.label)}
+                            onToggle={() => toggleSetting(r.id, r.title, s)} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1769,7 +2043,11 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   }, [chapter?.id]);
 
   const [characters, setCharacters] = useState<{ id: string; name: string; selected: boolean }[]>([]);
-  const [references, setReferences] = useState<{ id: string; title: string; selected: boolean; events: { name: string; description: string; chapter: string }[] }[]>([]);
+  const [references, setReferences] = useState<{
+    id: string; title: string; selected: boolean;
+    events: { name: string; description: string; chapter: string }[];
+    settings: { label: string; content: string }[];
+  }[]>([]);
   const [inspirations, setInspirations] = useState<{ id: string; category: string; title: string; content: string }[]>([]);
   const [showCharLink, setShowCharLink] = useState(false);
   const [showRefLink, setShowRefLink] = useState(false);
@@ -1931,6 +2209,7 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         title: w.title || w.name || "未命名",
         selected: chapterRefs.includes(w.ref_id || w.id),
         events: workEvents(w.plot_outline_json),
+        settings: workSettings(w.settings_json),
       }))))
       .catch(() => setReferences([]));
     apiGet<{ items: any[] }>("/api/references/inspirations")
@@ -1951,28 +2230,39 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
     });
   };
   const refEvents = chapter?.referenced_events || [];
+  const refSettings = (chapter as any)?.referenced_settings || [];
   const refInsps = chapter?.referenced_inspirations || [];
   const isEventLinked = (refId: string, name: string) =>
     refEvents.some(e => e.ref_id === refId && e.name === name);
+  const isSettingLinked = (refId: string, label: string) =>
+    refSettings.some((s: any) => s.ref_id === refId && s.label === label);
 
+  // 关联参考作品 is editable inline in the editor; specific events / settings
+  // per work are picked from the inline panel below.
   const toggleRef = (id: string) => {
-    if (READONLY) { goEditInStoryline(); return; }
     setReferences(prev => {
       const next = prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r);
       const selectedIds = next.filter(r => r.selected).map(r => r.id);
       onUpdateChapter?.("references", selectedIds);
       const stillSel = new Set(selectedIds);
-      const pruned = refEvents.filter(e => stillSel.has(e.ref_id));
-      if (pruned.length !== refEvents.length) onUpdateChapter?.("referenced_events", pruned);
+      const prunedEvents = refEvents.filter(e => stillSel.has(e.ref_id));
+      if (prunedEvents.length !== refEvents.length) onUpdateChapter?.("referenced_events", prunedEvents);
+      const prunedSettings = refSettings.filter((s: any) => stillSel.has(s.ref_id));
+      if (prunedSettings.length !== refSettings.length) onUpdateChapter?.("referenced_settings", prunedSettings);
       return next;
     });
   };
   const toggleEvent = (refId: string, workTitle: string, ev: { name: string; description: string; chapter: string }) => {
-    if (READONLY) { goEditInStoryline(); return; }
     const next = isEventLinked(refId, ev.name)
       ? refEvents.filter(e => !(e.ref_id === refId && e.name === ev.name))
       : [...refEvents, { ref_id: refId, work_title: workTitle, name: ev.name, description: ev.description, chapter: ev.chapter }];
     onUpdateChapter?.("referenced_events", next);
+  };
+  const toggleSetting = (refId: string, workTitle: string, s: { label: string; content: string }) => {
+    const next = isSettingLinked(refId, s.label)
+      ? refSettings.filter((x: any) => !(x.ref_id === refId && x.label === s.label))
+      : [...refSettings, { ref_id: refId, work_title: workTitle, label: s.label, content: s.content }];
+    onUpdateChapter?.("referenced_settings", next);
   };
   const toggleInspiration = (it: { id: string; category: string; title: string; content: string }) => {
     if (READONLY) { goEditInStoryline(); return; }
@@ -2189,36 +2479,22 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         )}
       </ReadOnlyEditorSection>
 
-      {/* 关联参考作品 */}
-      <ReadOnlyEditorSection title="关联参考作品" count={selectedRefs.length}
-        color="var(--jade)">
-        {selectedRefs.length === 0 ? (
-          <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>未关联参考作品</span>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {selectedRefs.map(r => {
-              const linkedN = refEvents.filter(e => e.ref_id === r.id).length;
-              return (
-                <div key={r.id} style={{
-                  fontSize: 11, padding: "4px 10px",
-                  background: "var(--jade-subtle)",
-                  border: "1px solid var(--jade)", borderRadius: 8,
-                  display: "flex", alignItems: "center", gap: 6,
-                }}>
-                  <span style={{ color: "var(--jade)", fontWeight: 600, flex: 1 }}>
-                    {r.title}
-                  </span>
-                  {linkedN > 0 && (
-                    <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-                      · {linkedN} 事件
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </ReadOnlyEditorSection>
+      {/* 关联参考作品 — 编辑器内可直接编辑（不属于只读区）。先在
+          顶部选择参考作品，再为每部选中的作品挑选具体事件 / 设定，
+          loader 会把这些 denormalized 文本通过 referenced_materials 注入。 */}
+      <ReferenceLinkSection
+        references={references}
+        selectedRefs={selectedRefs}
+        refEvents={refEvents}
+        refSettings={refSettings}
+        toggleRef={toggleRef}
+        toggleEvent={toggleEvent}
+        toggleSetting={toggleSetting}
+        isEventLinked={isEventLinked}
+        isSettingLinked={isSettingLinked}
+        refSearch={refSearch} setRefSearch={setRefSearch}
+        eventSearch={eventSearch} setEventSearch={setEventSearch}
+      />
 
       {/* 关联灵感 */}
       <ReadOnlyEditorSection title="关联灵感" count={refInsps.length}
@@ -2347,30 +2623,57 @@ const sectionMatch = (sections: Map<string, string>, candidates: string[]): stri
 };
 
 /** Sections expected by the prompt template — used by RAG预览 to surface
- *  which loaders actually injected content into the rendered prompt. Mirrors
- *  the canonical list from components/shared/PromptInspector.tsx. */
-/** RAG 预览 section list — title 显示给用户看；matches 列出会出现在
- *  实际渲染 prompt `## …` 标题里的子串。匹配时只要任一 substring 命中
- *  就算注入成功，避免 loader 标题后缀（括号补充、章号、源标记）让前
- *  端误判为「未注入」。 */
-const RAG_PREVIEW_SECTIONS: { title: string; source: string; matches: string[] }[] = [
-  { title: "用户特别要求", source: "user_special_requirements", matches: ["用户特别要求"] },
-  { title: "本章大纲",     source: "chapter_outline",           matches: ["本章大纲"] },
-  { title: "时间与地点",   source: "time_location",             matches: ["时间与地点"] },
-  { title: "本章出场角色", source: "characters_block",          matches: ["本章出场角色", "出场角色"] },
-  { title: "出场角色档案", source: "character_cards",           matches: ["出场角色档案", "角色档案"] },
-  { title: "世界观设定",   source: "worldbook",                 matches: ["世界观设定", "世界书"] },
-  { title: "关联参考作品", source: "reference",                 matches: ["参考作品综合", "关联参考", "参考作品"] },
-  { title: "用户写作偏好", source: "user_preferences",          matches: ["用户写作偏好"] },
-  { title: "关联伏笔",     source: "foreshadowing",             matches: ["关联伏笔", "伏笔"] },
-  { title: "当前涉及的故事线", source: "subplots",              matches: ["当前涉及的故事线", "故事线"] },
-  { title: "相关灵感",     source: "inspiration",               matches: ["相关灵感", "灵感库"] },
-  { title: "Storyland 客观状态", source: "storyland_state",     matches: ["Storyland 客观状态", "客观状态", "storyland"] },
-  { title: "读者视角记忆", source: "reader_memory",             matches: ["读者视角记忆"] },
-  { title: "已有正文",     source: "existing_content / current_chapter_draft", matches: ["已有正文", "正文草稿", "前几章正文"] },
-  { title: "创作技能",     source: "skills",                    matches: ["创作技能", "技能"] },
-  { title: "平台风格",     source: "platform_directive",        matches: ["平台风格", "平台指令"] },
+ *  which loaders actually injected content into the rendered prompt.
+ *  hint = 未注入 时给出的诊断提示，帮助用户立刻知道为什么是空。
+ *  group = 顶部分组（系统级 / 上下文 / 章节）— 与后端
+ *  builder._SECTION_GROUPS 一一对应。 */
+const RAG_PREVIEW_SECTIONS: {
+  title: string; source: string; matches: string[];
+  group: "system" | "context" | "user"; hint: string;
+}[] = [
+  // —— 章节专属 ——
+  { title: "用户特别要求", source: "user_special_requirements", matches: ["用户特别要求"],
+    group: "user", hint: "请在本页上方「用户特别要求」字段输入内容" },
+  { title: "本章大纲",     source: "chapter_outline",           matches: ["本章大纲"],
+    group: "user", hint: "请填写「章节剧情大纲」或在故事线为本章添加情节卡" },
+  { title: "时间与地点",   source: "time_location",             matches: ["时间与地点"],
+    group: "user", hint: "请在故事线情节卡设置时间 / 地点" },
+  { title: "本章出场角色", source: "characters_block",          matches: ["本章出场角色", "出场角色"],
+    group: "user", hint: "请在故事线情节卡选择「出场角色」" },
+  { title: "已有正文",     source: "existing_content / current_chapter_draft", matches: ["已有正文", "正文草稿", "前几章正文"],
+    group: "user", hint: "首次创作正常为空；本章已有 10 字以上内容才会注入" },
+  // —— 上下文 ——
+  { title: "出场角色档案", source: "character_cards",           matches: ["出场角色档案", "角色档案"],
+    group: "context", hint: "请在「角色管理」补全本章出场角色的档案" },
+  { title: "世界观设定",   source: "worldbook",                 matches: ["世界观设定", "世界书"],
+    group: "context", hint: "请在「故事中世界 → 世界书」添加设定条目" },
+  { title: "关联参考作品", source: "reference",                 matches: ["参考作品综合", "关联参考", "参考作品"],
+    group: "context", hint: "请在「参考作品详情」给本项目关联作品，并在编辑器选择具体情节 / 设定" },
+  { title: "关联伏笔",     source: "foreshadowing",             matches: ["关联伏笔", "伏笔"],
+    group: "context", hint: "请在故事线情节卡为本章关联未回收的伏笔" },
+  { title: "当前涉及的故事线", source: "subplots",              matches: ["当前涉及的故事线", "故事线"],
+    group: "context", hint: "请在故事线为本章关联主线 / 支线" },
+  { title: "相关灵感",     source: "inspiration",               matches: ["相关灵感", "灵感库"],
+    group: "context", hint: "请在「灵感库」添加条目，或在大纲中描述匹配方向" },
+  { title: "Storyland 客观状态", source: "storyland_state",     matches: ["Storyland 客观状态", "客观状态", "storyland"],
+    group: "context", hint: "需 SPO 三元组 / 角色 ledger / 情绪轨迹（待前章完成后由 Truth 系统沉淀）" },
+  { title: "读者视角记忆", source: "reader_memory",             matches: ["读者视角记忆"],
+    group: "context", hint: "需 章节号 > 1 且已生成前章摘要 / 锚点" },
+  // —— 系统级 ——
+  { title: "用户写作偏好", source: "user_preferences",          matches: ["用户写作偏好"],
+    group: "system", hint: "请在「设置 → 写作偏好」填写禁词 / 风格规则" },
+  { title: "创作技能",     source: "skills",                    matches: ["创作技能", "技能"],
+    group: "system", hint: "请在「设置 → 自学技能」启用至少一个 SKILL" },
+  { title: "平台风格",     source: "platform_directive",        matches: ["平台风格", "平台指令"],
+    group: "system", hint: "请在项目设置选择「平台 + 题材」并完成市场画像提取" },
 ];
+
+const RAG_GROUP_LABEL: Record<string, string> = {
+  system: "系统级", context: "上下文", user: "章节专属",
+};
+const RAG_GROUP_COLOR: Record<string, string> = {
+  system: "var(--purple)", context: "var(--jade)", user: "var(--accent)",
+};
 
 /** Parse a rendered prompt into `## title` → body sections. Heuristic-based;
  *  matches the parser used by PromptInspector so RAG预览 surfaces the same view. */
@@ -2392,10 +2695,10 @@ function parsePromptSections(prompt: string): Map<string, string> {
   return out;
 }
 
-/** RAGLoaderList — RAG tab 的主要内容块。开局自动拉一次渲染后的
- *  prompt，把 16 个 loader 的 `## …` 段落各自渲染成 collapsible details
- *  (默认全部收起)；可以「刷新」重新拉。与旧 LoaderInjectionPreview 不
- *  同：默认渲染、没有总折叠开关、视觉风格更接近主面板。 */
+/** RAGLoaderList — RAG tab 的主要内容块。
+ *  · 顶部状态条：已注入 N / 总数 · prompt 长度 · 三组各自统计 · 刷新 / 仅看未注入 / 全部展开-收起
+ *  · 按 system / context / user 三大分组渲染；每组带左侧彩条、组级 mini-counter
+ *  · 每个 loader 一行 details；未注入时给出诊断提示（hint）说明"如何让它有内容"。 */
 function RAGLoaderList({ projectId, chapterId, chapterNum }: {
   projectId: string; chapterId: string; chapterNum: number;
 }) {
@@ -2403,6 +2706,8 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
   const [loading, setLoading] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [onlyEmpty, setOnlyEmpty] = useState(false);
+  const [openAll, setOpenAll] = useState<boolean | null>(null);
 
   const load = useCallback(async () => {
     if (!projectId || !chapterId) return;
@@ -2428,9 +2733,13 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
   }, [projectId, chapterId, chapterNum]);
 
   const sections = parsePromptSections(prompt);
-  const filled = RAG_PREVIEW_SECTIONS.filter(
-    s => sectionMatch(sections, s.matches).trim().length > 0,
-  ).length;
+  // Precompute per-loader presence + body so we don't run sectionMatch multiple times.
+  const entries = RAG_PREVIEW_SECTIONS.map(expected => {
+    const body = sectionMatch(sections, expected.matches).trim();
+    return { expected, body, present: body.length > 0 };
+  });
+  const filled = entries.filter(e => e.present).length;
+  const groups: ("system" | "context" | "user")[] = ["user", "context", "system"];
 
   return (
     <div style={{
@@ -2439,7 +2748,7 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
       border: "1px solid var(--border)", borderRadius: 10,
     }}>
       <div style={{
-        display: "flex", alignItems: "baseline", gap: 8,
+        display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap",
         marginBottom: 10, paddingBottom: 8,
         borderBottom: "1px solid var(--border-subtle)",
       }}>
@@ -2449,8 +2758,22 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
         <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
           · {loaded ? `${filled}/${RAG_PREVIEW_SECTIONS.length} 已注入 · ${prompt.length} 字` : "拉取中…"}
         </span>
-        <span style={{ flex: 1 }} />
-        <button className="btn" style={{ fontSize: 11, padding: "3px 12px" }}
+        <span style={{ flex: 1, minWidth: 8 }} />
+        <label style={{
+          fontSize: 10.5, color: "var(--text-secondary)",
+          display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer",
+        }}>
+          <input type="checkbox" checked={onlyEmpty}
+            onChange={e => setOnlyEmpty(e.target.checked)}
+            style={{ accentColor: "var(--accent)" }} />
+          仅看未注入
+        </label>
+        <button className="btn" style={{ fontSize: 10.5, padding: "2px 10px" }}
+          onClick={() => setOpenAll(openAll === true ? false : true)}
+          title="展开 / 收起所有已注入条目">
+          {openAll === true ? "全部收起" : "全部展开"}
+        </button>
+        <button className="btn" style={{ fontSize: 10.5, padding: "2px 10px" }}
           onClick={load} disabled={loading}
           title="重新渲染当前章节的 RAG prompt">
           {loading ? "刷新中..." : "刷新"}
@@ -2461,42 +2784,83 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
           正在渲染 RAG prompt...
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {RAG_PREVIEW_SECTIONS.map(expected => {
-            const body = sectionMatch(sections, expected.matches).trim();
-            const present = body.length > 0;
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {groups.map(g => {
+            const groupEntries = entries.filter(e => e.expected.group === g);
+            const visible = onlyEmpty ? groupEntries.filter(e => !e.present) : groupEntries;
+            if (visible.length === 0) return null;
+            const groupFilled = groupEntries.filter(e => e.present).length;
+            const color = RAG_GROUP_COLOR[g];
             return (
-              <details key={expected.title} style={{
-                padding: "6px 10px",
-                background: present ? "var(--bg-surface-2)" : "transparent",
-                borderLeft: `3px solid ${present ? "var(--accent)" : "var(--border)"}`,
-                borderRadius: 4,
-              }}>
-                <summary style={{
-                  cursor: present ? "pointer" : "default",
-                  fontSize: 11.5,
-                  color: present ? "var(--text-primary)" : "var(--text-tertiary)",
-                  display: "flex", alignItems: "center", gap: 8,
+              <div key={g}>
+                <div style={{
+                  display: "flex", alignItems: "baseline", gap: 6,
+                  paddingLeft: 8, marginBottom: 4,
+                  borderLeft: `3px solid ${color}`,
                 }}>
-                  <strong>{expected.title}</strong>
-                  <span style={{ flex: 1 }} />
                   <span style={{
-                    fontSize: 10, color: present ? "var(--accent)" : "var(--text-disabled)",
-                    fontWeight: 600,
+                    fontSize: 11, fontWeight: 700, color, letterSpacing: 0.5,
                   }}>
-                    {present ? `${body.length} 字` : "未注入"}
+                    {RAG_GROUP_LABEL[g]}
                   </span>
-                </summary>
-                {present && (
-                  <pre style={{
-                    marginTop: 8, padding: 8, background: "var(--bg-app)",
-                    fontSize: 11, lineHeight: 1.6, fontFamily: "var(--font-mono)",
-                    color: "var(--text-secondary)",
-                    maxHeight: 280, overflow: "auto", borderRadius: 4,
-                    whiteSpace: "pre-wrap", wordBreak: "break-word",
-                  }}>{body}</pre>
-                )}
-              </details>
+                  <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                    · {groupFilled}/{groupEntries.length} 已注入
+                  </span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {visible.map(({ expected, body, present }) => (
+                    <details key={expected.title}
+                      open={present && openAll === true ? true : (openAll === false ? false : undefined)}
+                      style={{
+                        padding: "5px 10px",
+                        background: present ? "var(--bg-surface-2)" : "transparent",
+                        borderLeft: `2px solid ${present ? color : "var(--border)"}`,
+                        borderRadius: 4,
+                      }}>
+                      <summary style={{
+                        cursor: present ? "pointer" : "default",
+                        fontSize: 11.5,
+                        color: present ? "var(--text-primary)" : "var(--text-tertiary)",
+                        display: "flex", alignItems: "center", gap: 8,
+                        listStyle: present ? undefined : "none",
+                      }}>
+                        <span style={{
+                          width: 6, height: 6, borderRadius: 3, flexShrink: 0,
+                          background: present ? color : "var(--text-disabled)",
+                          opacity: present ? 1 : 0.5,
+                        }} />
+                        <strong>{expected.title}</strong>
+                        <span style={{ flex: 1 }} />
+                        <span style={{
+                          fontSize: 10, color: present ? color : "var(--text-disabled)",
+                          fontWeight: 600, flexShrink: 0,
+                        }}>
+                          {present ? `${body.length} 字` : "未注入"}
+                        </span>
+                      </summary>
+                      {present ? (
+                        <pre style={{
+                          marginTop: 6, padding: 8, background: "var(--bg-app)",
+                          fontSize: 10.5, lineHeight: 1.6, fontFamily: "var(--font-mono)",
+                          color: "var(--text-secondary)",
+                          maxHeight: 280, overflow: "auto", borderRadius: 4,
+                          whiteSpace: "pre-wrap", wordBreak: "break-word",
+                        }}>{body}</pre>
+                      ) : (
+                        expected.hint && (
+                          <div style={{
+                            marginTop: 4, paddingLeft: 14, fontSize: 10,
+                            color: "var(--text-tertiary)", lineHeight: 1.5,
+                            fontStyle: "italic",
+                          }}>
+                            ↳ {expected.hint}
+                          </div>
+                        )
+                      )}
+                    </details>
+                  ))}
+                </div>
+              </div>
             );
           })}
         </div>
