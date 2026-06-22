@@ -129,6 +129,93 @@ class TestPlatformMarketDataDriven(unittest.TestCase):
         self.assertEqual(platform_market.load("p4"), "")
 
 
+class TestPlatformMarketCrawlerFallback(unittest.TestCase):
+    """When NO project-DB caches contain data for the platform, the
+    loader must still surface real data straight from the 市场数据库
+    (crawler DB) — novels count + main-category distribution + top tags
+    are aggregated on demand. This is the user's "tabs display data but
+    loader says 未注入" path.
+    """
+
+    def setUp(self) -> None:
+        import os, sqlite3, tempfile
+        from storage.project_schema import (
+            ensure_creation_tables, _ensure_projects_market_columns,
+        )
+        from storage.market_extractor_schema import ensure_market_extractor_tables
+        from ui.backend.app.services import project_store as ps
+
+        self._ps = ps
+        tmp = tempfile.mkdtemp()
+        self.project_db = os.path.join(tmp, "project.db")
+        self.crawler_db = os.path.join(tmp, "crawler.db")
+        with sqlite3.connect(self.project_db) as con:
+            ensure_creation_tables(con)
+            _ensure_projects_market_columns(con)
+            ensure_market_extractor_tables(con)
+        # Crawler DB — 5 novels (3 玄幻 / 2 都市) under platform="起点".
+        with sqlite3.connect(self.crawler_db) as con:
+            con.executescript(
+                "CREATE TABLE novels (novel_uid INTEGER PRIMARY KEY, "
+                "platform TEXT, author TEXT, main_category TEXT, "
+                "intro TEXT, status TEXT, total_words INTEGER, "
+                "url TEXT, created_date TEXT, last_seen_date TEXT);"
+                "CREATE TABLE novel_titles (title_id INTEGER PRIMARY KEY, "
+                "novel_uid INTEGER, title TEXT, is_primary INTEGER);"
+                "CREATE TABLE tags (tag_id INTEGER PRIMARY KEY, tag_name TEXT);"
+                "CREATE TABLE novel_tag_map (novel_uid INTEGER, tag_id INTEGER);"
+                "CREATE TABLE first_n_chapters (chapter_id INTEGER PRIMARY KEY, "
+                "novel_uid INTEGER, chapter_num INTEGER, chapter_title TEXT, "
+                "chapter_content TEXT, word_count INTEGER);"
+            )
+            cats = ["玄幻", "玄幻", "都市", "玄幻", "都市"]
+            for i, cat in enumerate(cats, 1):
+                con.execute(
+                    "INSERT INTO novels VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (i, "起点", f"作者{i}", cat, "intro", "ongoing",
+                     1_000_000 + i * 100_000, "", "", "2024-06-01"))
+                con.execute(
+                    "INSERT INTO first_n_chapters VALUES (?,?,?,?,?,?)",
+                    (i, i, 1, "第一章", "x" * 400, 400))
+            for tid, name in enumerate(["爽文", "系统流", "都市"], 1):
+                con.execute("INSERT INTO tags VALUES (?,?)", (tid, name))
+            for nid in (1, 2, 4):
+                con.execute("INSERT INTO novel_tag_map VALUES (?,?)", (nid, 1))
+                con.execute("INSERT INTO novel_tag_map VALUES (?,?)", (nid, 2))
+            for nid in (3, 5):
+                con.execute("INSERT INTO novel_tag_map VALUES (?,?)", (nid, 3))
+            con.commit()
+
+        self._patcher_db = mock.patch(
+            "ui.backend.app.services.project_paths.get_db_path",
+            return_value=self.project_db,
+        )
+        self._patcher_db.start()
+        self._patcher_crawler = mock.patch(
+            "ui.backend.app.utils.resolve_crawler_db_path",
+            return_value=self.crawler_db,
+        )
+        self._patcher_crawler.start()
+
+    def tearDown(self) -> None:
+        self._patcher_db.stop()
+        self._patcher_crawler.stop()
+
+    def test_crawler_db_only_still_injects(self) -> None:
+        """No platform_profiles, no compute_cache, no aggregated_stats —
+        yet the loader must read the crawler DB directly and inject."""
+        self._ps.upsert_project(self.project_db, {
+            "id": "p1", "name": "n",
+            "platform": "起点中文网", "category": "玄幻",
+        })
+        out = platform_market.load("p1")
+        self.assertIn("平台风格基线", out)
+        self.assertIn("市场数据库", out)
+        self.assertIn("玄幻", out)         # main-category distribution
+        self.assertIn("系统流", out)       # top tag in 玄幻
+        self.assertIn("5 部作品", out)     # novel_count aggregate
+
+
 class TestCharacterCardsLoaderBaseline(unittest.TestCase):
     """Smoke tests for the rewritten loader — stable path only.
 

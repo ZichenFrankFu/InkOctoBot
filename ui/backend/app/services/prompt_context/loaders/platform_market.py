@@ -2,29 +2,39 @@
 
 Reads ONLY from real extracted features — no hardcoded platform style
 descriptions, no static alias tables. Every value the loader emits to
-the prompt comes from a row the market-extractor pipeline actually
-persisted.
+the prompt comes from a row the market-extractor pipeline (or the
+crawler itself) actually persisted.
 
-Three data sources, in priority order:
+Data sources scanned, in priority order:
 
-  · ``platform_profiles``                  (synthesized profile — Phase 4)
-  · ``category_aggregated_stats``          (高级特征提取 cross-work aggregate)
-  · ``compute_cache[opening_nlp:<platform>]`` (基础特征提取 NLP measurements)
+  · ``platform_profiles``                          (synthesized profile)
+  · ``category_aggregated_stats``                  (高级特征提取 aggregate)
+  · ``compute_cache[opening_nlp:<platform>]``      (基础特征 NLP cache)
+  · ``compute_cache[analysis_run_v4:<platform>:*]``(基础特征 趋势 cache —
+                                                    tag_rollup / cat_rollup /
+                                                    opportunities / panel)
+  · Crawler DB ``novels`` / ``novel_titles`` /
+    ``tags`` / ``novel_tag_map`` / ``first_n_chapters``
+    (raw 市场数据库 — directly aggregated on demand when none of the
+     project-DB caches matched the platform; this is the data the user
+     sees in 基础特征 / 高级特征 tabs)
 
-Name resolution is also data-driven (``_data_driven_platform_matches``):
+Name resolution is data-driven (``_data_driven_platform_matches``):
 the loader inspects which platform identifiers each source has actually
-stored, then case-insensitively matches them against the project's
-platform string (exact > stored ⊂ project > project ⊂ stored). No
-hardcoded mapping between display labels and crawler-side identifiers.
+stored — including the crawler DB's ``novels.platform`` column — then
+case-insensitively matches them against the project's platform string
+(exact > stored ⊂ project > project ⊂ stored). No hardcoded mapping
+between display labels and crawler-side identifiers.
 
-Truncates each subsection so the rendered body stays under
-``LOADER_BUDGETS["platform_directive"]["max"]`` — the budget allocator
-will further clip when the global RAG budget is tight.
+Per-subsection cap of ``_CAP_PER_SUBSECTION`` chars; overall body
+budget enforced by ``render(budget)`` → ``clip()``. The budget allocator
+further clips when global RAG budget is tight.
 
 Returns ``None`` only when:
 - the project has no platform set, or
 - the project's platform string doesn't overlap any stored identifier
-  (i.e. no extractor data exists for this platform).
+  on EITHER the project DB or the crawler DB (i.e. no real data
+  exists for this platform anywhere).
 """
 from __future__ import annotations
 
@@ -113,33 +123,27 @@ def _coerce_payload_field(raw) -> str:
     return text
 
 
-def _data_driven_platform_matches(
-    db_path: str, project_platform: str,
-) -> list[str]:
-    """Discover every stored platform identifier that matches the
-    project's platform string, purely from real extracted data.
+def _crawler_db_path() -> str:
+    """Return the crawler DB path (or '') without raising — the loader
+    must keep working when the user hasn't configured 市场数据库."""
+    try:
+        from ui.backend.app.utils import resolve_crawler_db_path
+        from pathlib import Path
+        path = resolve_crawler_db_path()
+        if path and Path(path).exists():
+            return path
+    except Exception as e:
+        logger.debug("crawler db resolution failed: %s", e)
+    return ""
 
-    No hardcoded alias table — we scan the three places the market
-    extractor actually persists platform-keyed rows:
 
-      · ``platform_profiles.platform``        (synthesized profile)
-      · ``category_aggregated_stats.platform``(aggregated stats)
-      · ``compute_cache`` keys of the form ``opening_nlp:<platform>``
-        (basic NLP cache)
+def _scan_stored_platforms(db_path: str, crawler_db: str) -> list[str]:
+    """Collect every platform identifier that has been WRITTEN by either
+    the market extractor (project DB) or the crawler itself (market DB).
 
-    Then match the stored values against ``project_platform`` with three
-    tiers of decreasing strictness (exact > project-contains-stored >
-    stored-contains-project, all case-insensitive). Ordering is preserved
-    so the loader tries the strongest match first.
-
-    Returns ``[]`` when none of the stored values overlap — the loader
-    surfaces a "no real data for this platform" hint to the user instead
-    of falling back to anything synthesized.
+    Order matters only for the caller's "strongest-match-first" tier;
+    duplicates are merged case-insensitively.
     """
-    if not (project_platform or "").strip():
-        return []
-    pp = project_platform.strip().lower()
-
     stored: list[str] = []
     seen: set[str] = set()
 
@@ -150,34 +154,95 @@ def _data_driven_platform_matches(
         stored.append(s)
         seen.add(s.lower())
 
-    try:
-        with sqlite3.connect(db_path) as con:
-            for sql in (
-                "SELECT DISTINCT platform FROM platform_profiles "
-                "WHERE platform IS NOT NULL AND platform != ''",
-                "SELECT DISTINCT platform FROM category_aggregated_stats "
-                "WHERE platform IS NOT NULL AND platform != ''",
-            ):
+    # Project DB — synthesized + aggregated + cached NLP / trend results.
+    if db_path:
+        try:
+            with sqlite3.connect(db_path) as con:
+                for sql in (
+                    "SELECT DISTINCT platform FROM platform_profiles "
+                    "WHERE platform IS NOT NULL AND platform != ''",
+                    "SELECT DISTINCT platform FROM category_aggregated_stats "
+                    "WHERE platform IS NOT NULL AND platform != ''",
+                ):
+                    try:
+                        for (v,) in con.execute(sql).fetchall():
+                            _push(v)
+                    except sqlite3.OperationalError:
+                        continue
                 try:
-                    for (v,) in con.execute(sql).fetchall():
+                    rows = con.execute(
+                        "SELECT cache_key FROM compute_cache "
+                        "WHERE cache_key LIKE 'opening_nlp:%' "
+                        "OR cache_key LIKE 'analysis_run_v4:%'"
+                    ).fetchall()
+                    for (key,) in rows:
+                        if not isinstance(key, str) or ":" not in key:
+                            continue
+                        # opening_nlp:<platform>  → suffix is platform
+                        # analysis_run_v4:<platform>:<lookback>:<top_k>
+                        parts = key.split(":")
+                        if len(parts) >= 2:
+                            suffix = parts[1]
+                            if suffix and suffix not in ("all", "both"):
+                                _push(suffix)
+                except sqlite3.OperationalError:
+                    pass
+        except sqlite3.OperationalError:
+            pass
+
+    # Crawler DB — every platform the market scraper has ever seen.
+    if crawler_db:
+        try:
+            with sqlite3.connect(crawler_db) as con:
+                try:
+                    rows = con.execute(
+                        "SELECT DISTINCT platform FROM novels "
+                        "WHERE platform IS NOT NULL AND platform != '' "
+                        "ORDER BY platform"
+                    ).fetchall()
+                    for (v,) in rows:
                         _push(v)
                 except sqlite3.OperationalError:
-                    continue
-            try:
-                rows = con.execute(
-                    "SELECT cache_key FROM compute_cache "
-                    "WHERE cache_key LIKE 'opening_nlp:%'"
-                ).fetchall()
-                for (key,) in rows:
-                    if not isinstance(key, str) or ":" not in key:
-                        continue
-                    suffix = key.split(":", 1)[1]
-                    if suffix and suffix != "all":
-                        _push(suffix)
-            except sqlite3.OperationalError:
-                pass
-    except sqlite3.OperationalError:
+                    pass
+                try:
+                    rows = con.execute(
+                        "SELECT DISTINCT platform FROM rank_lists "
+                        "WHERE platform IS NOT NULL AND platform != ''"
+                    ).fetchall()
+                    for (v,) in rows:
+                        _push(v)
+                except sqlite3.OperationalError:
+                    pass
+        except sqlite3.OperationalError:
+            pass
+
+    return stored
+
+
+def _data_driven_platform_matches(
+    db_path: str, project_platform: str, crawler_db: str = "",
+) -> list[str]:
+    """Discover every stored platform identifier that matches the
+    project's platform string, purely from real extracted data.
+
+    No hardcoded alias table — we scan all five sources via
+    ``_scan_stored_platforms`` (three project-DB tables + crawler DB's
+    ``novels`` and ``rank_lists`` columns), then match each stored value
+    against ``project_platform`` with three tiers of decreasing
+    strictness (exact > project-contains-stored > stored-contains-project,
+    all case-insensitive). Ordering is preserved so the loader tries the
+    strongest match first.
+
+    Returns ``[]`` when none of the stored values overlap — the loader
+    surfaces a "no real data for this platform" hint to the user instead
+    of falling back to anything synthesized.
+    """
+    if not (project_platform or "").strip():
         return []
+    pp = project_platform.strip().lower()
+    if not crawler_db:
+        crawler_db = _crawler_db_path()
+    stored = _scan_stored_platforms(db_path, crawler_db)
 
     exact: list[str] = []
     project_contains: list[str] = []
@@ -187,12 +252,12 @@ def _data_driven_platform_matches(
         if vl == pp:
             exact.append(v)
         elif vl in pp:
-            # The stored value is shorter than (and contained in) the
-            # project's value — e.g. project="起点中文网", stored="起点".
+            # Stored shorter than (and contained in) project value —
+            # e.g. project="起点中文网", stored="起点".
             project_contains.append(v)
         elif pp in vl:
-            # The project's value is contained in the stored value —
-            # e.g. project="起点", stored="起点中文网".
+            # Project value contained in stored — e.g. project="起点",
+            # stored="起点中文网".
             stored_contains.append(v)
     return exact + project_contains + stored_contains
 
@@ -420,6 +485,168 @@ def _load_opening_nlp_cache(db_path: str, platform: str) -> dict | None:
     return None
 
 
+def _load_analysis_run_cache(db_path: str, platform: str) -> dict | None:
+    """Read the ``analysis_run_v4:<platform>:*`` cached trend payload
+    written by ``/api/analysis/run`` — this is what the 基础特征提取 tab
+    displays (tag rollup / category rollup / opportunities / co-occurring
+    pair-triples / panel). Same payload, fed straight to the prompt.
+
+    Tries every platform alias produced by the data-driven matcher; for
+    each, looks for any cache_key starting with ``analysis_run_v4:<alias>:``
+    so we don't have to guess the lookback / top_k components.
+    """
+    matches = _data_driven_platform_matches(db_path, platform)
+    if not matches:
+        return None
+    try:
+        with sqlite3.connect(db_path) as con:
+            for alias in matches:
+                rows = con.execute(
+                    "SELECT payload_json, updated_at FROM compute_cache "
+                    "WHERE cache_key LIKE ? ORDER BY updated_at DESC LIMIT 1",
+                    (f"analysis_run_v4:{alias}:%",),
+                ).fetchall()
+                for (raw, _ts) in rows:
+                    if not raw:
+                        continue
+                    try:
+                        data = json.loads(raw)
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if isinstance(data, dict) and not data.get("empty"):
+                        return data
+    except sqlite3.OperationalError:
+        return None
+    return None
+
+
+def _load_crawler_aggregates(
+    crawler_db: str, matches: list[str], category: str,
+) -> dict:
+    """Aggregate fresh stats directly from the 市场数据库 (crawler DB).
+
+    This is the same source the 基础特征 / 高级特征 tabs visualize, so
+    even when none of the project-DB caches contain a row for the
+    project's platform, we still surface useful market signal in the
+    prompt.
+
+    Returns a dict with whatever fields the SQL could compute — fields
+    are skipped silently when their table or columns are absent so old
+    crawler DBs degrade gracefully.
+    """
+    if not crawler_db or not matches:
+        return {}
+    out: dict[str, Any] = {}
+    try:
+        with sqlite3.connect(crawler_db) as con:
+            con.row_factory = sqlite3.Row
+            # Platform totals — novel count, average length, latest activity.
+            placeholders = ",".join("?" for _ in matches)
+            try:
+                row = con.execute(
+                    "SELECT COUNT(*) AS novel_count, "
+                    "       AVG(total_words) AS avg_words, "
+                    "       MAX(last_seen_date) AS latest "
+                    "FROM novels WHERE platform IN (" + placeholders + ")",
+                    matches,
+                ).fetchone()
+                if row and (row["novel_count"] or 0) > 0:
+                    out["novel_count"] = int(row["novel_count"])
+                    if row["avg_words"]:
+                        out["avg_words"] = int(row["avg_words"])
+                    if row["latest"]:
+                        out["latest"] = str(row["latest"])
+            except sqlite3.OperationalError:
+                pass
+            # 主分类 distribution — what's actually published on this platform.
+            try:
+                rows = con.execute(
+                    "SELECT main_category AS k, COUNT(*) AS n FROM novels "
+                    "WHERE platform IN (" + placeholders + ") "
+                    "AND main_category IS NOT NULL AND main_category != '' "
+                    "GROUP BY main_category ORDER BY n DESC LIMIT 8",
+                    matches,
+                ).fetchall()
+                out["main_categories"] = [
+                    {"label": r["k"], "count": int(r["n"])} for r in rows if r["k"]
+                ]
+            except sqlite3.OperationalError:
+                out["main_categories"] = []
+            # Tag frequency — restrict to this category when the project has one,
+            # otherwise platform-wide.
+            try:
+                if category:
+                    rows = con.execute(
+                        "SELECT t.tag_name AS tag, COUNT(*) AS n "
+                        "FROM novels n "
+                        "JOIN novel_tag_map m ON m.novel_uid = n.novel_uid "
+                        "JOIN tags t ON t.tag_id = m.tag_id "
+                        "WHERE n.platform IN (" + placeholders + ") "
+                        "AND n.main_category = ? "
+                        "GROUP BY t.tag_name "
+                        "ORDER BY n DESC LIMIT 15",
+                        matches + [category],
+                    ).fetchall()
+                else:
+                    rows = con.execute(
+                        "SELECT t.tag_name AS tag, COUNT(*) AS n "
+                        "FROM novels n "
+                        "JOIN novel_tag_map m ON m.novel_uid = n.novel_uid "
+                        "JOIN tags t ON t.tag_id = m.tag_id "
+                        "WHERE n.platform IN (" + placeholders + ") "
+                        "GROUP BY t.tag_name "
+                        "ORDER BY n DESC LIMIT 15",
+                        matches,
+                    ).fetchall()
+                out["top_tags"] = [
+                    {"label": r["tag"], "count": int(r["n"])}
+                    for r in rows if r["tag"]
+                ]
+            except sqlite3.OperationalError:
+                out["top_tags"] = []
+            # Opening-chapter sample size (so the LLM knows how grounded
+            # the upstream NLP is). Pure count, no body fetched.
+            try:
+                row = con.execute(
+                    "SELECT COUNT(*) AS n FROM first_n_chapters fc "
+                    "JOIN novels n ON n.novel_uid = fc.novel_uid "
+                    "WHERE n.platform IN (" + placeholders + ") "
+                    "AND fc.chapter_num = 1 "
+                    "AND length(fc.chapter_content) > 300",
+                    matches,
+                ).fetchone()
+                if row and (row["n"] or 0) > 0:
+                    out["opening_sample_count"] = int(row["n"])
+            except sqlite3.OperationalError:
+                pass
+    except sqlite3.OperationalError:
+        return out
+    return out
+
+
+def _format_dist(items: list[dict] | None, n: int = _TOP_N_DIST) -> str:
+    """Render a list of ``{"label","count"}`` dicts as
+    ``"a 5 · b 3 · c 2"``. Empty list / missing fields → ``""``."""
+    if not isinstance(items, list) or not items:
+        return ""
+    bits: list[str] = []
+    for it in items[:n]:
+        if not isinstance(it, dict):
+            continue
+        lab = str(it.get("label") or it.get("tag") or it.get("category") or "").strip()
+        cnt = it.get("count")
+        if not lab:
+            continue
+        if cnt is None:
+            bits.append(lab)
+        else:
+            try:
+                bits.append(f"{lab} {int(cnt)}")
+            except (TypeError, ValueError):
+                bits.append(lab)
+    return " · ".join(bits)
+
+
 def _build_from_market_data(
     db_path: str, platform: str, category: str,
 ) -> str:
@@ -503,13 +730,71 @@ def _build_from_market_data(
         ]:
             items = nlp.get(field) or []
             if isinstance(items, list) and items:
-                top = items[:_TOP_N_DIST]
-                line = " · ".join(
-                    f"{x.get('label')} {x.get('count')}"
-                    for x in top if isinstance(x, dict) and x.get("label")
-                )
+                line = _format_dist(items)
                 if line:
                     parts.append(clip(f"{label}：{line}", _CAP_PER_SUBSECTION))
+
+    # Trend analysis (analysis_run_v4 cache) — top tags / categories /
+    # opportunities that the 基础特征提取 tab shows. Real cached data
+    # from /api/analysis/run — same pipeline the user is looking at.
+    trend = _load_analysis_run_cache(db_path, platform)
+    if trend:
+        head = "市场趋势（"
+        if trend.get("start_date") and trend.get("end_date"):
+            head += f"{trend['start_date']} → {trend['end_date']}"
+        head += "）"
+        parts.append(head)
+        tags = trend.get("tag_rollup") or []
+        if isinstance(tags, list) and tags:
+            tag_line = _format_dist(
+                [{"label": t.get("tag") or t.get("tag_u"),
+                  "count": int(t.get("appearances") or 0)}
+                 for t in tags if isinstance(t, dict)],
+                n=8,
+            )
+            if tag_line:
+                parts.append(clip(f"热门标签：{tag_line}", _CAP_PER_SUBSECTION))
+        cats = trend.get("cat_rollup") or []
+        if isinstance(cats, list) and cats:
+            cat_line = _format_dist(
+                [{"label": c.get("category") or c.get("cat_u"),
+                  "count": int(c.get("appearances") or 0)}
+                 for c in cats if isinstance(c, dict)],
+                n=6,
+            )
+            if cat_line:
+                parts.append(clip(f"热门分类：{cat_line}", _CAP_PER_SUBSECTION))
+        opps = trend.get("opportunities") or []
+        if isinstance(opps, list) and opps:
+            opp_line = "、".join(
+                str(o.get("tag") or o.get("tag_u") or "").strip()
+                for o in opps[:5] if isinstance(o, dict)
+            )
+            if opp_line.strip("、"):
+                parts.append(clip(f"机会词：{opp_line}", _CAP_PER_SUBSECTION))
+
+    # Crawler-DB direct aggregation — the deepest fallback. Even when
+    # nothing's been cached or extracted in the project DB, the 市场数据库
+    # itself can answer "what does this platform actually publish, and
+    # what are the popular tags?" right now.
+    matches = _data_driven_platform_matches(db_path, platform)
+    if matches:
+        crawler_db = _crawler_db_path()
+        if crawler_db:
+            agg = _load_crawler_aggregates(crawler_db, matches, category)
+            if agg.get("novel_count"):
+                bits = [f"{agg['novel_count']} 部作品"]
+                if agg.get("avg_words"):
+                    bits.append(f"平均 {agg['avg_words']:,} 字")
+                if agg.get("opening_sample_count"):
+                    bits.append(f"开篇样本 {agg['opening_sample_count']} 章")
+                parts.append("市场基底（来自市场数据库）：" + " · ".join(bits))
+                mc_line = _format_dist(agg.get("main_categories"), n=6)
+                if mc_line:
+                    parts.append(clip(f"在售主分类分布：{mc_line}", _CAP_PER_SUBSECTION))
+                tag_line = _format_dist(agg.get("top_tags"), n=10)
+                if tag_line:
+                    parts.append(clip(f"高频标签：{tag_line}", _CAP_PER_SUBSECTION))
 
     return "\n".join(parts).strip()
 
