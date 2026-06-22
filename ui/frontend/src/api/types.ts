@@ -280,6 +280,10 @@ export interface ChapterOutline {
   referenced_inspirations?: { id: string; category: string; title: string; content: string }[];
   /** Map of real character name -> alias for hidden identity (e.g. "李悦" -> "神秘女人") */
   character_aliases?: Record<string, string>;
+  /** Per-chapter free-text 用户特别要求 — surfaces in the RAG prompt
+   *  via the `user_special_requirements` loader. Empty / undefined =
+   *  loader is silent. */
+  special_requirements?: string;
 }
 
 // ── Pipeline / Generation ──

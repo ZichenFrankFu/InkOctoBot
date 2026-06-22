@@ -2117,6 +2117,26 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       </div>
       )}
 
+      {/* ── 用户特别要求 ── 本章独有的写作要求，loader
+          (user_special_requirements) 会把它注入到 prompt 顶部，让 AI
+          严格遵守。空 → loader 跳过。 */}
+      <div className="field" style={{ marginTop: 14 }}>
+        <label className="label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          用户特别要求
+          <span className="text-xs" style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>
+            · 本章 AI 必须遵守的额外要求（如：保持低悬念 / 多用对白 / 严禁某情节）
+          </span>
+        </label>
+        <textarea
+          className="input"
+          value={(chapter as any)?.special_requirements || ""}
+          onChange={e => onUpdateChapter?.("special_requirements", e.target.value)}
+          placeholder="留空则不向 AI 提交本章特别要求..."
+          rows={3}
+          style={{ fontSize: 12, lineHeight: 1.6 }}
+        />
+      </div>
+
       {/* ─── READ-ONLY ZONE ─── 关联角色 / 参考作品 / 灵感 / 伏笔 /
           时间 / 地点 全部只读且全部展开；编辑请到 故事线 page。
           剧情大纲 1.5s 静止后自动同步到 故事线 章节大纲。 */}

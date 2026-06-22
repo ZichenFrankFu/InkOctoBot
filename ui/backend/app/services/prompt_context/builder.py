@@ -586,6 +586,36 @@ def single_agent_vars(
             db_path = get_db_path()
         except Exception:
             db_path = ""
+    # ── Fallback fill from chapter_id ──────────────────────────────
+    # When the caller passed a chapter_id but left individual chapter-
+    # local fields empty (the common case for the RAG preview panel,
+    # which only forwards project_id / chapter_id / chapter_num), pull
+    # them out of the editor doc so the preview reflects what the actual
+    # generation call would see. Explicit non-empty params still win.
+    if chapter_id:
+        try:
+            _cf = load_chapter_fields(project_id, chapter_id)
+            if not synopsis:
+                synopsis = _cf.get("synopsis") or ""
+            if not time_setting:
+                time_setting = _cf.get("time_setting") or ""
+            if not location:
+                location = _cf.get("location") or ""
+            if not characters:
+                characters = _cf.get("characters") or []
+            if not existing_content:
+                existing_content = _cf.get("existing_content") or ""
+            if not character_aliases:
+                _cf_aliases = _cf.get("character_aliases")
+                if isinstance(_cf_aliases, dict):
+                    character_aliases = _cf_aliases
+            if not referenced_events:
+                referenced_events = _cf.get("referenced_events") or []
+            if not referenced_inspirations:
+                referenced_inspirations = _cf.get("referenced_inspirations") or []
+        except Exception as _e:
+            logger.debug("single_agent_vars chapter fallback skipped: %s", _e)
+
     ctx = build_generation_context(
         project_id, chapter_num, characters, db_path=db_path, skills=skills,
         chapter_id=chapter_id, rag_excludes=rag_excludes)
