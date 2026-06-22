@@ -646,6 +646,111 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
 
   const currentTabAgent = STUDIO_TABS.find(t => t.key === studioTab)?.agent || "";
 
+  // Shared form body used by 新建 (renders ABOVE the grid) and 编辑
+  // (renders inline inside the matching card). Same fields + handlers
+  // so both flows stay in lockstep without prop-drilling 9 setters.
+  const projectFormBody = (
+    <>
+      <div className="flex gap-12 mb-12" style={{ flexWrap: "wrap" }}>
+        <div className="field" style={{ flex: 2, minWidth: 200 }}>
+          <label className="label">书名 *</label>
+          <input className="input" value={formName} onChange={e => setFormName(e.target.value)}
+            placeholder="例：星辰大海" autoFocus
+            onKeyDown={e => { if (e.key === "Enter") editingId ? handleUpdate() : handleCreate(); }} />
+        </div>
+        <div className="field" style={{ flex: 1, minWidth: 140 }}>
+          <label className="label">发布平台</label>
+          <select className="select" value={formPlatform}
+            onChange={e => {
+              const next = e.target.value;
+              setFormPlatform(next);
+              const prevProf = platformProfile(formPlatform);
+              const nextProf = platformProfile(next);
+              if (prevProf.id !== nextProf.id) {
+                setFormGenre("");
+                setFormCategory("");
+              }
+            }}
+            style={{ width: "100%" }}>
+            <option value="">未选择</option>
+            {PLATFORMS.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+        <div className="field" style={{ flex: 1, minWidth: 140 }}>
+          <label className="label">
+            主分类
+            {formPlatform && formCategoryOptions.main.length > 0 && (
+              <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
+                （{platformProfile(formPlatform).label}）
+              </span>
+            )}
+          </label>
+          <PlatformMainCategorySelect
+            platform={formPlatform}
+            value={formGenre}
+            onChange={(v) => {
+              setFormGenre(v);
+              setFormCategory("");
+            }}
+            mainOptions={formCategoryOptions.main}
+            loading={formCategoryLoading}
+          />
+        </div>
+        <div className="field" style={{ flex: 1, minWidth: 140 }}>
+          <label className="label">
+            副分类
+            {formGenre && (
+              <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
+                （限 {formGenre} 下）
+              </span>
+            )}
+          </label>
+          <PlatformSubCategorySelect
+            platform={formPlatform}
+            mainCategory={formGenre}
+            value={formCategory}
+            onChange={setFormCategory}
+            subOptions={formCategoryOptions.sub}
+            loading={formCategoryLoading}
+          />
+        </div>
+      </div>
+      <div className="flex gap-12 mb-12" style={{ flexWrap: "wrap" }}>
+        <div className="field" style={{ flex: 1 }}>
+          <label className="label">男频/女频</label>
+          <div className="flex gap-6">
+            {GENDERS.map(g => (
+              <button key={g.key} className={formGender === g.key ? "btn-primary" : "btn"}
+                style={{ flex: 1, fontSize: 12, padding: "6px 0", borderRadius: 20, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
+                onClick={() => setFormGender(formGender === g.key ? "" : g.key)}>{g.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="field" style={{ flex: 1 }}>
+          <label className="label">连载状态</label>
+          <div className="flex gap-6">
+            {STATUS_OPTIONS.map(s => (
+              <button key={s.key} className={formSerialStatus === s.key ? "btn-primary" : "btn"}
+                style={{ flex: 1, fontSize: 12, padding: "6px 0", borderRadius: 20, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
+                onClick={() => setFormSerialStatus(s.key)}>{s.label}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="field mb-12">
+        <label className="label">简介</label>
+        <textarea className="input" value={formSynopsis} onChange={e => setFormSynopsis(e.target.value)}
+          placeholder="简要描述你的小说..." rows={2} style={{ fontSize: 13 }} />
+      </div>
+      <div className="flex gap-8" style={{ justifyContent: "flex-end" }}>
+        <button className="btn" onClick={cancelForm}>取消</button>
+        <button className="btn-primary" onClick={editingId ? handleUpdate : handleCreate} disabled={!formName.trim()}>
+          {editingId ? "保存" : "创建"}
+        </button>
+      </div>
+    </>
+  );
+
   return (
     <div className="page-full">
       <div className="panel-layout" style={{ height: "100%" }}>
@@ -677,116 +782,15 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
               </div>
             </div>
 
-            {/* Create/Edit Form */}
-            {(showForm || editingId) && (
+            {/* Create form — only shown above the card grid when creating a
+                NEW project. Editing an existing project mounts the same
+                fields inline inside the matching card (see below) so the
+                form doesn't visually disconnect from the row it modifies. */}
+            {showForm && !editingId && (
               <div className="card mb-24" style={{ animation: "slideUp 0.2s var(--ease-out)" }}>
-                <div className="card-header"><h3>{editingId ? "编辑项目" : "新建项目"}</h3></div>
+                <div className="card-header"><h3>新建项目</h3></div>
                 <div className="card-body">
-                  <div className="flex gap-12 mb-12" style={{ flexWrap: "wrap" }}>
-                    <div className="field" style={{ flex: 2, minWidth: 200 }}>
-                      <label className="label">书名 *</label>
-                      <input className="input" value={formName} onChange={e => setFormName(e.target.value)}
-                        placeholder="例：星辰大海" autoFocus
-                        onKeyDown={e => { if (e.key === "Enter") editingId ? handleUpdate() : handleCreate(); }} />
-                    </div>
-                    <div className="field" style={{ flex: 1, minWidth: 140 }}>
-                      <label className="label">发布平台</label>
-                      <select className="select" value={formPlatform}
-                        onChange={e => {
-                          const next = e.target.value;
-                          setFormPlatform(next);
-                          // Clear genre + category when platform changes so
-                          // users don't carry a 起点 主分类 into 番茄.
-                          const prevProf = platformProfile(formPlatform);
-                          const nextProf = platformProfile(next);
-                          if (prevProf.id !== nextProf.id) {
-                            setFormGenre("");
-                            setFormCategory("");
-                          }
-                        }}
-                        style={{ width: "100%" }}>
-                        <option value="">未选择</option>
-                        {PLATFORMS.map(p => <option key={p} value={p}>{p}</option>)}
-                      </select>
-                    </div>
-                    <div className="field" style={{ flex: 1, minWidth: 140 }}>
-                      <label className="label">
-                        主分类
-                        {formPlatform && formCategoryOptions.main.length > 0 && (
-                          <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
-                            （{platformProfile(formPlatform).label}）
-                          </span>
-                        )}
-                      </label>
-                      <PlatformMainCategorySelect
-                        platform={formPlatform}
-                        value={formGenre}
-                        onChange={(v) => {
-                          setFormGenre(v);
-                          // 主分类 改变 → 副分类 清空，避免遗留不匹配的副类。
-                          setFormCategory("");
-                        }}
-                        mainOptions={formCategoryOptions.main}
-                        loading={formCategoryLoading}
-                      />
-                    </div>
-                    <div className="field" style={{ flex: 1, minWidth: 140 }}>
-                      <label className="label">
-                        副分类
-                        {formGenre && (
-                          <span className="text-xs text-muted" style={{ marginLeft: 8, fontWeight: 400 }}>
-                            （限 {formGenre} 下）
-                          </span>
-                        )}
-                      </label>
-                      <PlatformSubCategorySelect
-                        platform={formPlatform}
-                        mainCategory={formGenre}
-                        value={formCategory}
-                        onChange={setFormCategory}
-                        subOptions={formCategoryOptions.sub}
-                        loading={formCategoryLoading}
-                      />
-                    </div>
-                  </div>
-                  <div className="flex gap-12 mb-12" style={{ flexWrap: "wrap" }}>
-                    <div className="field" style={{ flex: 1 }}>
-                      <label className="label">男频/女频</label>
-                      <div className="flex gap-6">
-                        {GENDERS.map(g => (
-                          <button key={g.key} className={formGender === g.key ? "btn-primary" : "btn"}
-                            style={{ flex: 1, fontSize: 12, padding: "6px 0", borderRadius: 20, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
-                            onClick={() => setFormGender(formGender === g.key ? "" : g.key)}>{g.label}</button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="field" style={{ flex: 1 }}>
-                      <label className="label">连载状态</label>
-                      <div className="flex gap-6">
-                        {STATUS_OPTIONS.map(s => (
-                          <button key={s.key} className={formSerialStatus === s.key ? "btn-primary" : "btn"}
-                            style={{ flex: 1, fontSize: 12, padding: "6px 0", borderRadius: 20, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
-                            onClick={() => setFormSerialStatus(s.key)}>{s.label}</button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="field mb-12">
-                    <label className="label">简介</label>
-                    <textarea className="input" value={formSynopsis} onChange={e => setFormSynopsis(e.target.value)}
-                      placeholder="简要描述你的小说..." rows={2} style={{ fontSize: 13 }} />
-                  </div>
-                  <div className="field mb-12">
-                    <label className="label">整体故事梗概</label>
-                    <textarea className="input" value={formSynopsis} onChange={e => setFormSynopsis(e.target.value)}
-                      placeholder="描述整体故事走向..." rows={3} style={{ fontSize: 13, fontFamily: "var(--font-serif)" }} />
-                  </div>
-                  <div className="flex gap-8" style={{ justifyContent: "flex-end" }}>
-                    <button className="btn" onClick={cancelForm}>取消</button>
-                    <button className="btn-primary" onClick={editingId ? handleUpdate : handleCreate} disabled={!formName.trim()}>
-                      {editingId ? "保存" : "创建"}
-                    </button>
-                  </div>
+                  {projectFormBody}
                 </div>
               </div>
             )}
@@ -803,14 +807,15 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
                 {projects.map(p => {
                   const isActive = p.id === activeProject;
+                  const isEditing = editingId === p.id;
                   return (
                     <div key={p.id} className="card" style={{
-                      cursor: "pointer",
+                      cursor: isEditing ? "default" : "pointer",
                       transition: "border-color 0.15s, box-shadow 0.2s, transform 0.2s var(--ease-out)",
-                      borderColor: isActive ? "var(--accent)" : undefined,
+                      borderColor: isActive ? "var(--accent)" : (isEditing ? "var(--gold)" : undefined),
                       boxShadow: isActive ? "0 0 12px var(--accent-glow)" : undefined,
-                    }} onClick={() => onSelectProject(p.id)}>
-                      <div style={{ height: 3, background: isActive ? "var(--accent)" : "var(--border)" }} />
+                    }} onClick={() => { if (!isEditing) onSelectProject(p.id); }}>
+                      <div style={{ height: 3, background: isActive ? "var(--accent)" : (isEditing ? "var(--gold)" : "var(--border)") }} />
                       <div className="card-body">
                         <div className="flex items-center justify-between mb-8">
                           <h3 className="font-serif" style={{ fontSize: 16, fontWeight: 700, color: "var(--text-primary)" }}>{p.name}</h3>
@@ -821,6 +826,7 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                         </div>
                         <div className="flex gap-8 mb-8" style={{ flexWrap: "wrap" }}>
                           {(p as any).platform && <span className="tag qidian" style={{ fontSize: 10 }}>{(p as any).platform}</span>}
+                          {(p as any).category && <span className="tag category" style={{ fontSize: 10 }}>{(p as any).category}</span>}
                           {(p as any).gender_target && <span className="tag purple" style={{ fontSize: 10 }}>{(p as any).gender_target === "male" ? "男频" : "女频"}</span>}
                           {(p as any).serial_status && <span className={`tag ${(p as any).serial_status === "ongoing" ? "status-ongoing" : "status-completed"}`} style={{ fontSize: 10 }}>
                             {(p as any).serial_status === "ongoing" ? "连载" : "完结"}
@@ -839,11 +845,24 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                         <div className="flex items-center justify-between">
                           <span className="text-xs text-muted">创建于 {formatDate(p.created_at)}</span>
                           <div className="flex gap-4">
-                            <button className="btn-icon" title="编辑" onClick={e => startEdit(p, e)}>&#9998;</button>
+                            <button className="btn-icon" title={isEditing ? "收起编辑" : "编辑"}
+                              onClick={e => { e.stopPropagation(); isEditing ? cancelForm() : startEdit(p, e); }}>
+                              {isEditing ? "▴" : "✎"}
+                            </button>
                             <button className="btn-icon" title="进入编辑器" onClick={e => { e.stopPropagation(); onSelectProject(p.id); onNavigate("editor"); }}>&#8594;</button>
                             <button className="btn-icon" title="删除" onClick={e => handleDelete(p.id, e)} style={{ color: "var(--error)" }}>&#10005;</button>
                           </div>
                         </div>
+                        {/* Inline edit form — replaces the legacy「单开一个 section」flow so
+                            the form stays visually anchored to the card it edits. */}
+                        {isEditing && (
+                          <div onClick={e => e.stopPropagation()} style={{
+                            marginTop: 12, paddingTop: 12,
+                            borderTop: "1px dashed var(--gold)",
+                          }}>
+                            {projectFormBody}
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -854,26 +873,49 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {projects.map(p => {
                   const isActive = p.id === activeProject;
+                  const isEditing = editingId === p.id;
                   return (
-                    <div key={p.id} className={`report-list-item ${isActive ? "active" : ""}`}
-                      onClick={() => onSelectProject(p.id)} style={{ borderRadius: "var(--radius-sm)", padding: "10px 16px" }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="flex items-center gap-8 mb-4">
-                          <span className="font-serif" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{p.name}</span>
-                          {p.genre && <span className="tag category" style={{ fontSize: 10 }}>{p.genre}</span>}
-                          {(p as any).platform && <span className="tag qidian" style={{ fontSize: 10 }}>{(p as any).platform}</span>}
+                    <div key={p.id} style={{ display: "flex", flexDirection: "column" }}>
+                      <div className={`report-list-item ${isActive ? "active" : ""}`}
+                        onClick={() => { if (!isEditing) onSelectProject(p.id); }}
+                        style={{
+                          borderRadius: "var(--radius-sm)", padding: "10px 16px",
+                          borderColor: isEditing ? "var(--gold)" : undefined,
+                          cursor: isEditing ? "default" : "pointer",
+                        }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="flex items-center gap-8 mb-4">
+                            <span className="font-serif" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{p.name}</span>
+                            {p.genre && <span className="tag category" style={{ fontSize: 10 }}>{p.genre}</span>}
+                            {(p as any).category && <span className="tag category" style={{ fontSize: 10 }}>{(p as any).category}</span>}
+                            {(p as any).platform && <span className="tag qidian" style={{ fontSize: 10 }}>{(p as any).platform}</span>}
+                          </div>
+                          <div className="flex gap-16 text-xs text-muted">
+                            <span>{(p.word_count || 0).toLocaleString()} 字</span>
+                            <span>{p.chapter_count || 0} 章</span>
+                            <span>创建于 {formatDate(p.created_at)}</span>
+                          </div>
                         </div>
-                        <div className="flex gap-16 text-xs text-muted">
-                          <span>{(p.word_count || 0).toLocaleString()} 字</span>
-                          <span>{p.chapter_count || 0} 章</span>
-                          <span>创建于 {formatDate(p.created_at)}</span>
+                        <div className="flex gap-4">
+                          <button className="btn-icon" title={isEditing ? "收起编辑" : "编辑"}
+                            onClick={e => { e.stopPropagation(); isEditing ? cancelForm() : startEdit(p, e); }}>
+                            {isEditing ? "▴" : "✎"}
+                          </button>
+                          <button className="btn-icon" title="进入编辑器" onClick={e => { e.stopPropagation(); onSelectProject(p.id); onNavigate("editor"); }}>&#8594;</button>
+                          <button className="btn-icon" title="删除" onClick={e => handleDelete(p.id, e)} style={{ color: "var(--error)" }}>&#10005;</button>
                         </div>
                       </div>
-                      <div className="flex gap-4">
-                        <button className="btn-icon" title="编辑" onClick={e => startEdit(p, e)}>&#9998;</button>
-                        <button className="btn-icon" title="进入编辑器" onClick={e => { e.stopPropagation(); onSelectProject(p.id); onNavigate("editor"); }}>&#8594;</button>
-                        <button className="btn-icon" title="删除" onClick={e => handleDelete(p.id, e)} style={{ color: "var(--error)" }}>&#10005;</button>
-                      </div>
+                      {isEditing && (
+                        <div onClick={e => e.stopPropagation()} style={{
+                          padding: "12px 16px",
+                          border: "1px dashed var(--gold)",
+                          borderTop: "none",
+                          borderRadius: "0 0 var(--radius-sm) var(--radius-sm)",
+                          background: "var(--bg-surface-2)",
+                        }}>
+                          {projectFormBody}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

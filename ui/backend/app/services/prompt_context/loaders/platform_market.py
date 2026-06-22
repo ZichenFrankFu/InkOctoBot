@@ -125,6 +125,10 @@ def _load_active_profile(db_path: str, platform: str, category: str) -> str:
       3. Any profile for the platform — last resort, picks whichever
          row has the highest profile_version regardless of category.
 
+    Each tier is repeated for every platform alias (``platform`` may
+    be the user-facing label "起点中文网" while the profile row stored
+    the crawler's short form "起点").
+
     Prefer ``loader_payload`` (the 1000-char prose blob synthesized for
     direct prompt injection). When that column is empty (e.g. older
     rows, or the LLM forgot the field), fall back to a concatenation of
@@ -132,6 +136,9 @@ def _load_active_profile(db_path: str, platform: str, category: str) -> str:
     ``style_baseline`` + ``pacing_guidance`` so the user still gets a
     usable block.
     """
+    # Local import to avoid a circular dependency at module load.
+    from ui.backend.app.services.platform_aliases import platform_candidates
+
     base_select = (
         "SELECT loader_payload, profile_summary, "
         "       style_baseline, signature_devices_description, "
@@ -142,22 +149,23 @@ def _load_active_profile(db_path: str, platform: str, category: str) -> str:
         "AND (confidence_label IS NULL OR confidence_label != 'low') "
     )
     candidates: list[tuple[str, tuple]] = []
-    if category:
+    for plat_alias in platform_candidates(platform):
+        if category:
+            candidates.append((
+                base_select + "AND category = ? ORDER BY profile_version DESC LIMIT 1",
+                (plat_alias, category),
+            ))
+        # Platform-wide profile (category='') — what the manual extractor saves.
         candidates.append((
-            base_select + "AND category = ? ORDER BY profile_version DESC LIMIT 1",
-            (platform, category),
+            base_select + "AND (category = '' OR category IS NULL) "
+            "ORDER BY profile_version DESC LIMIT 1",
+            (plat_alias,),
         ))
-    # Platform-wide profile (category='') — what the manual extractor saves.
-    candidates.append((
-        base_select + "AND (category = '' OR category IS NULL) "
-        "ORDER BY profile_version DESC LIMIT 1",
-        (platform,),
-    ))
-    # Last resort — any profile for the platform.
-    candidates.append((
-        base_select + "ORDER BY profile_version DESC LIMIT 1",
-        (platform,),
-    ))
+        # Last resort — any profile for this alias.
+        candidates.append((
+            base_select + "ORDER BY profile_version DESC LIMIT 1",
+            (plat_alias,),
+        ))
 
     row = None
     try:
@@ -171,8 +179,9 @@ def _load_active_profile(db_path: str, platform: str, category: str) -> str:
         return ""
     if not row:
         logger.debug(
-            "platform_directive: no active profile for platform=%r category=%r",
-            platform, category)
+            "platform_directive: no active profile for platform=%r category=%r "
+            "(tried aliases: %s)",
+            platform, category, platform_candidates(platform))
         return ""
     payload = (row["loader_payload"] or "").strip()
     if payload:
@@ -257,22 +266,24 @@ def _load_aggregated_stats(
 ) -> dict | None:
     """Pull the latest ``category_aggregated_stats`` row, preferring an
     exact (platform, category) match. Falls back to platform-only when
-    the project's category is blank or no exact row exists — same
-    permissive shape as ``_load_active_profile``.
+    the project's category is blank or no exact row exists, and tries
+    every platform alias so a project saved as "起点中文网" still finds
+    a stats row stored as "起点" / "qidian".
     """
+    from ui.backend.app.services.platform_aliases import platform_candidates
+
     candidates: list[tuple[str, tuple]] = []
-    base = (
-        "SELECT * FROM category_aggregated_stats WHERE platform = ? "
-    )
-    if category:
+    base = "SELECT * FROM category_aggregated_stats WHERE platform = ? "
+    for plat_alias in platform_candidates(platform):
+        if category:
+            candidates.append((
+                base + "AND category = ? ORDER BY aggregated_at DESC LIMIT 1",
+                (plat_alias, category),
+            ))
         candidates.append((
-            base + "AND category = ? ORDER BY aggregated_at DESC LIMIT 1",
-            (platform, category),
+            base + "ORDER BY aggregated_at DESC LIMIT 1",
+            (plat_alias,),
         ))
-    candidates.append((
-        base + "ORDER BY aggregated_at DESC LIMIT 1",
-        (platform,),
-    ))
     try:
         with sqlite3.connect(db_path) as con:
             con.row_factory = sqlite3.Row
@@ -287,10 +298,21 @@ def _load_aggregated_stats(
 
 def _load_opening_nlp_cache(db_path: str, platform: str) -> dict | None:
     """Read the cached ``opening_nlp:<platform>`` payload written by the
-    "基础特征提取" tab. Returns ``None`` when the entry is missing or
-    the platform's analysis hasn't been run yet.
+    "基础特征提取" tab. Tries every platform alias (the tab caches under
+    whatever the crawler stored; the project may carry a different
+    label), then falls back to the platform-agnostic ``opening_nlp:all``
+    entry.
     """
-    cache_keys = [f"opening_nlp:{platform}", "opening_nlp:all"]
+    from ui.backend.app.services.platform_aliases import platform_candidates
+
+    cache_keys: list[str] = []
+    seen: set[str] = set()
+    for plat_alias in platform_candidates(platform):
+        key = f"opening_nlp:{plat_alias}"
+        if key not in seen:
+            cache_keys.append(key)
+            seen.add(key)
+    cache_keys.append("opening_nlp:all")
     try:
         with sqlite3.connect(db_path) as con:
             for key in cache_keys:
