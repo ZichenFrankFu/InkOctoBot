@@ -274,10 +274,13 @@ class GenerateRequest(BaseModel):
     existing_content: str = ""
     chapter_num: int = 1
     character_aliases: dict[str, str] = {}
-    # Chapter-linked reference material (chronicle events / settings / inspirations).
+    # Chapter-linked reference material (chronicle events / settings /
+    # characters / setting entries / inspirations).
     referenced_events: list[dict] = []
     referenced_inspirations: list[dict] = []
     referenced_settings: list[dict] = []
+    referenced_characters: list[dict] = []
+    referenced_entries: list[dict] = []
     # When true, /quick-generate skips the LLM call and returns the
     # assembled prompt so it can be run in a web LLM instead.
     prompt_only: bool = False
@@ -383,7 +386,9 @@ async def start_generation(req: GenerateRequest):
         from ._rag_context import build_referenced_materials_block
         materials = build_referenced_materials_block(
             req.referenced_events, req.referenced_inspirations, _get_db_path(),
-            settings=req.referenced_settings)
+            settings=req.referenced_settings,
+            characters=req.referenced_characters,
+            entries=req.referenced_entries)
     except Exception:
         materials = ""
     if materials:
@@ -817,6 +822,8 @@ async def quick_generate(req: GenerateRequest):
                 referenced_events=req.referenced_events,
                 referenced_inspirations=req.referenced_inspirations,
                 referenced_settings=req.referenced_settings,
+                referenced_characters=req.referenced_characters,
+                referenced_entries=req.referenced_entries,
                 chapter_id=req.chapter_id,
                 rag_excludes=req.rag_excludes,
                 web_mode=req.prompt_only,

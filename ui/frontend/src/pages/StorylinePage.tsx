@@ -198,12 +198,13 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
       .catch(() => setLoaded(true));
   }, [projectId]);
 
-  // --- Push character union (storyline → editor) ──
-  // For each chapter the storyline knows about, replace the editor
-  // chapter.characters with the UNION of characters across the chapter's
-  // 情节 cards. The user wants「保持一致」 — storyline is the source of
-  // truth when it has events for the chapter; chapters with no 情节 are
-  // left alone (don't wipe the editor's own picks).
+  // --- Push 情节-driven fields (storyline → editor) ──
+  // For each chapter the storyline knows about, mirror the union of
+  // characters AND the first 情节 card's time + location into the editor
+  // chapter row. Without this, the editor's chapter.time / chapter.location
+  // stay empty and the prompt-context loaders inject empty 时间与地点
+  // blocks. Chapters with no 情节 cards are left alone so we don't wipe
+  // direct edits the user made elsewhere.
   const pushCharactersToEditor = useCallback(async () => {
     try {
       const pid = projectId || "default";
@@ -224,11 +225,23 @@ export default function StorylinePage({ projectId, onNavigate }: { projectId: st
           }));
           const nextChars = Array.from(charUnion).sort();
           const prevChars = (c.characters || []).slice().sort();
-          if (JSON.stringify(nextChars) !== JSON.stringify(prevChars)) {
-            changed = true;
-            return { ...c, characters: nextChars };
-          }
-          return c;
+          // Time / location: pick from the FIRST 情节 card that has a value.
+          // Aggregating multiple cards as "x → y" runs into ordering issues
+          // and the loader only accepts a single string anyway.
+          const firstTime = chapterNodes.map(n => (n.time || "").trim()).find(Boolean) || "";
+          const firstLoc = chapterNodes.map(n => (n.location || "").trim()).find(Boolean) || "";
+          const charsChanged = JSON.stringify(nextChars) !== JSON.stringify(prevChars);
+          const timeChanged = firstTime !== ((c.time || "").trim());
+          const locChanged = firstLoc !== ((c.location || "").trim());
+          if (!charsChanged && !timeChanged && !locChanged) return c;
+          changed = true;
+          const next: any = { ...c };
+          if (charsChanged) next.characters = nextChars;
+          // Only overwrite when the storyline has a value — never wipe the
+          // editor's own picks just because all 情节 cards are blank.
+          if (timeChanged && firstTime) next.time = firstTime;
+          if (locChanged && firstLoc) next.location = firstLoc;
+          return next;
         }),
       }));
       if (changed) {

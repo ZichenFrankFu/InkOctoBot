@@ -569,6 +569,8 @@ def single_agent_vars(
     referenced_events: list[dict] | None = None,
     referenced_inspirations: list[dict] | None = None,
     referenced_settings: list[dict] | None = None,
+    referenced_characters: list[dict] | None = None,
+    referenced_entries: list[dict] | None = None,
     db_path: str | None = None,
     chapter_id: str = "",
     rag_excludes: list[str] | None = None,
@@ -616,6 +618,10 @@ def single_agent_vars(
                 referenced_inspirations = _cf.get("referenced_inspirations") or []
             if not referenced_settings:
                 referenced_settings = _cf.get("referenced_settings") or []
+            if not referenced_characters:
+                referenced_characters = _cf.get("referenced_characters") or []
+            if not referenced_entries:
+                referenced_entries = _cf.get("referenced_entries") or []
         except Exception as _e:
             logger.debug("single_agent_vars chapter fallback skipped: %s", _e)
 
@@ -641,7 +647,10 @@ def single_agent_vars(
         tl.append(f"时间：{time_setting}")
     if location:
         tl.append(f"地点：{location}")
-    blocks["time_location"] = section("时间与地点", "\n".join(tl))
+    # Skip the block entirely when both are blank — otherwise the
+    # prompt carries an empty `## 时间与地点\n` heading that confuses
+    # both the LLM and the frontend's "已注入" detector.
+    blocks["time_location"] = section("时间与地点", "\n".join(tl)) if tl else ""
 
     aliases = character_aliases or {}
     if characters:
@@ -669,5 +678,7 @@ def single_agent_vars(
     blocks["referenced_materials"] = build_referenced_materials_block(
         referenced_events, referenced_inspirations, db_path or "",
         settings=referenced_settings,
+        characters=referenced_characters,
+        entries=referenced_entries,
     )
     return blocks

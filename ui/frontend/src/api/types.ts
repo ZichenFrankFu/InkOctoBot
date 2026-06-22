@@ -278,6 +278,10 @@ export interface ChapterOutline {
   referenced_events?: { ref_id: string; work_title: string; name: string; description: string; chapter?: string }[];
   /** Setting / worldview items linked from reference works (denormalized text). */
   referenced_settings?: { ref_id: string; work_title: string; label: string; content: string }[];
+  /** Characters linked from reference works (narrative or pure-setting). */
+  referenced_characters?: { ref_id: string; work_title: string; name: string; description: string }[];
+  /** Pure-setting taxonomy entries linked from reference works. */
+  referenced_entries?: { ref_id: string; work_title: string; title: string; content: string }[];
   /** Inspirations linked from the 灵感库 (denormalized text). */
   referenced_inspirations?: { id: string; category: string; title: string; content: string }[];
   /** Map of real character name -> alias for hidden identity (e.g. "李悦" -> "神秘女人") */

@@ -1653,7 +1653,7 @@ function EventRow({ ev, on, onToggle }: {
   return (
     <div style={{ borderBottom: "1px solid var(--border)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
-        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--gold)", fontWeight: 700 }}>{on ? "" : ""}</span>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--gold)", fontWeight: 700 }}>{on ? "✓" : "○"}</span>
         {ev.chapter && (
           <span style={{
             fontSize: 9, padding: "0 5px", flexShrink: 0, borderRadius: 3,
@@ -1667,7 +1667,7 @@ function EventRow({ ev, on, onToggle }: {
         }}>{ev.name}</span>
         {ev.description && (
           <span onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
-            {expanded ? "收起 ▲" : "详情 ▼"}
+            {expanded ? "收起 ^" : "详情 ▾"}
           </span>
         )}
       </div>
@@ -1678,6 +1678,69 @@ function EventRow({ ev, on, onToggle }: {
       )}
     </div>
   );
+}
+
+/** Parse a reference work's character list. Prefers ``static_characters_json``
+ *  (pure-setting works' canonical roster) and falls back to
+ *  ``extracted_characters_json`` (narrative works' AI-extracted roster). */
+function workReferenceCharacters(w: any): { name: string; description: string }[] {
+  const out: { name: string; description: string }[] = [];
+  const seen = new Set<string>();
+  const push = (name: any, description: any, role: any) => {
+    const n = String(name || "").trim();
+    if (!n || seen.has(n)) return;
+    seen.add(n);
+    const d = String(description || "").trim();
+    const r = String(role || "").trim();
+    out.push({
+      name: n,
+      description: r ? `（${r}）${d}` : d,
+    });
+  };
+  const parse = (raw: any) => {
+    if (raw == null) return null;
+    if (typeof raw !== "string") return raw;
+    try { return JSON.parse(raw); } catch { return null; }
+  };
+  // Pure-setting works first (static_characters_json).
+  const sc = parse(w.static_characters_json);
+  const items1: any[] = Array.isArray(sc)
+    ? sc
+    : (sc && Array.isArray(sc.characters) ? sc.characters : []);
+  items1.forEach(c => { if (c && typeof c === "object") push(c.name, c.description, c.role); });
+  // Narrative works' extracted roster.
+  const ec = parse(w.extracted_characters_json);
+  const items2: any[] = Array.isArray(ec)
+    ? ec
+    : (ec && Array.isArray(ec.characters) ? ec.characters : []);
+  items2.forEach(c => {
+    if (!c || typeof c !== "object") return;
+    push(c.name, c.intro || c.description, c.role_tag || c.role);
+  });
+  return out;
+}
+
+/** Parse a reference work's setting-feature entries (pure-setting taxonomy:
+ *  category / title / description). One row per entry. */
+function workEntries(raw: any): { title: string; content: string }[] {
+  let s: any = raw;
+  if (typeof raw === "string") {
+    try { s = JSON.parse(raw); } catch { return []; }
+  }
+  if (!Array.isArray(s)) return [];
+  const out: { title: string; content: string }[] = [];
+  for (const f of s) {
+    if (!f || typeof f !== "object") continue;
+    const title = String(f.title || f.name || "").trim();
+    if (!title) continue;
+    const cat = String(f.category || "").trim();
+    const desc = String(f.description || "").trim();
+    out.push({
+      title: cat ? `[${cat}] ${title}` : title,
+      content: desc,
+    });
+  }
+  return out;
 }
 
 /** A selectable setting/worldview row — label tag + content preview, with
@@ -1797,34 +1860,63 @@ function PickRow({ label, sub, on, color, onClick }: {
  *  上半：作品列表（搜索 + 多选）；下半：每部已选作品分两栏展示「具体
  *  情节」（events）与「具体设定」（settings），用户可勾选具体条目，
  *  选中项会通过 referenced_materials loader 注入到 prompt。 */
+type RefWork = {
+  id: string; title: string; selected: boolean; structureType: string;
+  events: { name: string; description: string; chapter: string }[];
+  settings: { label: string; content: string }[];
+  characters: { name: string; description: string }[];
+  entries: { title: string; content: string }[];
+};
+
 function ReferenceLinkSection({
-  references, selectedRefs, refEvents, refSettings,
-  toggleRef, toggleEvent, toggleSetting,
-  isEventLinked, isSettingLinked,
+  references, selectedRefs,
+  refEvents, refSettings, refCharacters, refEntries,
+  toggleRef, toggleEvent, toggleSetting, toggleCharacter, toggleEntry,
+  isEventLinked, isSettingLinked, isCharacterLinked, isEntryLinked,
   refSearch, setRefSearch, eventSearch, setEventSearch,
 }: {
-  references: { id: string; title: string; selected: boolean;
-                 events: { name: string; description: string; chapter: string }[];
-                 settings: { label: string; content: string }[]; }[];
-  selectedRefs: { id: string; title: string; selected: boolean;
-                  events: { name: string; description: string; chapter: string }[];
-                  settings: { label: string; content: string }[]; }[];
+  references: RefWork[];
+  selectedRefs: RefWork[];
   refEvents: { ref_id: string; work_title: string; name: string; description: string; chapter?: string }[];
   refSettings: { ref_id: string; work_title: string; label: string; content: string }[];
+  refCharacters: { ref_id: string; work_title: string; name: string; description: string }[];
+  refEntries: { ref_id: string; work_title: string; title: string; content: string }[];
   toggleRef: (id: string) => void;
   toggleEvent: (refId: string, workTitle: string,
                  ev: { name: string; description: string; chapter: string }) => void;
   toggleSetting: (refId: string, workTitle: string,
                    s: { label: string; content: string }) => void;
+  toggleCharacter: (refId: string, workTitle: string,
+                     c: { name: string; description: string }) => void;
+  toggleEntry: (refId: string, workTitle: string,
+                 e: { title: string; content: string }) => void;
   isEventLinked: (refId: string, name: string) => boolean;
   isSettingLinked: (refId: string, label: string) => boolean;
+  isCharacterLinked: (refId: string, name: string) => boolean;
+  isEntryLinked: (refId: string, title: string) => boolean;
   refSearch: string; setRefSearch: (v: string) => void;
   eventSearch: string; setEventSearch: (v: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const refQ = refSearch.trim().toLowerCase();
   const filteredRefs = references.filter(r => !refQ || r.title.toLowerCase().includes(refQ));
-  const totalLinked = refEvents.length + refSettings.length;
+  // Per-work category counts for the collapsed-state chip subtitle.
+  const linkedCount = (ref_id: string) =>
+    refEvents.filter(e => e.ref_id === ref_id).length
+    + refSettings.filter(s => s.ref_id === ref_id).length
+    + refCharacters.filter(c => c.ref_id === ref_id).length
+    + refEntries.filter(e => e.ref_id === ref_id).length;
+  // 智能识别: a work is "pure-setting" when it has settings/characters/entries
+  // but no events. Subtitle in the work picker reflects whichever categories
+  // the work actually exposes.
+  const workSubtitle = (r: RefWork) => {
+    const parts: string[] = [];
+    if (r.events.length) parts.push(`${r.events.length} 情节`);
+    if (r.settings.length) parts.push(`${r.settings.length} 设定`);
+    if (r.characters.length) parts.push(`${r.characters.length} 人物`);
+    if (r.entries.length) parts.push(`${r.entries.length} 条目`);
+    return parts.length ? parts.join(" · ") : "暂无可挑选数据";
+  };
   return (
     <div style={{
       marginTop: 8, padding: "10px 12px",
@@ -1847,35 +1939,36 @@ function ReferenceLinkSection({
           关联参考作品
         </span>
         <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-          · {selectedRefs.length} 部 · {refEvents.length} 情节 · {refSettings.length} 设定
+          · {selectedRefs.length} 部
+          {refEvents.length > 0 ? ` · ${refEvents.length} 情节` : ""}
+          {refSettings.length > 0 ? ` · ${refSettings.length} 设定` : ""}
+          {refCharacters.length > 0 ? ` · ${refCharacters.length} 人物` : ""}
+          {refEntries.length > 0 ? ` · ${refEntries.length} 条目` : ""}
         </span>
         <span style={{ flex: 1 }} />
-        <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>
-          {expanded ? "收起 ▲" : "展开 ▼"}
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+          {expanded ? "^" : "▾"}
         </span>
       </button>
       {!expanded ? (
         selectedRefs.length === 0 ? (
           <span className="text-xs text-muted" style={{ fontStyle: "italic", display: "block", marginTop: 4 }}>
-            未关联参考作品 — 点击「展开」选择作品并挑选具体情节 / 设定
+            未关联参考作品 — 点击 ▾ 展开后选择作品并挑选具体条目
           </span>
         ) : (
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 4 }}>
             {selectedRefs.map(r => {
-              const evN = refEvents.filter(e => e.ref_id === r.id).length;
-              const seN = refSettings.filter(s => s.ref_id === r.id).length;
+              const n = linkedCount(r.id);
               return (
                 <span key={r.id} style={{
                   fontSize: 11, padding: "3px 10px",
                   background: "var(--jade-subtle)", color: "var(--jade)",
                   border: "1px solid var(--jade)", borderRadius: 12,
                   fontWeight: 500,
-                }} title={`${evN} 情节 · ${seN} 设定`}>
+                }} title={`${r.title} · ${n} 个具体条目`}>
                   {r.title}
-                  {(evN + seN) > 0 && (
-                    <span style={{ fontSize: 9, marginLeft: 4, opacity: 0.7 }}>
-                      ·{evN}/{seN}
-                    </span>
+                  {n > 0 && (
+                    <span style={{ fontSize: 9, marginLeft: 4, opacity: 0.7 }}>·{n}</span>
                   )}
                 </span>
               );
@@ -1899,7 +1992,7 @@ function ReferenceLinkSection({
               }}>
                 {filteredRefs.map(r => (
                   <PickRow key={r.id} label={r.title}
-                    sub={`${r.events.length} 情节 · ${r.settings.length} 设定`}
+                    sub={workSubtitle(r)}
                     on={r.selected} color="var(--jade)"
                     onClick={() => toggleRef(r.id)} />
                 ))}
@@ -1910,10 +2003,9 @@ function ReferenceLinkSection({
             )}
           </div>
 
-          {/* 每部已选作品的具体事件 / 设定 */}
           {selectedRefs.length > 0 && (
             <input className="input" value={eventSearch} onChange={e => setEventSearch(e.target.value)}
-              placeholder="搜索章节 / 情节 / 设定名..." style={{ fontSize: 11, padding: "4px 8px", marginBottom: 8 }} />
+              placeholder="搜索情节 / 设定 / 人物 / 条目..." style={{ fontSize: 11, padding: "4px 8px", marginBottom: 8 }} />
           )}
           {selectedRefs.map(r => {
             const eq = eventSearch.trim().toLowerCase();
@@ -1924,8 +2016,18 @@ function ReferenceLinkSection({
             const ses = r.settings.filter(s => !eq
               || s.label.toLowerCase().includes(eq)
               || s.content.toLowerCase().includes(eq));
+            const chs = r.characters.filter(c => !eq
+              || c.name.toLowerCase().includes(eq)
+              || c.description.toLowerCase().includes(eq));
+            const ens = r.entries.filter(e => !eq
+              || e.title.toLowerCase().includes(eq)
+              || e.content.toLowerCase().includes(eq));
             const evLinked = refEvents.filter(e => e.ref_id === r.id).length;
             const seLinked = refSettings.filter(s => s.ref_id === r.id).length;
+            const chLinked = refCharacters.filter(c => c.ref_id === r.id).length;
+            const enLinked = refEntries.filter(e => e.ref_id === r.id).length;
+            const isPureSetting = r.structureType === "setting_collection"
+              || (r.events.length === 0 && (r.settings.length + r.characters.length + r.entries.length) > 0);
             return (
               <div key={r.id} style={{
                 marginBottom: 10, padding: "6px 8px",
@@ -1935,61 +2037,78 @@ function ReferenceLinkSection({
                 <div style={{
                   fontSize: 11, fontWeight: 700, color: "var(--jade)",
                   marginBottom: 6, display: "flex", alignItems: "baseline", gap: 6,
+                  flexWrap: "wrap",
                 }}>
                   「{r.title}」
+                  <span style={{
+                    fontSize: 8.5, padding: "1px 5px", borderRadius: 8,
+                    color: isPureSetting ? "var(--indigo)" : "var(--gold)",
+                    background: isPureSetting ? "var(--indigo-subtle)" : "var(--gold-subtle)",
+                    border: `1px solid ${isPureSetting ? "var(--indigo)" : "var(--gold)"}`,
+                    fontWeight: 600,
+                  }}>
+                    {isPureSetting ? "纯设定" : "叙事"}
+                  </span>
                   <span style={{ fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>
-                    · 已选 {evLinked} 情节 · {seLinked} 设定
+                    · 已选
+                    {r.events.length > 0 ? ` ${evLinked} 情节` : ""}
+                    {r.settings.length > 0 ? ` ${seLinked} 设定` : ""}
+                    {r.characters.length > 0 ? ` ${chLinked} 人物` : ""}
+                    {r.entries.length > 0 ? ` ${enLinked} 条目` : ""}
                   </span>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  {/* 情节 */}
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 600, color: "var(--gold)", marginBottom: 3 }}>
-                      具体情节
+                {/* 智能识别：只渲染该作品有数据的类别。条目竖向堆叠，不并排。 */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {r.events.length > 0 && (
+                    <CategoryPanel
+                      label="具体情节" color="var(--gold)"
+                      empty={evs.length === 0 ? "无匹配" : null}>
+                      {evs.map((ev, i) => (
+                        <EventRow key={i} ev={ev}
+                          on={isEventLinked(r.id, ev.name)}
+                          onToggle={() => toggleEvent(r.id, r.title, ev)} />
+                      ))}
+                    </CategoryPanel>
+                  )}
+                  {r.settings.length > 0 && (
+                    <CategoryPanel
+                      label="具体设定" color="var(--indigo)"
+                      empty={ses.length === 0 ? "无匹配" : null}>
+                      {ses.map((s, i) => (
+                        <SettingRow key={i} s={s}
+                          on={isSettingLinked(r.id, s.label)}
+                          onToggle={() => toggleSetting(r.id, r.title, s)} />
+                      ))}
+                    </CategoryPanel>
+                  )}
+                  {r.characters.length > 0 && (
+                    <CategoryPanel
+                      label="具体人物" color="var(--purple)"
+                      empty={chs.length === 0 ? "无匹配" : null}>
+                      {chs.map((c, i) => (
+                        <CharacterRefRow key={i} c={c}
+                          on={isCharacterLinked(r.id, c.name)}
+                          onToggle={() => toggleCharacter(r.id, r.title, c)} />
+                      ))}
+                    </CategoryPanel>
+                  )}
+                  {r.entries.length > 0 && (
+                    <CategoryPanel
+                      label="具体条目" color="var(--jade)"
+                      empty={ens.length === 0 ? "无匹配" : null}>
+                      {ens.map((e, i) => (
+                        <EntryRow key={i} e={e}
+                          on={isEntryLinked(r.id, e.title)}
+                          onToggle={() => toggleEntry(r.id, r.title, e)} />
+                      ))}
+                    </CategoryPanel>
+                  )}
+                  {r.events.length === 0 && r.settings.length === 0
+                    && r.characters.length === 0 && r.entries.length === 0 && (
+                    <div className="text-xs text-muted" style={{ padding: 6, fontSize: 10, fontStyle: "italic" }}>
+                      此作品暂未抽取出可挑选的数据 — 请先在「参考作品详情」运行分析流程。
                     </div>
-                    {r.events.length === 0 ? (
-                      <div className="text-xs text-muted" style={{ padding: 4, fontSize: 10 }}>
-                        无情节 — 请先在参考作品详情中提取剧情大纲
-                      </div>
-                    ) : evs.length === 0 ? (
-                      <div className="text-xs text-muted" style={{ padding: 4, fontSize: 10 }}>无匹配</div>
-                    ) : (
-                      <div style={{
-                        maxHeight: 180, overflowY: "auto",
-                        border: "1px solid var(--border)", borderRadius: 4,
-                      }}>
-                        {evs.map((ev, i) => (
-                          <EventRow key={i} ev={ev}
-                            on={isEventLinked(r.id, ev.name)}
-                            onToggle={() => toggleEvent(r.id, r.title, ev)} />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  {/* 设定 */}
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 600, color: "var(--indigo)", marginBottom: 3 }}>
-                      具体设定
-                    </div>
-                    {r.settings.length === 0 ? (
-                      <div className="text-xs text-muted" style={{ padding: 4, fontSize: 10 }}>
-                        无设定 — 请先在参考作品详情中提取世界设定
-                      </div>
-                    ) : ses.length === 0 ? (
-                      <div className="text-xs text-muted" style={{ padding: 4, fontSize: 10 }}>无匹配</div>
-                    ) : (
-                      <div style={{
-                        maxHeight: 180, overflowY: "auto",
-                        border: "1px solid var(--border)", borderRadius: 4,
-                      }}>
-                        {ses.map((s, i) => (
-                          <SettingRow key={i} s={s}
-                            on={isSettingLinked(r.id, s.label)}
-                            onToggle={() => toggleSetting(r.id, r.title, s)} />
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
               </div>
             );
@@ -2000,7 +2119,88 @@ function ReferenceLinkSection({
   );
 }
 
-function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, chapterNum, onUpdateChapter, allChapters, onNavigate }: {
+/** Scrollable inner panel for one category (情节 / 设定 / 人物 / 条目). */
+function CategoryPanel({ label, color, empty, children }: {
+  label: string; color: string; empty: string | null; children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 600, color, marginBottom: 3 }}>
+        {label}
+      </div>
+      {empty != null ? (
+        <div className="text-xs text-muted" style={{ padding: 4, fontSize: 10 }}>{empty}</div>
+      ) : (
+        <div style={{
+          maxHeight: 180, overflowY: "auto",
+          border: "1px solid var(--border)", borderRadius: 4,
+        }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Selectable character row — name + role + click-to-expand description. */
+function CharacterRefRow({ c, on, onToggle }: {
+  c: { name: string; description: string }; on: boolean; onToggle: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--purple)", fontWeight: 700 }}>{on ? "✓" : "○"}</span>
+        <span onClick={onToggle} style={{
+          flex: 1, minWidth: 0, cursor: "pointer",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          fontWeight: on ? 600 : 400, color: on ? "var(--purple)" : "var(--text-secondary)",
+        }}>{c.name}</span>
+        {c.description && (
+          <span onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
+            {expanded ? "收起 ^" : "详情 ▾"}
+          </span>
+        )}
+      </div>
+      {expanded && c.description && (
+        <div style={{ padding: "0 8px 5px 25px", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          {c.description}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Selectable entry row (pure-setting taxonomy item) — title + click-to-expand content. */
+function EntryRow({ e, on, onToggle }: {
+  e: { title: string; content: string }; on: boolean; onToggle: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--jade)", fontWeight: 700 }}>{on ? "✓" : "○"}</span>
+        <span onClick={onToggle} style={{
+          flex: 1, minWidth: 0, cursor: "pointer",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          fontWeight: on ? 600 : 400, color: on ? "var(--jade)" : "var(--text-secondary)",
+        }}>{e.title}</span>
+        {e.content && (
+          <span onClick={() => setExpanded(x => !x)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
+            {expanded ? "收起 ^" : "详情 ▾"}
+          </span>
+        )}
+      </div>
+      {expanded && e.content && (
+        <div style={{ padding: "0 8px 5px 25px", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          {e.content}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, chapterNum, onUpdateChapter, allChapters, onNavigate: _onNavigate }: {
   synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; projectId: string;
   chapter?: ChapterOutline | null; onUpdateChapter?: (field: string, value: any) => void;
   chapterNum?: number;
@@ -2008,18 +2208,6 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   onNavigate?: (tab: string) => void;
 }) {
   const { toast } = useToast();
-  const [time, setTime] = useState(chapter?.time || "");
-  const [location, setLocation] = useState(chapter?.location || "");
-
-  // ── 编辑器关联区只读 + 自动同步到 故事线 ──
-  // 关联角色 / 参考作品 / 灵感 / 伏笔 / 时间 / 地点 的源头都已迁到
-  // 故事线 page；编辑器只展示当前章节的快照，并提供一键跳转。
-  // 用户点击任一只读 chip → 跳转 故事线 page 修改。
-  const READONLY = true;
-  const goEditInStoryline = useCallback(() => {
-    if (onNavigate) onNavigate("storyline");
-    else toast("请打开 故事线 page 修改", "info");
-  }, [onNavigate, toast]);
 
   // 章节剧情大纲 debounced 自动保存（1.5s 静止后写回 editor → 同步
   // 进 故事线 章节大纲）。
@@ -2036,69 +2224,19 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
     return () => clearTimeout(t);
   }, [synopsis]);
 
-  // Sync when chapter changes (user switches active chapter)
-  useEffect(() => {
-    setTime(chapter?.time || "");
-    setLocation(chapter?.location || "");
-  }, [chapter?.id]);
-
-  const [characters, setCharacters] = useState<{ id: string; name: string; selected: boolean }[]>([]);
+  // Editable references registry — loaded from /api/references/works for
+  // the ReferenceLinkSection below. Characters / inspirations / 伏笔 /
+  // 时间 / 地点 are no longer displayed in the editor (they surface in
+  // the RAG injection panel via their respective loaders).
   const [references, setReferences] = useState<{
-    id: string; title: string; selected: boolean;
+    id: string; title: string; selected: boolean; structureType: string;
     events: { name: string; description: string; chapter: string }[];
     settings: { label: string; content: string }[];
+    characters: { name: string; description: string }[];
+    entries: { title: string; content: string }[];
   }[]>([]);
-  const [inspirations, setInspirations] = useState<{ id: string; category: string; title: string; content: string }[]>([]);
-  const [showCharLink, setShowCharLink] = useState(false);
-  const [showRefLink, setShowRefLink] = useState(false);
-  const [showInspLink, setShowInspLink] = useState(false);
-  const [showForeshadow, setShowForeshadow] = useState(false);
-  const [foreshadow, setForeshadow] = useState<{ id: string; title: string; content: string; chapter_ids: string[] }[]>([]);
-  const fsLoadedRef = useRef(false);
-
-  useEffect(() => {
-    fsLoadedRef.current = false;
-    apiGet<{ items: any[] }>(`/api/data/foreshadowing/${projectId}`)
-      .then(r => setForeshadow(Array.isArray(r.items) ? r.items : []))
-      .catch(() => setForeshadow([]))
-      .finally(() => { fsLoadedRef.current = true; });
-  }, [projectId]);
-
-  useEffect(() => {
-    if (!fsLoadedRef.current) return;
-    const t = setTimeout(() => {
-      apiPut(`/api/data/foreshadowing/${projectId}`, { items: foreshadow }).catch(() => {});
-    }, 700);
-    return () => clearTimeout(t);
-  }, [foreshadow, projectId]);
-
-  const addForeshadow = () => {
-    if (READONLY) { goEditInStoryline(); return; }
-    setForeshadow(prev => [
-      { id: `fs_${Date.now()}`, title: "新伏笔", content: "",
-        chapter_ids: chapter?.id ? [chapter.id] : [] },
-      ...prev,
-    ]);
-  };
-  const updateForeshadow = (id: string, patch: Partial<{ title: string; content: string }>) => {
-    if (READONLY) { goEditInStoryline(); return; }
-    setForeshadow(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
-  };
-  const deleteForeshadow = (id: string) => {
-    if (READONLY) { goEditInStoryline(); return; }
-    setForeshadow(prev => prev.filter(f => f.id !== id));
-  };
-  const toggleFsChapter = (id: string, chId: string) => {
-    if (READONLY) { goEditInStoryline(); return; }
-    setForeshadow(prev => prev.map(f => {
-      if (f.id !== id) return f;
-      const has = f.chapter_ids.includes(chId);
-      return { ...f, chapter_ids: has ? f.chapter_ids.filter(x => x !== chId) : [...f.chapter_ids, chId] };
-    }));
-  };
   const [refSearch, setRefSearch] = useState("");
   const [eventSearch, setEventSearch] = useState("");
-  const [inspSearch, setInspSearch] = useState("");
 
   // Outline chat state (overlay dialog)
   const [showOutlineChat, setShowOutlineChat] = useState(false);
@@ -2197,48 +2335,37 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   };
 
   useEffect(() => {
-    const pid = projectId || "default";
-    const chapterChars = chapter?.characters || [];
-    apiGet<{ items: any[] }>(`/api/data/characters?project_id=${pid}`)
-      .then(r => setCharacters((r.items || []).map((c: any) => ({ id: c.id, name: c.name, selected: chapterChars.includes(c.name) }))))
-      .catch(() => {});
     const chapterRefs = chapter?.references || [];
     apiGet<{ items: any[] }>("/api/references/works")
       .then(r => setReferences((r.items || []).map((w: any) => ({
         id: w.ref_id || w.id,
         title: w.title || w.name || "未命名",
         selected: chapterRefs.includes(w.ref_id || w.id),
+        structureType: (w.structure_type || "narrative") as string,
         events: workEvents(w.plot_outline_json),
         settings: workSettings(w.settings_json),
+        characters: workReferenceCharacters(w),
+        entries: workEntries(w.setting_features_json),
       }))))
       .catch(() => setReferences([]));
-    apiGet<{ items: any[] }>("/api/references/inspirations")
-      .then(r => setInspirations((r.items || []).map((it: any) => ({
-        id: it.id, category: it.category || "other",
-        title: it.title || "", content: it.content || "",
-      }))))
-      .catch(() => setInspirations([]));
   }, [projectId, chapter?.id]);
 
-  const toggleChar = (id: string) => {
-    if (READONLY) { goEditInStoryline(); return; }
-    setCharacters(prev => {
-      const next = prev.map(c => c.id === id ? { ...c, selected: !c.selected } : c);
-      const selectedNames = next.filter(c => c.selected).map(c => c.name);
-      onUpdateChapter?.("characters", selectedNames);
-      return next;
-    });
-  };
   const refEvents = chapter?.referenced_events || [];
   const refSettings = (chapter as any)?.referenced_settings || [];
-  const refInsps = chapter?.referenced_inspirations || [];
+  const refCharacters = (chapter as any)?.referenced_characters || [];
+  const refEntries = (chapter as any)?.referenced_entries || [];
   const isEventLinked = (refId: string, name: string) =>
     refEvents.some(e => e.ref_id === refId && e.name === name);
   const isSettingLinked = (refId: string, label: string) =>
     refSettings.some((s: any) => s.ref_id === refId && s.label === label);
+  const isCharacterLinked = (refId: string, name: string) =>
+    refCharacters.some((c: any) => c.ref_id === refId && c.name === name);
+  const isEntryLinked = (refId: string, title: string) =>
+    refEntries.some((e: any) => e.ref_id === refId && e.title === title);
 
   // 关联参考作品 is editable inline in the editor; specific events / settings
-  // per work are picked from the inline panel below.
+  // / characters / entries per work are picked from the inline panel below.
+  // Categories with 0 items in the work are auto-hidden by ReferenceLinkSection.
   const toggleRef = (id: string) => {
     setReferences(prev => {
       const next = prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r);
@@ -2249,6 +2376,10 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       if (prunedEvents.length !== refEvents.length) onUpdateChapter?.("referenced_events", prunedEvents);
       const prunedSettings = refSettings.filter((s: any) => stillSel.has(s.ref_id));
       if (prunedSettings.length !== refSettings.length) onUpdateChapter?.("referenced_settings", prunedSettings);
+      const prunedCharacters = refCharacters.filter((c: any) => stillSel.has(c.ref_id));
+      if (prunedCharacters.length !== refCharacters.length) onUpdateChapter?.("referenced_characters", prunedCharacters);
+      const prunedEntries = refEntries.filter((e: any) => stillSel.has(e.ref_id));
+      if (prunedEntries.length !== refEntries.length) onUpdateChapter?.("referenced_entries", prunedEntries);
       return next;
     });
   };
@@ -2264,20 +2395,19 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       : [...refSettings, { ref_id: refId, work_title: workTitle, label: s.label, content: s.content }];
     onUpdateChapter?.("referenced_settings", next);
   };
-  const toggleInspiration = (it: { id: string; category: string; title: string; content: string }) => {
-    if (READONLY) { goEditInStoryline(); return; }
-    const next = refInsps.some(i => i.id === it.id)
-      ? refInsps.filter(i => i.id !== it.id)
-      : [...refInsps, it];
-    onUpdateChapter?.("referenced_inspirations", next);
+  const toggleCharacter = (refId: string, workTitle: string, c: { name: string; description: string }) => {
+    const next = isCharacterLinked(refId, c.name)
+      ? refCharacters.filter((x: any) => !(x.ref_id === refId && x.name === c.name))
+      : [...refCharacters, { ref_id: refId, work_title: workTitle, name: c.name, description: c.description }];
+    onUpdateChapter?.("referenced_characters", next);
   };
-  const selectedChars = characters.filter(c => c.selected);
+  const toggleEntry = (refId: string, workTitle: string, e: { title: string; content: string }) => {
+    const next = isEntryLinked(refId, e.title)
+      ? refEntries.filter((x: any) => !(x.ref_id === refId && x.title === e.title))
+      : [...refEntries, { ref_id: refId, work_title: workTitle, title: e.title, content: e.content }];
+    onUpdateChapter?.("referenced_entries", next);
+  };
   const selectedRefs = references.filter(r => r.selected);
-  const refQ = refSearch.trim().toLowerCase();
-  const filteredRefs = references.filter(r => !refQ || r.title.toLowerCase().includes(refQ));
-  const inspQ = inspSearch.trim().toLowerCase();
-  const filteredInsps = inspirations.filter(
-    it => !inspQ || `${it.title} ${it.content}`.toLowerCase().includes(inspQ));
 
   return (
     <div>
@@ -2427,152 +2557,31 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
         />
       </div>
 
-      {/* ─── READ-ONLY ZONE ─── 关联角色 / 参考作品 / 灵感 / 伏笔 /
-          时间 / 地点 全部只读且全部展开；编辑请到 故事线 page。
-          剧情大纲 1.5s 静止后自动同步到 故事线 章节大纲。 */}
-      {/* 引导横幅 — 单行紧凑设计：左 ↗ + 一行说明 + 右 CTA。 */}
-      <div style={{
-        marginTop: 12, padding: "8px 12px",
-        background: "var(--accent-subtle)",
-        border: "1px solid var(--accent)",
-        borderRadius: 8,
-        display: "flex", alignItems: "center", gap: 10,
-        fontSize: 11.5,
-      }}>
-        <span style={{
-          fontSize: 12, fontWeight: 700, color: "var(--accent)",
-          lineHeight: 1, flexShrink: 0,
-        }}>↗</span>
-        <span style={{ flex: 1, color: "var(--text-secondary)" }}>
-          关联信息只读 — 编辑请至 <strong style={{ color: "var(--text-primary)" }}>故事线</strong>
-        </span>
-        <button className="btn-primary" onClick={goEditInStoryline}
-          style={{
-            fontSize: 11, padding: "4px 12px", whiteSpace: "nowrap",
-            fontWeight: 600, flexShrink: 0,
-          }}>
-          打开
-        </button>
-      </div>
-
-      {/* 关联角色 */}
-      <ReadOnlyEditorSection title="关联角色" count={selectedChars.length}
-        color="var(--purple)">
-        {selectedChars.length === 0 ? (
-          <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>未关联角色</span>
-        ) : (
-          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-            {selectedChars.map(c => {
-              const alias = (chapter?.character_aliases || {})[c.name];
-              return (
-                <span key={c.id} style={{
-                  fontSize: 11, padding: "3px 10px",
-                  background: "var(--purple-subtle)", color: "var(--purple)",
-                  border: "1px solid var(--purple)", borderRadius: 12,
-                  fontWeight: 500,
-                }}>
-                  {c.name}{alias ? ` → ${alias}` : ""}
-                </span>
-              );
-            })}
-          </div>
-        )}
-      </ReadOnlyEditorSection>
-
-      {/* 关联参考作品 — 编辑器内可直接编辑（不属于只读区）。先在
-          顶部选择参考作品，再为每部选中的作品挑选具体事件 / 设定，
-          loader 会把这些 denormalized 文本通过 referenced_materials 注入。 */}
+      {/* 关联参考作品 — 编辑器内可直接编辑。先在顶部选择参考作品，
+          再为每部已选作品挑选具体情节 / 设定 / 人物 / 条目（智能识别
+          作品类型，自动隐藏空类别），loader 通过 referenced_materials
+          块注入到 prompt。其余关联信息（角色 / 灵感 / 伏笔 / 时间地点）
+          全部合并到下面的 RAG 注入内容里展示，不再在这里重复。 */}
       <ReferenceLinkSection
         references={references}
         selectedRefs={selectedRefs}
         refEvents={refEvents}
         refSettings={refSettings}
+        refCharacters={refCharacters}
+        refEntries={refEntries}
         toggleRef={toggleRef}
         toggleEvent={toggleEvent}
         toggleSetting={toggleSetting}
+        toggleCharacter={toggleCharacter}
+        toggleEntry={toggleEntry}
         isEventLinked={isEventLinked}
         isSettingLinked={isSettingLinked}
+        isCharacterLinked={isCharacterLinked}
+        isEntryLinked={isEntryLinked}
         refSearch={refSearch} setRefSearch={setRefSearch}
         eventSearch={eventSearch} setEventSearch={setEventSearch}
       />
 
-      {/* 关联灵感 */}
-      <ReadOnlyEditorSection title="关联灵感" count={refInsps.length}
-        color="var(--accent)">
-        {refInsps.length === 0 ? (
-          <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>未关联灵感</span>
-        ) : (
-          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-            {refInsps.map(it => (
-              <span key={it.id} style={{
-                fontSize: 11, padding: "3px 10px",
-                background: "var(--accent-subtle)", color: "var(--accent)",
-                border: "1px solid var(--accent)", borderRadius: 12,
-                fontWeight: 500,
-              }} title={it.content}>
-                {it.title || it.content.slice(0, 16) || "未命名灵感"}
-              </span>
-            ))}
-          </div>
-        )}
-      </ReadOnlyEditorSection>
-
-      {/* 伏笔 */}
-      <ReadOnlyEditorSection title="伏笔" count={foreshadow.length}
-        color="var(--gold)">
-        {foreshadow.length === 0 ? (
-          <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>暂无伏笔</span>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {foreshadow.map(f => (
-              <div key={f.id} style={{
-                padding: "6px 10px",
-                background: "var(--gold-subtle)",
-                border: "1px solid var(--gold)", borderRadius: 8,
-              }}>
-                <div style={{
-                  fontSize: 11, fontWeight: 600, color: "var(--gold)",
-                  marginBottom: f.content ? 3 : 0,
-                }}>
-                  {f.title || "未命名伏笔"}
-                </div>
-                {f.content && (
-                  <div style={{
-                    fontSize: 10.5, color: "var(--text-secondary)",
-                    lineHeight: 1.5, whiteSpace: "pre-wrap",
-                  }}>
-                    {f.content}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </ReadOnlyEditorSection>
-
-      {/* 时间 + 地点 — two-column display */}
-      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <div style={{ flex: 1 }}>
-          <ReadOnlyEditorSection title="时间" color="var(--text-secondary)">
-            {time ? (
-              <span style={{ fontSize: 12, color: "var(--text-primary)" }}>{time}</span>
-            ) : (
-              <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>未指定</span>
-            )}
-          </ReadOnlyEditorSection>
-        </div>
-        <div style={{ flex: 1 }}>
-          <ReadOnlyEditorSection title="地点" color="var(--text-secondary)">
-            {location ? (
-              <span style={{ fontSize: 12, color: "var(--text-primary)" }}>{location}</span>
-            ) : (
-              <span className="text-xs text-muted" style={{ fontStyle: "italic" }}>未指定</span>
-            )}
-          </ReadOnlyEditorSection>
-        </div>
-      </div>
-      {/* 所有 RAG loader 的实时内容 — 每个 loader 默认收起，点击展开
-          查看 prompt 中实际注入的文本，方便用户在创作前自检上下文。 */}
       {projectId && chapter?.id && (
         <RAGLoaderList projectId={projectId}
           chapterId={chapter.id}
@@ -2696,9 +2705,9 @@ function parsePromptSections(prompt: string): Map<string, string> {
 }
 
 /** RAGLoaderList — RAG tab 的主要内容块。
- *  · 顶部状态条：已注入 N / 总数 · prompt 长度 · 三组各自统计 · 刷新 / 仅看未注入 / 全部展开-收起
+ *  · 顶部状态条：已注入 N / 总数 · prompt 长度 · 三组各自统计 · 刷新
  *  · 按 system / context / user 三大分组渲染；每组带左侧彩条、组级 mini-counter
- *  · 每个 loader 一行 details；未注入时给出诊断提示（hint）说明"如何让它有内容"。 */
+ *  · 每个 loader 一行 details，默认全部展开；summary 末尾用 ^ / ▾ 指引展开收起 */
 function RAGLoaderList({ projectId, chapterId, chapterNum }: {
   projectId: string; chapterId: string; chapterNum: number;
 }) {
@@ -2706,8 +2715,6 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
   const [loading, setLoading] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [loaded, setLoaded] = useState(false);
-  const [onlyEmpty, setOnlyEmpty] = useState(false);
-  const [openAll, setOpenAll] = useState<boolean | null>(null);
 
   const load = useCallback(async () => {
     if (!projectId || !chapterId) return;
@@ -2733,7 +2740,6 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
   }, [projectId, chapterId, chapterNum]);
 
   const sections = parsePromptSections(prompt);
-  // Precompute per-loader presence + body so we don't run sectionMatch multiple times.
   const entries = RAG_PREVIEW_SECTIONS.map(expected => {
     const body = sectionMatch(sections, expected.matches).trim();
     return { expected, body, present: body.length > 0 };
@@ -2759,20 +2765,6 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
           · {loaded ? `${filled}/${RAG_PREVIEW_SECTIONS.length} 已注入 · ${prompt.length} 字` : "拉取中…"}
         </span>
         <span style={{ flex: 1, minWidth: 8 }} />
-        <label style={{
-          fontSize: 10.5, color: "var(--text-secondary)",
-          display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer",
-        }}>
-          <input type="checkbox" checked={onlyEmpty}
-            onChange={e => setOnlyEmpty(e.target.checked)}
-            style={{ accentColor: "var(--accent)" }} />
-          仅看未注入
-        </label>
-        <button className="btn" style={{ fontSize: 10.5, padding: "2px 10px" }}
-          onClick={() => setOpenAll(openAll === true ? false : true)}
-          title="展开 / 收起所有已注入条目">
-          {openAll === true ? "全部收起" : "全部展开"}
-        </button>
         <button className="btn" style={{ fontSize: 10.5, padding: "2px 10px" }}
           onClick={load} disabled={loading}
           title="重新渲染当前章节的 RAG prompt">
@@ -2787,8 +2779,7 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {groups.map(g => {
             const groupEntries = entries.filter(e => e.expected.group === g);
-            const visible = onlyEmpty ? groupEntries.filter(e => !e.present) : groupEntries;
-            if (visible.length === 0) return null;
+            if (groupEntries.length === 0) return null;
             const groupFilled = groupEntries.filter(e => e.present).length;
             const color = RAG_GROUP_COLOR[g];
             return (
@@ -2808,56 +2799,11 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
                   </span>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {visible.map(({ expected, body, present }) => (
-                    <details key={expected.title}
-                      open={present && openAll === true ? true : (openAll === false ? false : undefined)}
-                      style={{
-                        padding: "5px 10px",
-                        background: present ? "var(--bg-surface-2)" : "transparent",
-                        borderLeft: `2px solid ${present ? color : "var(--border)"}`,
-                        borderRadius: 4,
-                      }}>
-                      <summary style={{
-                        cursor: present ? "pointer" : "default",
-                        fontSize: 11.5,
-                        color: present ? "var(--text-primary)" : "var(--text-tertiary)",
-                        display: "flex", alignItems: "center", gap: 8,
-                        listStyle: present ? undefined : "none",
-                      }}>
-                        <span style={{
-                          width: 6, height: 6, borderRadius: 3, flexShrink: 0,
-                          background: present ? color : "var(--text-disabled)",
-                          opacity: present ? 1 : 0.5,
-                        }} />
-                        <strong>{expected.title}</strong>
-                        <span style={{ flex: 1 }} />
-                        <span style={{
-                          fontSize: 10, color: present ? color : "var(--text-disabled)",
-                          fontWeight: 600, flexShrink: 0,
-                        }}>
-                          {present ? `${body.length} 字` : "未注入"}
-                        </span>
-                      </summary>
-                      {present ? (
-                        <pre style={{
-                          marginTop: 6, padding: 8, background: "var(--bg-app)",
-                          fontSize: 10.5, lineHeight: 1.6, fontFamily: "var(--font-mono)",
-                          color: "var(--text-secondary)",
-                          maxHeight: 280, overflow: "auto", borderRadius: 4,
-                          whiteSpace: "pre-wrap", wordBreak: "break-word",
-                        }}>{body}</pre>
-                      ) : (
-                        expected.hint && (
-                          <div style={{
-                            marginTop: 4, paddingLeft: 14, fontSize: 10,
-                            color: "var(--text-tertiary)", lineHeight: 1.5,
-                            fontStyle: "italic",
-                          }}>
-                            ↳ {expected.hint}
-                          </div>
-                        )
-                      )}
-                    </details>
+                  {groupEntries.map(({ expected, body, present }) => (
+                    <RAGLoaderRow key={expected.title}
+                      title={expected.title}
+                      hint={expected.hint}
+                      body={body} present={present} color={color} />
                   ))}
                 </div>
               </div>
@@ -2866,6 +2812,72 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
         </div>
       )}
     </div>
+  );
+}
+
+/** Single row in RAGLoaderList — default-expanded; summary footer shows
+ *  ^ when open and ▾ when collapsed; future toggling is purely visual via
+ *  the native <details> element. */
+function RAGLoaderRow({ title, hint, body, present, color }: {
+  title: string; hint: string; body: string; present: boolean; color: string;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <details open={open}
+      onToggle={e => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      style={{
+        padding: "5px 10px",
+        background: present ? "var(--bg-surface-2)" : "transparent",
+        borderLeft: `2px solid ${present ? color : "var(--border)"}`,
+        borderRadius: 4,
+      }}>
+      <summary style={{
+        cursor: "pointer",
+        fontSize: 11.5,
+        color: present ? "var(--text-primary)" : "var(--text-tertiary)",
+        display: "flex", alignItems: "center", gap: 8,
+        listStyle: "none",
+      }}>
+        <span style={{
+          width: 6, height: 6, borderRadius: 3, flexShrink: 0,
+          background: present ? color : "var(--text-disabled)",
+          opacity: present ? 1 : 0.5,
+        }} />
+        <strong>{title}</strong>
+        <span style={{ flex: 1 }} />
+        <span style={{
+          fontSize: 10, color: present ? color : "var(--text-disabled)",
+          fontWeight: 600, flexShrink: 0,
+        }}>
+          {present ? `${body.length} 字` : "未注入"}
+        </span>
+        <span style={{
+          fontSize: 11, color: "var(--text-tertiary)", flexShrink: 0,
+          width: 12, textAlign: "center",
+        }}>
+          {open ? "^" : "▾"}
+        </span>
+      </summary>
+      {present ? (
+        <pre style={{
+          marginTop: 6, padding: 8, background: "var(--bg-app)",
+          fontSize: 10.5, lineHeight: 1.6, fontFamily: "var(--font-mono)",
+          color: "var(--text-secondary)",
+          maxHeight: 280, overflow: "auto", borderRadius: 4,
+          whiteSpace: "pre-wrap", wordBreak: "break-word",
+        }}>{body}</pre>
+      ) : (
+        hint && (
+          <div style={{
+            marginTop: 4, paddingLeft: 14, fontSize: 10,
+            color: "var(--text-tertiary)", lineHeight: 1.5,
+            fontStyle: "italic",
+          }}>
+            ↳ {hint}
+          </div>
+        )
+      )}
+    </details>
   );
 }
 
