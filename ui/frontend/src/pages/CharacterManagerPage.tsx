@@ -795,12 +795,21 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 {filtered.map(c => {
                   const isActive = editing?.id === c.id;
                   const avatarUrl = (c as any).avatar_url as string | undefined;
-                  const roleColor = c.role === "主角" ? "var(--accent)"
-                    : c.role === "反派" ? "var(--purple)"
-                    : "var(--jade)";
-                  const roleSubtle = c.role === "主角" ? "var(--accent-subtle)"
-                    : c.role === "反派" ? "var(--purple-subtle)"
-                    : "var(--jade-subtle)";
+                  // 角色定位 chip — 规约为 ROLES 四个之一；任何其他值 (空 /
+                  // 历史遗留的「副主角」等) 都降级为「路人」，所以网格下
+                  // 方只展示这四档定位。
+                  const roleLabel = (c.role && ROLES.includes(c.role))
+                    ? c.role : "路人";
+                  const roleColor =
+                      roleLabel === "主角" ? "var(--accent)"
+                    : roleLabel === "反派" ? "var(--purple)"
+                    : roleLabel === "配角" ? "var(--jade)"
+                    : "var(--text-tertiary)";   // 路人
+                  const roleSubtle =
+                      roleLabel === "主角" ? "var(--accent-subtle)"
+                    : roleLabel === "反派" ? "var(--purple-subtle)"
+                    : roleLabel === "配角" ? "var(--jade-subtle)"
+                    : "var(--bg-surface-2)";    // 路人
                   return (
                     <div
                       key={c.id}
@@ -855,7 +864,9 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                           <span style={{ lineHeight: 1 }}>{c.name.charAt(0)}</span>
                         )}
                       </div>
-                      {/* Name + role */}
+                      {/* Name + 角色定位 chip — 网格下方只显示角色定位
+                          这一个标签，按用户要求仅四档：主角 / 配角 / 反派 /
+                          路人，色系一一对应。 */}
                       <div style={{ width: "100%", textAlign: "center", minWidth: 0 }}>
                         <div className="truncate" style={{
                           fontSize: 13, fontWeight: 600, color: "var(--text-primary)",
@@ -863,17 +874,15 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                         }} title={c.name}>
                           {c.name}
                         </div>
-                        {c.role && (
-                          <span style={{
-                            display: "inline-block",
-                            fontSize: 10, padding: "1px 8px", borderRadius: 10,
-                            background: roleSubtle, color: roleColor,
-                            border: `1px solid ${roleColor}`,
-                            fontWeight: 500,
-                          }}>
-                            {c.role}
-                          </span>
-                        )}
+                        <span style={{
+                          display: "inline-block",
+                          fontSize: 10, padding: "1px 8px", borderRadius: 10,
+                          background: roleSubtle, color: roleColor,
+                          border: `1px solid ${roleColor}`,
+                          fontWeight: 500,
+                        }}>
+                          {roleLabel}
+                        </span>
                       </div>
                       {/* Delete — top-right, only visible on hover via opacity */}
                       <button
@@ -906,10 +915,16 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
             a character or switches to the global graph view. ======== */}
         {showDetailColumn && (
         <>
-        <div className="panel flex-1" style={{ background: "var(--bg-app)", overflowY: rightView === "graph" ? "hidden" : "auto" }}>
+        {/* Detail column uses a flex-column shell so the 保存当前角色 footer
+            can stick to the bottom while the editor body scrolls above it. */}
+        <div className="panel flex-1" style={{
+          background: "var(--bg-app)",
+          display: "flex", flexDirection: "column",
+          overflow: "hidden",
+        }}>
           {rightView === "graph" ? (
             /* ======== GLOBAL RELATIONSHIP GRAPH (full column) ======== */
-            <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
               <div style={{ padding: "16px 20px 8px", flexShrink: 0 }}>
                 <h2 className="font-serif" style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
                   全局关系图谱
@@ -939,12 +954,16 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
               </div>
             </div>
           ) : !editing ? (
-            <div className="empty-state" style={{ paddingTop: 120 }}>
+            <div className="empty-state" style={{ paddingTop: 120, flex: 1 }}>
               <h4>选择或创建一个角色</h4>
               <p>在左侧列表中选择角色，或点击「新建角色」</p>
             </div>
           ) : (
-            <div style={{ maxWidth: 720, margin: "0 auto", padding: "28px 32px 48px" }}>
+            <>
+            {/* Scrollable editor body — flex:1 + overflow:auto so the footer
+                below stays glued to the bottom of the detail column. */}
+            <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+            <div style={{ maxWidth: 720, margin: "0 auto", padding: "28px 32px 24px" }}>
               {/* Header */}
               <div className="flex items-center justify-between mb-24">
                 <h2 className="font-serif" style={{ fontSize: 22, fontWeight: 700 }}>
@@ -1762,22 +1781,37 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 </div>
               )}
 
-              {/* Centered, full-row save bar at the bottom. */}
-              <div style={{ marginTop: 24, padding: "12px 0", display: "flex", justifyContent: "center" }}>
-                <button
-                  className="btn-primary"
-                  onClick={save}
-                  disabled={!dirty}
-                  style={{
-                    minWidth: 220, padding: "10px 32px",
-                    fontSize: 14, fontWeight: 600,
-                    opacity: dirty ? 1 : 0.5,
-                  }}
-                >
-                  {dirty ? "保存当前角色" : "已保存"}
-                </button>
-              </div>
             </div>
+            </div>
+            {/* Pinned save bar — always visible at the bottom of the detail
+                column regardless of scroll position. Flex centering on the
+                button itself guarantees the label sits dead-center even when
+                a future variant adds a leading icon or trailing badge. */}
+            <div style={{
+              flexShrink: 0,
+              padding: "12px 16px",
+              background: "var(--bg-surface)",
+              borderTop: "1px solid var(--border)",
+              display: "flex", justifyContent: "center",
+            }}>
+              <button
+                className="btn-primary"
+                onClick={save}
+                disabled={!dirty}
+                style={{
+                  minWidth: 220, padding: "10px 32px",
+                  fontSize: 14, fontWeight: 600,
+                  opacity: dirty ? 1 : 0.5,
+                  display: "inline-flex",
+                  alignItems: "center", justifyContent: "center",
+                  textAlign: "center",
+                  lineHeight: 1,
+                }}
+              >
+                {dirty ? "保存当前角色" : "已保存"}
+              </button>
+            </div>
+            </>
           )}
         </div>
         </>
