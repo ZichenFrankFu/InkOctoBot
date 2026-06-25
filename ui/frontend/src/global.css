@@ -106,51 +106,57 @@
    modal scrims. Accent / status / chart hues keep the same vermillion
    palette so the brand stays consistent; only their subtle backgrounds
    pick up the slightly more saturated value that reads on white.
+
+   Tuned for "纸张感" — pure-white surfaces felt too bright and washed
+   text out; instead we use a warm paper-grey base (~#e0e2e8) with
+   near-black text (~#0a0c12) so the primary text/background contrast
+   is ≥ 12:1 (WCAG AAA). Borders are deepened to stay visible against
+   the softer surfaces.
 */
 :root[data-theme="light"] {
-  --bg-app: #f6f7fb;
-  --bg-sidebar: #eef0f5;
-  --bg-surface: #ffffff;
-  --bg-surface-2: #f3f4f8;
-  --bg-surface-hover: #e9ebf2;
-  --bg-surface-active: #dfe2eb;
-  --bg-card: #ffffff;
-  --bg-input: #ffffff;
-  --bg-header: rgba(246, 247, 251, 0.92);
+  --bg-app: #d8dae1;
+  --bg-sidebar: #cdd0d8;
+  --bg-surface: #e3e5eb;
+  --bg-surface-2: #d8dae2;
+  --bg-surface-hover: #ccd0d8;
+  --bg-surface-active: #bdc1cc;
+  --bg-card: #e3e5eb;
+  --bg-input: #ebedf1;
+  --bg-header: rgba(216, 218, 225, 0.94);
 
-  --text-primary: #1a1d24;
-  --text-secondary: #4a4f5e;
-  --text-tertiary: #7a8090;
-  --text-disabled: #b0b4c0;
+  --text-primary: #0a0c12;
+  --text-secondary: #2a2e3a;
+  --text-tertiary: #4f5462;
+  --text-disabled: #858a98;
   --text-inverse: #ffffff;
 
-  --accent-subtle: rgba(224, 85, 69, 0.10);
-  --accent-glow: rgba(224, 85, 69, 0.22);
-  --accent-muted: rgba(224, 85, 69, 0.06);
-  --jade-subtle: rgba(36, 158, 92, 0.10);
-  --gold-subtle: rgba(184, 132, 18, 0.10);
-  --indigo-subtle: rgba(72, 102, 220, 0.10);
-  --purple-subtle: rgba(124, 88, 220, 0.10);
-  --cyan-subtle: rgba(20, 168, 198, 0.10);
+  --accent-subtle: rgba(224, 85, 69, 0.14);
+  --accent-glow: rgba(224, 85, 69, 0.28);
+  --accent-muted: rgba(224, 85, 69, 0.08);
+  --jade-subtle: rgba(36, 158, 92, 0.14);
+  --gold-subtle: rgba(184, 132, 18, 0.14);
+  --indigo-subtle: rgba(72, 102, 220, 0.14);
+  --purple-subtle: rgba(124, 88, 220, 0.14);
+  --cyan-subtle: rgba(20, 168, 198, 0.14);
 
-  --border: rgba(0, 0, 0, 0.08);
-  --border-hover: rgba(0, 0, 0, 0.14);
-  --border-active: rgba(0, 0, 0, 0.22);
-  --border-subtle: rgba(0, 0, 0, 0.04);
+  --border: rgba(0, 0, 0, 0.18);
+  --border-hover: rgba(0, 0, 0, 0.28);
+  --border-active: rgba(0, 0, 0, 0.40);
+  --border-subtle: rgba(0, 0, 0, 0.10);
 
-  --scrollbar-thumb: rgba(0, 0, 0, 0.18);
-  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.32);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.28);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.45);
 
-  --overlay-scrim: rgba(20, 22, 30, 0.42);
+  --overlay-scrim: rgba(20, 22, 30, 0.55);
 
-  --tag-qidian-border: rgba(72, 102, 220, 0.30);
-  --tag-fanqie-border: rgba(184, 132, 18, 0.30);
-  --tag-top3-border: rgba(184, 132, 18, 0.40);
+  --tag-qidian-border: rgba(72, 102, 220, 0.42);
+  --tag-fanqie-border: rgba(184, 132, 18, 0.42);
+  --tag-top3-border: rgba(184, 132, 18, 0.52);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 1px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 0 0 1px var(--border-subtle);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.10), 0 1px 1px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.14);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.18);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.10), 0 0 0 1px var(--border-subtle);
 }
 
 /* ── Reset ── */
