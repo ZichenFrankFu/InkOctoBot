@@ -53,6 +53,18 @@
   --border-active: rgba(255, 255, 255, 0.18);
   --border-subtle: rgba(255, 255, 255, 0.04);
 
+  /* Scrollbar (depends on theme — flipped under data-theme="light") */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.10);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
+
+  /* Modal / overlay scrim (depends on theme) */
+  --overlay-scrim: rgba(0, 0, 0, 0.5);
+
+  /* Tag border accents — accent-colored at low opacity */
+  --tag-qidian-border: rgba(107, 138, 255, 0.20);
+  --tag-fanqie-border: rgba(232, 184, 74, 0.20);
+  --tag-top3-border: rgba(232, 184, 74, 0.30);
+
   /* Typography */
   --font-serif: 'Noto Serif SC', 'Songti SC', 'SimSun', serif;
   --font-sans: 'Noto Sans SC', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
@@ -87,6 +99,60 @@
   --z-modal: 100;
 }
 
+/* ── Light Theme ──
+   Activated when <html data-theme="light"> is set (see hooks/useTheme.ts).
+   Inverts every background / text / border / scrollbar / overlay token so
+   the whole UI flips together — chips, inputs, dropdowns, scrollbars,
+   modal scrims. Accent / status / chart hues keep the same vermillion
+   palette so the brand stays consistent; only their subtle backgrounds
+   pick up the slightly more saturated value that reads on white.
+*/
+:root[data-theme="light"] {
+  --bg-app: #f6f7fb;
+  --bg-sidebar: #eef0f5;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #f3f4f8;
+  --bg-surface-hover: #e9ebf2;
+  --bg-surface-active: #dfe2eb;
+  --bg-card: #ffffff;
+  --bg-input: #ffffff;
+  --bg-header: rgba(246, 247, 251, 0.92);
+
+  --text-primary: #1a1d24;
+  --text-secondary: #4a4f5e;
+  --text-tertiary: #7a8090;
+  --text-disabled: #b0b4c0;
+  --text-inverse: #ffffff;
+
+  --accent-subtle: rgba(224, 85, 69, 0.10);
+  --accent-glow: rgba(224, 85, 69, 0.22);
+  --accent-muted: rgba(224, 85, 69, 0.06);
+  --jade-subtle: rgba(36, 158, 92, 0.10);
+  --gold-subtle: rgba(184, 132, 18, 0.10);
+  --indigo-subtle: rgba(72, 102, 220, 0.10);
+  --purple-subtle: rgba(124, 88, 220, 0.10);
+  --cyan-subtle: rgba(20, 168, 198, 0.10);
+
+  --border: rgba(0, 0, 0, 0.08);
+  --border-hover: rgba(0, 0, 0, 0.14);
+  --border-active: rgba(0, 0, 0, 0.22);
+  --border-subtle: rgba(0, 0, 0, 0.04);
+
+  --scrollbar-thumb: rgba(0, 0, 0, 0.18);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.32);
+
+  --overlay-scrim: rgba(20, 22, 30, 0.42);
+
+  --tag-qidian-border: rgba(72, 102, 220, 0.30);
+  --tag-fanqie-border: rgba(184, 132, 18, 0.30);
+  --tag-top3-border: rgba(184, 132, 18, 0.40);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 1px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 0 0 1px var(--border-subtle);
+}
+
 /* ── Reset ── */
 *, *::before, *::after {
   box-sizing: border-box;
@@ -100,6 +166,11 @@ html, body, #root {
   overflow: hidden;
 }
 
+/* Hint to the UA: default form controls, scrollbars, and text selection
+   should pick up the active theme. The hint is overridden per-theme. */
+:root { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+
 body {
   font-family: var(--font-sans);
   font-size: 14px;
@@ -108,6 +179,8 @@ body {
   background: var(--bg-app);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Smooth fade when toggling theme so the whole UI doesn't strobe. */
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 /* ── Scrollbar ── */
@@ -119,11 +192,11 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--scrollbar-thumb-hover);
 }
 
 ::selection {
@@ -597,8 +670,8 @@ body {
   border: 1px solid transparent;
 }
 
-.tag.qidian   { background: var(--indigo-subtle); color: var(--indigo); border-color: rgba(107,138,255,0.2); }
-.tag.fanqie   { background: var(--gold-subtle); color: var(--gold); border-color: rgba(232,184,74,0.2); }
+.tag.qidian   { background: var(--indigo-subtle); color: var(--indigo); border-color: var(--tag-qidian-border); }
+.tag.fanqie   { background: var(--gold-subtle); color: var(--gold); border-color: var(--tag-fanqie-border); }
 .tag.category { background: var(--bg-surface-2); color: var(--text-secondary); }
 .tag.status-ongoing   { background: var(--jade-subtle); color: var(--jade); }
 .tag.status-completed { background: var(--gold-subtle); color: var(--gold); }
@@ -618,7 +691,7 @@ body {
   font-weight: 700;
   font-family: var(--font-mono);
 }
-.rank-badge.top3   { background: var(--gold-subtle); color: var(--gold); border: 1px solid rgba(232,184,74,0.3); }
+.rank-badge.top3   { background: var(--gold-subtle); color: var(--gold); border: 1px solid var(--tag-top3-border); }
 .rank-badge.top10  { background: var(--accent-subtle); color: var(--accent); }
 .rank-badge.normal { background: var(--bg-surface-2); color: var(--text-secondary); }
 
@@ -763,6 +836,13 @@ textarea.input {
 .select:focus {
   border-color: var(--accent);
 }
+/* Native dropdown items inherit OS scheme colors by default — force them
+   to track our theme tokens so the popup readable in both light & dark. */
+.select option,
+select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
 
 .label {
   font-size: 12px;
@@ -846,7 +926,7 @@ textarea.input {
 .side-panel-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-scrim);
   backdrop-filter: blur(4px);
   z-index: var(--z-modal-overlay);
   animation: fadeIn 0.2s var(--ease-out);

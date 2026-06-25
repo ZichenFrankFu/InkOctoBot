@@ -5,6 +5,7 @@ import { useDialog } from "../components/shared/Dialog";
 import type { AppSettings } from "../api/types";
 import PromptPreview from "../components/reference/PromptPreview";
 import { getLang, setLang, useLang, t } from "../i18n";
+import { useTheme } from "../hooks/useTheme";
 
 // Pipeline roles laid out in workflow order: 参考作品 → 开书 → 角色 & 世界书
 // → 正文创作 → 评估. Every group covers operations that run a built-in AI.
@@ -667,6 +668,9 @@ function SystemTab({
       {/* Language toggle (中文 / English) — system-level UI preference. */}
       <LanguageToggleSection />
 
+      {/* 日间 / 夜间 主题切换 — 持久化到 localStorage，整站随 data-theme 翻转。 */}
+      <ThemeToggleSection />
+
       {/* Crawler DB Path */}
       <div className="card" style={{ gridColumn: "1 / -1" }}>
         <div className="card-header"><h3>爬虫数据库路径</h3></div>
@@ -1119,6 +1123,39 @@ function LanguageToggleSection() {
               className={lang === opt.key ? "btn-primary" : "btn"}
               style={{ fontSize: 13, padding: "4px 16px" }}
               onClick={() => setLang(opt.key)}
+            >{opt.label}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* 日间 / 夜间 切换 — 持久化到 localStorage 并通过 <html data-theme>
+ * 触发 global.css 里的 :root[data-theme="light"] 变量覆盖，整个 UI
+ * （背景 / 文字 / 边框 / 下拉 / 滚动条 / 弹层）随即切换。 */
+function ThemeToggleSection() {
+  const { theme, toggle } = useTheme();
+  const isLight = theme === "light";
+  return (
+    <div className="card" style={{ gridColumn: "1 / -1", padding: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 14 }}>外观主题</h3>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+            日间 / 夜间 模式 — 当前：{isLight ? "日间（浅色）" : "夜间（深色）"}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {([
+            { key: "dark" as const,  label: "夜间" },
+            { key: "light" as const, label: "日间" },
+          ]).map(opt => (
+            <button
+              key={opt.key}
+              className={theme === opt.key ? "btn-primary" : "btn"}
+              style={{ fontSize: 13, padding: "4px 16px" }}
+              onClick={() => { if (theme !== opt.key) toggle(); }}
             >{opt.label}</button>
           ))}
         </div>

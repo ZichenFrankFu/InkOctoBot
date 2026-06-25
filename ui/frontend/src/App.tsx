@@ -5,6 +5,7 @@ import { ToastProvider, useToast } from "./components/shared/Toast";
 import { DialogProvider } from "./components/shared/Dialog";
 import ErrorBoundary from "./components/shared/ErrorBoundary";
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts";
+import { useTheme } from "./hooks/useTheme";
 import ShortcutHint from "./components/shared/ShortcutHint";
 
 import GlobalSearch from "./components/shared/GlobalSearch";
@@ -108,6 +109,11 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
 ];
 
 function AppInner() {
+  // Mount the active theme to <html data-theme> as early as possible so
+  // the first paint already matches the user's saved preference — without
+  // this, every reload briefly flashes the default dark theme.
+  useTheme();
+
   const [tab, setTab] = useState<Tab>("dashboard");
   const [sidebarW, setSidebarW] = useState(220);
   const [collapsed, setCollapsed] = useState(false);
