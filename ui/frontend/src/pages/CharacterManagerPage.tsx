@@ -774,8 +774,12 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
             </button>
           </div>
 
-          {/* List */}
-          <div className="panel-body">
+          {/* Grid — 自适应每行卡片数：宽列 4-6 张/行，窄列 (打开角色详情时)
+              自动塌到 2 张/行；卡片尺寸由 minmax(150px, 1fr) 决定。 */}
+          <div className="panel-body" style={{
+            padding: "12px",
+            overflowY: "auto",
+          }}>
             {loading ? (
               <div className="loading"><div className="loading-spinner" /></div>
             ) : filtered.length === 0 ? (
@@ -783,56 +787,114 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 <p>{search ? "没有匹配的角色" : "暂无角色，点击左上角「+」添加"}</p>
               </div>
             ) : (
-              filtered.map(c => (
-                <div
-                  key={c.id}
-                  className={`report-list-item ${editing?.id === c.id ? "active" : ""}`}
-                  onClick={() => {
-                    // Switching to the same character is a no-op (and
-                    // shouldn't trigger a discard prompt either).
-                    if (editing?.id === c.id) { setRightView("detail"); return; }
-                    confirmDiscardIfDirty(() => {
-                      setEditing(c);
-                      setDirty(false);
-                      setRightView("detail");
-                    });
-                  }}
-                >
-                  <div
-                    className="char-avatar"
-                    style={{
-                      background: (c as any).avatar_url ? "var(--bg-secondary)"
-                        : c.role === "主角" ? "var(--accent-subtle)"
-                        : c.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)",
-                      color: c.role === "主角" ? "var(--accent)" : c.role === "反派" ? "var(--purple)" : "var(--jade)",
-                      overflow: "hidden",
-                    }}
-                  >
-                    {(c as any).avatar_url ? (
-                      <img src={(c as any).avatar_url} alt={c.name}
-                        style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    ) : (
-                      <span style={{ lineHeight: 1, display: "inline-block" }}>{c.name.charAt(0)}</span>
-                    )}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="truncate" style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
-                      {c.name}
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+                gap: 12,
+              }}>
+                {filtered.map(c => {
+                  const isActive = editing?.id === c.id;
+                  const avatarUrl = (c as any).avatar_url as string | undefined;
+                  const roleColor = c.role === "主角" ? "var(--accent)"
+                    : c.role === "反派" ? "var(--purple)"
+                    : "var(--jade)";
+                  const roleSubtle = c.role === "主角" ? "var(--accent-subtle)"
+                    : c.role === "反派" ? "var(--purple-subtle)"
+                    : "var(--jade-subtle)";
+                  return (
+                    <div
+                      key={c.id}
+                      onClick={() => {
+                        if (editing?.id === c.id) { setRightView("detail"); return; }
+                        confirmDiscardIfDirty(() => {
+                          setEditing(c);
+                          setDirty(false);
+                          setRightView("detail");
+                        });
+                      }}
+                      style={{
+                        position: "relative",
+                        background: isActive ? "var(--bg-surface-2)" : "var(--bg-card, var(--bg-surface))",
+                        border: `1px solid ${isActive ? roleColor : "var(--border)"}`,
+                        borderRadius: "var(--radius-md, 10px)",
+                        padding: "14px 10px 10px",
+                        cursor: "pointer",
+                        transition: "border-color 0.15s, transform 0.15s var(--ease-out), box-shadow 0.15s",
+                        boxShadow: isActive ? `0 0 0 1px ${roleColor}` : "none",
+                        display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
+                      }}
+                      onMouseEnter={e => {
+                        if (!isActive) {
+                          e.currentTarget.style.transform = "translateY(-2px)";
+                          e.currentTarget.style.borderColor = "var(--border-hover)";
+                          e.currentTarget.style.boxShadow = "var(--shadow-sm)";
+                        }
+                      }}
+                      onMouseLeave={e => {
+                        if (!isActive) {
+                          e.currentTarget.style.transform = "translateY(0)";
+                          e.currentTarget.style.borderColor = "var(--border)";
+                          e.currentTarget.style.boxShadow = "none";
+                        }
+                      }}
+                    >
+                      {/* Avatar — circular, 64px, role-colored fallback */}
+                      <div style={{
+                        width: 64, height: 64, borderRadius: "50%",
+                        background: avatarUrl ? "var(--bg-surface-2)" : roleSubtle,
+                        color: roleColor,
+                        border: `2px solid ${isActive ? roleColor : "transparent"}`,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        overflow: "hidden", flexShrink: 0,
+                        fontSize: 24, fontWeight: 700, fontFamily: "var(--font-serif)",
+                      }}>
+                        {avatarUrl ? (
+                          <img src={avatarUrl} alt={c.name}
+                            style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        ) : (
+                          <span style={{ lineHeight: 1 }}>{c.name.charAt(0)}</span>
+                        )}
+                      </div>
+                      {/* Name + role */}
+                      <div style={{ width: "100%", textAlign: "center", minWidth: 0 }}>
+                        <div className="truncate" style={{
+                          fontSize: 13, fontWeight: 600, color: "var(--text-primary)",
+                          marginBottom: 4,
+                        }} title={c.name}>
+                          {c.name}
+                        </div>
+                        {c.role && (
+                          <span style={{
+                            display: "inline-block",
+                            fontSize: 10, padding: "1px 8px", borderRadius: 10,
+                            background: roleSubtle, color: roleColor,
+                            border: `1px solid ${roleColor}`,
+                            fontWeight: 500,
+                          }}>
+                            {c.role}
+                          </span>
+                        )}
+                      </div>
+                      {/* Delete — top-right, only visible on hover via opacity */}
+                      <button
+                        className="btn-icon"
+                        title="删除"
+                        onClick={e => { e.stopPropagation(); remove(c.id); }}
+                        style={{
+                          position: "absolute", top: 4, right: 4,
+                          fontSize: 13, padding: "2px 6px",
+                          color: "var(--text-tertiary)",
+                          opacity: 0.6,
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.color = "var(--error)"; e.currentTarget.style.opacity = "1"; }}
+                        onMouseLeave={e => { e.currentTarget.style.color = "var(--text-tertiary)"; e.currentTarget.style.opacity = "0.6"; }}
+                      >
+                        &times;
+                      </button>
                     </div>
-                    <div className="text-xs text-muted">
-                      {c.role || "角色"}
-                    </div>
-                  </div>
-                  <button
-                    className="btn-icon"
-                    style={{ fontSize: 14 }}
-                    title="删除"
-                    onClick={e => { e.stopPropagation(); remove(c.id); }}
-                  >
-                    &times;
-                  </button>
-                </div>
-              ))
+                  );
+                })}
+              </div>
             )}
           </div>
         </div>
