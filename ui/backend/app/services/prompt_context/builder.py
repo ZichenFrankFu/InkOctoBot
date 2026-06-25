@@ -92,10 +92,13 @@ _SECTION_GROUPS: dict[str, str] = {
 # (Loader预算分配·机制6). Block-id ↔ spec name mapping:
 # platform_directive = platform_style, subplots = plotline.
 AGENT_LOADER_PROFILES: dict[str, tuple[str, ...]] = {
-    # 单 Agent / 导演模式末步整合 — 14 loaders, target sum ≈ 24K
+    # 单 Agent / 导演模式末步整合 — 15 loaders, target sum ≈ 26K.
+    # market_overview included so the Writer has the same 市场总览 the
+    # 开书助手 gets — user explicitly asked for this context to flow
+    # through the chapter-generation prompt, not just book ideation.
     "writer": (
-        "platform_directive", "reference", "inspiration", "character_cards",
-        "worldbook", "chapter_outline", "reader_memory",
+        "platform_directive", "market_overview", "reference", "inspiration",
+        "character_cards", "worldbook", "chapter_outline", "reader_memory",
         "current_chapter_draft", "storyland_state", "foreshadowing",
         "subplots", "user_preferences", "user_special_requirements", "skills",
     ),

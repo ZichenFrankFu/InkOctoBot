@@ -355,6 +355,17 @@ def diagnose_platform_directive(project_id: str) -> dict:
     return platform_market.diagnose(project_id)
 
 
+@router.get("/diagnose/market-overview")
+def diagnose_market_overview() -> dict:
+    """Inspect what the market_overview loader sees — which 市场特征提取
+    cache rows are present, how many rows / tags / pairs each source
+    surfaces, and a preview of the assembled body. Use when 市场总览
+    shows 未注入 even though the basic / advanced extraction tabs work.
+    """
+    from ui.backend.app.services.prompt_context.loaders import market_overview
+    return market_overview.diagnose()
+
+
 @router.get("/cost-estimate")
 def cost_estimate(
     project_id: str = "",

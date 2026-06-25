@@ -2646,6 +2646,8 @@ const RAG_PREVIEW_SECTIONS: {
     group: "system", hint: "请在「设置 → 自学技能」启用至少一个 SKILL" },
   { title: "平台风格",     source: "platform_directive",        matches: ["平台风格", "平台指令"],
     group: "system", hint: "请在项目设置选择「平台 + 题材」并完成市场画像提取" },
+  { title: "市场总览",     source: "market_overview",           matches: ["市场总览", "市场信息", "市场特征提取"],
+    group: "system", hint: "请打开「市场特征提取 → 基础特征 / 高级特征」让相关分析结果落入 compute_cache" },
 ];
 
 const RAG_GROUP_LABEL: Record<string, string> = {
@@ -2770,17 +2772,25 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
                   </span>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {groupEntries.map(({ expected, body, present }) => (
-                    <RAGLoaderRow key={expected.title}
-                      title={expected.title}
-                      hint={expected.hint}
-                      body={body} present={present} color={color}
-                      diagnoseUrl={
-                        expected.source === "platform_directive" && projectId
-                          ? `/api/generation/diagnose/platform-directive/${projectId}`
-                          : undefined
-                      } />
-                  ))}
+                  {groupEntries.map(({ expected, body, present }) => {
+                    // 「诊断」按钮目前接两条 loader 的后端 endpoint：
+                    //   platform_directive → 项目级（带 projectId）
+                    //   market_overview   → 全局（不带 projectId）
+                    // 其余 loader 没有专用 endpoint，按钮不渲染。
+                    let diagnoseUrl: string | undefined;
+                    if (expected.source === "platform_directive" && projectId) {
+                      diagnoseUrl = `/api/generation/diagnose/platform-directive/${projectId}`;
+                    } else if (expected.source === "market_overview") {
+                      diagnoseUrl = `/api/generation/diagnose/market-overview`;
+                    }
+                    return (
+                      <RAGLoaderRow key={expected.title}
+                        title={expected.title}
+                        hint={expected.hint}
+                        body={body} present={present} color={color}
+                        diagnoseUrl={diagnoseUrl} />
+                    );
+                  })}
                 </div>
               </div>
             );
