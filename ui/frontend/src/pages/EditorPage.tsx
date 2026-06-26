@@ -103,6 +103,13 @@ interface ChatMessage {
   followUpOptions?: string[];
   warningOptions?: string[];
   agentDisplayName?: string;
+  /** Per-message token / cost snapshot — captured at send time on User
+   *  messages, rendered as a small chip on the bubble. */
+  tokenEstimate?: { inputK: number; llmCalls: number; usd: number };
+  /** Progress payload for System status messages while a request is in
+   *  flight: ETA in seconds + started-at epoch. The renderer draws an
+   *  animated bar and a live "剩余 N 秒" countdown. */
+  progress?: { etaSec: number; startedAt: number };
 }
 
 /** Format Scene Director JSON output as human-readable screenplay format */
@@ -1222,90 +1229,83 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setCurrentAgent(null);
   }, [activeCh, buildGenPayload]);
 
-  /** Build the kickoff system message shown as the first chat entry when
-   *  a single-agent run starts. Lists every active loader and the cost
-   *  estimate — the spec calls this "第一条信息应包含所有 loader 与
-   *  token 估算". Manifest may not be loaded yet on first hit; we fetch
-   *  it inline. */
-  const buildKickoffMessage = useCallback(async (extraInstruction = ""): Promise<string> => {
-    const pid = projectId || "default";
-    let m: ContextManifest | null = manifest;
-    if (!m && activeChId) {
-      try {
-        m = await apiGet<ContextManifest>(
-          `/api/generation/context-manifest?project_id=${encodeURIComponent(pid)}&chapter_id=${encodeURIComponent(activeChId)}&chapter_num=${chapterNum}&mode=single`,
-        );
-      } catch { m = null; }
-    }
-    let cost: any = null;
+  /** Fetch single-mode cost estimate as a flat snapshot. Used for the
+   *  per-message token chip on every User message + the ETA on the
+   *  System "generating" progress bubble. Returns null on failure
+   *  (the chip just renders nothing). */
+  const fetchTokenEstimate = useCallback(async (): Promise<{
+    inputK: number; llmCalls: number; usd: number; etaSec: number;
+  } | null> => {
+    if (!activeChId) return null;
     try {
-      cost = await apiGet<any>(
-        `/api/generation/cost-estimate?mode=single&project_id=${encodeURIComponent(pid)}&chapter_id=${encodeURIComponent(activeChId)}`,
+      const cost = await apiGet<any>(
+        `/api/generation/cost-estimate?mode=single&project_id=${encodeURIComponent(projectId || "default")}&chapter_id=${encodeURIComponent(activeChId)}`,
       );
-    } catch { cost = null; }
-
-    const lines: string[] = [];
-    const synLine = (activeCh?.synopsis || "").slice(0, 60).trim();
-    lines.push(`▸ 大纲：${synLine ? "「" + synLine + (synLine.length >= 60 ? "…」" : "」") : "（未填写）"}`);
-
-    if (m?.rag?.length) {
-      const active = m.rag.filter(r => r.present);
-      const inactive = m.rag.filter(r => !r.present);
-      if (active.length) {
-        const labels = active.map(r => {
-          const dropped = r.items.filter(it => ragExcludes.has(`${r.key}::${it.id}`)).length;
-          const total = r.items.length;
-          if (total && dropped) return `${r.label}(${total - dropped}/${total})`;
-          if (total) return `${r.label}(${total})`;
-          return r.label;
-        });
-        lines.push(`▸ RAG 加载：${labels.join(" · ")}`);
-      }
-      if (inactive.length) {
-        lines.push(`▸ 未注入：${inactive.map(r => r.label).join(" · ")}`);
-      }
-    }
-    const skillNames = (m?.learned_skills || [])
-      .filter(s => skillSelection[s.name] !== false).map(s => s.name);
-    if (skillNames.length) {
-      lines.push(`▸ 启用技能：${skillNames.slice(0, 5).join("、")}${skillNames.length > 5 ? ` 等 ${skillNames.length} 条` : ""}`);
-    }
-    if (cost?.requested) {
-      const r = cost.requested;
-      const inK = Math.round(r.input_tokens / 1000);
-      const usd = r.estimated_usd > 0 ? ` · 约 $${r.estimated_usd.toFixed(3)}` : "";
-      lines.push(`▸ Token 估算：输入 ~${inK}K · 调用 ${r.llm_calls} 次${usd}`);
-    }
-    if (extraInstruction) {
-      lines.push(`▸ 本次补充指令：${extraInstruction}`);
-    }
-    return `单智能体创作 · 启动\n${lines.join("\n")}`;
-  }, [projectId, activeChId, chapterNum, manifest, activeCh, ragExcludes, skillSelection]);
-  const runPlainAgent = useCallback(async (extraInstruction = "", resetChat = true) => {
+      const r = cost?.requested;
+      if (!r) return null;
+      // 5K input tokens ≈ 1 s wall-clock as a coarse default. Cap to
+      // sensible bounds so the bar doesn't show "8 分钟" on a 50K prompt.
+      const eta = Math.max(8, Math.min(180, Math.round((r.input_tokens || 0) / 5000) + 12));
+      return {
+        inputK: Math.round((r.input_tokens || 0) / 1000),
+        llmCalls: r.llm_calls || 1,
+        usd: r.estimated_usd || 0,
+        etaSec: eta,
+      };
+    } catch { return null; }
+  }, [projectId, activeChId]);
+  /** Single-agent run.
+   *  Flow (Claude-style chat):
+   *    1. push User message (instruction or "按大纲创作本章") with
+   *       token estimate snapshot
+   *    2. push System "生成中" message with progress bar + ETA
+   *    3. await /quick-generate
+   *    4. on success: replace progress with "生成完成" status; append
+   *       Writer (作家智能体) message with the chapter text
+   *    5. on error: replace progress with "生成出错: …"
+   *
+   *  `instruction` is the user's typed instruction (becomes the User
+   *  message content); empty → default "按大纲创作本章".
+   *  `userPreSent` is true when the User message has already been
+   *  pushed by sendChatMessage — runPlainAgent then skips re-adding it.
+   */
+  const runPlainAgent = useCallback(async (instruction = "", userPreSent = false) => {
     if (!activeCh) return;
     genModeRef.current = "single";
     setAiTab("single");
     setGenerating(true);
     setPipelineSteps([{ step: "Plain Agent", status: "running", detail: "单Agent直接生成中..." }]);
-    const kickoff = await buildKickoffMessage(extraInstruction);
-    const kickoffMsg: ChatMessage = {
-      agent: "System", content: kickoff, status: "done", timestamp: Date.now(),
+
+    const est = await fetchTokenEstimate();
+    const userText = instruction.trim() || "按大纲创作本章";
+    const startedAt = Date.now();
+    const etaSec = est?.etaSec ?? 30;
+    const progressMsg: ChatMessage = {
+      agent: "System", content: "生成中",
+      status: "done", timestamp: Date.now() + 1,
+      progress: { etaSec, startedAt },
     };
-    if (resetChat) {
-      setChatMessages([kickoffMsg]);
-    } else {
-      setChatMessages(prev => [...prev, kickoffMsg]);
-    }
+    setChatMessages(prev => {
+      const next = userPreSent ? [...prev] : [...prev, {
+        agent: "User" as const, content: userText, status: "done" as const,
+        timestamp: Date.now(),
+        tokenEstimate: est ? { inputK: est.inputK, llmCalls: est.llmCalls, usd: est.usd } : undefined,
+      }];
+      next.push(progressMsg);
+      return next;
+    });
     generatedTextRef.current = "";
+
     try {
       const payload: any = { ...buildGenPayload() };
-      // Surface the chat-typed补充指令到本次 quick-generate. 用 chapter
-      // 已有的 special_requirements 拼接, 不写回 chapter row.
-      if (extraInstruction) {
+      // Surface the chat-typed 指令 to this 生成请求. Persisted
+      // chapter.special_requirements (if any) prefixed; the chat input
+      // becomes the "本次补充" tail. We do NOT write back to the chapter row.
+      if (instruction.trim()) {
         const base = ((activeCh as any)?.special_requirements || "").trim();
         payload.special_requirements = base
-          ? `${base}\n[本次补充] ${extraInstruction}`
-          : `[本次补充] ${extraInstruction}`;
+          ? `${base}\n[本次补充] ${instruction.trim()}`
+          : instruction.trim();
       }
       const resp = await apiPost<{ text: string; model: string; tokens?: any; skills_used?: string[] }>(
         "/api/generation/quick-generate", payload,
@@ -1313,22 +1313,27 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       generatedTextRef.current = resp.text;
       setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "已完成", progress: 100 }]);
       setChatMessages(prev => {
-        const filtered = prev.filter(m => m.status !== "thinking");
-        return [...filtered,
-          { agent: "Writer", content: resp.text, status: "done" as const, timestamp: Date.now() },
-          { agent: "System", content: `生成完成 · ${resp.text.length} 字 · ${resp.model}${resp.tokens ? ` (${resp.tokens.input}+${resp.tokens.output} tk)` : ""}`, status: "done" as const, timestamp: Date.now() },
-        ];
+        // Replace the in-flight progress System message with a completion
+        // status, then append the Writer agent's chapter text.
+        const out: ChatMessage[] = prev.map(m =>
+          m.progress
+            ? { ...m, progress: undefined, content: `生成完成 · ${resp.text.length} 字 · ${resp.model}${resp.tokens ? ` (${resp.tokens.input}+${resp.tokens.output} tk)` : ""}` }
+            : m,
+        );
+        out.push({ agent: "Writer", content: resp.text, status: "done", timestamp: Date.now() });
+        return out;
       });
     } catch (e: any) {
       setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "出错" }]);
-      setChatMessages(prev => [...prev, {
-        agent: "System", content: `生成出错：${e?.message || "请检查模型连接"}`,
-        status: "done", timestamp: Date.now(),
-      }]);
+      setChatMessages(prev => prev.map(m =>
+        m.progress
+          ? { ...m, progress: undefined, content: `生成出错：${e?.message || "请检查模型连接"}` }
+          : m,
+      ));
     }
     setGenerating(false);
     setCurrentAgent(null);
-  }, [activeCh, projectId, activeChId, buildGenPayload, buildKickoffMessage]);
+  }, [activeCh, projectId, activeChId, buildGenPayload, fetchTokenEstimate]);
 
   /** Apply a web-LLM-generated chapter the user pasted back. */
   const applyPlainPaste = useCallback((text: string) => {
@@ -1555,27 +1560,46 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   // Manual-mode toggle: when ON, sendChatMessage opens UniversalLLMDialog
   // (网页大模型) instead of calling /quick-generate.
   const [manualMode, setManualMode] = useState(false);
-  const sendChatMessage = () => {
-    if (!chatInput.trim()) return;
+  const sendChatMessage = async () => {
     const msg = chatInput.trim();
-    setChatMessages(prev => [...prev, { agent: "User", content: msg, status: "done", timestamp: Date.now() }]);
+    // single mode allows empty-send → "按大纲创作本章" default;
+    // cluster / waitingForConfirm still requires text.
+    const singleIdle = aiTab === "single" && !generating && !waitingForConfirm;
+    if (!msg && !singleIdle) return;
     setChatInput("");
+
     if (waitingForConfirm && sessionIdRef.current) {
+      // Pipeline confirm flow keeps the old semantics.
+      setChatMessages(prev => [...prev, {
+        agent: "User", content: msg, status: "done", timestamp: Date.now(),
+      }]);
       setWaitingForConfirm(false);
       apiPost(`/api/generation/confirm/${sessionIdRef.current}`, { action: "continue", message: msg }).catch((e) => toast(e.message || "操作失败", "error"));
       return;
     }
-    // Chat-driven generation: in single mode, idle (not running a pipeline),
-    // sending the message fires off a generation with the user input as
-    // 本次补充指令 — no separate "重新创作" button needed. Manual-mode
-    // toggles 网页大模型 dialog instead of API call.
-    if (aiTab === "single" && !generating) {
+
+    if (singleIdle) {
+      // Single-mode chat-driven generation. Snapshot the token estimate
+      // onto the User message so it shows up as a chip on the bubble.
+      const est = await fetchTokenEstimate();
+      const userText = msg || "按大纲创作本章";
+      setChatMessages(prev => [...prev, {
+        agent: "User", content: userText, status: "done", timestamp: Date.now(),
+        tokenEstimate: est ? { inputK: est.inputK, llmCalls: est.llmCalls, usd: est.usd } : undefined,
+      }]);
       if (manualMode) {
         openWebLLMDialog();
       } else {
-        runPlainAgent(msg, false);
+        runPlainAgent(msg, true);
       }
+      return;
     }
+
+    // Cluster mode / generating: keep prior behavior — pure chat message,
+    // no generation trigger.
+    setChatMessages(prev => [...prev, {
+      agent: "User", content: msg, status: "done", timestamp: Date.now(),
+    }]);
   };
 
   const words = useMemo(() => wc(content), [content]);
@@ -2923,26 +2947,10 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       </div>
       )}
 
-      {/* ── 创作备注 ──（原「用户特别要求」）一句话级别的本章特殊要求，
-          loader (user_special_requirements) 注入 prompt 顶部。空 → 跳过。
-          rows=2 + maxLength=200 把这块面板「占地」压到大纲半屏以下。 */}
-      <div className="field" style={{ marginTop: 14 }}>
-        <label className="label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-          <span>创作备注</span>
-          <span className="text-xs" style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>
-            {((chapter as any)?.special_requirements || "").length}/200
-          </span>
-        </label>
-        <textarea
-          className="input"
-          value={(chapter as any)?.special_requirements || ""}
-          onChange={e => onUpdateChapter?.("special_requirements", e.target.value.slice(0, 200))}
-          placeholder="一句话本章要求（保持低悬念 / 多用对白 / 严禁某情节…），留空则跳过"
-          rows={2}
-          maxLength={200}
-          style={{ fontSize: 12, lineHeight: 1.6 }}
-        />
-      </div>
+      {/* 创作备注 textarea 已从 RAG tab 撤掉 —— 它的语义现在由
+          「智能体创作」聊天输入框承担：每次发送的文本就是「本次创作
+          指令 / 备注」。chapter.special_requirements 字段仍保留以供
+          loader 在历史数据上工作，但 RAG tab 不再露面。 */}
 
       {/* 关联参考作品 — 编辑器内可直接编辑。先在顶部选择参考作品，
           再为每部已选作品挑选具体情节 / 设定 / 人物 / 条目（智能识别
@@ -3574,6 +3582,46 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
   );
 }
 
+/** Inline progress bubble for an in-flight System status message.
+ *  Animated bar fills from 0 → ~95% over `etaSec` so the user gets a
+ *  realistic completion feel even though /quick-generate is a single
+ *  blocking call. Tick driven by setInterval; cleared on unmount.
+ *  When ETA elapses, the bar holds at 95% and the label says "收尾中…". */
+function ProgressBubble({ label, etaSec, startedAt }: {
+  label: string; etaSec: number; startedAt: number;
+}) {
+  const [, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(id);
+  }, []);
+  const elapsed = (Date.now() - startedAt) / 1000;
+  const pct = Math.min(95, Math.max(2, (elapsed / Math.max(1, etaSec)) * 95));
+  const remaining = Math.max(0, Math.ceil(etaSec - elapsed));
+  const stillRunning = remaining > 0;
+  return (
+    <div style={{ minWidth: 220 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, fontSize: 12, color: "var(--text-secondary)" }}>
+        <span>{label}{stillRunning ? "…" : "（收尾中…）"}</span>
+        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+          {stillRunning ? `预计 ${remaining}s` : `已 ${Math.round(elapsed)}s`}
+        </span>
+      </div>
+      <div style={{
+        height: 6, borderRadius: 3,
+        background: "var(--border)", overflow: "hidden",
+      }}>
+        <div style={{
+          height: "100%", width: `${pct}%`,
+          background: "linear-gradient(90deg, var(--accent), var(--gold))",
+          borderRadius: 3,
+          transition: "width 0.45s ease-out",
+        }} />
+      </div>
+    </div>
+  );
+}
+
 // 生成前成本预估 (spec LLM调用·机制1): 本章预估 LLM 调用数与
 // token / USD，导演模式以场景数为主变量；超出单章成本上限时展示
 // 降级建议（导演转单 Agent / 跳过 LLM 评估层）。
@@ -3742,7 +3790,9 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
       <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
           <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
-            {mode === "cluster" ? "集群式智能体创作" : "单智能体创作"}
+            {mode === "cluster"
+              ? "集群式智能体创作"
+              : "在下方输入本次创作的具体指令，点「创作」开始 — 留空即按大纲创作。"}
           </div>
         )}
         {chatMessages.map((msg, i) => {
@@ -3852,8 +3902,26 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                     <QuestionChoices content={msg.content} onChoose={(choice) => {
                       onChatInputChange(choice);
                     }} />
+                  ) : msg.progress ? (
+                    <ProgressBubble label={msg.content} etaSec={msg.progress.etaSec} startedAt={msg.progress.startedAt} />
                   ) : msg.content}
                 </div>
+                {msg.tokenEstimate && msg.agent === "User" && (
+                  <div style={{
+                    marginTop: 4, display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", gap: 4,
+                  }}>
+                    <span style={{
+                      display: "inline-flex", alignItems: "center", gap: 4,
+                      padding: "2px 8px", borderRadius: 10,
+                      fontSize: 10, lineHeight: 1,
+                      background: "var(--bg-surface-2)", color: "var(--text-tertiary)",
+                      border: "1px solid var(--border-subtle, var(--border))",
+                    }} title="本次请求的 token 估算（cost-estimate）">
+                      ~{msg.tokenEstimate.inputK}K tokens · {msg.tokenEstimate.llmCalls} 次调用
+                      {msg.tokenEstimate.usd > 0 ? ` · $${msg.tokenEstimate.usd.toFixed(3)}` : ""}
+                    </span>
+                  </div>
+                )}
                 {msg.status === "done" && (
                   <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
                     <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
@@ -3962,11 +4030,29 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
           </button>
         </div>
       )}
-      {/* Input — single mode: 发送即生成（Claude 风格的 chat 输入框）。
-          手动 toggle 切到「网页大模型」模式后，发送会打开粘贴 dialog 而不
-          走 API. cluster / waitingForConfirm 走旧的"发消息与 Agent 对话"
-          语义. */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
+      {/* Single mode input (Claude-style):
+            ┌ 手动模式 toggle (上方) ─┐
+            ├ 用户具体指令 textarea ─┤
+            └ 发送按钮 (label: 创作) ┘
+          手动模式勾上后, "创作" 按钮文案不变, 但走 UniversalLLMDialog
+          而不是 API. 留空发送 = "按大纲创作本章". */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+        {mode === "single" && !generating && !waitingForConfirm && onToggleManualMode && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
+              <input type="checkbox" checked={!!manualMode} onChange={onToggleManualMode}
+                style={{ accentColor: "var(--indigo)", cursor: "pointer" }} />
+              <span style={{ color: manualMode ? "var(--indigo)" : "var(--text-tertiary)", fontWeight: manualMode ? 600 : 400 }}>
+                手动模式
+              </span>
+            </label>
+            {manualMode && (
+              <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+                · 发送会打开网页大模型 dialog 让你粘贴回复
+              </span>
+            )}
+          </div>
+        )}
         <div style={{ display: "flex", gap: 6 }}>
           <textarea className="input" value={chatInput} onChange={e => onChatInputChange(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSendMessage(); } }}
@@ -3974,107 +4060,45 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
               waitingForConfirm
                 ? "输入修改意见，或点击确认继续..."
                 : mode === "single"
-                  ? (chatMessages.length === 0
-                      ? "输入补充指令并发送即可开始创作（留空也行，回车直接发送）"
-                      : (manualMode ? "发送将打开网页大模型 dialog…" : "想让作家智能体怎么改？发送即重新创作…"))
+                  ? "用户的具体指令…"
                   : "输入消息与 Agent 对话..."
             }
-            rows={1} style={{ flex: 1, fontSize: 12, padding: "6px 10px", minHeight: 32, maxHeight: 100, resize: "none" }} />
+            rows={2}
+            style={{ flex: 1, fontSize: 12, padding: "6px 10px", minHeight: 36, maxHeight: 120, resize: "vertical" }} />
           <button className="btn-primary"
             onClick={onSendMessage}
             disabled={!chatInput.trim() && !(mode === "single" && !generating && !waitingForConfirm)}
-            title={mode === "single" && !generating && !waitingForConfirm
-              ? (chatMessages.length === 0 ? "开始创作" : (manualMode ? "打开网页大模型" : "重新创作"))
-              : "发送消息"}
-            style={{ fontSize: 12, padding: "6px 12px", flexShrink: 0 }}>
-            {mode === "single" && !generating && !waitingForConfirm
-              ? (manualMode ? "网页版" : (chatMessages.length === 0 ? "创作" : "重新创作"))
-              : "发送"}
+            title={mode === "single" && !generating && !waitingForConfirm ? "创作（Enter 发送）" : "发送消息"}
+            style={{ fontSize: 13, padding: "6px 18px", flexShrink: 0, alignSelf: "stretch", fontWeight: 600 }}>
+            {mode === "single" && !generating && !waitingForConfirm ? "创作" : "发送"}
           </button>
         </div>
-        {mode === "single" && !generating && !waitingForConfirm && onToggleManualMode && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, color: "var(--text-tertiary)" }}>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", userSelect: "none" }}>
-              <input type="checkbox" checked={!!manualMode} onChange={onToggleManualMode}
-                style={{ accentColor: "var(--indigo)", cursor: "pointer" }} />
-              <span style={{ color: manualMode ? "var(--indigo)" : "var(--text-tertiary)", fontWeight: manualMode ? 600 : 400 }}>
-                手动模式（网页大模型 paste 回复）
-              </span>
-            </label>
-          </div>
-        )}
       </div>
-      {/* Generation controls */}
-      {!generating && !waitingForConfirm && (
+      {/* Cluster mode keeps its two big legacy buttons; single mode UI
+          is now fully driven by the chat input above — no extra row. */}
+      {mode === "cluster" && !generating && !waitingForConfirm && (
         <div style={{ marginBottom: 6 }}>
-          {/* 单智能体 (single) 模式不再展示 调用的 skill / RAG 预览 /
-              Prompt 注入预览 — 这些已迁到 RAG tab，避免双份冗余。 */}
-          {mode === "cluster" && (
-            <ContextPanel
-              manifest={manifest || null}
-              skillSelection={skillSelection || {}}
-              ragExcludes={ragExcludes || new Set()}
-              onToggleSkill={(n) => onToggleSkill?.(n)}
-              onToggleRagItem={(k) => onToggleRagItem?.(k)}
-              onRefresh={onRefreshManifest}
-              projectId={projectId} chapterId={chapterId} chapterNum={chapterNum}
-            />
-          )}
+          <ContextPanel
+            manifest={manifest || null}
+            skillSelection={skillSelection || {}}
+            ragExcludes={ragExcludes || new Set()}
+            onToggleSkill={(n) => onToggleSkill?.(n)}
+            onToggleRagItem={(k) => onToggleRagItem?.(k)}
+            onRefresh={onRefreshManifest}
+            projectId={projectId} chapterId={chapterId} chapterNum={chapterNum}
+          />
           <CostEstimateBlock mode={mode} projectId={projectId} chapterId={chapterId} />
-          {mode === "single" ? (
-            // 只在 chat 还空着的时候露出 "创作 / 网页版" 两个起手按钮.
-            // 一旦有任何消息（kickoff system 或用户对话），后续都走聊天
-            // 框 (sendChatMessage). 这是 spec 里 "其余都仿照 claude 做成
-            // 聊天框，不需要额外的两个 button" 的实现.
-            chatMessages.length === 0 ? (
-              <div style={{ display: "flex", gap: 6 }}>
-                {onStartPlain && (
-                  <button className="btn-primary" style={{ flex: 1 }} onClick={() => onStartPlain()}>
-                    创作
-                  </button>
-                )}
-                {onOpenWebLLM && (
-                  <button
-                    onClick={onOpenWebLLM}
-                    title="复制 prompt 到任意网页大模型（ChatGPT / Claude / Gemini），把回复粘回 → 作家智能体接管"
-                    style={{
-                      flex: 1,
-                      display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-                      padding: "7px 12px",
-                      background: "var(--indigo-subtle, var(--bg-surface-2))",
-                      color: "var(--indigo, var(--text-primary))",
-                      border: "1px solid var(--indigo)",
-                      borderRadius: "var(--radius-sm)",
-                      fontSize: 13, fontWeight: 600,
-                      cursor: "pointer",
-                    }}
-                  >
-                    <span style={{
-                      display: "inline-flex", alignItems: "center", justifyContent: "center",
-                      width: 18, height: 18, borderRadius: 4,
-                      background: "var(--indigo)", color: "#fff",
-                      fontSize: 10, fontWeight: 700,
-                    }}>WEB</span>
-                    网页版
-                  </button>
-                )}
-              </div>
-            ) : null
-          ) : (
-            <>
-              <button className="btn-primary" style={{ width: "100%" }} onClick={() => onStart(false)}
-                title="多 Agent 协作 Pipeline（导演 → 角色 → 编辑 → 评估），调用 AI 大模型 API">
-                {chatMessages.length > 0 ? "重新集群创作" : "集群式智能体创作"}
-              </button>
-              <div style={{ marginTop: 6 }}>
-                <button className="btn" style={{ width: "100%" }}
-                  onClick={() => onStart(true)}
-                  title="逐 agent 暂停：复制该步 prompt 到 AI大模型网页版、粘贴返回结果再继续">
-                  AI大模型网页版（逐 agent 复制 prompt / 粘贴结果）
-                </button>
-              </div>
-            </>
-          )}
+          <button className="btn-primary" style={{ width: "100%" }} onClick={() => onStart(false)}
+            title="多 Agent 协作 Pipeline（导演 → 角色 → 编辑 → 评估），调用 AI 大模型 API">
+            {chatMessages.length > 0 ? "重新集群创作" : "集群式智能体创作"}
+          </button>
+          <div style={{ marginTop: 6 }}>
+            <button className="btn" style={{ width: "100%" }}
+              onClick={() => onStart(true)}
+              title="逐 agent 暂停：复制该步 prompt 到 AI大模型网页版、粘贴返回结果再继续">
+              AI大模型网页版（逐 agent 复制 prompt / 粘贴结果）
+            </button>
+          </div>
         </div>
       )}
     </div>
