@@ -99,7 +99,10 @@ export default function StorylandPage({ projectId }: { projectId: string }) {
       </div>
 
       <div className="tab-bar-underline" style={{ marginBottom: 14 }}>
-        {([["state", "Storyland 状态"], ["memory", "读者视角记忆"]] as [TabKey, string][]).map(([k, label]) => (
+        {([
+          ["state",  "Storyland 状态"],
+          ["memory", "章节回看（5 个回看面板）"],
+        ] as [TabKey, string][]).map(([k, label]) => (
           <button key={k}
             className={`tab-item ${tab === k ? "active" : ""}`}
             onClick={() => setTab(k)}>{label}</button>
@@ -391,14 +394,67 @@ function StateTab({ projectId, chapters, toast }: {
   );
 }
 
-// ─────────────── Tab 2: 读者视角记忆 ───────────────
+// ─────────────── Tab 2: 章节历史视图 ───────────────
 
-function MemoryTab({ projectId, chapters, toast }: {
+// 后端 /api/historical-view/{chapter_id} 返回 5 个结构化板块. 之前 UI 是把
+// 整段 JSON 倒进 <pre> 给用户看 —— 用户明确反对. 下面每个板块按自己的数据
+// 形态做了 human-readable 渲染.
+
+interface ChapterSegmentItem {
+  segment_id: string;
+  sequence_order: number;
+  content: string;
+  source: string;
+}
+
+interface StateTriple {
+  subject: string;
+  subject_type: string;
+  predicate: string;
+  value: string;
+  from_chapter: number;
+  trigger: string;
+}
+
+interface HistoricalView {
+  chapter_id: string;
+  chapter_num: number;
+  snapshot_id: string | null;
+  tab_1_content?: { segments?: ChapterSegmentItem[] };
+  tab_2_storyland_state?: { chapter_num: number; active_state?: StateTriple[] };
+  tab_3_reader_memory?: { chapter_num: number; rendered: string; error?: string };
+  tab_4_full_prompt?: {
+    full_prompt: string;
+    embedding_model: string;
+    generation_model: string;
+  };
+  tab_5_diagnostics?: Record<string, any>;
+}
+
+const SEGMENT_SOURCE_LABEL: Record<string, string> = {
+  ai_generated:     "AI 生成",
+  user_edit:        "用户改写",
+  user_edited:      "用户改写",
+  targeted_rewrite: "定向重写",
+  manual:           "手动粘贴",
+};
+
+type HistoryTabKey = "segments" | "state" | "memory" | "prompt" | "diag";
+
+const HISTORY_TAB_LABELS: Record<HistoryTabKey, string> = {
+  segments: "章节段落（按段落看来源）",
+  state:    "Storyland 状态（生成本章前的客观事实）",
+  memory:   "读者视角记忆（生成本章时看到的累积）",
+  prompt:   "完整 prompt（生成本章时实际发给 LLM 的内容）",
+  diag:     "诊断数据（loader / 模型 / 字符数）",
+};
+
+function MemoryTab({ projectId: _projectId, chapters, toast }: {
   projectId: string;
   chapters: ChapterRef[];
   toast: (m: string, t?: any) => void;
 }) {
-  // Single-handle chapter timeline for picking the章节 — auto-tracks the
+  // Single-handle chapter timeline for picking 章节 — auto-tracks the
   // last chapter on first load so the page lands on the most useful view.
   const chapterMin = 1;
   const chapterMax = chapters.length > 0
@@ -415,13 +471,14 @@ function MemoryTab({ projectId, chapters, toast }: {
   const selectedChapter = chapters.find(c => c.chapter_num === chapterNum);
   const selected = selectedChapter?.chapter_id || "";
 
-  const [view, setView] = useState<any>(null);
+  const [view, setView] = useState<HistoricalView | null>(null);
   const [loading, setLoading] = useState(false);
+  const [subTab, setSubTab] = useState<HistoryTabKey>("memory");
 
   useEffect(() => {
     if (!selected) return;
     setLoading(true);
-    apiGet<any>(`/api/historical-view/${selected}`)
+    apiGet<HistoricalView>(`/api/historical-view/${selected}`)
       .then(setView)
       .catch((e: any) => { setView(null); toast(e.message || "加载失败", "error"); })
       .finally(() => setLoading(false));
@@ -431,7 +488,7 @@ function MemoryTab({ projectId, chapters, toast }: {
     <div>
       <div className="card">
         <SectionHeader
-          title="按章节查看读者视角记忆"
+          title="章节历史视图"
           action={selectedChapter ? (
             <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
               第{selectedChapter.chapter_num}章 {selectedChapter.title}
@@ -440,7 +497,8 @@ function MemoryTab({ projectId, chapters, toast }: {
         />
         <div className="card-body">
           <div className="text-xs text-muted" style={{ marginBottom: 8, lineHeight: 1.6 }}>
-            展示生成第 K 章时读者的记忆状态（前 K-1 章的累积）：L1 刚刚发生、L2 近期摘要、L3 相似召回、L4 标志性事件。
+            选定章节, 即可回看「生成这一章时」: 段落来源 / Storyland 状态 / 读者视角记忆 /
+            完整 prompt / 诊断 五个面板. 已 commit 的章节才有快照.
           </div>
           {chapters.length === 0 ? (
             <div className="empty-state" style={{ padding: "16px 0" }}>
@@ -457,41 +515,386 @@ function MemoryTab({ projectId, chapters, toast }: {
               label="章节"
             />
           )}
+
           {loading && <div className="text-xs text-muted" style={{ marginTop: 8 }}>加载中...</div>}
+
           {!loading && view && (
-            <div style={{ marginTop: 12 }}>
-              {(view.tabs || []).map((t: any, i: number) => (
-                <div key={i} style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", marginBottom: 4 }}>
-                    {t.label || t.name || `板块${i + 1}`}
-                  </div>
-                  <pre className="font-mono" style={{
-                    fontSize: 11, whiteSpace: "pre-wrap", color: "var(--text-secondary)",
-                    background: "var(--bg-surface)", borderRadius: "var(--radius-sm)",
-                    padding: "8px 10px", maxHeight: 320, overflow: "auto", margin: 0,
-                  }}>
-                    {typeof t.content === "string" ? t.content : JSON.stringify(t.content ?? t, null, 2)}
-                  </pre>
-                </div>
-              ))}
-              {!view.tabs && (
-                <pre className="font-mono" style={{
-                  fontSize: 11, whiteSpace: "pre-wrap", color: "var(--text-secondary)",
-                  background: "var(--bg-surface)", borderRadius: "var(--radius-sm)",
-                  padding: "8px 10px", maxHeight: 480, overflow: "auto", margin: 0,
-                }}>
-                  {JSON.stringify(view, null, 2)}
-                </pre>
-              )}
-            </div>
+            <>
+              {/* 子 tab 选择栏 */}
+              <div className="tab-bar-underline" style={{ marginTop: 12 }}>
+                {(Object.keys(HISTORY_TAB_LABELS) as HistoryTabKey[]).map(k => (
+                  <button key={k}
+                    className={`tab-item ${subTab === k ? "active" : ""}`}
+                    style={{ fontSize: 12 }}
+                    onClick={() => setSubTab(k)}>
+                    {HISTORY_TAB_LABELS[k]}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                {subTab === "segments" && <SegmentsPanel data={view.tab_1_content} />}
+                {subTab === "state"    && <StatePanel data={view.tab_2_storyland_state} />}
+                {subTab === "memory"   && <MemoryRenderedPanel data={view.tab_3_reader_memory} />}
+                {subTab === "prompt"   && <FullPromptPanel data={view.tab_4_full_prompt} toast={toast} />}
+                {subTab === "diag"     && <DiagnosticsPanel data={view.tab_5_diagnostics} />}
+              </div>
+            </>
           )}
+
           {!loading && !view && selected && (
             <div className="text-xs text-muted" style={{ marginTop: 8 }}>
-              该章节暂无记忆快照（需先 commit 一次）。
+              该章节暂无快照（需先 commit 一次正文）。
             </div>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── 5 个子面板的 human-readable 渲染 ─────────────────────────────
+
+function PanelEmpty({ msg }: { msg: string }) {
+  return (
+    <div className="text-xs text-muted" style={{
+      padding: "12px 0", textAlign: "center", fontStyle: "italic",
+    }}>
+      {msg}
+    </div>
+  );
+}
+
+function SegmentsPanel({ data }: { data?: { segments?: ChapterSegmentItem[] } }) {
+  const segments = data?.segments || [];
+  if (segments.length === 0) {
+    return <PanelEmpty msg="本章尚无段落记录（commit 后才会生成 chapter_segments）" />;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {segments.map(s => (
+        <div key={s.segment_id} style={{
+          border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+          padding: "8px 10px", background: "var(--bg-surface)",
+        }}>
+          <div className="flex items-center gap-6" style={{ marginBottom: 4 }}>
+            <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+              段 #{s.sequence_order}
+            </span>
+            <span className="tag" style={{
+              fontSize: 10, padding: "1px 6px",
+              color: "var(--accent)", borderColor: "var(--accent)",
+            }}>
+              {SEGMENT_SOURCE_LABEL[s.source] || s.source || "未知来源"}
+            </span>
+          </div>
+          <div style={{
+            fontSize: 12, lineHeight: 1.7, color: "var(--text-secondary)",
+            whiteSpace: "pre-wrap", fontFamily: "var(--font-serif)",
+          }}>
+            {s.content}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StatePanel({ data }: {
+  data?: { chapter_num: number; active_state?: StateTriple[] };
+}) {
+  const facts = data?.active_state || [];
+  if (facts.length === 0) {
+    return <PanelEmpty msg="生成本章前没有任何已记录的客观事实" />;
+  }
+  // Group by subject so the same actor's facts cluster together.
+  const bySubject = new Map<string, StateTriple[]>();
+  for (const f of facts) {
+    if (!bySubject.has(f.subject)) bySubject.set(f.subject, []);
+    bySubject.get(f.subject)!.push(f);
+  }
+  return (
+    <div>
+      <div className="text-xs text-muted" style={{ marginBottom: 8 }}>
+        生成第 {data!.chapter_num} 章前, 共 {facts.length} 条客观事实
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {Array.from(bySubject.entries()).map(([subj, items]) => (
+          <div key={subj} style={{
+            border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+            padding: "8px 10px", background: "var(--bg-surface)",
+          }}>
+            <div className="flex items-center gap-6" style={{ marginBottom: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{subj}</span>
+              <span className="tag" style={{ fontSize: 10 }}>
+                {ENTITY_TYPE_LABEL[items[0].subject_type] || items[0].subject_type || "其他"}
+              </span>
+              <span className="text-xs" style={{ color: "var(--text-tertiary)", marginLeft: "auto" }}>
+                {items.length} 条
+              </span>
+            </div>
+            {items.map((f, i) => (
+              <div key={i} style={{
+                display: "flex", gap: 8, alignItems: "baseline",
+                fontSize: 12, padding: "3px 0",
+                borderTop: i === 0 ? "none" : "1px solid var(--border-subtle)",
+              }}>
+                <span style={{ color: "var(--accent)" }}>{f.predicate}</span>
+                <span>{f.value}</span>
+                <span className="text-xs" style={{
+                  color: "var(--text-tertiary)", marginLeft: "auto",
+                }}>
+                  第 {f.from_chapter} 章{f.trigger ? ` · ${f.trigger}` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MemoryRenderedPanel({ data }: {
+  data?: { chapter_num: number; rendered: string; error?: string };
+}) {
+  if (!data) return <PanelEmpty msg="无数据" />;
+  if (data.error) {
+    return (
+      <div className="text-xs" style={{ color: "var(--danger)", padding: "12px 0" }}>
+        加载读者视角记忆失败: {data.error}
+      </div>
+    );
+  }
+  const rendered = (data.rendered || "").trim();
+  if (!rendered) {
+    return <PanelEmpty msg="生成本章前还没有读者视角记忆 (前几章可能无前置摘要)" />;
+  }
+  // The body comes back as the loader's final prompt-injection text:
+  // ``## 标题\n…\n## 标题\n…`` - render it as styled markdown-ish blocks.
+  const blocks: { title: string; body: string }[] = [];
+  let curTitle = "（默认）";
+  let curBody  = "";
+  for (const line of rendered.split("\n")) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m) {
+      if (curBody.trim() || curTitle !== "（默认）") {
+        blocks.push({ title: curTitle, body: curBody });
+      }
+      curTitle = m[1];
+      curBody  = "";
+    } else {
+      curBody += line + "\n";
+    }
+  }
+  if (curBody.trim() || curTitle !== "（默认）") {
+    blocks.push({ title: curTitle, body: curBody });
+  }
+  return (
+    <div>
+      <div className="text-xs text-muted" style={{ marginBottom: 8 }}>
+        生成第 {data.chapter_num + 1} 章时, 读者视角记忆 loader 看到的累积内容
+      </div>
+      {blocks.map((b, i) => (
+        <div key={i} style={{
+          border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+          padding: "10px 12px", marginBottom: 10, background: "var(--bg-surface)",
+        }}>
+          <div style={{
+            fontSize: 12, fontWeight: 700,
+            color: "var(--accent)", marginBottom: 6,
+          }}>
+            {b.title}
+          </div>
+          <div style={{
+            fontSize: 12, lineHeight: 1.7,
+            color: "var(--text-secondary)",
+            whiteSpace: "pre-wrap", fontFamily: "var(--font-serif)",
+          }}>
+            {b.body.trim() || "（空）"}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FullPromptPanel({ data, toast }: {
+  data?: { full_prompt: string; embedding_model: string; generation_model: string };
+  toast: (m: string, t?: any) => void;
+}) {
+  if (!data || !data.full_prompt) {
+    return <PanelEmpty msg="该章节没有保存完整 prompt 快照" />;
+  }
+  // 这条 prompt 是 markdown-flavored 自然语言 (写手 prompt), 不是 JSON.
+  // 用 serif 字体大字号渲染, 方便用户人读, 不要套 mono / pre-wrap-json.
+  const copy = () => {
+    navigator.clipboard.writeText(data.full_prompt).then(
+      () => toast("完整 prompt 已复制", "success"),
+      () => toast("复制失败", "error"),
+    );
+  };
+  return (
+    <div>
+      <div className="flex items-center gap-12" style={{
+        marginBottom: 8, fontSize: 11, color: "var(--text-tertiary)",
+        flexWrap: "wrap",
+      }}>
+        <span>生成模型: <strong style={{ color: "var(--text-secondary)" }}>
+          {data.generation_model || "—"}
+        </strong></span>
+        <span>嵌入模型: <strong style={{ color: "var(--text-secondary)" }}>
+          {data.embedding_model || "—"}
+        </strong></span>
+        <span style={{ marginLeft: "auto" }}>{data.full_prompt.length} 字</span>
+        <button className="btn" style={{ fontSize: 10, padding: "1px 8px" }}
+          onClick={copy}>复制</button>
+      </div>
+      <div style={{
+        border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+        padding: "12px 14px", background: "var(--bg-surface)",
+        maxHeight: 520, overflow: "auto",
+        fontSize: 12, lineHeight: 1.75, fontFamily: "var(--font-serif)",
+        color: "var(--text-secondary)", whiteSpace: "pre-wrap",
+      }}>
+        {data.full_prompt}
+      </div>
+    </div>
+  );
+}
+
+function DiagnosticsPanel({ data }: { data?: Record<string, any> }) {
+  if (!data || Object.keys(data).length === 0) {
+    return <PanelEmpty msg="无诊断数据" />;
+  }
+  // diagnostics_snapshot 的典型 shape:
+  //   { agent, total: {chars, tokens, tokenizer_method},
+  //     sections: {system, context, user}, loaders: {<loader_id>: {...}},
+  //     alerts: {empty, pressure, dominant} }
+  const total    = data.total || {};
+  const sections = data.sections || {};
+  const loaders  = data.loaders || {};
+  const alerts   = data.alerts || {};
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* 顶部统计 */}
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+        gap: 8,
+      }}>
+        <DiagStat label="Agent" value={data.agent || "—"} />
+        <DiagStat label="总字符" value={total.chars ?? "—"} />
+        <DiagStat label="总 token" value={total.tokens ?? "—"} />
+        <DiagStat label="Tokenizer" value={total.tokenizer_method || "—"} />
+      </div>
+
+      {/* 三组 (system / context / user) */}
+      {Object.keys(sections).length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>分组字符 / token</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
+            {Object.entries(sections).map(([k, v]: [string, any]) => (
+              <div key={k} style={{
+                border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+                padding: "6px 10px", background: "var(--bg-surface)",
+              }}>
+                <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{k}</div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>
+                  {v?.chars ?? 0} 字 · {v?.tokens ?? 0} token
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* loader 明细 */}
+      {Object.keys(loaders).length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+            每个 loader 的明细
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {Object.entries(loaders).map(([k, v]: [string, any]) => (
+              <DiagLoaderRow key={k} name={k} info={v} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 告警 */}
+      {(alerts.empty?.length || alerts.pressure?.length || alerts.dominant?.length) ? (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>告警</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {alerts.empty?.length > 0 && (
+              <DiagAlertLine label="空 / 低利用率" items={alerts.empty} color="var(--text-tertiary)" />
+            )}
+            {alerts.pressure?.length > 0 && (
+              <DiagAlertLine label="预算紧张 / 被裁" items={alerts.pressure} color="var(--gold)" />
+            )}
+            {alerts.dominant?.length > 0 && (
+              <DiagAlertLine label="占比过高" items={alerts.dominant} color="var(--accent)" />
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DiagStat({ label, value }: { label: string; value: any }) {
+  return (
+    <div style={{
+      border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+      padding: "6px 10px", background: "var(--bg-surface)",
+    }}>
+      <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 600 }}>{String(value)}</div>
+    </div>
+  );
+}
+
+function DiagLoaderRow({ name, info }: { name: string; info: any }) {
+  const status = info?.status || "—";
+  const chars  = info?.chars ?? 0;
+  const tokens = info?.tokens ?? 0;
+  const alloc  = info?.allocated_budget ?? 0;
+  const util   = typeof info?.utilization === "number"
+    ? `${Math.round(info.utilization * 100)}%` : "—";
+  const STATUS_COLOR: Record<string, string> = {
+    rendered: "var(--accent)",
+    clipped:  "var(--gold)",
+    inactive: "var(--text-disabled)",
+  };
+  return (
+    <div style={{
+      display: "flex", alignItems: "baseline", gap: 10,
+      fontSize: 11.5, padding: "4px 0",
+      borderBottom: "1px solid var(--border-subtle)",
+    }}>
+      <span style={{ width: 160, fontFamily: "var(--font-mono)", fontSize: 11 }}>{name}</span>
+      <span className="tag" style={{
+        fontSize: 9, padding: "1px 5px",
+        color: STATUS_COLOR[status] || "var(--text-tertiary)",
+        borderColor: STATUS_COLOR[status] || "var(--border)",
+      }}>{status}</span>
+      <span style={{ color: "var(--text-tertiary)" }}>
+        {chars} 字 · {tokens} token · 预算 {alloc} · 利用率 {util}
+      </span>
+    </div>
+  );
+}
+
+function DiagAlertLine({ label, items, color }: {
+  label: string; items: string[]; color: string;
+}) {
+  return (
+    <div style={{ fontSize: 11.5, lineHeight: 1.7 }}>
+      <span style={{ color, fontWeight: 600 }}>{label}：</span>
+      <span style={{ color: "var(--text-secondary)" }}>
+        {items.join("、")}
+      </span>
     </div>
   );
 }
