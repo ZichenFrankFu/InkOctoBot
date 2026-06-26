@@ -985,17 +985,22 @@ function SystemTab({
 
 interface PromptItem {
   key: string;
+  /** Chinese "where is this used" label, e.g. "市场特征提取 - 高级特征提取". */
+  usage_location: string;
   description: string;
+  /** Kept so the preview/edit modal can still inject vars, but NOT
+   *  displayed to the user — vars are an implementation detail. */
   vars: string[];
   has_override: boolean;
 }
 
-// Group prompts into readable sections by their key prefix.
+// Group prompts into readable sections by their key prefix. Labels match
+// what the user actually sees in the rest of the app (编辑器 / 参考作品 / …).
 const PROMPT_GROUPS: { label: string; prefixes: string[] }[] = [
   { label: "参考作品", prefixes: ["reference."] },
-  { label: "AI 助手", prefixes: ["assistant."] },
-  { label: "正文生成 / 重写 / 评估", prefixes: ["generation."] },
-  { label: "创作管线 Agent", prefixes: ["pipeline."] },
+  { label: "AI 助手 (开书 / 角色 / 世界书 / 大纲)", prefixes: ["assistant."] },
+  { label: "编辑器 - 正文生成", prefixes: ["generation."] },
+  { label: "编辑器 - 导演模式 / 状态结算", prefixes: ["pipeline."] },
   { label: "市场特征提取", prefixes: ["market_extractor."] },
 ];
 
@@ -1064,8 +1069,11 @@ function PromptsTab() {
                   }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
-                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
-                          {it.key}
+                        <span style={{
+                          fontSize: 13, fontWeight: 600,
+                          color: "var(--text-primary)",
+                        }}>
+                          {it.usage_location || it.key}
                         </span>
                         {it.has_override && (
                           <span className="tag" style={{
@@ -1076,11 +1084,6 @@ function PromptsTab() {
                         )}
                       </div>
                       <div className="text-xs text-muted">{it.description || "—"}</div>
-                      {it.vars.length > 0 && (
-                        <div className="text-xs text-muted" style={{ marginTop: 2, fontFamily: "var(--font-mono)" }}>
-                          vars: {it.vars.join(", ")}
-                        </div>
-                      )}
                     </div>
                     <button
                       className={isOpen ? "btn-primary" : "btn"}

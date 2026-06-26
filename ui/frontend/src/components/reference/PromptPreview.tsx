@@ -192,7 +192,7 @@ export default function PromptPreview({
         <>
           <div style={{ marginBottom: 8 }}>
             <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
-              <span className="text-xs text-muted">模板（{info.vars.length > 0 ? `变量: ${info.vars.join(", ")}` : "无变量"}）</span>
+              <span className="text-xs text-muted">模板</span>
               <div className="flex gap-6">
                 <button className="btn" style={{ fontSize: 11, padding: "2px 8px" }} onClick={resetToFactory} disabled={saving || !info.has_override}>
                   重置为默认

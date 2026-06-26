@@ -420,18 +420,16 @@ _ADVANCED_SCHEMA_SPEC = (
     '    "first_hook_chapter": "首爆点章", "antagonist_intro_chapter": "反派出场章",\n'
     '    "first_face_slap_chapter": "首次反击章", "info_release_strategy": "信息释放策略"\n'
     "  },\n"
-    '  "recommended_openings": ["开篇套路1","开篇套路2","开篇套路3","开篇套路4"],\n'
-    '  "loader_payload": "（备份字段，可填可不填）600-1200字、可被注入正文生成prompt '
-    '的中文段落正文：第二人称对生成者说话，覆盖题材定位/视角人称/语言风格/句式节奏/对白比/'
-    '字数/钩子爽点节奏/反派与首次反击时机/信息释放策略/招牌手法清单/可借鉴开篇套路；'
-    '不出现书名作者名、不列举具体人物 / 关系网，不给起名建议；'
-    '结尾以[写作时严格遵循以上风格基线]收束。"\n'
+    '  "recommended_openings": ["开篇套路1","开篇套路2","开篇套路3","开篇套路4"]\n'
     "}\n"
     "```\n\n"
     "## 要求\n"
     "1. **所有字段的取值、描述、关键词、列表项必须使用简体中文输出**；"
     "JSON 字段名（key）保留英文不变，但 value 全部用中文。"
     "不允许英文 / 拼音 / 中英混排作为字段值，遇到外来概念也要给出中文表述。\n"
+    "   **例外**：数字（包括百分比 `30%`、章节号 `第 5 章`、字数区间 `2500-3500` 等数值）"
+    "请保留阿拉伯数字 + 必要的符号，不要写成「百分之三十」「第五章」「两千五到三千五」这种全中文形式；"
+    "数字旁边的单位 / 量词照常用中文（章 / 字 / 部 …）。\n"
     "2. 所有结论须以上方真实统计与原文节选为依据，避免凭空泛谈。\n"
     "3. style_dimensions 的七组(A-G)与 neologism_step2 必须填写，是 JSON 对象；"
     "B_social 仅保留 B2_ensemble，禁止再输出 B1_network。\n"
@@ -612,10 +610,12 @@ def submit_manual_extraction(body: dict = Body(...)) -> dict:
     if not parsed:
         raise HTTPException(
             422, "无法解析为 JSON — 请确认粘贴了大模型返回的完整 JSON 结果")
-    # loader_payload is injected verbatim into generation prompts — it must
-    # be the prose paragraph, not the whole JSON blob. Fall back to the raw
-    # text only when the model omitted the field.
-    loader_payload = _as_text(parsed.get("loader_payload") or "").strip() or raw
+    # loader_payload 已从 schema 中移除（用户 2026-06 调整）—— 写入空字符串
+    # 保持列存在, 老接口和 UI 仍能正常读 row dict. 真正的写作风格基线现在
+    # 由 6 段结构化字段 (profile_summary / style_baseline / pacing_guidance /
+    # signature_devices_description / style_dimensions / neologism_step2)
+    # 各自承担, 不再需要单独的整段画像.
+    loader_payload = ""
     profile_id = f"pp_manual_{_uuid.uuid4().hex[:10]}"
     from storage.market_extractor_schema import ensure_market_extractor_tables
     with _sqlite3.connect(get_db_path()) as con:

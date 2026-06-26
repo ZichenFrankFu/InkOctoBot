@@ -1131,14 +1131,65 @@ def _save_overrides(ov: dict[str, str]) -> None:
 # ── Public API ──────────────────────────────────────────────────────
 
 
+# Human-readable Chinese label saying WHERE each prompt is used in the
+# UI ("市场特征提取 - 高级特征提取" etc). Kept next to DEFAULT_PROMPTS so
+# new keys are forced to also declare their usage_location at code-review
+# time. The settings page shows this label INSTEAD OF the technical key.
+USAGE_LOCATIONS: dict[str, str] = {
+    "reference.unified":                    "参考作品 - 4合1抽取（事件/角色/设定/风格）",
+    "reference.style":                      "参考作品 - 文风提取",
+    "reference.characters":                 "参考作品 - 角色提取",
+    "reference.settings":                   "参考作品 - 设定提取",
+    "reference.outline":                    "参考作品 - 大纲提取",
+    "reference.outline_summary":            "参考作品 - 大纲概要",
+    "reference.rhythm":                     "参考作品 - 节奏分析",
+    "reference.chat_system":                "参考作品 - AI 对话",
+    "reference.volume_detect":              "参考作品 - 卷分隔识别",
+    "reference.ai_complete":                "参考作品 - AI 补全作品信息",
+    "reference.pure_setting":               "参考作品 - 纯设定提取",
+    "reference.pure_setting_translate":     "参考作品 - 纯设定翻译",
+    "reference.outline_granularity":        "参考作品 - 大纲压缩（大事件/卷级/全书级）",
+    "assistant.book_start_trending":        "AI 开书助手 - 趋势分析",
+    "assistant.book_start_brainstorm":      "AI 开书助手 - 故事头脑风暴",
+    "assistant.character":                  "角色管理 - AI 设计对话",
+    "assistant.character_profile":          "角色管理 - 一键补全角色档案（system）",
+    "assistant.character_profile_user":     "角色管理 - 一键补全角色档案（user）",
+    "assistant.worldbook":                  "世界书 - AI 设定助手",
+    "assistant.worldbook_consistency":      "世界书 - 一致性检查（system）",
+    "assistant.worldbook_consistency_user": "世界书 - 一致性检查（user）",
+    "assistant.outline":                    "故事大纲 - AI 大纲助手",
+    "assistant.skill_learner":              "设置 - 自学习 Skill 生成器",
+    "generation.single_agent":              "编辑器 - 正文生成（单 Agent / 写手 user）",
+    "generation.writer_system":             "编辑器 - 正文生成（写手 system）",
+    "generation.rewrite":                   "编辑器 - 章节段落重写",
+    "generation.evaluate":                  "编辑器 - 章节评估",
+    "generation.chapter_summary":           "编辑器 - 写完章后摘要（user）",
+    "generation.chapter_summary_system":    "编辑器 - 写完章后摘要（system）",
+    "pipeline.scene_direct":                "编辑器 - 导演模式（分镜 Agent）",
+    "pipeline.actor":                       "编辑器 - 导演模式（演员 Agent）",
+    "pipeline.narrator":                    "编辑器 - 导演模式（旁白 Agent）",
+    "pipeline.editor":                      "编辑器 - 导演模式（剪辑师 Agent）",
+    "pipeline.reader_memory_consolidation": "编辑器 - 章节摘要 → Truth Files",
+    "pipeline.storyland_state_settlement":  "编辑器 - Storyland 状态结算",
+    "market_extractor.advanced_extraction": "市场特征提取 - 高级特征提取",
+}
+
+
 def list_keys() -> list[dict]:
-    """Return [{key, description, vars, has_override}] for the UI."""
+    """Return [{key, usage_location, description, has_override}] for the UI.
+
+    ``usage_location`` is the Chinese "where this prompt is used" label
+    the settings tab displays (instead of the technical key). ``vars`` is
+    no longer surfaced — the settings page hides it; preview/render paths
+    still inspect ``DEFAULT_PROMPTS[k]['vars']`` directly when needed.
+    """
     ov = _load_overrides()
     return [
         {
             "key": k,
+            "usage_location": USAGE_LOCATIONS.get(k, k),
             "description": v.get("description", ""),
-            "vars": list(v.get("vars") or []),
+            "vars": list(v.get("vars") or []),  # kept for prompts/preview
             "has_override": k in ov,
         }
         for k, v in DEFAULT_PROMPTS.items()
