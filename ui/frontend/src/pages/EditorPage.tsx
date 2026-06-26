@@ -2796,11 +2796,50 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
   );
 }
 
+/** Translate a platform_directive diagnose blob into a one-sentence
+ *  human-readable reason. Picks the FIRST failing link in the chain so
+ *  the user can act on it without reading 500 字 of JSON. */
+function summarizeDiag(diag: any): string {
+  if (!diag || typeof diag !== "object") return "未拿到诊断信息";
+  if (diag.error) return `后端报错：${diag.error}`;
+  if (!diag.project_platform) {
+    return "项目尚未设定『发布平台』 — 请进入项目设置选择平台 + 题材";
+  }
+  const stored: string[] = Array.isArray(diag.stored_platforms) ? diag.stored_platforms : [];
+  const matched: string[] = Array.isArray(diag.matched_aliases) ? diag.matched_aliases : [];
+  if (stored.length === 0) {
+    return `项目平台『${diag.project_platform}』已设, 但市场数据库 / 提取缓存里 完全没有任何平台数据 — 请先在「市场特征提取」运行基础特征 / 高级特征`;
+  }
+  if (matched.length === 0) {
+    return `项目平台『${diag.project_platform}』与已存平台 ${JSON.stringify(stored.slice(0, 6))} 没有重叠 — 请把项目平台改成其中之一, 或为本平台跑一次提取`;
+  }
+  const profPresent = diag.sources?.platform_profiles?.present;
+  const fields: string[] = diag.sources?.platform_profiles?.fields_present || [];
+  const nlpPresent = diag.sources?.opening_nlp_cache?.present;
+  const specOk = diag.sources?.opening_nlp_cache?.spec_stats_available;
+  if (!profPresent && !nlpPresent) {
+    return `平台『${diag.project_platform}』匹配到 ${JSON.stringify(matched)}, 但 platform_profiles + opening_nlp 两条数据源都为空 — 请运行『高级特征提取』或『基础特征提取』`;
+  }
+  if (profPresent && fields.length === 0 && !nlpPresent) {
+    return `找到了 platform_profiles 行, 但 profile_summary / loader_payload / 6 段结构化字段全是空 — 重新运行『高级特征提取』, 并确认 LLM 返回的 JSON 完整`;
+  }
+  if ((diag.rendered_length || 0) === 0) {
+    return `数据存在但 loader 渲染后为空 — 可能 confidence_label='low' 把 profile 过滤掉了, 或 spec_stats.available=false`;
+  }
+  // rendered_length > 0 — the loader DID emit content; the matcher just
+  // didn't find it in the prompt. Likely cause: the rendered prompt was
+  // truncated by budget, or the section heading drift.
+  return `loader 已注入 ${diag.rendered_length} 字, 但 RAG 预览没匹配到 ## 平台风格基线 标题 — 请刷新页面 / 清浏览器缓存`;
+}
+
 /** Single row in RAGLoaderList — default-expanded; summary footer shows
  *  ▴ when open and ▾ when collapsed. The optional `diagnoseUrl` exposes
  *  a "诊断" toggle that fetches a JSON dump from the backend explaining
  *  why the loader was empty (used by the 平台风格 row — answers the
- *  recurring "市场特征提取 tabs work but loader says 未注入" question). */
+ *  recurring "市场特征提取 tabs work but loader says 未注入" question).
+ *
+ *  Auto-loads the diag blob when present=false so the user reads the
+ *  reason inline without clicking. */
 function RAGLoaderRow({ title, hint, body, present, color, diagnoseUrl }: {
   title: string; hint: string; body: string; present: boolean; color: string;
   diagnoseUrl?: string;
@@ -2819,6 +2858,21 @@ function RAGLoaderRow({ title, hint, body, present, color, diagnoseUrl }: {
       toast(`诊断失败：${e?.message || ""}`, "error");
     } finally { setDiagLoading(false); }
   }, [diagnoseUrl, toast]);
+  useEffect(() => {
+    if (diagnoseUrl && !present && !diag) {
+      loadDiag();
+    }
+  }, [diagnoseUrl, present, diag, loadDiag]);
+  const copyDiag = useCallback(async () => {
+    if (!diag) return;
+    const text = JSON.stringify(diag, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("诊断 JSON 已复制到剪贴板", "success");
+    } catch {
+      toast("无法访问剪贴板, 请手动选中下方文字 Ctrl+C", "error");
+    }
+  }, [diag, toast]);
   return (
     <details open={open}
       onToggle={e => setOpen((e.currentTarget as HTMLDetailsElement).open)}
@@ -2874,24 +2928,62 @@ function RAGLoaderRow({ title, hint, body, present, color, diagnoseUrl }: {
           whiteSpace: "pre-wrap", wordBreak: "break-word",
         }}>{body}</pre>
       ) : (
-        hint && (
-          <div style={{
-            marginTop: 4, paddingLeft: 14, fontSize: 10,
-            color: "var(--text-tertiary)", lineHeight: 1.5,
-            fontStyle: "italic",
-          }}>
-            ↳ {hint}
-          </div>
-        )
+        <div style={{ marginTop: 4, paddingLeft: 14 }}>
+          {hint && (
+            <div style={{
+              fontSize: 10, color: "var(--text-tertiary)",
+              lineHeight: 1.5, fontStyle: "italic",
+            }}>
+              ↳ {hint}
+            </div>
+          )}
+          {diagnoseUrl && (
+            <div style={{
+              marginTop: 6, padding: "6px 8px",
+              background: "var(--bg-app)", borderRadius: 4,
+              border: "1px solid var(--border-subtle)",
+              fontSize: 10.5, lineHeight: 1.55, color: "var(--text-secondary)",
+            }}>
+              {diagLoading
+                ? "诊断中…"
+                : diag
+                  ? (<>
+                      <div style={{ fontWeight: 700, marginBottom: 3, color: "var(--accent)" }}>
+                        诊断
+                      </div>
+                      <div>{summarizeDiag(diag)}</div>
+                    </>)
+                  : (<span style={{ color: "var(--text-tertiary)" }}>
+                      点上方「诊断」按钮查看 loader 真实看到的数据
+                    </span>)}
+            </div>
+          )}
+        </div>
       )}
       {diag && (
-        <pre style={{
-          marginTop: 6, padding: 8, background: "var(--bg-app)",
-          fontSize: 10, lineHeight: 1.5, fontFamily: "var(--font-mono)",
-          color: "var(--text-secondary)",
-          maxHeight: 280, overflow: "auto", borderRadius: 4,
-          whiteSpace: "pre-wrap", wordBreak: "break-word",
-        }}>{JSON.stringify(diag, null, 2)}</pre>
+        <div style={{ marginTop: 6 }}>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 6,
+            fontSize: 10, color: "var(--text-tertiary)", marginBottom: 4,
+          }}>
+            <span>诊断 JSON (loader 真实看到的数据)</span>
+            <button onClick={e => { e.preventDefault(); e.stopPropagation(); copyDiag(); }}
+              style={{
+                fontSize: 9, padding: "1px 6px", borderRadius: 8,
+                border: "1px solid var(--border)", background: "transparent",
+                color: "var(--text-tertiary)", cursor: "pointer",
+              }} title="把整段 JSON 复制到剪贴板">
+              复制
+            </button>
+          </div>
+          <pre style={{
+            padding: 8, background: "var(--bg-app)",
+            fontSize: 10, lineHeight: 1.5, fontFamily: "var(--font-mono)",
+            color: "var(--text-secondary)",
+            maxHeight: 280, overflow: "auto", borderRadius: 4,
+            whiteSpace: "pre-wrap", wordBreak: "break-word",
+          }}>{JSON.stringify(diag, null, 2)}</pre>
+        </div>
       )}
     </details>
   );
