@@ -18,6 +18,8 @@ def load_chapter_fields(project_id: str, chapter_id: str) -> dict[str, Any]:
         "synopsis": "", "time_setting": "", "location": "",
         "characters": [], "existing_content": "",
         "referenced_events": [], "referenced_inspirations": [],
+        "referenced_settings": [],
+        "referenced_characters": [], "referenced_entries": [],
         # LOADER_SPEC Loader 7: envelope of all on-stage entities the
         # chapter touches. Always returned; defaults to the legacy
         # ``characters`` list inside an otherwise-empty shape so
@@ -47,6 +49,9 @@ def load_chapter_fields(project_id: str, chapter_id: str) -> dict[str, Any]:
                     fields["existing_content"] = ch.get("content", "") or ""
                     fields["referenced_events"] = ch.get("referenced_events", []) or []
                     fields["referenced_inspirations"] = ch.get("referenced_inspirations", []) or []
+                    fields["referenced_settings"] = ch.get("referenced_settings", []) or []
+                    fields["referenced_characters"] = ch.get("referenced_characters", []) or []
+                    fields["referenced_entries"] = ch.get("referenced_entries", []) or []
                     fields["special_requirements"] = (ch.get("special_requirements") or "").strip()
                     ose = ch.get("on_stage_entities")
                     if isinstance(ose, dict):

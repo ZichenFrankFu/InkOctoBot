@@ -92,10 +92,15 @@ _SECTION_GROUPS: dict[str, str] = {
 # (Loader预算分配·机制6). Block-id ↔ spec name mapping:
 # platform_directive = platform_style, subplots = plotline.
 AGENT_LOADER_PROFILES: dict[str, tuple[str, ...]] = {
-    # 单 Agent / 导演模式末步整合 — 14 loaders, target sum ≈ 24K
+    # 单 Agent / 导演模式末步整合.
+    # ``market_overview`` is intentionally NOT in the writer profile —
+    # by the time the user is writing chapters they have already opened
+    # the book, so 市场总览 / 趋势 belongs on the 市场特征提取 tab, not
+    # in every chapter prompt. The platform_directive loader carries
+    # the still-relevant 基础特征 + 高级特征 picks that the writer needs.
     "writer": (
-        "platform_directive", "reference", "inspiration", "character_cards",
-        "worldbook", "chapter_outline", "reader_memory",
+        "platform_directive", "reference", "inspiration",
+        "character_cards", "worldbook", "chapter_outline", "reader_memory",
         "current_chapter_draft", "storyland_state", "foreshadowing",
         "subplots", "user_preferences", "user_special_requirements", "skills",
     ),
@@ -528,7 +533,7 @@ def creation_context_manifest(
         {"key": "foreshadowing", "label": "伏笔",
          "items": [{"id": "__all__", "label": "未回收伏笔"}] if _has("foreshadowing") else [],
          "present": _has("foreshadowing")},
-        {"key": "storyland_state", "label": "Storyland 客观状态",
+        {"key": "storyland_state", "label": "故事舞台 客观状态",
          "items": [{"id": "__all__", "label": "全部"}] if _has("storyland_state") else [],
          "present": _has("storyland_state")},
         {"key": "reader_memory", "label": "读者视角记忆",
@@ -568,6 +573,9 @@ def single_agent_vars(
     skills: list[str] | None = None,
     referenced_events: list[dict] | None = None,
     referenced_inspirations: list[dict] | None = None,
+    referenced_settings: list[dict] | None = None,
+    referenced_characters: list[dict] | None = None,
+    referenced_entries: list[dict] | None = None,
     db_path: str | None = None,
     chapter_id: str = "",
     rag_excludes: list[str] | None = None,
@@ -586,6 +594,42 @@ def single_agent_vars(
             db_path = get_db_path()
         except Exception:
             db_path = ""
+    # ── Fallback fill from chapter_id ──────────────────────────────
+    # When the caller passed a chapter_id but left individual chapter-
+    # local fields empty (the common case for the RAG preview panel,
+    # which only forwards project_id / chapter_id / chapter_num), pull
+    # them out of the editor doc so the preview reflects what the actual
+    # generation call would see. Explicit non-empty params still win.
+    if chapter_id:
+        try:
+            _cf = load_chapter_fields(project_id, chapter_id)
+            if not synopsis:
+                synopsis = _cf.get("synopsis") or ""
+            if not time_setting:
+                time_setting = _cf.get("time_setting") or ""
+            if not location:
+                location = _cf.get("location") or ""
+            if not characters:
+                characters = _cf.get("characters") or []
+            if not existing_content:
+                existing_content = _cf.get("existing_content") or ""
+            if not character_aliases:
+                _cf_aliases = _cf.get("character_aliases")
+                if isinstance(_cf_aliases, dict):
+                    character_aliases = _cf_aliases
+            if not referenced_events:
+                referenced_events = _cf.get("referenced_events") or []
+            if not referenced_inspirations:
+                referenced_inspirations = _cf.get("referenced_inspirations") or []
+            if not referenced_settings:
+                referenced_settings = _cf.get("referenced_settings") or []
+            if not referenced_characters:
+                referenced_characters = _cf.get("referenced_characters") or []
+            if not referenced_entries:
+                referenced_entries = _cf.get("referenced_entries") or []
+        except Exception as _e:
+            logger.debug("single_agent_vars chapter fallback skipped: %s", _e)
+
     ctx = build_generation_context(
         project_id, chapter_num, characters, db_path=db_path, skills=skills,
         chapter_id=chapter_id, rag_excludes=rag_excludes)
@@ -604,11 +648,24 @@ def single_agent_vars(
         )
 
     tl: list[str] = []
+    # 故事线 → 编辑器 同步路径把同一章下所有 情节卡 的 time / location
+    # 按 「；」 合并写入 chapter.time / chapter.location。这里加一行说明，
+    # 让 Writer 看到字段是 "每个情节对应的时间地点（以「；」分隔）" 而不是
+    # "整章只有一个时间地点"。
+    note = (
+        "下列时间 / 地点对应本章每一个情节卡片，以「；」分隔；如某情节未填，"
+        "该位置将缺失。"
+    )
     if time_setting:
         tl.append(f"时间：{time_setting}")
     if location:
         tl.append(f"地点：{location}")
-    blocks["time_location"] = section("时间与地点", "\n".join(tl))
+    # Skip the block entirely when both are blank — otherwise the
+    # prompt carries an empty `## 时间与地点\n` heading that confuses
+    # both the LLM and the frontend's "已注入" detector.
+    blocks["time_location"] = (
+        section("时间与地点", note + "\n" + "\n".join(tl)) if tl else ""
+    )
 
     aliases = character_aliases or {}
     if characters:
@@ -621,9 +678,11 @@ def single_agent_vars(
         blocks["characters_block"] = ""
 
     existing = (existing_content or "").strip()
+    # 用户显式要求 已有正文 loader 无字数下限 —— 只要 chapter.content 非空
+    # 就注入。完全空时仍跳过（避免给 prompt 写一个空 section）。
     blocks["existing_content"] = (
         section("已有正文（需在此基础上续写，保持风格一致）", existing[-800:])
-        if len(existing) > 10
+        if existing
         else ""
     )
 
@@ -635,5 +694,8 @@ def single_agent_vars(
     blocks["skills_block"] = ""
     blocks["referenced_materials"] = build_referenced_materials_block(
         referenced_events, referenced_inspirations, db_path or "",
+        settings=referenced_settings,
+        characters=referenced_characters,
+        entries=referenced_entries,
     )
     return blocks

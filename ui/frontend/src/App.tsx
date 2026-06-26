@@ -5,6 +5,7 @@ import { ToastProvider, useToast } from "./components/shared/Toast";
 import { DialogProvider } from "./components/shared/Dialog";
 import ErrorBoundary from "./components/shared/ErrorBoundary";
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts";
+import { useTheme } from "./hooks/useTheme";
 import ShortcutHint from "./components/shared/ShortcutHint";
 
 import GlobalSearch from "./components/shared/GlobalSearch";
@@ -90,10 +91,10 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
     section: "创作",
     items: [
       { key: "projects",     icon: "□", label: "开书" },
-      { key: "characters",   icon: "♢", label: "角色管理" },
+      { key: "characters",   icon: "♢", label: "角色卡" },
       { key: "worldbook",    icon: "⊕", label: "世界书" },
+      { key: "storyline",    icon: "─", label: "故事线" },
       { key: "editor",       icon: "✎", label: "编辑器" },
-      { key: "storyline",    icon: "─", label: "剧情线" },
       { key: "storyland",    icon: "◎", label: "故事中世界" },
     ],
   },
@@ -108,6 +109,11 @@ const NAV: { section: string; items: { key: Tab; icon: string; label: string }[]
 ];
 
 function AppInner() {
+  // Mount the active theme to <html data-theme> as early as possible so
+  // the first paint already matches the user's saved preference — without
+  // this, every reload briefly flashes the default dark theme.
+  useTheme();
+
   const [tab, setTab] = useState<Tab>("dashboard");
   const [sidebarW, setSidebarW] = useState(220);
   const [collapsed, setCollapsed] = useState(false);
@@ -164,7 +170,9 @@ function AppInner() {
   return (
     <div className="app-layout">
       <a href="#main-content" className="sr-only">Skip to main content</a>
-      <aside className="sidebar" style={{ width: collapsed ? 56 : sidebarW }} role="navigation" aria-label="Main navigation">
+      <aside className={`sidebar${collapsed ? " collapsed" : ""}`}
+        style={{ width: collapsed ? 40 : sidebarW }}
+        role="navigation" aria-label="Main navigation">
         <div className="sidebar-brand" style={collapsed ? { padding: "14px 0", textAlign: "center" } : undefined}>
           <h1 style={collapsed ? { margin: 0 } : undefined}>
             <img src="/favicon.svg" alt="InkOctoBot" style={{ width: 24, height: 24, verticalAlign: "middle", marginRight: collapsed ? 0 : 6 }} />
@@ -179,7 +187,7 @@ function AppInner() {
           onClick={() => setSearchOpen(true)}
           aria-label="Search (Ctrl+K)"
           title="搜索 (Ctrl+K)"
-          style={{ margin: collapsed ? "10px auto 6px" : "10px 8px 6px", width: collapsed ? 38 : "auto", padding: collapsed ? "5px 0" : "5px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 30 }}
+          style={{ margin: collapsed ? "10px auto 6px" : "10px 8px 6px", width: collapsed ? 28 : "auto", padding: collapsed ? "5px 0" : "5px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 11, color: "var(--text-tertiary)", background: "var(--bg-surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", height: 30 }}
         >
           <span style={{ fontSize: 12, opacity: 0.6 }}>&#x2315;</span>
           {!collapsed && (
@@ -270,7 +278,7 @@ function AppInner() {
         {tab === "editor"        && <ErrorBoundary key="editor"><EditorPage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "characters"    && <ErrorBoundary key="characters"><CharacterManagerPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
         {tab === "worldbook"     && <ErrorBoundary key="worldbook"><WorldBookPage projectId={activeProject} projects={projects} /></ErrorBoundary>}
-        {tab === "storyline"     && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} /></ErrorBoundary>}
+        {tab === "storyline"     && <ErrorBoundary key="storyline"><StorylinePage projectId={activeProject} onNavigate={(t: string) => setTab(t as Tab)} /></ErrorBoundary>}
         {tab === "storyland" && <ErrorBoundary key="storyland"><StorylandPage projectId={activeProject} /></ErrorBoundary>}
 
         {/* 智能体与设置 */}

@@ -11,7 +11,6 @@ import EvalReport from "../components/editor/EvalReport";
 import type { EvalReportData } from "../components/editor/EvalReport";
 import FollowUpQuestions from "../components/shared/FollowUpQuestions";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
-import EditorRightDrawer from "../components/shared/EditorRightDrawer";
 
 const vuid = () => `v_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -105,23 +104,9 @@ function formatSceneDirectorOutput(result: any): string {
   return output;
 }
 
-// MIN_SAVE_CHARS — physical guard against the "saved 0-char text_versions"
-// disaster the user hit (see docs/UI_REDESIGN_SPEC.md §3). If the editor
-// content is below this, save-paths confirm before writing. 50 chars is
-// well below any real chapter and well above any conceivable empty paste.
-const MIN_SAVE_CHARS = 50;
-
-/** Returns true if the user wants to save anyway, false to abort. */
-function confirmShortSave(chars: number): boolean {
-  return window.confirm(
-    ` 内容只有 ${chars} 字 (< ${MIN_SAVE_CHARS} 字推荐下限)。\n\n` +
-    `这是过去几次"text_versions 0 字符"灾难的根因。常见原因：\n` +
-    `  • LLM 调用其实没返回内容\n` +
-    `  • 粘贴到了错误的输入框\n` +
-    `  • 编辑器内容被清空后误点了保存\n\n` +
-    `仍然要保存吗？`
-  );
-}
+// Chapter-content save / existing_content loader 没有字数下限 — 用户
+// 显式禁用了之前的 MIN_SAVE_CHARS 守卫，所以即使 0 字内容也会写入
+// text_versions / chapter row。
 
 export default function EditorPage({ projectId, onNavigate }: { projectId: string; onNavigate?: (tab: string) => void }) {
   const { toast } = useToast();
@@ -130,8 +115,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [content, setContent] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
-  // Right-side inspector drawer (spec §5).
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Last successfully-persisted snapshot per chapter — lets the
   // auto-save skip no-op writes (e.g. right after a chapter switch).
@@ -319,10 +302,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     if (autoVersionTimer.current) clearTimeout(autoVersionTimer.current);
     autoVersionTimer.current = setTimeout(() => {
       if (content === lastAutoVersionContent.current) return;
-      // Skip when content is below the save-disaster floor — auto-save
-      // runs silently in the background so it can't even prompt the
-      // user; just never write below MIN_SAVE_CHARS.
-      if (content.trim().length < MIN_SAVE_CHARS) return;
       lastAutoVersionContent.current = content;
       const newVersion: TextVersion = {
         version_id: vuid(), chapter_id: activeChId,
@@ -358,22 +337,66 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   }, [activeChId]);
 
   const handleSaveOutline = useCallback(async () => {
+    if (!activeChId) {
+      toast("没有可保存的章节", "error");
+      return;
+    }
     setSaveStatus("saving");
     const uv = volumes.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, content, title: titleVal || c.title, word_count: wc(content) } : c) }));
-    try { await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv }); setSaveStatus("saved"); toast("已保存", "success"); } catch (e: any) { setSaveStatus("unsaved"); toast(e.message || "保存失败", "error"); }
+    try {
+      await apiPut("/api/data/editor", { project_id: projectId || "default", volumes: uv });
+      setVolumes(uv);
+      persistedRef.current = { chId: activeChId, content, title: titleVal };
+      setSaveStatus("saved");
+      toast("已保存", "success");
+    } catch (e: any) {
+      setSaveStatus("unsaved");
+      toast(e.message || "保存失败", "error");
+    }
   }, [volumes, activeChId, content, titleVal, projectId, toast]);
 
-  // Ctrl+S / Cmd+S triggers manual save with toast
+  // Ctrl/Cmd + S: save the chapter outline AND commit a version snapshot so
+  // the user has a stable rollback point per explicit save (not just the
+  // 60s auto-version backup). Short content is skipped with a confirm to
+  // keep the "saved 0-char text_versions" disaster from re-occurring.
+  const handleSaveAndCommit = useCallback(async () => {
+    if (!activeChId) {
+      toast("没有可保存的章节", "error");
+      return;
+    }
+    const chars = content.trim().length;
+    // Persist the editor state first — same path as 自动保存 + manual button.
+    await handleSaveOutline();
+    if (chars === 0) return;        // nothing to snapshot
+    const newVersion: TextVersion = {
+      version_id: vuid(), chapter_id: activeChId,
+      version: versionHistory.filter(v => v.chapter_id === activeChId).length + 1,
+      source: "user_edited", text: content,
+      synopsis: activeCh?.synopsis || "",
+      created_at: new Date().toISOString(),
+    };
+    setVersionHistory(prev => [...prev, newVersion]);
+    try {
+      await apiPost("/api/data/versions", {
+        project_id: projectId || "default", version: newVersion,
+      });
+      toast(`已保存并提交版本 v${newVersion.version}`, "success");
+    } catch (e: any) {
+      toast(`版本提交失败：${e?.message || ""}`, "error");
+    }
+  }, [activeChId, content, projectId, versionHistory, activeCh, handleSaveOutline, toast]);
+
+  // Ctrl+S / Cmd+S triggers save + commit (snapshot a version) with toast
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
-        handleSaveOutline();
+        handleSaveAndCommit();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleSaveOutline]);
+  }, [handleSaveAndCommit]);
 
   const handleMouseUp = () => {
     const el = textRef.current; if (!el) return;
@@ -1237,17 +1260,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       };
       setVersionHistory(prev => [...prev, prevVersion]);
     }
-    // Char-count guard before persisting an "AI version" — the
-    // recurring "saved 0 chars" path. Empty/short LLM output should
-    // not silently produce a text_versions row.
-    const finalChars = (finalText || "").trim().length;
-    if (finalChars < MIN_SAVE_CHARS) {
-      if (!confirmShortSave(finalChars)) {
-        toast("已取消保存（内容过短）", "error");
-        setMergePreview(null);
-        return;
-      }
-    }
     setContent(finalText);
     // Save AI version
     const aiVersion: TextVersion = {
@@ -1318,38 +1330,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   return (
     <div className="page-full">
-      {/* Floating right-drawer trigger (spec §5: PromptInspector +
-          NotificationFeed + deep-links to the learning surfaces) */}
-      <button
-        onClick={() => setDrawerOpen(true)}
-        title="打开右侧 Inspector (Prompt 透视 / 通知 / 导航)"
-        style={{
-          position: "fixed", right: 16, top: 60, zIndex: 800,
-          width: 40, height: 40, borderRadius: "50%",
-          background: "var(--bg-surface)",
-          border: "1px solid var(--border)",
-          boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
-          fontSize: 18, cursor: "pointer",
-        }}
-        aria-label="Open inspector drawer"
-      >
-        
-      </button>
-
-      <EditorRightDrawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        projectId={projectId}
-        chapterId={activeChId}
-        chapterNum={(activeCh as any)?.order || (activeCh as any)?.chapter_num || 1}
-        synopsis={activeCh?.synopsis || ""}
-        characters={activeCh?.characters || []}
-        onNavigate={(page) => {
-          setDrawerOpen(false);
-          onNavigate?.(page);
-        }}
-      />
-
       <div className="editor-layout">
         {/* LEFT PANEL */}
         {leftPanelOpen ? (
@@ -1379,7 +1359,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               </div>
               <div style={{ display: "flex", gap: 4 }}>
                 <button className="btn-icon" style={{ fontSize: 11, flex: 1, padding: "3px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} disabled={selectedChIds.size === 0} onClick={exportSelectedChapters}>导出选中</button>
-                <button className="btn-icon" style={{ fontSize: 11, flex: 1, padding: "3px 0", border: "1px solid var(--error)", borderRadius: "var(--radius-sm)", color: "var(--error)" }} disabled={selectedChIds.size === 0} onClick={deleteSelectedChapters}>删除选中</button>
+                <button className="btn-icon" title="删除选中章节" style={{ fontSize: 13, flex: 1, padding: "3px 0", border: "1px solid var(--error)", borderRadius: "var(--radius-sm)", color: "var(--error)", fontWeight: 600 }} disabled={selectedChIds.size === 0} onClick={deleteSelectedChapters}>× 选中</button>
               </div>
             </div>
           )}
@@ -1412,10 +1392,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                 onClick={() => {
                   // Save current state as a version
                   if (!activeChId || !content) return;
-                  // Char-count guard — prevents the 0-char text_versions
-                  // disaster (see MIN_SAVE_CHARS docstring above).
-                  const chars = content.trim().length;
-                  if (chars < MIN_SAVE_CHARS && !confirmShortSave(chars)) return;
                   const newVersion: TextVersion = {
                     version_id: vuid(), chapter_id: activeChId,
                     version: versionHistory.filter(v => v.chapter_id === activeChId).length + 1,
@@ -1510,7 +1486,19 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
           </div>
           <div className="flex items-center justify-between" style={{ padding: "6px 28px", borderTop: "1px solid var(--border)", background: "var(--bg-surface)", flexShrink: 0 }}>
             <div className="flex items-center gap-12 text-xs text-muted"><span>{words.toLocaleString()} 字</span><span>写作 {elapsed} 分钟</span></div>
-            <div className="flex items-center gap-8 text-xs"><span style={{ color: saveStatus === "saved" ? "var(--jade)" : saveStatus === "saving" ? "var(--gold)" : "var(--text-tertiary)" }}>{saveStatus === "saved" ? "已保存" : saveStatus === "saving" ? "保存中..." : "未保存"}</span></div>
+            <div className="flex items-center gap-8 text-xs">
+              <span style={{ color: saveStatus === "saved" ? "var(--jade)" : saveStatus === "saving" ? "var(--gold)" : "var(--text-tertiary)" }}>
+                {saveStatus === "saved" ? "已保存" : saveStatus === "saving" ? "保存中..." : "未保存"}
+              </span>
+              <button
+                className="btn-primary"
+                style={{ fontSize: 11, padding: "3px 12px" }}
+                onClick={handleSaveAndCommit}
+                disabled={!activeChId || saveStatus === "saving"}
+                title="保存并提交版本快照">
+                保存
+              </button>
+            </div>
           </div>
         </div>
         {rightPanelOpen && <div className="panel-resize-h" {...rightPanel.handleProps} />}
@@ -1523,7 +1511,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 面板">&#9654;</button>
           </div>
           <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
-            {([["outline", "大纲"], ["single", "单智能体创作"], ["cluster", "集群式智能体创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
+            {/* 多智能体（cluster / 导演模式）pipeline 已暂时下线，留给下一阶段
+                重做；当前 tab 仅保留：RAG / 单智能体 / 重写 / 评估。 */}
+            {([["outline", "RAG"], ["single", "智能体创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
               <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
             ))}
           </div>
@@ -1531,13 +1521,15 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             {aiTab === "outline" && <OutlineTab synopsis={activeCh?.synopsis || ""} onChange={updateSynopsis} onSave={handleSaveOutline}
               onStartGeneration={() => { setAiTab("single"); setTimeout(() => { if (!generating) runPlainAgent(); }, 300); }} projectId={projectId}
               chapter={activeCh}
+              chapterNum={chapterNum}
               allChapters={volumes.flatMap(v => (v.chapters || []).map(c => ({ id: c.id, title: c.title })))}
               onUpdateChapter={(field, value) => {
                 setVolumes(prev => prev.map(v => ({ ...v, chapters: v.chapters.map(c => c.id === activeChId ? { ...c, [field]: value } : c) })));
-              }} />}
+              }}
+              onNavigate={onNavigate} />}
             {(aiTab === "single" || aiTab === "cluster") && <InspireTab mode={aiTab} steps={pipelineSteps} generating={generating} onStart={startGeneration} onStartPlain={runPlainAgent} chatMessages={chatMessages} chatInput={chatInput}
               onChatInputChange={setChatInput} onSendMessage={sendChatMessage} waitingForConfirm={waitingForConfirm} onConfirmContinue={handleConfirmContinue} onRollback={handleRollback} onWriteToEditor={handleWriteToEditor} onStopPipeline={handleStopPipeline}
-              paused={pipelinePaused} onPauseResume={handlePauseResume} projectId={projectId} chapterId={activeChId}
+              paused={pipelinePaused} onPauseResume={handlePauseResume} projectId={projectId} chapterId={activeChId} chapterNum={chapterNum}
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
               onFetchPrompt={fetchGenPrompt}
               onApplyPaste={applyPlainPaste}
@@ -1547,7 +1539,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId}
-              chapterId={activeChId} manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
+              chapterId={activeChId} chapterNum={chapterNum} manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
               onToggleSkill={toggleSkill} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest} />}
           </div>
         </div>
@@ -1585,6 +1577,40 @@ function workEvents(plotJson: any): { name: string; description: string; chapter
   return out;
 }
 
+/** Flatten a reference work's settings_json into a flat (label, content) list. */
+function workSettings(settingsJson: any): { label: string; content: string }[] {
+  let s: any = settingsJson;
+  if (typeof settingsJson === "string") {
+    try { s = JSON.parse(settingsJson); } catch { return []; }
+  }
+  const out: { label: string; content: string }[] = [];
+  if (s && typeof s === "object" && !Array.isArray(s)) {
+    for (const [label, value] of Object.entries(s)) {
+      const lab = String(label || "").trim();
+      if (!lab) continue;
+      let body = "";
+      if (typeof value === "string") body = value;
+      else if (Array.isArray(value)) body = value.map(v => String(v)).join("；");
+      else if (value && typeof value === "object") {
+        body = Object.entries(value).map(([k, v]) => `${k}: ${v}`).join("；");
+      } else if (value != null) body = String(value);
+      body = body.trim();
+      if (body) out.push({ label: lab, content: body });
+    }
+  } else if (Array.isArray(s)) {
+    s.forEach((item, i) => {
+      if (typeof item === "string" && item.trim()) {
+        out.push({ label: `条目${i + 1}`, content: item.trim() });
+      } else if (item && typeof item === "object") {
+        const lab = String((item as any).label || (item as any).name || (item as any).title || `条目${i + 1}`);
+        const body = String((item as any).content || (item as any).description || (item as any).value || "");
+        if (body.trim()) out.push({ label: lab, content: body.trim() });
+      }
+    });
+  }
+  return out;
+}
+
 /** A selectable chronicle-event row: 章节 tag + 事件名, with click-to-expand
  *  details — keeps each row compact in the narrow AI 助手 column. */
 function EventRow({ ev, on, onToggle }: {
@@ -1595,7 +1621,7 @@ function EventRow({ ev, on, onToggle }: {
   return (
     <div style={{ borderBottom: "1px solid var(--border)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
-        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--gold)", fontWeight: 700 }}>{on ? "" : ""}</span>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--gold)", fontWeight: 700 }}>{on ? "✓" : "○"}</span>
         {ev.chapter && (
           <span style={{
             fontSize: 9, padding: "0 5px", flexShrink: 0, borderRadius: 3,
@@ -1609,13 +1635,109 @@ function EventRow({ ev, on, onToggle }: {
         }}>{ev.name}</span>
         {ev.description && (
           <span onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
-            {expanded ? "收起 ▲" : "详情 ▼"}
+            {expanded ? "收起 ▴" : "详情 ▾"}
           </span>
         )}
       </div>
       {expanded && ev.description && (
         <div style={{ padding: "0 8px 5px 25px", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
           {ev.description}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Parse a reference work's character list. Prefers ``static_characters_json``
+ *  (pure-setting works' canonical roster) and falls back to
+ *  ``extracted_characters_json`` (narrative works' AI-extracted roster). */
+function workReferenceCharacters(w: any): { name: string; description: string }[] {
+  const out: { name: string; description: string }[] = [];
+  const seen = new Set<string>();
+  const push = (name: any, description: any, role: any) => {
+    const n = String(name || "").trim();
+    if (!n || seen.has(n)) return;
+    seen.add(n);
+    const d = String(description || "").trim();
+    const r = String(role || "").trim();
+    out.push({
+      name: n,
+      description: r ? `（${r}）${d}` : d,
+    });
+  };
+  const parse = (raw: any) => {
+    if (raw == null) return null;
+    if (typeof raw !== "string") return raw;
+    try { return JSON.parse(raw); } catch { return null; }
+  };
+  // Pure-setting works first (static_characters_json).
+  const sc = parse(w.static_characters_json);
+  const items1: any[] = Array.isArray(sc)
+    ? sc
+    : (sc && Array.isArray(sc.characters) ? sc.characters : []);
+  items1.forEach(c => { if (c && typeof c === "object") push(c.name, c.description, c.role); });
+  // Narrative works' extracted roster.
+  const ec = parse(w.extracted_characters_json);
+  const items2: any[] = Array.isArray(ec)
+    ? ec
+    : (ec && Array.isArray(ec.characters) ? ec.characters : []);
+  items2.forEach(c => {
+    if (!c || typeof c !== "object") return;
+    push(c.name, c.intro || c.description, c.role_tag || c.role);
+  });
+  return out;
+}
+
+/** Parse a reference work's setting-feature entries (pure-setting taxonomy:
+ *  category / title / description). One row per entry. */
+function workEntries(raw: any): { title: string; content: string }[] {
+  let s: any = raw;
+  if (typeof raw === "string") {
+    try { s = JSON.parse(raw); } catch { return []; }
+  }
+  if (!Array.isArray(s)) return [];
+  const out: { title: string; content: string }[] = [];
+  for (const f of s) {
+    if (!f || typeof f !== "object") continue;
+    const title = String(f.title || f.name || "").trim();
+    if (!title) continue;
+    const cat = String(f.category || "").trim();
+    const desc = String(f.description || "").trim();
+    out.push({
+      title: cat ? `[${cat}] ${title}` : title,
+      content: desc,
+    });
+  }
+  return out;
+}
+
+/** A selectable setting/worldview row — label tag + content preview, with
+ *  click-to-expand details for the full setting description. */
+function SettingRow({ s, on, onToggle }: {
+  s: { label: string; content: string };
+  on: boolean; onToggle: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--indigo)", fontWeight: 700 }}>{on ? "✓" : "○"}</span>
+        <span style={{
+          fontSize: 9, padding: "0 5px", flexShrink: 0, borderRadius: 3,
+          color: "var(--indigo)", border: "1px solid var(--indigo)",
+        }}>{s.label}</span>
+        <span onClick={onToggle} style={{
+          flex: 1, minWidth: 0, cursor: "pointer",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          fontWeight: on ? 600 : 400, color: on ? "var(--indigo)" : "var(--text-secondary)",
+        }}>{s.content.slice(0, 40)}{s.content.length > 40 ? "…" : ""}</span>
+        <span onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
+          {expanded ? "收起 ▲" : "详情 ▼"}
+        </span>
+      </div>
+      {expanded && (
+        <div style={{ padding: "0 8px 5px 25px", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          {s.content}
         </div>
       )}
     </div>
@@ -1634,6 +1756,54 @@ function chipStyle(on: boolean, color: string, bg: string): React.CSSProperties 
 }
 
 /** A selectable row in a searchable pick-list (works / events / inspirations). */
+/* ── ReadOnlyEditorSection ──
+ * Editor 大纲 tab 下 关联角色 / 参考作品 / 灵感 / 伏笔 / 时间 / 地点
+ * 等"已迁至 故事线 page"区块的标准卡片：左侧 vertical 彩条 + 标题
+ * + 计数 + 自定义内容。没有 collapsible toggle、没有输入框样式，
+ * 保持单纯展示。 */
+function ReadOnlyEditorSection({ title, count, color, children }: {
+  title: string;
+  count?: number;
+  color: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div style={{
+      marginTop: 8, padding: "10px 12px",
+      background: "var(--bg-surface)",
+      border: "1px solid var(--border)",
+      borderRadius: 8,
+      position: "relative",
+    }}>
+      <div style={{
+        position: "absolute", left: 0, top: 0, bottom: 0,
+        width: 3, background: color, opacity: 0.8,
+        borderRadius: "8px 0 0 8px",
+      }} />
+      <div style={{
+        display: "flex", alignItems: "baseline", gap: 6,
+        marginBottom: 8,
+      }}>
+        <span style={{
+          fontSize: 11, fontWeight: 700, color,
+          letterSpacing: 0.3,
+        }}>
+          {title}
+        </span>
+        {count !== undefined && count > 0 && (
+          <span style={{
+            fontSize: 10, color: "var(--text-tertiary)", fontWeight: 500,
+          }}>
+            · {count}
+          </span>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+
 function PickRow({ label, sub, on, color, onClick }: {
   label: string; sub?: string; on: boolean; color: string; onClick: () => void;
 }) {
@@ -1644,7 +1814,7 @@ function PickRow({ label, sub, on, color, onClick }: {
       borderBottom: "1px solid var(--border)",
       background: on ? "var(--bg-surface)" : "transparent",
     }}>
-      <span style={{ width: 11, flexShrink: 0, color, fontWeight: 700 }}>{on ? "" : ""}</span>
+      <span style={{ width: 11, flexShrink: 0, color, fontWeight: 700 }}>{on ? "✓" : "○"}</span>
       <span style={{
         flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
         fontWeight: on ? 600 : 400, color: on ? color : "var(--text-secondary)",
@@ -1654,65 +1824,387 @@ function PickRow({ label, sub, on, color, onClick }: {
   );
 }
 
-function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, onUpdateChapter, allChapters }: {
+/** ReferenceLinkSection — 编辑器内可编辑的关联参考作品区域。
+ *  上半：作品列表（搜索 + 多选）；下半：每部已选作品分两栏展示「具体
+ *  情节」（events）与「具体设定」（settings），用户可勾选具体条目，
+ *  选中项会通过 referenced_materials loader 注入到 prompt。 */
+type RefWork = {
+  id: string; title: string; selected: boolean; structureType: string;
+  events: { name: string; description: string; chapter: string }[];
+  settings: { label: string; content: string }[];
+  characters: { name: string; description: string }[];
+  entries: { title: string; content: string }[];
+};
+
+function ReferenceLinkSection({
+  references, selectedRefs,
+  refEvents, refSettings, refCharacters, refEntries,
+  toggleRef, toggleEvent, toggleSetting, toggleCharacter, toggleEntry,
+  isEventLinked, isSettingLinked, isCharacterLinked, isEntryLinked,
+  refSearch, setRefSearch, eventSearch, setEventSearch,
+}: {
+  references: RefWork[];
+  selectedRefs: RefWork[];
+  refEvents: { ref_id: string; work_title: string; name: string; description: string; chapter?: string }[];
+  refSettings: { ref_id: string; work_title: string; label: string; content: string }[];
+  refCharacters: { ref_id: string; work_title: string; name: string; description: string }[];
+  refEntries: { ref_id: string; work_title: string; title: string; content: string }[];
+  toggleRef: (id: string) => void;
+  toggleEvent: (refId: string, workTitle: string,
+                 ev: { name: string; description: string; chapter: string }) => void;
+  toggleSetting: (refId: string, workTitle: string,
+                   s: { label: string; content: string }) => void;
+  toggleCharacter: (refId: string, workTitle: string,
+                     c: { name: string; description: string }) => void;
+  toggleEntry: (refId: string, workTitle: string,
+                 e: { title: string; content: string }) => void;
+  isEventLinked: (refId: string, name: string) => boolean;
+  isSettingLinked: (refId: string, label: string) => boolean;
+  isCharacterLinked: (refId: string, name: string) => boolean;
+  isEntryLinked: (refId: string, title: string) => boolean;
+  refSearch: string; setRefSearch: (v: string) => void;
+  eventSearch: string; setEventSearch: (v: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const refQ = refSearch.trim().toLowerCase();
+  const filteredRefs = references.filter(r => !refQ || r.title.toLowerCase().includes(refQ));
+  // Per-work category counts for the collapsed-state chip subtitle.
+  const linkedCount = (ref_id: string) =>
+    refEvents.filter(e => e.ref_id === ref_id).length
+    + refSettings.filter(s => s.ref_id === ref_id).length
+    + refCharacters.filter(c => c.ref_id === ref_id).length
+    + refEntries.filter(e => e.ref_id === ref_id).length;
+  // 智能识别: a work is "pure-setting" when it has settings/characters/entries
+  // but no events. Subtitle in the work picker reflects whichever categories
+  // the work actually exposes.
+  const workSubtitle = (r: RefWork) => {
+    const parts: string[] = [];
+    if (r.events.length) parts.push(`${r.events.length} 情节`);
+    if (r.settings.length) parts.push(`${r.settings.length} 设定`);
+    if (r.characters.length) parts.push(`${r.characters.length} 人物`);
+    if (r.entries.length) parts.push(`${r.entries.length} 条目`);
+    return parts.length ? parts.join(" · ") : "暂无可挑选数据";
+  };
+  return (
+    <div style={{
+      marginTop: 8, padding: "10px 12px",
+      background: "var(--bg-surface)",
+      border: "1px solid var(--border)",
+      borderRadius: 8,
+      position: "relative",
+    }}>
+      <div style={{
+        position: "absolute", left: 0, top: 0, bottom: 0,
+        width: 3, background: "var(--jade)", opacity: 0.8,
+        borderRadius: "8px 0 0 8px",
+      }} />
+      <button onClick={() => setExpanded(e => !e)} style={{
+        all: "unset", cursor: "pointer", width: "100%",
+        display: "flex", alignItems: "baseline", gap: 6,
+        marginBottom: expanded ? 8 : 0,
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--jade)", letterSpacing: 0.3 }}>
+          关联参考作品
+        </span>
+        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+          · {selectedRefs.length} 部
+          {refEvents.length > 0 ? ` · ${refEvents.length} 情节` : ""}
+          {refSettings.length > 0 ? ` · ${refSettings.length} 设定` : ""}
+          {refCharacters.length > 0 ? ` · ${refCharacters.length} 人物` : ""}
+          {refEntries.length > 0 ? ` · ${refEntries.length} 条目` : ""}
+        </span>
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+          {expanded ? "▴" : "▾"}
+        </span>
+      </button>
+      {!expanded ? (
+        selectedRefs.length === 0 ? (
+          <span className="text-xs text-muted" style={{ fontStyle: "italic", display: "block", marginTop: 4 }}>
+            未关联参考作品 — 点击 ▾ 展开后选择作品并挑选具体条目
+          </span>
+        ) : (
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 4 }}>
+            {selectedRefs.map(r => {
+              const n = linkedCount(r.id);
+              return (
+                <span key={r.id} style={{
+                  fontSize: 11, padding: "3px 10px",
+                  background: "var(--jade-subtle)", color: "var(--jade)",
+                  border: "1px solid var(--jade)", borderRadius: 12,
+                  fontWeight: 500,
+                }} title={`${r.title} · ${n} 个具体条目`}>
+                  {r.title}
+                  {n > 0 && (
+                    <span style={{ fontSize: 9, marginLeft: 4, opacity: 0.7 }}>·{n}</span>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        )
+      ) : (
+        <div>
+          {/* 作品多选 */}
+          <div style={{ marginBottom: 10 }}>
+            <input className="input" value={refSearch} onChange={e => setRefSearch(e.target.value)}
+              placeholder="搜索作品标题..." style={{ fontSize: 11, padding: "4px 8px", marginBottom: 4 }} />
+            {references.length === 0 ? (
+              <div className="text-xs text-muted" style={{ padding: 8 }}>
+                参考库为空，请到「参考作品详情」导入
+              </div>
+            ) : (
+              <div style={{
+                maxHeight: 160, overflowY: "auto",
+                border: "1px solid var(--border)", borderRadius: 4,
+              }}>
+                {filteredRefs.map(r => (
+                  <PickRow key={r.id} label={r.title}
+                    sub={workSubtitle(r)}
+                    on={r.selected} color="var(--jade)"
+                    onClick={() => toggleRef(r.id)} />
+                ))}
+                {filteredRefs.length === 0 && (
+                  <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配</div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {selectedRefs.length > 0 && (
+            <input className="input" value={eventSearch} onChange={e => setEventSearch(e.target.value)}
+              placeholder="搜索情节 / 设定 / 人物 / 条目..." style={{ fontSize: 11, padding: "4px 8px", marginBottom: 8 }} />
+          )}
+          {selectedRefs.map(r => {
+            const eq = eventSearch.trim().toLowerCase();
+            const evs = r.events.filter(ev => !eq
+              || ev.name.toLowerCase().includes(eq)
+              || ev.description.toLowerCase().includes(eq)
+              || ev.chapter.toLowerCase().includes(eq));
+            const ses = r.settings.filter(s => !eq
+              || s.label.toLowerCase().includes(eq)
+              || s.content.toLowerCase().includes(eq));
+            const chs = r.characters.filter(c => !eq
+              || c.name.toLowerCase().includes(eq)
+              || c.description.toLowerCase().includes(eq));
+            const ens = r.entries.filter(e => !eq
+              || e.title.toLowerCase().includes(eq)
+              || e.content.toLowerCase().includes(eq));
+            const evLinked = refEvents.filter(e => e.ref_id === r.id).length;
+            const seLinked = refSettings.filter(s => s.ref_id === r.id).length;
+            const chLinked = refCharacters.filter(c => c.ref_id === r.id).length;
+            const enLinked = refEntries.filter(e => e.ref_id === r.id).length;
+            const isPureSetting = r.structureType === "setting_collection"
+              || (r.events.length === 0 && (r.settings.length + r.characters.length + r.entries.length) > 0);
+            return (
+              <div key={r.id} style={{
+                marginBottom: 10, padding: "6px 8px",
+                background: "var(--bg-surface-2)",
+                border: "1px solid var(--border)", borderRadius: 6,
+              }}>
+                <div style={{
+                  fontSize: 11, fontWeight: 700, color: "var(--jade)",
+                  marginBottom: 6, display: "flex", alignItems: "baseline", gap: 6,
+                  flexWrap: "wrap",
+                }}>
+                  「{r.title}」
+                  <span style={{
+                    fontSize: 8.5, padding: "1px 5px", borderRadius: 8,
+                    color: isPureSetting ? "var(--indigo)" : "var(--gold)",
+                    background: isPureSetting ? "var(--indigo-subtle)" : "var(--gold-subtle)",
+                    border: `1px solid ${isPureSetting ? "var(--indigo)" : "var(--gold)"}`,
+                    fontWeight: 600,
+                  }}>
+                    {isPureSetting ? "纯设定" : "叙事"}
+                  </span>
+                  <span style={{ fontSize: 9, color: "var(--text-tertiary)", fontWeight: 400 }}>
+                    · 已选
+                    {r.events.length > 0 ? ` ${evLinked} 情节` : ""}
+                    {r.settings.length > 0 ? ` ${seLinked} 设定` : ""}
+                    {r.characters.length > 0 ? ` ${chLinked} 人物` : ""}
+                    {r.entries.length > 0 ? ` ${enLinked} 条目` : ""}
+                  </span>
+                </div>
+                {/* 智能识别：只渲染该作品有数据的类别。条目竖向堆叠，不并排。 */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {r.events.length > 0 && (
+                    <CategoryPanel
+                      label="具体情节" color="var(--gold)"
+                      empty={evs.length === 0 ? "无匹配" : null}>
+                      {evs.map((ev, i) => (
+                        <EventRow key={i} ev={ev}
+                          on={isEventLinked(r.id, ev.name)}
+                          onToggle={() => toggleEvent(r.id, r.title, ev)} />
+                      ))}
+                    </CategoryPanel>
+                  )}
+                  {r.settings.length > 0 && (
+                    <CategoryPanel
+                      label="具体设定" color="var(--indigo)"
+                      empty={ses.length === 0 ? "无匹配" : null}>
+                      {ses.map((s, i) => (
+                        <SettingRow key={i} s={s}
+                          on={isSettingLinked(r.id, s.label)}
+                          onToggle={() => toggleSetting(r.id, r.title, s)} />
+                      ))}
+                    </CategoryPanel>
+                  )}
+                  {r.characters.length > 0 && (
+                    <CategoryPanel
+                      label="具体人物" color="var(--purple)"
+                      empty={chs.length === 0 ? "无匹配" : null}>
+                      {chs.map((c, i) => (
+                        <CharacterRefRow key={i} c={c}
+                          on={isCharacterLinked(r.id, c.name)}
+                          onToggle={() => toggleCharacter(r.id, r.title, c)} />
+                      ))}
+                    </CategoryPanel>
+                  )}
+                  {r.entries.length > 0 && (
+                    <CategoryPanel
+                      label="具体条目" color="var(--jade)"
+                      empty={ens.length === 0 ? "无匹配" : null}>
+                      {ens.map((e, i) => (
+                        <EntryRow key={i} e={e}
+                          on={isEntryLinked(r.id, e.title)}
+                          onToggle={() => toggleEntry(r.id, r.title, e)} />
+                      ))}
+                    </CategoryPanel>
+                  )}
+                  {r.events.length === 0 && r.settings.length === 0
+                    && r.characters.length === 0 && r.entries.length === 0 && (
+                    <div className="text-xs text-muted" style={{ padding: 6, fontSize: 10, fontStyle: "italic" }}>
+                      此作品暂未抽取出可挑选的数据 — 请先在「参考作品详情」运行分析流程。
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Scrollable inner panel for one category (情节 / 设定 / 人物 / 条目). */
+function CategoryPanel({ label, color, empty, children }: {
+  label: string; color: string; empty: string | null; children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 600, color, marginBottom: 3 }}>
+        {label}
+      </div>
+      {empty != null ? (
+        <div className="text-xs text-muted" style={{ padding: 4, fontSize: 10 }}>{empty}</div>
+      ) : (
+        <div style={{
+          maxHeight: 180, overflowY: "auto",
+          border: "1px solid var(--border)", borderRadius: 4,
+        }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Selectable character row — name + role + click-to-expand description. */
+function CharacterRefRow({ c, on, onToggle }: {
+  c: { name: string; description: string }; on: boolean; onToggle: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--purple)", fontWeight: 700 }}>{on ? "✓" : "○"}</span>
+        <span onClick={onToggle} style={{
+          flex: 1, minWidth: 0, cursor: "pointer",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          fontWeight: on ? 600 : 400, color: on ? "var(--purple)" : "var(--text-secondary)",
+        }}>{c.name}</span>
+        {c.description && (
+          <span onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
+            {expanded ? "收起 ▴" : "详情 ▾"}
+          </span>
+        )}
+      </div>
+      {expanded && c.description && (
+        <div style={{ padding: "0 8px 5px 25px", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          {c.description}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Selectable entry row (pure-setting taxonomy item) — title + click-to-expand content. */
+function EntryRow({ e, on, onToggle }: {
+  e: { title: string; content: string }; on: boolean; onToggle: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", fontSize: 11 }}>
+        <span onClick={onToggle} style={{ cursor: "pointer", width: 11, flexShrink: 0, color: "var(--jade)", fontWeight: 700 }}>{on ? "✓" : "○"}</span>
+        <span onClick={onToggle} style={{
+          flex: 1, minWidth: 0, cursor: "pointer",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          fontWeight: on ? 600 : 400, color: on ? "var(--jade)" : "var(--text-secondary)",
+        }}>{e.title}</span>
+        {e.content && (
+          <span onClick={() => setExpanded(x => !x)} style={{ cursor: "pointer", fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>
+            {expanded ? "收起 ▴" : "详情 ▾"}
+          </span>
+        )}
+      </div>
+      {expanded && e.content && (
+        <div style={{ padding: "0 8px 5px 25px", fontSize: 10, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+          {e.content}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, chapter, chapterNum, onUpdateChapter, allChapters, onNavigate: _onNavigate }: {
   synopsis: string; onChange: (v: string) => void; onSave: () => void; onStartGeneration: () => void; projectId: string;
   chapter?: ChapterOutline | null; onUpdateChapter?: (field: string, value: any) => void;
+  chapterNum?: number;
   allChapters?: { id: string; title: string }[];
+  onNavigate?: (tab: string) => void;
 }) {
   const { toast } = useToast();
-  const [time, setTime] = useState(chapter?.time || "");
-  const [location, setLocation] = useState(chapter?.location || "");
 
-  // Sync when chapter changes (user switches active chapter)
+  // 章节剧情大纲 debounced 自动保存（1.5s 静止后写回 editor → 同步
+  // 进 故事线 章节大纲）。
+  const lastSavedSynRef = useRef(synopsis);
+  const onSaveRef = useRef(onSave);
+  useEffect(() => { onSaveRef.current = onSave; }, [onSave]);
+  useEffect(() => { lastSavedSynRef.current = synopsis; }, [chapter?.id]);
   useEffect(() => {
-    setTime(chapter?.time || "");
-    setLocation(chapter?.location || "");
-  }, [chapter?.id]);
-
-  const [characters, setCharacters] = useState<{ id: string; name: string; selected: boolean }[]>([]);
-  const [references, setReferences] = useState<{ id: string; title: string; selected: boolean; events: { name: string; description: string; chapter: string }[] }[]>([]);
-  const [inspirations, setInspirations] = useState<{ id: string; category: string; title: string; content: string }[]>([]);
-  const [showCharLink, setShowCharLink] = useState(false);
-  const [showRefLink, setShowRefLink] = useState(false);
-  const [showInspLink, setShowInspLink] = useState(false);
-  const [showForeshadow, setShowForeshadow] = useState(false);
-  const [foreshadow, setForeshadow] = useState<{ id: string; title: string; content: string; chapter_ids: string[] }[]>([]);
-  const fsLoadedRef = useRef(false);
-
-  useEffect(() => {
-    fsLoadedRef.current = false;
-    apiGet<{ items: any[] }>(`/api/data/foreshadowing/${projectId}`)
-      .then(r => setForeshadow(Array.isArray(r.items) ? r.items : []))
-      .catch(() => setForeshadow([]))
-      .finally(() => { fsLoadedRef.current = true; });
-  }, [projectId]);
-
-  useEffect(() => {
-    if (!fsLoadedRef.current) return;
+    if (synopsis === lastSavedSynRef.current) return;
     const t = setTimeout(() => {
-      apiPut(`/api/data/foreshadowing/${projectId}`, { items: foreshadow }).catch(() => {});
-    }, 700);
+      onSaveRef.current();
+      lastSavedSynRef.current = synopsis;
+    }, 1500);
     return () => clearTimeout(t);
-  }, [foreshadow, projectId]);
+  }, [synopsis]);
 
-  const addForeshadow = () => setForeshadow(prev => [
-    { id: `fs_${Date.now()}`, title: "新伏笔", content: "",
-      chapter_ids: chapter?.id ? [chapter.id] : [] },
-    ...prev,
-  ]);
-  const updateForeshadow = (id: string, patch: Partial<{ title: string; content: string }>) =>
-    setForeshadow(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
-  const deleteForeshadow = (id: string) =>
-    setForeshadow(prev => prev.filter(f => f.id !== id));
-  const toggleFsChapter = (id: string, chId: string) =>
-    setForeshadow(prev => prev.map(f => {
-      if (f.id !== id) return f;
-      const has = f.chapter_ids.includes(chId);
-      return { ...f, chapter_ids: has ? f.chapter_ids.filter(x => x !== chId) : [...f.chapter_ids, chId] };
-    }));
+  // Editable references registry — loaded from /api/references/works for
+  // the ReferenceLinkSection below. Characters / inspirations / 伏笔 /
+  // 时间 / 地点 are no longer displayed in the editor (they surface in
+  // the RAG injection panel via their respective loaders).
+  const [references, setReferences] = useState<{
+    id: string; title: string; selected: boolean; structureType: string;
+    events: { name: string; description: string; chapter: string }[];
+    settings: { label: string; content: string }[];
+    characters: { name: string; description: string }[];
+    entries: { title: string; content: string }[];
+  }[]>([]);
   const [refSearch, setRefSearch] = useState("");
   const [eventSearch, setEventSearch] = useState("");
-  const [inspSearch, setInspSearch] = useState("");
 
   // Outline chat state (overlay dialog)
   const [showOutlineChat, setShowOutlineChat] = useState(false);
@@ -1811,50 +2303,51 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
   };
 
   useEffect(() => {
-    const pid = projectId || "default";
-    const chapterChars = chapter?.characters || [];
-    apiGet<{ items: any[] }>(`/api/data/characters?project_id=${pid}`)
-      .then(r => setCharacters((r.items || []).map((c: any) => ({ id: c.id, name: c.name, selected: chapterChars.includes(c.name) }))))
-      .catch(() => {});
     const chapterRefs = chapter?.references || [];
     apiGet<{ items: any[] }>("/api/references/works")
       .then(r => setReferences((r.items || []).map((w: any) => ({
         id: w.ref_id || w.id,
         title: w.title || w.name || "未命名",
         selected: chapterRefs.includes(w.ref_id || w.id),
+        structureType: (w.structure_type || "narrative") as string,
         events: workEvents(w.plot_outline_json),
+        settings: workSettings(w.settings_json),
+        characters: workReferenceCharacters(w),
+        entries: workEntries(w.setting_features_json),
       }))))
       .catch(() => setReferences([]));
-    apiGet<{ items: any[] }>("/api/references/inspirations")
-      .then(r => setInspirations((r.items || []).map((it: any) => ({
-        id: it.id, category: it.category || "other",
-        title: it.title || "", content: it.content || "",
-      }))))
-      .catch(() => setInspirations([]));
   }, [projectId, chapter?.id]);
 
-  const toggleChar = (id: string) => {
-    setCharacters(prev => {
-      const next = prev.map(c => c.id === id ? { ...c, selected: !c.selected } : c);
-      const selectedNames = next.filter(c => c.selected).map(c => c.name);
-      onUpdateChapter?.("characters", selectedNames);
-      return next;
-    });
-  };
   const refEvents = chapter?.referenced_events || [];
-  const refInsps = chapter?.referenced_inspirations || [];
+  const refSettings = (chapter as any)?.referenced_settings || [];
+  const refCharacters = (chapter as any)?.referenced_characters || [];
+  const refEntries = (chapter as any)?.referenced_entries || [];
   const isEventLinked = (refId: string, name: string) =>
     refEvents.some(e => e.ref_id === refId && e.name === name);
+  const isSettingLinked = (refId: string, label: string) =>
+    refSettings.some((s: any) => s.ref_id === refId && s.label === label);
+  const isCharacterLinked = (refId: string, name: string) =>
+    refCharacters.some((c: any) => c.ref_id === refId && c.name === name);
+  const isEntryLinked = (refId: string, title: string) =>
+    refEntries.some((e: any) => e.ref_id === refId && e.title === title);
 
+  // 关联参考作品 is editable inline in the editor; specific events / settings
+  // / characters / entries per work are picked from the inline panel below.
+  // Categories with 0 items in the work are auto-hidden by ReferenceLinkSection.
   const toggleRef = (id: string) => {
     setReferences(prev => {
       const next = prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r);
       const selectedIds = next.filter(r => r.selected).map(r => r.id);
       onUpdateChapter?.("references", selectedIds);
-      // Unlinking a work drops the chronicle events linked from it.
       const stillSel = new Set(selectedIds);
-      const pruned = refEvents.filter(e => stillSel.has(e.ref_id));
-      if (pruned.length !== refEvents.length) onUpdateChapter?.("referenced_events", pruned);
+      const prunedEvents = refEvents.filter(e => stillSel.has(e.ref_id));
+      if (prunedEvents.length !== refEvents.length) onUpdateChapter?.("referenced_events", prunedEvents);
+      const prunedSettings = refSettings.filter((s: any) => stillSel.has(s.ref_id));
+      if (prunedSettings.length !== refSettings.length) onUpdateChapter?.("referenced_settings", prunedSettings);
+      const prunedCharacters = refCharacters.filter((c: any) => stillSel.has(c.ref_id));
+      if (prunedCharacters.length !== refCharacters.length) onUpdateChapter?.("referenced_characters", prunedCharacters);
+      const prunedEntries = refEntries.filter((e: any) => stillSel.has(e.ref_id));
+      if (prunedEntries.length !== refEntries.length) onUpdateChapter?.("referenced_entries", prunedEntries);
       return next;
     });
   };
@@ -1864,19 +2357,25 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       : [...refEvents, { ref_id: refId, work_title: workTitle, name: ev.name, description: ev.description, chapter: ev.chapter }];
     onUpdateChapter?.("referenced_events", next);
   };
-  const toggleInspiration = (it: { id: string; category: string; title: string; content: string }) => {
-    const next = refInsps.some(i => i.id === it.id)
-      ? refInsps.filter(i => i.id !== it.id)
-      : [...refInsps, it];
-    onUpdateChapter?.("referenced_inspirations", next);
+  const toggleSetting = (refId: string, workTitle: string, s: { label: string; content: string }) => {
+    const next = isSettingLinked(refId, s.label)
+      ? refSettings.filter((x: any) => !(x.ref_id === refId && x.label === s.label))
+      : [...refSettings, { ref_id: refId, work_title: workTitle, label: s.label, content: s.content }];
+    onUpdateChapter?.("referenced_settings", next);
   };
-  const selectedChars = characters.filter(c => c.selected);
+  const toggleCharacter = (refId: string, workTitle: string, c: { name: string; description: string }) => {
+    const next = isCharacterLinked(refId, c.name)
+      ? refCharacters.filter((x: any) => !(x.ref_id === refId && x.name === c.name))
+      : [...refCharacters, { ref_id: refId, work_title: workTitle, name: c.name, description: c.description }];
+    onUpdateChapter?.("referenced_characters", next);
+  };
+  const toggleEntry = (refId: string, workTitle: string, e: { title: string; content: string }) => {
+    const next = isEntryLinked(refId, e.title)
+      ? refEntries.filter((x: any) => !(x.ref_id === refId && x.title === e.title))
+      : [...refEntries, { ref_id: refId, work_title: workTitle, title: e.title, content: e.content }];
+    onUpdateChapter?.("referenced_entries", next);
+  };
   const selectedRefs = references.filter(r => r.selected);
-  const refQ = refSearch.trim().toLowerCase();
-  const filteredRefs = references.filter(r => !refQ || r.title.toLowerCase().includes(refQ));
-  const inspQ = inspSearch.trim().toLowerCase();
-  const filteredInsps = inspirations.filter(
-    it => !inspQ || `${it.title} ${it.content}`.toLowerCase().includes(inspQ));
 
   return (
     <div>
@@ -2006,230 +2505,61 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       </div>
       )}
 
-      {/* 关联角色 — cohesive collapsible section (header attached to panel) */}
-      <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
-        <button className="btn-ghost" onClick={() => setShowCharLink(v => !v)}
-          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
-            background: showCharLink ? "var(--bg-surface-2)" : "transparent" }}>
-          {showCharLink ? "▾ " : "▸ "}关联角色{selectedChars.length > 0 ? ` · 已选 ${selectedChars.length}` : ""}
-        </button>
-        {showCharLink && (
-          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
-            {characters.length > 0 ? (
-              <>
-                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                  {characters.map(c => (
-                    <button key={c.id} onClick={() => toggleChar(c.id)}
-                      style={chipStyle(c.selected, "var(--purple)", "var(--purple-subtle)")}>
-                      {c.name}
-                    </button>
-                  ))}
-                </div>
-                {selectedChars.length > 0 && (
-                  <div style={{ marginTop: 8 }}>
-                    <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--purple)" }}>隐藏身份（可选）</div>
-                    {selectedChars.map(c => {
-                      const alias = (chapter?.character_aliases || {})[c.name] || "";
-                      return (
-                        <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                          <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "var(--purple-subtle)", color: "var(--purple)", whiteSpace: "nowrap" }}>{c.name}</span>
-                          <input className="input" value={alias}
-                            onChange={e => {
-                              const next = { ...(chapter?.character_aliases || {}) };
-                              if (e.target.value.trim()) next[c.name] = e.target.value;
-                              else delete next[c.name];
-                              onUpdateChapter?.("character_aliases", next);
-                            }}
-                            placeholder="隐藏身份（如：神秘女人）"
-                            style={{ flex: 1, fontSize: 10, padding: "2px 8px", height: 22 }} />
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="text-xs text-muted">暂无角色，请在「角色管理」中创建</div>
-            )}
-          </div>
-        )}
+      {/* ── 用户特别要求 ── 本章独有的写作要求，loader
+          (user_special_requirements) 会把它注入到 prompt 顶部，让 AI
+          严格遵守。空 → loader 跳过。 */}
+      <div className="field" style={{ marginTop: 14 }}>
+        <label className="label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          用户特别要求
+          <span className="text-xs" style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>
+            · 本章 AI 必须遵守的额外要求（如：保持低悬念 / 多用对白 / 严禁某情节）
+          </span>
+        </label>
+        <textarea
+          className="input"
+          value={(chapter as any)?.special_requirements || ""}
+          onChange={e => onUpdateChapter?.("special_requirements", e.target.value)}
+          placeholder="留空则不向 AI 提交本章特别要求..."
+          rows={3}
+          style={{ fontSize: 12, lineHeight: 1.6 }}
+        />
       </div>
 
-      {/* 关联参考作品 — collapsible; count shown on the collapsed title */}
-      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
-        <button className="btn-ghost" onClick={() => setShowRefLink(v => !v)}
-          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
-            background: showRefLink ? "var(--bg-surface-2)" : "transparent" }}>
-          {showRefLink ? "▾ " : "▸ "}关联参考作品{references.length > 0 ? ` · 已选 ${selectedRefs.length}/${references.length}` : ""}
-        </button>
-        {showRefLink && (
-          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
-            {references.length > 0 ? (
-              <>
-                <input className="input" value={refSearch} onChange={e => setRefSearch(e.target.value)}
-                  placeholder="搜索参考作品标题..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
-                <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-                  {filteredRefs.map(r => (
-                    <PickRow key={r.id} label={r.title}
-                      sub={r.events.length > 0 ? `${r.events.length} 事件` : "无事件"}
-                      on={r.selected} color="var(--jade)" onClick={() => toggleRef(r.id)} />
-                  ))}
-                  {filteredRefs.length === 0 && (
-                    <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配作品</div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="text-xs text-muted">暂无参考作品，请在「参考作品详情」中导入</div>
-            )}
+      {/* 关联参考作品 — 编辑器内可直接编辑。先在顶部选择参考作品，
+          再为每部已选作品挑选具体情节 / 设定 / 人物 / 条目（智能识别
+          作品类型，自动隐藏空类别），loader 通过 referenced_materials
+          块注入到 prompt。其余关联信息（角色 / 灵感 / 伏笔 / 时间地点）
+          全部合并到下面的 RAG 注入内容里展示，不再在这里重复。 */}
+      <ReferenceLinkSection
+        references={references}
+        selectedRefs={selectedRefs}
+        refEvents={refEvents}
+        refSettings={refSettings}
+        refCharacters={refCharacters}
+        refEntries={refEntries}
+        toggleRef={toggleRef}
+        toggleEvent={toggleEvent}
+        toggleSetting={toggleSetting}
+        toggleCharacter={toggleCharacter}
+        toggleEntry={toggleEntry}
+        isEventLinked={isEventLinked}
+        isSettingLinked={isSettingLinked}
+        isCharacterLinked={isCharacterLinked}
+        isEntryLinked={isEntryLinked}
+        refSearch={refSearch} setRefSearch={setRefSearch}
+        eventSearch={eventSearch} setEventSearch={setEventSearch}
+      />
 
-            {/* 编年史事件 — per selected work; each row = 章节 tag + 事件名,
-                click「详情」to expand details (the column is narrow). */}
-            {selectedRefs.map(r => {
-              const eq = eventSearch.trim().toLowerCase();
-              const evs = r.events.filter(ev => !eq
-                || ev.name.toLowerCase().includes(eq)
-                || ev.description.toLowerCase().includes(eq)
-                || ev.chapter.toLowerCase().includes(eq));
-              const linkedN = refEvents.filter(e => e.ref_id === r.id).length;
-              return (
-                <div key={r.id} style={{ marginTop: 10 }}>
-                  <div className="label" style={{ fontSize: 10, marginBottom: 4, color: "var(--gold)" }}>
-                    「{r.title}」编年史事件{linkedN > 0 ? ` · 已选 ${linkedN}` : ""}
-                  </div>
-                  {r.events.length > 0 ? (
-                    <>
-                      <input className="input" value={eventSearch} onChange={e => setEventSearch(e.target.value)}
-                        placeholder="搜索章节 / 事件名..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
-                      <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-                        {evs.map((ev, i) => (
-                          <EventRow key={i} ev={ev}
-                            on={isEventLinked(r.id, ev.name)}
-                            onToggle={() => toggleEvent(r.id, r.title, ev)} />
-                        ))}
-                        {evs.length === 0 && (
-                          <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配事件</div>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-xs text-muted">该作品暂无编年史事件，请先在参考作品详情中提取剧情大纲</div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+      {projectId && chapter?.id && (
+        <RAGLoaderList projectId={projectId}
+          chapterId={chapter.id}
+          chapterNum={chapterNum || 1} />
+      )}
 
-      {/* 关联灵感 — collapsible; count shown on the collapsed title */}
-      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
-        <button className="btn-ghost" onClick={() => setShowInspLink(v => !v)}
-          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
-            background: showInspLink ? "var(--bg-surface-2)" : "transparent" }}>
-          {showInspLink ? "▾ " : "▸ "}关联灵感{inspirations.length > 0 ? ` · 已选 ${refInsps.length}/${inspirations.length}` : ""}
-        </button>
-        {showInspLink && (
-          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
-            {inspirations.length > 0 ? (
-              <>
-                <input className="input" value={inspSearch} onChange={e => setInspSearch(e.target.value)}
-                  placeholder="搜索灵感..." style={{ fontSize: 11, padding: "3px 8px", marginBottom: 4 }} />
-                <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-                  {filteredInsps.map(it => (
-                    <PickRow key={it.id}
-                      label={it.title || it.content.slice(0, 16) || "未命名灵感"}
-                      sub={it.title ? it.content.slice(0, 14) : undefined}
-                      on={refInsps.some(i => i.id === it.id)} color="var(--accent)"
-                      onClick={() => toggleInspiration(it)} />
-                  ))}
-                  {filteredInsps.length === 0 && (
-                    <div className="text-xs text-muted" style={{ padding: 8 }}>无匹配灵感</div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="text-xs text-muted">灵感库为空，请在「灵感搜索 → 灵感库」中添加</div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* 伏笔 — collapsible CRUD section; each 伏笔 links chapters bidirectionally */}
-      <div style={{ marginTop: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
-        <button className="btn-ghost" onClick={() => setShowForeshadow(v => !v)}
-          style={{ width: "100%", fontSize: 11, fontWeight: 600, padding: "6px 12px", textAlign: "left", borderRadius: 0,
-            background: showForeshadow ? "var(--bg-surface-2)" : "transparent" }}>
-          {showForeshadow ? "▾ " : "▸ "}伏笔{foreshadow.length > 0 ? ` · ${foreshadow.length}` : ""}
-        </button>
-        {showForeshadow && (
-          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
-            <button className="btn" style={{ fontSize: 11, padding: "3px 12px", marginBottom: 8 }} onClick={addForeshadow}>
-              + 新建伏笔
-            </button>
-            {foreshadow.length === 0 ? (
-              <div className="text-xs text-muted">暂无伏笔。新建后可关联多个章节——任一关联章节生成时都会带上该伏笔。</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {foreshadow.map(f => (
-                  <div key={f.id} style={{ border: "1px solid var(--border)", borderRadius: 4, padding: 8 }}>
-                    <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
-                      <input className="input" value={f.title}
-                        onChange={e => updateForeshadow(f.id, { title: e.target.value })}
-                        placeholder="伏笔标题" style={{ flex: 1, fontSize: 12, padding: "3px 8px" }} />
-                      <button onClick={() => deleteForeshadow(f.id)}
-                        style={{ background: "none", border: "none", color: "var(--text-disabled)", cursor: "pointer", fontSize: 15 }}
-                        title="删除伏笔">&times;</button>
-                    </div>
-                    <textarea className="input" value={f.content}
-                      onChange={e => updateForeshadow(f.id, { content: e.target.value })}
-                      placeholder="伏笔内容（埋设了什么、计划如何回收）" rows={2}
-                      style={{ width: "100%", fontSize: 11, padding: "4px 8px", resize: "vertical", marginBottom: 4, boxSizing: "border-box" }} />
-                    <div className="text-xs text-muted" style={{ marginBottom: 3 }}>关联章节（点击切换；关联为双向）：</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                      {(allChapters || []).map(ch => {
-                        const on = f.chapter_ids.includes(ch.id);
-                        return (
-                          <span key={ch.id} onClick={() => toggleFsChapter(f.id, ch.id)}
-                            style={{
-                              fontSize: 10, padding: "2px 8px", borderRadius: 10, cursor: "pointer", userSelect: "none",
-                              background: on ? "var(--accent-subtle)" : "transparent",
-                              color: on ? "var(--accent)" : "var(--text-tertiary)",
-                              border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
-                            }}>
-                            {ch.title || "未命名"}
-                          </span>
-                        );
-                      })}
-                      {(allChapters || []).length === 0 && (
-                        <span className="text-xs text-muted">暂无章节</span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <div className="field" style={{ flex: 1 }}>
-          <label className="label">时间</label>
-          <input className="input" value={time} onChange={e => { setTime(e.target.value); onUpdateChapter?.("time", e.target.value); }} placeholder="例：第3天·黄昏" style={{ fontSize: 12 }} />
-        </div>
-        <div className="field" style={{ flex: 1 }}>
-          <label className="label">地点</label>
-          <input className="input" value={location} onChange={e => { setLocation(e.target.value); onUpdateChapter?.("location", e.target.value); }} placeholder="例：云隐山·剑庐" style={{ fontSize: 12 }} />
-        </div>
-      </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button className="btn-primary" style={{ flex: 1 }} onClick={onSave}>保存</button>
         <button className="btn-primary" style={{ flex: 1, background: "var(--jade, #34a853)", border: "none" }} onClick={onStartGeneration}>开始生成</button>
       </div>
-      <p className="text-xs text-muted mt-12" style={{ lineHeight: 1.6 }}>
-        用上方 AI 大纲助手与 AI 讨论大纲，满意后点击「写入大纲」。关联角色、参考作品的编年史事件与灵感库后，Pipeline 生成时 AI 将参考相关信息。
-      </p>
     </div>
   );
 }
@@ -2242,10 +2572,13 @@ type ContextManifest = {
   writing_knowledge: { id: string; title: string }[];
 };
 
-/** Normalize a persisted aiTab value (migrates the old "inspire" tab). */
+/** Normalize a persisted aiTab value. Cluster / 导演 multi-agent mode
+ *  is offline this iteration — any prior session that landed on cluster
+ *  falls back to single. */
 function normalizeAiTab(v: any): "outline" | "single" | "cluster" | "rewrite" | "eval" {
   if (v === "inspire" || v === "single") return "single";
-  if (v === "cluster" || v === "rewrite" || v === "eval") return v;
+  if (v === "cluster") return "single";
+  if (v === "rewrite" || v === "eval") return v;
   return "outline";
 }
 
@@ -2256,18 +2589,431 @@ function formatSkillsUsed(skills?: string[]): string {
     : "本次创作未启用自定义技能";
 }
 
+/** Look up the actual prompt section whose `## title` *contains* one of
+ *  the candidate substrings. The 后端 loaders嵌的标题里常带括号补充
+ *  («参考作品综合», «相关灵感（用户灵感库）», «故事舞台 客观状态
+ *  （截至第 N 章）» 等），所以严格相等匹配会全部 miss。 */
+const sectionMatch = (sections: Map<string, string>, candidates: string[]): string => {
+  for (const [title, body] of sections) {
+    for (const c of candidates) {
+      if (title === c || title.includes(c)) return body;
+    }
+  }
+  return "";
+};
+
+/** Sections expected by the prompt template — used by RAG预览 to surface
+ *  which loaders actually injected content into the rendered prompt.
+ *  hint = 未注入 时给出的诊断提示，帮助用户立刻知道为什么是空。
+ *  group = 顶部分组（系统级 / 上下文 / 章节）— 与后端
+ *  builder._SECTION_GROUPS 一一对应。 */
+const RAG_PREVIEW_SECTIONS: {
+  title: string; source: string; matches: string[];
+  group: "system" | "context" | "user"; hint: string;
+}[] = [
+  // —— 章节专属 ——
+  { title: "用户特别要求", source: "user_special_requirements", matches: ["用户特别要求"],
+    group: "user", hint: "请在本页上方「用户特别要求」字段输入内容" },
+  { title: "本章大纲",     source: "chapter_outline",           matches: ["本章大纲"],
+    group: "user", hint: "请填写「章节剧情大纲」或在故事线为本章添加情节卡" },
+  { title: "时间与地点",   source: "time_location",             matches: ["时间与地点"],
+    group: "user", hint: "请在故事线情节卡设置时间 / 地点" },
+  { title: "本章出场角色", source: "characters_block",          matches: ["本章出场角色", "出场角色"],
+    group: "user", hint: "请在故事线情节卡选择「出场角色」" },
+  { title: "已有正文",     source: "existing_content / current_chapter_draft", matches: ["已有正文", "正文草稿", "前几章正文"],
+    group: "user", hint: "首次创作正常为空；本章已有 10 字以上内容才会注入" },
+  // —— 上下文 ——
+  { title: "出场角色档案", source: "character_cards",           matches: ["出场角色档案", "角色档案"],
+    group: "context", hint: "请在「角色管理」补全本章出场角色的档案" },
+  { title: "世界观设定",   source: "worldbook",                 matches: ["世界观设定", "世界书"],
+    group: "context", hint: "请在「故事中世界 → 世界书」添加设定条目" },
+  { title: "关联参考作品", source: "reference",                 matches: ["参考作品综合", "关联参考", "参考作品"],
+    group: "context", hint: "请在「参考作品详情」给本项目关联作品，并在编辑器选择具体情节 / 设定" },
+  { title: "关联伏笔",     source: "foreshadowing",             matches: ["关联伏笔", "伏笔"],
+    group: "context", hint: "请在故事线情节卡为本章关联未回收的伏笔" },
+  { title: "当前涉及的故事线", source: "subplots",              matches: ["当前涉及的故事线", "故事线"],
+    group: "context", hint: "请在故事线为本章关联主线 / 支线" },
+  { title: "相关灵感",     source: "inspiration",               matches: ["相关灵感", "灵感库"],
+    group: "context", hint: "请在「灵感库」添加条目，或在大纲中描述匹配方向" },
+  { title: "故事舞台 客观状态", source: "storyland_state",
+    // 保留 "Storyland 客观状态" / "storyland" 作为兜底, 老快照里的 prompt 仍然
+    // 以原名落盘, 重命名后能继续匹配上.
+    matches: ["故事舞台 客观状态", "Storyland 客观状态", "客观状态", "storyland"],
+    group: "context", hint: "需 SPO 三元组 / 角色 ledger / 情绪轨迹（待前章完成后由 Truth 系统沉淀）" },
+  { title: "读者视角记忆", source: "reader_memory",             matches: ["读者视角记忆"],
+    group: "context", hint: "需 章节号 > 1 且已生成前章摘要 / 锚点" },
+  // —— 系统级 ——
+  { title: "用户写作偏好", source: "user_preferences",          matches: ["用户写作偏好"],
+    group: "system", hint: "请在「设置 → 写作偏好」填写禁词 / 风格规则" },
+  { title: "创作技能",     source: "skills",                    matches: ["创作技能", "技能"],
+    group: "system", hint: "请在「设置 → 自学技能」启用至少一个 SKILL" },
+  { title: "平台风格",     source: "platform_directive",        matches: ["平台风格", "平台指令"],
+    group: "system", hint: "请在项目设置选择「平台 + 题材」并完成市场画像提取（基础+高级特征已并入此 loader）" },
+];
+
+const RAG_GROUP_LABEL: Record<string, string> = {
+  system: "系统级", context: "上下文", user: "章节专属",
+};
+const RAG_GROUP_COLOR: Record<string, string> = {
+  system: "var(--purple)", context: "var(--jade)", user: "var(--accent)",
+};
+
+/** Parse a rendered prompt into `## title` → body sections. Heuristic-based;
+ *  matches the parser used by PromptInspector so RAG预览 surfaces the same view. */
+function parsePromptSections(prompt: string): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!prompt) return out;
+  let curTitle = "", curBody = "";
+  for (const line of prompt.split("\n")) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m) {
+      if (curTitle) out.set(curTitle, curBody);
+      curTitle = m[1];
+      curBody = "";
+    } else if (curTitle) {
+      curBody += line + "\n";
+    }
+  }
+  if (curTitle) out.set(curTitle, curBody);
+  return out;
+}
+
+/** RAGLoaderList — RAG tab 的主要内容块。
+ *  · 顶部状态条：已注入 N / 总数 · prompt 长度 · 三组各自统计 · 刷新
+ *  · 按 system / context / user 三大分组渲染；每组带左侧彩条、组级 mini-counter
+ *  · 每个 loader 一行 details，默认全部展开；summary 末尾用 ^ / ▾ 指引展开收起 */
+function RAGLoaderList({ projectId, chapterId, chapterNum }: {
+  projectId: string; chapterId: string; chapterNum: number;
+}) {
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [loaded, setLoaded] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!projectId || !chapterId) return;
+    setLoading(true);
+    try {
+      const res = await apiPost<{ status: string; prompt: string }>(
+        "/api/generation/quick-generate",
+        { project_id: projectId, chapter_id: chapterId, chapter_num: chapterNum,
+          synopsis: "", characters: [], prompt_only: true },
+      );
+      setPrompt(res.prompt || "");
+      setLoaded(true);
+    } catch (e: any) {
+      toast(`获取 RAG 失败：${e?.message || ""}`, "error");
+    } finally { setLoading(false); }
+  }, [projectId, chapterId, chapterNum, toast]);
+
+  useEffect(() => {
+    setLoaded(false);
+    setPrompt("");
+    if (projectId && chapterId) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, chapterId, chapterNum]);
+
+  const sections = parsePromptSections(prompt);
+  const entries = RAG_PREVIEW_SECTIONS.map(expected => {
+    const body = sectionMatch(sections, expected.matches).trim();
+    return { expected, body, present: body.length > 0 };
+  });
+  const filled = entries.filter(e => e.present).length;
+  const groups: ("system" | "context" | "user")[] = ["user", "context", "system"];
+
+  return (
+    <div style={{
+      marginTop: 16, padding: "12px 14px",
+      background: "var(--bg-surface)",
+      border: "1px solid var(--border)", borderRadius: 10,
+    }}>
+      <div style={{
+        display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap",
+        marginBottom: 10, paddingBottom: 8,
+        borderBottom: "1px solid var(--border-subtle)",
+      }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>
+          RAG 注入内容
+        </span>
+        <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+          · {loaded ? `${filled}/${RAG_PREVIEW_SECTIONS.length} 已注入 · ${prompt.length} 字` : "拉取中…"}
+        </span>
+        <span style={{ flex: 1, minWidth: 8 }} />
+        <button className="btn" style={{ fontSize: 10.5, padding: "2px 10px" }}
+          onClick={load} disabled={loading}
+          title="重新渲染当前章节的 RAG prompt">
+          {loading ? "刷新中..." : "刷新"}
+        </button>
+      </div>
+      {!loaded && loading ? (
+        <div className="text-xs text-muted" style={{ padding: "12px 0", textAlign: "center" }}>
+          正在渲染 RAG prompt...
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {groups.map(g => {
+            const groupEntries = entries.filter(e => e.expected.group === g);
+            if (groupEntries.length === 0) return null;
+            const groupFilled = groupEntries.filter(e => e.present).length;
+            const color = RAG_GROUP_COLOR[g];
+            return (
+              <div key={g}>
+                <div style={{
+                  display: "flex", alignItems: "baseline", gap: 6,
+                  paddingLeft: 8, marginBottom: 4,
+                  borderLeft: `3px solid ${color}`,
+                }}>
+                  <span style={{
+                    fontSize: 11, fontWeight: 700, color, letterSpacing: 0.5,
+                  }}>
+                    {RAG_GROUP_LABEL[g]}
+                  </span>
+                  <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                    · {groupFilled}/{groupEntries.length} 已注入
+                  </span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {groupEntries.map(({ expected, body, present }) => (
+                    <RAGLoaderRow key={expected.title}
+                      title={expected.title}
+                      hint={expected.hint}
+                      body={body} present={present} color={color} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Single row in RAGLoaderList — default-expanded; summary footer shows
+ *  ▴ when open and ▾ when collapsed. Renders the loader's body when it
+ *  injected something, otherwise the hint that explains how to get the
+ *  loader to fire. (前期的诊断面板已按用户要求移除.) */
+function RAGLoaderRow({ title, hint, body, present, color }: {
+  title: string; hint: string; body: string; present: boolean; color: string;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <details open={open}
+      onToggle={e => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      style={{
+        padding: "5px 10px",
+        background: present ? "var(--bg-surface-2)" : "transparent",
+        borderLeft: `2px solid ${present ? color : "var(--border)"}`,
+        borderRadius: 4,
+      }}>
+      <summary style={{
+        cursor: "pointer",
+        fontSize: 11.5,
+        color: present ? "var(--text-primary)" : "var(--text-tertiary)",
+        display: "flex", alignItems: "center", gap: 8,
+        listStyle: "none",
+      }}>
+        <span style={{
+          width: 6, height: 6, borderRadius: 3, flexShrink: 0,
+          background: present ? color : "var(--text-disabled)",
+          opacity: present ? 1 : 0.5,
+        }} />
+        <strong>{title}</strong>
+        <span style={{ flex: 1 }} />
+        <span style={{
+          fontSize: 10, color: present ? color : "var(--text-disabled)",
+          fontWeight: 600, flexShrink: 0,
+        }}>
+          {present ? `${body.length} 字` : "未注入"}
+        </span>
+        <span style={{
+          fontSize: 11, color: "var(--text-tertiary)", flexShrink: 0,
+          width: 12, textAlign: "center",
+        }}>
+          {open ? "▴" : "▾"}
+        </span>
+      </summary>
+      {present ? (
+        <pre style={{
+          marginTop: 6, padding: 8, background: "var(--bg-app)",
+          fontSize: 10.5, lineHeight: 1.6, fontFamily: "var(--font-mono)",
+          color: "var(--text-secondary)",
+          maxHeight: 280, overflow: "auto", borderRadius: 4,
+          whiteSpace: "pre-wrap", wordBreak: "break-word",
+        }}>{body}</pre>
+      ) : (
+        hint && (
+          <div style={{
+            marginTop: 4, paddingLeft: 14, fontSize: 10,
+            color: "var(--text-tertiary)", lineHeight: 1.5,
+            fontStyle: "italic",
+          }}>
+            ↳ {hint}
+          </div>
+        )
+      )}
+    </details>
+  );
+}
+
+
+/** RAG预览 loader-injection panel: fetches the rendered prompt on demand
+ *  (prompt_only=true, no LLM call) and shows which of the 16 sections were
+ *  actually injected — replaces the old floating prompt-inspector ball. */
+function LoaderInjectionPreview({ projectId, chapterId, chapterNum }: {
+  projectId: string; chapterId: string; chapterNum: number;
+}) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [showFull, setShowFull] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!projectId || !chapterId) return;
+    setLoading(true);
+    try {
+      const res = await apiPost<{ status: string; prompt: string }>(
+        "/api/generation/quick-generate",
+        {
+          project_id: projectId, chapter_id: chapterId, chapter_num: chapterNum,
+          synopsis: "", characters: [], prompt_only: true,
+        },
+      );
+      setPrompt(res.prompt || "");
+    } catch (e: any) {
+      toast(`获取 prompt 失败：${e?.message || ""}`, "error");
+    } finally { setLoading(false); }
+  }, [projectId, chapterId, chapterNum, toast]);
+
+  // Lazy-load the rendered prompt the first time the user opens the preview.
+  const onToggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !prompt && !loading) load();
+  };
+
+  const copyAll = () => {
+    if (!prompt) return;
+    navigator.clipboard.writeText(prompt).then(
+      () => toast("已复制完整 prompt", "success"),
+      () => toast("复制失败", "error"),
+    );
+  };
+
+  const sections = parsePromptSections(prompt);
+  const filled = RAG_PREVIEW_SECTIONS.filter(
+    s => sectionMatch(sections, s.matches).trim().length > 0,
+  ).length;
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <button onClick={onToggle} style={{
+          flex: 1, textAlign: "left", background: "none", border: "none", padding: "2px 0",
+          cursor: "pointer", fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
+        }}>
+          {open ? "收起" : "展开"} Prompt 注入预览
+          {prompt && <span style={{ marginLeft: 6, color: "var(--text-tertiary)", fontWeight: 400 }}>
+            （{filled}/{RAG_PREVIEW_SECTIONS.length} 已注入 · {prompt.length} 字）
+          </span>}
+        </button>
+        {open && (
+          <>
+            <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+              onClick={load} disabled={loading}
+              title="重新拉取渲染后的 prompt">
+              {loading ? "..." : "刷新"}
+            </button>
+            <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+              onClick={copyAll} disabled={!prompt}
+              title="复制完整 prompt（用于网页版大模型）">
+              复制
+            </button>
+            <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+              onClick={() => setShowFull(s => !s)} disabled={!prompt}>
+              {showFull ? "收起完整" : "看完整"}
+            </button>
+          </>
+        )}
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 6 }}>
+          {loading && !prompt ? (
+            <div className="text-xs text-muted" style={{ padding: "8px 0" }}>渲染 prompt 中...</div>
+          ) : !prompt ? (
+            <div className="text-xs text-muted" style={{ padding: "8px 0" }}>
+              点击「刷新」拉取渲染后的 prompt 以查看 loader 注入状态。
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 3 }}>
+              {RAG_PREVIEW_SECTIONS.map(expected => {
+                const body = sectionMatch(sections, expected.matches).trim();
+                const present = body.length > 0;
+                return (
+                  <details key={expected.title} style={{
+                    padding: "3px 8px",
+                    background: present ? "var(--bg-surface-2)" : "transparent",
+                    borderLeft: `3px solid ${present ? "var(--accent)" : "var(--border)"}`,
+                    borderRadius: 3,
+                  }}>
+                    <summary style={{
+                      cursor: present ? "pointer" : "default", fontSize: 11,
+                      color: present ? "var(--text-primary)" : "var(--text-tertiary)",
+                    }}>
+                      <strong>{expected.title}</strong>
+                      <span style={{ marginLeft: 8, color: "var(--text-tertiary)", fontSize: 10 }}>
+                        {present ? `${body.length} 字` : "未注入"}
+                      </span>
+                    </summary>
+                    {present && (
+                      <pre style={{
+                        marginTop: 4, padding: 6, background: "var(--bg-surface)",
+                        fontSize: 10, fontFamily: "var(--font-mono)",
+                        maxHeight: 160, overflow: "auto", borderRadius: 3,
+                        whiteSpace: "pre-wrap", wordBreak: "break-word",
+                      }}>{body}</pre>
+                    )}
+                  </details>
+                );
+              })}
+            </div>
+          )}
+
+          {showFull && prompt && (
+            <details open style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", fontSize: 11, fontWeight: 600 }}>完整 prompt</summary>
+              <pre style={{
+                marginTop: 6, padding: 8, background: "var(--bg-surface-2)",
+                fontSize: 10, fontFamily: "var(--font-mono)",
+                maxHeight: 320, overflow: "auto", borderRadius: 4,
+                whiteSpace: "pre-wrap",
+              }}>{prompt}</pre>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Transparency panel: skills used + per-item RAG context (de-selectable).
- *  Shared by the creation tabs and the 评估 tab. */
-function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefresh }: {
+ *  The RAG section doubles as the prompt-loader inspector — the floating ball
+ *  trigger was retired in favour of an inline preview here. */
+function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefresh, projectId, chapterId, chapterNum }: {
   manifest: ContextManifest | null;
   skillSelection: Record<string, boolean>;
   ragExcludes: Set<string>;
   onToggleSkill: (name: string) => void;
   onToggleRagItem: (key: string) => void;
   onRefresh?: () => void;
+  projectId?: string;
+  chapterId?: string;
+  chapterNum?: number;
 }) {
   const [skillOpen, setSkillOpen] = useState(false);
-  const [ragOpen, setRagOpen] = useState(false);
+  const [ragOpen, setRagOpen] = useState(true);
   if (!manifest) return null;
 
   const sectionHeader = (open: boolean, toggle: () => void, text: string,
@@ -2278,7 +3024,7 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
         cursor: "pointer", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)",
         display: "flex", alignItems: "center", gap: 5,
       }}>
-        <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>{open ? "▾" : "▸"}</span>{text}
+        <span style={{ fontSize: 9, color: "var(--text-tertiary)" }}>{open ? "[-]" : "[+]"}</span>{text}
       </button>
       {rightEl}
     </div>
@@ -2327,7 +3073,7 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
 
   return (
     <div style={{
-      marginBottom: 6, padding: "8px 10px", background: "var(--bg-surface)",
+      marginBottom: 8, padding: "10px 12px", background: "var(--bg-surface)",
       borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
     }}>
       {sectionHeader(skillOpen, () => setSkillOpen(o => !o), `调用的 skill（${skillCount}）`,
@@ -2339,7 +3085,7 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
           </button>
         ) : undefined)}
       {skillOpen && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0 8px" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0 10px" }}>
           {manifest.default_skills.map(s => chip("d:" + s.name, s.name, true, undefined, s.step || "默认"))}
           {manifest.learned_skills.map(s => chip(
             "l:" + s.name, s.name, skillSelection[s.name] !== false,
@@ -2351,23 +3097,25 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
           {skillCount === 0 && <span className="text-xs text-muted">本次无可调用 skill</span>}
         </div>
       )}
-      {sectionHeader(ragOpen, () => setRagOpen(o => !o),
-        `引用的 RAG 上下文（已启用 ${selCount}/${allKeys.length} 项）`,
-        onRefresh ? (
-          <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
-            onClick={onRefresh}
-            title="重新加载 RAG —— 在角色管理 / 世界书 / 大纲等处更新数据后点此同步">
-            ↻ 刷新
-          </button>
-        ) : undefined)}
+      <div style={{ marginTop: 6 }}>
+        {sectionHeader(ragOpen, () => setRagOpen(o => !o),
+          `RAG 预览（已启用 ${selCount}/${allKeys.length} 项）`,
+          onRefresh ? (
+            <button className="btn" style={{ fontSize: 9, padding: "1px 7px" }}
+              onClick={onRefresh}
+              title="重新加载 RAG —— 在角色卡 / 世界书 / 大纲等处更新数据后点此同步">
+              刷新
+            </button>
+          ) : undefined)}
+      </div>
       {ragOpen && (
-        <div style={{ marginTop: 2 }}>
+        <div style={{ marginTop: 4 }}>
           {manifest.rag.map(cat => {
             const sel = cat.items.filter(it => !ragExcludes.has(`${cat.key}::${it.id}`)).length;
             return (
               <div key={cat.key} style={{ marginTop: 7 }}>
                 <div className="text-xs" style={{ color: "var(--text-tertiary)", marginBottom: 3 }}>
-                  {cat.label}{cat.items.length > 0 ? ` ·已选 ${sel}/${cat.items.length}` : ""}
+                  {cat.label}{cat.items.length > 0 ? `（已选 ${sel}/${cat.items.length}）` : ""}
                 </div>
                 {cat.items.length > 0 ? (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -2380,6 +3128,13 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
               </div>
             );
           })}
+          {projectId && chapterId && (
+            <LoaderInjectionPreview
+              projectId={projectId}
+              chapterId={chapterId}
+              chapterNum={chapterNum || 1}
+            />
+          )}
         </div>
       )}
     </div>
@@ -2453,11 +3208,11 @@ function CostEstimateBlock({ mode, projectId, chapterId }: {
   );
 }
 
-function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, chapterNum, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
   mode: "single" | "cluster";
   steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
-  paused?: boolean; onPauseResume?: () => void; projectId?: string; chapterId?: string;
+  paused?: boolean; onPauseResume?: () => void; projectId?: string; chapterId?: string; chapterNum?: number;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
   onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
   manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
@@ -2695,7 +3450,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                         onMouseEnter={e => e.currentTarget.style.color = "var(--error)"}
                         onMouseLeave={e => e.currentTarget.style.color = "var(--text-tertiary)"}
                         title="删除此消息">
-                        × 删除
+                        ×
                       </button>
                     )}
                   </div>
@@ -2782,14 +3537,19 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
       {/* Generation controls */}
       {!generating && !waitingForConfirm && (
         <div style={{ marginBottom: 6 }}>
-          <ContextPanel
-            manifest={manifest || null}
-            skillSelection={skillSelection || {}}
-            ragExcludes={ragExcludes || new Set()}
-            onToggleSkill={(n) => onToggleSkill?.(n)}
-            onToggleRagItem={(k) => onToggleRagItem?.(k)}
-            onRefresh={onRefreshManifest}
-          />
+          {/* 单智能体 (single) 模式不再展示 调用的 skill / RAG 预览 /
+              Prompt 注入预览 — 这些已迁到 RAG tab，避免双份冗余。 */}
+          {mode === "cluster" && (
+            <ContextPanel
+              manifest={manifest || null}
+              skillSelection={skillSelection || {}}
+              ragExcludes={ragExcludes || new Set()}
+              onToggleSkill={(n) => onToggleSkill?.(n)}
+              onToggleRagItem={(k) => onToggleRagItem?.(k)}
+              onRefresh={onRefreshManifest}
+              projectId={projectId} chapterId={chapterId} chapterNum={chapterNum}
+            />
+          )}
           <CostEstimateBlock mode={mode} projectId={projectId} chapterId={chapterId} />
           {mode === "single" ? (
             <>
@@ -3080,8 +3840,8 @@ function ScoreDots({ score, max }: { score: number; max: number }) {
 
 /** 评估 tab — evaluate the current chapter text on demand (no need to
  *  generate first), or show the result from a pipeline run. */
-function EvalTab({ result, chapterContent, projectId, chapterId, manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefreshManifest }: {
-  result: EvalResult | null; chapterContent: string; projectId: string; chapterId: string;
+function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefreshManifest }: {
+  result: EvalResult | null; chapterContent: string; projectId: string; chapterId: string; chapterNum?: number;
   manifest: ContextManifest | null; skillSelection: Record<string, boolean>; ragExcludes: Set<string>;
   onToggleSkill: (name: string) => void; onToggleRagItem: (key: string) => void;
   onRefreshManifest?: () => void;
@@ -3125,6 +3885,7 @@ function EvalTab({ result, chapterContent, projectId, chapterId, manifest, skill
         manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
         onToggleSkill={onToggleSkill} onToggleRagItem={onToggleRagItem}
         onRefresh={onRefreshManifest}
+        projectId={projectId} chapterId={chapterId} chapterNum={chapterNum}
       />
       <div style={{ marginBottom: 12 }}>
         <button className="btn-primary" style={{ width: "100%" }} onClick={runEval} disabled={evaluating}>

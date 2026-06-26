@@ -128,7 +128,13 @@ class WorkIndexer:
 
     async def index_l1(self, ref_id: str) -> dict:
         """L1: chronicle events + characters + settings (cheap, always run).
-        Reads the work's currently-stored analysis JSON and (re-)embeds it."""
+        Reads the work's currently-stored analysis JSON and (re-)embeds it.
+
+        Handles both narrative works (plot_outline_json + extracted_characters_json)
+        and 纯设定 works (static_characters_json + setting_features_json) so
+        setting collections (SCP, 后室, 战锤40K, …) get a usable L1 index instead
+        of silently embedding zero items.
+        """
         from knowledge.reference_db import ReferenceDB
         rdb = ReferenceDB(self.db_path)
         work = rdb.get_work(ref_id)
@@ -138,11 +144,16 @@ class WorkIndexer:
         plot = self._safe_json(work.get("plot_outline_json"))
         chars = self._safe_json(work.get("extracted_characters_json"))
         settings_items = self._safe_json(work.get("settings_json"))
+        # Pure-setting (setting_collection) fields. For narrative works these
+        # are typically empty; for 纯设定 works they're the primary source.
+        static_chars = self._safe_json(work.get("static_characters_json"))
+        setting_features = self._safe_json(work.get("setting_features_json"))
         title = work.get("title") or ref_id
 
         items: list[tuple[str, str, dict]] = []  # (doc_id, text, metadata)
 
-        # Chronicle events
+        # Chronicle events (narrative works only — plot_outline_json is the
+        # AI-extracted timeline; empty for 纯设定 works).
         for ei, ep in enumerate(((plot or {}).get("epochs") or [])):
             for pi, per in enumerate(ep.get("periods") or []):
                 for evi, ev in enumerate(per.get("events") or []):
@@ -163,26 +174,45 @@ class WorkIndexer:
                         "name": name,
                     }))
 
-        # Characters
+        # Characters — merge narrative (extracted_characters_json) + 纯设定
+        # (static_characters_json), de-duplicated by name so a work that has
+        # both shapes (post-migration) doesn't get double-embedded.
+        seen_char_slugs: set[str] = set()
+
+        def _emit_char(c: dict, kind: str) -> None:
+            if not isinstance(c, dict):
+                return
+            name = (c.get("name") or "").strip()
+            if not name:
+                return
+            slug = _slug(name)
+            if slug in seen_char_slugs:
+                return
+            seen_char_slugs.add(slug)
+            # Narrative characters use `intro`; pure-setting characters use
+            # `role` + `description`. Normalize to a single descriptive text.
+            intro = (c.get("intro") or "").strip()
+            role = (c.get("role") or "").strip()
+            desc = (c.get("description") or "").strip()
+            body = intro or "；".join(p for p in (role, desc) if p)
+            text = f"{name}：{body}" if body else name
+            items.append((doc_id := f"{ref_id}:L1:ch:{slug}", text, {
+                "ref_id": ref_id, "title": title,
+                "level": "L1", "source_type": "character",
+                "name": name,
+                "first_seen_at": (c.get("first_seen_at") or ""),
+                "mentions": int(c.get("mentions") or 0),
+                "char_kind": kind,
+            }))
+
         if isinstance(chars, list):
             for c in chars:
-                if not isinstance(c, dict):
-                    continue
-                name = (c.get("name") or "").strip()
-                intro = (c.get("intro") or "").strip()
-                if not name:
-                    continue
-                text = f"{name}：{intro}" if intro else name
-                doc_id = f"{ref_id}:L1:ch:{_slug(name)}"
-                items.append((doc_id, text, {
-                    "ref_id": ref_id, "title": title,
-                    "level": "L1", "source_type": "character",
-                    "name": name,
-                    "first_seen_at": (c.get("first_seen_at") or ""),
-                    "mentions": int(c.get("mentions") or 0),
-                }))
+                _emit_char(c, "narrative")
+        if isinstance(static_chars, list):
+            for c in static_chars:
+                _emit_char(c, "static")
 
-        # Settings
+        # Settings — shared by both kinds; field schema is identical.
         if isinstance(settings_items, list):
             for s in settings_items:
                 if not isinstance(s, dict):
@@ -201,6 +231,27 @@ class WorkIndexer:
                     "first_introduced_at": (s.get("first_introduced_at") or ""),
                 }))
 
+        # Setting features (纯设定 only) — 高概念 / 核心冲突 distilled
+        # from the raw entries. Embed as L1 「setting_feature」 so semantic
+        # search can hit them alongside characters and 设定.
+        if isinstance(setting_features, list):
+            for f in setting_features:
+                if not isinstance(f, dict):
+                    continue
+                t = (f.get("title") or "").strip()
+                d = (f.get("description") or "").strip()
+                if not t and not d:
+                    continue
+                cat = (f.get("category") or "高概念").strip()
+                text = f"【{cat}】{t}：{d}" if d else f"【{cat}】{t}"
+                doc_id = f"{ref_id}:L1:sf:{_slug(t or cat)}"
+                items.append((doc_id, text, {
+                    "ref_id": ref_id, "title": title,
+                    "level": "L1", "source_type": "setting_feature",
+                    "category": cat,
+                    "name": t,
+                }))
+
         if not items:
             self._set_progress(ref_id, "L1", done=0, total=0, status="done")
             return {"level": "L1", "embedded": 0}
@@ -217,6 +268,12 @@ class WorkIndexer:
         work = rdb.get_work(ref_id)
         if not work:
             raise ValueError(f"work not found: {ref_id}")
+        # 纯设定 works have no chapters by definition — surface that as a
+        # distinct `not_applicable` status (instead of `done` with 0 items)
+        # so the UI can hide the L2 chip rather than show "已完成 (0)".
+        if (work.get("structure_type") or "narrative") == "setting_collection":
+            self._set_progress(ref_id, "L2", done=0, total=0, status="not_applicable")
+            return {"level": "L2", "embedded": 0, "skipped": "pure_setting"}
         if not work.get("has_full_text") or not work.get("file_path"):
             self._set_progress(ref_id, "L2", done=0, total=0, status="done")
             return {"level": "L2", "embedded": 0, "skipped": "no full text"}
@@ -274,6 +331,10 @@ class WorkIndexer:
         work = rdb.get_work(ref_id)
         if not work:
             raise ValueError(f"work not found: {ref_id}")
+        # 纯设定 works don't have full text — no L3 possible.
+        if (work.get("structure_type") or "narrative") == "setting_collection":
+            self._set_progress(ref_id, "L3", done=0, total=0, status="not_applicable")
+            return {"level": "L3", "embedded": 0, "skipped": "pure_setting"}
         if not work.get("has_full_text") or not work.get("file_path"):
             self._set_progress(ref_id, "L3", done=0, total=0, status="done")
             return {"level": "L3", "embedded": 0, "skipped": "no full text"}
@@ -351,24 +412,36 @@ class WorkIndexer:
         return {"level": "L3", "embedded": embedded, "seen": seen, "elapsed_s": elapsed}
 
     async def index_all(self, ref_id: str, *, include_l3: bool = False) -> dict:
-        """Index L1 + L2 (and L3 if explicitly requested)."""
+        """Index L1 + L2 (and L3 if explicitly requested). 纯设定 works skip
+        L2/L3 entirely — those levels need chapter text by definition."""
+        from knowledge.reference_db import ReferenceDB
+        work = ReferenceDB(self.db_path).get_work(ref_id)
+        is_pure_setting = bool(
+            work and (work.get("structure_type") or "narrative") == "setting_collection"
+        )
         out = {"L1": None, "L2": None, "L3": None}
         try:
             out["L1"] = await self.index_l1(ref_id)
         except Exception as e:
             self._set_progress(ref_id, "L1", status="error", error=str(e)[:300])
             logger.exception("index_l1 failed for %s", ref_id)
-        try:
-            out["L2"] = await self.index_l2(ref_id)
-        except Exception as e:
-            self._set_progress(ref_id, "L2", status="error", error=str(e)[:300])
-            logger.exception("index_l2 failed for %s", ref_id)
-        if include_l3:
+        if not is_pure_setting:
             try:
-                out["L3"] = await self.index_l3(ref_id)
+                out["L2"] = await self.index_l2(ref_id)
             except Exception as e:
-                self._set_progress(ref_id, "L3", status="error", error=str(e)[:300])
-                logger.exception("index_l3 failed for %s", ref_id)
+                self._set_progress(ref_id, "L2", status="error", error=str(e)[:300])
+                logger.exception("index_l2 failed for %s", ref_id)
+            if include_l3:
+                try:
+                    out["L3"] = await self.index_l3(ref_id)
+                except Exception as e:
+                    self._set_progress(ref_id, "L3", status="error", error=str(e)[:300])
+                    logger.exception("index_l3 failed for %s", ref_id)
+        else:
+            # Record the skip so the UI/progress table shows the explicit state.
+            out["L2"] = await self.index_l2(ref_id)
+            if include_l3:
+                out["L3"] = await self.index_l3(ref_id)
         return out
 
     def clear_work(self, ref_id: str, levels: list[str] | None = None) -> None:

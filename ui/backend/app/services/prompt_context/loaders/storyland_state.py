@@ -191,7 +191,7 @@ def plan(
         project_id, chapter_num,
         on_stage_entities or {}, exclude,
     )
-    title = f"Storyland 客观状态（截至第 {chapter_num - 1} 章）"
+    title = f"故事舞台 客观状态（截至第 {chapter_num - 1} 章）"
     return make_plan(_BLOCK, title, body)
 
 

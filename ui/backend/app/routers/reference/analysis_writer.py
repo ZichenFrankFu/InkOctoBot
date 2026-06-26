@@ -52,22 +52,13 @@ _OUTLINE_LEVELS = {
 
 
 def _build_granularity_prompt(plot: dict, level: str) -> str:
+    """Render via the prompt registry so 设置 → 提示词 can override it."""
+    from reference_pipeline.prompts import render as _render_prompt
     level_cn, level_hint = _OUTLINE_LEVELS[level]
-    return (
-        "[自动化数据抽取 · 不是对话] 你的输出会被 json.loads 直接解析；"
-        "任何非 JSON 字符都会导致失败。\n\n"
-        "下面是一部作品的「章节级」细颗粒度剧情大纲（编年史）。\n"
-        f"请把它**概括**为更宏观的「{level_cn}」颗粒度大纲：{level_hint}\n\n"
-        "严格禁止：寒暄 / 解释 / markdown 包装 / <think> 块 / JSON 之外的文字。\n"
-        "只输出以 { 开始、} 结束的合法 JSON，结构与输入保持一致：\n"
-        '{ "logline": "≤ 50 字一句话概括", "epochs": [ { "title": "大段标题", '
-        '"periods": [ { "title": "时间段标题", "time_marker": "可选时间锚点", '
-        '"events": [ { "subject": "主语", "category": '
-        '"plot_main|plot_side|character|setting|conflict|revelation|foreshadow|other", '
-        '"name": "事件名 ≤ 12 字", "description": "1-2 句客观描述", '
-        '"time_marker": "可选" } ] } ] } ] }\n\n'
-        "原始章节级大纲：\n"
-        + json.dumps(plot, ensure_ascii=False, indent=1)
+    return _render_prompt(
+        "reference.outline_granularity",
+        level_cn=level_cn, level_hint=level_hint,
+        plot_json=json.dumps(plot, ensure_ascii=False, indent=1),
     )
 
 

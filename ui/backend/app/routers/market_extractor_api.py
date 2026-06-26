@@ -102,12 +102,16 @@ def delete_job_endpoint(job_id: str) -> dict:
 
 @router.get("/platforms")
 def list_platforms() -> dict:
-    """Distinct ``platform`` values from the crawler DB. Uses the
-    same path resolver as the rest of the market endpoints so the
-    user-configured market-DB path takes effect."""
+    """Distinct ``platform`` values from the crawler DB. ``key`` is the
+    raw crawler-side slug (qidian / fanqie / …) — kept verbatim because
+    downstream cache keys / job filters use it. ``label`` is translated
+    to the canonical Chinese display name through
+    ``platform_aliases.canonicalize_platform`` so the UI dropdown shows
+    起点 / 番茄 instead of qidian / fanqie."""
     import sqlite3 as _sqlite3
     from pathlib import Path as _Path
     from ui.backend.app.utils import resolve_crawler_db_path
+    from ui.backend.app.services.platform_aliases import canonicalize_platform
     crawler_db_path = resolve_crawler_db_path()
     if not crawler_db_path or not _Path(crawler_db_path).exists():
         return {"platforms": [], "warning": "crawler DB not configured"}
@@ -120,7 +124,11 @@ def list_platforms() -> dict:
                 "ORDER BY book_count DESC"
             ).fetchall()
         return {"platforms": [
-            {"key": r["platform"], "label": r["platform"], "book_count": r["book_count"]}
+            {
+                "key":        r["platform"],
+                "label":      canonicalize_platform(r["platform"]) or r["platform"],
+                "book_count": r["book_count"],
+            }
             for r in rows if r["platform"]
         ]}
     except _sqlite3.OperationalError as e:
@@ -327,8 +335,14 @@ def representative_candidates(
     return {"platform": platform, "category": category, "candidates": out}
 
 
-# spec 2.1.3.2 高级特征提取 — 生造词Step2 + 行文风格七组 (A1-G2) 的输出
-# 契约。机制4: 生造词Step2 与行文风格组装进同一个 prompt 一次产出。
+# spec 2.1.3.2 高级特征提取 — 专有名词（原"生造词Step2"）+ 行文风格七组
+# (A1-G2) 的输出契约。机制4: 专有名词 与行文风格组装进同一个 prompt 一次产出。
+#
+# 重要约束（写在 prompt 里强调）：
+#  · 行文风格必须输出"该平台×榜单的通用风格画像"，不能列具体作品里的人物
+#    清单或人物关系网 —— 否则下游正文生成会被锁死到那几本参考书上。
+#  · B_social 因此只保留聚焦度 / 反派类型这类抽象描述，B1_network（前5章
+#    登场角色清单+关系）被删除。
 _ADVANCED_SCHEMA_SPEC = (
     "## 输出要求\n\n"
     "请严格输出**纯 JSON**（不要 markdown 围栏、不要前后多余文字），"
@@ -339,55 +353,56 @@ _ADVANCED_SCHEMA_SPEC = (
     '    "proper_nouns": ["复核确认的专有名词/虚构概念，如 灰雾、源石…"],\n'
     '    "person_names": ["人名"],\n'
     '    "place_names": ["地名"],\n'
-    '    "naming_patterns": "该榜单生造词的常见构词模式（如 单字+宗/门、'
+    '    "naming_patterns": "该榜单专有名词的常见构词模式（如 单字+宗/门、'
     '叠音、古风双字、音译外来词…）",\n'
     '    "common_chars": ["高频用字，如 玄、天、灵、域…"]\n'
     "  },\n"
     '  "style_dimensions": {\n'
     '    "A_protagonist": {\n'
-    '      "A1_appearance": "登场位置：第几章/段/句、登场场景类型(动作/对话/'
-    '描写/心理/旁白)、是否第一句出场、第一章戏份占比",\n'
-    '      "A2_image": "实力定位(强势/弱势/隐藏强势/隐藏弱势/待发掘)、性格关键词'
-    '(3-5个)、外貌描述详细度、年龄段、是否有反差点",\n'
-    '      "A3_cheat": "金手指类型(系统/血脉/重生记忆/神秘传承/特殊体质/灵宝/'
-    '学霸记忆/模拟器/其它)、来源、出现章节、揭露程度、描述",\n'
-    '      "A4_agency": "Proactive/Reactive/Mixed、首个主动决策章节、决策代价",\n'
-    '      "A5_drive": "冲突类型(生存/复仇/保护/探索/称霸/还债/追寻/揭秘)、紧迫度、'
-    '冲突对象、冲突方式(武力/智斗/政治/情感/混合)、自由描述"\n'
+    '      "A1_appearance": "主角登场的通用模式：常见登场位置（第几章/段/句）、'
+    '常见场景类型(动作/对话/描写/心理/旁白)、是否惯用第一句出场、首章戏份占比区间",\n'
+    '      "A2_image": "实力定位的通用倾向(强势/弱势/隐藏强势/隐藏弱势/待发掘)、'
+    '常见性格关键词(3-5个抽象标签)、外貌描述详细度、常见年龄段、是否有反差点",\n'
+    '      "A3_cheat": "金手指类型分布(系统/血脉/重生记忆/神秘传承/特殊体质/灵宝/'
+    '学霸记忆/模拟器/其它)、常见来源、出现章节区间、揭露程度、抽象描述",\n'
+    '      "A4_agency": "Proactive/Reactive/Mixed 倾向、首个主动决策的常见章节、'
+    '常见决策代价",\n'
+    '      "A5_drive": "冲突类型分布(生存/复仇/保护/探索/称霸/还债/追寻/揭秘)、'
+    '紧迫度、常见冲突对象类型、冲突方式(武力/智斗/政治/情感/混合)、抽象描述"\n'
     "    },\n"
     '    "B_social": {\n'
-    '      "B1_network": "前5章登场角色清单、各自与主角关系、关键关系(3-5个)、关系预埋",\n'
-    '      "B2_ensemble": "主角聚焦度(单主角/双主角/群像)、前5章登场角色总数、'
-    '反派首次登场章节、反派类型(明面/潜在/体制/未现身)"\n'
+    '      "B2_ensemble": "主角聚焦度倾向(单主角/双主角/群像)、前5章登场角色总数区间、'
+    '反派首次登场章节区间、反派类型(明面/潜在/体制/未现身)"\n'
     "    },\n"
     '    "C_world": {\n'
-    '      "C1_type": "能力体系、时空起点(现代/古代/异界/穿越/重生/未来)、跨界混合、体系新颖度",\n'
+    '      "C1_type": "能力体系倾向、时空起点(现代/古代/异界/穿越/重生/未来)、'
+    '跨界混合、体系新颖度",\n'
     '      "C2_unfold": "设定字数占比、铺展方式(信息倾倒/渐进揭露/随剧情自然/完全不解释)、'
     '第一章设定密度、是否前5章揭露核心设定",\n'
-    '      "C3_contrast": "题材内突破点、反常识设定、具体selling point"\n'
+    '      "C3_contrast": "题材内常见突破点、反常识设定方向、抽象 selling point"\n'
     "    },\n"
     '    "D_hook": {\n'
-    '      "D1_opening_hook": "开篇钩子类型(开篇即死/开篇成神/谜团式/极端处境/'
-    '重生穿越/系统降临/末日/觉醒突破/误会/失忆…)、钩子描述(1-3句)、触发位置",\n'
-    '      "D2_early_payoff": "前5章是否有打脸、首次打脸章节、爽点类型(解气/装逼/'
-    '揭秘/暧昧/复仇/救赎)、爽点密度(前5章共几次)",\n'
-    '      "D3_chapter_end_hooks": "对前5章每章末尾：钩子类型(悬念/高潮/反转/揭示/'
-    '平静收尾)、强度(强/中/弱)、何时收回(第1-5章/前5章未收回)"\n'
+    '      "D1_opening_hook": "开篇钩子类型分布(开篇即死/开篇成神/谜团式/极端处境/'
+    '重生穿越/系统降临/末日/觉醒突破/误会/失忆…)、抽象钩子描述、常见触发位置",\n'
+    '      "D2_early_payoff": "前5章是否惯用打脸、首次打脸常见章节、爽点类型分布'
+    '(解气/装逼/揭秘/暧昧/复仇/救赎)、爽点密度(前5章平均几次)",\n'
+    '      "D3_chapter_end_hooks": "前5章章末钩子类型分布(悬念/高潮/反转/揭示/'
+    '平静收尾)、强度分布(强/中/弱)、回收周期(本章/2-5章/跨卷)"\n'
     "    },\n"
     '    "E_style": {\n'
     '      "E1_writing_style": "写作风格关键词(浮夸/酷/吐槽/冷酷/热血/文艺/黑色幽默/'
-    '中二/老练/严肃/戏谑/装逼/反讽/古典/现代…) + 代表性句子片段(2-3句)",\n'
-    '      "E2_emotion": "主导情绪、情绪起伏度(持续高强度/张弛有度/持续低强度)、'
+    '中二/老练/严肃/戏谑/装逼/反讽/古典/现代…)；只给关键词，不抄具体作品句子。",\n'
+    '      "E2_emotion": "主导情绪倾向、情绪起伏度(持续高强度/张弛有度/持续低强度)、'
     '黑暗度(阳光/中性/灰暗/黑暗)"\n'
     "    },\n"
     '    "F_info": {\n'
-    '      "F1_disclosure": "信息揭露策略(全知预告/渐进揭露/反转伏笔/谜团驱动)、'
-    '前5章主要伏笔(3-5个)、已揭露vs已埋设比例、章末是否常用悬念",\n'
-    '      "F2_volume_concept": "第一卷主要目标/要解决的问题、是否第一章就锁定第一卷概念"\n'
+    '      "F1_disclosure": "信息揭露策略倾向(全知预告/渐进揭露/反转伏笔/谜团驱动)、'
+    '前5章伏笔密度、已揭露vs已埋设比例、章末是否常用悬念",\n'
+    '      "F2_volume_concept": "第一卷常见目标/要解决的问题类型、是否第一章就锁定第一卷概念"\n'
     "    },\n"
     '    "G_pacing": {\n'
-    '      "G1_rhythm": "节奏类型(紧凑/适中/缓慢)、章节平均字数、章节字数波动度",\n'
-    '      "G2_early_strategy": "前5章事件数量、前5章主线事件数量、前5章是否有'
+    '      "G1_rhythm": "节奏类型(紧凑/适中/缓慢)、章节字数区间、章节字数波动度",\n'
+    '      "G2_early_strategy": "前5章事件数量区间、前5章主线事件数量、前5章是否有'
     '明显节奏起伏(如先慢后快)"\n'
     "    }\n"
     "  },\n"
@@ -398,26 +413,34 @@ _ADVANCED_SCHEMA_SPEC = (
     '    "sentence_rhythm": "短句为主/长短交错/偏长句…",\n'
     '    "dialogue_ratio": 0.3, "vocabulary_features": ["高频词1","高频词2","高频词3"]\n'
     "  },\n"
-    '  "signature_devices_description": "（200-400字）反复使用的招牌叙事手法，举具体手法名。",\n'
+    '  "signature_devices_description": "（200-400字）反复使用的招牌叙事手法，举具体手法名，'
+    '不抄具体作品的人物 / 情节细节。",\n'
     '  "pacing_guidance": {\n'
     '    "first_chapter_words": "如 2000-3000", "chapter_words": "如 2500-3500",\n'
     '    "first_hook_chapter": "首爆点章", "antagonist_intro_chapter": "反派出场章",\n'
     '    "first_face_slap_chapter": "首次反击章", "info_release_strategy": "信息释放策略"\n'
     "  },\n"
-    '  "recommended_openings": ["开篇套路1","开篇套路2","开篇套路3","开篇套路4"],\n'
-    '  "loader_payload": "最关键字段：600-1200字、会被逐字注入正文生成prompt的中文段落正文：'
-    '第二人称对生成者说话，覆盖题材定位/视角人称/语言风格/句式节奏/对白比/字数/钩子爽点节奏/'
-    '反派与首次反击时机/信息释放策略/招牌手法清单/可借鉴开篇套路；不出现书名作者名、不给起名建议；'
-    '结尾以[写作时严格遵循以上风格基线]收束。"\n'
+    '  "recommended_openings": ["开篇套路1","开篇套路2","开篇套路3","开篇套路4"]\n'
     "}\n"
     "```\n\n"
     "## 要求\n"
-    "1. 所有结论须以上方真实统计与原文节选为依据，避免凭空泛谈。\n"
-    "2. style_dimensions 的七组(A-G)与 neologism_step2 必须填写，是 JSON 对象。\n"
-    "3. loader_payload 长度 ≥ 600 字，是连续中文段落而非 JSON/列表。\n"
-    "4. 如果你具备联网搜索能力，请在网络中检索这些作品与该平台题材的公开信息，"
+    "1. **所有字段的取值、描述、关键词、列表项必须使用简体中文输出**；"
+    "JSON 字段名（key）保留英文不变，但 value 全部用中文。"
+    "不允许英文 / 拼音 / 中英混排作为字段值，遇到外来概念也要给出中文表述。\n"
+    "   **例外**：数字（包括百分比 `30%`、章节号 `第 5 章`、字数区间 `2500-3500` 等数值）"
+    "请保留阿拉伯数字 + 必要的符号，不要写成「百分之三十」「第五章」「两千五到三千五」这种全中文形式；"
+    "数字旁边的单位 / 量词照常用中文（章 / 字 / 部 …）。\n"
+    "2. 所有结论须以上方真实统计与原文节选为依据，避免凭空泛谈。\n"
+    "3. style_dimensions 的七组(A-G)与 neologism_step2 必须填写，是 JSON 对象；"
+    "B_social 仅保留 B2_ensemble，禁止再输出 B1_network。\n"
+    "4. **行文风格七组（style_dimensions）所有字段必须输出 \"该平台×榜单的通用画像\"**："
+    "用倾向 / 区间 / 分布 / 抽象关键词描述，禁止粘贴具体作品里的人名 / 关系网 / 情节细节。"
+    "下游 writer prompt 会复用这些字段，过细的人物信息会把生成锁死在参考书上。\n"
+    "5. 专有名词（neologism_step2）只能列出该榜单代表作里复核确认存在的词；"
+    "如果某一类（人名/地名/常见字）为空，留 [] 即可。\n"
+    "6. 如果你具备联网搜索能力，请在网络中检索这些作品与该平台题材的公开信息，"
     "作为上方所给信息的补充，并确保所输出的信息真实可靠、不编造。\n"
-    "5. 整体只输出 JSON，前后不带任何说明文字。\n"
+    "7. 整体只输出 JSON，前后不带任何说明文字。\n"
 )
 
 
@@ -426,8 +449,8 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
     """Assemble the LLM prompt for manual-mode usage. The user copies
     the returned prompt into a browser LLM, pastes the response back
     via /manual-submit. The prompt requests the full spec-2.1.3.2
-    高级特征提取 schema: 生造词Step2 + 行文风格七组 (A1-G2), plus the
-    platform-profile injection payload the loader reads."""
+    高级特征提取 schema: 专有名词（旧名 生造词Step2）+ 行文风格七组
+    (A1-G2)，plus the platform-profile injection payload the loader reads."""
     platform = (body.get("platform") or "").strip()
     category = (body.get("category") or "").strip()   # 留空＝整平台
     work_ids = body.get("work_ids") or None
@@ -525,20 +548,15 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
     except Exception:
         pass
 
-    prompt = (
-        f"# 任务：为[{scope_cn}]做高级特征提取（生造词Step2 + 行文风格七组）\n\n"
-        f"你是一名资深的网络文学市场分析师。下面给出{plat_cn}平台多维度精选的代表作"
-        "清单（覆盖总排行最高、上榜最稳定、热度最高、新书等不同类型，以代表整个平台"
-        "风格）、开篇章节的真实 NLP 统计、以及各作品前 2 章[开头+结尾]的原文节选。"
-        "请综合分析后，按下列全部维度输出结构化 JSON。\n\n"
-        f"## 代表作清单（已选 {len(works)} 部，全部纳入分析）\n\n"
-        f"{work_block}\n\n"
-        f"{keyword_block}"
-        "## 开篇章节真实统计（脚本计算，含生造词Step1候选）\n\n"
-        f"{nlp_block}\n\n"
-        "## 章节原文节选（各作品前2章 开头+结尾，用于风格与生造词判断）\n\n"
-        f"{excerpt_block}\n\n"
-        + _ADVANCED_SCHEMA_SPEC
+    # 通过提示词注册表渲染整段, 用户可在 设置 → 提示词 改写并保存.
+    from reference_pipeline.prompts import render as _render_prompt
+    prompt = _render_prompt(
+        "market_extractor.advanced_extraction",
+        scope_cn=scope_cn, plat_cn=plat_cn, work_count=len(works),
+        work_block=work_block,
+        keyword_block=keyword_block,
+        nlp_block=nlp_block, excerpt_block=excerpt_block,
+        schema_spec=_ADVANCED_SCHEMA_SPEC,
     )
     return {"prompt": prompt, "platform": platform, "category": category,
             "work_count": len(works),
@@ -592,10 +610,12 @@ def submit_manual_extraction(body: dict = Body(...)) -> dict:
     if not parsed:
         raise HTTPException(
             422, "无法解析为 JSON — 请确认粘贴了大模型返回的完整 JSON 结果")
-    # loader_payload is injected verbatim into generation prompts — it must
-    # be the prose paragraph, not the whole JSON blob. Fall back to the raw
-    # text only when the model omitted the field.
-    loader_payload = _as_text(parsed.get("loader_payload") or "").strip() or raw
+    # loader_payload 已从 schema 中移除（用户 2026-06 调整）—— 写入空字符串
+    # 保持列存在, 老接口和 UI 仍能正常读 row dict. 真正的写作风格基线现在
+    # 由 6 段结构化字段 (profile_summary / style_baseline / pacing_guidance /
+    # signature_devices_description / style_dimensions / neologism_step2)
+    # 各自承担, 不再需要单独的整段画像.
+    loader_payload = ""
     profile_id = f"pp_manual_{_uuid.uuid4().hex[:10]}"
     from storage.market_extractor_schema import ensure_market_extractor_tables
     with _sqlite3.connect(get_db_path()) as con:

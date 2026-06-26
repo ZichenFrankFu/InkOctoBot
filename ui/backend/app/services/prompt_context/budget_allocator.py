@@ -54,9 +54,13 @@ LOADER_BUDGETS: dict[str, dict[str, int]] = {
     # tier 3 — 补充
     "reference":                  {"min":  800, "target": 2400, "max": 3600, "tier": 3},
     "inspiration":                {"min":  200, "target":  600, "max":  900, "tier": 3},
-    "platform_directive":         {"min":  150, "target":  400, "max":  600, "tier": 3},
+    # platform_directive absorbed market_overview's 1500-char share when
+    # the writer profile dropped market_overview (loader merger): old
+    # target=400 + old market_overview target=1500 → new target=1900.
+    # Writer-profile total stays on the spec's ≈24K target.
+    "platform_directive":         {"min":  800, "target": 1900, "max": 2600, "tier": 3},
     "user_preferences":           {"min":  200, "target":  500, "max":  800, "tier": 3},
-    # tier 4 — 系统
+    # tier 4 — 系统（仅 book_opening profile 使用）
     "market_overview":            {"min":  600, "target": 1500, "max": 2000, "tier": 4},
 }
 

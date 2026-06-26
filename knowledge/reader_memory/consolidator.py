@@ -36,24 +36,12 @@ from llm.base import LLMMessage
 
 logger = logging.getLogger("inkoctobot.knowledge.reader_memory.consolidator")
 
-_CONSOLIDATION_PROMPT = """\
-你是一个小说记忆压缩引擎。给定一个章节摘要，提取以下三类永久信息：
-
-1. permanent_facts: 不可逆的事实（如"张远在第5章觉醒了灵根"）
-2. active_foreshadowing: 尚未回收的伏笔（如"李清漪在第7章提到的'那个人'身份未揭示"）
-3. character_state_changes: 角色状态变化（如"张远对宗门的信任从中立变为怀疑"）
-
-请以JSON格式输出：
-```json
-{
-  "permanent_facts": ["...", "..."],
-  "active_foreshadowing": ["...", "..."],
-  "character_state_changes": [
-    {"character": "角色名", "change": "变化描述", "from_state": "原状态", "to_state": "新状态"}
-  ]
-}
-```
-"""
+def _consolidation_prompt() -> str:
+    """Read the consolidation prompt through the registry so user can
+    override it from 设置 → 提示词. Lazy-imported to avoid a circular
+    dep at module load."""
+    from reference_pipeline.prompts import render as _render_prompt
+    return _render_prompt("pipeline.reader_memory_consolidation")
 
 
 class ReaderMemoryConsolidator:
@@ -98,7 +86,7 @@ class ReaderMemoryConsolidator:
         summary_text = summary["summary_text"]
 
         messages = [
-            LLMMessage(role="system", content=_CONSOLIDATION_PROMPT),
+            LLMMessage(role="system", content=_consolidation_prompt()),
             LLMMessage(role="user", content=f"第{chapter_num}章摘要:\n{summary_text}"),
         ]
         resp = await self.router.generate(

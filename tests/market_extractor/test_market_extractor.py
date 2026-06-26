@@ -512,10 +512,12 @@ class TestPlatformMarketLoader(unittest.TestCase):
                 "INSERT INTO projects (project_id, title, platform, category) "
                 "VALUES ('p1', 't', 'qidian', 'xianxia')"
             )
+            # New loader contract: render structured subsections, not
+            # loader_payload. Seed profile_summary so the loader picks it up.
             con.execute(
                 "INSERT INTO platform_profiles "
                 "(profile_id, platform, category, profile_version, "
-                " loader_payload, confidence_label) "
+                " profile_summary, confidence_label) "
                 "VALUES ('pp_x', 'qidian', 'xianxia', 1, "
                 " '起点玄幻：穿越流为主，短句节奏。', 'high')"
             )
@@ -528,6 +530,7 @@ class TestPlatformMarketLoader(unittest.TestCase):
         self.assertIsNotNone(p)
         rendered = p.render(p.target)
         self.assertIn("起点玄幻", rendered)
+        self.assertIn("平台综述", rendered)
 
 
 # ─────────── job runner ───────────

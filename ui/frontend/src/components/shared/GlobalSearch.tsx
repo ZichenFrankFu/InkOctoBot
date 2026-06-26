@@ -35,10 +35,10 @@ const NAV_ITEMS: { key: string; icon: string; label: string }[] = [
   { key: "references", icon: "\u229E", label: "参考作品库" },
   { key: "analysis", icon: "\u2197", label: "分析面板" },
   { key: "projects", icon: "\u25A1", label: "开书" },
-  { key: "characters", icon: "\u2662", label: "角色管理" },
+  { key: "characters", icon: "\u2662", label: "角色卡"},
   { key: "worldbook", icon: "\u2295", label: "世界书" },
   { key: "editor", icon: "\u270E", label: "编辑器" },
-  { key: "storyline", icon: "\u2500", label: "剧情线" },
+  { key: "storyline", icon: "\u2500", label: "故事线" },
   { key: "skills", icon: "\u2699", label: "智能体" },
   { key: "settings", icon: "\u2638", label: "设置" },
 ];

@@ -125,10 +125,11 @@ export default function CommonPatternLearningPanel({
                   {expandedId === s.skill_id ? "收起" : "查看"}
                 </button>
                 <button className="btn" style={{ fontSize: 10, padding: "1px 8px", color: "var(--error)" }}
+                  title="删除"
                   onClick={async () => {
                     try { await apiDelete(`/api/references/learned-skills/${s.skill_id}`); reload(); }
                     catch (e: any) { toast(e.message || "删除失败", "error"); }
-                  }}>删除</button>
+                  }}>×</button>
               </div>
               {expandedId === s.skill_id && (
                 <pre style={{ marginTop: 6, fontSize: 11, whiteSpace: "pre-wrap", color: "var(--text-secondary)", background: "var(--bg-secondary)", borderRadius: 6, padding: "8px 10px", maxHeight: 280, overflow: "auto" }}>

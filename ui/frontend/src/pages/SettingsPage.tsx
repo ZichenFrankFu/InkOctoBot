@@ -5,6 +5,7 @@ import { useDialog } from "../components/shared/Dialog";
 import type { AppSettings } from "../api/types";
 import PromptPreview from "../components/reference/PromptPreview";
 import { getLang, setLang, useLang, t } from "../i18n";
+import { useTheme } from "../hooks/useTheme";
 
 // Pipeline roles laid out in workflow order: 参考作品 → 开书 → 角色 & 世界书
 // → 正文创作 → 评估. Every group covers operations that run a built-in AI.
@@ -201,7 +202,7 @@ export default function SettingsPage() {
   const TABS: { key: Tab; label: string; icon: string }[] = [
     { key: "pipeline", label: "Pipeline 配置", icon: "\u2699" },
     { key: "providers", label: "模型供应商", icon: "\u2261" },
-    { key: "prompts", label: "LLM Prompt", icon: "\u270E" },
+    { key: "prompts", label: "\u63D0\u793A\u8BCD", icon: "\u270E" },
     { key: "system", label: "系统设置", icon: "\u2638" },
   ];
 
@@ -667,6 +668,9 @@ function SystemTab({
       {/* Language toggle (中文 / English) — system-level UI preference. */}
       <LanguageToggleSection />
 
+      {/* 日间 / 夜间 主题切换 — 持久化到 localStorage，整站随 data-theme 翻转。 */}
+      <ThemeToggleSection />
+
       {/* Crawler DB Path */}
       <div className="card" style={{ gridColumn: "1 / -1" }}>
         <div className="card-header"><h3>爬虫数据库路径</h3></div>
@@ -981,17 +985,23 @@ function SystemTab({
 
 interface PromptItem {
   key: string;
+  /** Chinese "where is this used" label, e.g. "市场特征提取 - 高级特征提取". */
+  usage_location: string;
   description: string;
+  /** Kept so the preview/edit modal can still inject vars, but NOT
+   *  displayed to the user — vars are an implementation detail. */
   vars: string[];
   has_override: boolean;
 }
 
-// Group prompts into readable sections by their key prefix.
+// Group prompts into readable sections by their key prefix. Labels match
+// what the user actually sees in the rest of the app (编辑器 / 参考作品 / …).
 const PROMPT_GROUPS: { label: string; prefixes: string[] }[] = [
   { label: "参考作品", prefixes: ["reference."] },
-  { label: "AI 助手", prefixes: ["assistant."] },
-  { label: "正文生成 / 重写 / 评估", prefixes: ["generation."] },
-  { label: "创作管线 Agent", prefixes: ["pipeline."] },
+  { label: "AI 助手 (开书 / 角色 / 世界书 / 大纲)", prefixes: ["assistant."] },
+  { label: "编辑器 - 正文生成", prefixes: ["generation."] },
+  { label: "编辑器 - 导演模式 / 状态结算", prefixes: ["pipeline."] },
+  { label: "市场特征提取", prefixes: ["market_extractor."] },
 ];
 
 function promptGroupLabel(key: string): string {
@@ -1029,8 +1039,11 @@ function PromptsTab() {
   return (
     <div>
       <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
-        所有预设 AI prompt 模板（参考作品提取、AI 助手、正文生成、评估、创作管线）。点击「编辑」可查看出厂默认 + 当前内容、修改、并保存为新默认。
-        每次提取/对话时可单独覆盖（不影响保存的默认）。
+        每一次和 LLM 交互的提示词都在这里 —— 参考作品提取、AI 助手 (角色 / 世界书 /
+        大纲 / 开书) 、正文生成 / 重写 / 评估、创作管线 Agent、市场特征提取、读者记忆压缩、
+        故事舞台 状态结算、自学习 Skill 生成器, 全部已纳入此注册表.
+        点「编辑」查看出厂默认 + 当前内容、修改、保存为新默认; 单次调用还可通过
+        ``prompt_override`` 临时覆盖一次而不动默认.
       </div>
 
       {loading ? (
@@ -1056,8 +1069,11 @@ function PromptsTab() {
                   }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
-                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
-                          {it.key}
+                        <span style={{
+                          fontSize: 13, fontWeight: 600,
+                          color: "var(--text-primary)",
+                        }}>
+                          {it.usage_location || it.key}
                         </span>
                         {it.has_override && (
                           <span className="tag" style={{
@@ -1068,11 +1084,6 @@ function PromptsTab() {
                         )}
                       </div>
                       <div className="text-xs text-muted">{it.description || "—"}</div>
-                      {it.vars.length > 0 && (
-                        <div className="text-xs text-muted" style={{ marginTop: 2, fontFamily: "var(--font-mono)" }}>
-                          vars: {it.vars.join(", ")}
-                        </div>
-                      )}
                     </div>
                     <button
                       className={isOpen ? "btn-primary" : "btn"}
@@ -1119,6 +1130,39 @@ function LanguageToggleSection() {
               className={lang === opt.key ? "btn-primary" : "btn"}
               style={{ fontSize: 13, padding: "4px 16px" }}
               onClick={() => setLang(opt.key)}
+            >{opt.label}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* 日间 / 夜间 切换 — 持久化到 localStorage 并通过 <html data-theme>
+ * 触发 global.css 里的 :root[data-theme="light"] 变量覆盖，整个 UI
+ * （背景 / 文字 / 边框 / 下拉 / 滚动条 / 弹层）随即切换。 */
+function ThemeToggleSection() {
+  const { theme, toggle } = useTheme();
+  const isLight = theme === "light";
+  return (
+    <div className="card" style={{ gridColumn: "1 / -1", padding: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 14 }}>外观主题</h3>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+            日间 / 夜间 模式 — 当前：{isLight ? "日间（浅色）" : "夜间（深色）"}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {([
+            { key: "dark" as const,  label: "夜间" },
+            { key: "light" as const, label: "日间" },
+          ]).map(opt => (
+            <button
+              key={opt.key}
+              className={theme === opt.key ? "btn-primary" : "btn"}
+              style={{ fontSize: 13, padding: "4px 16px" }}
+              onClick={() => { if (theme !== opt.key) toggle(); }}
             >{opt.label}</button>
           ))}
         </div>

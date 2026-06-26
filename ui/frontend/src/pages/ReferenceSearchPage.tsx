@@ -48,10 +48,11 @@ const SOURCE_COLOR: Record<string, string> = {
 };
 
 const STATUS_LABEL: Record<string, { label: string; color: string }> = {
-  done:    { label: "已完成", color: "var(--jade)" },
-  running: { label: "进行中", color: "var(--gold)" },
-  pending: { label: "等待中", color: "var(--accent)" },
-  error:   { label: "出错",   color: "var(--error)" },
+  done:            { label: "已完成", color: "var(--jade)" },
+  running:         { label: "进行中", color: "var(--gold)" },
+  pending:         { label: "等待中", color: "var(--accent)" },
+  error:           { label: "出错",   color: "var(--error)" },
+  not_applicable:  { label: "不适用", color: "var(--text-disabled)" },
 };
 
 type RsTab = "search" | "index" | "compare" | "learn";
@@ -94,6 +95,9 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
   const [selectedLevels, setSelectedLevels] = useState<Set<"L1" | "L2" | "L3">>(
     new Set(["L1", "L2"]),
   );
+  // Multi-select works for the batch builder. Empty by default — the user
+  // has to opt into which works get re-indexed (no accidental "rebuild all").
+  const [selectedRefIds, setSelectedRefIds] = useState<Set<string>>(new Set());
 
   // ── Loaders ──
 
@@ -191,34 +195,6 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
 
   // ── Index actions ──
 
-  const buildIndex = async (refId: string, includeL3: boolean) => {
-    setIndexing(prev => ({ ...prev, [refId]: true }));
-    try {
-      // 性能预期·机制1: 执行前给出预计耗时（同硬件历史优先）。
-      try {
-        const est = await apiGet<any>(
-          `/api/references/works/${refId}/index/estimate?include_l3=${includeL3}`);
-        if (est?.display) {
-          toast(`开始建立索引，预计耗时 ${est.display}` +
-            (est.basis === "history" ? `（按 ${est.samples} 次历史运行估算）` : "（默认估算）"), "info");
-        }
-      } catch {}
-      const r = await apiPost<any>(
-        `/api/references/works/${refId}/index/run`,
-        { level: "all", include_l3: includeL3 },
-        { timeoutMs: 900_000 },
-      );
-      const parts: string[] = [];
-      if (r?.L1?.embedded != null) parts.push(`L1=${r.L1.embedded}`);
-      if (r?.L2?.embedded != null) parts.push(`L2=${r.L2.embedded}`);
-      if (r?.L3?.embedded != null) parts.push(`L3=${r.L3.embedded}`);
-      toast(`索引完成：${parts.join(", ") || "OK"}`, "success");
-      await loadProgress([refId]);
-    } catch (e: any) {
-      toast(e?.message || "索引失败", "error");
-    } finally { setIndexing(prev => ({ ...prev, [refId]: false })); }
-  };
-
   /** Build a specific level for one work. The /index/run API accepts
    *  one level at a time (or "all" for L1+L2). For arbitrary level
    *  combinations we just call it level-by-level. */
@@ -252,15 +228,24 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
       toast("请先勾选要建立的索引级别（L1 / L2 / L3）", "info");
       return;
     }
+    if (selectedRefIds.size === 0) {
+      toast("请先勾选要建索引的作品（可点击「全选」选中当前筛选下的全部作品）", "info");
+      return;
+    }
     const orderedLevels = (["L1", "L2", "L3"] as const).filter(l => levels.includes(l));
     const includesL3 = orderedLevels.includes("L3");
     const summary = orderedLevels.join(" + ");
+    const targetWorks = works.filter(w => selectedRefIds.has(w.ref_id));
     if (!(await confirm({
-      message: `确认为全部 ${works.length} 部作品建立 ${summary} 索引？`
-        + (includesL3 ? "\nL3 较重，~10 万字单作品需 1–3 分钟。" : ""),
+      message: `确认为已选 ${targetWorks.length} 部作品建立 ${summary} 索引？`
+        + (includesL3 ? "\nL3 较重，~10 万字单作品需 1–3 分钟。" : "")
+        + "\n纯设定作品会自动跳过 L2 / L3。",
     }))) return;
-    for (const w of works) {
+    for (const w of targetWorks) {
+      const isPureSetting = (w as any).structure_type === "setting_collection";
       for (const level of orderedLevels) {
+        // 纯设定作品没有章节正文，跳过 L2/L3。
+        if (isPureSetting && (level === "L2" || level === "L3")) continue;
         // Sequential to avoid hammering local embedding backend with parallel requests.
         // eslint-disable-next-line no-await-in-loop
         await buildLevel(w.ref_id, level);
@@ -448,7 +433,30 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
 
       {/* 灵感库 tab removed — see InspirationLibraryPage. */}
 
-      {activeTab === "index" && (
+      {activeTab === "index" && (() => {
+        const filteredIds = filteredWorks.map(w => w.ref_id);
+        const allSelectedInFilter = filteredIds.length > 0
+          && filteredIds.every(id => selectedRefIds.has(id));
+        const someSelectedInFilter = filteredIds.some(id => selectedRefIds.has(id));
+        const toggleSelectAll = () => {
+          setSelectedRefIds(prev => {
+            const next = new Set(prev);
+            if (allSelectedInFilter) {
+              filteredIds.forEach(id => next.delete(id));
+            } else {
+              filteredIds.forEach(id => next.add(id));
+            }
+            return next;
+          });
+        };
+        const toggleWork = (refId: string) => {
+          setSelectedRefIds(prev => {
+            const next = new Set(prev);
+            if (next.has(refId)) next.delete(refId); else next.add(refId);
+            return next;
+          });
+        };
+        return (
         <>
           <div className="card" style={{ marginBottom: 14 }}>
             <div className="card-body">
@@ -469,17 +477,32 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
                     >{f.label}</button>
                   ))}
                 </div>
+                <span className="text-xs text-muted">
+                  已选 {selectedRefIds.size} / {works.length} 部作品
+                </span>
                 <div style={{ flex: 1 }} />
+                <button className="btn"
+                        onClick={toggleSelectAll}
+                        disabled={filteredIds.length === 0}>
+                  {allSelectedInFilter ? "取消全选" : "全选"}
+                </button>
                 <button className="btn-primary"
                         onClick={buildAllIndexes}
-                        disabled={Object.values(indexing).some(Boolean) || selectedLevels.size === 0}>
-                  一键建索引（已选 {selectedLevels.size} 个级别）
+                        disabled={Object.values(indexing).some(Boolean)
+                          || selectedLevels.size === 0
+                          || selectedRefIds.size === 0}>
+                  建立索引（{selectedRefIds.size} 部 × {selectedLevels.size} 级）
                 </button>
               </div>
               <LevelMultiSelect
                 selected={selectedLevels}
                 onChange={setSelectedLevels}
               />
+              {someSelectedInFilter && selectedLevels.has("L3") && (
+                <div className="text-xs text-muted" style={{ marginTop: 8, lineHeight: 1.5 }}>
+                  提示：L3 较重，~10 万字单作品需 1–3 分钟；纯设定作品会自动跳过 L2 / L3。
+                </div>
+              )}
             </div>
           </div>
 
@@ -495,7 +518,8 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
                   w={w}
                   rows={progressByRef[w.ref_id] || []}
                   indexing={!!indexing[w.ref_id]}
-                  onBuild={(l3) => buildIndex(w.ref_id, l3)}
+                  selected={selectedRefIds.has(w.ref_id)}
+                  onToggleSelect={() => toggleWork(w.ref_id)}
                   onClear={() => clearIndex(w.ref_id)}
                   onOpen={() => openDetail(w.ref_id)}
                   topBorder={idx > 0}
@@ -504,7 +528,8 @@ export default function ReferenceSearchPage({ onNavigate, initialTab, hideTabs, 
             </div>
           </div>
         </>
-      )}
+        );
+      })()}
 
       {activeTab === "compare" && <CompareWorksPanel />}
       {activeTab === "learn" && <CommonPatternLearningPanel works={works} />}
@@ -587,15 +612,20 @@ function LevelMultiSelect({
   );
 }
 
-function IndexRow({ w, rows, indexing, onBuild, onClear, onOpen, topBorder }: {
+function IndexRow({ w, rows, indexing, selected, onToggleSelect, onClear, onOpen, topBorder }: {
   w: ReferenceWork;
   rows: IndexProgressRow[];
   indexing: boolean;
-  onBuild: (includeL3: boolean) => void;
+  selected: boolean;
+  onToggleSelect: () => void;
   onClear: () => void;
   onOpen: () => void;
   topBorder: boolean;
 }) {
+  const isPureSetting = (w as any).structure_type === "setting_collection";
+  const visibleLevels = isPureSetting
+    ? (["L1"] as const)
+    : (["L1", "L2", "L3"] as const);
   const byLevel: Record<string, IndexProgressRow> = {};
   for (const r of rows) byLevel[r.level] = r;
   // Aggregate progress across levels — used by the live progress bar
@@ -610,15 +640,33 @@ function IndexRow({ w, rows, indexing, onBuild, onClear, onOpen, topBorder }: {
     <div style={{
       padding: "12px 16px",
       borderTop: topBorder ? "1px solid var(--border)" : "none",
+      background: selected ? "var(--accent-subtle)" : undefined,
+      transition: "background 0.15s",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <input
+          type="checkbox"
+          className="checkbox-pretty"
+          checked={selected}
+          onChange={onToggleSelect}
+          disabled={indexing}
+          style={{ flexShrink: 0 }}
+          aria-label={`选择 ${w.title}`}
+        />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="flex items-center gap-8" style={{ marginBottom: 3 }}>
+          <div className="flex items-center gap-8" style={{ marginBottom: 3, flexWrap: "wrap" }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{w.title}</span>
             {w.creator && <span className="text-xs text-muted">· {w.creator}</span>}
+            {isPureSetting && (
+              <span className="tag" style={{
+                fontSize: 10, padding: "1px 6px",
+                color: "var(--indigo)", background: "var(--bg-surface-2)",
+                border: "1px solid var(--indigo)",
+              }}>纯设定</span>
+            )}
           </div>
           <div className="flex gap-6" style={{ flexWrap: "wrap" }}>
-            {(["L1", "L2", "L3"] as const).map(lv => {
+            {visibleLevels.map(lv => {
               const row = byLevel[lv];
               const status = row?.status;
               const meta = STATUS_LABEL[status || ""] || { label: "未索引", color: "var(--text-tertiary)" };
@@ -638,16 +686,6 @@ function IndexRow({ w, rows, indexing, onBuild, onClear, onOpen, topBorder }: {
           </div>
         </div>
         <div className="flex gap-6" style={{ flexShrink: 0 }}>
-          <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                  onClick={() => onBuild(false)} disabled={indexing}
-                  title="为本作品建立 L1 + L2 索引（大纲/角色/设定 + 章节摘要）">
-            {indexing ? "索引中..." : "建 L1+L2"}
-          </button>
-          <button className="btn" style={{ fontSize: 11, padding: "3px 10px" }}
-                  onClick={() => onBuild(true)} disabled={indexing}
-                  title="为本作品建立 L1 + L2 + L3 索引（含正文 1500-字片段）">
-            建 +L3
-          </button>
           <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--text-tertiary)" }}
                   onClick={onClear} disabled={indexing}>
             清除

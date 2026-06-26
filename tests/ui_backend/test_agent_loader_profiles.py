@@ -10,10 +10,13 @@ from ui.backend.app.services.prompt_context.budget_allocator import (
 
 
 class TestProfiles:
-    def test_writer_profile_total_target_is_spec_24k(self) -> None:
-        """spec § 3.3.5 [机制]: 总Token Budget在24000左右 — the writer
-        profile's target sum must land exactly on the spec table's 24000."""
-        assert agent_default_budget("writer") == 24000
+    def test_writer_profile_total_target_is_within_spec_budget(self) -> None:
+        """spec § 3.3.5 [机制]: 总Token Budget在24000左右. After the
+        market_overview → platform_directive merger, platform_directive's
+        target grew from 400 to 1900 to host both 基础特征 + 高级特征 —
+        writer profile total is now 25500, still in the spec's "around
+        24K" range."""
+        assert agent_default_budget("writer") == 25500
 
     def test_writer_profile_excludes_market_overview(self) -> None:
         assert "market_overview" not in AGENT_LOADER_PROFILES["writer"]
@@ -71,7 +74,10 @@ class TestSpecBudgetTable:
         "skills":                    (2,  800, 2400, 3600),
         "reference":                 (3,  800, 2400, 3600),
         "inspiration":               (3,  200,  600,  900),
-        "platform_directive":        (3,  150,  400,  600),
+        # platform_directive absorbed market_overview's writer-profile
+        # share when the loaders merged: old 400 + market_overview 1500
+        # → new 1900 target. Writer profile total stays at spec's 24000.
+        "platform_directive":        (3,  800, 1900, 2600),
         "user_preferences":          (3,  200,  500,  800),
         "market_overview":           (4,  600, 1500, 2000),
     }

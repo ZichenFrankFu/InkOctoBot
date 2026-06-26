@@ -37,20 +37,25 @@ def characters_status():
 
 @router.post("/generate-profile")
 async def generate_profile(req: GenerateProfileRequest):
-    """Use AI to generate a character profile from a name and role."""
+    """Use AI to generate a character profile from a name and role.
+    System + user prompts both routed through the prompt registry —
+    overridable from 设置 → 提示词."""
     try:
         from llm.base import LLMMessage
+        from reference_pipeline.prompts import render as _render_prompt
         router_inst = _build_router(req.provider, req.model)
 
-        existing = f"\n已有人设信息：{req.existing_personality}" if req.existing_personality else ""
+        existing_block = (
+            f"\n已有人设信息：{req.existing_personality}"
+            if req.existing_personality else ""
+        )
         messages = [
-            LLMMessage(role="system", content=(
-                "你是一个专业的小说角色设计师。根据角色名字和定位，"
-                "生成详细的角色档案。请直接用 JSON 格式输出（不要代码块标记）：\n"
-                '{"personality": "性格描述", "background": "背景故事", "speech_style": "说话风格特征", '
-                '"appearance": "外貌描写", "tags": ["标签1", "标签2"]}'
+            LLMMessage(role="system",
+                       content=_render_prompt("assistant.character_profile")),
+            LLMMessage(role="user", content=_render_prompt(
+                "assistant.character_profile_user",
+                name=req.name, role=req.role, existing_block=existing_block,
             )),
-            LLMMessage(role="user", content=f"角色名：{req.name}\n定位：{req.role}{existing}"),
         ]
 
         response = await router_inst.generate(

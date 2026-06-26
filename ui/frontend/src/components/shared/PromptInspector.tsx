@@ -42,25 +42,30 @@ function parseSections(prompt: string): { title: string; body: string }[] {
 }
 
 
-// Expected loader sections (whether they should appear). Empty body
-// means "absent" — explicitly flagged so user can see what's missing.
+// Expected loader sections (whether they should appear). Each entry
+// carries `matches`: substrings any of which can appear inside the
+// rendered prompt's `## title` line — covers the case where 后端
+// loaders append qualifiers ("参考作品综合", "故事舞台 客观状态（截
+// 至第 N 章）"…) that exact-equality matching used to miss, making
+// the preview falsely report "未注入".
 const EXPECTED_SECTIONS = [
-  { title: "用户特别要求", source: "user_special_requirements" },
-  { title: "本章大纲",     source: "chapter_outline" },
-  { title: "时间与地点",   source: "time_location" },
-  { title: "本章出场角色", source: "characters_block" },
-  { title: "出场角色档案", source: "character_cards" },
-  { title: "世界观设定",   source: "worldbook" },
-  { title: "关联参考",     source: "reference" },
-  { title: "用户写作偏好", source: "user_preferences" },
-  { title: "未回收伏笔",   source: "foreshadowing" },
-  { title: "故事线",       source: "subplots" },
-  { title: "相关灵感",     source: "inspiration" },
-  { title: "客观状态",     source: "storyland_state" },
-  { title: "读者视角记忆", source: "reader_memory" },
-  { title: "已有正文",     source: "existing_content / current_chapter_draft" },
-  { title: "创作技能",     source: "skills" },
-  { title: "平台风格",     source: "platform_directive" },
+  { title: "用户特别要求", source: "user_special_requirements", matches: ["用户特别要求"] },
+  { title: "本章大纲",     source: "chapter_outline",           matches: ["本章大纲"] },
+  { title: "时间与地点",   source: "time_location",             matches: ["时间与地点"] },
+  { title: "本章出场角色", source: "characters_block",          matches: ["本章出场角色", "出场角色"] },
+  { title: "出场角色档案", source: "character_cards",           matches: ["出场角色档案", "角色档案"] },
+  { title: "世界观设定",   source: "worldbook",                 matches: ["世界观设定", "世界书"] },
+  { title: "关联参考作品", source: "reference",                 matches: ["参考作品综合", "关联参考", "参考作品"] },
+  { title: "用户写作偏好", source: "user_preferences",          matches: ["用户写作偏好"] },
+  { title: "关联伏笔",     source: "foreshadowing",             matches: ["关联伏笔", "伏笔"] },
+  { title: "当前涉及的故事线", source: "subplots",              matches: ["当前涉及的故事线", "故事线"] },
+  { title: "相关灵感",     source: "inspiration",               matches: ["相关灵感", "灵感库"] },
+  { title: "故事舞台 客观状态", source: "storyland_state",
+    matches: ["故事舞台 客观状态", "Storyland 客观状态", "客观状态", "storyland"] },
+  { title: "读者视角记忆", source: "reader_memory",             matches: ["读者视角记忆"] },
+  { title: "已有正文",     source: "existing_content / current_chapter_draft", matches: ["已有正文", "正文草稿", "前几章正文"] },
+  { title: "创作技能",     source: "skills",                    matches: ["创作技能", "技能"] },
+  { title: "平台风格",     source: "platform_directive",        matches: ["平台风格", "平台指令"] },
 ];
 
 
@@ -130,8 +135,10 @@ export default function PromptInspector({
       {/* Section status grid */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 4, fontSize: 12 }}>
         {EXPECTED_SECTIONS.map(expected => {
-          const s = sectionsByTitle.get(expected.title) ||
-                    [...sectionsByTitle.values()].find(x => x.title.startsWith(expected.title));
+          // Match any actual ## title that contains any of our candidates.
+          const s = sectionsByTitle.get(expected.title)
+            || [...sectionsByTitle.values()].find(x =>
+              expected.matches.some(m => x.title.includes(m)));
           const present = !!s && s.body.trim().length > 0;
           const chars = s ? s.body.trim().length : 0;
           return (

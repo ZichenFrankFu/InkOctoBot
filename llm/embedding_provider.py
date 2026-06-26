@@ -70,7 +70,24 @@ class LocalSTProvider(BaseEmbeddingProvider):
                 "pip install sentence-transformers torch"
             ) from e
         logger.info("Loading sentence-transformers model %s ...", self._MODEL_NAME)
-        self._model = SentenceTransformer(self._MODEL_NAME)
+        try:
+            self._model = SentenceTransformer(self._MODEL_NAME)
+        except ImportError as e:
+            # Typical env breakage: sentence-transformers >= 3.x needs
+            # transformers >= 4.41 (which exports EncoderDecoderCache).
+            # Surface the upgrade command so the user can act on it instead
+            # of staring at a 500 / "cannot import EncoderDecoderCache".
+            raise ImportError(
+                f"sentence-transformers 加载失败：{e}。\n"
+                "通常是 transformers 版本过旧导致 (sentence-transformers ≥ 3 需要 "
+                "transformers ≥ 4.41)。请执行：\n"
+                "  pip install -U 'transformers>=4.41' 'sentence-transformers>=2.7'\n"
+                "如不便升级，可在 Settings → 模型设置 切到 OpenAI 后端，或让系统自动降级到 TF-IDF。"
+            ) from e
+        except Exception as e:  # torch / cuda / disk / network errors
+            raise RuntimeError(
+                f"加载本地 embedding 模型 {self._MODEL_NAME} 失败：{e}"
+            ) from e
 
     async def embed(self, texts: list[str]) -> Any:
         if not texts:
@@ -97,6 +114,78 @@ class LocalSTProvider(BaseEmbeddingProvider):
     @property
     def name(self) -> str:
         return f"local:{self._MODEL_NAME}"
+
+
+class TfidfFallbackProvider(BaseEmbeddingProvider):
+    """Stateless hashing-TF-IDF fallback when sentence-transformers can't load.
+
+    Tokenizes via jieba (whitespace fallback) and projects to a fixed-size
+    feature space with ``HashingVectorizer`` so vectors are comparable across
+    batches without a fit step. Cosine ≡ dot product after L2 normalization.
+
+    The resulting vectors aren't semantically as good as a real embedding
+    model, but they keep similarity search working when the env is broken
+    (e.g. sentence-transformers ↔ transformers version mismatch).
+    """
+
+    _DIM = 384
+    _NAME = "tfidf_jieba_384"
+
+    def __init__(self):
+        self._vec = None
+
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        try:
+            import jieba  # noqa: WPS433
+            return [t for t in jieba.cut(text or "") if t.strip()]
+        except Exception:
+            return (text or "").split()
+
+    def _ensure(self) -> None:
+        if self._vec is not None:
+            return
+        try:
+            from sklearn.feature_extraction.text import HashingVectorizer
+        except ImportError as e:
+            raise ImportError(
+                "TF-IDF 兜底需要 scikit-learn：pip install scikit-learn"
+            ) from e
+        self._vec = HashingVectorizer(
+            n_features=self._DIM,
+            analyzer=self._tokenize,
+            norm=None,                # we normalize ourselves below
+            alternate_sign=False,     # non-negative features → meaningful cosine
+        )
+
+    async def embed(self, texts: list[str]) -> Any:
+        import numpy as np
+        if not texts:
+            return np.zeros((0, self._DIM), dtype="float32")
+        self._ensure()
+        # `transform` is fast (no fit), pure-Python tokenization happens
+        # inside; run in a thread to avoid blocking the event loop on large
+        # batches.
+        import asyncio
+        loop = asyncio.get_event_loop()
+        sparse = await loop.run_in_executor(
+            None, lambda: self._vec.transform(texts),
+        )
+        arr = sparse.toarray().astype("float32", copy=False)
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        # Empty-text rows hash to zero vectors — replace with a tiny
+        # constant so cosine doesn't divide-by-zero AND the row is still
+        # distinct from real content.
+        norms[norms == 0] = 1.0
+        return arr / norms
+
+    @property
+    def dim(self) -> int:
+        return self._DIM
+
+    @property
+    def name(self) -> str:
+        return f"local:{self._NAME}"
 
 
 class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
@@ -157,10 +246,81 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
 # ── Factory ─────────────────────────────────────────────────────────
 
 
+class _LocalWithFallback(BaseEmbeddingProvider):
+    """Try ``LocalSTProvider`` first; on probe failure (broken env, version
+    mismatch, no GPU + slow CPU OOM, …) commit to ``TfidfFallbackProvider``
+    so the indexer keeps working instead of 500-ing.
+
+    The probe runs at first access to ``.name`` / ``.dim`` / ``.embed()`` so
+    the collection name is consistent with the actual backend used —
+    preventing 384-dim ST vectors and 384-dim TF-IDF vectors from landing in
+    the same ChromaDB collection (the similarity geometry is incompatible).
+
+    The probe is fast in the broken-env case (the EncoderDecoderCache
+    ImportError fires during class loading, before any model download), and
+    slow but successful otherwise — same cost as the first real embed call.
+    """
+
+    def __init__(self) -> None:
+        self._impl: BaseEmbeddingProvider = LocalSTProvider()
+        self._committed = False
+        self._fallback_reason: str | None = None
+
+    def _commit(self) -> None:
+        """Resolve which backend to use. Cheap on subsequent calls."""
+        if self._committed:
+            return
+        if isinstance(self._impl, LocalSTProvider):
+            try:
+                self._impl._ensure()
+            except (ImportError, RuntimeError) as e:
+                self._fallback_reason = str(e)
+                logger.warning(
+                    "本地 embedding 不可用，自动降级到 TF-IDF：%s\n"
+                    "请尽快修复 sentence-transformers 环境或切到 OpenAI 后端以恢复语义检索质量。",
+                    e,
+                )
+                self._impl = TfidfFallbackProvider()
+        self._committed = True
+
+    async def embed(self, texts: list[str]) -> Any:
+        self._commit()
+        return await self._impl.embed(texts)
+
+    @property
+    def dim(self) -> int:
+        self._commit()
+        return self._impl.dim
+
+    @property
+    def name(self) -> str:
+        self._commit()
+        return self._impl.name
+
+
+# Module-level cache so make_indexer's per-request call doesn't re-load the
+# sentence-transformers model (or re-run the fallback probe). Keyed by the
+# backend choice so switching settings via /settings reloads cleanly via
+# `clear_embedding_provider_cache()`.
+_PROVIDER_CACHE: dict[str, BaseEmbeddingProvider] = {}
+
+
+def clear_embedding_provider_cache() -> None:
+    """Drop the cached providers — call after Settings → embedding_backend
+    changes so the next request picks up the new choice."""
+    _PROVIDER_CACHE.clear()
+
+
 def get_embedding_provider(backend: str | None = None) -> BaseEmbeddingProvider:
     """Resolve the embedding backend from settings.json (or an explicit
     override). Reads OpenAI api_key from settings.providers.openai when
-    backend="openai"."""
+    backend="openai".
+
+    ``backend="local"`` (the default) returns a wrapper that probes
+    sentence-transformers on first access and auto-falls-back to TF-IDF if
+    loading fails (env issue, version mismatch, …) so callers don't see 500s.
+    Pass ``backend="local_strict"`` to disable the fallback for diagnostics.
+    Pass ``backend="tfidf"`` to force the TF-IDF path."""
     import json
     from pathlib import Path
 
@@ -179,14 +339,25 @@ def get_embedding_provider(backend: str | None = None) -> BaseEmbeddingProvider:
             logger.warning("Failed to read settings.json: %s", e)
 
     chosen = (backend or data.get("embedding_backend") or "local").lower()
+    cached = _PROVIDER_CACHE.get(chosen)
+    if cached is not None:
+        return cached
     if chosen == "openai":
         prov_cfg = (data.get("providers") or {}).get("openai") or {}
-        return OpenAIEmbeddingProvider(
+        provider: BaseEmbeddingProvider = OpenAIEmbeddingProvider(
             api_key=prov_cfg.get("api_key") or None,
             base_url=prov_cfg.get("base_url") or None,
         )
-    # default: local
-    return LocalSTProvider()
+    elif chosen == "tfidf":
+        provider = TfidfFallbackProvider()
+    elif chosen == "local_strict":
+        provider = LocalSTProvider()
+    else:
+        # default: local with TF-IDF fallback so a broken sentence-transformers
+        # env doesn't take down indexing entirely.
+        provider = _LocalWithFallback()
+    _PROVIDER_CACHE[chosen] = provider
+    return provider
 
 
 def collection_name_for(backend_name: str) -> str:

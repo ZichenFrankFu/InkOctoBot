@@ -757,11 +757,27 @@ export async function fetchPromptForInspection(params: {
     prompt_only: true,
   });
   const prompt = res.prompt || "";
-  const EXPECTED = [
-    "用户特别要求", "本章大纲", "时间与地点", "本章出场角色",
-    "出场角色档案", "世界观设定", "关联参考", "用户写作偏好",
-    "未回收伏笔", "故事线", "相关灵感", "客观状态",
-    "读者视角记忆", "已有正文", "创作技能", "平台风格",
+  // Each entry: 显示标题 + 实际 prompt `## 标题` 行里可能出现的 substring
+  // 列表。后端 loaders 会在标题里加括号补充（如「参考作品综合」、
+  // 「故事舞台 客观状态（截至第 N 章）」），所以严格相等会漏判。
+  const EXPECTED: Array<{ title: string; matches: string[] }> = [
+    { title: "用户特别要求", matches: ["用户特别要求"] },
+    { title: "本章大纲",     matches: ["本章大纲"] },
+    { title: "时间与地点",   matches: ["时间与地点"] },
+    { title: "本章出场角色", matches: ["本章出场角色", "出场角色"] },
+    { title: "出场角色档案", matches: ["出场角色档案", "角色档案"] },
+    { title: "世界观设定",   matches: ["世界观设定", "世界书"] },
+    { title: "关联参考作品", matches: ["参考作品综合", "关联参考", "参考作品"] },
+    { title: "用户写作偏好", matches: ["用户写作偏好"] },
+    { title: "关联伏笔",     matches: ["关联伏笔", "伏笔"] },
+    { title: "当前涉及的故事线", matches: ["当前涉及的故事线", "故事线"] },
+    { title: "相关灵感",     matches: ["相关灵感", "灵感库"] },
+    { title: "故事舞台 客观状态",
+      matches: ["故事舞台 客观状态", "Storyland 客观状态", "客观状态", "storyland"] },
+    { title: "读者视角记忆", matches: ["读者视角记忆"] },
+    { title: "已有正文",     matches: ["已有正文", "正文草稿", "前几章正文"] },
+    { title: "创作技能",     matches: ["创作技能", "技能"] },
+    { title: "平台风格",     matches: ["平台风格", "平台指令"] },
   ];
   const lines = prompt.split("\n");
   const sections: { title: string; body: string }[] = [];
@@ -773,9 +789,10 @@ export async function fetchPromptForInspection(params: {
   }
   if (cur) sections.push(cur);
   const byTitle = new Map(sections.map(s => [s.title.trim(), s]));
-  const loaderStatus = EXPECTED.map(title => {
-    const sec = byTitle.get(title) ||
-                [...byTitle.values()].find(x => x.title.startsWith(title));
+  const loaderStatus = EXPECTED.map(({ title, matches }) => {
+    const sec = byTitle.get(title)
+      || [...byTitle.values()].find(x =>
+        matches.some(m => x.title.includes(m)));
     const present = !!sec && sec.body.trim().length > 0;
     return { title, present, chars: sec ? sec.body.trim().length : 0 };
   });

@@ -4,6 +4,7 @@ import { swrHydrate, swrStore } from "../api/swr";
 import { useToast } from "../components/shared/Toast";
 import type { Novel } from "../api/types";
 import { splitGenres } from "../utils/genre";
+import { tSerialStatus } from "../i18n";
 
 /* ── local response types ── */
 interface Overview {
@@ -686,7 +687,7 @@ function NovelPanel({ detail }: { detail: NovelDetail }) {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <span className={`tag ${n.platform}`}>{platformLabel(n.platform)}</span>
           {n.main_category && <span className="tag category">{n.main_category}</span>}
-          {n.status && <span className={`tag ${n.status === "completed" ? "status-completed" : "status-ongoing"}`}>{n.status === "completed" ? "已完本" : "连载中"}</span>}
+          {n.status && <span className={`tag ${n.status === "completed" ? "status-completed" : "status-ongoing"}`}>{tSerialStatus(n.status)}</span>}
         </div>
       </div>
       <div className="detail-section">

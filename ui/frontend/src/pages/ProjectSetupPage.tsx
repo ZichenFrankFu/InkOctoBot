@@ -347,7 +347,7 @@ export default function ProjectSetupPage({ projectId, onNavigate }: SetupProps) 
         onToggle={() => toggleSection("outline")}
         actions={
           <button className="btn-ghost" onClick={() => nav("storyline")}>
-            打开剧情线 &rarr;
+            打开故事线 &rarr;
           </button>
         }
       >

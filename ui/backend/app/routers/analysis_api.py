@@ -752,7 +752,8 @@ def naming_pattern_categories(platform: str = Query(default="")):
 
 
 @router.get("/naming-patterns")
-def naming_patterns(category: str = Query(...), platform: str = Query(default="")):
+def naming_patterns(category: str = Query(default=""), platform: str = Query(default="")):
+    """``category`` 留空 / "全部" / "all" → 跨题材聚合（全部样本）；具体题材 → 该题材。"""
     from ..services.market_extractor import naming_patterns as _np
     return _np.compute_for_category(_project_db_path(), category,
                                     platform=platform or None)

@@ -98,7 +98,7 @@ const DICT: Record<string, string> = {
   "灵感库":       "Inspiration Library",
   "创作":         "Authoring",
   "开书":         "Projects",
-  "角色管理":     "Characters",
+  "角色卡":       "Characters",
   "世界书":       "Worldbook",
   "编辑器":       "Editor",
   "剧情线":       "Storyline",
@@ -226,19 +226,115 @@ export function tInspirationCategory(key: string): string {
 
 
 /** Platform keys are stored in the DB as the crawler's English slug
- *  (qidian / fanqie / zongheng / ciweimao / 17k). The UI should display
- *  the localised Chinese name in zh mode. */
+ *  (qidian / fanqie). The UI displays the localised Chinese name in
+ *  zh mode. 用户要求暂时只暴露 起点 / 番茄, 其它平台等业务需要再加. */
 const PLATFORM_NAMES: Record<string, { zh: string; en: string }> = {
-  qidian:   { zh: "起点",   en: "Qidian" },
-  fanqie:   { zh: "番茄",   en: "Fanqie" },
-  zongheng: { zh: "纵横",   en: "Zongheng" },
-  ciweimao: { zh: "刺猬猫", en: "Ciweimao" },
-  "17k":    { zh: "17K",    en: "17K" },
+  qidian: { zh: "起点", en: "Qidian" },
+  fanqie: { zh: "番茄", en: "Fanqie" },
 };
 
 export function tPlatform(key: string): string {
   const meta = PLATFORM_NAMES[(key || "").toLowerCase()];
   if (!meta) return key;
+  return _lang === "en" ? meta.en : meta.zh;
+}
+
+
+/** Code-layer status / gender / serial-status values are ALWAYS English
+ *  in the DB and API (ongoing / completed / hiatus / unknown / male /
+ *  female …). Display strings should NEVER be hardcoded next to the
+ *  comparison — go through the translators below so 前端展示 stays
+ *  Chinese-only, 代码标识符 stays English-only. */
+
+const SERIAL_STATUS_NAMES: Record<string, { zh: string; en: string }> = {
+  ongoing:   { zh: "连载中",   en: "Ongoing" },
+  completed: { zh: "已完本",   en: "Completed" },
+  hiatus:    { zh: "停更",     en: "On hiatus" },
+  unknown:   { zh: "状态未知", en: "Unknown" },
+};
+
+/** 长版 (适合标签栏): 连载中 / 已完本 / 停更 / 状态未知 */
+export function tSerialStatus(key: string): string {
+  const meta = SERIAL_STATUS_NAMES[(key || "").toLowerCase()];
+  if (!meta) return key;
+  return _lang === "en" ? meta.en : meta.zh;
+}
+
+/** 短版 (适合卡片角标): 连载 / 完结 / 停更 / 未知 — 不同长度方便 UI 选 */
+const SERIAL_STATUS_SHORT: Record<string, string> = {
+  ongoing: "连载", completed: "完结", hiatus: "停更", unknown: "未知",
+};
+export function tSerialStatusShort(key: string): string {
+  return SERIAL_STATUS_SHORT[(key || "").toLowerCase()] || key;
+}
+
+const GENDER_TARGET_NAMES: Record<string, { zh: string; en: string }> = {
+  male:    { zh: "男频", en: "Male-oriented" },
+  female:  { zh: "女频", en: "Female-oriented" },
+  neutral: { zh: "通用", en: "Neutral" },
+};
+
+export function tGenderTarget(key: string): string {
+  const meta = GENDER_TARGET_NAMES[(key || "").toLowerCase()];
+  if (!meta) return key;
+  return _lang === "en" ? meta.en : meta.zh;
+}
+
+const GENDER_NAMES: Record<string, { zh: string; en: string }> = {
+  male:   { zh: "男", en: "Male" },
+  female: { zh: "女", en: "Female" },
+  other:  { zh: "其他", en: "Other" },
+};
+
+export function tGender(key: string): string {
+  const meta = GENDER_NAMES[(key || "").toLowerCase()];
+  if (!meta) return key;
+  return _lang === "en" ? meta.en : meta.zh;
+}
+
+
+/** 角色定位 — canonical 4 个英文 code, 中文只用于显示. 老库里写进 `role`
+ *  列的可能仍是 中文字面量 ("主角" / "配角" / "反派" / "路人"), canonicalRole
+ *  接受这两种输入并归一到 英文 code, 让代码里的比较 / lookup 不再混语种.
+ */
+export const CHARACTER_ROLE_CODES = [
+  "protagonist", "supporting", "antagonist", "bystander",
+] as const;
+export type CharacterRoleCode = typeof CHARACTER_ROLE_CODES[number];
+
+const CHARACTER_ROLE_LABEL: Record<CharacterRoleCode, { zh: string; en: string }> = {
+  protagonist: { zh: "主角", en: "Protagonist" },
+  supporting:  { zh: "配角", en: "Supporting" },
+  antagonist:  { zh: "反派", en: "Antagonist" },
+  bystander:   { zh: "路人", en: "Bystander" },
+};
+
+// 兼容旧数据 — 中文字面量 / 英文 code / 历史遗留的 "副主角" 等都归一到一个 code.
+const _ROLE_NORMALIZE: Record<string, CharacterRoleCode> = {
+  // English
+  protagonist: "protagonist", supporting: "supporting",
+  antagonist:  "antagonist",  bystander:  "bystander",
+  // Chinese canonical
+  "主角": "protagonist", "配角": "supporting",
+  "反派": "antagonist",  "路人": "bystander",
+  // Common legacy spellings
+  "女主角": "protagonist", "男主角": "protagonist", "副主角": "supporting",
+  "男配":   "supporting",  "女配":   "supporting",  "重要配角": "supporting",
+  "师长":   "supporting",  "其他":   "bystander",
+};
+
+export function canonicalRole(stored: string | undefined | null): CharacterRoleCode {
+  if (!stored) return "bystander";
+  const norm = String(stored).trim();
+  if (norm in _ROLE_NORMALIZE) return _ROLE_NORMALIZE[norm];
+  const lo = norm.toLowerCase();
+  if (lo in _ROLE_NORMALIZE) return _ROLE_NORMALIZE[lo];
+  return "bystander";
+}
+
+export function tCharacterRole(role: string | undefined | null): string {
+  const code = canonicalRole(role);
+  const meta = CHARACTER_ROLE_LABEL[code];
   return _lang === "en" ? meta.en : meta.zh;
 }
 

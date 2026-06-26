@@ -127,11 +127,13 @@ def upsert_character(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
         "tags", "relationships", "layer_a", "layer_b",
         "created_at", "updated_at",
     }
-    # LOADER_SPEC v3 Batch 5: ``dynamic_snapshots`` lived on extras_json
-    # in earlier versions but the snapshot system now owns its own table
-    # (see ``snapshot_store``). Drop the legacy key so it can't sneak
-    # back in via a stale frontend payload.
-    body = {k: v for k, v in body.items() if k != "dynamic_snapshots"}
+    # ``dynamic_snapshots`` is owned at runtime by snapshot_store (its own
+    # table) for the canonical generation pipeline, but the legacy 角色卡
+    # UI still reads/writes this field directly. We let it pass through
+    # into ``extra_json`` so the snapshot card survives a reload; the
+    # canonical snapshot_store remains the source of truth for the
+    # generation pipeline and is unaffected. A future migration can move
+    # this back into the table without changing this code path.
     extra = {k: v for k, v in body.items() if k not in known_cols}
 
     with open_db(db_path) as con:
@@ -777,6 +779,11 @@ def save_editor_doc(db_path: str, project_id: str,
         # Pending segment syncs — applied after the chapter commit so
         # segment_manager's own connection sees the latest chapter row.
         pending_segment_updates: list[tuple[str, str, str]] = []
+        # chap_num must be UNIQUE per project (project_schema.py UNIQUE
+        # constraint). Numbering it per-volume produced collisions across
+        # multiple volumes ("v1 ch 1" + "v2 ch 1" both got chap_num=1 →
+        # sqlite3.IntegrityError). Number globally, in document order.
+        running_chap_num = 0
         for vol_idx, vol in enumerate(body.get("volumes", []) or []):
             if not isinstance(vol, dict):
                 continue
@@ -784,9 +791,15 @@ def save_editor_doc(db_path: str, project_id: str,
             for ch_idx, ch in enumerate(vol.get("chapters", []) or []):
                 if not isinstance(ch, dict):
                     continue
-                chap_num = int(ch.get("order", ch_idx) or 0) + 1
-                # Stable, project-scoped chapter_id.
-                cid = ch.get("chapter_id") or f"{project_id}_v{vol_num}_c{chap_num:04d}"
+                running_chap_num += 1
+                chap_num = running_chap_num
+                # Stable, project-scoped chapter_id. Prefer the id the
+                # frontend has been tracking (`chapter_id` or `id`) so
+                # text_versions FK + version history stay attached even
+                # when the user reorders chapters. Fall back to a
+                # generated id only for chapters that came in without one.
+                cid = ch.get("chapter_id") or ch.get("id") \
+                    or f"{project_id}_v{vol_num}_c{chap_num:04d}"
                 kept_ids.add(cid)
                 content = ch.get("content", "") or ""
                 word_count = ch.get("word_count")
@@ -807,6 +820,31 @@ def save_editor_doc(db_path: str, project_id: str,
                     "items":         ose.get("items") if isinstance(ose.get("items"), list) else [],
                     "organizations": ose.get("organizations") if isinstance(ose.get("organizations"), list) else [],
                 }
+                # Some prior versions of save_editor_doc numbered per-volume
+                # AND fell back to a generated chapter_id even when the
+                # frontend already had one — so the DB can carry a row at
+                # (project_id, chap_num) whose chapter_id won't match the
+                # one we're about to insert. The ``ON CONFLICT(chapter_id)``
+                # clause won't catch that collision; the writer would 500
+                # with UNIQUE(project_id, chapter_num). Free the slot
+                # explicitly first so this save can land.
+                stale = con.execute(
+                    "SELECT chapter_id FROM chapters "
+                    "WHERE project_id = ? AND chapter_num = ? AND chapter_id <> ?",
+                    (project_id, chap_num, cid),
+                ).fetchone()
+                if stale is not None:
+                    stale_id = stale["chapter_id"]
+                    # Move the displaced chapter to a sentinel chap_num
+                    # outside the valid range so its row isn't lost (the
+                    # delete pass below will tidy up if it really vanished
+                    # from the editor doc, otherwise a later iteration of
+                    # this loop will re-claim its real chap_num).
+                    con.execute(
+                        "UPDATE chapters SET chapter_num = -ABS(chapter_num) "
+                        "WHERE project_id = ? AND chapter_id = ?",
+                        (project_id, stale_id),
+                    )
                 con.execute(
                     """INSERT INTO chapters (
                            chapter_id, project_id, chapter_num, volume,
@@ -859,6 +897,15 @@ def save_editor_doc(db_path: str, project_id: str,
                 "DELETE FROM chapters WHERE chapter_id = ? AND project_id = ?",
                 (cid, project_id),
             )
+        # Any chapters we sentinelled to a negative chap_num to free a
+        # slot, but didn't re-claim, are stale duplicates from the old
+        # buggy numbering — drop them. ON DELETE CASCADE on text_versions
+        # would only fire if a version was attached, which it won't be
+        # since the user can't see those phantom rows.
+        con.execute(
+            "DELETE FROM chapters WHERE project_id = ? AND chapter_num < 0",
+            (project_id,),
+        )
         con.commit()
 
     # Sync chapter_segments after the chapter rows commit so the
@@ -941,6 +988,12 @@ def _project_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
         "model_preset": r.get("model_preset") or "balanced",
         "created_at": r.get("created_at"),
         "updated_at": r.get("updated_at"),
+        # Dedicated columns added by _ensure_projects_market_columns.
+        # Prefer the real column; fall back to whatever's in
+        # style_profile_json.extra (legacy projects that were saved
+        # before upsert_project knew about these fields).
+        "platform": r.get("platform") or extra.get("platform") or "",
+        "category": r.get("category") or extra.get("category") or "",
     }
     # Restore frontend-only keys stashed in style_profile_json.
     for k, v in extra.items():
@@ -976,11 +1029,24 @@ def upsert_project(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
         "id", "name", "genre", "description", "status",
         "current_chapter", "current_volume", "world_book_path",
         "model_preset", "created_at", "updated_at",
+        # These three live in their own columns (added by
+        # _ensure_projects_market_columns), but the frontend ships them
+        # in the same flat body — keep them out of the ``extra`` blob so
+        # the platform_market loader can read the real columns.
+        "platform", "category",
     }
     extra = {k: v for k, v in body.items() if k not in known_cols}
     status = body.get("status", "planning")
     if status not in {"planning", "writing", "paused", "completed"}:
         status = "planning"
+
+    platform = str(body.get("platform") or "").strip()
+    # 副分类 / 主分类 — frontend now sends both. Older projects only
+    # carry a single ``genre`` which historically conflated the two; we
+    # keep that backward compatibility by leaving ``genre`` as whatever
+    # the caller sends, and only mirroring 副分类 into the dedicated
+    # ``category`` column (used by the platform_market loader).
+    category = str(body.get("category") or "").strip()
 
     with open_db(db_path) as con:
         con.execute(
@@ -1013,6 +1079,22 @@ def upsert_project(db_path: str, body: dict[str, Any]) -> dict[str, Any]:
              json.dumps(extra, ensure_ascii=False),
              body.get("model_preset", "balanced")),
         )
+        # Platform + category live in dedicated columns added by the
+        # _ensure_projects_market_columns migration. Update them separately
+        # so the legacy INSERT statement above (which doesn't list them)
+        # doesn't need touching — and so projects on a schema without the
+        # migration silently degrade instead of crashing.
+        try:
+            con.execute(
+                "UPDATE projects SET platform = ?, category = ? "
+                "WHERE project_id = ?",
+                (platform, category, pid),
+            )
+        except sqlite3.OperationalError:
+            # platform / category columns don't exist on this schema —
+            # the values are still preserved in style_profile_json.extra
+            # so a later migration can backfill them.
+            pass
         con.commit()
     saved = get_project(db_path, pid)
     if saved is None:  # pragma: no cover
@@ -1033,12 +1115,31 @@ def delete_project(db_path: str, project_id: str) -> None:
 def _version_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
     r = _row_to_dict(row)
     diff = json.loads(r.get("diff_json") or "{}") or {}
+    # The frontend's TextVersion interface uses `version` / `text` /
+    # `user_edited`-style source labels; the DB schema uses `version_num`
+    # / `content` / `user_edit`. Surface BOTH spellings so the
+    # version-history panel renders the saved text instead of an empty
+    # box. The `source` mapping is the inverse of insert_version().
+    raw_source = r.get("source") or "ai"
+    source_display = {
+        "ai":        "ai_generated",
+        "user_edit": "user_edited",
+        "rewrite":   "targeted_rewrite",
+    }.get(raw_source, raw_source)
+    # Diff bag may carry the original source label (e.g. auto_saved) that
+    # didn't fit the DB CHECK; prefer it when present so the UI doesn't
+    # mis-categorise auto-saves as user_edits.
+    if isinstance(diff.get("source"), str):
+        source_display = diff["source"]
+    content = r.get("content") or ""
     out = {
         "version_id": r["version_id"],
         "chapter_id": r["chapter_id"],
         "version_num": r.get("version_num") or 1,
-        "source": r.get("source") or "ai",
-        "content": r.get("content") or "",
+        "version":     r.get("version_num") or 1,  # frontend alias
+        "source": source_display,
+        "content": content,
+        "text":    content,                          # frontend alias
         "model_used": r.get("model_used") or "",
         "created_at": r.get("created_at"),
         "ts": r.get("created_at"),
@@ -1075,9 +1176,31 @@ def list_versions(db_path: str, project_id: str,
     return [_version_row_to_payload(r) for r in rows]
 
 
+_SOURCE_TO_DB = {
+    # Frontend labels (TextVersion.source) → DB CHECK domain.
+    "ai_generated":     "ai",
+    "user_edited":      "user_edit",
+    "targeted_rewrite": "rewrite",
+    "outline_chat":     "ai",
+    "auto_saved":       "user_edit",
+    # DB labels — pass through.
+    "ai":               "ai",
+    "user_edit":        "user_edit",
+    "rewrite":          "rewrite",
+}
+
+
 def insert_version(db_path: str, project_id: str,
                    version: dict[str, Any]) -> dict[str, Any]:
     """Append a new version to a chapter's history.
+
+    Accepts both the legacy DB-shaped payload (``version_num`` / ``content``
+    / ``ai`` / ``user_edit`` / ``rewrite``) and the frontend's TextVersion
+    shape (``version`` / ``text`` / ``user_edited`` / ``auto_saved`` / …)
+    so /api/data/versions saves carry the actual chapter text instead of
+    landing as an empty `content` blob. Out-of-domain labels are mapped
+    into the DB CHECK domain; the original is preserved in diff_json so
+    the UI can still distinguish ``auto_saved`` from ``user_edited``.
 
     Requires ``chapter_id`` to exist in the chapters table (FK).
     Auto-increments ``version_num`` per chapter.
@@ -1086,12 +1209,23 @@ def insert_version(db_path: str, project_id: str,
     if not chapter_id:
         raise ValueError("chapter_id is required")
 
-    known_cols = {"version_id", "chapter_id", "version_num", "source",
-                  "content", "model_used", "created_at", "ts"}
+    # Accept text/content interchangeably so the frontend's `text` field
+    # (TextVersion interface) doesn't get dropped on insert.
+    content = version.get("content")
+    if not isinstance(content, str) or not content:
+        content = version.get("text", "") or ""
+
+    raw_source = (version.get("source") or "ai").strip()
+    db_source = _SOURCE_TO_DB.get(raw_source, "ai")
+
+    known_cols = {"version_id", "chapter_id", "version_num", "version",
+                  "source", "content", "text", "model_used",
+                  "created_at", "ts"}
     diff = {k: v for k, v in version.items() if k not in known_cols}
-    source = version.get("source", "ai")
-    if source not in {"ai", "user_edit", "rewrite"}:
-        source = "ai"
+    # Preserve the original (frontend) source label so the next read
+    # round-trip can render it.
+    if raw_source and raw_source != db_source:
+        diff.setdefault("source", raw_source)
 
     with open_db(db_path) as con:
         # Auto-increment per chapter
@@ -1100,15 +1234,15 @@ def insert_version(db_path: str, project_id: str,
             "WHERE chapter_id = ?",
             (chapter_id,),
         ).fetchone()[0]
-        vnum = int(version.get("version_num") or (max_num + 1))
+        vnum = int(version.get("version_num") or version.get("version") or (max_num + 1))
         vid = version.get("version_id") or _nid("ver_")
         con.execute(
             """INSERT INTO text_versions
                (version_id, chapter_id, version_num, source, content,
                 diff_json, model_used, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-            (vid, chapter_id, vnum, source,
-             version.get("content", ""),
+            (vid, chapter_id, vnum, db_source,
+             content,
              json.dumps(diff, ensure_ascii=False),
              version.get("model_used", "")),
         )
@@ -1137,37 +1271,53 @@ def delete_version(db_path: str, version_id: str) -> None:
 # 大纲 tab by reading from pending_hooks.
 
 
-def list_foreshadowing_legacy(db_path: str, project_id: str) -> list[dict]:
-    """Return open hooks shaped like the legacy {items: [...]} blob.
+def list_foreshadowing_legacy(
+    db_path: str, project_id: str, *, include_resolved: bool = False,
+) -> list[dict]:
+    """Return hooks shaped like the legacy {items: [...]} blob.
 
-    Hooks the user authoritatively closed via ``fully_resolve_hook`` are
-    filtered out so the loader can't re-surface them even if the
-    auto-detector would otherwise re-open the same hook.
+    By default returns ONLY active hooks — those the user has 已
+    fully-resolved (user_marked_fully_resolved=1) are filtered out so
+    the prompt loader can't re-surface them even if the auto-detector
+    would otherwise re-open the same hook.
+
+    ``include_resolved=True`` (used by the 故事线 page's 已回收 view)
+    drops that filter so resolved hooks show in the inactive list.
     """
+    where = "WHERE project_id = ?"
+    if not include_resolved:
+        where += " AND COALESCE(user_marked_fully_resolved, 0) = 0"
     with open_db(db_path) as con:
         try:
             rows = con.execute(
                 "SELECT hook_id, description, origin_chapter, "
                 "expected_payoff_chapter, status, importance, "
-                "COALESCE(scale, 'event_clue') AS scale "
-                "FROM pending_hooks WHERE project_id = ? "
-                "AND COALESCE(user_marked_fully_resolved, 0) = 0 "
+                "COALESCE(scale, 'event_clue') AS scale, "
+                "COALESCE(user_marked_fully_resolved, 0) AS user_resolved "
+                f"FROM pending_hooks {where} "
                 "ORDER BY origin_chapter",
                 (project_id,),
             ).fetchall()
         except sqlite3.OperationalError:
             return []
-    return [{
-        "id": r["hook_id"],
-        "title": r["description"][:30],
-        "content": r["description"],
-        "chapter_ids": [],
-        "origin_chapter": r["origin_chapter"],
-        "expected_payoff_chapter": r["expected_payoff_chapter"],
-        "status": r["status"],
-        "importance": r["importance"],
-        "scale": r["scale"],
-    } for r in rows]
+    out = []
+    for r in rows:
+        # If the user marked the hook fully resolved, the canonical status
+        # client-side is "resolved" regardless of the auto-detector's
+        # tracking field.
+        status = "resolved" if r["user_resolved"] else r["status"]
+        out.append({
+            "id": r["hook_id"],
+            "title": r["description"][:30],
+            "content": r["description"],
+            "chapter_ids": [],
+            "origin_chapter": r["origin_chapter"],
+            "expected_payoff_chapter": r["expected_payoff_chapter"],
+            "status": status,
+            "importance": r["importance"],
+            "scale": r["scale"],
+        })
+    return out
 
 
 def fully_resolve_hook(
@@ -1201,6 +1351,65 @@ def fully_resolve_hook(
             "       origin_chapter, importance, "
             "       user_marked_fully_resolved, user_resolved_at_chapter, "
             "       user_resolve_notes "
+            "FROM pending_hooks WHERE hook_id = ?",
+            (hook_id,),
+        ).fetchone()
+    return _row_to_dict(row) if row else {}
+
+
+def reactivate_hook(db_path: str, hook_id: str) -> dict[str, Any]:
+    """Undo a user fully-resolve: clear the resolve flag, blank the close
+    chapter / notes, and recompute the status from earlier hook_events
+    so 埋设 / 推进 history stays intact (only the 回收 event is dropped).
+
+    Status rules:
+      · If there is any earlier 'progress'/'mention' event → status
+        becomes 'progressing'
+      · Otherwise → 'open' (just 埋设)
+
+    Returns the post-update hook row (or {} if no such hook exists).
+    """
+    with open_db(db_path) as con:
+        # 1) Decide the next status by inspecting earlier events.
+        rows = con.execute(
+            "SELECT action FROM hook_events "
+            "WHERE hook_id = ? AND action != 'resolve' "
+            "ORDER BY chapter_num",
+            (hook_id,),
+        ).fetchall()
+        had_progress = any(
+            (r["action"] if hasattr(r, "keys") else r[0]) in (
+                "progress", "mention", "pressured", "near_payoff",
+            )
+            for r in rows
+        )
+        next_status = "progressing" if had_progress else "open"
+
+        # 2) Flip the hook row back.
+        cur = con.execute(
+            "UPDATE pending_hooks "
+            "SET user_marked_fully_resolved = 0, "
+            "    user_resolved_at_chapter = NULL, "
+            "    user_resolve_notes = '', "
+            "    status = ? "
+            "WHERE hook_id = ?",
+            (next_status, hook_id),
+        )
+        if cur.rowcount == 0:
+            return {}
+
+        # 3) Drop the matching 'resolve' hook_events so the 回收 章节 no
+        #    longer carries that marker. 埋设/推进 events stay intact.
+        con.execute(
+            "DELETE FROM hook_events WHERE hook_id = ? AND action = 'resolve'",
+            (hook_id,),
+        )
+        con.commit()
+
+        row = con.execute(
+            "SELECT hook_id, project_id, description, status, "
+            "       origin_chapter, importance, "
+            "       user_marked_fully_resolved, user_resolved_at_chapter "
             "FROM pending_hooks WHERE hook_id = ?",
             (hook_id,),
         ).fetchone()

@@ -78,13 +78,18 @@ def _top(weighted: dict[str, float], k: int) -> list[dict]:
 def compute_for_category(
     db_path: str, category: str, *, platform: str | None = None, top_k: int = 20,
 ) -> dict:
-    """单题材加权命名画像。"""
-    where = ["source_category = ?"]
-    params: list = [category]
+    """单题材加权命名画像。空 / "" / "全部" / "all" → 跨题材聚合（全部样本）。"""
+    where: list[str] = []
+    params: list = []
+    cat_label = (category or "").strip()
+    # Empty / 全部 / all → no category filter; everything else → exact match.
+    if cat_label and cat_label.lower() != "all" and cat_label != "全部":
+        where.append("source_category = ?")
+        params.append(cat_label)
     if platform:
         where.append("source_platform = ?")
         params.append(platform)
-    where_sql = " AND ".join(where)
+    where_sql = " AND ".join(where) if where else "1=1"
     with sqlite3.connect(db_path) as con:
         from . import name_library
         name_library._ensure(con)
@@ -97,8 +102,10 @@ def compute_for_category(
             params,
         ).fetchall()
     if not rows:
-        return {"available": False, "category": category, "platform": platform or "all",
-                "reason": "该题材人名库为空", "note": _DISCLAIMER}
+        return {"available": False, "category": cat_label or "全部",
+                "platform": platform or "all",
+                "reason": "该题材人名库为空" if cat_label else "人名库为空",
+                "note": _DISCLAIMER}
 
     # 每本书的 rank/heat（按 book 去重；同书多名取一致元数据）。
     books: dict[str, dict] = {}

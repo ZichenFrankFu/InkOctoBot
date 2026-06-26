@@ -146,10 +146,25 @@ class TransformersProvider(EmbeddingProvider):
             "loading %s on %s (fp16=%s)",
             self._model.hf_repo, device, self._fp16 and device == "cuda",
         )
-        st = SentenceTransformer(
-            self._model.hf_repo,
-            device=device,
-            model_kwargs=model_kwargs or None,
-        )
+        # Quiet the well-known noisy deprecation warnings that fire during
+        # model load: huggingface_hub's resume_download FutureWarning and
+        # transformers' "Special tokens have been added in the vocabulary"
+        # advice. They surface every time the model is loaded and obscure
+        # real errors in the log.
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            _warnings.filterwarnings(
+                "ignore", category=FutureWarning,
+                message=".*resume_download.*",
+            )
+            _warnings.filterwarnings(
+                "ignore", category=UserWarning,
+                message=".*Special tokens have been added.*",
+            )
+            st = SentenceTransformer(
+                self._model.hf_repo,
+                device=device,
+                model_kwargs=model_kwargs or None,
+            )
         self._actual_device = device
         return st

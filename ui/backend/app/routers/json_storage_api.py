@@ -18,7 +18,8 @@ import json, time, uuid, os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, File, UploadFile
+from fastapi.responses import FileResponse
 from ..services import project_store
 from ..services.project_paths import get_db_path
 from ..settings import settings
@@ -163,6 +164,106 @@ def delete_character(cid: str):
     return {"ok": True}
 
 
+# ─── Character avatar (upload + serve) ───
+
+def _avatar_dir() -> Path:
+    """Avatars live next to the database in <data_dir>/avatars/."""
+    from pathlib import Path as _P
+    return _P(_db()).resolve().parent / "avatars"
+
+
+_ALLOWED_AVATAR_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+@router.post("/characters/{cid}/avatar")
+async def upload_character_avatar(cid: str, file: UploadFile = File(...)):
+    """Save the uploaded image as the character's avatar. Replaces any
+    previously-uploaded avatar (delete-old + write-new is atomic for the
+    UI flow). The avatar lives next to the DB as
+    ``<data_dir>/avatars/{cid}{.ext}`` and is served by the GET sibling
+    below. The character's ``avatar_url`` extra-field is then updated
+    so list / detail / graph all pick up the new image after a reload."""
+    char = project_store.get_character(_db(), cid)
+    if not char:
+        raise HTTPException(status_code=404, detail=f"character {cid} not found")
+
+    ext = ""
+    if file.filename:
+        from pathlib import Path as _P
+        ext = _P(file.filename).suffix.lower()
+    if ext not in _ALLOWED_AVATAR_EXT:
+        # Fall back to content-type sniff.
+        ct = (file.content_type or "").lower()
+        if "png" in ct:
+            ext = ".png"
+        elif "jpeg" in ct or "jpg" in ct:
+            ext = ".jpg"
+        elif "webp" in ct:
+            ext = ".webp"
+        elif "gif" in ct:
+            ext = ".gif"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="unsupported image type (need png / jpg / webp / gif)",
+            )
+
+    avatar_dir = _avatar_dir()
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+
+    # Drop any previous avatar regardless of extension so we don't leak
+    # stale files when the user re-uploads a different format.
+    for existing in avatar_dir.glob(f"{cid}.*"):
+        try:
+            existing.unlink()
+        except OSError:
+            pass
+
+    target = avatar_dir / f"{cid}{ext}"
+    blob = await file.read()
+    target.write_bytes(blob)
+
+    # Persist the URL so frontend can render the avatar after reload.
+    url = f"/api/data/characters/{cid}/avatar"
+    body = dict(char)
+    body["avatar_url"] = url
+    project_store.upsert_character(_db(), body)
+    return {"ok": True, "avatar_url": url}
+
+
+@router.get("/characters/{cid}/avatar")
+def get_character_avatar(cid: str):
+    """Stream the avatar bytes. 404 when the user hasn't uploaded yet."""
+    avatar_dir = _avatar_dir()
+    for ext in _ALLOWED_AVATAR_EXT:
+        candidate = avatar_dir / f"{cid}{ext}"
+        if candidate.exists():
+            media = "image/png" if ext == ".png" \
+                else "image/jpeg" if ext in (".jpg", ".jpeg") \
+                else "image/webp" if ext == ".webp" \
+                else "image/gif"
+            return FileResponse(str(candidate), media_type=media)
+    raise HTTPException(status_code=404, detail=f"avatar not found for {cid}")
+
+
+@router.delete("/characters/{cid}/avatar")
+def delete_character_avatar(cid: str):
+    """Remove the uploaded avatar (the character falls back to the
+    auto-generated 文字 头像 again). Idempotent."""
+    avatar_dir = _avatar_dir()
+    for existing in avatar_dir.glob(f"{cid}.*"):
+        try:
+            existing.unlink()
+        except OSError:
+            pass
+    char = project_store.get_character(_db(), cid)
+    if char and char.get("avatar_url"):
+        body = dict(char)
+        body["avatar_url"] = ""
+        project_store.upsert_character(_db(), body)
+    return {"ok": True}
+
+
 # ═══ World Book (DB-backed via project_store) ═══
 @router.get("/worldbook")
 def list_worldbook(project_id: str | None = None, page: int = 0, size: int = 0):
@@ -296,10 +397,15 @@ import logging as _fs_logging
 _fs_log = _fs_logging.getLogger("inkoctobot.routers.foreshadowing_legacy")
 
 @router.get("/foreshadowing/{project_id}")
-def get_foreshadowing(project_id: str):
+def get_foreshadowing(project_id: str, include_resolved: bool = False):
+    """Active hooks by default; pass include_resolved=true to also surface
+    hooks the user 已 fully-resolved (needed for the 故事线 page's 已回收
+    view so the inactive list isn't always empty)."""
     return {
         "project_id": project_id,
-        "items": project_store.list_foreshadowing_legacy(_db(), project_id),
+        "items": project_store.list_foreshadowing_legacy(
+            _db(), project_id, include_resolved=include_resolved,
+        ),
         "source": "pending_hooks",
     }
 
@@ -379,6 +485,21 @@ def fully_resolve_foreshadowing(hook_id: str, body: dict = Body(default={})):
         "user fully-resolved hook %s at chapter %s (notes len=%d)",
         hook_id, chapter_num, len(notes),
     )
+    return {"ok": True, "hook": saved}
+
+
+@router.post("/foreshadowing/{hook_id}/reactivate")
+def reactivate_foreshadowing(hook_id: str):
+    """Undo a fully-resolve: clear the user_marked_fully_resolved flag,
+    drop the 'resolve' hook_event so the close 章节 no longer carries
+    that marker (埋设 / 推进 events stay), and recompute status as
+    'progressing' if any earlier progress/mention exists, else 'open'.
+    Returns 404 if the hook id is unknown."""
+    saved = project_store.reactivate_hook(_db(), hook_id)
+    if not saved:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"hook {hook_id} not found")
+    _fs_log.info("user reactivated hook %s -> status=%s", hook_id, saved.get("status"))
     return {"ok": True, "hook": saved}
 
 # ═══ Editor (DB-backed: project_blobs + chapters table) ═══

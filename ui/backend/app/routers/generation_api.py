@@ -202,20 +202,22 @@ async def _run_chapter_complete_hook(
 ) -> None:
     """Post-generation hook: update memory system (A2: memory integration)."""
     try:
-        # Generate chapter summary using LLM
+        # Generate chapter summary using LLM. system + user prompts both
+        # routed through the prompt registry — user can override either
+        # via 设置 → 提示词.
         from llm.base import LLMMessage
+        from reference_pipeline.prompts import render as _render_prompt
+        sys_prompt = _render_prompt("generation.chapter_summary_system")
+        user_prompt = _render_prompt(
+            "generation.chapter_summary",
+            chapter_num=chapter_num,
+            chapter_text=chapter_text[:3000],
+        )
         summary_resp = await router_inst.generate(
             agent_role="evaluator",
             messages=[
-                LLMMessage(role="system", content="你是一个小说章节摘要生成器。"),
-                LLMMessage(role="user", content=(
-                    f"请为以下第{chapter_num}章生成简短摘要（100-200字），"
-                    f"并提取关键事件和角色状态变化。\n\n{chapter_text[:3000]}\n\n"
-                    "请以JSON格式输出：\n"
-                    '{"summary": "摘要", "key_events": ["事件1"], '
-                    '"character_states": {"角色名": "状态"}, '
-                    '"foreshadowing": [{"type": "planted|resolved", "description": "描述"}]}'
-                )),
+                LLMMessage(role="system", content=sys_prompt),
+                LLMMessage(role="user", content=user_prompt),
             ],
             temperature=0.3,
             max_tokens=1000,
@@ -274,9 +276,13 @@ class GenerateRequest(BaseModel):
     existing_content: str = ""
     chapter_num: int = 1
     character_aliases: dict[str, str] = {}
-    # Chapter-linked reference material (chronicle events / inspirations).
+    # Chapter-linked reference material (chronicle events / settings /
+    # characters / setting entries / inspirations).
     referenced_events: list[dict] = []
     referenced_inspirations: list[dict] = []
+    referenced_settings: list[dict] = []
+    referenced_characters: list[dict] = []
+    referenced_entries: list[dict] = []
     # When true, /quick-generate skips the LLM call and returns the
     # assembled prompt so it can be run in a web LLM instead.
     prompt_only: bool = False
@@ -335,6 +341,33 @@ def health():
     return {"status": "ok", "router": "generation"}
 
 
+@router.get("/diagnose/platform-directive/{project_id}")
+def diagnose_platform_directive(project_id: str) -> dict:
+    """Debug "loader says 未注入 but the 市场特征提取 tabs show data".
+
+    Returns the trail of values the platform_directive loader sees for
+    this project: resolved platform/category, every stored platform
+    identifier discovered across the project DB + crawler DB, the
+    matched alias list, and which source (synthesized profile / aggregated
+    stats / opening_nlp cache / analysis_run trend cache / crawler-DB
+    direct aggregate) had content. Hitting this endpoint reveals exactly
+    where the chain breaks.
+    """
+    from ui.backend.app.services.prompt_context.loaders import platform_market
+    return platform_market.diagnose(project_id)
+
+
+@router.get("/diagnose/market-overview")
+def diagnose_market_overview() -> dict:
+    """Inspect what the market_overview loader sees — which 市场特征提取
+    cache rows are present, how many rows / tags / pairs each source
+    surfaces, and a preview of the assembled body. Use when 市场总览
+    shows 未注入 even though the basic / advanced extraction tabs work.
+    """
+    from ui.backend.app.services.prompt_context.loaders import market_overview
+    return market_overview.diagnose()
+
+
 @router.get("/cost-estimate")
 def cost_estimate(
     project_id: str = "",
@@ -381,7 +414,10 @@ async def start_generation(req: GenerateRequest):
     try:
         from ._rag_context import build_referenced_materials_block
         materials = build_referenced_materials_block(
-            req.referenced_events, req.referenced_inspirations, _get_db_path())
+            req.referenced_events, req.referenced_inspirations, _get_db_path(),
+            settings=req.referenced_settings,
+            characters=req.referenced_characters,
+            entries=req.referenced_entries)
     except Exception:
         materials = ""
     if materials:
@@ -814,6 +850,9 @@ async def quick_generate(req: GenerateRequest):
                 req.character_aliases, req.skills,
                 referenced_events=req.referenced_events,
                 referenced_inspirations=req.referenced_inspirations,
+                referenced_settings=req.referenced_settings,
+                referenced_characters=req.referenced_characters,
+                referenced_entries=req.referenced_entries,
                 chapter_id=req.chapter_id,
                 rag_excludes=req.rag_excludes,
                 web_mode=req.prompt_only,
@@ -829,7 +868,7 @@ async def quick_generate(req: GenerateRequest):
                     "single_agent prompt render failed (%s); using default template", ve
                 )
                 user_content = _render_prompt("generation.single_agent", **prompt_vars)
-            system_prompt = "你是一名专业的中文网文写作者，请严格依据用户提供的资料创作。"
+            system_prompt = _render_prompt("generation.writer_system")
             if req.prompt_only:
                 return {"status": "ok", "prompt": user_content, "skills_used": skills_used}
 

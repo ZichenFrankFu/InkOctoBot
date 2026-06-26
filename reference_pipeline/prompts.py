@@ -604,7 +604,8 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
 3. 严格遵守上述世界观设定、人物档案、专业知识与平台特性，不得自相矛盾。
 4. 直接输出小说正文，不要输出标题、解释、大纲或任何格式标记。""",
         "vars": [
-            "platform_directive", "user_special_requirements",
+            "platform_directive",
+            "user_special_requirements",
             "chapter_outline", "time_location",
             "characters_block", "character_cards", "worldbook",
             "reference", "referenced_materials",
@@ -613,7 +614,7 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
             "user_preferences", "existing_content",
             "current_chapter_draft", "skills",
         ],
-        "description": "单 Agent / 快速生成正文的提示模板（含 LOADER_SPEC v3.1 全部 14 个 spec block 槽位）",
+        "description": "单 Agent / 快速生成正文的提示模板（market_overview 已并入 platform_directive，剩 14 个 spec block 槽位）",
     },
 
     "generation.rewrite": {
@@ -870,6 +871,219 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
         "vars": [],
         "description": "创作管线 · 剪辑师 Agent 的 system 提示",
     },
+
+    # ── 之前以 inline f-string 散落在各 router / agent 里的 prompts ──
+    # 全部并入注册表, 让设置 → 提示词 可以一键覆盖/恢复 (用户要求).
+
+    "generation.writer_system": {
+        "template": """你是一名专业的中文网文写作者，请严格依据用户提供的资料创作。""",
+        "vars": [],
+        "description": "正文生成 · 单 Agent / 导演模式的 system 提示词",
+    },
+
+    "generation.chapter_summary": {
+        "template": """请为以下第{chapter_num}章生成简短摘要（100-200字），并提取关键事件和角色状态变化。
+
+{chapter_text}
+
+请以 JSON 格式输出：
+{{"summary": "摘要", "key_events": ["事件1"], "character_states": {{"角色名": "状态"}}, "foreshadowing": [{{"type": "planted|resolved", "description": "描述"}}]}}""",
+        "vars": ["chapter_num", "chapter_text"],
+        "description": "正文生成 · 写完章节后的摘要 / 关键事件抽取提示词",
+    },
+
+    "generation.chapter_summary_system": {
+        "template": """你是一个小说章节摘要生成器。""",
+        "vars": [],
+        "description": "正文生成 · 章节摘要生成器的 system 提示",
+    },
+
+    "assistant.character_profile": {
+        "template": """你是一个专业的小说角色设计师。根据角色名字和定位，生成详细的角色档案。请直接用 JSON 格式输出（不要代码块标记）：
+{{"personality": "性格描述", "background": "背景故事", "speech_style": "说话风格特征", "appearance": "外貌描写", "tags": ["标签1", "标签2"]}}""",
+        "vars": [],
+        "description": "AI 角色生成 · 「一键补全角色档案」按钮的 system 提示",
+    },
+
+    "assistant.character_profile_user": {
+        "template": """角色名：{name}
+定位：{role}{existing_block}""",
+        "vars": ["name", "role", "existing_block"],
+        "description": "AI 角色生成 · 「一键补全角色档案」按钮的 user 提示",
+    },
+
+    "assistant.worldbook_consistency": {
+        "template": """你是一个世界观一致性检查专家。仔细检查以下世界书条目两两之间是否存在矛盾或逻辑冲突。
+输出 JSON：
+{{"conflicts": [{{"entry_a": "条目A标题", "entry_b": "条目B标题", "conflict": "冲突的具体内容", "suggestion": "修改建议"}}]}}
+要求：
+1. entry_a / entry_b 必须使用条目的原标题
+2. conflict 要引用双方冲突的原文表述
+3. suggestion 给出可执行的修改方案（改哪一条、怎么改）
+4. 没有矛盾时输出 {{"conflicts": []}}
+5. 禁止使用 emoji""",
+        "vars": [],
+        "description": "AI 设定助手 · 世界书一致性检查的 system 提示",
+    },
+
+    "assistant.worldbook_consistency_user": {
+        "template": """请检查以下世界书条目的一致性：
+
+{text}""",
+        "vars": ["text"],
+        "description": "AI 设定助手 · 世界书一致性检查的 user 提示",
+    },
+
+    "assistant.skill_learner": {
+        "template": """You are creating a new Skill for InkOctoBot, an AI novel writing system.
+
+Need description: {need}
+{examples_block}
+
+Generate two files:
+
+1. SKILL.md (YAML frontmatter + markdown description)
+2. skill.py (Python class inheriting from BaseSkill)
+
+Rules:
+- The skill.py MUST have `from agents.base_skill import BaseSkill, SkillMeta`
+- The class MUST be named `Skill`
+- MUST implement: meta(), build_prompt(), parse_output()
+- NO imports of: os, subprocess, socket, requests, urllib
+- NO file I/O
+- Output MUST be valid JSON from parse_output()
+- All text should be in Chinese where appropriate
+
+Output format:
+```skill_md
+(SKILL.md content)
+```
+
+```python
+(skill.py content)
+```""",
+        "vars": ["need", "examples_block"],
+        "description": "自学习 Skill 生成器 · 给一段需求 + 示例, 让 LLM 产出 SKILL.md + skill.py",
+    },
+
+    "reference.outline_granularity": {
+        "template": """[自动化数据抽取 · 不是对话] 你的输出会被 json.loads 直接解析；任何非 JSON 字符都会导致失败。
+
+下面是一部作品的「章节级」细颗粒度剧情大纲（编年史）。
+请把它**概括**为更宏观的「{level_cn}」颗粒度大纲：{level_hint}
+
+严格禁止：寒暄 / 解释 / markdown 包装 / <think> 块 / JSON 之外的文字。
+只输出以 {{ 开始、}} 结束的合法 JSON，结构与输入保持一致：
+{{ "logline": "≤ 50 字一句话概括", "epochs": [ {{ "title": "大段标题", "periods": [ {{ "title": "时间段标题", "time_marker": "可选时间锚点", "events": [ {{ "subject": "主语", "category": "plot_main|plot_side|character|setting|conflict|revelation|foreshadow|other", "name": "事件名 ≤ 12 字", "description": "1-2 句客观描述", "time_marker": "可选" }} ] }} ] }} ] }}
+
+原始章节级大纲：
+{plot_json}""",
+        "vars": ["level_cn", "level_hint", "plot_json"],
+        "description": "参考作品 · 把章节级大纲压缩成大事件/卷级/全书级的 user 提示",
+    },
+
+    "pipeline.reader_memory_consolidation": {
+        "template": """你是一个小说记忆压缩引擎。给定一个章节摘要，提取以下三类永久信息：
+
+1. permanent_facts: 不可逆的事实（如"张远在第5章觉醒了灵根"）
+2. active_foreshadowing: 尚未回收的伏笔（如"李清漪在第7章提到的'那个人'身份未揭示"）
+3. character_state_changes: 角色状态变化（如"张远对宗门的信任从中立变为怀疑"）
+
+请以 JSON 格式输出：
+```json
+{{
+  "permanent_facts": ["...", "..."],
+  "active_foreshadowing": ["...", "..."],
+  "character_state_changes": [
+    {{"character": "角色名", "change": "变化描述", "from_state": "原状态", "to_state": "新状态"}}
+  ]
+}}
+```""",
+        "vars": [],
+        "description": "创作管线 · 章节摘要压缩成 Truth Files (permanent_facts / 伏笔 / 状态)",
+    },
+
+    "pipeline.storyland_state_settlement": {
+        "template": """你是一个小说事实抽取引擎。给定一章已经写好的正文（和章节元数据），请从中提取以下 7 类结构化变化：
+
+1. **state_patches** — 角色/世界永久状态的"主-谓-宾"三元组事实
+   （如"李星河"-"位置"-"K-7 矿星"；"星门"-"状态"-"激活"）
+2. **particle_reconciliations** — 角色资源/物品账本变化（必须满足闭合等式 old + delta == new）
+   常见 category: resource（如灵石/金钱）, item（如剑/丹药）, status（如等级/血量）
+3. **hook_deltas** — 伏笔的新增 / 提及 / 推进 / 回收 / 放弃
+   （只输出本章实际发生的；importance: A=核心 B=次要 C=次要细节；
+    is_spoiler: 若伏笔内容涉及未来揭示则 true，应只对全知 POV 可见）
+4. **subplot_updates** — 副线推进（status_after: setup/building/climax/resolution/dormant）
+5. **emotion_arc_entries** — 角色情绪轨迹的明确转变（必须 from_state → to_state，且有触发事件）
+6. **chapter_summary** — 本章 300 字以内的总结 + 3-5 个关键事件
+
+如果本章上下文给了「预存锚点」（old_value）信息，**必须**：
+- delta 是有符号整数（subtract 用负值，add 用正值，set 用 0）
+- new_value 必须满足 closed equation（old + delta == new for add/subtract；
+  set 时 new_value 直接是新值）
+
+严格 JSON 输出（不带额外说明）：
+
+```json
+{{
+  "state_patches": [
+    {{"subject": "...", "predicate": "...", "object": "...", "action": "upsert"}}
+  ],
+  "particle_reconciliations": [
+    {{"character": "李星河", "category": "resource", "resource": "灵石",
+     "old_value": 80, "operation": "subtract", "delta": -30, "new_value": 50,
+     "reason": "购买突破丹", "in_text_evidence": "他咬牙拿出三十灵石递过去"}}
+  ],
+  "hook_deltas": [
+    {{"description": "...", "action": "new", "importance": "B", "is_spoiler": false}}
+  ],
+  "subplot_updates": [
+    {{"name": "宗门之争", "action": "advance", "status_after": "building",
+     "related_hook_ids": [], "note": "..."}}
+  ],
+  "emotion_arc_entries": [
+    {{"character": "...", "from_state": "...", "to_state": "...", "trigger": "..."}}
+  ],
+  "chapter_summary": {{
+    "summary": "...",
+    "key_events": ["...", "..."],
+    "pov_character": "...",
+    "mood": "..."
+  }}
+}}
+```
+
+如果某类没有变化，对应字段输出空数组（[]）。不要凭空虚构 — 只抽取文本明确支撑的事实。""",
+        "vars": [],
+        "description": "创作管线 · 故事舞台 状态结算（写完章节后从正文里抽取的 7 类结构化变化）",
+    },
+
+    "market_extractor.advanced_extraction": {
+        "template": """# 任务：为[{scope_cn}]做高级特征提取（专有名词 + 行文风格七组）
+
+你是一名资深的网络文学市场分析师。下面给出 {plat_cn} 平台多维度精选的代表作清单（覆盖总排行最高、上榜最稳定、热度最高、新书等不同类型，以代表整个平台风格）、开篇章节的真实 NLP 统计、以及各作品前 2 章[开头+结尾]的原文节选。请综合分析后，按下列全部维度输出结构化 JSON。
+
+⚠️ 注意：本次提取的目标是『该平台×榜单的通用风格画像』，**不是**任何一本具体作品的设定簿。**禁止**在 style_dimensions / signature_devices_description 等字段里粘贴具体作品的人物清单、关系网或情节细节 —— 用倾向 / 区间 / 抽象关键词替代。
+
+## 代表作清单（已选 {work_count} 部，全部纳入分析）
+
+{work_block}
+
+{keyword_block}## 开篇章节真实统计（脚本计算，含 生造词Step1 候选 — Step1 仍沿用旧名，Step2 已正式更名为『专有名词』）
+
+{nlp_block}
+
+## 章节原文节选（各作品前2章 开头+结尾，用于风格与专有名词判断）
+
+{excerpt_block}
+
+{schema_spec}""",
+        "vars": [
+            "scope_cn", "plat_cn", "work_count", "work_block",
+            "keyword_block", "nlp_block", "excerpt_block", "schema_spec",
+        ],
+        "description": "市场特征提取 · 高级特征 (代表作选取 + 专有名词 + 行文风格七组) 的 LLM 模板",
+    },
 }
 
 
@@ -917,14 +1131,65 @@ def _save_overrides(ov: dict[str, str]) -> None:
 # ── Public API ──────────────────────────────────────────────────────
 
 
+# Human-readable Chinese label saying WHERE each prompt is used in the
+# UI ("市场特征提取 - 高级特征提取" etc). Kept next to DEFAULT_PROMPTS so
+# new keys are forced to also declare their usage_location at code-review
+# time. The settings page shows this label INSTEAD OF the technical key.
+USAGE_LOCATIONS: dict[str, str] = {
+    "reference.unified":                    "参考作品 - 4合1抽取（事件/角色/设定/风格）",
+    "reference.style":                      "参考作品 - 文风提取",
+    "reference.characters":                 "参考作品 - 角色提取",
+    "reference.settings":                   "参考作品 - 设定提取",
+    "reference.outline":                    "参考作品 - 大纲提取",
+    "reference.outline_summary":            "参考作品 - 大纲概要",
+    "reference.rhythm":                     "参考作品 - 节奏分析",
+    "reference.chat_system":                "参考作品 - AI 对话",
+    "reference.volume_detect":              "参考作品 - 卷分隔识别",
+    "reference.ai_complete":                "参考作品 - AI 补全作品信息",
+    "reference.pure_setting":               "参考作品 - 纯设定提取",
+    "reference.pure_setting_translate":     "参考作品 - 纯设定翻译",
+    "reference.outline_granularity":        "参考作品 - 大纲压缩（大事件/卷级/全书级）",
+    "assistant.book_start_trending":        "AI 开书助手 - 趋势分析",
+    "assistant.book_start_brainstorm":      "AI 开书助手 - 故事头脑风暴",
+    "assistant.character":                  "角色管理 - AI 设计对话",
+    "assistant.character_profile":          "角色管理 - 一键补全角色档案（system）",
+    "assistant.character_profile_user":     "角色管理 - 一键补全角色档案（user）",
+    "assistant.worldbook":                  "世界书 - AI 设定助手",
+    "assistant.worldbook_consistency":      "世界书 - 一致性检查（system）",
+    "assistant.worldbook_consistency_user": "世界书 - 一致性检查（user）",
+    "assistant.outline":                    "故事大纲 - AI 大纲助手",
+    "assistant.skill_learner":              "设置 - 自学习 Skill 生成器",
+    "generation.single_agent":              "编辑器 - 正文生成（单 Agent / 写手 user）",
+    "generation.writer_system":             "编辑器 - 正文生成（写手 system）",
+    "generation.rewrite":                   "编辑器 - 章节段落重写",
+    "generation.evaluate":                  "编辑器 - 章节评估",
+    "generation.chapter_summary":           "编辑器 - 写完章后摘要（user）",
+    "generation.chapter_summary_system":    "编辑器 - 写完章后摘要（system）",
+    "pipeline.scene_direct":                "编辑器 - 导演模式（分镜 Agent）",
+    "pipeline.actor":                       "编辑器 - 导演模式（演员 Agent）",
+    "pipeline.narrator":                    "编辑器 - 导演模式（旁白 Agent）",
+    "pipeline.editor":                      "编辑器 - 导演模式（剪辑师 Agent）",
+    "pipeline.reader_memory_consolidation": "编辑器 - 章节摘要 → Truth Files",
+    "pipeline.storyland_state_settlement":  "编辑器 - 故事舞台 状态结算",
+    "market_extractor.advanced_extraction": "市场特征提取 - 高级特征提取",
+}
+
+
 def list_keys() -> list[dict]:
-    """Return [{key, description, vars, has_override}] for the UI."""
+    """Return [{key, usage_location, description, has_override}] for the UI.
+
+    ``usage_location`` is the Chinese "where this prompt is used" label
+    the settings tab displays (instead of the technical key). ``vars`` is
+    no longer surfaced — the settings page hides it; preview/render paths
+    still inspect ``DEFAULT_PROMPTS[k]['vars']`` directly when needed.
+    """
     ov = _load_overrides()
     return [
         {
             "key": k,
+            "usage_location": USAGE_LOCATIONS.get(k, k),
             "description": v.get("description", ""),
-            "vars": list(v.get("vars") or []),
+            "vars": list(v.get("vars") or []),  # kept for prompts/preview
             "has_override": k in ov,
         }
         for k, v in DEFAULT_PROMPTS.items()

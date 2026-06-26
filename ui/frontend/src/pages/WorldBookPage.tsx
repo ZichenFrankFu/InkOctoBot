@@ -4,6 +4,7 @@ import { useResizable } from "../hooks/useResizable";
 import { useToast } from "../components/shared/Toast";
 import { useDialog } from "../components/shared/Dialog";
 import type { WorldBookEntry, WorldBookCategory } from "../api/types";
+import ConsistencyCheckModal from "../components/worldbook/ConsistencyCheckModal";
 import TagAutocomplete from "../components/shared/TagAutocomplete";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 import { renderPrompt } from "../utils/promptTemplate";
@@ -13,23 +14,20 @@ interface Props {
   projects: any[];
 }
 
-const BUILTIN_CATEGORIES: { key: string; label: string; icon: string }[] = [
-  { key: "power_system", label: "力量体系", icon: "\u26A1" },
-  { key: "factions", label: "势力", icon: "\u2694" },
-  { key: "geography", label: "地理", icon: "\u2295" },
-  { key: "social_rules", label: "社会规则/习俗", icon: "\u2261" },
-  { key: "history", label: "历史", icon: "\u229E" },
-  { key: "hard_rules", label: "世界观规则", icon: "\u2500" },
-  { key: "other", label: "其他", icon: "\u25CB" },
+const BUILTIN_CATEGORIES: { key: string; label: string }[] = [
+  { key: "power_system", label: "力量体系" },
+  { key: "factions", label: "势力" },
+  { key: "geography", label: "地理" },
+  { key: "social_rules", label: "社会规则/习俗" },
+  { key: "history", label: "历史" },
+  { key: "hard_rules", label: "世界观规则" },
+  { key: "other", label: "其他" },
 ];
 
 function catLabel(cat: string, customCats: { key: string; label: string }[]): string {
   return BUILTIN_CATEGORIES.find(c => c.key === cat)?.label
     || customCats.find(c => c.key === cat)?.label
     || cat;
-}
-function catIcon(cat: string): string {
-  return BUILTIN_CATEGORIES.find(c => c.key === cat)?.icon || "\uD83D\uDCDD";
 }
 
 interface ConsistencyIssue {
@@ -53,12 +51,34 @@ export default function WorldBookPage({ projectId, projects }: Props) {
   const [filterCat, setFilterCat] = useState<string>("");
   const [editing, setEditing] = useState<WorldBookEntry | null>(null);
   const [dirty, setDirty] = useState(false);
+
+  // Warn before leaving with unsaved changes (browser tab close / refresh).
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
+
+  // In-app guard for actions that would discard the current draft
+  // (switching to another entry in the list, etc.).
+  const confirmDiscardIfDirty = useCallback(async (action: () => void) => {
+    if (!dirty) { action(); return; }
+    const ok = await confirm({
+      title: "未保存的更改",
+      message: "当前条目有未保存的修改，继续将丢弃这些内容。建议先点击「保存」。",
+      confirmLabel: "丢弃并继续",
+      cancelLabel: "取消",
+      destructive: true,
+    });
+    if (ok) action();
+  }, [dirty, confirm]);
+
   const [checking, setChecking] = useState(false);
   const [checkIssues, setCheckIssues] = useState<ConsistencyIssue[]>([]);
   const [checkMessage, setCheckMessage] = useState<string | null>(null);
+  const [showConsistency, setShowConsistency] = useState(false);
   const [search, setSearch] = useState("");
-  const [batchMode, setBatchMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // AI Assistant dialog state
   const [showAIChat, setShowAIChat] = useState(false);
@@ -96,7 +116,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
 
   const allCategories = useMemo(() => [
     ...BUILTIN_CATEGORIES,
-    ...customCategories.map(c => ({ ...c, icon: "\u2022" })),
+    ...customCategories,
   ], [customCategories]);
 
   const leftPanel = useResizable({ direction: "horizontal", initialSize: 320, minSize: 240, maxSize: 450 });
@@ -190,7 +210,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
         project_id: projectId,
         entries_text: entries,
       });
-      // 结构化结果优先（spec: 条目A × 条目B + 冲突内容 + 修改建议）
+      // 结构化结果优先（spec: 条目A 与 条目B + 冲突内容 + 修改建议）
       if (resp.conflicts && resp.conflicts.length > 0) {
         setCheckIssues(resp.conflicts.map((c: any) => ({
           entry1: c.entry_a || "",
@@ -226,22 +246,55 @@ export default function WorldBookPage({ projectId, projects }: Props) {
 
   const buildAIChatSystemHint = useCallback(async (): Promise<string> => {
     if (!editing) return "";
+    // Sibling entries in the same category — they're the most relevant
+    // cross-reference context for the editor, and shipping them in the
+    // hint lets the AI catch consistency issues without an extra round
+    // trip. Cap at 12 to keep the prompt size sane.
+    const SAME_CAT_CAP = 12;
+    const others = items
+      .filter(e => e.id !== editing.id)
+      .sort((a, b) => (a.category === editing.category ? -1 : 0)
+                   - (b.category === editing.category ? -1 : 0))
+      .slice(0, SAME_CAT_CAP);
+
+    const lines: string[] = [];
+    lines.push(`你是 AI 设定助手。当前正在编辑世界书条目「${editing.title}」（分类：${catLabel(editing.category, customCategories)}）。`);
+    lines.push("");
+    lines.push("【当前条目】");
+    lines.push(`- 标题：${editing.title}`);
+    lines.push(`- 分类：${catLabel(editing.category, customCategories)}`);
+    if (editing.tags && (editing.tags as any).length) {
+      lines.push(`- 标签：${(editing.tags as any).join("、")}`);
+    }
+    lines.push(`- 内容：${editing.content || "（空）"}`);
+
+    if (others.length) {
+      lines.push("");
+      lines.push(`【本作其它已记录的设定条目（${others.length}/${items.length - 1}）】`);
+      others.forEach(o => {
+        const body = (o.content || "").replace(/\s+/g, " ").slice(0, 140);
+        lines.push(`- [${catLabel(o.category, customCategories)}] ${o.title}${body ? `：${body}${body.length >= 140 ? "…" : ""}` : ""}`);
+      });
+    }
+
+    lines.push("");
+    lines.push(`帮助用户完善设定，回答设定相关问题，并在能看出冲突或缺口时主动指出。如果用户确认了某些内容，可以提供快速补全建议。
+回答后主动追加一个追问来帮助用户进一步完善设定。
+追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
+用自然语言回答，不要使用 JSON 格式。`);
+    const fallback = lines.join("\n");
+
     return renderPrompt(
       "assistant.worldbook",
       {
         entry_title: editing.title,
         category: catLabel(editing.category, customCategories),
         content: editing.content || "（空）",
+        full_context: fallback,
       },
-      `你是AI设定助手。当前正在编辑世界书条目「${editing.title}」（分类：${catLabel(editing.category, customCategories)}）。
-已有内容：${editing.content || "（空）"}
-
-帮助用户完善设定，回答设定相关问题。如果用户确认了某些内容，可以提供快速补全建议。
-回答后主动追加一个追问来帮助用户进一步完善设定。
-追问格式：在回答末尾加上 [FOLLOW_UP]追问内容[/FOLLOW_UP][OPTIONS]选项A|选项B|选项C[/OPTIONS]
-用自然语言回答，不要使用JSON格式。`,
+      fallback,
     );
-  }, [editing, customCategories]);
+  }, [editing, customCategories, items]);
 
   const fetchAIChatPrompt = useCallback(async (): Promise<string> => {
     const systemHint = await buildAIChatSystemHint();
@@ -302,51 +355,29 @@ export default function WorldBookPage({ projectId, projects }: Props) {
     setAiChatLoading(false);
   };
 
+  // 默认（editing 为空）只展示世界书 entry 列表，铺满整页。
+  // 用户点击某个 entry → 列表收窄为 leftPanel.size，右边展开 详情。
+  const showDetailColumn = editing !== null;
+
   return (
     <div className="page-full">
       <div className="panel-layout">
-        {/* ══════ LEFT PANEL: Navigator (4.1) ══════ */}
-        <div className="panel" style={{ width: leftPanel.size, flexShrink: 0, background: "var(--bg-surface)", borderRight: "1px solid var(--border)" }}>
+        {/* LEFT PANEL: Navigator (4.1) */}
+        <div className="panel" style={{
+          width: showDetailColumn ? leftPanel.size : "100%",
+          flex: showDetailColumn ? "0 0 auto" : "1 1 auto",
+          flexShrink: 0,
+          background: "var(--bg-surface)",
+          borderRight: showDetailColumn ? "1px solid var(--border)" : "none",
+        }}>
           <div className="panel-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
             <div className="flex items-center justify-between">
               <h3>世界书</h3>
-              <div className="flex gap-4">
-                <button className="btn" style={{ padding: "5px 10px", fontSize: 11 }}
-                  onClick={() => { setBatchMode(!batchMode); setSelectedIds(new Set()); }}>
-                  {batchMode ? "取消" : "批量"}
-                </button>
-                <button className="btn-primary" style={{ padding: "5px 12px", fontSize: 12 }} onClick={create}>
-                  + 新建
-                </button>
-              </div>
+              <button className="btn-primary" style={{ padding: "5px 12px", fontSize: 12 }} onClick={create}>
+                + 新建
+              </button>
             </div>
             <div className="text-xs text-muted">{projName}</div>
-            {batchMode && selectedIds.size > 0 && (
-              <div className="flex gap-4 mt-4">
-                <button className="btn" style={{ fontSize: 11, flex: 1 }}
-                  onClick={() => {
-                    const selected = items.filter(i => selectedIds.has(i.id));
-                    const blob = new Blob([JSON.stringify(selected, null, 2)], { type: "application/json" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url; a.download = `worldbook_${Date.now()}.json`;
-                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                  }}>
-                  导出 ({selectedIds.size})
-                </button>
-                <button className="btn" style={{ fontSize: 11, flex: 1, color: "var(--error)" }}
-                  onClick={async () => {
-                    if (!(await confirm({ message: `确定删除 ${selectedIds.size} 个条目？`, destructive: true }))) return;
-                    for (const id of selectedIds) {
-                      await apiDelete(`/api/data/worldbook/${id}`).catch((e) => toast(e.message || "操作失败", "error"));
-                    }
-                    setSelectedIds(new Set()); setBatchMode(false); load();
-                  }}>
-                  删除 ({selectedIds.size})
-                </button>
-              </div>
-            )}
           </div>
 
           {/* Search */}
@@ -367,7 +398,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                 className={filterCat === c.key ? "btn-primary" : "btn"}
                 style={{ padding: "4px 10px", fontSize: 11, borderRadius: 12 }}
                 onClick={() => setFilterCat(filterCat === c.key ? "" : c.key)}>
-                {c.icon} {c.label} ({catCounts[c.key] || 0})
+                {c.label} ({catCounts[c.key] || 0})
               </button>
             ))}
             <button className="btn"
@@ -392,22 +423,30 @@ export default function WorldBookPage({ projectId, projects }: Props) {
               {customCategories.map(c => (
                 <span key={c.key} style={{ marginLeft: 4, padding: "1px 6px", background: "var(--bg-surface-2)", borderRadius: 8, cursor: "pointer" }}
                   onClick={async () => { if (await confirm({ message: `删除自定义分类「${c.label}」？`, destructive: true })) removeCustomCategory(c.key); }}>
-                  {c.label} &times;
+                  {c.label} ×
                 </span>
               ))}
             </div>
           )}
 
-          {/* Consistency check button (4.1.1) */}
+          {/* Consistency check — opens a UniversalLLMDialog-style modal
+              with both API mode and 网页版 paste-back mode (mirrors the
+              advanced extraction tab's two-mode picker). */}
           <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
-            <button className="btn w-full" onClick={runConsistencyCheck}
-              disabled={checking || items.length === 0}
+            <button className="btn w-full"
+              onClick={() => setShowConsistency(true)}
+              disabled={items.length === 0}
               style={{ justifyContent: "center" }}>
-              {checking ? "检查中..." : "一致性检查"}
+              一致性检查
             </button>
           </div>
 
-          {/* Entry list */}
+          {/* Entry list / grid. While the panel is wide (no detail
+              column open) the entries are rendered as a category-grouped
+              grid — every category is a block, every entry a card with
+              a content preview. Once the user picks an entry the panel
+              collapses and we fall back to the linear list because grid
+              cards look cramped in the narrow column. */}
           <div className="panel-body">
             {loading ? (
               <div className="loading"><div className="loading-spinner" /></div>
@@ -415,55 +454,159 @@ export default function WorldBookPage({ projectId, projects }: Props) {
               <div className="empty-state" style={{ padding: 32 }}>
                 <p>{filterCat || search ? "没有匹配的条目" : "暂无条目"}</p>
               </div>
-            ) : (
+            ) : showDetailColumn ? (
+              // ──── linear list (compact / split view) ────
               filtered.map(entry => (
                 <div key={entry.id}
                   className={`report-list-item ${editing?.id === entry.id ? "active" : ""}`}
                   onClick={() => {
-                    if (batchMode) {
-                      setSelectedIds(prev => {
-                        const next = new Set(prev);
-                        if (next.has(entry.id)) next.delete(entry.id); else next.add(entry.id);
-                        return next;
-                      });
-                    } else {
-                      setEditing(entry); setDirty(false);
-                    }
+                    if (editing?.id === entry.id) return;
+                    confirmDiscardIfDirty(() => { setEditing(entry); setDirty(false); });
                   }}>
-                  {batchMode && (
-                    <input type="checkbox" checked={selectedIds.has(entry.id)} readOnly
-                      style={{ accentColor: "var(--accent)", flexShrink: 0 }} />
-                  )}
-                  <span className="report-icon">{catIcon(entry.category)}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="report-name" style={{ fontWeight: 600, color: "var(--text-primary)" }}>
                       {entry.title}
                     </div>
                     <div className="text-xs text-muted truncate">
                       {catLabel(entry.category, customCategories)}
-                      {entry.content ? ` \u00B7 ${entry.content.length > 40 ? entry.content.slice(0, 40) + "..." : entry.content}` : " \u00B7 (空)"}
+                      {entry.content ? `，${entry.content.length > 40 ? entry.content.slice(0, 40) + "..." : entry.content}` : "（空）"}
                     </div>
                   </div>
-                  {!batchMode && (
-                    <button className="btn-icon" style={{ fontSize: 14 }}
-                      onClick={e => { e.stopPropagation(); remove(entry.id); }}>&times;</button>
-                  )}
+                  <button className="btn-icon" style={{ fontSize: 14, padding: "2px 8px", lineHeight: 1 }}
+                    title="删除"
+                    onClick={e => { e.stopPropagation(); remove(entry.id); }}>×</button>
                 </div>
               ))
+            ) : (
+              // ──── category-grouped grid (default full-width view) ────
+              (() => {
+                const groups = new Map<string, typeof filtered>();
+                filtered.forEach(entry => {
+                  const key = entry.category || "other";
+                  if (!groups.has(key)) groups.set(key, []);
+                  groups.get(key)!.push(entry);
+                });
+                // Sort categories so any with a known label appear in
+                // allCategories order; unknown keys fall to the end.
+                const knownOrder = new Map(allCategories.map((c, i) => [c.key, i]));
+                const sortedKeys = Array.from(groups.keys()).sort((a, b) => {
+                  const ai = knownOrder.has(a) ? knownOrder.get(a)! : 9999;
+                  const bi = knownOrder.has(b) ? knownOrder.get(b)! : 9999;
+                  return ai - bi;
+                });
+                return (
+                  <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 16 }}>
+                    {sortedKeys.map(catKey => {
+                      const entries = groups.get(catKey) || [];
+                      return (
+                        <div key={catKey}>
+                          <div style={{
+                            display: "flex", alignItems: "baseline", gap: 8,
+                            marginBottom: 8, paddingBottom: 6,
+                            borderBottom: "1px solid var(--border-subtle)",
+                          }}>
+                            <h4 style={{
+                              fontSize: 13, fontWeight: 700, color: "var(--text-primary)",
+                              margin: 0,
+                            }}>
+                              {catLabel(catKey, customCategories)}
+                            </h4>
+                            <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                              {entries.length} 条
+                            </span>
+                          </div>
+                          <div style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                            gap: 10,
+                          }}>
+                            {entries.map(entry => (
+                              <div key={entry.id}
+                                onClick={() => confirmDiscardIfDirty(() => { setEditing(entry); setDirty(false); })}
+                                style={{
+                                  position: "relative",
+                                  background: "var(--bg-card, var(--bg-surface))",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: 10,
+                                  padding: "10px 12px",
+                                  cursor: "pointer",
+                                  transition: "border-color 0.15s, transform 0.15s",
+                                  minHeight: 86,
+                                  display: "flex", flexDirection: "column", gap: 4,
+                                }}
+                                onMouseEnter={e => {
+                                  e.currentTarget.style.borderColor = "var(--accent)";
+                                  e.currentTarget.style.transform = "translateY(-1px)";
+                                }}
+                                onMouseLeave={e => {
+                                  e.currentTarget.style.borderColor = "var(--border)";
+                                  e.currentTarget.style.transform = "translateY(0)";
+                                }}>
+                                <div style={{
+                                  display: "flex", alignItems: "center", gap: 6,
+                                }}>
+                                  <span style={{
+                                    fontSize: 13, fontWeight: 600,
+                                    color: "var(--text-primary)",
+                                    overflow: "hidden", textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap", flex: 1,
+                                  }} title={entry.title}>
+                                    {entry.title || "（未命名）"}
+                                  </span>
+                                  <button className="btn-icon"
+                                    title="删除"
+                                    onClick={e => { e.stopPropagation(); remove(entry.id); }}
+                                    style={{
+                                      fontSize: 13, lineHeight: 1, padding: "2px 6px",
+                                      color: "var(--text-tertiary)",
+                                    }}>×</button>
+                                </div>
+                                <div style={{
+                                  fontSize: 11, lineHeight: 1.5,
+                                  color: entry.content ? "var(--text-secondary)" : "var(--text-disabled)",
+                                  fontStyle: entry.content ? "normal" : "italic",
+                                  overflow: "hidden",
+                                  display: "-webkit-box",
+                                  WebkitLineClamp: 3, WebkitBoxOrient: "vertical",
+                                }}>
+                                  {entry.content || "（空）"}
+                                </div>
+                                {(entry.tags && (entry.tags as any).length > 0) && (
+                                  <div style={{
+                                    display: "flex", gap: 4, flexWrap: "wrap",
+                                    marginTop: "auto",
+                                  }}>
+                                    {((entry.tags as any) as string[]).slice(0, 4).map((tag, ti) => (
+                                      <span key={ti} className="tag" style={{
+                                        fontSize: 9, padding: "1px 6px",
+                                      }}>{tag}</span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()
             )}
           </div>
         </div>
 
-        <div className="panel-resize-h" {...leftPanel.handleProps} />
+        {showDetailColumn && <div className="panel-resize-h" {...leftPanel.handleProps} />}
 
-        {/* ══════ RIGHT PANEL: Entry Detail (4.2) ══════ */}
+        {/* RIGHT PANEL: Entry Detail (4.2) — only after the user picks an entry */}
+        {showDetailColumn && (
         <div className="panel flex-1" style={{ background: "var(--bg-app)", overflowY: "auto" }}>
           {/* Consistency check result as TABLE (4.1.1) */}
           {(checkIssues.length > 0 || checkMessage) && (
             <div style={{ margin: "16px 32px 0" }}>
               <div className="flex items-center justify-between mb-8">
                 <span className="label" style={{ marginBottom: 0 }}>一致性检查结果</span>
-                <button className="btn-icon" onClick={() => { setCheckIssues([]); setCheckMessage(null); }} style={{ fontSize: 12 }}>&times;</button>
+                <button className="btn-icon" onClick={() => { setCheckIssues([]); setCheckMessage(null); }} style={{ fontSize: 11, padding: "2px 6px" }}>关闭</button>
               </div>
               {checkMessage ? (
                 <div style={{
@@ -516,10 +659,11 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                     style={{ fontSize: 12 }} onClick={() => setShowAIChat(!showAIChat)}>
                     {showAIChat ? "收起 AI" : "AI 设定助手"}
                   </button>
-                  <button className="btn-primary" onClick={save} disabled={!dirty}
-                    style={{ opacity: dirty ? 1 : 0.5 }}>
-                    {dirty ? "保存" : "已保存"}
-                  </button>
+                  {dirty && (
+                    <span className="text-xs" style={{ color: "var(--gold)", fontWeight: 600 }}>
+                      · 未保存
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -641,7 +785,7 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                           className={editing.category === c.key ? "btn-primary" : "btn"}
                           style={{ padding: "6px 14px", fontSize: 12, borderRadius: 20 }}
                           onClick={() => u("category", c.key)}>
-                          {c.icon} {c.label}
+                          {c.label}
                         </button>
                       ))}
                     </div>
@@ -668,10 +812,42 @@ export default function WorldBookPage({ projectId, projects }: Props) {
                     style={{ fontFamily: "var(--font-serif)", lineHeight: 1.8, fontSize: 14, userSelect: "text" }} />
                 </div>
               </div>
+
+              {/* Centered, full-row save bar at the bottom. */}
+              <div style={{
+                marginTop: 16, padding: "12px 0",
+                display: "flex", justifyContent: "center",
+              }}>
+                <button
+                  className="btn-primary"
+                  onClick={save}
+                  disabled={!dirty}
+                  style={{
+                    minWidth: 220, padding: "10px 32px",
+                    fontSize: 14, fontWeight: 600,
+                    opacity: dirty ? 1 : 0.5,
+                  }}
+                >
+                  {dirty ? "保存当前条目" : "已保存"}
+                </button>
+              </div>
             </div>
           )}
         </div>
+        )}
       </div>
+
+      <ConsistencyCheckModal
+        open={showConsistency}
+        onClose={() => setShowConsistency(false)}
+        projectId={projectId || "default"}
+        entries={items}
+        catLabel={(k?: string) => catLabel(k as any, customCategories)}
+        onResult={({ issues, message }) => {
+          setCheckIssues(issues);
+          setCheckMessage(message);
+        }}
+      />
     </div>
   );
 }

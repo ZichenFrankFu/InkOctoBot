@@ -7,9 +7,11 @@ export interface Project {
   id: string;
   name: string;
   genre?: string;
-  platform?: string;          // 平台: 起点/番茄/etc
-  gender_target?: string;     // 男频/女频
-  serial_status?: string;     // 连载状态
+  // 代码层一律使用英文 slug / 枚举值, 展示层 (tPlatform / tGenderTarget /
+  // tSerialStatus) 负责翻译成中文. 不要在比较或 lookup 里写中文字面量.
+  platform?: string;          // canonical: "qidian" | "fanqie" | 自定义
+  gender_target?: string;     // "male" | "female" | "neutral"
+  serial_status?: string;     // "ongoing" | "completed" | "hiatus" | "unknown"
   synopsis?: string;          // 故事梗概
   status?: string;
   created_at?: string | number;
@@ -154,6 +156,11 @@ export interface Character {
   layer_b?: CharacterLayerB;
   relationships?: CharacterRelationship[];
   dynamic_snapshots?: DynamicPropertySnapshot[];
+  /** Avatar image (uploaded or AI-generated). Path returned by the
+   *  upload endpoint, fetchable via the same path. Used as the avatar
+   *  in 角色卡 list / 详情 / 全局关系图谱 nodes. Empty / undefined =
+   *  fall back to the colored 文字头像 (first character of name). */
+  avatar_url?: string;
 }
 
 export interface CharacterLayerB {
@@ -179,6 +186,13 @@ export interface CharacterRelationship {
 // ── Dynamic Property Snapshot (chapter-linked) ──
 export interface DynamicPropertySnapshot {
   chapter: string;        // chapter or in-story time marker
+  /** 转变档位 — one of "动摇" / "试探" / "倾向" (or empty / "无"). */
+  stage?: string;
+  /** Fixed random seed for the 决策参数 sampling at generation time.
+   *  When set, the generation pipeline must seed its RNG so the same
+   *  inputs reproduce the same decisions. ``null`` / undefined means
+   *  use a fresh random seed each generation (non-reproducible). */
+  decision_seed?: number | null;
   personality?: string;
   background?: string;
   speech_style?: string;
@@ -264,10 +278,20 @@ export interface ChapterOutline {
   references?: string[];
   /** Chronicle events linked from reference works (denormalized text). */
   referenced_events?: { ref_id: string; work_title: string; name: string; description: string; chapter?: string }[];
+  /** Setting / worldview items linked from reference works (denormalized text). */
+  referenced_settings?: { ref_id: string; work_title: string; label: string; content: string }[];
+  /** Characters linked from reference works (narrative or pure-setting). */
+  referenced_characters?: { ref_id: string; work_title: string; name: string; description: string }[];
+  /** Pure-setting taxonomy entries linked from reference works. */
+  referenced_entries?: { ref_id: string; work_title: string; title: string; content: string }[];
   /** Inspirations linked from the 灵感库 (denormalized text). */
   referenced_inspirations?: { id: string; category: string; title: string; content: string }[];
   /** Map of real character name -> alias for hidden identity (e.g. "李悦" -> "神秘女人") */
   character_aliases?: Record<string, string>;
+  /** Per-chapter free-text 用户特别要求 — surfaces in the RAG prompt
+   *  via the `user_special_requirements` loader. Empty / undefined =
+   *  loader is silent. */
+  special_requirements?: string;
 }
 
 // ── Pipeline / Generation ──
@@ -386,6 +410,22 @@ export interface StoryNode {
   time?: string;
   location?: string;
   week?: number;
+  /** Optional: 故事线 / 伏笔 this 情节 belongs to. Singular fields are
+   *  the legacy shape; the new multi-select 详情面板 writes the array
+   *  versions. Readers fall back to the singular if the array is empty. */
+  thread_id?: string;
+  hook_id?: string;
+  thread_ids?: string[];
+  hook_ids?: string[];
+  /** Per-情节 status w.r.t. each thread / hook the card belongs to.
+   *  Keys = thread_id / hook_id; values = status keys. Thread values:
+   *  "setup" | "building" | "resolution" (开启 / 推进 / 完结).
+   *  Hook values: "open" | "progressing" | "resolved" (埋设 / 推进 / 回收).
+   *  Missing key → defaults to "setup" / "open". A 情节 marking a hook
+   *  as "resolved" greys out only that card's chip — the global hook
+   *  stays active unless the user also fully-resolves in the 总览栏. */
+  thread_statuses?: Record<string, string>;
+  hook_statuses?: Record<string, string>;
 }
 
 export interface StoryEdge {

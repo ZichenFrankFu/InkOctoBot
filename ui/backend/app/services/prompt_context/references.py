@@ -186,15 +186,35 @@ def build_referenced_materials_block(
     events: list[dict] | None,
     inspirations: list[dict] | None,
     db_path: str = "",
+    settings: list[dict] | None = None,
+    characters: list[dict] | None = None,
+    entries: list[dict] | None = None,
 ) -> str:
-    """Build the chapter's reference block from its 大纲-tab linked events
-    and inspirations. Each referenced work is enriched from the reference
-    database with its full-book plot outline, character roster and
-    rhythm / payoff / hook profile."""
+    """Build the chapter's reference block from its 大纲-tab linked events,
+    settings, characters, entries and inspirations. Each referenced work
+    is enriched from the reference database with its full-book plot
+    outline, character roster and rhythm / payoff / hook profile."""
     by_work: dict[str, list[dict]] = {}
     for e in (events or []):
         rid = str(e.get("ref_id") or e.get("work_title") or e.get("ref_title") or "")
         by_work.setdefault(rid, []).append(e)
+    settings_by_work: dict[str, list[dict]] = {}
+    for s in (settings or []):
+        rid = str(s.get("ref_id") or s.get("work_title") or "")
+        settings_by_work.setdefault(rid, []).append(s)
+    characters_by_work: dict[str, list[dict]] = {}
+    for c in (characters or []):
+        rid = str(c.get("ref_id") or c.get("work_title") or "")
+        characters_by_work.setdefault(rid, []).append(c)
+    entries_by_work: dict[str, list[dict]] = {}
+    for e in (entries or []):
+        rid = str(e.get("ref_id") or e.get("work_title") or "")
+        entries_by_work.setdefault(rid, []).append(e)
+    # Make sure works that only have settings / characters / entries (no
+    # events) still get a block.
+    for extra in (settings_by_work, characters_by_work, entries_by_work):
+        for rid in extra:
+            by_work.setdefault(rid, [])
     rdb = None
     if db_path and by_work:
         try:
@@ -204,7 +224,11 @@ def build_referenced_materials_block(
             rdb = None
     blocks: list[str] = []
     for rid, evs in by_work.items():
-        wt = str(evs[0].get("work_title") or evs[0].get("ref_title") or rid).strip()
+        first = evs[0] if evs else (
+            (settings_by_work.get(rid) or characters_by_work.get(rid)
+              or entries_by_work.get(rid) or [{}])[0]
+        )
+        wt = str(first.get("work_title") or first.get("ref_title") or rid).strip()
         seg = [f"《{wt}》"]
         work = None
         if rdb is not None:
@@ -231,6 +255,33 @@ def build_referenced_materials_block(
             ev_lines.append(f"- {head}：{desc}" if desc else f"- {head}")
         if ev_lines:
             seg.append("关联事件（user 选取）：\n" + "\n".join(ev_lines))
+        se_lines: list[str] = []
+        for s in settings_by_work.get(rid, []):
+            lab = str(s.get("label") or "").strip()
+            content = str(s.get("content") or "").strip()
+            if not lab and not content:
+                continue
+            se_lines.append(f"- {lab}：{content}" if lab else f"- {content}")
+        if se_lines:
+            seg.append("关联设定（user 选取）：\n" + "\n".join(se_lines))
+        ch_lines: list[str] = []
+        for c in characters_by_work.get(rid, []):
+            nm = str(c.get("name") or "").strip()
+            desc = str(c.get("description") or "").strip()
+            if not nm and not desc:
+                continue
+            ch_lines.append(f"- {nm}：{desc}" if desc else f"- {nm}")
+        if ch_lines:
+            seg.append("关联人物（user 选取）：\n" + "\n".join(ch_lines))
+        en_lines: list[str] = []
+        for e in entries_by_work.get(rid, []):
+            t = str(e.get("title") or "").strip()
+            content = str(e.get("content") or "").strip()
+            if not t and not content:
+                continue
+            en_lines.append(f"- {t}：{content}" if content else f"- {t}")
+        if en_lines:
+            seg.append("关联条目（user 选取）：\n" + "\n".join(en_lines))
         if len(seg) > 1:
             blocks.append("\n".join(seg))
     insp_lines: list[str] = []

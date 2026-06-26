@@ -100,10 +100,12 @@ class TestLoader2PicksUpColumns(unittest.TestCase):
                 "INSERT INTO projects (project_id, title, platform, category) "
                 "VALUES ('p_main', 't', 'qidian', 'xianxia')"
             )
+            # New loader contract: structured subsections (profile_summary
+            # etc.), not loader_payload.
             c.execute(
                 "INSERT INTO platform_profiles "
                 "(profile_id, platform, category, profile_version, "
-                " loader_payload, confidence_label) "
+                " profile_summary, confidence_label) "
                 "VALUES ('pp_x', 'qidian', 'xianxia', 1, "
                 " '起点玄幻：复仇流为主。', 'high')"
             )
