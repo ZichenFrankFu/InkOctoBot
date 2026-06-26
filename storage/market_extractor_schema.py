@@ -254,7 +254,9 @@ _DDL: tuple[str, ...] = (
         loader_token_estimate            INTEGER,
         holdout_similarity_score         REAL,
         -- spec 2.1.3.2 高级特征提取：行文风格七组 (A1-G2) 结构化结果
-        -- 与生造词 Step2（专有名词/人名/地名常见模式与常见字）。
+        -- 与专有名词（旧称『生造词 Step2』；含 proper_nouns / 人名 /
+        -- 地名 / 常见构词模式 / 常见字）。JSON 字段名保留 neologism_step2_json
+        -- 以兼容旧档案 — 仅 UI / prompt 文案改用『专有名词』。
         style_dimensions_json            TEXT,
         neologism_step2_json             TEXT,
         confidence_label                 TEXT,

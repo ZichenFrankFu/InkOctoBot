@@ -45,10 +45,17 @@ class TestPlatformMarketPlaceholder(unittest.TestCase):
 class TestPlatformMarketDataDriven(unittest.TestCase):
     """Confirms the loader resolves the project's platform string against
     REAL stored data only — no hardcoded alias table — and pulls
-    content from market-extractor outputs (category_aggregated_stats /
-    compute_cache opening_nlp).
+    content from market-extractor outputs.
 
-    Three fuzzy-matcher tiers:
+    Per the merged design (no separate ``market_overview`` block) the
+    body is composed of:
+      · 高级特征 — six subsections drawn from a ``platform_profiles`` row
+        (profile_summary / style_baseline / pacing_guidance /
+        signature_devices_description / neologism_step2 / style_dimensions).
+      · 基础特征 — ``compute_cache[opening_nlp:<platform>]['spec_stats']``
+        rendered via ``opening_stats.render_stats_for_prompt``.
+
+    Three fuzzy-matcher tiers (project label → stored identifier):
     1. project="起点中文网", data="起点"  → stored ⊂ project match
     2. project="起点",       data="起点"  → exact match
     3. project="qidian",     data="起点"  → no overlap → loader skips
@@ -68,15 +75,50 @@ class TestPlatformMarketDataDriven(unittest.TestCase):
             ensure_creation_tables(con)
             _ensure_projects_market_columns(con)
             ensure_market_extractor_tables(con)
+            # Active platform_profiles row — drives the six 高级特征 subsections.
             con.execute(
-                "INSERT INTO category_aggregated_stats(stats_id, platform, "
-                "category, source_works_count, "
-                "opening_hook_type_distribution_json, "
-                "chapter_word_count_stats_json) "
-                "VALUES('cas_1', '起点', '玄幻', 10, ?, ?)",
-                (json.dumps({"金手指开场": 5, "高潮开场": 3}, ensure_ascii=False),
-                 json.dumps({"mean": 3200, "p25": 2800, "p50": 3200,
-                              "p75": 3600}, ensure_ascii=False)))
+                "INSERT INTO platform_profiles("
+                "profile_id, platform, category, profile_version, "
+                "profile_summary, style_baseline, "
+                "signature_devices_description, pacing_guidance, "
+                "style_dimensions_json, neologism_step2_json, "
+                "loader_payload, confidence_label, "
+                "extraction_started_at, extraction_completed_at) "
+                "VALUES('prof_1', '起点', '玄幻', 1, ?, ?, ?, ?, ?, ?, '', "
+                "'manual', ?, ?)",
+                (
+                    "起点玄幻的代表画像：金手指主导、爽点密集、首章 3000 字开篇即设悬念。",
+                    json.dumps({
+                        "narration_pov": "第三人称限知", "tone": "热血",
+                        "language_register": "口语化", "sentence_rhythm": "短句为主",
+                    }, ensure_ascii=False),
+                    "招牌叙事手法：装逼打脸 / 系统升级 / 反派智商在线。",
+                    json.dumps({
+                        "first_chapter_words": "2500-3500",
+                        "info_release_strategy": "渐进揭露",
+                    }, ensure_ascii=False),
+                    json.dumps({
+                        "A_protagonist": {
+                            "A1_appearance": "首句登场，动作场景切入。",
+                            "A3_cheat": "系统流，初章揭示。",
+                        },
+                        "B_social": {
+                            "B1_network": "前5章登场：师父 / 师姐 / 反派A — 应被剔除",
+                            "B2_ensemble": "单主角聚焦，反派第3章登场。",
+                        },
+                        "E_style": {
+                            "E1_writing_style": "热血爽快，带轻度吐槽。",
+                        },
+                    }, ensure_ascii=False),
+                    json.dumps({
+                        "proper_nouns": ["灵根", "宗门", "玄气"],
+                        "person_names": ["林萧"],
+                        "naming_patterns": "单字+宗/门，叠音古风双字。",
+                    }, ensure_ascii=False),
+                    time.time(), time.time(),
+                ),
+            )
+            # opening_nlp cache — drives 基础特征 via render_stats_for_prompt.
             con.execute(
                 "CREATE TABLE IF NOT EXISTS compute_cache ("
                 "cache_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL, "
@@ -88,6 +130,31 @@ class TestPlatformMarketDataDriven(unittest.TestCase):
                     "available": True, "sample_count": 50, "unique_novels": 20,
                     "word_count_summary": {"mean": 2900, "min": 1500, "max": 4500},
                     "dialogue_ratio": {"mean": 0.28},
+                    "spec_stats": {
+                        "available": True,
+                        "chapters_analyzed": 120,
+                        "first_chapter_words_avg": 2950,
+                        "chapter_words_avg": 2900,
+                        "chapter_words_median": 2850,
+                        "avg_sentence_length": 22.4,
+                        "punctuation_density_per_1k": {"。": 35, "，": 88},
+                        "linguistic_features": {
+                            "pos_distribution": {
+                                "available": True,
+                                "action_scene": 0.22,
+                                "description_density": 0.18,
+                                "setting_density": 0.28,
+                            },
+                            "sentiment": {
+                                "available": True,
+                                "emotion_ratio": {"乐": 0.32, "怒": 0.18, "惧": 0.12},
+                            },
+                        },
+                        "top_words": [
+                            {"word": "灵气", "count": 18, "relative_freq_permille": 5.2},
+                            {"word": "宗门", "count": 14, "relative_freq_permille": 4.0},
+                        ],
+                    },
                 }, ensure_ascii=False), time.time()))
             con.commit()
         self._patcher = mock.patch(
@@ -106,8 +173,20 @@ class TestPlatformMarketDataDriven(unittest.TestCase):
         })
         out = platform_market.load("p1")
         self.assertIn("平台风格基线", out)
-        self.assertIn("金手指开场", out)
-        self.assertIn("开篇字数", out)
+        # 高级特征 subsections present.
+        self.assertIn("平台综述", out)
+        self.assertIn("风格基线", out)
+        self.assertIn("招牌叙事手法", out)
+        self.assertIn("专有名词", out)
+        self.assertIn("灵根", out)
+        # 基础特征 rendered via render_stats_for_prompt.
+        self.assertIn("基础特征", out)
+        self.assertIn("词性分布", out)
+        # B1_network deliberately dropped — must NOT appear in prompt.
+        self.assertNotIn("应被剔除", out)
+        # 市场基底 / 市场趋势 sections removed entirely.
+        self.assertNotIn("市场数据库", out)
+        self.assertNotIn("市场趋势", out)
 
     def test_exact_match(self) -> None:
         self._ps.upsert_project(self.db, {
@@ -115,6 +194,7 @@ class TestPlatformMarketDataDriven(unittest.TestCase):
         })
         out = platform_market.load("p2")
         self.assertIn("平台风格基线", out)
+        self.assertIn("平台综述", out)
 
     def test_no_overlap_returns_empty(self) -> None:
         """No hardcoded alias table — a project value with zero overlap
@@ -127,93 +207,6 @@ class TestPlatformMarketDataDriven(unittest.TestCase):
     def test_no_platform_set(self) -> None:
         self._ps.upsert_project(self.db, {"id": "p4", "name": "d"})
         self.assertEqual(platform_market.load("p4"), "")
-
-
-class TestPlatformMarketCrawlerFallback(unittest.TestCase):
-    """When NO project-DB caches contain data for the platform, the
-    loader must still surface real data straight from the 市场数据库
-    (crawler DB) — novels count + main-category distribution + top tags
-    are aggregated on demand. This is the user's "tabs display data but
-    loader says 未注入" path.
-    """
-
-    def setUp(self) -> None:
-        import os, sqlite3, tempfile
-        from storage.project_schema import (
-            ensure_creation_tables, _ensure_projects_market_columns,
-        )
-        from storage.market_extractor_schema import ensure_market_extractor_tables
-        from ui.backend.app.services import project_store as ps
-
-        self._ps = ps
-        tmp = tempfile.mkdtemp()
-        self.project_db = os.path.join(tmp, "project.db")
-        self.crawler_db = os.path.join(tmp, "crawler.db")
-        with sqlite3.connect(self.project_db) as con:
-            ensure_creation_tables(con)
-            _ensure_projects_market_columns(con)
-            ensure_market_extractor_tables(con)
-        # Crawler DB — 5 novels (3 玄幻 / 2 都市) under platform="起点".
-        with sqlite3.connect(self.crawler_db) as con:
-            con.executescript(
-                "CREATE TABLE novels (novel_uid INTEGER PRIMARY KEY, "
-                "platform TEXT, author TEXT, main_category TEXT, "
-                "intro TEXT, status TEXT, total_words INTEGER, "
-                "url TEXT, created_date TEXT, last_seen_date TEXT);"
-                "CREATE TABLE novel_titles (title_id INTEGER PRIMARY KEY, "
-                "novel_uid INTEGER, title TEXT, is_primary INTEGER);"
-                "CREATE TABLE tags (tag_id INTEGER PRIMARY KEY, tag_name TEXT);"
-                "CREATE TABLE novel_tag_map (novel_uid INTEGER, tag_id INTEGER);"
-                "CREATE TABLE first_n_chapters (chapter_id INTEGER PRIMARY KEY, "
-                "novel_uid INTEGER, chapter_num INTEGER, chapter_title TEXT, "
-                "chapter_content TEXT, word_count INTEGER);"
-            )
-            cats = ["玄幻", "玄幻", "都市", "玄幻", "都市"]
-            for i, cat in enumerate(cats, 1):
-                con.execute(
-                    "INSERT INTO novels VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (i, "起点", f"作者{i}", cat, "intro", "ongoing",
-                     1_000_000 + i * 100_000, "", "", "2024-06-01"))
-                con.execute(
-                    "INSERT INTO first_n_chapters VALUES (?,?,?,?,?,?)",
-                    (i, i, 1, "第一章", "x" * 400, 400))
-            for tid, name in enumerate(["爽文", "系统流", "都市"], 1):
-                con.execute("INSERT INTO tags VALUES (?,?)", (tid, name))
-            for nid in (1, 2, 4):
-                con.execute("INSERT INTO novel_tag_map VALUES (?,?)", (nid, 1))
-                con.execute("INSERT INTO novel_tag_map VALUES (?,?)", (nid, 2))
-            for nid in (3, 5):
-                con.execute("INSERT INTO novel_tag_map VALUES (?,?)", (nid, 3))
-            con.commit()
-
-        self._patcher_db = mock.patch(
-            "ui.backend.app.services.project_paths.get_db_path",
-            return_value=self.project_db,
-        )
-        self._patcher_db.start()
-        self._patcher_crawler = mock.patch(
-            "ui.backend.app.utils.resolve_crawler_db_path",
-            return_value=self.crawler_db,
-        )
-        self._patcher_crawler.start()
-
-    def tearDown(self) -> None:
-        self._patcher_db.stop()
-        self._patcher_crawler.stop()
-
-    def test_crawler_db_only_still_injects(self) -> None:
-        """No platform_profiles, no compute_cache, no aggregated_stats —
-        yet the loader must read the crawler DB directly and inject."""
-        self._ps.upsert_project(self.project_db, {
-            "id": "p1", "name": "n",
-            "platform": "起点中文网", "category": "玄幻",
-        })
-        out = platform_market.load("p1")
-        self.assertIn("平台风格基线", out)
-        self.assertIn("市场数据库", out)
-        self.assertIn("玄幻", out)         # main-category distribution
-        self.assertIn("系统流", out)       # top tag in 玄幻
-        self.assertIn("5 部作品", out)     # novel_count aggregate
 
 
 class TestCharacterCardsLoaderBaseline(unittest.TestCase):

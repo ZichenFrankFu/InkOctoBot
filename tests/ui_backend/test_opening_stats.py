@@ -127,16 +127,18 @@ class TestManualPromptInjection:
         # spec-2.1.3.2 真实统计 (render_stats_for_prompt 注入)
         assert "章中位字数" in prompt
         assert "标点密度" in prompt
-        assert "生造词Step1" in prompt
+        assert "生造词Step1" in prompt   # Step1 仍沿用旧名（无需复核）
         # 真实章节原文节选（前2章 开头+结尾）
         assert "章节原文节选" in prompt
         assert "陈玄" in prompt          # actual chapter text reached the prompt
-        # 高级特征提取 schema: 生造词Step2 + 行文风格七组 (A1-G2)
-        assert "生造词Step2" in prompt
-        assert "neologism_step2" in prompt
+        # 高级特征提取 schema: 专有名词（旧称生造词Step2）+ 行文风格七组 (A1-G2)
+        assert "专有名词" in prompt
+        assert "neologism_step2" in prompt   # JSON 字段名仍保持向后兼容
         assert "style_dimensions" in prompt
-        # 七组都在 schema 里 (A 主角 … G 节奏)
-        for marker in ("A1_appearance", "B1_network", "C1_type",
+        # B1_network 已从 schema 移除（避免行文风格被锁死到具体作品的人物关系网）
+        assert "B1_network" not in prompt
+        # 其余六组仍在 schema 里 (A 主角 … G 节奏；B 仅保留 B2_ensemble)
+        for marker in ("A1_appearance", "B2_ensemble", "C1_type",
                        "D1_opening_hook", "E1_writing_style",
                        "F1_disclosure", "G1_rhythm"):
             assert marker in prompt, marker

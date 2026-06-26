@@ -22,7 +22,8 @@ import { tPlatform } from "../i18n";
 
 
 // 基础特征提取 (市场信息 + 语言学文本特征) 在前；高级特征提取
-// (代表作选取 → 生造词Step2 + 行文风格七组 LLM 提取) 在后。
+// (代表作选取 → 专有名词 + 行文风格七组 LLM 提取) 在后。
+// 注：「专有名词」即旧版的 "生造词Step2"，已正式更名。
 type TopTab = "basic" | "advanced" | "resources";
 
 interface RepCandidate {
@@ -479,7 +480,7 @@ export default function MarketFeatureExtractionPage() {
           )}
         </div>
 
-        {/* 提取结果 — 当前平台风格档案（含生造词Step2 + 行文风格七组） */}
+        {/* 提取结果 — 当前平台风格档案（含专有名词 + 行文风格七组） */}
         <ExtractionResultSection
           profiles={platformProfiles} platform={platform} category="" />
       </>)}
@@ -684,23 +685,28 @@ function RepWorksSelector({
 
 /**
  * ExtractionResultSection — 高级特征提取 的「提取结果」：当前平台风格
- * 档案（综述/风格基线/招牌手法/节奏指南）+ 生造词Step2 + 行文风格
- * 七组 (A1-G2) 的结构化结果。
+ * 档案（综述/风格基线/招牌手法/节奏指南）+ 专有名词（旧称生造词Step2）
+ * + 行文风格七组 (A1-G2) 的结构化结果。
+ *
+ * Prompt 已禁止输出 B1_network（人物关系网） —— 它会把行文风格锁死到
+ * 具体参考书里的角色清单上；旧档案里如有 B1_network 字段，UI 不再展示。
  */
 const DIM_GROUP_LABELS: Record<string, string> = {
-  A_protagonist: "A · 主角", B_social: "B · 社会关系", C_world: "C · 世界观",
+  A_protagonist: "A · 主角", B_social: "B · 角色聚焦", C_world: "C · 世界观",
   D_hook: "D · 钩子爽点", E_style: "E · 写作风格", F_info: "F · 信息节奏",
   G_pacing: "G · 节奏策略",
 };
 const DIM_FIELD_LABELS: Record<string, string> = {
   A1_appearance: "主角登场", A2_image: "主角形象", A3_cheat: "金手指",
-  A4_agency: "主动性", A5_drive: "核心驱动", B1_network: "人物关系网",
+  A4_agency: "主动性", A5_drive: "核心驱动",
   B2_ensemble: "角色聚焦", C1_type: "世界类型", C2_unfold: "设定铺展",
   C3_contrast: "题材突破点", D1_opening_hook: "开篇钩子", D2_early_payoff: "前期爽点",
   D3_chapter_end_hooks: "章末钩子", E1_writing_style: "写作风格", E2_emotion: "情绪基调",
   F1_disclosure: "信息揭露", F2_volume_concept: "第一卷概念", G1_rhythm: "节奏类型",
   G2_early_strategy: "前5章策略",
 };
+// 渲染时跳过的字段（行文风格里太具体、容易把生成锁死到参考书上的内容）。
+const DIM_FIELD_HIDDEN: Set<string> = new Set(["B1_network"]);
 const BASELINE_LABELS: Record<string, string> = {
   narration_pov: "视角人称", tone: "语气", language_register: "语言风格",
   sentence_rhythm: "句式节奏", dialogue_ratio: "对白比", vocabulary_features: "高频词",
@@ -768,13 +774,47 @@ function ResultChips({ label, items }: { label: string; items?: any[] }) {
   );
 }
 
-/** 提取结果（平台风格档案）— 结构化 / 可视化展示，替代 mono 文本块。 */
+/** 一个章节标题 — 在 result section 内的二级分组（高级 / 基础特征 / 元数据）。 */
+function ResultBlockHeading({ title, hint, accent }: {
+  title: string; hint?: string; accent?: string;
+}) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "baseline", gap: 8,
+      borderLeft: `3px solid ${accent || "var(--indigo)"}`,
+      paddingLeft: 10, marginTop: 4,
+    }}>
+      <span style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: 0.3, color: accent || "var(--indigo)" }}>
+        {title}
+      </span>
+      {hint ? (
+        <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>{hint}</span>
+      ) : null}
+    </div>
+  );
+}
+
+/** 提取结果（平台风格档案）— 结构化 / 可视化展示，替代 mono 文本块。
+ *  布局分三块：
+ *   · 头部：平台综述 + 风格基线 + 节奏指南 + 招牌手法 + 专有名词（chips）
+ *   · 中部：行文风格七组（A-G）网格，B1_network 字段隐藏
+ *   · 底部：注入正文 loader_payload（折叠默认收起，避免和上方重复）
+ */
 function ExtractionResultSection({
   profiles, platform,
 }: { profiles: PlatformProfile[]; platform: string; category: string }) {
   const top = (profiles[0] || null) as any;
   const styleDims = parseMaybeJson(top?.style_dimensions_json);
   const neo = parseMaybeJson(top?.neologism_step2_json);
+  const styleDimEntries = styleDims && typeof styleDims === "object"
+    ? Object.entries(styleDims).map(([group, fields]) => {
+        const rows = fields && typeof fields === "object"
+          ? Object.entries(fields as Record<string, any>)
+              .filter(([k, v]) => !DIM_FIELD_HIDDEN.has(k) && _valText(v).trim())
+          : [];
+        return { group, rows };
+      }).filter(g => g.rows.length > 0)
+    : [];
   return (
     <div className="card" style={{ marginTop: 16, borderTop: "3px solid var(--indigo)" }}>
       <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
@@ -789,49 +829,99 @@ function ExtractionResultSection({
         {profiles.length === 0 ? (
           <Empty msg={platform ? `${tPlatform(platform)} 暂无提取结果。` : "请选定平台。"} />
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {/* 注入正文（最关键）+ 综述 */}
-            <ResultPara title="注入正文（写作风格基线，会注入生成 prompt）" text={top.loader_payload} accent="var(--jade)" />
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* —— 第一块：平台画像与基线 —— */}
+            <ResultBlockHeading title="平台画像" hint="这些字段会按需注入生成 prompt" accent="var(--accent)" />
             <ResultPara title="平台综述" text={top.profile_summary} accent="var(--accent)" />
-
-            {/* 风格基线 / 节奏指南 — 键值网格 */}
-            <ResultKV title="风格基线" obj={top.style_baseline} labels={BASELINE_LABELS} accent="var(--indigo)" />
-            <ResultKV title="节奏指南" obj={top.pacing_guidance} labels={PACING_LABELS} accent="var(--gold)" />
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+              gap: 10,
+            }}>
+              <ResultKV title="风格基线" obj={top.style_baseline} labels={BASELINE_LABELS} accent="var(--indigo)" />
+              <ResultKV title="节奏指南" obj={top.pacing_guidance} labels={PACING_LABELS} accent="var(--gold)" />
+            </div>
             <ResultPara title="招牌叙事手法" text={top.signature_devices_description} />
 
-            {/* 生造词 Step2 — chip 组 */}
+            {/* —— 第二块：专有名词（旧名 生造词Step2） —— */}
             {neo && (
-              <div style={{ background: "var(--bg-surface-2)", borderRadius: 6, padding: "10px 12px" }}>
-                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>生造词 Step2</div>
-                <ResultChips label="专有名词" items={neo.proper_nouns} />
-                <ResultChips label="人名" items={neo.person_names} />
-                <ResultChips label="地名" items={neo.place_names} />
-                <ResultChips label="常见字" items={neo.common_chars} />
-                {neo.naming_patterns ? <div style={{ fontSize: 11.5, lineHeight: 1.7 }}><span style={{ color: "var(--text-tertiary)" }}>常见构词模式：</span>{_valText(neo.naming_patterns)}</div> : null}
-              </div>
+              <>
+                <ResultBlockHeading title="专有名词" hint="旧称『生造词 Step2』·  仅记录复核确认存在的词" accent="var(--jade)" />
+                <div style={{
+                  background: "var(--bg-surface-2)", borderRadius: 6, padding: "10px 12px",
+                  borderLeft: "3px solid var(--jade)",
+                  display: "flex", flexDirection: "column", gap: 4,
+                }}>
+                  <ResultChips label="专有名词" items={neo.proper_nouns} />
+                  <ResultChips label="人名" items={neo.person_names} />
+                  <ResultChips label="地名" items={neo.place_names} />
+                  <ResultChips label="常见字" items={neo.common_chars} />
+                  {neo.naming_patterns ? (
+                    <div style={{ fontSize: 11.5, lineHeight: 1.7 }}>
+                      <span style={{ color: "var(--text-tertiary)" }}>常见构词模式：</span>
+                      {_valText(neo.naming_patterns)}
+                    </div>
+                  ) : null}
+                </div>
+              </>
             )}
 
-            {/* 行文风格七组 — A-G 卡片网格 */}
-            {styleDims && typeof styleDims === "object" && (
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>行文风格七组</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
-                  {Object.entries(styleDims).map(([group, fields]) => (
-                    <div key={group} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 10, background: "var(--bg-surface)" }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: "var(--accent)" }}>{DIM_GROUP_LABELS[group] || group}</div>
-                      {fields && typeof fields === "object" ? (
-                        Object.entries(fields as Record<string, any>).filter(([, v]) => _valText(v).trim()).map(([k, v]) => (
-                          <div key={k} style={{ fontSize: 11, lineHeight: 1.6, marginBottom: 3 }}>
-                            <span style={{ color: "var(--text-tertiary)" }}>{DIM_FIELD_LABELS[k] || k}：</span>
-                            <span style={{ color: "var(--text-secondary)" }}>{_valText(v)}</span>
-                          </div>
-                        ))
-                      ) : <div style={{ fontSize: 11 }}>{_valText(fields)}</div>}
+            {/* —— 第三块：行文风格七组 A-G —— */}
+            {styleDimEntries.length > 0 && (
+              <>
+                <ResultBlockHeading
+                  title="行文风格七组（A-G）"
+                  hint="该平台×榜单的通用倾向画像，B1_network（人物关系网）已禁用"
+                  accent="var(--indigo)"
+                />
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+                  gap: 10,
+                }}>
+                  {styleDimEntries.map(({ group, rows }) => (
+                    <div key={group} style={{
+                      border: "1px solid var(--border)", borderRadius: 6,
+                      padding: 10, background: "var(--bg-surface)",
+                    }}>
+                      <div style={{
+                        fontSize: 12, fontWeight: 700, marginBottom: 6,
+                        color: "var(--accent)",
+                      }}>
+                        {DIM_GROUP_LABELS[group] || group}
+                      </div>
+                      {rows.map(([k, v]) => (
+                        <div key={k} style={{ fontSize: 11, lineHeight: 1.6, marginBottom: 3 }}>
+                          <span style={{ color: "var(--text-tertiary)" }}>
+                            {DIM_FIELD_LABELS[k] || k}：
+                          </span>
+                          <span style={{ color: "var(--text-secondary)" }}>{_valText(v)}</span>
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </div>
-              </div>
+              </>
             )}
+
+            {/* —— 第四块：完整 loader_payload（折叠，备份用） —— */}
+            {top.loader_payload ? (
+              <details style={{
+                marginTop: 4, fontSize: 11.5,
+                background: "var(--bg-surface-2)", borderRadius: 6,
+                padding: "8px 12px", borderLeft: "3px solid var(--border)",
+              }}>
+                <summary style={{ cursor: "pointer", fontWeight: 700, color: "var(--text-tertiary)" }}>
+                  注入正文（loader_payload · 备份字段，默认折叠）
+                </summary>
+                <div style={{
+                  marginTop: 8, lineHeight: 1.7, whiteSpace: "pre-wrap",
+                  color: "var(--text-secondary)",
+                }}>
+                  {_valText(top.loader_payload)}
+                </div>
+              </details>
+            ) : null}
           </div>
         )}
       </div>

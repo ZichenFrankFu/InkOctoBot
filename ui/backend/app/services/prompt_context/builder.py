@@ -92,12 +92,14 @@ _SECTION_GROUPS: dict[str, str] = {
 # (Loader预算分配·机制6). Block-id ↔ spec name mapping:
 # platform_directive = platform_style, subplots = plotline.
 AGENT_LOADER_PROFILES: dict[str, tuple[str, ...]] = {
-    # 单 Agent / 导演模式末步整合 — 15 loaders, target sum ≈ 26K.
-    # market_overview included so the Writer has the same 市场总览 the
-    # 开书助手 gets — user explicitly asked for this context to flow
-    # through the chapter-generation prompt, not just book ideation.
+    # 单 Agent / 导演模式末步整合.
+    # ``market_overview`` is intentionally NOT in the writer profile —
+    # by the time the user is writing chapters they have already opened
+    # the book, so 市场总览 / 趋势 belongs on the 市场特征提取 tab, not
+    # in every chapter prompt. The platform_directive loader carries
+    # the still-relevant 基础特征 + 高级特征 picks that the writer needs.
     "writer": (
-        "platform_directive", "market_overview", "reference", "inspiration",
+        "platform_directive", "reference", "inspiration",
         "character_cards", "worldbook", "chapter_outline", "reader_memory",
         "current_chapter_draft", "storyland_state", "foreshadowing",
         "subplots", "user_preferences", "user_special_requirements", "skills",
