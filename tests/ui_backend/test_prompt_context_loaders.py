@@ -177,11 +177,14 @@ class TestPlatformMarketDataDriven(unittest.TestCase):
         self.assertIn("平台综述", out)
         self.assertIn("风格基线", out)
         self.assertIn("招牌叙事手法", out)
-        self.assertIn("专有名词", out)
-        self.assertIn("灵根", out)
+        self.assertIn("行文风格", out)
         # 基础特征 rendered via render_stats_for_prompt.
         self.assertIn("基础特征", out)
         self.assertIn("词性分布", out)
+        # 专有名词 was REMOVED from the prompt block per the latest spec —
+        # the 神经符号 / neologism_step2 stays in the UI panel, but no
+        # longer pollutes the writer prompt budget.
+        self.assertNotIn("专有名词", out)
         # B1_network deliberately dropped — must NOT appear in prompt.
         self.assertNotIn("应被剔除", out)
         # 市场基底 / 市场趋势 sections removed entirely.

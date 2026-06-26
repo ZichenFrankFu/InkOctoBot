@@ -429,17 +429,20 @@ _ADVANCED_SCHEMA_SPEC = (
     "}\n"
     "```\n\n"
     "## 要求\n"
-    "1. 所有结论须以上方真实统计与原文节选为依据，避免凭空泛谈。\n"
-    "2. style_dimensions 的七组(A-G)与 neologism_step2 必须填写，是 JSON 对象；"
+    "1. **所有字段的取值、描述、关键词、列表项必须使用简体中文输出**；"
+    "JSON 字段名（key）保留英文不变，但 value 全部用中文。"
+    "不允许英文 / 拼音 / 中英混排作为字段值，遇到外来概念也要给出中文表述。\n"
+    "2. 所有结论须以上方真实统计与原文节选为依据，避免凭空泛谈。\n"
+    "3. style_dimensions 的七组(A-G)与 neologism_step2 必须填写，是 JSON 对象；"
     "B_social 仅保留 B2_ensemble，禁止再输出 B1_network。\n"
-    "3. **行文风格七组（style_dimensions）所有字段必须输出 \"该平台×榜单的通用画像\"**："
+    "4. **行文风格七组（style_dimensions）所有字段必须输出 \"该平台×榜单的通用画像\"**："
     "用倾向 / 区间 / 分布 / 抽象关键词描述，禁止粘贴具体作品里的人名 / 关系网 / 情节细节。"
     "下游 writer prompt 会复用这些字段，过细的人物信息会把生成锁死在参考书上。\n"
-    "4. 专有名词（neologism_step2）只能列出该榜单代表作里复核确认存在的词；"
+    "5. 专有名词（neologism_step2）只能列出该榜单代表作里复核确认存在的词；"
     "如果某一类（人名/地名/常见字）为空，留 [] 即可。\n"
-    "5. 如果你具备联网搜索能力，请在网络中检索这些作品与该平台题材的公开信息，"
+    "6. 如果你具备联网搜索能力，请在网络中检索这些作品与该平台题材的公开信息，"
     "作为上方所给信息的补充，并确保所输出的信息真实可靠、不编造。\n"
-    "6. 整体只输出 JSON，前后不带任何说明文字。\n"
+    "7. 整体只输出 JSON，前后不带任何说明文字。\n"
 )
 
 
@@ -547,25 +550,15 @@ def build_manual_prompt(body: dict = Body(...)) -> dict:
     except Exception:
         pass
 
-    prompt = (
-        f"# 任务：为[{scope_cn}]做高级特征提取（专有名词 + 行文风格七组）\n\n"
-        f"你是一名资深的网络文学市场分析师。下面给出{plat_cn}平台多维度精选的代表作"
-        "清单（覆盖总排行最高、上榜最稳定、热度最高、新书等不同类型，以代表整个平台"
-        "风格）、开篇章节的真实 NLP 统计、以及各作品前 2 章[开头+结尾]的原文节选。"
-        "请综合分析后，按下列全部维度输出结构化 JSON。\n\n"
-        "⚠️ 注意：本次提取的目标是『该平台×榜单的通用风格画像』，**不是**任何一本"
-        "具体作品的设定簿。**禁止**在 style_dimensions / signature_devices_description "
-        "等字段里粘贴具体作品的人物清单、关系网或情节细节 —— 用倾向 / 区间 / 抽象"
-        "关键词替代。\n\n"
-        f"## 代表作清单（已选 {len(works)} 部，全部纳入分析）\n\n"
-        f"{work_block}\n\n"
-        f"{keyword_block}"
-        "## 开篇章节真实统计（脚本计算，含 生造词Step1 候选 — Step1 仍沿用旧名，"
-        "Step2 已正式更名为『专有名词』）\n\n"
-        f"{nlp_block}\n\n"
-        "## 章节原文节选（各作品前2章 开头+结尾，用于风格与专有名词判断）\n\n"
-        f"{excerpt_block}\n\n"
-        + _ADVANCED_SCHEMA_SPEC
+    # 通过提示词注册表渲染整段, 用户可在 设置 → 提示词 改写并保存.
+    from reference_pipeline.prompts import render as _render_prompt
+    prompt = _render_prompt(
+        "market_extractor.advanced_extraction",
+        scope_cn=scope_cn, plat_cn=plat_cn, work_count=len(works),
+        work_block=work_block,
+        keyword_block=keyword_block,
+        nlp_block=nlp_block, excerpt_block=excerpt_block,
+        schema_spec=_ADVANCED_SCHEMA_SPEC,
     )
     return {"prompt": prompt, "platform": platform, "category": category,
             "work_count": len(works),

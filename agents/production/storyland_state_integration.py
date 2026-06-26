@@ -136,58 +136,12 @@ def list_pressured_hooks_text(
 # ─────────────── Phase 2: settlement output ────────────────────────
 
 
-_SETTLEMENT_PROMPT = """\
-你是一个小说事实抽取引擎。给定一章已经写好的正文（和章节元数据），请从中提取以下 7 类结构化变化：
-
-1. **state_patches** — 角色/世界永久状态的"主-谓-宾"三元组事实
-   （如"李星河"-"位置"-"K-7 矿星"；"星门"-"状态"-"激活"）
-2. **particle_reconciliations** — 角色资源/物品账本变化（必须满足闭合等式 old + delta == new）
-   常见 category: resource（如灵石/金钱）, item（如剑/丹药）, status（如等级/血量）
-3. **hook_deltas** — 伏笔的新增 / 提及 / 推进 / 回收 / 放弃
-   （只输出本章实际发生的；importance: A=核心 B=次要 C=次要细节；
-    is_spoiler: 若伏笔内容涉及未来揭示则 true，应只对全知 POV 可见）
-4. **subplot_updates** — 副线推进（status_after: setup/building/climax/resolution/dormant）
-5. **emotion_arc_entries** — 角色情绪轨迹的明确转变（必须 from_state → to_state，且有触发事件）
-6. **chapter_summary** — 本章 300 字以内的总结 + 3-5 个关键事件
-
-如果本章上下文给了「预存锚点」（old_value）信息，**必须**：
-- delta 是有符号整数（subtract 用负值，add 用正值，set 用 0）
-- new_value 必须满足 closed equation（old + delta == new for add/subtract；
-  set 时 new_value 直接是新值）
-
-严格 JSON 输出（不带额外说明）：
-
-```json
-{
-  "state_patches": [
-    {"subject": "...", "predicate": "...", "object": "...", "action": "upsert"}
-  ],
-  "particle_reconciliations": [
-    {"character": "李星河", "category": "resource", "resource": "灵石",
-     "old_value": 80, "operation": "subtract", "delta": -30, "new_value": 50,
-     "reason": "购买突破丹", "in_text_evidence": "他咬牙拿出三十灵石递过去"}
-  ],
-  "hook_deltas": [
-    {"description": "...", "action": "new", "importance": "B", "is_spoiler": false}
-  ],
-  "subplot_updates": [
-    {"name": "宗门之争", "action": "advance", "status_after": "building",
-     "related_hook_ids": [], "note": "..."}
-  ],
-  "emotion_arc_entries": [
-    {"character": "...", "from_state": "...", "to_state": "...", "trigger": "..."}
-  ],
-  "chapter_summary": {
-    "summary": "...",
-    "key_events": ["...", "..."],
-    "pov_character": "...",
-    "mood": "..."
-  }
-}
-```
-
-如果某类没有变化，对应字段输出空数组（[]）。不要凭空虚构 — 只抽取文本明确支撑的事实。
-"""
+def _settlement_prompt() -> str:
+    """Pull the settlement prompt from the registry so 设置 → 提示词 can
+    override it. Lazy-imported to avoid registering at module-load time
+    when the FastAPI app may not be available."""
+    from reference_pipeline.prompts import render as _render_prompt
+    return _render_prompt("pipeline.storyland_state_settlement")
 
 
 def build_ledger_anchors(
@@ -296,8 +250,9 @@ async def extract_state_deltas(
         "请按上述 schema 抽取本章的结构化变化。"
     )
 
+    settlement_system = _settlement_prompt()
     messages = [
-        LLMMessage(role="system", content=_SETTLEMENT_PROMPT),
+        LLMMessage(role="system", content=settlement_system),
         LLMMessage(role="user", content=user_content),
     ]
 
@@ -324,7 +279,7 @@ async def extract_state_deltas(
             call_site_id="storyland_state.settlement",
             primary_role=agent_role,
             prompt_full=user_content,
-            system_prompt=_SETTLEMENT_PROMPT,
+            system_prompt=settlement_system,
             auto_executor=_auto_executor,
             parsed_target_table="truth_current_state",
         )

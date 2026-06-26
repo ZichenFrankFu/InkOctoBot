@@ -153,33 +153,15 @@ class SkillLearner:
                 f"Example {i+1}: {e}" for i, e in enumerate(examples)
             )
 
-        prompt = f"""You are creating a new Skill for InkOctoBot, an AI novel writing system.
-
-Need description: {need}
-{f'Examples:{chr(10)}{examples_text}' if examples_text else ''}
-
-Generate two files:
-
-1. SKILL.md (YAML frontmatter + markdown description)
-2. skill.py (Python class inheriting from BaseSkill)
-
-Rules:
-- The skill.py MUST have `from agents.base_skill import BaseSkill, SkillMeta`
-- The class MUST be named `Skill`
-- MUST implement: meta(), build_prompt(), parse_output()
-- NO imports of: os, subprocess, socket, requests, urllib
-- NO file I/O
-- Output MUST be valid JSON from parse_output()
-- All text should be in Chinese where appropriate
-
-Output format:
-```skill_md
-(SKILL.md content)
-```
-
-```python
-(skill.py content)
-```"""
+        # 通过提示词注册表渲染, 用户可在 设置 → 提示词 覆盖.
+        from reference_pipeline.prompts import render as _render_prompt
+        examples_block = (
+            f"Examples:\n{examples_text}" if examples_text else ""
+        )
+        prompt = _render_prompt(
+            "assistant.skill_learner",
+            need=need, examples_block=examples_block,
+        )
 
         from llm.base import LLMMessage
         messages = [LLMMessage(role="user", content=prompt)]

@@ -63,9 +63,8 @@ _TITLE = "平台风格基线"
 # Per-subsection caps so a single noisy field can't blow the budget.
 # The aggregate budget cap is enforced by render(budget) → clip().
 _CAP_PER_SUBSECTION = 320      # chars — default for short subsections
-# 行文风格 七组 (A1-G2) 信息密度最大, 直接关系 writer 风格落地, 单独给
-# 更高的预算上限 —— 用户明确要求 "增加行文风格 token".
-_CAP_STYLE_DIMENSIONS = 1200
+# 行文风格七组 (A1-G2) 走 "完整渲染" 路径, 不在子段级别再做截断,
+# 整段长度仍由 render(budget) 的 clip() 兜底.
 _TOP_N_DIST = 3                # top-N entries per distribution
 _TOP_N_VOCAB = 12              # top-N genre vocabulary terms
 
@@ -527,27 +526,9 @@ def _render_advanced_subsections(row: dict) -> list[str]:
     _emit("招牌叙事手法",
           (row.get("signature_devices_description") or "").strip())
 
-    # 专有名词 (formerly 生造词Step2) — proper_nouns / person_names /
-    # place_names / common_chars / naming_patterns from the JSON blob.
-    neo = _safe_json(row.get("neologism_step2_json")) or {}
-    if isinstance(neo, dict):
-        neo_bits: list[str] = []
-        for key, label in [
-            ("proper_nouns",     "专有名词"),
-            ("person_names",     "人名"),
-            ("place_names",      "地名"),
-            ("common_chars",     "常见字"),
-        ]:
-            vals = neo.get(key) or []
-            if isinstance(vals, list) and vals:
-                neo_bits.append(
-                    f"{label}：" + "、".join(str(v) for v in vals[:10] if v)
-                )
-        nm_pat = (neo.get("naming_patterns") or "").strip()
-        if nm_pat:
-            neo_bits.append(f"构词模式：{nm_pat}")
-        if neo_bits:
-            _emit("专有名词", "；".join(neo_bits))
+    # 专有名词 (formerly 生造词Step2) 已按用户要求从 platform_directive
+    # 中移除 —— 它对 writer 风格指导贡献小, 还占预算. UI 里仍然展示
+    # neologism_step2_json, 但不进 RAG 注入流.
 
     # 行文风格 — the seven (A-G) dimension groups. Render each group as
     # one line; field labels match the UI's ``DIM_FIELD_LABELS`` so a
@@ -602,13 +583,10 @@ def _render_advanced_subsections(row: dict) -> list[str]:
             if field_bits:
                 group_lines.append(f"{glabel} — " + "；".join(field_bits))
         if group_lines:
-            # 行文风格 用单独的高预算 (用户要求): 默认 320 字不够装下 6 组
-            # × 平均 80 字 = 480 字, 截下来只剩 3 组. 提到 1200 字基本能保住
-            # 所有组都进 prompt.
-            body_text = "\n".join(group_lines)
-            parts.append(
-                f"### 行文风格\n{clip(body_text, _CAP_STYLE_DIMENSIONS)}"
-            )
+            # 行文风格 用户要求 "完整包括" —— 不做子段截断, 让 6 组 A-G
+            # 全文进 prompt. 整个 platform_directive block 的总长仍受
+            # render(budget) 的 clip() 兜底, 所以预算紧张时还是会被剪.
+            parts.append("### 行文风格\n" + "\n".join(group_lines))
 
     # Legacy-profile fallback: an older extraction may have populated
     # ONLY ``loader_payload`` (the LLM-written 600-1200字 baseline

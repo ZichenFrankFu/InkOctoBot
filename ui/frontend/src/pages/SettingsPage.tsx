@@ -202,7 +202,7 @@ export default function SettingsPage() {
   const TABS: { key: Tab; label: string; icon: string }[] = [
     { key: "pipeline", label: "Pipeline 配置", icon: "\u2699" },
     { key: "providers", label: "模型供应商", icon: "\u2261" },
-    { key: "prompts", label: "LLM Prompt", icon: "\u270E" },
+    { key: "prompts", label: "\u63D0\u793A\u8BCD", icon: "\u270E" },
     { key: "system", label: "系统设置", icon: "\u2638" },
   ];
 
@@ -996,6 +996,7 @@ const PROMPT_GROUPS: { label: string; prefixes: string[] }[] = [
   { label: "AI 助手", prefixes: ["assistant."] },
   { label: "正文生成 / 重写 / 评估", prefixes: ["generation."] },
   { label: "创作管线 Agent", prefixes: ["pipeline."] },
+  { label: "市场特征提取", prefixes: ["market_extractor."] },
 ];
 
 function promptGroupLabel(key: string): string {
@@ -1033,8 +1034,11 @@ function PromptsTab() {
   return (
     <div>
       <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
-        所有预设 AI prompt 模板（参考作品提取、AI 助手、正文生成、评估、创作管线）。点击「编辑」可查看出厂默认 + 当前内容、修改、并保存为新默认。
-        每次提取/对话时可单独覆盖（不影响保存的默认）。
+        每一次和 LLM 交互的提示词都在这里 —— 参考作品提取、AI 助手 (角色 / 世界书 /
+        大纲 / 开书) 、正文生成 / 重写 / 评估、创作管线 Agent、市场特征提取、读者记忆压缩、
+        Storyland 状态结算、自学习 Skill 生成器, 全部已纳入此注册表.
+        点「编辑」查看出厂默认 + 当前内容、修改、保存为新默认; 单次调用还可通过
+        ``prompt_override`` 临时覆盖一次而不动默认.
       </div>
 
       {loading ? (

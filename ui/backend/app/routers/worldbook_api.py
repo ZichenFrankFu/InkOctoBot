@@ -48,26 +48,16 @@ async def consistency_check(req: ConsistencyRequest):
     try:
         from llm.base import LLMMessage
         from llm.call_site import with_audit_and_manual_mode
+        from reference_pipeline.prompts import render as _render_prompt
         router_inst = _build_router(req.provider, req.model)
 
         # spec 世界书功能: 结果需要看到 条目A与条目B、其中冲突的内容、
-        # 修改建议 — 要求结构化 JSON 输出。
-        system_prompt = (
-            "你是一个世界观一致性检查专家。仔细检查以下世界书条目两两之间"
-            "是否存在矛盾或逻辑冲突。\n"
-            "输出 JSON：\n"
-            "{\"conflicts\": [{\"entry_a\": \"条目A标题\", "
-            "\"entry_b\": \"条目B标题\", "
-            "\"conflict\": \"冲突的具体内容\", "
-            "\"suggestion\": \"修改建议\"}]}\n"
-            "要求：\n"
-            "1. entry_a / entry_b 必须使用条目的原标题\n"
-            "2. conflict 要引用双方冲突的原文表述\n"
-            "3. suggestion 给出可执行的修改方案（改哪一条、怎么改）\n"
-            "4. 没有矛盾时输出 {\"conflicts\": []}\n"
-            "5. 禁止使用 emoji"
+        # 修改建议 — 要求结构化 JSON 输出。Prompts overridable via
+        # 设置 → 提示词.
+        system_prompt = _render_prompt("assistant.worldbook_consistency")
+        user_prompt = _render_prompt(
+            "assistant.worldbook_consistency_user", text=text,
         )
-        user_prompt = f"请检查以下世界书条目的一致性：\n\n{text}"
 
         async def _exec() -> str:
             messages = [

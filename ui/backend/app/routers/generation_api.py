@@ -202,20 +202,22 @@ async def _run_chapter_complete_hook(
 ) -> None:
     """Post-generation hook: update memory system (A2: memory integration)."""
     try:
-        # Generate chapter summary using LLM
+        # Generate chapter summary using LLM. system + user prompts both
+        # routed through the prompt registry — user can override either
+        # via 设置 → 提示词.
         from llm.base import LLMMessage
+        from reference_pipeline.prompts import render as _render_prompt
+        sys_prompt = _render_prompt("generation.chapter_summary_system")
+        user_prompt = _render_prompt(
+            "generation.chapter_summary",
+            chapter_num=chapter_num,
+            chapter_text=chapter_text[:3000],
+        )
         summary_resp = await router_inst.generate(
             agent_role="evaluator",
             messages=[
-                LLMMessage(role="system", content="你是一个小说章节摘要生成器。"),
-                LLMMessage(role="user", content=(
-                    f"请为以下第{chapter_num}章生成简短摘要（100-200字），"
-                    f"并提取关键事件和角色状态变化。\n\n{chapter_text[:3000]}\n\n"
-                    "请以JSON格式输出：\n"
-                    '{"summary": "摘要", "key_events": ["事件1"], '
-                    '"character_states": {"角色名": "状态"}, '
-                    '"foreshadowing": [{"type": "planted|resolved", "description": "描述"}]}'
-                )),
+                LLMMessage(role="system", content=sys_prompt),
+                LLMMessage(role="user", content=user_prompt),
             ],
             temperature=0.3,
             max_tokens=1000,
@@ -866,7 +868,7 @@ async def quick_generate(req: GenerateRequest):
                     "single_agent prompt render failed (%s); using default template", ve
                 )
                 user_content = _render_prompt("generation.single_agent", **prompt_vars)
-            system_prompt = "你是一名专业的中文网文写作者，请严格依据用户提供的资料创作。"
+            system_prompt = _render_prompt("generation.writer_system")
             if req.prompt_only:
                 return {"status": "ok", "prompt": user_content, "skills_used": skills_used}
 
