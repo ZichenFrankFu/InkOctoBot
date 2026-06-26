@@ -62,7 +62,10 @@ _TITLE = "平台风格基线"
 
 # Per-subsection caps so a single noisy field can't blow the budget.
 # The aggregate budget cap is enforced by render(budget) → clip().
-_CAP_PER_SUBSECTION = 320      # chars
+_CAP_PER_SUBSECTION = 320      # chars — default for short subsections
+# 行文风格 七组 (A1-G2) 信息密度最大, 直接关系 writer 风格落地, 单独给
+# 更高的预算上限 —— 用户明确要求 "增加行文风格 token".
+_CAP_STYLE_DIMENSIONS = 1200
 _TOP_N_DIST = 3                # top-N entries per distribution
 _TOP_N_VOCAB = 12              # top-N genre vocabulary terms
 
@@ -599,7 +602,13 @@ def _render_advanced_subsections(row: dict) -> list[str]:
             if field_bits:
                 group_lines.append(f"{glabel} — " + "；".join(field_bits))
         if group_lines:
-            _emit("行文风格", "\n".join(group_lines))
+            # 行文风格 用单独的高预算 (用户要求): 默认 320 字不够装下 6 组
+            # × 平均 80 字 = 480 字, 截下来只剩 3 组. 提到 1200 字基本能保住
+            # 所有组都进 prompt.
+            body_text = "\n".join(group_lines)
+            parts.append(
+                f"### 行文风格\n{clip(body_text, _CAP_STYLE_DIMENSIONS)}"
+            )
 
     # Legacy-profile fallback: an older extraction may have populated
     # ONLY ``loader_payload`` (the LLM-written 600-1200字 baseline

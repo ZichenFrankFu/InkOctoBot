@@ -2770,22 +2770,12 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
                   </span>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {groupEntries.map(({ expected, body, present }) => {
-                    // 「诊断」按钮目前只接 platform_directive 一条后端
-                    // endpoint —— 它涵盖了基础特征 + 高级特征 + 平台画像。
-                    // 其余 loader 没有专用 endpoint，按钮不渲染。
-                    let diagnoseUrl: string | undefined;
-                    if (expected.source === "platform_directive" && projectId) {
-                      diagnoseUrl = `/api/generation/diagnose/platform-directive/${projectId}`;
-                    }
-                    return (
-                      <RAGLoaderRow key={expected.title}
-                        title={expected.title}
-                        hint={expected.hint}
-                        body={body} present={present} color={color}
-                        diagnoseUrl={diagnoseUrl} />
-                    );
-                  })}
+                  {groupEntries.map(({ expected, body, present }) => (
+                    <RAGLoaderRow key={expected.title}
+                      title={expected.title}
+                      hint={expected.hint}
+                      body={body} present={present} color={color} />
+                  ))}
                 </div>
               </div>
             );
@@ -2796,83 +2786,14 @@ function RAGLoaderList({ projectId, chapterId, chapterNum }: {
   );
 }
 
-/** Translate a platform_directive diagnose blob into a one-sentence
- *  human-readable reason. Picks the FIRST failing link in the chain so
- *  the user can act on it without reading 500 字 of JSON. */
-function summarizeDiag(diag: any): string {
-  if (!diag || typeof diag !== "object") return "未拿到诊断信息";
-  if (diag.error) return `后端报错：${diag.error}`;
-  if (!diag.project_platform) {
-    return "项目尚未设定『发布平台』 — 请进入项目设置选择平台 + 题材";
-  }
-  const stored: string[] = Array.isArray(diag.stored_platforms) ? diag.stored_platforms : [];
-  const matched: string[] = Array.isArray(diag.matched_aliases) ? diag.matched_aliases : [];
-  if (stored.length === 0) {
-    return `项目平台『${diag.project_platform}』已设, 但市场数据库 / 提取缓存里 完全没有任何平台数据 — 请先在「市场特征提取」运行基础特征 / 高级特征`;
-  }
-  if (matched.length === 0) {
-    return `项目平台『${diag.project_platform}』与已存平台 ${JSON.stringify(stored.slice(0, 6))} 没有重叠 — 请把项目平台改成其中之一, 或为本平台跑一次提取`;
-  }
-  const profPresent = diag.sources?.platform_profiles?.present;
-  const fields: string[] = diag.sources?.platform_profiles?.fields_present || [];
-  const nlpPresent = diag.sources?.opening_nlp_cache?.present;
-  const specOk = diag.sources?.opening_nlp_cache?.spec_stats_available;
-  if (!profPresent && !nlpPresent) {
-    return `平台『${diag.project_platform}』匹配到 ${JSON.stringify(matched)}, 但 platform_profiles + opening_nlp 两条数据源都为空 — 请运行『高级特征提取』或『基础特征提取』`;
-  }
-  if (profPresent && fields.length === 0 && !nlpPresent) {
-    return `找到了 platform_profiles 行, 但 profile_summary / loader_payload / 6 段结构化字段全是空 — 重新运行『高级特征提取』, 并确认 LLM 返回的 JSON 完整`;
-  }
-  if ((diag.rendered_length || 0) === 0) {
-    return `数据存在但 loader 渲染后为空 — 可能 confidence_label='low' 把 profile 过滤掉了, 或 spec_stats.available=false`;
-  }
-  // rendered_length > 0 — the loader DID emit content; the matcher just
-  // didn't find it in the prompt. Likely cause: the rendered prompt was
-  // truncated by budget, or the section heading drift.
-  return `loader 已注入 ${diag.rendered_length} 字, 但 RAG 预览没匹配到 ## 平台风格基线 标题 — 请刷新页面 / 清浏览器缓存`;
-}
-
 /** Single row in RAGLoaderList — default-expanded; summary footer shows
- *  ▴ when open and ▾ when collapsed. The optional `diagnoseUrl` exposes
- *  a "诊断" toggle that fetches a JSON dump from the backend explaining
- *  why the loader was empty (used by the 平台风格 row — answers the
- *  recurring "市场特征提取 tabs work but loader says 未注入" question).
- *
- *  Auto-loads the diag blob when present=false so the user reads the
- *  reason inline without clicking. */
-function RAGLoaderRow({ title, hint, body, present, color, diagnoseUrl }: {
+ *  ▴ when open and ▾ when collapsed. Renders the loader's body when it
+ *  injected something, otherwise the hint that explains how to get the
+ *  loader to fire. (前期的诊断面板已按用户要求移除.) */
+function RAGLoaderRow({ title, hint, body, present, color }: {
   title: string; hint: string; body: string; present: boolean; color: string;
-  diagnoseUrl?: string;
 }) {
   const [open, setOpen] = useState(true);
-  const [diag, setDiag] = useState<any>(null);
-  const [diagLoading, setDiagLoading] = useState(false);
-  const { toast } = useToast();
-  const loadDiag = useCallback(async () => {
-    if (!diagnoseUrl) return;
-    setDiagLoading(true);
-    try {
-      const r = await apiGet<any>(diagnoseUrl);
-      setDiag(r);
-    } catch (e: any) {
-      toast(`诊断失败：${e?.message || ""}`, "error");
-    } finally { setDiagLoading(false); }
-  }, [diagnoseUrl, toast]);
-  useEffect(() => {
-    if (diagnoseUrl && !present && !diag) {
-      loadDiag();
-    }
-  }, [diagnoseUrl, present, diag, loadDiag]);
-  const copyDiag = useCallback(async () => {
-    if (!diag) return;
-    const text = JSON.stringify(diag, null, 2);
-    try {
-      await navigator.clipboard.writeText(text);
-      toast("诊断 JSON 已复制到剪贴板", "success");
-    } catch {
-      toast("无法访问剪贴板, 请手动选中下方文字 Ctrl+C", "error");
-    }
-  }, [diag, toast]);
   return (
     <details open={open}
       onToggle={e => setOpen((e.currentTarget as HTMLDetailsElement).open)}
@@ -2896,16 +2817,6 @@ function RAGLoaderRow({ title, hint, body, present, color, diagnoseUrl }: {
         }} />
         <strong>{title}</strong>
         <span style={{ flex: 1 }} />
-        {diagnoseUrl && (
-          <button onClick={e => { e.preventDefault(); e.stopPropagation(); loadDiag(); }}
-            style={{
-              fontSize: 9, padding: "1px 6px", borderRadius: 8,
-              border: "1px solid var(--border)", background: "transparent",
-              color: "var(--text-tertiary)", cursor: "pointer", flexShrink: 0,
-            }} title="查看 loader 真实看到的数据">
-            {diagLoading ? "..." : "诊断"}
-          </button>
-        )}
         <span style={{
           fontSize: 10, color: present ? color : "var(--text-disabled)",
           fontWeight: 600, flexShrink: 0,
@@ -2928,62 +2839,15 @@ function RAGLoaderRow({ title, hint, body, present, color, diagnoseUrl }: {
           whiteSpace: "pre-wrap", wordBreak: "break-word",
         }}>{body}</pre>
       ) : (
-        <div style={{ marginTop: 4, paddingLeft: 14 }}>
-          {hint && (
-            <div style={{
-              fontSize: 10, color: "var(--text-tertiary)",
-              lineHeight: 1.5, fontStyle: "italic",
-            }}>
-              ↳ {hint}
-            </div>
-          )}
-          {diagnoseUrl && (
-            <div style={{
-              marginTop: 6, padding: "6px 8px",
-              background: "var(--bg-app)", borderRadius: 4,
-              border: "1px solid var(--border-subtle)",
-              fontSize: 10.5, lineHeight: 1.55, color: "var(--text-secondary)",
-            }}>
-              {diagLoading
-                ? "诊断中…"
-                : diag
-                  ? (<>
-                      <div style={{ fontWeight: 700, marginBottom: 3, color: "var(--accent)" }}>
-                        诊断
-                      </div>
-                      <div>{summarizeDiag(diag)}</div>
-                    </>)
-                  : (<span style={{ color: "var(--text-tertiary)" }}>
-                      点上方「诊断」按钮查看 loader 真实看到的数据
-                    </span>)}
-            </div>
-          )}
-        </div>
-      )}
-      {diag && (
-        <div style={{ marginTop: 6 }}>
+        hint && (
           <div style={{
-            display: "flex", alignItems: "center", gap: 6,
-            fontSize: 10, color: "var(--text-tertiary)", marginBottom: 4,
+            marginTop: 4, paddingLeft: 14, fontSize: 10,
+            color: "var(--text-tertiary)", lineHeight: 1.5,
+            fontStyle: "italic",
           }}>
-            <span>诊断 JSON (loader 真实看到的数据)</span>
-            <button onClick={e => { e.preventDefault(); e.stopPropagation(); copyDiag(); }}
-              style={{
-                fontSize: 9, padding: "1px 6px", borderRadius: 8,
-                border: "1px solid var(--border)", background: "transparent",
-                color: "var(--text-tertiary)", cursor: "pointer",
-              }} title="把整段 JSON 复制到剪贴板">
-              复制
-            </button>
+            ↳ {hint}
           </div>
-          <pre style={{
-            padding: 8, background: "var(--bg-app)",
-            fontSize: 10, lineHeight: 1.5, fontFamily: "var(--font-mono)",
-            color: "var(--text-secondary)",
-            maxHeight: 280, overflow: "auto", borderRadius: 4,
-            whiteSpace: "pre-wrap", wordBreak: "break-word",
-          }}>{JSON.stringify(diag, null, 2)}</pre>
-        </div>
+        )
       )}
     </details>
   );

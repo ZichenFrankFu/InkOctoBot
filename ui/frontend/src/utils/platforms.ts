@@ -22,6 +22,9 @@ export interface PlatformProfile {
 // 为了让 platform_market loader 能直接和爬虫库里的 ``qidian`` / ``fanqie``
 // 对齐, 这里使用规范化中文短名 ``起点`` / ``番茄``; 后端 platform_aliases.py
 // 提供 起点中文网 → 起点 / qidian → 起点 的双向桥接.
+//
+// 用户明确要求：暂时只暴露 起点 / 番茄 两个平台 —— 纵横 / 刺猬猫 / 17K 等
+// 不在下拉里, 等需要时再回归.
 export const PLATFORM_PROFILES: PlatformProfile[] = [
   {
     id: "qidian",
@@ -43,23 +46,16 @@ export const PLATFORM_PROFILES: PlatformProfile[] = [
     generationHint:
       "番茄读者偏好短章快节奏，单章 1500-2500 字；情节推进密集，爽点前置，少铺垫多冲突。",
   },
-  {
-    id: "other",
-    label: "其他",
-    aliases: ["other"],
-    chapterWordTarget: [2000, 3000],
-    pacing: "中速",
-    openingNote: "",
-    generationHint: "",
-  },
 ];
 
 /** Platform option list for <select> controls. */
 export const PLATFORMS: string[] = PLATFORM_PROFILES.map((p) => p.label);
 
-/** Fuzzy-resolve a stored (free-text) platform string to its profile. */
+/** Fuzzy-resolve a stored (free-text) platform string to its profile.
+ *  下拉里现在只剩 起点 / 番茄, 没有兜底的 "其他" 选项 —— 不认识就回起点
+ *  (出现频率最高), 调用方需要自行判断时再额外校验 ``id`` 字段. */
 export function platformProfile(name: string | undefined | null): PlatformProfile {
-  const fallback = PLATFORM_PROFILES[PLATFORM_PROFILES.length - 1];
+  const fallback = PLATFORM_PROFILES[0];
   const norm = (name || "").trim().toLowerCase();
   if (!norm) return fallback;
   for (const p of PLATFORM_PROFILES) {
@@ -67,7 +63,6 @@ export function platformProfile(name: string | undefined | null): PlatformProfil
     if (p.aliases.some((a) => a.toLowerCase() === norm)) return p;
   }
   for (const p of PLATFORM_PROFILES) {
-    if (p.id === "other") continue;
     if (norm.includes(p.label.toLowerCase())) return p;
     if (p.aliases.some((a) => a && norm.includes(a.toLowerCase()))) return p;
   }

@@ -226,14 +226,11 @@ export function tInspirationCategory(key: string): string {
 
 
 /** Platform keys are stored in the DB as the crawler's English slug
- *  (qidian / fanqie / zongheng / ciweimao / 17k). The UI should display
- *  the localised Chinese name in zh mode. */
+ *  (qidian / fanqie). The UI displays the localised Chinese name in
+ *  zh mode. 用户要求暂时只暴露 起点 / 番茄, 其它平台等业务需要再加. */
 const PLATFORM_NAMES: Record<string, { zh: string; en: string }> = {
-  qidian:   { zh: "起点",   en: "Qidian" },
-  fanqie:   { zh: "番茄",   en: "Fanqie" },
-  zongheng: { zh: "纵横",   en: "Zongheng" },
-  ciweimao: { zh: "刺猬猫", en: "Ciweimao" },
-  "17k":    { zh: "17K",    en: "17K" },
+  qidian: { zh: "起点", en: "Qidian" },
+  fanqie: { zh: "番茄", en: "Fanqie" },
 };
 
 export function tPlatform(key: string): string {

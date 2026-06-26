@@ -740,15 +740,13 @@ def render_stats_for_prompt(stats: dict[str, Any]) -> str:
         )
     tw = stats.get("top_words") or []
     if tw:
+        # 高频词控制在 6 个以内 —— 再多就重复, 而且会挤掉行文风格的预算.
         lines.append(
             "- 高频词（相对频率‰）：" + "、".join(
-                f"{w['word']}({w.get('relative_freq_permille', w['count'])}‰)" for w in tw[:15]
+                f"{w['word']}({w.get('relative_freq_permille', w['count'])}‰)"
+                for w in tw[:6]
             )
         )
-    neo = stats.get("neologism_step1") or []
-    if neo:
-        lines.append(
-            "- 生造词Step1候选（频率+凝合度初筛）："
-            + "、".join(f"{n['term']}({n['count']})" for n in neo[:12])
-        )
+    # 生造词Step1 只是给『高级特征提取』LLM 做复核的中间候选,
+    # 不进 writer prompt —— 用户的『专有名词』字段才是最终结果.
     return "\n".join(lines)

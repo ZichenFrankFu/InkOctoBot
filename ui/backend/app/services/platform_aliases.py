@@ -1,8 +1,8 @@
 """Platform-name canonicalization — bridges three label families:
 
-- Crawler DB keys (English slugs): ``qidian`` / ``fanqie`` / ``zongheng`` / …
-- Project DB stored values (Chinese display labels): ``起点`` / ``番茄`` / …
-- Legacy long-form labels: ``起点中文网`` / ``番茄小说`` / …
+- Crawler DB keys (English slugs): ``qidian`` / ``fanqie``
+- Project DB stored values (Chinese display labels): ``起点`` / ``番茄``
+- Legacy long-form labels: ``起点中文网`` / ``番茄小说``
 
 The platform_directive / market_overview loaders match project values
 against stored values purely by string overlap, which fails when one
@@ -16,6 +16,10 @@ platform style" rule applies to the body of ``platform_directive``;
 that body is still loaded purely from real extracted features. The
 alias map below only translates the platform IDENTIFIER between
 crawler-side and project-side conventions.
+
+用户要求暂时只暴露 起点 / 番茄 两个平台, 别的平台等业务需要再回归 —— 别的
+synonyms (zongheng / ciweimao / 17K / …) 主动从表里删掉, 防止 UI 里
+意外冒出来.
 """
 from __future__ import annotations
 
@@ -35,16 +39,6 @@ _PLATFORM_NORMALIZE: dict[str, str] = {
     "番茄":         "番茄",
     "番茄小说":     "番茄",
     "tomato":       "番茄",
-    # 纵横
-    "zongheng":     "纵横",
-    "纵横":         "纵横",
-    "纵横中文网":   "纵横",
-    # 刺猬猫 (mrfz)
-    "ciweimao":     "刺猬猫",
-    "刺猬猫":       "刺猬猫",
-    # 17K
-    "17k":          "17K",
-    "17K":          "17K",
 }
 
 
