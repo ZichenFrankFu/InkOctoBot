@@ -232,41 +232,50 @@ def _data_driven_platform_matches(
     """Discover every stored platform identifier that matches the
     project's platform string, purely from real extracted data.
 
-    No hardcoded alias table — we scan all five sources via
-    ``_scan_stored_platforms`` (three project-DB tables + crawler DB's
-    ``novels`` and ``rank_lists`` columns), then match each stored value
-    against ``project_platform`` with three tiers of decreasing
-    strictness (exact > project-contains-stored > stored-contains-project,
-    all case-insensitive). Ordering is preserved so the loader tries the
-    strongest match first.
+    Two-pass matching:
+    1. **Canonical alias bridge** — both the project value and each
+       stored value are normalised through
+       ``platform_aliases.canonicalize_platform`` (qidian ↔ 起点,
+       fanqie ↔ 番茄, 起点中文网 → 起点, …). When the canonical forms
+       agree, the stored value is treated as an exact match. This is
+       what bridges crawler-side English slugs to project-side Chinese
+       labels.
+    2. **Substring fallback** — when the alias map doesn't cover a
+       platform we still do the original case-insensitive substring
+       match (exact > project ⊃ stored > stored ⊃ project) so newly-added
+       platforms work without touching the alias table.
 
-    Returns ``[]`` when none of the stored values overlap — the loader
-    surfaces a "no real data for this platform" hint to the user instead
-    of falling back to anything synthesized.
+    Returns ``[]`` when nothing overlaps; the loader then surfaces a
+    "no real data for this platform" hint to the user.
     """
     if not (project_platform or "").strip():
         return []
+    from ui.backend.app.services.platform_aliases import canonicalize_platform
+    pp_canon = canonicalize_platform(project_platform).lower()
     pp = project_platform.strip().lower()
     if not crawler_db:
         crawler_db = _crawler_db_path()
     stored = _scan_stored_platforms(db_path, crawler_db)
 
+    alias_hits: list[str] = []
     exact: list[str] = []
     project_contains: list[str] = []
     stored_contains: list[str] = []
     for v in stored:
         vl = v.lower()
+        v_canon = canonicalize_platform(v).lower()
+        # 1. Canonical alias match — bridges qidian ↔ 起点中文网.
+        if pp_canon and v_canon and pp_canon == v_canon:
+            alias_hits.append(v)
+            continue
+        # 2. Substring fallback — original three tiers.
         if vl == pp:
             exact.append(v)
         elif vl in pp:
-            # Stored shorter than (and contained in) project value —
-            # e.g. project="起点中文网", stored="起点".
             project_contains.append(v)
         elif pp in vl:
-            # Project value contained in stored — e.g. project="起点",
-            # stored="起点中文网".
             stored_contains.append(v)
-    return exact + project_contains + stored_contains
+    return alias_hits + exact + project_contains + stored_contains
 
 
 def _load_active_profile_row(

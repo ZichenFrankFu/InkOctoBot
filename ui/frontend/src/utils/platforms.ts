@@ -18,11 +18,15 @@ export interface PlatformProfile {
   generationHint: string;
 }
 
+// label 字段同时也是项目 DB 里 ``platforms.platform`` 列的存储值。
+// 为了让 platform_market loader 能直接和爬虫库里的 ``qidian`` / ``fanqie``
+// 对齐, 这里使用规范化中文短名 ``起点`` / ``番茄``; 后端 platform_aliases.py
+// 提供 起点中文网 → 起点 / qidian → 起点 的双向桥接.
 export const PLATFORM_PROFILES: PlatformProfile[] = [
   {
     id: "qidian",
-    label: "起点中文网",
-    aliases: ["起点", "qidian", "起点中文"],
+    label: "起点",
+    aliases: ["起点中文网", "qidian", "起点中文"],
     chapterWordTarget: [2500, 4000],
     pacing: "中速",
     openingNote: "黄金三章内建立核心冲突即可，允许适度铺垫",
@@ -31,8 +35,8 @@ export const PLATFORM_PROFILES: PlatformProfile[] = [
   },
   {
     id: "fanqie",
-    label: "番茄小说",
-    aliases: ["番茄", "fanqie", "tomato"],
+    label: "番茄",
+    aliases: ["番茄小说", "fanqie", "tomato"],
     chapterWordTarget: [1500, 2500],
     pacing: "快",
     openingNote: "首章即抛出爽点或核心钩子，强开局",

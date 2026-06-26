@@ -102,12 +102,16 @@ def delete_job_endpoint(job_id: str) -> dict:
 
 @router.get("/platforms")
 def list_platforms() -> dict:
-    """Distinct ``platform`` values from the crawler DB. Uses the
-    same path resolver as the rest of the market endpoints so the
-    user-configured market-DB path takes effect."""
+    """Distinct ``platform`` values from the crawler DB. ``key`` is the
+    raw crawler-side slug (qidian / fanqie / …) — kept verbatim because
+    downstream cache keys / job filters use it. ``label`` is translated
+    to the canonical Chinese display name through
+    ``platform_aliases.canonicalize_platform`` so the UI dropdown shows
+    起点 / 番茄 instead of qidian / fanqie."""
     import sqlite3 as _sqlite3
     from pathlib import Path as _Path
     from ui.backend.app.utils import resolve_crawler_db_path
+    from ui.backend.app.services.platform_aliases import canonicalize_platform
     crawler_db_path = resolve_crawler_db_path()
     if not crawler_db_path or not _Path(crawler_db_path).exists():
         return {"platforms": [], "warning": "crawler DB not configured"}
@@ -120,7 +124,11 @@ def list_platforms() -> dict:
                 "ORDER BY book_count DESC"
             ).fetchall()
         return {"platforms": [
-            {"key": r["platform"], "label": r["platform"], "book_count": r["book_count"]}
+            {
+                "key":        r["platform"],
+                "label":      canonicalize_platform(r["platform"]) or r["platform"],
+                "book_count": r["book_count"],
+            }
             for r in rows if r["platform"]
         ]}
     except _sqlite3.OperationalError as e:

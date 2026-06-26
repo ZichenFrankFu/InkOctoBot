@@ -197,16 +197,81 @@ class TestPlatformMarketDataDriven(unittest.TestCase):
         self.assertIn("平台综述", out)
 
     def test_no_overlap_returns_empty(self) -> None:
-        """No hardcoded alias table — a project value with zero overlap
-        against any stored identifier MUST skip the loader."""
+        """A project value with zero overlap against any stored
+        identifier — AND not bridged by ``platform_aliases`` — must skip
+        the loader. Use a fake platform name that the alias map doesn't
+        know about (``"未识别平台"``) so the bridge can't rescue it."""
         self._ps.upsert_project(self.db, {
-            "id": "p3", "name": "c", "platform": "qidian", "category": "玄幻",
+            "id": "p3", "name": "c", "platform": "未识别平台", "category": "玄幻",
         })
         self.assertEqual(platform_market.load("p3"), "")
 
     def test_no_platform_set(self) -> None:
         self._ps.upsert_project(self.db, {"id": "p4", "name": "d"})
         self.assertEqual(platform_market.load("p4"), "")
+
+
+class TestPlatformMarketCanonicalAliasBridge(unittest.TestCase):
+    """Project DB stores the Chinese display label (起点中文网 / 番茄小说)
+    while the crawler stores the English slug (qidian / fanqie). The
+    purely substring-based matcher couldn't bridge them — the alias map
+    in ``ui.backend.app.services.platform_aliases`` does."""
+
+    def setUp(self) -> None:
+        import os, sqlite3, tempfile, time, json
+        from storage.project_schema import (
+            ensure_creation_tables, _ensure_projects_market_columns,
+        )
+        from storage.market_extractor_schema import ensure_market_extractor_tables
+        from ui.backend.app.services import project_store as ps
+        self._ps = ps
+        tmp = tempfile.mkdtemp()
+        self.project_db = os.path.join(tmp, "p.db")
+        self.crawler_db = os.path.join(tmp, "c.db")
+        with sqlite3.connect(self.project_db) as con:
+            ensure_creation_tables(con)
+            _ensure_projects_market_columns(con)
+            ensure_market_extractor_tables(con)
+            con.execute(
+                "INSERT INTO platform_profiles(profile_id, platform, "
+                "category, profile_version, profile_summary, "
+                "confidence_label, extraction_started_at, "
+                "extraction_completed_at) "
+                "VALUES('pp_q', 'qidian', '', 1, '起点平台综述。', "
+                "'manual', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        # Crawler DB writes English slugs.
+        with sqlite3.connect(self.crawler_db) as con:
+            con.execute(
+                "CREATE TABLE novels (novel_uid INTEGER PRIMARY KEY, "
+                "platform TEXT)"
+            )
+            con.execute("INSERT INTO novels VALUES (1, 'qidian')")
+        self._patcher_db = mock.patch(
+            "ui.backend.app.services.project_paths.get_db_path",
+            return_value=self.project_db,
+        )
+        self._patcher_db.start()
+        self._patcher_crawler = mock.patch(
+            "ui.backend.app.utils.resolve_crawler_db_path",
+            return_value=self.crawler_db,
+        )
+        self._patcher_crawler.start()
+
+    def tearDown(self) -> None:
+        self._patcher_db.stop()
+        self._patcher_crawler.stop()
+
+    def test_chinese_label_bridges_to_english_slug(self) -> None:
+        """Project saved with long-form Chinese label still resolves to
+        the crawler's English slug via the canonical alias map."""
+        self._ps.upsert_project(self.project_db, {
+            "id": "p1", "name": "demo",
+            "platform": "起点中文网", "category": "星际文明",
+        })
+        out = platform_market.load("p1")
+        self.assertIn("平台风格基线", out)
+        self.assertIn("起点平台综述", out)
 
 
 class TestPlatformMarketLegacyFallbacks(unittest.TestCase):
