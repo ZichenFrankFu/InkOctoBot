@@ -408,8 +408,15 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   };
 
   const addVolume = () => { setVolumes([...volumes, { id: uid(), project_id: projectId, title: `第${volumes.length + 1}卷`, order: volumes.length + 1, chapters: [], collapsed: false }]); };
-  const addChapter = (volId: string) => { const vol = volumes.find(v => v.id === volId); if (!vol) return; const ch: ChapterOutline = { id: uid(), volume_id: volId, title: `第${vol.chapters.length + 1}章`, order: vol.chapters.length + 1, synopsis: "", content: "", word_count: 0 }; setVolumes(volumes.map(v => v.id === volId ? { ...v, chapters: [...v.chapters, ch] } : v)); };
-  const addChapterToFirstVolume = () => { if (volumes.length > 0) addChapter(volumes[0].id); };
+  const addChapter = (volId: string) => { const vol = volumes.find(v => v.id === volId); if (!vol) return; const ch: ChapterOutline = { id: uid(), volume_id: volId, title: `第${vol.chapters.length + 1}章`, order: vol.chapters.length + 1, synopsis: "", content: "", word_count: 0 }; setVolumes(volumes.map(v => v.id === volId ? { ...v, chapters: [...v.chapters, ch] } : v)); setActiveChId(ch.id); };
+  // 顶栏 "+章" 添加到当前章节所在卷（无激活章节时落到最后一卷）。
+  // 之前固定写首卷，加上卷头自己又长一个 "+" 按钮 — 现在卷头按钮被移除,
+  // 这条路径需要承担「按当前位置加章」的语义。
+  const addChapterSmart = () => {
+    if (volumes.length === 0) return;
+    const target = activeVol ?? volumes[volumes.length - 1];
+    addChapter(target.id);
+  };
   const deleteChapter = (chId: string) => { const allChs = volumes.flatMap(v => v.chapters); if (allChs.length <= 1) return; setVolumes(volumes.map(v => ({ ...v, chapters: v.chapters.filter(c => c.id !== chId) }))); if (activeChId === chId) { const r = allChs.filter(c => c.id !== chId); if (r.length) setActiveChId(r[0].id); } };
   const toggleVolume = (volId: string) => { setVolumes(volumes.map(v => v.id === volId ? { ...v, collapsed: !v.collapsed } : v)); };
   const startRename = (id: string, title: string) => { setRenamingId(id); setRenameVal(title); };
@@ -466,6 +473,119 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
     return true;
+  };
+
+  // Read a .txt / .md file via showOpenFilePicker (with hidden input fallback).
+  const pickTextFile = async (): Promise<string | null> => {
+    const picker = (window as any).showOpenFilePicker;
+    if (typeof picker === "function") {
+      let handle: any;
+      try {
+        [handle] = await picker.call(window, {
+          types: [{ description: "文本文件", accept: { "text/plain": [".txt", ".md", ".markdown"] } }],
+          multiple: false,
+        });
+      } catch (e: any) {
+        if (e?.name === "AbortError") return null;
+        throw e;
+      }
+      const file = await handle.getFile();
+      return await file.text();
+    }
+    return await new Promise<string | null>((resolve, reject) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".txt,.md,.markdown,text/plain";
+      input.onchange = async () => {
+        const f = input.files?.[0];
+        if (!f) { resolve(null); return; }
+        try { resolve(await f.text()); } catch (e) { reject(e); }
+      };
+      input.click();
+    });
+  };
+
+  // Split imported text on Chinese-novel chapter markers.
+  // Matches "第X章 标题", "第X节 标题", "Chapter N ...", "Prologue/序章/楔子/尾声".
+  // Returns null when no marker is found — the caller treats that as a single
+  // chapter and dumps the whole file into one new entry.
+  const parseImportedText = (text: string): Array<{ title: string; content: string }> | null => {
+    const re = /^[ \t]*((?:第[一-鿿0-9零一二三四五六七八九十百千万]+[章节回][^\n]*)|(?:序章|楔子|尾声|后记|番外)[^\n]*|Chapter\s+\d+[^\n]*)\s*$/gmi;
+    const matches: Array<{ title: string; index: number; length: number }> = [];
+    for (const m of text.matchAll(re)) {
+      if (m.index === undefined) continue;
+      matches.push({ title: m[1].trim(), index: m.index, length: m[0].length });
+    }
+    if (matches.length === 0) return null;
+    const result: Array<{ title: string; content: string }> = [];
+    // Preamble before the first marker — only keep it if it contains content.
+    const preamble = text.slice(0, matches[0].index).trim();
+    if (preamble) result.push({ title: "导入前言", content: preamble });
+    for (let i = 0; i < matches.length; i++) {
+      const start = matches[i].index + matches[i].length;
+      const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
+      result.push({
+        title: matches[i].title.slice(0, 80),  // guard against runaway-long titles
+        content: text.slice(start, end).trim(),
+      });
+    }
+    return result;
+  };
+
+  const handleImport = async () => {
+    let text: string | null = null;
+    try { text = await pickTextFile(); }
+    catch (e: any) { toast(e?.message || "读取文件失败", "error"); return; }
+    if (text == null) return;             // user cancelled
+    if (!text.trim()) { toast("文件为空", "error"); return; }
+
+    // Land into the active chapter's volume (so importing while viewing
+    // 第三卷·序章 appends there), falling back to the last volume.
+    let targetVol = activeVol ?? volumes[volumes.length - 1] ?? null;
+    if (!targetVol) {
+      const nv: LocalVolume = {
+        id: uid(), project_id: projectId,
+        title: "导入卷", order: 1, chapters: [], collapsed: false,
+      };
+      setVolumes([nv]);
+      targetVol = nv;
+    }
+
+    const parsed = parseImportedText(text);
+    if (!parsed || parsed.length === 0) {
+      const trimmed = text.trim();
+      const ok = await confirm({
+        message: `未识别到章节标记，将整个文件作为一章导入到「${targetVol.title}」？\n（共 ${wc(trimmed).toLocaleString()} 字）`,
+      });
+      if (!ok) return;
+      const baseOrder = targetVol.chapters.length;
+      const ch: ChapterOutline = {
+        id: uid(), volume_id: targetVol.id,
+        title: `导入章节 ${baseOrder + 1}`,
+        order: baseOrder + 1,
+        synopsis: "", content: trimmed, word_count: wc(trimmed),
+      };
+      setVolumes(volumes.map(v => v.id === targetVol!.id ? { ...v, chapters: [...v.chapters, ch] } : v));
+      setActiveChId(ch.id);
+      toast("已导入 1 章", "success");
+      return;
+    }
+
+    const totalWords = parsed.reduce((s, p) => s + wc(p.content), 0);
+    const ok = await confirm({
+      message: `识别到 ${parsed.length} 个章节（共 ${totalWords.toLocaleString()} 字），添加到「${targetVol.title}」末尾？`,
+    });
+    if (!ok) return;
+    const baseOrder = targetVol.chapters.length;
+    const newChs: ChapterOutline[] = parsed.map((p, i) => ({
+      id: uid(), volume_id: targetVol!.id,
+      title: p.title || `导入章节 ${baseOrder + i + 1}`,
+      order: baseOrder + i + 1,
+      synopsis: "", content: p.content, word_count: wc(p.content),
+    }));
+    setVolumes(volumes.map(v => v.id === targetVol!.id ? { ...v, chapters: [...v.chapters, ...newChs] } : v));
+    if (newChs[0]) setActiveChId(newChs[0].id);
+    toast(`已导入 ${newChs.length} 章`, "success");
   };
 
   const handleBundleExport = async () => {
@@ -1341,25 +1461,129 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
           <div style={{ padding: "8px 14px 4px" }}>
             <input className="input" type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="搜索章节..." style={{ fontSize: 12, padding: "5px 10px", width: "100%", boxSizing: "border-box" }} />
           </div>
-          <div style={{ padding: "4px 14px 6px", display: "flex", gap: 6 }}>
-            <button className="btn-icon" onClick={addVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+卷</button>
-            <button className="btn-icon" onClick={addChapterToFirstVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+章</button>
-            <button className="btn-icon" onClick={handleBundleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} title="导出角色+世界书+章节大纲，可自选保存位置">导出</button>
-            <button className="btn-icon" onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--jade)", borderRadius: "var(--radius-sm)", color: batchMode ? "#fff" : "var(--jade)", background: batchMode ? "var(--jade)" : undefined }} title="批量选择章节后删除 / 导出">批量</button>
+          <div style={{ padding: "4px 14px 6px", display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="btn-icon" onClick={addVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+卷</button>
+              <button className="btn-icon" onClick={addChapterSmart} title={activeVol ? `在 ${activeVol.title} 末尾新增章节` : "在最后一卷末尾新增章节"} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+章</button>
+              <button className="btn-icon" onClick={handleImport} title="从 .txt / .md 文件导入章节，自动按「第X章」切分" style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>导入</button>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="btn-icon" onClick={handleBundleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} title="导出角色+世界书+章节大纲，可自选保存位置">导出</button>
+              <button className="btn-icon" onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--jade)", borderRadius: "var(--radius-sm)", color: batchMode ? "#fff" : "var(--jade)", background: batchMode ? "var(--jade)" : undefined }} title="批量选择章节后删除 / 导出">批量</button>
+            </div>
           </div>
           {batchMode && (
-            <div style={{ padding: "6px 10px", background: "var(--jade-subtle)", borderBottom: "1px solid var(--border)", fontSize: 11 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                <span>已选 {selectedChIds.size} 章</span>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={selectAllChapters}>全选</button>
-                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={() => setSelectedChIds(new Set())}>清空</button>
-                  <button className="btn-icon" style={{ fontSize: 10, padding: "2px 6px" }} onClick={exitBatchMode}>退出</button>
+            <div style={{
+              margin: "4px 10px 8px",
+              padding: 10,
+              background: "var(--bg-surface-2)",
+              border: "1px solid var(--border)",
+              borderLeft: "3px solid var(--jade)",
+              borderRadius: "var(--radius-sm)",
+              fontSize: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}>
+              {/* Status row: count badge + close */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    minWidth: 22,
+                    height: 20,
+                    padding: "0 6px",
+                    borderRadius: 10,
+                    background: selectedChIds.size > 0 ? "var(--jade)" : "var(--bg-surface)",
+                    color: selectedChIds.size > 0 ? "#fff" : "var(--text-tertiary)",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    lineHeight: 1,
+                  }}>{selectedChIds.size}</span>
+                  <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>已选章节</span>
                 </div>
+                <button
+                  onClick={exitBatchMode}
+                  title="退出批量模式"
+                  style={{
+                    width: 22, height: 22,
+                    padding: 0,
+                    background: "transparent",
+                    border: "none",
+                    borderRadius: "var(--radius-sm)",
+                    color: "var(--text-tertiary)",
+                    fontSize: 16,
+                    lineHeight: 1,
+                    cursor: "pointer",
+                  }}
+                >×</button>
               </div>
-              <div style={{ display: "flex", gap: 4 }}>
-                <button className="btn-icon" style={{ fontSize: 11, flex: 1, padding: "3px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} disabled={selectedChIds.size === 0} onClick={exportSelectedChapters}>导出选中</button>
-                <button className="btn-icon" title="删除选中章节" style={{ fontSize: 13, flex: 1, padding: "3px 0", border: "1px solid var(--error)", borderRadius: "var(--radius-sm)", color: "var(--error)", fontWeight: 600 }} disabled={selectedChIds.size === 0} onClick={deleteSelectedChapters}>× 选中</button>
+              {/* Selection chips */}
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={selectAllChapters}
+                  style={{
+                    flex: 1,
+                    padding: "5px 0",
+                    background: "var(--bg-surface)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--radius-sm)",
+                    color: "var(--text-secondary)",
+                    fontSize: 11,
+                    cursor: "pointer",
+                  }}
+                >全选</button>
+                <button
+                  onClick={() => setSelectedChIds(new Set())}
+                  disabled={selectedChIds.size === 0}
+                  style={{
+                    flex: 1,
+                    padding: "5px 0",
+                    background: "var(--bg-surface)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--radius-sm)",
+                    color: selectedChIds.size === 0 ? "var(--text-disabled)" : "var(--text-secondary)",
+                    fontSize: 11,
+                    cursor: selectedChIds.size === 0 ? "not-allowed" : "pointer",
+                  }}
+                >清空</button>
+              </div>
+              {/* Primary actions */}
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={exportSelectedChapters}
+                  disabled={selectedChIds.size === 0}
+                  title="将选中章节导出为 .txt 文件"
+                  style={{
+                    flex: 1,
+                    padding: "7px 0",
+                    background: selectedChIds.size === 0 ? "transparent" : "var(--indigo-subtle, transparent)",
+                    border: `1px solid ${selectedChIds.size === 0 ? "var(--border)" : "var(--indigo)"}`,
+                    borderRadius: "var(--radius-sm)",
+                    color: selectedChIds.size === 0 ? "var(--text-disabled)" : "var(--indigo)",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: selectedChIds.size === 0 ? "not-allowed" : "pointer",
+                  }}
+                >导出</button>
+                <button
+                  onClick={deleteSelectedChapters}
+                  disabled={selectedChIds.size === 0}
+                  title="删除选中章节（不可撤销）"
+                  style={{
+                    flex: 1,
+                    padding: "7px 0",
+                    background: selectedChIds.size === 0 ? "transparent" : "var(--error)",
+                    border: `1px solid var(--error)`,
+                    borderRadius: "var(--radius-sm)",
+                    color: selectedChIds.size === 0 ? "var(--text-disabled)" : "#fff",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: selectedChIds.size === 0 ? "not-allowed" : "pointer",
+                  }}
+                >删除</button>
               </div>
             </div>
           )}
@@ -1370,7 +1594,6 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                   <span style={{ cursor: "pointer", fontSize: 10, width: 14, flexShrink: 0 }} onClick={() => toggleVolume(v.id)}>{v.collapsed ? "\u25B6" : "\u25BC"}</span>
                   {renamingId === v.id ? <input className="input" value={renameVal} onChange={e => setRenameVal(e.target.value)} onBlur={commitRename} onKeyDown={e => e.key === "Enter" && commitRename()} autoFocus style={{ padding: "2px 6px", fontSize: 12, flex: 1 }} />
                     : <span className="truncate" style={{ flex: 1, cursor: "pointer" }} onDoubleClick={() => startRename(v.id, v.title)}>{v.title}</span>}
-                  <button className="btn-icon" style={{ width: 22, height: 22, fontSize: 13 }} onClick={() => addChapter(v.id)}>+</button>
                 </div>
                 {!v.collapsed && v.chapters.map(c => (
                   <div key={c.id} className={`chapter-tree-item indent ${(batchMode ? selectedChIds.has(c.id) : c.id === activeChId) ? "active" : ""}`}
