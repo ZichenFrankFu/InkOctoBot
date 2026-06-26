@@ -547,6 +547,20 @@ def _render_advanced_subsections(row: dict) -> list[str]:
         if group_lines:
             _emit("行文风格", "\n".join(group_lines))
 
+    # Legacy-profile fallback: an older extraction may have populated
+    # ONLY ``loader_payload`` (the LLM-written 600-1200字 baseline
+    # paragraph) without filling the six structured fields above. Surface
+    # the payload as a single "整段画像" subsection so those projects
+    # don't regress to 未注入 in RAG预览 just because their schema is older.
+    # Allowed budget: 2 × _CAP_PER_SUBSECTION (~640 chars) to keep prompt
+    # tight while preserving most of the writing baseline.
+    if not parts:
+        legacy = (row.get("loader_payload") or "").strip()
+        if legacy:
+            parts.append(
+                f"### 整段画像\n{clip(legacy, _CAP_PER_SUBSECTION * 2)}"
+            )
+
     return parts
 
 
@@ -556,23 +570,78 @@ def _render_basic_features(db_path: str, platform: str) -> str:
     The cached payload's ``spec_stats`` field is exactly what the 基础特征
     tab visualizes; rendering it with the shared helper keeps the prompt
     wording in sync with the UI (标点密度 / 词性分布 / 情感占比 / 高频词 /
-    生造词Step1 候选). Returns ``""`` when no ``opening_nlp`` cache row
-    matches the platform, so the caller can skip the subsection cleanly.
+    生造词Step1 候选).
+
+    Legacy fallback: pre-``spec_stats`` cache rows still expose
+    ``word_count_summary`` / ``dialogue_ratio`` / ``sentence_length`` /
+    ``first_sentence_types`` / ``end_hook_types`` at the top level. When
+    the new field is missing we fall back to those so existing projects
+    don't show 未注入 just because their cache is older.
+
+    Returns ``""`` when no ``opening_nlp`` cache row matches.
     """
     nlp = _load_opening_nlp_cache(db_path, platform)
     if not nlp:
         return ""
     spec = nlp.get("spec_stats") or {}
-    if not isinstance(spec, dict) or not spec.get("available"):
-        return ""
-    try:
-        from ui.backend.app.services.market_extractor.opening_stats import (
-            render_stats_for_prompt,
+    if isinstance(spec, dict) and spec.get("available"):
+        try:
+            from ui.backend.app.services.market_extractor.opening_stats import (
+                render_stats_for_prompt,
+            )
+        except Exception as e:
+            logger.debug("opening_stats import failed: %s", e)
+            return _render_legacy_basic_features(nlp)
+        body = render_stats_for_prompt(spec).strip()
+        if body:
+            return clip(body, _CAP_PER_SUBSECTION * 2)
+    # spec_stats absent or unavailable → degrade to the legacy fields the
+    # cache always has so the loader still emits something useful.
+    return _render_legacy_basic_features(nlp)
+
+
+def _render_legacy_basic_features(nlp: dict) -> str:
+    """Render the legacy ``opening_nlp`` cache shape (pre-spec_stats) —
+    word counts, dialogue ratio, average sentence length, first-sentence /
+    end-hook type top-3. Each row is at most one line; the whole block
+    fits well under one ``_CAP_PER_SUBSECTION`` budget.
+    """
+    bits: list[str] = []
+    sample = int(nlp.get("sample_count") or 0)
+    novels = int(nlp.get("unique_novels") or 0)
+    if sample or novels:
+        bits.append(f"- 样本：{novels} 部 / {sample} 章")
+    wcs = nlp.get("word_count_summary") or {}
+    if isinstance(wcs, dict) and wcs.get("mean"):
+        bits.append(
+            f"- 开篇字数 均 {int(wcs.get('mean') or 0)} "
+            f"(min {int(wcs.get('min') or 0)} / max {int(wcs.get('max') or 0)})"
         )
-    except Exception as e:
-        logger.debug("opening_stats import failed: %s", e)
-        return ""
-    body = render_stats_for_prompt(spec).strip()
+    dr = nlp.get("dialogue_ratio") or {}
+    if isinstance(dr, dict) and dr.get("mean") is not None:
+        bits.append(f"- 开篇对话占比 均 {float(dr.get('mean') or 0):.1%}")
+    sl = nlp.get("sentence_length") or {}
+    if isinstance(sl, dict) and sl.get("mean"):
+        bits.append(f"- 开篇平均句长 {float(sl.get('mean') or 0):.1f} 字")
+    for field, label in [
+        ("first_sentence_types", "首句类型"),
+        ("end_hook_types",       "尾钩类型"),
+    ]:
+        items = nlp.get(field) or []
+        if not isinstance(items, list) or not items:
+            continue
+        line_bits: list[str] = []
+        for it in items[:3]:
+            if not isinstance(it, dict):
+                continue
+            lab = str(it.get("label") or "").strip()
+            cnt = it.get("count")
+            if not lab:
+                continue
+            line_bits.append(f"{lab} {int(cnt)}" if cnt is not None else lab)
+        if line_bits:
+            bits.append(f"- {label}：" + " · ".join(line_bits))
+    body = "\n".join(bits).strip()
     if not body:
         return ""
     return clip(body, _CAP_PER_SUBSECTION * 2)

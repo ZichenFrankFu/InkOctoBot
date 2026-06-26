@@ -209,6 +209,104 @@ class TestPlatformMarketDataDriven(unittest.TestCase):
         self.assertEqual(platform_market.load("p4"), "")
 
 
+class TestPlatformMarketLegacyFallbacks(unittest.TestCase):
+    """Two graceful-degradation paths that protect existing projects from
+    regressing to 未注入 after the loader merger:
+
+    1. ``platform_profiles`` row with ONLY ``loader_payload`` populated
+       (none of the six structured fields) — older extractions where the
+       LLM filled the writing baseline paragraph but not the per-field
+       breakdown. The loader surfaces it as one "整段画像" subsection.
+    2. ``opening_nlp`` cache row WITHOUT ``spec_stats`` — pre-spec_stats
+       cache shape. The loader renders the legacy fields
+       (word_count_summary / dialogue_ratio / first_sentence_types …)
+       instead of returning empty.
+    """
+
+    def setUp(self) -> None:
+        import os, sqlite3, tempfile, time, json
+        from storage.market_extractor_schema import ensure_market_extractor_tables
+        from storage.project_schema import (
+            ensure_creation_tables, _ensure_projects_market_columns,
+        )
+        from ui.backend.app.services import project_store as ps
+        self._ps = ps
+        self.db = os.path.join(tempfile.mkdtemp(), "legacy.db")
+        with sqlite3.connect(self.db) as con:
+            ensure_creation_tables(con)
+            _ensure_projects_market_columns(con)
+            ensure_market_extractor_tables(con)
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS compute_cache ("
+                "cache_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL, "
+                "version_key TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)"
+            )
+            # platform_profiles row with ONLY loader_payload (legacy shape).
+            con.execute(
+                "INSERT INTO platform_profiles("
+                "profile_id, platform, category, profile_version, "
+                "loader_payload, confidence_label, "
+                "extraction_started_at, extraction_completed_at) "
+                "VALUES('prof_legacy', '起点', '玄幻', 1, ?, 'high', ?, ?)",
+                (
+                    "起点玄幻：穿越流为主，短句节奏，前期密集打脸 — 写作时严格遵循以上风格基线。",
+                    time.time(), time.time(),
+                ),
+            )
+            # opening_nlp cache row WITHOUT spec_stats (legacy shape).
+            con.execute(
+                "INSERT INTO compute_cache VALUES(?, ?, '', ?)",
+                ("opening_nlp:起点", json.dumps({
+                    "available": True, "sample_count": 50, "unique_novels": 20,
+                    "word_count_summary": {"mean": 2900, "min": 1500, "max": 4500},
+                    "dialogue_ratio": {"mean": 0.28},
+                    "sentence_length": {"mean": 22.4},
+                    "first_sentence_types": [
+                        {"label": "动作", "count": 18},
+                        {"label": "对话", "count": 12},
+                    ],
+                    "end_hook_types": [
+                        {"label": "悬念", "count": 22},
+                        {"label": "反转", "count": 8},
+                    ],
+                }, ensure_ascii=False), time.time()))
+            con.commit()
+        self._patcher = mock.patch(
+            "ui.backend.app.services.project_paths.get_db_path",
+            return_value=self.db,
+        )
+        self._patcher.start()
+
+    def tearDown(self) -> None:
+        self._patcher.stop()
+
+    def test_loader_payload_only_profile_falls_back_to_整段画像(self) -> None:
+        """Even when the six structured fields are blank, loader_payload
+        must reach the prompt — projects with older extractions can't
+        regress to 未注入 silently."""
+        self._ps.upsert_project(self.db, {
+            "id": "p_leg", "name": "demo",
+            "platform": "起点", "category": "玄幻",
+        })
+        out = platform_market.load("p_leg")
+        self.assertIn("平台风格基线", out)
+        self.assertIn("整段画像", out)
+        self.assertIn("穿越流为主", out)
+
+    def test_legacy_opening_nlp_cache_still_renders(self) -> None:
+        """A cache row without ``spec_stats`` (older NLP schema) still
+        injects the basic features via the legacy renderer."""
+        self._ps.upsert_project(self.db, {
+            "id": "p_leg", "name": "demo",
+            "platform": "起点", "category": "玄幻",
+        })
+        out = platform_market.load("p_leg")
+        self.assertIn("基础特征", out)
+        self.assertIn("开篇字数", out)
+        self.assertIn("首句类型", out)
+        self.assertIn("动作", out)
+
+
 class TestCharacterCardsLoaderBaseline(unittest.TestCase):
     """Smoke tests for the rewritten loader — stable path only.
 
