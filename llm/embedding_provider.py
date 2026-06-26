@@ -71,7 +71,21 @@ class LocalSTProvider(BaseEmbeddingProvider):
             ) from e
         logger.info("Loading sentence-transformers model %s ...", self._MODEL_NAME)
         try:
-            self._model = SentenceTransformer(self._MODEL_NAME)
+            # huggingface_hub fires a FutureWarning about `resume_download`
+            # and transformers emits a "Special tokens have been added"
+            # advisory every load — they obscure real errors in the log.
+            # Same filter pair as ui/backend/.../providers/transformers.py.
+            import warnings as _w
+            with _w.catch_warnings():
+                _w.filterwarnings(
+                    "ignore", category=FutureWarning,
+                    message=".*resume_download.*",
+                )
+                _w.filterwarnings(
+                    "ignore", category=UserWarning,
+                    message=".*Special tokens have been added.*",
+                )
+                self._model = SentenceTransformer(self._MODEL_NAME)
         except ImportError as e:
             # Typical env breakage: sentence-transformers >= 3.x needs
             # transformers >= 4.41 (which exports EncoderDecoderCache).
