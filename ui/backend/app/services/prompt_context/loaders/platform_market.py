@@ -284,47 +284,87 @@ def _load_active_profile_row(
     tried against each alias produced by ``_data_driven_platform_matches``.
     Returns ``None`` when no row matches; the caller then degrades to
     rendering only basic features.
+
+    Uses ``SELECT *`` so DBs on an older schema (missing newer columns
+    like ``style_dimensions_json`` / ``neologism_step2_json`` / the
+    ``superseded_by_profile_id`` column) still resolve a row instead of
+    blowing up the entire SELECT and silently returning None.
     """
-    base_select = (
-        "SELECT profile_summary, style_baseline, "
-        "       signature_devices_description, pacing_guidance, "
-        "       style_dimensions_json, neologism_step2_json, "
-        "       loader_payload, confidence_label, category "
-        "FROM platform_profiles "
-        "WHERE platform = ? "
-        "AND superseded_by_profile_id IS NULL "
-        "AND (confidence_label IS NULL OR confidence_label != 'low') "
-    )
     matches = _data_driven_platform_matches(db_path, platform)
+    # Emergency fallback: if the scanner missed the project's platform
+    # string (rare schema-skew edge case), still try the verbatim value.
+    # The downstream SELECT uses ``WHERE platform = ?`` which is exact,
+    # so adding the project string itself can only RECOVER a missed
+    # match — never introduce a wrong one.
+    if (platform or "").strip() and platform not in matches:
+        matches = list(matches) + [platform.strip()]
+    if not matches:
+        return None
+    # Detect available columns once so we can build a WHERE clause that
+    # only references columns the schema actually has.
+    try:
+        with sqlite3.connect(db_path) as con:
+            cols = {
+                r[1] for r in con.execute("PRAGMA table_info(platform_profiles)")
+            }
+    except sqlite3.OperationalError:
+        return None
+    if not cols:
+        return None
+    extra_where = ""
+    if "superseded_by_profile_id" in cols:
+        extra_where += " AND superseded_by_profile_id IS NULL"
+    if "confidence_label" in cols:
+        extra_where += (
+            " AND (confidence_label IS NULL OR confidence_label != 'low')"
+        )
+    order_clause = (
+        " ORDER BY profile_version DESC"
+        if "profile_version" in cols else ""
+    )
+    has_category = "category" in cols
+    base_select = (
+        "SELECT * FROM platform_profiles WHERE platform = ?" + extra_where
+    )
     candidates: list[tuple[str, tuple]] = []
     for plat_alias in matches:
-        if category:
+        if category and has_category:
             candidates.append((
-                base_select + "AND category = ? ORDER BY profile_version DESC LIMIT 1",
+                base_select + " AND category = ?" + order_clause + " LIMIT 1",
                 (plat_alias, category),
             ))
+        if has_category:
+            candidates.append((
+                base_select
+                + " AND (category = '' OR category IS NULL)"
+                + order_clause + " LIMIT 1",
+                (plat_alias,),
+            ))
         candidates.append((
-            base_select + "AND (category = '' OR category IS NULL) "
-            "ORDER BY profile_version DESC LIMIT 1",
-            (plat_alias,),
-        ))
-        candidates.append((
-            base_select + "ORDER BY profile_version DESC LIMIT 1",
+            base_select + order_clause + " LIMIT 1",
             (plat_alias,),
         ))
     try:
         with sqlite3.connect(db_path) as con:
             con.row_factory = sqlite3.Row
             for sql, params in candidates:
-                row = con.execute(sql, params).fetchone()
+                try:
+                    row = con.execute(sql, params).fetchone()
+                except sqlite3.OperationalError as e:
+                    logger.debug(
+                        "platform_directive: SELECT failed for alias %r: %s",
+                        params, e,
+                    )
+                    continue
                 if row:
                     return dict(row)
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as e:
+        logger.debug("platform_directive: profile_row connect failed: %s", e)
         return None
     logger.debug(
         "platform_directive: no active profile for platform=%r category=%r "
-        "(data-driven matches: %s)",
-        platform, category, matches)
+        "(data-driven matches: %s, available cols: %s)",
+        platform, category, matches, sorted(cols))
     return None
 
 
@@ -419,6 +459,11 @@ def _load_opening_nlp_cache(db_path: str, platform: str) -> dict | None:
     no platform-specific row matches.
     """
     matches = _data_driven_platform_matches(db_path, platform)
+    # Emergency fallback: try the verbatim project platform too, in case
+    # the scanner missed it (e.g. compute_cache rows written before the
+    # opening_nlp key prefix existed).
+    if (platform or "").strip() and platform not in matches:
+        matches = list(matches) + [platform.strip()]
     cache_keys: list[str] = []
     seen: set[str] = set()
     for plat_alias in matches:
