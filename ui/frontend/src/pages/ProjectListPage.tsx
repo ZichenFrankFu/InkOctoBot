@@ -6,6 +6,7 @@ import type { Project } from "../api/types";
 import AIChatPanel, { ChatMessage } from "../components/shared/AIChatPanel";
 import { renderPrompt } from "../utils/promptTemplate";
 import { PLATFORMS, platformProfile } from "../utils/platforms";
+import { tPlatform, tGenderTarget, tSerialStatusShort } from "../i18n";
 
 interface Props {
   activeProject: string;
@@ -825,11 +826,11 @@ export default function ProjectListPage({ activeProject, onSelectProject, onNavi
                           </div>
                         </div>
                         <div className="flex gap-8 mb-8" style={{ flexWrap: "wrap" }}>
-                          {(p as any).platform && <span className="tag qidian" style={{ fontSize: 10 }}>{(p as any).platform}</span>}
+                          {(p as any).platform && <span className="tag qidian" style={{ fontSize: 10 }}>{tPlatform((p as any).platform)}</span>}
                           {(p as any).category && <span className="tag category" style={{ fontSize: 10 }}>{(p as any).category}</span>}
-                          {(p as any).gender_target && <span className="tag purple" style={{ fontSize: 10 }}>{(p as any).gender_target === "male" ? "男频" : "女频"}</span>}
+                          {(p as any).gender_target && <span className="tag purple" style={{ fontSize: 10 }}>{tGenderTarget((p as any).gender_target)}</span>}
                           {(p as any).serial_status && <span className={`tag ${(p as any).serial_status === "ongoing" ? "status-ongoing" : "status-completed"}`} style={{ fontSize: 10 }}>
-                            {(p as any).serial_status === "ongoing" ? "连载" : "完结"}
+                            {tSerialStatusShort((p as any).serial_status)}
                           </span>}
                         </div>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>

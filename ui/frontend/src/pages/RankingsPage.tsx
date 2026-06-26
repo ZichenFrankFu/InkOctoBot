@@ -3,6 +3,7 @@ import { apiGet, apiPost } from "../api/client";
 import { useResizable } from "../hooks/useResizable";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
 import type { RankList, RankSnapshot, RankEntry, Novel } from "../api/types";
+import { tSerialStatus } from "../i18n";
 
 /* ── local types ── */
 interface NovelDetail {
@@ -686,7 +687,7 @@ function NovelPanel({ detail }: { detail: NovelDetail }) {
             <span
               className={`tag ${n.status === "completed" ? "status-completed" : "status-ongoing"}`}
             >
-              {n.status === "completed" ? "已完本" : "连载中"}
+              {tSerialStatus(n.status)}
             </span>
           )}
         </div>

@@ -7,9 +7,11 @@ export interface Project {
   id: string;
   name: string;
   genre?: string;
-  platform?: string;          // 平台: 起点/番茄/etc
-  gender_target?: string;     // 男频/女频
-  serial_status?: string;     // 连载状态
+  // 代码层一律使用英文 slug / 枚举值, 展示层 (tPlatform / tGenderTarget /
+  // tSerialStatus) 负责翻译成中文. 不要在比较或 lookup 里写中文字面量.
+  platform?: string;          // canonical: "qidian" | "fanqie" | 自定义
+  gender_target?: string;     // "male" | "female" | "neutral"
+  serial_status?: string;     // "ongoing" | "completed" | "hiatus" | "unknown"
   synopsis?: string;          // 故事梗概
   status?: string;
   created_at?: string | number;

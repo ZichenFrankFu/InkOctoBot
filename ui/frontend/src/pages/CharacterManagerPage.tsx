@@ -10,6 +10,9 @@ import SnapshotStageEditor from "../components/characters/SnapshotStageEditor";
 import NameGeneratorModal from "../components/characters/NameGeneratorModal";
 import type { Character, CharacterLayerB, CharacterRelationship, DynamicPropertySnapshot } from "../api/types";
 import { renderPrompt } from "../utils/promptTemplate";
+import {
+  CHARACTER_ROLE_CODES, canonicalRole, tCharacterRole, tGender,
+} from "../i18n";
 
 interface CharChatMsg {
   role: "user" | "assistant";
@@ -22,8 +25,11 @@ interface Props {
   projects: any[];
 }
 
-const ROLES = ["主角", "配角", "反派", "路人"];
-const GENDERS = ["男", "女", "其他"];
+// 代码层一律用 英文 code, 显示通过 tCharacterRole / tGender 翻译.
+// CHARACTER_ROLE_CODES === ["protagonist", "supporting", "antagonist", "bystander"]
+const ROLE_CODES = CHARACTER_ROLE_CODES;
+// 性别也分离: code = "male"/"female"/"other", 中文显示走 tGender.
+const GENDER_CODES = ["male", "female", "other"] as const;
 
 const DEFAULT_LAYER_B: CharacterLayerB = {
   loss_aversion: 2.5,
@@ -181,7 +187,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
   const buildCharChatSystemHint = useCallback(async () => {
     if (!editing) return "";
     const lines: string[] = [];
-    lines.push(`你是一个专业的小说角色设计师。当前正在设计角色「${editing.name}」（定位：${editing.role || "配角"}）。`);
+    // LLM 看 Chinese label, 不看 英文 code — 通过 tCharacterRole 翻译.
+    lines.push(`你是一个专业的小说角色设计师。当前正在设计角色「${editing.name}」（定位：${tCharacterRole(editing.role)}）。`);
     lines.push("");
     lines.push("【顶层人设】");
     lines.push(`- 性格：${editing.personality || "未设定"}`);
@@ -250,7 +257,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
       "assistant.character",
       {
         char_name: editing.name,
-        char_role: editing.role || "配角",
+        // assistant.character prompt 的 {char_role} 占位用中文显示 —— LLM 看人话.
+        char_role: tCharacterRole(editing.role),
         personality: editing.personality || "未设定",
         background: editing.background || "未设定",
         speech_style: editing.speech_style || "未设定",
@@ -397,7 +405,8 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
     try {
       const c = await apiPost<Character>(`/api/data/characters`, {
         name: "新角色",
-        role: "配角",
+        // 写英文 code, 显示交给 tCharacterRole.
+        role: "supporting",
         project_id: projectId,
         tags: [],
         personality: "",
@@ -795,21 +804,20 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                 {filtered.map(c => {
                   const isActive = editing?.id === c.id;
                   const avatarUrl = (c as any).avatar_url as string | undefined;
-                  // 角色定位 chip — 规约为 ROLES 四个之一；任何其他值 (空 /
-                  // 历史遗留的「副主角」等) 都降级为「路人」，所以网格下
-                  // 方只展示这四档定位。
-                  const roleLabel = (c.role && ROLES.includes(c.role))
-                    ? c.role : "路人";
+                  // 角色定位 — canonicalize 到 4 个 英文 code, 显示走
+                  // tCharacterRole 翻成中文. 历史的 "副主角" 等也归一掉.
+                  const roleCode = canonicalRole(c.role);
+                  const roleLabel = tCharacterRole(c.role);
                   const roleColor =
-                      roleLabel === "主角" ? "var(--accent)"
-                    : roleLabel === "反派" ? "var(--purple)"
-                    : roleLabel === "配角" ? "var(--jade)"
-                    : "var(--text-tertiary)";   // 路人
+                      roleCode === "protagonist" ? "var(--accent)"
+                    : roleCode === "antagonist"  ? "var(--purple)"
+                    : roleCode === "supporting"  ? "var(--jade)"
+                    : "var(--text-tertiary)";   // bystander
                   const roleSubtle =
-                      roleLabel === "主角" ? "var(--accent-subtle)"
-                    : roleLabel === "反派" ? "var(--purple-subtle)"
-                    : roleLabel === "配角" ? "var(--jade-subtle)"
-                    : "var(--bg-surface-2)";    // 路人
+                      roleCode === "protagonist" ? "var(--accent-subtle)"
+                    : roleCode === "antagonist"  ? "var(--purple-subtle)"
+                    : roleCode === "supporting"  ? "var(--jade-subtle)"
+                    : "var(--bg-surface-2)";    // bystander
                   return (
                     <div
                       key={c.id}
@@ -1167,10 +1175,10 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                     <div className="field" style={{ flex: 1, minWidth: 80 }}>
                       <label className="label">性别 *</label>
                       <div className="flex gap-4">
-                        {GENDERS.map(g => (
-                          <button key={g} className={(editing as any).gender === g ? "btn-primary" : "btn"}
+                        {GENDER_CODES.map(code => (
+                          <button key={code} className={(editing as any).gender === code ? "btn-primary" : "btn"}
                             style={{ flex: 1, fontSize: 11, padding: "5px 0", borderRadius: 16, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}
-                            onClick={() => u("gender", g)}>{g}</button>
+                            onClick={() => u("gender", code)}>{tGender(code)}</button>
                         ))}
                       </div>
                     </div>
@@ -1184,11 +1192,12 @@ export default function CharacterManagerPage({ projectId, projects }: Props) {
                   <div className="field mb-12">
                     <label className="label">角色定位 *</label>
                     <div className="flex gap-6" style={{ flexWrap: "wrap" }}>
-                      {ROLES.map(r => (
-                        <button key={r}
-                          className={editing.role === r ? "btn-primary" : "btn"}
+                      {ROLE_CODES.map(code => (
+                        <button key={code}
+                          // 比较老库里仍可能是中文 — canonicalize 双方再对比.
+                          className={canonicalRole(editing.role) === code ? "btn-primary" : "btn"}
                           style={{ padding: "5px 14px", fontSize: 12, borderRadius: 20 }}
-                          onClick={() => u("role", r)}>{r}</button>
+                          onClick={() => u("role", code)}>{tCharacterRole(code)}</button>
                       ))}
                     </div>
                   </div>
@@ -2538,7 +2547,10 @@ function GlobalRelationshipGraph({ characters, editorChapterCount, onSelectChara
             const pos = positions[c.id];
             if (!pos) return null;
             const r = nodeR(c.name);
-            const fillColor = c.role === "主角" ? "var(--accent-subtle)" : c.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)";
+            const _rc = canonicalRole(c.role);
+            const fillColor = _rc === "protagonist" ? "var(--accent-subtle)"
+              : _rc === "antagonist" ? "var(--purple-subtle)"
+              : "var(--jade-subtle)";
             const avatar = (c as any).avatar_url as string | undefined;
             const clipId = `clip-${c.id}`;
             return (
@@ -2772,10 +2784,11 @@ function CharacterAvatarField({ character, onChange, toast }: {
 
   const avatarUrl = (character as any).avatar_url;
   const initial = (character.name || "?").charAt(0);
-  const roleBg = character.role === "主角" ? "var(--accent-subtle)"
-    : character.role === "反派" ? "var(--purple-subtle)" : "var(--jade-subtle)";
-  const roleFg = character.role === "主角" ? "var(--accent)"
-    : character.role === "反派" ? "var(--purple)" : "var(--jade)";
+  const _rc = canonicalRole(character.role);
+  const roleBg = _rc === "protagonist" ? "var(--accent-subtle)"
+    : _rc === "antagonist" ? "var(--purple-subtle)" : "var(--jade-subtle)";
+  const roleFg = _rc === "protagonist" ? "var(--accent)"
+    : _rc === "antagonist" ? "var(--purple)" : "var(--jade)";
 
   return (
     <div className="field mb-12" style={{ display: "flex", justifyContent: "center" }}>
