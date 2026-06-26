@@ -2591,7 +2591,7 @@ function formatSkillsUsed(skills?: string[]): string {
 
 /** Look up the actual prompt section whose `## title` *contains* one of
  *  the candidate substrings. The 后端 loaders嵌的标题里常带括号补充
- *  («参考作品综合», «相关灵感（用户灵感库）», «Storyland 客观状态
+ *  («参考作品综合», «相关灵感（用户灵感库）», «故事舞台 客观状态
  *  （截至第 N 章）» 等），所以严格相等匹配会全部 miss。 */
 const sectionMatch = (sections: Map<string, string>, candidates: string[]): string => {
   for (const [title, body] of sections) {
@@ -2635,7 +2635,10 @@ const RAG_PREVIEW_SECTIONS: {
     group: "context", hint: "请在故事线为本章关联主线 / 支线" },
   { title: "相关灵感",     source: "inspiration",               matches: ["相关灵感", "灵感库"],
     group: "context", hint: "请在「灵感库」添加条目，或在大纲中描述匹配方向" },
-  { title: "Storyland 客观状态", source: "storyland_state",     matches: ["Storyland 客观状态", "客观状态", "storyland"],
+  { title: "故事舞台 客观状态", source: "storyland_state",
+    // 保留 "Storyland 客观状态" / "storyland" 作为兜底, 老快照里的 prompt 仍然
+    // 以原名落盘, 重命名后能继续匹配上.
+    matches: ["故事舞台 客观状态", "Storyland 客观状态", "客观状态", "storyland"],
     group: "context", hint: "需 SPO 三元组 / 角色 ledger / 情绪轨迹（待前章完成后由 Truth 系统沉淀）" },
   { title: "读者视角记忆", source: "reader_memory",             matches: ["读者视角记忆"],
     group: "context", hint: "需 章节号 > 1 且已生成前章摘要 / 锚点" },

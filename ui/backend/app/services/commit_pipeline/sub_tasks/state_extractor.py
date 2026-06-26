@@ -735,7 +735,7 @@ def _store_proposal(
             severity="medium",
             title="本章状态更新待确认",
             description=(
-                "已从本章正文提取 Storyland 事实、标志性事件与伏笔/故事线"
+                "已从本章正文提取 故事舞台 事实、标志性事件与伏笔/故事线"
                 "节点标签，需确认后才会入库。"
             ),
             action_label="去确认",

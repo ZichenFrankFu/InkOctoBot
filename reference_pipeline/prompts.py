@@ -1055,7 +1055,7 @@ Output format:
 
 如果某类没有变化，对应字段输出空数组（[]）。不要凭空虚构 — 只抽取文本明确支撑的事实。""",
         "vars": [],
-        "description": "创作管线 · Storyland 状态结算（写完章节后从正文里抽取的 7 类结构化变化）",
+        "description": "创作管线 · 故事舞台 状态结算（写完章节后从正文里抽取的 7 类结构化变化）",
     },
 
     "market_extractor.advanced_extraction": {
@@ -1170,7 +1170,7 @@ USAGE_LOCATIONS: dict[str, str] = {
     "pipeline.narrator":                    "编辑器 - 导演模式（旁白 Agent）",
     "pipeline.editor":                      "编辑器 - 导演模式（剪辑师 Agent）",
     "pipeline.reader_memory_consolidation": "编辑器 - 章节摘要 → Truth Files",
-    "pipeline.storyland_state_settlement":  "编辑器 - Storyland 状态结算",
+    "pipeline.storyland_state_settlement":  "编辑器 - 故事舞台 状态结算",
     "market_extractor.advanced_extraction": "市场特征提取 - 高级特征提取",
 }
 

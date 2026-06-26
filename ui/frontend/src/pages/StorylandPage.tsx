@@ -4,8 +4,8 @@ import { useToast } from "../components/shared/Toast";
 import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
 import ChapterTimeline from "../components/shared/ChapterTimeline";
 
-// 故事中世界（Storyland）页面 — 双 tab：
-// 1. Storyland 状态：创世入口/审阅区、实体管理、SPO 事实（时间线/按章节）
+// 故事中世界（故事舞台 / 旧称 Storyland，保留代码标识符与表名以兼容数据）页面 — 双 tab：
+// 1. 故事舞台 状态：创世入口/审阅区、实体管理、SPO 事实（时间线/按章节）
 // 2. 读者视角记忆：按章节查看 L1-L4
 // 注：原「故事线」tab 已迁至 故事线 page 的「故事线与伏笔总览」section，
 //    将故事线 / 伏笔的 CRUD 与可视化时间线放在一起更聚拢。
@@ -93,14 +93,14 @@ export default function StorylandPage({ projectId }: { projectId: string }) {
         <div className="page-header-row">
           <div>
             <h2 className="font-serif">故事中世界</h2>
-            <p>跨章节的 Storyland 状态 · 读者视角记忆 · 故事线 / 伏笔</p>
+            <p>跨章节的 故事舞台 状态 · 读者视角记忆 · 故事线 / 伏笔</p>
           </div>
         </div>
       </div>
 
       <div className="tab-bar-underline" style={{ marginBottom: 14 }}>
         {([
-          ["state",  "Storyland 状态"],
+          ["state",  "故事舞台 状态"],
           ["memory", "读者视角记忆"],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button key={k}
@@ -115,7 +115,7 @@ export default function StorylandPage({ projectId }: { projectId: string }) {
   );
 }
 
-// ─────────────── Tab 1: Storyland 状态 ───────────────
+// ─────────────── Tab 1: 故事舞台 状态 ───────────────
 
 function StateTab({ projectId, chapters, toast }: {
   projectId: string;
@@ -227,7 +227,7 @@ function StateTab({ projectId, chapters, toast }: {
       <UniversalLLMDialog
         open={genesisDialogOpen}
         onClose={() => setGenesisDialogOpen(false)}
-        title="Storyland 创世"
+        title="故事舞台 创世"
         description="单次 LLM 调用按五步顺序补全舞台全貌；支持 API 调用或复制 prompt 到大模型网页版后粘贴回结果（自动解析为待审提案）。"
         prompt={genesisPrompt?.prompt || ""}
         system={genesisPrompt?.system || ""}

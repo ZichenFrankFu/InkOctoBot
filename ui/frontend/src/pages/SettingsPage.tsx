@@ -1041,7 +1041,7 @@ function PromptsTab() {
       <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, padding: "12px 16px", background: "var(--bg-secondary)", borderRadius: 8, borderLeft: "3px solid var(--accent)" }}>
         每一次和 LLM 交互的提示词都在这里 —— 参考作品提取、AI 助手 (角色 / 世界书 /
         大纲 / 开书) 、正文生成 / 重写 / 评估、创作管线 Agent、市场特征提取、读者记忆压缩、
-        Storyland 状态结算、自学习 Skill 生成器, 全部已纳入此注册表.
+        故事舞台 状态结算、自学习 Skill 生成器, 全部已纳入此注册表.
         点「编辑」查看出厂默认 + 当前内容、修改、保存为新默认; 单次调用还可通过
         ``prompt_override`` 临时覆盖一次而不动默认.
       </div>

@@ -759,7 +759,7 @@ export async function fetchPromptForInspection(params: {
   const prompt = res.prompt || "";
   // Each entry: 显示标题 + 实际 prompt `## 标题` 行里可能出现的 substring
   // 列表。后端 loaders 会在标题里加括号补充（如「参考作品综合」、
-  // 「Storyland 客观状态（截至第 N 章）」），所以严格相等会漏判。
+  // 「故事舞台 客观状态（截至第 N 章）」），所以严格相等会漏判。
   const EXPECTED: Array<{ title: string; matches: string[] }> = [
     { title: "用户特别要求", matches: ["用户特别要求"] },
     { title: "本章大纲",     matches: ["本章大纲"] },
@@ -772,7 +772,8 @@ export async function fetchPromptForInspection(params: {
     { title: "关联伏笔",     matches: ["关联伏笔", "伏笔"] },
     { title: "当前涉及的故事线", matches: ["当前涉及的故事线", "故事线"] },
     { title: "相关灵感",     matches: ["相关灵感", "灵感库"] },
-    { title: "Storyland 客观状态", matches: ["Storyland 客观状态", "客观状态", "storyland"] },
+    { title: "故事舞台 客观状态",
+      matches: ["故事舞台 客观状态", "Storyland 客观状态", "客观状态", "storyland"] },
     { title: "读者视角记忆", matches: ["读者视角记忆"] },
     { title: "已有正文",     matches: ["已有正文", "正文草稿", "前几章正文"] },
     { title: "创作技能",     matches: ["创作技能", "技能"] },

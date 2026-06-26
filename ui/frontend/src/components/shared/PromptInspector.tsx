@@ -45,7 +45,7 @@ function parseSections(prompt: string): { title: string; body: string }[] {
 // Expected loader sections (whether they should appear). Each entry
 // carries `matches`: substrings any of which can appear inside the
 // rendered prompt's `## title` line — covers the case where 后端
-// loaders append qualifiers ("参考作品综合", "Storyland 客观状态（截
+// loaders append qualifiers ("参考作品综合", "故事舞台 客观状态（截
 // 至第 N 章）"…) that exact-equality matching used to miss, making
 // the preview falsely report "未注入".
 const EXPECTED_SECTIONS = [
@@ -60,7 +60,8 @@ const EXPECTED_SECTIONS = [
   { title: "关联伏笔",     source: "foreshadowing",             matches: ["关联伏笔", "伏笔"] },
   { title: "当前涉及的故事线", source: "subplots",              matches: ["当前涉及的故事线", "故事线"] },
   { title: "相关灵感",     source: "inspiration",               matches: ["相关灵感", "灵感库"] },
-  { title: "Storyland 客观状态", source: "storyland_state",     matches: ["Storyland 客观状态", "客观状态", "storyland"] },
+  { title: "故事舞台 客观状态", source: "storyland_state",
+    matches: ["故事舞台 客观状态", "Storyland 客观状态", "客观状态", "storyland"] },
   { title: "读者视角记忆", source: "reader_memory",             matches: ["读者视角记忆"] },
   { title: "已有正文",     source: "existing_content / current_chapter_draft", matches: ["已有正文", "正文草稿", "前几章正文"] },
   { title: "创作技能",     source: "skills",                    matches: ["创作技能", "技能"] },

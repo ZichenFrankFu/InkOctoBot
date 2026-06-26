@@ -533,7 +533,7 @@ def creation_context_manifest(
         {"key": "foreshadowing", "label": "伏笔",
          "items": [{"id": "__all__", "label": "未回收伏笔"}] if _has("foreshadowing") else [],
          "present": _has("foreshadowing")},
-        {"key": "storyland_state", "label": "Storyland 客观状态",
+        {"key": "storyland_state", "label": "故事舞台 客观状态",
          "items": [{"id": "__all__", "label": "全部"}] if _has("storyland_state") else [],
          "present": _has("storyland_state")},
         {"key": "reader_memory", "label": "读者视角记忆",
