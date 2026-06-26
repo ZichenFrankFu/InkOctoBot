@@ -11,6 +11,7 @@ import EvalReport from "../components/editor/EvalReport";
 import type { EvalReportData } from "../components/editor/EvalReport";
 import FollowUpQuestions from "../components/shared/FollowUpQuestions";
 import WebLLMPromptPanel from "../components/shared/WebLLMPromptPanel";
+import UniversalLLMDialog from "../components/shared/UniversalLLMDialog";
 
 const vuid = () => `v_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -30,11 +31,50 @@ const AGENT_COLORS: Record<string, { bg: string; border: string; name: string }>
   "Scene Director": { bg: "var(--indigo-subtle)", border: "var(--indigo)", name: "Scene Director" },
   "Actor Agents": { bg: "var(--gold-subtle)", border: "var(--gold)", name: "Actor Agents" },
   "Editor-Writer": { bg: "var(--jade-subtle)", border: "var(--jade)", name: "Editor-Writer" },
+  // Writer = 网页大模型粘贴回写的「作家智能体」入口；视觉跟 Editor-Writer
+  // 共用 jade，但保留独立 key, 避免 pipeline 进度条改名.
+  "Writer": { bg: "var(--jade-subtle)", border: "var(--jade)", name: "作家智能体" },
   "Evaluator": { bg: "var(--accent-subtle)", border: "var(--accent)", name: "Evaluator" },
   "旁白": { bg: "var(--bg-surface-2)", border: "var(--text-secondary)", name: "旁白" },
   "User": { bg: "var(--purple-subtle)", border: "var(--purple)", name: "用户" },
   "System": { bg: "var(--bg-surface-2)", border: "var(--text-tertiary)", name: "系统" },
 };
+
+/** Normalize a paste from a web LLM into prose:
+ *  - strip outer markdown code fences (```json ... ``` / ``` ... ```)
+ *  - if the body parses as JSON, pull a text-bearing field
+ *    (`text` / `content` / `chapter` / `body` / first long string value)
+ *  - trim and collapse trailing whitespace
+ *  Returns the original input verbatim if none of the above apply. */
+function normalizeWebLLMReply(raw: string): string {
+  let s = (raw || "").trim();
+  if (!s) return "";
+  // Peel one layer of triple-backtick fence if present.
+  const fence = s.match(/^```(?:[a-zA-Z]+)?\s*\n([\s\S]*?)\n```\s*$/);
+  if (fence) s = fence[1].trim();
+  // If it parses as JSON, try to find prose inside.
+  if (s.startsWith("{") || s.startsWith("[")) {
+    try {
+      const obj = JSON.parse(s);
+      const pickProse = (o: any): string | null => {
+        if (typeof o === "string") return o.length > 60 ? o : null;
+        if (!o || typeof o !== "object") return null;
+        for (const k of ["text", "content", "chapter", "body", "result", "output"]) {
+          if (typeof o[k] === "string" && o[k].trim()) return o[k];
+        }
+        // Fall through: longest string value wins
+        let best = "";
+        for (const v of Object.values(o)) {
+          if (typeof v === "string" && v.length > best.length) best = v;
+        }
+        return best || null;
+      };
+      const prose = pickProse(obj);
+      if (prose) s = prose.trim();
+    } catch { /* not JSON — keep raw */ }
+  }
+  return s.replace(/\s+$/g, "");
+}
 
 // Character-specific avatar colors for Actor agent group chat
 const CHAR_COLORS = [
@@ -1220,16 +1260,38 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
 
   /** Apply a web-LLM-generated chapter the user pasted back. */
   const applyPlainPaste = useCallback((text: string) => {
-    const t = (text || "").trim();
+    const t = normalizeWebLLMReply(text);
     if (!t) return;
     generatedTextRef.current = t;
     setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "已解析网页结果", progress: 100 }]);
-    setChatMessages([
-      { agent: "System", content: "已解析网页 LLM 返回的正文，可点「写入编辑器」。", status: "done", timestamp: Date.now() },
-      { agent: "Editor-Writer", content: t, status: "done", timestamp: Date.now() },
+    const wc_ = wc(t);
+    setChatMessages(prev => [
+      ...prev,
+      {
+        agent: "System",
+        content: `已收到网页大模型的回复（${wc_.toLocaleString()} 字），由作家智能体接管展示。可在下方「写入编辑器」。`,
+        status: "done", timestamp: Date.now(),
+      },
+      { agent: "Writer", content: t, status: "done", timestamp: Date.now() },
     ]);
     setGenerating(false);
   }, []);
+
+  // Web-LLM dialog (mirror of MarketFeatureExtraction's UniversalLLMDialog flow):
+  // user clicks "网页大模型创作" → dialog opens with the live single-agent
+  // prompt → user copies / pastes / commits → reply lands in the chat as
+  // "作家智能体" via applyPlainPaste.
+  const [webLLMOpen, setWebLLMOpen] = useState(false);
+  const [webLLMPrompt, setWebLLMPrompt] = useState("");
+  const openWebLLMDialog = useCallback(async () => {
+    try {
+      const p = await fetchGenPrompt();
+      setWebLLMPrompt(p || "");
+      setWebLLMOpen(true);
+    } catch (e: any) {
+      toast(e?.message || "获取 prompt 失败", "error");
+    }
+  }, [fetchGenPrompt, toast]);
 
   const startGeneration = useCallback(async (manual = false) => {
     if (!activeCh) return;
@@ -1462,14 +1524,35 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <input className="input" type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="搜索章节..." style={{ fontSize: 12, padding: "5px 10px", width: "100%", boxSizing: "border-box" }} />
           </div>
           <div style={{ padding: "4px 14px 6px", display: "flex", flexDirection: "column", gap: 6 }}>
+            {/* Row 1: 新增 */}
             <div style={{ display: "flex", gap: 6 }}>
               <button className="btn-icon" onClick={addVolume} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+卷</button>
               <button className="btn-icon" onClick={addChapterSmart} title={activeVol ? `在 ${activeVol.title} 末尾新增章节` : "在最后一卷末尾新增章节"} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>+章</button>
-              <button className="btn-icon" onClick={handleImport} title="从 .txt / .md 文件导入章节，自动按「第X章」切分" style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>导入</button>
             </div>
+            {/* Row 2: 导入 / 导出 — 同级主操作 */}
             <div style={{ display: "flex", gap: 6 }}>
-              <button className="btn-icon" onClick={handleBundleExport} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))" }} title="导出角色+世界书+章节大纲，可自选保存位置">导出</button>
-              <button className="btn-icon" onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))} style={{ fontSize: 12, flex: 1, padding: "4px 0", border: "1px solid var(--jade)", borderRadius: "var(--radius-sm)", color: batchMode ? "#fff" : "var(--jade)", background: batchMode ? "var(--jade)" : undefined }} title="批量选择章节后删除 / 导出">批量</button>
+              <button className="btn-icon" onClick={handleImport} title="从 .txt / .md 文件导入章节，自动按「第X章」切分" style={{ fontSize: 12, flex: 1, padding: "5px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))", fontWeight: 600 }}>导入</button>
+              <button className="btn-icon" onClick={handleBundleExport} title="导出角色+世界书+章节大纲，可自选保存位置" style={{ fontSize: 12, flex: 1, padding: "5px 0", border: "1px solid var(--indigo, var(--border))", borderRadius: "var(--radius-sm)", color: "var(--indigo, var(--text-secondary))", fontWeight: 600 }}>导出</button>
+            </div>
+            {/* Row 3: 批量 — 副入口，比主操作小一号 */}
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                className="btn-icon"
+                onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))}
+                title="批量选择章节后删除 / 导出"
+                style={{
+                  fontSize: 10,
+                  padding: "2px 10px",
+                  border: `1px solid ${batchMode ? "var(--jade)" : "var(--border)"}`,
+                  borderRadius: "var(--radius-sm)",
+                  color: batchMode ? "#fff" : "var(--text-tertiary)",
+                  background: batchMode ? "var(--jade)" : "transparent",
+                  height: "auto",
+                  width: "auto",
+                }}
+              >
+                {batchMode ? "退出批量" : "批量操作"}
+              </button>
             </div>
           </div>
           {batchMode && (
@@ -1733,11 +1816,17 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             <h3>AI 助手</h3>
             <button onClick={() => setRightPanelOpen(false)} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="收起 AI 面板">&#9654;</button>
           </div>
-          <div className="tab-bar-underline" style={{ flexShrink: 0 }}>
+          <div className="tab-bar-underline" style={{ flexShrink: 0, width: "100%" }}>
             {/* 多智能体（cluster / 导演模式）pipeline 已暂时下线，留给下一阶段
-                重做；当前 tab 仅保留：RAG / 单智能体 / 重写 / 评估。 */}
+                重做；当前 tab 仅保留：RAG / 单智能体 / 重写 / 评估。
+                flex:1 + textAlign:center 让 4 个 tab 平分整行宽度。 */}
             {([["outline", "RAG"], ["single", "智能体创作"], ["rewrite", "重写"], ["eval", "评估"]] as const).map(([key, label]) => (
-              <button key={key} className={`tab-item ${aiTab === key ? "active" : ""}`} onClick={() => setAiTab(key)}>{label}</button>
+              <button
+                key={key}
+                className={`tab-item ${aiTab === key ? "active" : ""}`}
+                onClick={() => setAiTab(key)}
+                style={{ flex: 1, textAlign: "center", padding: "10px 8px", minWidth: 0 }}
+              >{label}</button>
             ))}
           </div>
           <div className="panel-body" style={{ padding: "14px 16px" }}>
@@ -1756,6 +1845,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
               onFetchPrompt={fetchGenPrompt}
               onApplyPaste={applyPlainPaste}
+              onOpenWebLLM={openWebLLMDialog}
               manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
               manifest={manifest} skillSelection={skillSelection} onToggleSkill={toggleSkill}
               ragExcludes={ragExcludes} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest}
@@ -1774,6 +1864,21 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         </div>
         )}
       </div>
+      {/* 网页大模型创作 dialog — 与「市场特征提取」复用同一 UniversalLLMDialog。
+          manual_only 模式: 用户复制 prompt 到 ChatGPT / Claude / Gemini, 把回复
+          粘回 → onCommit 走 applyPlainPaste, 经 normalizeWebLLMReply 后作为
+          「作家智能体」消息进入 chat. */}
+      <UniversalLLMDialog
+        open={webLLMOpen}
+        onClose={() => setWebLLMOpen(false)}
+        title={`网页大模型创作 · ${activeCh?.title || "本章"}`}
+        description="复制 prompt 到网页大模型（ChatGPT / Claude / Gemini …），把回复粘回 → 作家智能体在右侧聊天接管展示。"
+        prompt={webLLMPrompt}
+        editablePrompt
+        onCommit={(p) => applyPlainPaste(p.text)}
+        minChars={80}
+        initialMode="manual_only"
+      />
     </div>
   );
 }
@@ -2728,22 +2833,23 @@ function OutlineTab({ synopsis, onChange, onSave, onStartGeneration, projectId, 
       </div>
       )}
 
-      {/* ── 用户特别要求 ── 本章独有的写作要求，loader
-          (user_special_requirements) 会把它注入到 prompt 顶部，让 AI
-          严格遵守。空 → loader 跳过。 */}
+      {/* ── 创作备注 ──（原「用户特别要求」）一句话级别的本章特殊要求，
+          loader (user_special_requirements) 注入 prompt 顶部。空 → 跳过。
+          rows=2 + maxLength=200 把这块面板「占地」压到大纲半屏以下。 */}
       <div className="field" style={{ marginTop: 14 }}>
-        <label className="label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          用户特别要求
+        <label className="label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+          <span>创作备注</span>
           <span className="text-xs" style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>
-            · 本章 AI 必须遵守的额外要求（如：保持低悬念 / 多用对白 / 严禁某情节）
+            {((chapter as any)?.special_requirements || "").length}/200
           </span>
         </label>
         <textarea
           className="input"
           value={(chapter as any)?.special_requirements || ""}
-          onChange={e => onUpdateChapter?.("special_requirements", e.target.value)}
-          placeholder="留空则不向 AI 提交本章特别要求..."
-          rows={3}
+          onChange={e => onUpdateChapter?.("special_requirements", e.target.value.slice(0, 200))}
+          placeholder="一句话本章要求（保持低悬念 / 多用对白 / 严禁某情节…），留空则跳过"
+          rows={2}
+          maxLength={200}
           style={{ fontSize: 12, lineHeight: 1.6 }}
         />
       </div>
@@ -2835,8 +2941,8 @@ const RAG_PREVIEW_SECTIONS: {
   group: "system" | "context" | "user"; hint: string;
 }[] = [
   // —— 章节专属 ——
-  { title: "用户特别要求", source: "user_special_requirements", matches: ["用户特别要求"],
-    group: "user", hint: "请在本页上方「用户特别要求」字段输入内容" },
+  { title: "创作备注", source: "user_special_requirements", matches: ["创作备注", "用户特别要求"],
+    group: "user", hint: "请在本页上方「创作备注」字段输入内容" },
   { title: "本章大纲",     source: "chapter_outline",           matches: ["本章大纲"],
     group: "user", hint: "请填写「章节剧情大纲」或在故事线为本章添加情节卡" },
   { title: "时间与地点",   source: "time_location",             matches: ["时间与地点"],
@@ -3431,13 +3537,14 @@ function CostEstimateBlock({ mode, projectId, chapterId }: {
   );
 }
 
-function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, chapterNum, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, chapterNum, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, onOpenWebLLM, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
   mode: "single" | "cluster";
   steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
   paused?: boolean; onPauseResume?: () => void; projectId?: string; chapterId?: string; chapterNum?: number;
   modelChanged?: boolean; onDismissModelChange?: () => void; onRestartWithNewModel?: () => void;
   onFetchPrompt?: () => Promise<string>; onApplyPaste?: (text: string) => void; onDeleteMessage?: (index: number) => void;
+  onOpenWebLLM?: () => void;
   manualPrompt?: { step: string; prompt: string } | null; onSubmitManual?: (text: string) => void;
   manifest?: ContextManifest | null;
   skillSelection?: Record<string, boolean>; onToggleSkill?: (name: string) => void;
@@ -3464,7 +3571,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
       // Use first character of name as avatar
       return displayName.charAt(0);
     }
-    const map: Record<string, string> = { "Scene Director": "SD", "Actor Agents": "AC", "Editor-Writer": "EW", "Evaluator": "EV", "User": "U", "System": "SY" };
+    const map: Record<string, string> = { "Scene Director": "SD", "Actor Agents": "AC", "Editor-Writer": "EW", "Writer": "作", "Evaluator": "EV", "User": "U", "System": "SY" };
     return map[agent] || "AG";
   };
   const [cotExpanded, setCotExpanded] = useState<Record<number, boolean>>({});
@@ -3781,13 +3888,30 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                   {chatMessages.length > 0 ? "单智能体重新创作" : "单智能体创作"}
                 </button>
               )}
-              {onFetchPrompt && (
-                <div style={{ marginTop: 6 }}>
-                  <WebLLMPromptPanel fetchPrompt={onFetchPrompt}
-                    title="AI大模型网页版"
-                    onApplyResult={onApplyPaste} applyLabel="解析并写入编辑器"
-                    resultPlaceholder="把网页 LLM 生成的章节正文粘贴到这里" />
-                </div>
+              {onOpenWebLLM && (
+                <button
+                  onClick={onOpenWebLLM}
+                  title="复制 prompt 到任意网页大模型（ChatGPT / Claude / Gemini …），粘贴回复后由作家智能体进入聊天"
+                  style={{
+                    width: "100%", marginTop: 8,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                    padding: "9px 14px",
+                    background: "var(--indigo-subtle, var(--bg-surface-2))",
+                    color: "var(--indigo, var(--text-primary))",
+                    border: "1px solid var(--indigo)",
+                    borderRadius: "var(--radius-sm)",
+                    fontSize: 13, fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    width: 18, height: 18, borderRadius: 4,
+                    background: "var(--indigo)", color: "#fff",
+                    fontSize: 11, fontWeight: 700,
+                  }}>WEB</span>
+                  网页大模型创作（手动 prompt / paste 回复）
+                </button>
               )}
             </>
           ) : (

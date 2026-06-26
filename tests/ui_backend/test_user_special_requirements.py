@@ -102,7 +102,7 @@ class TestLoader(unittest.TestCase):
             self.assertIsNotNone(p)
             self.assertGreater(p.natural_length, 0)
             out = usr.load("p1", "ch1")
-        self.assertIn("用户特别要求", out)
+        self.assertIn("创作备注", out)
         self.assertIn("慢节奏", out)
 
     def test_render_respects_budget(self) -> None:

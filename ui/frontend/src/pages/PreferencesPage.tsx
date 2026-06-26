@@ -145,7 +145,7 @@ export default function PreferencesPage({ projectId }: Props) {
           <p style={{ color: "var(--text-tertiary)", fontSize: 12, margin: "4px 0 0" }}>
             每次你保存 ``user_edit`` 版本时，系统会捕获一条 observation。
             积累到阈值时（默认 5 章）批量提取偏好，未来生成会自动注入。
-            特别要求（special_req）→ 偏好的起始置信度 0.4；普通编辑 → 0.15。
+            创作备注（special_req）→ 偏好的起始置信度 0.4；普通编辑 → 0.15。
           </p>
         </div>
         <button className="btn" onClick={refresh} disabled={loading}>刷新</button>
@@ -269,7 +269,7 @@ export default function PreferencesPage({ projectId }: Props) {
                 <tr style={{ textAlign: "left", color: "var(--text-tertiary)" }}>
                   <th style={{ padding: "4px 6px" }}>章节</th>
                   <th style={{ padding: "4px 6px" }}>状态</th>
-                  <th style={{ padding: "4px 6px" }}>特别要求</th>
+                  <th style={{ padding: "4px 6px" }}>创作备注</th>
                   <th style={{ padding: "4px 6px" }}>diff stats</th>
                   <th style={{ padding: "4px 6px" }}>时间</th>
                 </tr>

@@ -761,7 +761,7 @@ export async function fetchPromptForInspection(params: {
   // 列表。后端 loaders 会在标题里加括号补充（如「参考作品综合」、
   // 「故事舞台 客观状态（截至第 N 章）」），所以严格相等会漏判。
   const EXPECTED: Array<{ title: string; matches: string[] }> = [
-    { title: "用户特别要求", matches: ["用户特别要求"] },
+    { title: "创作备注", matches: ["创作备注", "用户特别要求"] },
     { title: "本章大纲",     matches: ["本章大纲"] },
     { title: "时间与地点",   matches: ["时间与地点"] },
     { title: "本章出场角色", matches: ["本章出场角色", "出场角色"] },

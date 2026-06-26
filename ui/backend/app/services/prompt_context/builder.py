@@ -539,8 +539,8 @@ def creation_context_manifest(
         {"key": "reader_memory", "label": "读者视角记忆",
          "items": [{"id": "__all__", "label": "全部"}] if _has("reader_memory") else [],
          "present": _has("reader_memory")},
-        {"key": "user_special_requirements", "label": "用户特别要求",
-         "items": [{"id": "__all__", "label": "本章特别要求"}]
+        {"key": "user_special_requirements", "label": "创作备注",
+         "items": [{"id": "__all__", "label": "本章创作备注"}]
                   if _has("user_special_requirements") else [],
          "present": _has("user_special_requirements")},
     ]

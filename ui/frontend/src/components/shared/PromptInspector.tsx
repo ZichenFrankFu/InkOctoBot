@@ -49,7 +49,7 @@ function parseSections(prompt: string): { title: string; body: string }[] {
 // 至第 N 章）"…) that exact-equality matching used to miss, making
 // the preview falsely report "未注入".
 const EXPECTED_SECTIONS = [
-  { title: "用户特别要求", source: "user_special_requirements", matches: ["用户特别要求"] },
+  { title: "创作备注", source: "user_special_requirements", matches: ["创作备注", "用户特别要求"] },
   { title: "本章大纲",     source: "chapter_outline",           matches: ["本章大纲"] },
   { title: "时间与地点",   source: "time_location",             matches: ["时间与地点"] },
   { title: "本章出场角色", source: "characters_block",          matches: ["本章出场角色", "出场角色"] },

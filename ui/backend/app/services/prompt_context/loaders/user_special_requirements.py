@@ -24,7 +24,10 @@ logger = logging.getLogger(
 
 
 _BLOCK = "user_special_requirements"
-_TITLE = "用户特别要求"
+# UI 侧字段从「用户特别要求」改名为「创作备注」，prompt 注入段标题随
+# 之同步，避免两端用词不一致。loader 名 / 数据列名保持 special_requirements
+# / user_special_requirements，避免库迁移。
+_TITLE = "创作备注"
 
 
 def plan(
