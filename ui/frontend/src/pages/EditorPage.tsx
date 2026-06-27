@@ -2230,7 +2230,18 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               onSwitchToRagTab={() => setAiTab("outline")}
               onEditPromptForMsg={openPromptEdit}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
-            {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
+            {aiTab === "rewrite" && <RewriteTab
+              selection={selection}
+              prompt={rewritePrompt} onPromptChange={setRewritePrompt}
+              model={rewriteModel} onModelChange={setRewriteModel}
+              onApply={(newText) => {
+                if (!selection) return;
+                setContent(prev => prev.slice(0, selection.start) + newText + prev.slice(selection.end));
+                setSelection(null);
+                setAiTab("outline");
+                toast("已替换原文", "success");
+              }}
+            />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId}
               chapterId={activeChId} chapterNum={chapterNum} manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
               onToggleSkill={toggleSkill} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest} />}
@@ -4634,6 +4645,10 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
           </div>
         )}
         {chatMessages.map((msg, i) => {
+          // 已应用过的 ManualPaste 老数据 (chat_history 持久化遗留) 不
+          // 再渲染 — 当时是 jade chip "已应用网页大模型回复", 现在改
+          // 走 System 成功 + Writer 手动 badge, chip 完全淘汰.
+          if (msg.manualPaste?.applied) return null;
           const style = getAgentStyle(msg.agent, msg.agentDisplayName); const isUser = msg.agent === "User";
           const avatar = getAgentAvatar(msg.agent, msg.agentDisplayName);
           const isCharActor = msg.agent === "Actor Agents" && msg.agentDisplayName && msg.agentDisplayName !== "旁白";
@@ -4980,10 +4995,54 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
   );
 }
 
-function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange }: { selection: { start: number; end: number; text: string } | null; prompt: string; onPromptChange: (v: string) => void; model: string; onModelChange: (v: string) => void; }) {
+function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange, onApply }: {
+  selection: { start: number; end: number; text: string } | null;
+  prompt: string; onPromptChange: (v: string) => void;
+  model: string; onModelChange: (v: string) => void;
+  onApply?: (newText: string) => void;
+}) {
+  const { toast } = useToast();
   const [rewriting, setRewriting] = useState(false);
   const [rewriteResult, setRewriteResult] = useState<string | null>(null);
   const [rewriteError, setRewriteError] = useState<string | null>(null);
+  const [manualMode, setManualMode] = useState(false);
+  const [paste, setPaste] = useState("");
+  const [snapshotPrompt, setSnapshotPrompt] = useState<string | null>(null);
+  const [estTokens, setEstTokens] = useState<number | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  // Live token preview: re-fetch the rendered prompt 600ms after the
+  // user pauses typing instruction.
+  const estDebRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!selection) return;
+    if (estDebRef.current) clearTimeout(estDebRef.current);
+    estDebRef.current = setTimeout(async () => {
+      try {
+        const r = await apiPost<{ prompt: string }>("/api/generation/rewrite", {
+          text: selection.text,
+          instruction: prompt || "润色并提升文学质量",
+          prompt_only: true,
+        });
+        const p = r.prompt || "";
+        // Local approx token estimator — same heuristic as EditorPage.
+        let cjk = 0, ascii = 0, other = 0;
+        for (let i = 0; i < p.length; i++) {
+          const cp = p.codePointAt(i)!;
+          if (cp > 0xffff) i++;
+          if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3000 && cp <= 0x303f)
+              || (cp >= 0xff00 && cp <= 0xffef) || (cp >= 0x3040 && cp <= 0x30ff)
+              || (cp >= 0xac00 && cp <= 0xd7af)) cjk++;
+          else if (cp >= 0x20 && cp <= 0x7e) ascii++;
+          else other++;
+        }
+        setEstTokens(Math.round(cjk / 1.6 + ascii / 4 + other / 3));
+      } catch {
+        setEstTokens(null);
+      }
+    }, 600);
+    return () => { if (estDebRef.current) clearTimeout(estDebRef.current); };
+  }, [selection, prompt]);
 
   const handleRewrite = async () => {
     if (!selection) return;
@@ -5003,41 +5062,257 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange }:
     setRewriting(false);
   };
 
+  const fetchAndCopyPrompt = async () => {
+    if (!selection) return;
+    try {
+      const r = await apiPost<{ prompt: string }>("/api/generation/rewrite", {
+        text: selection.text, instruction: prompt || "润色并提升文学质量", prompt_only: true,
+      });
+      const p = r.prompt || "";
+      setSnapshotPrompt(p);
+      try { await navigator.clipboard.writeText(p); }
+      catch {
+        const ta = document.createElement("textarea");
+        ta.value = p; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+      }
+      toast(`已复制 ${p.length.toLocaleString()} 字提示词`, "success");
+    } catch (e: any) {
+      toast(e?.message || "获取提示词失败", "error");
+    }
+  };
+
+  const applyPaste = () => {
+    const t = normalizeWebLLMReply(paste);
+    if (!t) { toast("回复为空", "error"); return; }
+    setRewriteResult(t);
+    setPaste("");
+    toast(`已读取 ${t.length.toLocaleString()} 字`, "success");
+  };
+
+  if (!selection) {
+    return (
+      <div>
+        <div className="label mb-8">AI 重写</div>
+        <div className="empty-state" style={{ padding: "32px 16px" }}>
+          <h4>请先在编辑器选中文本</h4>
+          <p>选中后会出现「AI 重写」按钮，或直接切到这个 tab 设置重写指令。</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div>
-      <div className="label mb-8">AI 重写选中文本</div>
-      {selection ? (<>
-        <div style={{ padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", marginBottom: 12, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7, maxHeight: 120, overflowY: "auto", fontFamily: "var(--font-serif)", borderLeft: "3px solid var(--accent)" }}>&ldquo;{selection.text.length > 200 ? selection.text.slice(0, 200) + "..." : selection.text}&rdquo;</div>
-        <div className="text-xs text-muted mb-12">选中了 {selection.text.length} 字（位置 {selection.start}-{selection.end}）</div>
-        <div className="field mb-12"><label className="label">重写指令（可选）</label><textarea className="input" value={prompt} onChange={e => onPromptChange(e.target.value)} rows={3} placeholder={"告诉 AI 你想怎么改...\n例如：更紧张、加入内心描写、换成第一人称"} /></div>
-        <button className="btn-primary w-full" onClick={handleRewrite} disabled={rewriting}>
-          {rewriting ? "重写中..." : "AI 重写此段落"}
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* 选中文本预览 */}
+      <div>
+        <div className="label mb-4" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>选中文本</span>
+          <span className="text-xs" style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>
+            {selection.text.length.toLocaleString()} 字 · 位置 {selection.start}-{selection.end}
+          </span>
+        </div>
+        <div style={{
+          padding: "10px 12px", background: "var(--bg-surface-2)",
+          borderRadius: 8, fontSize: 13, color: "var(--text-secondary)",
+          lineHeight: 1.7, maxHeight: 140, overflowY: "auto",
+          fontFamily: "var(--font-serif)", borderLeft: "3px solid var(--accent)",
+        }}>
+          &ldquo;{selection.text.length > 280 ? selection.text.slice(0, 280) + "…" : selection.text}&rdquo;
+        </div>
+      </div>
+
+      {/* 重写指令 */}
+      <div className="field">
+        <label className="label">重写指令（可选）</label>
+        <textarea className="input" value={prompt}
+          onChange={e => onPromptChange(e.target.value)} rows={3}
+          placeholder="告诉 AI 你想怎么改…例如：更紧张、加入内心描写、换成第一人称" />
+        <div style={{
+          marginTop: 4, fontSize: 10.5, color: "var(--text-tertiary)",
+          display: "flex", alignItems: "center", gap: 6,
+        }} title="本条请求最终交给 LLM 的提示词的近似 token 数。">
+          <span>隐藏上下文字符数：</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600,
+            color: estTokens != null ? "var(--text-secondary)" : "var(--text-disabled)" }}>
+            {estTokens != null ? estTokens.toLocaleString() : "—"}
+          </span>
+        </div>
+      </div>
+
+      {/* 高级选项 — 模型覆盖 */}
+      <div style={{ border: "1px solid var(--border)", borderRadius: 8 }}>
+        <button onClick={() => setAdvancedOpen(o => !o)} style={{
+          width: "100%", textAlign: "left", padding: "6px 10px",
+          background: advancedOpen ? "var(--bg-surface-2)" : "transparent",
+          border: "none", borderRadius: 8,
+          color: "var(--text-secondary)", fontSize: 11, cursor: "pointer",
+          display: "flex", alignItems: "center", gap: 6,
+        }}>
+          <span style={{ color: "var(--text-tertiary)" }}>{advancedOpen ? "▾" : "▸"}</span>
+          高级 · 模型覆盖
+          {model && model !== "default" && (
+            <span style={{
+              padding: "1px 7px", borderRadius: 8, fontSize: 10,
+              background: "var(--accent-subtle)", color: "var(--accent)",
+            }}>{model}</span>
+          )}
         </button>
-        {rewriteError && <p className="text-xs mt-8" style={{ color: "var(--error)" }}>{rewriteError}</p>}
-        {rewriteResult && (<>
-          <div style={{ marginTop: 12, padding: "10px 12px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)", fontSize: 13, lineHeight: 1.7, fontFamily: "var(--font-serif)", borderLeft: "3px solid var(--jade)", maxHeight: 200, overflowY: "auto", color: "var(--text-primary)" }}>
+        {advancedOpen && (
+          <div style={{ padding: "8px 10px 10px", borderTop: "1px solid var(--border)" }}>
+            <input className="input" value={model || ""}
+              onChange={e => onModelChange(e.target.value)}
+              placeholder="留空走 Pipeline 配置的默认模型"
+              style={{ fontSize: 11, padding: "5px 10px" }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* 手动模式 toggle pill */}
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <button
+          onClick={() => setManualMode(m => !m)}
+          title={manualMode ? "关闭手动模式 — 回到内置 API 重写" : "打开手动模式 — 用网页大模型手动跑 + 粘回结果"}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 8,
+            padding: "5px 14px", borderRadius: 999,
+            border: `1px solid ${manualMode ? "var(--indigo)" : "var(--border)"}`,
+            background: manualMode ? "var(--indigo-subtle, var(--bg-surface-2))" : "var(--bg-surface)",
+            color: manualMode ? "var(--indigo)" : "var(--text-secondary)",
+            fontSize: 11, fontWeight: 600, cursor: "pointer",
+          }}
+        >
+          <span style={{
+            display: "inline-block", width: 24, height: 12, borderRadius: 6,
+            background: manualMode ? "var(--indigo)" : "var(--border)",
+            position: "relative", transition: "background 0.15s",
+          }}>
+            <span style={{
+              position: "absolute", top: 1, left: manualMode ? 13 : 1,
+              width: 10, height: 10, borderRadius: "50%",
+              background: "#fff", transition: "left 0.15s",
+            }} />
+          </span>
+          <span>手动模式</span>
+          {manualMode && <span style={{ fontSize: 10, opacity: 0.85 }}>· 网页大模型</span>}
+        </button>
+      </div>
+
+      {/* 主操作 — auto: AI 重写; manual: 复制提示词 + 粘贴框 + 应用 */}
+      {!manualMode ? (
+        <button className="btn-primary w-full" onClick={handleRewrite} disabled={rewriting}
+          style={{ padding: "8px 16px", fontSize: 13, fontWeight: 600 }}>
+          {rewriting ? "重写中…" : "AI 重写此段落"}
+        </button>
+      ) : (
+        <div style={{
+          border: "1px solid var(--indigo)", borderLeft: "3px solid var(--indigo)",
+          borderRadius: 10, padding: 12,
+          display: "flex", flexDirection: "column", gap: 10,
+        }}>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+            复制本条提示词到大语言模型网页版中，把它的回答粘到下方。
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={fetchAndCopyPrompt} style={{
+              padding: "5px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+              background: "var(--indigo)", color: "#fff", border: "none", cursor: "pointer",
+            }}>复制提示词</button>
+            {snapshotPrompt && (
+              <span style={{ fontSize: 10.5, color: "var(--text-tertiary)" }}>
+                {snapshotPrompt.length.toLocaleString()} 字 · 已抓取本次提示词
+              </span>
+            )}
+          </div>
+          <textarea
+            value={paste} onChange={e => setPaste(e.target.value)}
+            placeholder="把网页大模型的回复粘到这里…"
+            rows={4}
+            style={{
+              width: "100%", boxSizing: "border-box",
+              padding: "8px 10px", fontSize: 12, lineHeight: 1.55,
+              background: "var(--bg-app)", color: "var(--text-primary)",
+              border: "1px solid var(--border)", borderRadius: 6,
+              fontFamily: "var(--font-sans)",
+              resize: "vertical", minHeight: 80, maxHeight: 240, outline: "none",
+            }}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+              {paste.trim() ? `${paste.length.toLocaleString()} 字待应用` : "粘贴后启用「应用回复」"}
+            </span>
+            <button onClick={applyPaste} disabled={!paste.trim()} style={{
+              padding: "6px 18px", borderRadius: 6,
+              background: paste.trim() ? "var(--jade)" : "transparent",
+              color: paste.trim() ? "#fff" : "var(--text-disabled)",
+              border: `1px solid ${paste.trim() ? "var(--jade)" : "var(--border)"}`,
+              fontSize: 12, fontWeight: 600,
+              cursor: paste.trim() ? "pointer" : "not-allowed",
+            }}>应用回复</button>
+          </div>
+        </div>
+      )}
+
+      {rewriteError && (
+        <div style={{
+          padding: "8px 12px", background: "rgba(224,85,69,0.08)",
+          borderLeft: "3px solid var(--error)", borderRadius: 6,
+          fontSize: 12, color: "var(--error)",
+        }}>{rewriteError}</div>
+      )}
+
+      {/* 重写结果 */}
+      {rewriteResult && (
+        <div>
+          <div className="label mb-4" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>重写结果</span>
+            <span className="text-xs" style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>
+              {rewriteResult.length.toLocaleString()} 字
+              {selection && (
+                <span style={{ marginLeft: 6,
+                  color: rewriteResult.length > selection.text.length ? "var(--gold)" : "var(--jade)" }}>
+                  {rewriteResult.length > selection.text.length ? "+" : ""}
+                  {(rewriteResult.length - selection.text.length).toLocaleString()}
+                </span>
+              )}
+            </span>
+          </div>
+          <div style={{
+            padding: "10px 12px", background: "var(--bg-surface-2)",
+            borderRadius: 8, fontSize: 13, lineHeight: 1.7,
+            fontFamily: "var(--font-serif)", borderLeft: "3px solid var(--jade)",
+            maxHeight: 280, overflowY: "auto", color: "var(--text-primary)",
+            whiteSpace: "pre-wrap", wordBreak: "break-word",
+          }}>
             {rewriteResult}
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-            <button className="btn" style={{ flex: 1, fontSize: 11 }} onClick={() => navigator.clipboard.writeText(rewriteResult)}>
-              复制结果
+            <button className="btn" style={{ flex: 1, fontSize: 11 }}
+              onClick={() => {
+                navigator.clipboard.writeText(rewriteResult);
+                toast("已复制", "success");
+              }}>
+              复制
             </button>
+            {onApply && (
+              <button className="btn-primary" style={{
+                flex: 1, fontSize: 11, padding: "4px 12px",
+                background: "var(--jade)", border: "none",
+              }} onClick={() => onApply(rewriteResult)}>
+                替换原文
+              </button>
+            )}
+            {!manualMode && (
+              <button className="btn" style={{ flex: 1, fontSize: 11 }}
+                onClick={handleRewrite} disabled={rewriting}>
+                {rewriting ? "重写中…" : "重新生成"}
+              </button>
+            )}
           </div>
-        </>)}
-        <div style={{ marginTop: 10 }}>
-          <WebLLMPromptPanel
-            fetchPrompt={async () => {
-              const r = await apiPost<{ prompt: string }>("/api/generation/rewrite", {
-                text: selection.text, instruction: prompt || "润色并提升文学质量", prompt_only: true,
-              });
-              return r.prompt || "";
-            }}
-            onApplyResult={(t) => setRewriteResult(t.trim())}
-            applyLabel="应用为重写结果"
-            resultPlaceholder="把网页 LLM 返回的重写文本粘贴到这里"
-          />
         </div>
-      </>) : (<div className="empty-state" style={{ padding: "32px 16px" }}><h4>选中文本以重写</h4><p>在编辑器中选中文本，将出现「AI重写」按钮</p></div>)}
+      )}
     </div>
   );
 }
@@ -5271,41 +5546,96 @@ function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, man
     }
   };
 
+  // 评估维度: AI率/重复/一致性/伏笔/文学质量/LLM 综合 — 跟 EvalResultView
+  // 内部用的那套保持一致, 前置展示让用户在跑评估前就知道会量哪些指标.
+  const EVAL_DIMENSIONS = [
+    { id: "slop_detection",       icon: "◉", name: "AI率（AI味）",     blurb: "检测固定句式 / 空洞修饰 / 「然而」「不禁」等 LLM 高频套话" },
+    { id: "repetition",           icon: "↻", name: "重复检测",         blurb: "句首重复 / 短语循环, 提示用同义词替换" },
+    { id: "narrative_consistency", icon: "≡", name: "叙事一致性",       blurb: "角色行为 / 情节逻辑 / 世界观设定是否对得上" },
+    { id: "foreshadowing",        icon: "∴", name: "伏笔一致性",       blurb: "前后伏笔有没有断裂 / 矛盾" },
+    { id: "literary_quality",     icon: "✎", name: "文学质量",         blurb: "语言张力 / 节奏 / 描写细节" },
+    { id: "llm_evaluation",       icon: "★", name: "LLM 深度综合",     blurb: "调一次大模型给完整评分 + 总结" },
+  ];
+
   return (
-    <div>
-      <ContextPanel
-        manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
-        onToggleSkill={onToggleSkill} onToggleRagItem={onToggleRagItem}
-        onRefresh={onRefreshManifest}
-        projectId={projectId} chapterId={chapterId} chapterNum={chapterNum}
-      />
-      <div style={{ marginBottom: 12 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ marginBottom: 0 }}>
         <button className="btn-primary" style={{ width: "100%" }} onClick={runEval} disabled={evaluating}>
-          {evaluating ? "评估中..." : "评估当前正文"}
+          {evaluating ? "评估中…" : "评估当前正文"}
         </button>
       </div>
-      <div style={{ marginBottom: 12 }}>
-        <WebLLMPromptPanel
-          title="AI大模型网页版"
-          fetchPrompt={async () => {
-            const text = (chapterContent || "").trim();
-            if (!text) throw new Error("当前章节没有正文可评估");
-            const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true, ...evalBody() });
-            return r.prompt || "";
-          }}
-          onApplyResult={applyPastedEval}
-          applyLabel="应用评估结果"
-          resultPlaceholder="把网页 LLM 返回的评估 JSON 粘贴到这里"
-        />
-      </div>
-      {displayResult
-        ? <EvalResultView result={displayResult} />
-        : (
-          <div className="empty-state" style={{ padding: "24px 16px" }}>
-            <h4>暂无评估结果</h4>
-            <p>点击「评估当前正文」评估编辑器中的章节。</p>
+
+      {/* 评估前: 展示评估会量哪些维度. 跑过有结果后 (displayResult) 不再
+          显示, 给 EvalResultView 让位. */}
+      {!displayResult && (
+        <div>
+          <div className="label mb-8" style={{
+            fontSize: 11, color: "var(--text-tertiary)", letterSpacing: 1,
+          }}>评估维度（点击「评估当前正文」后会按这些维度打分）</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {EVAL_DIMENSIONS.map(d => (
+              <div key={d.id} style={{
+                padding: "10px 12px", borderRadius: 8,
+                background: "var(--bg-surface-2)",
+                borderLeft: "3px solid var(--accent)",
+                display: "flex", gap: 10, alignItems: "flex-start",
+              }}>
+                <span style={{ fontSize: 16, lineHeight: 1.2, flexShrink: 0 }}>{d.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 3 }}>
+                    {d.name}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "var(--text-secondary)", lineHeight: 1.55 }}>
+                    {d.blurb}
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
-        )}
+          <div style={{
+            marginTop: 10, padding: "8px 12px", borderRadius: 8,
+            background: "var(--bg-surface)", border: "1px dashed var(--border)",
+            fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.55,
+          }}>
+            手动模式：复制提示词到大语言模型网页版跑一遍，把 JSON 回复粘到下方。
+          </div>
+          <div style={{ marginTop: 6 }}>
+            <WebLLMPromptPanel
+              title="网页大模型 · 评估提示词"
+              fetchPrompt={async () => {
+                const text = (chapterContent || "").trim();
+                if (!text) throw new Error("当前章节没有正文可评估");
+                const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true, ...evalBody() });
+                return r.prompt || "";
+              }}
+              onApplyResult={applyPastedEval}
+              applyLabel="应用评估结果"
+              resultPlaceholder="把网页大模型返回的评估 JSON 粘到这里"
+            />
+          </div>
+        </div>
+      )}
+
+      {displayResult && (
+        <>
+          <EvalResultView result={displayResult} />
+          {/* 已有结果时把手动模式入口收到结果下方, 不抢主区域 */}
+          <div style={{ marginTop: 6 }}>
+            <WebLLMPromptPanel
+              title="网页大模型 · 重新评估"
+              fetchPrompt={async () => {
+                const text = (chapterContent || "").trim();
+                if (!text) throw new Error("当前章节没有正文可评估");
+                const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true, ...evalBody() });
+                return r.prompt || "";
+              }}
+              onApplyResult={applyPastedEval}
+              applyLabel="替换评估结果"
+              resultPlaceholder="把网页大模型返回的评估 JSON 粘到这里"
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }
