@@ -56,6 +56,21 @@ class OllamaProvider(BaseLLMProvider):
                 "「自动检测」，或手动填写已安装的模型名称。"
             )
 
+    def _connect_error(self, exc: Exception) -> ValueError:
+        """Translate a raw httpx connection failure into a user-readable
+        ValueError. Generic ConnectError → "All connection attempts failed"
+        is opaque; we want the operator to know that Ollama itself is down
+        and where to look."""
+        return ValueError(
+            "无法连接到 Ollama 服务。请确认：\n"
+            "1) 本地已启动 ollama serve（或 Ollama 桌面应用已运行）；\n"
+            "2) 设置中的服务地址正确（当前: "
+            f"{self._base}）；\n"
+            "3) 网络 / 防火墙未拦截 11434 端口。\n"
+            "如使用其他模型供应商，请到「设置 → 模型供应商」切换。\n"
+            f"原始错误: {exc}"
+        )
+
     async def generate(self, messages: list[LLMMessage], *, temperature: float | None = None,
                        max_tokens: int | None = None, stop: list[str] | None = None, **kw: Any) -> LLMResponse:
         import httpx
@@ -67,6 +82,13 @@ class OllamaProvider(BaseLLMProvider):
         if stop:
             options["stop"] = stop
 
+        try:
+            return await self._generate_impl(messages, options)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
+            raise self._connect_error(exc) from exc
+
+    async def _generate_impl(self, messages: list[LLMMessage], options: dict[str, Any]) -> LLMResponse:
+        import httpx
         async with httpx.AsyncClient(timeout=300) as client:
             await self._verify_model(client)
 
@@ -150,6 +172,14 @@ class OllamaProvider(BaseLLMProvider):
         if stop:
             options["stop"] = stop
 
+        try:
+            async for chunk in self._stream_impl(messages, options):
+                yield chunk
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
+            raise self._connect_error(exc) from exc
+
+    async def _stream_impl(self, messages: list[LLMMessage], options: dict[str, Any]) -> AsyncIterator[str]:
+        import httpx
         async with httpx.AsyncClient(timeout=300) as client:
             await self._verify_model(client)
 

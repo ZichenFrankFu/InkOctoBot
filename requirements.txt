@@ -50,6 +50,11 @@ psutil>=5.9.0
 # 锁版本以阻断升级方向上的回退。注意：与 name_pretrainer/requirements.txt
 # 的 `transformers>=4.26,<4.41`（LTP 4.2.x 兼容）冲突 —— name_pretrainer
 # 走独立 venv，不要装到同一个环境里。
+# CVE-2025-32434: transformers 在 torch < 2.6 时不允许加载 .bin 权重
+# (torch.load 漏洞), sentence-transformers 调用链会抛
+# "we now require users to upgrade torch to at least v2.6". 即使后端有
+# safetensors 也得 torch>=2.6 才能跳过校验, 显式锁版.
+torch>=2.6
 transformers>=4.41,<5
 sentence-transformers>=2.7,<4
 

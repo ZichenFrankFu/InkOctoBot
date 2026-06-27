@@ -1442,12 +1442,14 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setGenerating(false);
   }, []);
 
-  /** Apply a paste from a specific in-chat ManualPaste card. Marks that
-   *  card as applied (so its textarea collapses to "✓ 已应用 · N 字"),
-   *  then appends the Writer message right after it so the conversation
-   *  reads top-down: User → ManualPaste card (applied) → Writer.
-   *  Different from applyPlainPaste, which appends to the END regardless
-   *  of where the user clicked. */
+  /** Apply a paste from a specific in-chat ManualPaste card. Drops the
+   *  card entirely (no more "已应用网页大模型回复" chip) and inserts
+   *  in its place:
+   *    - a System chat message announcing successful read
+   *    - a Writer message carrying the parsed content with
+   *      viaManualMode=true so the chat header shows a "手动" badge
+   *  Conversation thread reads top-down:
+   *    User(指令, 手动) → System(已成功读取…) → Writer(正文, 手动) */
   const applyInChatManualPaste = useCallback((msgIdx: number, text: string) => {
     const t = normalizeWebLLMReply(text);
     if (!t) return;
@@ -1457,14 +1459,17 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       if (!target?.manualPaste) return prev;
       const before = prev.slice(0, msgIdx);
       const after = prev.slice(msgIdx + 1);
-      const updatedPasteCard: ChatMessage = {
-        ...target,
-        manualPaste: { ...target.manualPaste, applied: true, pastedLen: t.length },
+      const ts = Date.now();
+      const sysMsg: ChatMessage = {
+        agent: "System",
+        content: `已成功读取网页大模型回复 · ${t.length.toLocaleString()} 字`,
+        status: "done", timestamp: ts,
       };
       const writerMsg: ChatMessage = {
-        agent: "Writer", content: t, status: "done", timestamp: Date.now(),
+        agent: "Writer", content: t, status: "done", timestamp: ts + 1,
+        viaManualMode: true,
       };
-      return [...before, updatedPasteCard, writerMsg, ...after];
+      return [...before, sysMsg, writerMsg, ...after];
     });
   }, []);
 
