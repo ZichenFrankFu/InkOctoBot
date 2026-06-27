@@ -110,6 +110,13 @@ interface ChatMessage {
    *  flight: ETA in seconds + started-at epoch. The renderer draws an
    *  animated bar and a live "剩余 N 秒" countdown. */
   progress?: { etaSec: number; startedAt: number };
+  /** Manual-mode paste-back card payload. When user sends an instruction
+   *  while 手动模式 is ON, we push two messages: the User instruction
+   *  and a System bubble carrying this payload — its renderer shows the
+   *  snapshot prompt (copy button) + a textarea for the web-LLM reply +
+   *  an "应用" button. Once applied, the textarea is replaced with a
+   *  "✓ 已应用" summary and a Writer message is appended. */
+  manualPaste?: { prompt: string; applied?: boolean; pastedLen?: number };
 }
 
 /** Format Scene Director JSON output as human-readable screenplay format */
@@ -1419,6 +1426,32 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setGenerating(false);
   }, []);
 
+  /** Apply a paste from a specific in-chat ManualPaste card. Marks that
+   *  card as applied (so its textarea collapses to "✓ 已应用 · N 字"),
+   *  then appends the Writer message right after it so the conversation
+   *  reads top-down: User → ManualPaste card (applied) → Writer.
+   *  Different from applyPlainPaste, which appends to the END regardless
+   *  of where the user clicked. */
+  const applyInChatManualPaste = useCallback((msgIdx: number, text: string) => {
+    const t = normalizeWebLLMReply(text);
+    if (!t) return;
+    generatedTextRef.current = t;
+    setChatMessages(prev => {
+      const target = prev[msgIdx];
+      if (!target?.manualPaste) return prev;
+      const before = prev.slice(0, msgIdx);
+      const after = prev.slice(msgIdx + 1);
+      const updatedPasteCard: ChatMessage = {
+        ...target,
+        manualPaste: { ...target.manualPaste, applied: true, pastedLen: t.length },
+      };
+      const writerMsg: ChatMessage = {
+        agent: "Writer", content: t, status: "done", timestamp: Date.now(),
+      };
+      return [...before, updatedPasteCard, writerMsg, ...after];
+    });
+  }, []);
+
   // Web-LLM dialog (mirror of MarketFeatureExtraction's UniversalLLMDialog flow):
   // user clicks "网页大模型创作" → dialog opens with the live single-agent
   // prompt → user copies / pastes / commits → reply lands in the chat as
@@ -1720,18 +1753,33 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }
 
     if (singleIdle) {
-      // Single-mode chat-driven generation. runPlainAgent owns the
-      // token snapshot + prompt cache — sendChatMessage just pushes
-      // the empty-shell User message so the chat shows it instantly
-      // (runPlainAgent backfills promptSent / tokenEstimate after
-      // /quick-generate's prompt-only round-trip completes).
       const userText = msg || "按大纲创作本章";
-      setChatMessages(prev => [...prev, {
-        agent: "User", content: userText, status: "done", timestamp: Date.now(),
-      }]);
       if (manualMode) {
-        openWebLLMDialog();
+        // 手动模式: push User instruction + 把 paste-back UI 嵌进对话框
+        // (作为一条 manualPaste system 消息). 不走 API. 用户在 chat
+        // 里复制 prompt → 网页 LLM → 粘贴回复 → 应用 → Writer 消息.
+        const est = await fetchTokenEstimate();
+        const ts = Date.now();
+        setChatMessages(prev => [...prev,
+          {
+            agent: "User", content: userText, status: "done", timestamp: ts,
+            promptSent: est?.prompt,
+            tokenEstimate: est
+              ? { inputK: est.inputK, llmCalls: est.llmCalls, usd: est.usd }
+              : undefined,
+          },
+          {
+            agent: "System", content: "", status: "done", timestamp: ts + 1,
+            manualPaste: { prompt: est?.prompt || "", applied: false },
+          },
+        ]);
       } else {
+        // 内置 API 创作: runPlainAgent owns 推 user msg + 进度条 +
+        // 结果 — sendChatMessage 只先推一条空 user msg 给 UI 即时反馈,
+        // runPlainAgent 收尾时再 backfill prompt / token chip.
+        setChatMessages(prev => [...prev, {
+          agent: "User", content: userText, status: "done", timestamp: Date.now(),
+        }]);
         runPlainAgent(msg, true);
       }
       return;
@@ -2099,6 +2147,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               onFetchPrompt={fetchGenPrompt}
               onApplyPaste={applyPlainPaste}
               onApplyManualResult={applyPlainPaste}
+              onApplyInChatManualPaste={applyInChatManualPaste}
               onOpenWebLLM={openWebLLMDialog}
               manualMode={manualMode} onToggleManualMode={() => setManualMode(v => !v)}
               manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
@@ -3834,76 +3883,147 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
   );
 }
 
-/** 手动模式 ON 时, 渲染在聊天区底部的 3 步引导卡片. 不入 chatMessages
- *  状态; 关掉 toggle 即消失, 不留历史. 第①步带 [复制 prompt] 按钮,
- *  延迟拉一次渲染后的 prompt 并写剪贴板. */
-function ManualGuidance({ fetchPrompt }: { fetchPrompt: () => Promise<string> }) {
+/** 手动模式专用 — 跟在用户的「指令」消息后面的 paste-back 卡片.
+ *  state: textarea 文本是 local; 应用后通过 onApply(text) 上报给
+ *  EditorPage, 由它给本卡 mark applied + insert Writer message.
+ *  Applied 后 textarea 折叠成 "✓ 已应用 · N 字" 摘要, 但消息卡仍留在
+ *  对话里, 用户能滚回去看是哪一轮粘的. */
+function InChatManualPasteCard({
+  prompt, applied, pastedLen, timestamp, onApply,
+}: {
+  prompt: string;
+  applied: boolean;
+  pastedLen?: number;
+  timestamp: number;
+  onApply: (text: string) => void;
+}) {
   const { toast } = useToast();
+  const [paste, setPaste] = useState("");
   const [copying, setCopying] = useState(false);
   const copyPrompt = async () => {
+    if (!prompt) { toast("Prompt 为空", "error"); return; }
     setCopying(true);
     try {
-      const p = await fetchPrompt();
-      if (!p) { toast("Prompt 为空", "error"); return; }
-      try { await navigator.clipboard.writeText(p); }
+      try { await navigator.clipboard.writeText(prompt); }
       catch {
         const ta = document.createElement("textarea");
-        ta.value = p; ta.style.position = "fixed"; ta.style.opacity = "0";
+        ta.value = prompt; ta.style.position = "fixed"; ta.style.opacity = "0";
         document.body.appendChild(ta); ta.select();
         try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
       }
-      toast(`已复制 ${p.length.toLocaleString()} 字 prompt`, "success");
-    } catch (e: any) { toast(e?.message || "获取 prompt 失败", "error"); }
-    finally { setCopying(false); }
+      toast(`已复制 ${prompt.length.toLocaleString()} 字 prompt`, "success");
+    } finally { setCopying(false); }
   };
-  const Step = ({ n, title, body, action }: { n: number; title: string; body: string; action?: React.ReactNode }) => (
+  const apply = () => {
+    if (!paste.trim()) return;
+    onApply(paste);
+    setPaste("");
+  };
+  // Applied state — collapse the textarea into a tiny success badge.
+  if (applied) {
+    return (
+      <div style={{
+        display: "inline-flex", alignItems: "center", gap: 8,
+        padding: "6px 12px", borderRadius: 999,
+        background: "var(--jade-subtle, rgba(52,199,123,0.12))",
+        color: "var(--jade)",
+        border: "1px solid var(--jade)",
+        fontSize: 11, fontWeight: 600,
+      }}>
+        <span style={{ fontSize: 13 }}>✓</span>
+        <span>已应用网页大模型回复</span>
+        {pastedLen != null && (
+          <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.85 }}>
+            · {pastedLen.toLocaleString()} 字
+          </span>
+        )}
+        <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.7 }}>
+          · {new Date(timestamp).toLocaleString("zh-CN", { hour: "numeric", minute: "numeric" })}
+        </span>
+      </div>
+    );
+  }
+  return (
     <div style={{
-      display: "flex", gap: 10, alignItems: "flex-start",
-      padding: "10px 12px", marginBottom: 6,
-      background: "var(--bg-surface)",
-      border: "1px solid var(--border)",
+      border: "1px solid var(--indigo)",
       borderLeft: "3px solid var(--indigo)",
       borderRadius: 10,
+      background: "var(--bg-surface)",
+      padding: 12,
+      display: "flex", flexDirection: "column", gap: 10,
     }}>
-      <div style={{
-        flexShrink: 0, width: 22, height: 22, borderRadius: "50%",
-        background: "var(--indigo-subtle, var(--bg-surface-2))",
-        color: "var(--indigo)", fontSize: 11, fontWeight: 700,
-        display: "inline-flex", alignItems: "center", justifyContent: "center",
-        border: "1px solid var(--indigo)", lineHeight: 1,
-      }}>{n}</div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>{title}</div>
-        <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.55 }}>{body}</div>
-        {action && <div style={{ marginTop: 6 }}>{action}</div>}
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          width: 22, height: 22, borderRadius: 6,
+          background: "var(--indigo)", color: "#fff",
+          fontSize: 10, fontWeight: 700, flexShrink: 0,
+        }}>WEB</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+          网页大模型 · 粘贴回复
+        </span>
+        <span style={{
+          marginLeft: "auto",
+          fontSize: 10, color: "var(--text-tertiary)",
+        }}>
+          ① 复制 prompt → ② 网页 LLM 跑 → ③ 粘回并应用
+        </span>
       </div>
-    </div>
-  );
-  return (
-    <div style={{ marginTop: 4 }}>
-      <div style={{
-        fontSize: 10, color: "var(--text-tertiary)",
-        textTransform: "uppercase", letterSpacing: 0.8,
-        margin: "4px 0 6px", textAlign: "center",
-      }}>
-        手动模式 · 网页大模型工作流
-      </div>
-      <Step n={1} title="复制 prompt"
-        body="把本次完整 prompt（含上下文 + 大纲 + 指令）复制到剪贴板。"
-        action={
-          <button onClick={copyPrompt} disabled={copying} style={{
-            padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+      {/* Step 1 — copy prompt */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button
+          onClick={copyPrompt} disabled={copying || !prompt}
+          style={{
+            padding: "5px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600,
             background: "var(--indigo)", color: "#fff",
             border: "none", cursor: copying ? "wait" : "pointer",
-          }}>{copying ? "复制中…" : "复制 prompt"}</button>
-        }
+            opacity: prompt ? 1 : 0.5,
+          }}
+        >
+          {copying ? "复制中…" : "复制 prompt"}
+        </button>
+        <span style={{ fontSize: 10.5, color: "var(--text-tertiary)" }}>
+          {prompt
+            ? `${prompt.length.toLocaleString()} 字 · 含本条指令 + 当前 RAG 上下文`
+            : "Prompt 不可用"}
+        </span>
+      </div>
+      {/* Step 2 — paste textarea */}
+      <textarea
+        value={paste}
+        onChange={e => setPaste(e.target.value)}
+        placeholder="把网页大模型的回复粘到这里…"
+        rows={4}
+        style={{
+          width: "100%", boxSizing: "border-box",
+          padding: "8px 10px", fontSize: 12, lineHeight: 1.55,
+          background: "var(--bg-app)", color: "var(--text-primary)",
+          border: "1px solid var(--border)", borderRadius: 6,
+          fontFamily: "var(--font-sans)",
+          resize: "vertical", minHeight: 80, maxHeight: 240,
+          outline: "none",
+        }}
       />
-      <Step n={2} title="在网页大模型跑一遍"
-        body="粘贴到 ChatGPT / Claude / Gemini 等网页 LLM，让它生成本章正文。"
-      />
-      <Step n={3} title="把回复粘到下方输入框 → 点「应用回复」"
-        body="作家智能体将以 human-readable 格式接管，并可继续按指令迭代。"
-      />
+      {/* Step 3 — apply */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+          {paste.trim() ? `${paste.length.toLocaleString()} 字待应用` : "粘贴后启用「应用回复」"}
+        </span>
+        <button
+          onClick={apply} disabled={!paste.trim()}
+          style={{
+            padding: "6px 18px", borderRadius: 8,
+            background: paste.trim() ? "var(--jade)" : "transparent",
+            color: paste.trim() ? "#fff" : "var(--text-disabled)",
+            border: `1px solid ${paste.trim() ? "var(--jade)" : "var(--border)"}`,
+            fontSize: 12, fontWeight: 600,
+            cursor: paste.trim() ? "pointer" : "not-allowed",
+          }}
+        >
+          应用回复
+        </button>
+      </div>
     </div>
   );
 }
@@ -3930,23 +4050,20 @@ function SingleModeComposer({
   onSwitchToRagTab?: () => void;
 }) {
   const [focused, setFocused] = useState(false);
-  const [ragExpanded, setRagExpanded] = useState(false);
   const togglable = (manifest?.rag || []).filter(r => r.items && r.items.length > 0);
   const isOn = (r: { key: string; items: { id: string }[] }) =>
     r.items.length > 0 && !r.items.every(it => ragExcludes.has(`${r.key}::${it.id}`));
   const onCount = togglable.filter(isOn).length;
 
-  const canSubmit = manualMode ? !!chatInput.trim() : true;
+  // Manual 跟 auto 在主输入框语义一致 — textarea 都是「用户的具体
+  // 指令」, 按钮都是「创作」, 走同一个 onSendMessage. 走到 sendChatMessage
+  // 里再按 manualMode 分流: auto 调 API, manual 推一条 paste-back 卡片
+  // 进对话, 让用户在聊天里完成复制 prompt / 粘贴回复 / 应用三步.
+  const canSubmit = true;  // 留空也允许 → "按大纲创作本章"
   const handleSubmit = () => {
-    if (!canSubmit) return;
-    if (manualMode) {
-      onApplyManualResult?.(chatInput);
-      onChatInputChange("");
-    } else {
-      onSendMessage();
-    }
+    onSendMessage();
   };
-  const submitLabel = manualMode ? "应用回复" : "创作";
+  const submitLabel = "创作";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
@@ -3996,20 +4113,42 @@ function SingleModeComposer({
         transition: "border-color 0.15s, box-shadow 0.15s",
         overflow: "hidden",
       }}>
-        {/* Chip strip — per-message RAG loaders. 文案明确强调"本条" */}
+        {/* Chip strip — per-message RAG loaders. 文案明确强调"本条";
+            一次性展示所有 togglable loader, 不折叠. chip 大小统一,
+            grid-like 流式排列保证对齐. */}
         {manifest && onToggleRagLoader && togglable.length > 0 && (
           <div style={{
-            padding: "8px 12px",
+            padding: "10px 12px",
             background: "var(--bg-surface-2)",
             borderBottom: "1px solid var(--border)",
-            display: "flex", flexDirection: "column", gap: 6,
+            display: "flex", flexDirection: "column", gap: 8,
           }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {/* Header row */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{
-                fontSize: 10, color: "var(--text-tertiary)", fontWeight: 600,
-                textTransform: "uppercase", letterSpacing: 0.6, flexShrink: 0,
+                fontSize: 10, color: "var(--text-tertiary)", fontWeight: 700,
+                textTransform: "uppercase", letterSpacing: 0.8,
               }}>本条加载</span>
-              {(ragExpanded ? togglable : togglable.slice(0, 5)).map(r => {
+              <span style={{
+                fontSize: 10, color: "var(--text-tertiary)",
+                padding: "1px 7px", borderRadius: 8,
+                background: "var(--bg-surface)", border: "1px solid var(--border)",
+                lineHeight: 1.4, fontWeight: 600,
+              }}>{onCount}/{togglable.length}</span>
+              <span style={{ flex: 1 }} />
+              {onSwitchToRagTab && (
+                <button onClick={onSwitchToRagTab} title="到 RAG tab 查看具体注入内容" style={{
+                  background: "none", border: "none", padding: 0,
+                  color: "var(--accent)", cursor: "pointer", fontSize: 10.5, fontWeight: 500,
+                }}>详情 →</button>
+              )}
+            </div>
+            {/* Chip grid — flex wrap with uniform gap; 全部 loader 一次性展示 */}
+            <div style={{
+              display: "flex", flexWrap: "wrap",
+              gap: "6px 6px",
+            }}>
+              {togglable.map(r => {
                 const on = isOn(r);
                 return (
                   <button
@@ -4017,47 +4156,32 @@ function SingleModeComposer({
                     onClick={() => onToggleRagLoader(r.key, r.items)}
                     title={`${on ? "取消" : "启用"} ${r.label}（本条指令）`}
                     style={{
-                      display: "inline-flex", alignItems: "center", gap: 4,
-                      padding: "2px 8px", borderRadius: 11,
+                      display: "inline-flex", alignItems: "center", gap: 5,
+                      padding: "4px 10px", borderRadius: 14,
                       border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
-                      background: on ? "var(--accent-subtle)" : "transparent",
-                      color: on ? "var(--accent)" : "var(--text-tertiary)",
-                      fontSize: 10.5, lineHeight: 1.5, cursor: "pointer",
+                      background: on ? "var(--accent-subtle)" : "var(--bg-surface)",
+                      color: on ? "var(--accent)" : "var(--text-secondary)",
+                      fontSize: 11, lineHeight: 1.45, cursor: "pointer",
                       fontWeight: on ? 600 : 400, transition: "all 0.12s",
+                      whiteSpace: "nowrap",
                     }}
                   >
                     <span style={{
-                      display: "inline-block", width: 6, height: 6, borderRadius: "50%",
+                      display: "inline-block", width: 7, height: 7, borderRadius: "50%",
                       background: on ? "var(--accent)" : "var(--text-disabled)",
+                      flexShrink: 0,
                     }} />
-                    {r.label}
-                    {r.items.length > 1 && <span style={{ opacity: 0.7 }}>·{r.items.length}</span>}
+                    <span>{r.label}</span>
+                    {r.items.length > 1 && (
+                      <span style={{
+                        fontSize: 9.5, opacity: 0.75, fontWeight: 400,
+                        padding: "0 4px", borderRadius: 6,
+                        background: on ? "rgba(0,0,0,0.06)" : "var(--bg-surface-2)",
+                      }}>{r.items.length}</span>
+                    )}
                   </button>
                 );
               })}
-              {!ragExpanded && togglable.length > 5 && (
-                <button onClick={() => setRagExpanded(true)} style={{
-                  background: "none", border: "none", padding: "2px 6px",
-                  color: "var(--text-tertiary)", fontSize: 10, cursor: "pointer",
-                }}>+{togglable.length - 5} 更多</button>
-              )}
-              {ragExpanded && togglable.length > 5 && (
-                <button onClick={() => setRagExpanded(false)} style={{
-                  background: "none", border: "none", padding: "2px 6px",
-                  color: "var(--text-tertiary)", fontSize: 10, cursor: "pointer",
-                }}>收起</button>
-              )}
-              <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                <span style={{
-                  fontSize: 9.5, color: "var(--text-tertiary)", lineHeight: 1.4,
-                }}>{onCount}/{togglable.length}</span>
-                {onSwitchToRagTab && (
-                  <button onClick={onSwitchToRagTab} title="到 RAG tab 查看具体注入内容" style={{
-                    background: "none", border: "none", padding: 0,
-                    color: "var(--accent)", cursor: "pointer", fontSize: 10,
-                  }}>详情 →</button>
-                )}
-              </span>
             </div>
           </div>
         )}
@@ -4072,7 +4196,7 @@ function SingleModeComposer({
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
           }}
           placeholder={manualMode
-            ? "把网页大模型的回复粘到这里…"
+            ? "本条指令 · Enter 发送后, 复制 prompt 到网页大模型, 把回复粘回对话框中的应答卡片"
             : "回复或指令 ·  Enter 发送 · Shift+Enter 换行"}
           rows={3}
           style={{
@@ -4094,12 +4218,11 @@ function SingleModeComposer({
           background: "var(--bg-surface)",
         }}>
           <div style={{ fontSize: 10.5, color: "var(--text-tertiary)", display: "flex", gap: 8, alignItems: "center" }}>
-            {manualMode ? (
-              <span>{chatInput.length.toLocaleString()} 字</span>
-            ) : (
-              <>
-                <span>{chatInput.trim() ? chatInput.length.toLocaleString() + " 字" : "留空 = 按大纲创作"}</span>
-              </>
+            <span>{chatInput.trim() ? `${chatInput.length.toLocaleString()} 字` : "留空 = 按大纲创作"}</span>
+            {manualMode && (
+              <span style={{ color: "var(--indigo)", fontWeight: 600 }}>
+                · 手动模式
+              </span>
             )}
           </div>
           <span style={{ flex: 1 }} />
@@ -4233,7 +4356,7 @@ function CostEstimateBlock({ mode, projectId, chapterId }: {
   );
 }
 
-function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, chapterNum, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, onOpenWebLLM, manualMode, onToggleManualMode, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onToggleRagLoader, onSwitchToRagTab, onRefreshManifest, onDeleteMessage, onEditPromptForMsg, onApplyManualResult }: {
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, chapterNum, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, onOpenWebLLM, manualMode, onToggleManualMode, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onToggleRagLoader, onSwitchToRagTab, onRefreshManifest, onDeleteMessage, onEditPromptForMsg, onApplyManualResult, onApplyInChatManualPaste }: {
   mode: "single" | "cluster";
   steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
@@ -4257,6 +4380,10 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
   /** Apply a manual-mode pasted web-LLM result to the chat. Same path
    *  as the inline manual panel below the input. */
   onApplyManualResult?: (text: string) => void;
+  /** Apply a paste from a specific in-chat ManualPaste card (by its
+   *  message index). Updates that card to "✓ 已应用" and inserts the
+   *  Writer message right after it. */
+  onApplyInChatManualPaste?: (msgIdx: number, text: string) => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -4358,7 +4485,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
           return (
             <div key={i} style={{ display: "flex", flexDirection: isUser ? "row-reverse" : "row", alignItems: "flex-start", marginBottom: 10, gap: 8 }}>
               <div style={{ width: 32, height: 32, borderRadius: "50%", background: style.bg, border: `2px solid ${style.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: isCharActor ? 13 : 16, flexShrink: 0, fontWeight: isCharActor ? 700 : 400, color: isCharActor ? style.border : undefined }}>{avatar}</div>
-              <div style={{ maxWidth: "80%", minWidth: 0 }}>
+              <div style={{ maxWidth: msg.manualPaste ? "95%" : "80%", minWidth: 0, width: msg.manualPaste ? "95%" : undefined }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
                   {msg.agentDisplayName || style.name}
                   {isCharActor && <span style={{ fontSize: 9, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 4 }}>(Actor)</span>}
@@ -4460,6 +4587,14 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                     }} />
                   ) : msg.progress ? (
                     <ProgressBubble label={msg.content} etaSec={msg.progress.etaSec} startedAt={msg.progress.startedAt} />
+                  ) : msg.manualPaste ? (
+                    <InChatManualPasteCard
+                      prompt={msg.manualPaste.prompt}
+                      applied={!!msg.manualPaste.applied}
+                      pastedLen={msg.manualPaste.pastedLen}
+                      timestamp={msg.timestamp}
+                      onApply={(text) => onApplyInChatManualPaste?.(i, text)}
+                    />
                   ) : msg.content}
                 </div>
                 {msg.tokenEstimate && msg.agent === "User" && (
@@ -4574,11 +4709,6 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
             </div>
           );
         })()}
-        {/* 手动模式 ON 时, 在聊天底部追加 3 步引导卡片 (system-style),
-            不入 chatMessages 状态以避免污染历史. */}
-        {mode === "single" && manualMode && !generating && !waitingForConfirm && onFetchPrompt && (
-          <ManualGuidance fetchPrompt={onFetchPrompt} />
-        )}
         <div ref={chatEndRef} />
       </div>
       {/* Stop / Control bar */}
