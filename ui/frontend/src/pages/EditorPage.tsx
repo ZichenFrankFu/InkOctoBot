@@ -3834,252 +3834,294 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
   );
 }
 
-/** Per-message RAG-loader selector. Lives directly above the chat input;
- *  user toggles entire loaders on/off for the NEXT send. Doesn't show
- *  loader content (that lives on the RAG tab) — only counts and the
- *  on/off switch + a "在 RAG tab 查看详情" link. */
-function LoaderSelectorPanel({
-  manifest, ragExcludes, onToggleLoader, onSwitchToRag,
-}: {
-  manifest: ContextManifest;
-  ragExcludes: Set<string>;
-  onToggleLoader: (key: string, items: { id: string }[]) => void;
-  onSwitchToRag?: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  // present + has items = togglable; presence-only loaders (no items)
-  // get listed as "已注入" with no checkbox.
-  const all = manifest.rag || [];
-  const togglable = all.filter(r => r.items && r.items.length > 0);
-  const isOn = (r: { key: string; items: { id: string }[] }) =>
-    r.items.length > 0 && !r.items.every(it => ragExcludes.has(`${r.key}::${it.id}`));
-  const onCount = togglable.filter(r => isOn(r)).length;
-  return (
-    <div style={{
-      border: "1px solid var(--border)",
-      borderRadius: 8,
-      background: open ? "var(--bg-surface)" : "transparent",
-      transition: "background 0.15s",
-    }}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        style={{
-          width: "100%", display: "flex", alignItems: "center", gap: 6,
-          padding: "6px 10px",
-          background: open ? "var(--bg-surface-2)" : "transparent",
-          border: "none",
-          borderBottom: open ? "1px solid var(--border)" : "none",
-          borderRadius: open ? "8px 8px 0 0" : 8,
-          cursor: "pointer", textAlign: "left",
-          color: "var(--text-secondary)", fontSize: 11,
-        }}
-        title="本次发送将加载的 RAG 上下文（章节级）"
-      >
-        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-          {open ? "▾" : "▸"}
-        </span>
-        <span style={{ flex: 1 }}>章节 RAG 注入</span>
-        <span style={{
-          padding: "1px 7px", borderRadius: 9,
-          background: onCount > 0 ? "var(--accent-subtle)" : "var(--bg-surface-2)",
-          color: onCount > 0 ? "var(--accent)" : "var(--text-tertiary)",
-          fontSize: 10, fontWeight: 600, lineHeight: 1.4,
-        }}>
-          {onCount}/{togglable.length}
-        </span>
-      </button>
-      {open && (
-        <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 4 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {togglable.map(r => {
-              const on = isOn(r);
-              const count = r.items.length;
-              return (
-                <label key={r.key} style={{
-                  display: "inline-flex", alignItems: "center", gap: 5,
-                  padding: "3px 8px", borderRadius: 12,
-                  border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
-                  background: on ? "var(--accent-subtle)" : "var(--bg-surface-2)",
-                  color: on ? "var(--accent)" : "var(--text-tertiary)",
-                  cursor: "pointer", fontSize: 11, userSelect: "none",
-                  transition: "all 0.12s",
-                }}>
-                  <input
-                    type="checkbox" checked={on}
-                    onChange={() => onToggleLoader(r.key, r.items)}
-                    style={{ margin: 0, accentColor: "var(--accent)", cursor: "pointer" }}
-                  />
-                  <span style={{ fontWeight: on ? 600 : 400 }}>{r.label}</span>
-                  {count > 1 && <span style={{ fontSize: 9, opacity: 0.7 }}>({count})</span>}
-                </label>
-              );
-            })}
-          </div>
-          {all.some(r => !r.items || !r.items.length) && (
-            <div style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-              未列出的 loader（{all.filter(r => !r.items || !r.items.length).map(r => r.label).join(" / ")}）按当前数据自动注入或跳过。
-            </div>
-          )}
-          <div style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-            具体内容{" "}
-            {onSwitchToRag ? (
-              <button onClick={onSwitchToRag} style={{
-                background: "none", border: "none", padding: 0,
-                color: "var(--accent)", cursor: "pointer", fontSize: 10,
-                textDecoration: "underline",
-              }}>到 RAG tab 查看</button>
-            ) : "请到 RAG tab 查看"}
-            。
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Inline manual-mode panel that lives BELOW the chat input.
- *  Steps:
- *    1. [复制 prompt] — lazy-fetch the rendered prompt; copy
- *    2. [paste textarea] — user pastes the web-LLM reply
- *    3. [应用回复] — pushes the reply into chat as 作家智能体
- *  Past pastes pile up as version chips [v1 v2 v3 …] — click to roll
- *  back any previous version into the chat. State is in-memory only;
- *  switching chapters clears it. */
-function ManualModePanel({
-  fetchPrompt, onApplyResult,
-}: {
-  fetchPrompt: () => Promise<string>;
-  onApplyResult: (text: string) => void;
-}) {
+/** 手动模式 ON 时, 渲染在聊天区底部的 3 步引导卡片. 不入 chatMessages
+ *  状态; 关掉 toggle 即消失, 不留历史. 第①步带 [复制 prompt] 按钮,
+ *  延迟拉一次渲染后的 prompt 并写剪贴板. */
+function ManualGuidance({ fetchPrompt }: { fetchPrompt: () => Promise<string> }) {
   const { toast } = useToast();
-  const [open, setOpen] = useState(false);
-  const [paste, setPaste] = useState("");
-  const [history, setHistory] = useState<{ text: string; ts: number }[]>([]);
   const [copying, setCopying] = useState(false);
   const copyPrompt = async () => {
     setCopying(true);
     try {
       const p = await fetchPrompt();
       if (!p) { toast("Prompt 为空", "error"); return; }
-      try {
-        await navigator.clipboard.writeText(p);
-      } catch {
+      try { await navigator.clipboard.writeText(p); }
+      catch {
         const ta = document.createElement("textarea");
         ta.value = p; ta.style.position = "fixed"; ta.style.opacity = "0";
         document.body.appendChild(ta); ta.select();
         try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
       }
       toast(`已复制 ${p.length.toLocaleString()} 字 prompt`, "success");
-    } catch (e: any) {
-      toast(e?.message || "获取 prompt 失败", "error");
-    } finally {
-      setCopying(false);
+    } catch (e: any) { toast(e?.message || "获取 prompt 失败", "error"); }
+    finally { setCopying(false); }
+  };
+  const Step = ({ n, title, body, action }: { n: number; title: string; body: string; action?: React.ReactNode }) => (
+    <div style={{
+      display: "flex", gap: 10, alignItems: "flex-start",
+      padding: "10px 12px", marginBottom: 6,
+      background: "var(--bg-surface)",
+      border: "1px solid var(--border)",
+      borderLeft: "3px solid var(--indigo)",
+      borderRadius: 10,
+    }}>
+      <div style={{
+        flexShrink: 0, width: 22, height: 22, borderRadius: "50%",
+        background: "var(--indigo-subtle, var(--bg-surface-2))",
+        color: "var(--indigo)", fontSize: 11, fontWeight: 700,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        border: "1px solid var(--indigo)", lineHeight: 1,
+      }}>{n}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>{title}</div>
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.55 }}>{body}</div>
+        {action && <div style={{ marginTop: 6 }}>{action}</div>}
+      </div>
+    </div>
+  );
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div style={{
+        fontSize: 10, color: "var(--text-tertiary)",
+        textTransform: "uppercase", letterSpacing: 0.8,
+        margin: "4px 0 6px", textAlign: "center",
+      }}>
+        手动模式 · 网页大模型工作流
+      </div>
+      <Step n={1} title="复制 prompt"
+        body="把本次完整 prompt（含上下文 + 大纲 + 指令）复制到剪贴板。"
+        action={
+          <button onClick={copyPrompt} disabled={copying} style={{
+            padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+            background: "var(--indigo)", color: "#fff",
+            border: "none", cursor: copying ? "wait" : "pointer",
+          }}>{copying ? "复制中…" : "复制 prompt"}</button>
+        }
+      />
+      <Step n={2} title="在网页大模型跑一遍"
+        body="粘贴到 ChatGPT / Claude / Gemini 等网页 LLM，让它生成本章正文。"
+      />
+      <Step n={3} title="把回复粘到下方输入框 → 点「应用回复」"
+        body="作家智能体将以 human-readable 格式接管，并可继续按指令迭代。"
+      />
+    </div>
+  );
+}
+
+/** Claude-style 一体化输入卡片. 顶部 chip strip = 本条 RAG 加载;
+ *  中部 textarea = 指令 (或 manual 模式下的粘贴框); 底部 action row
+ *  = 提示 + 创作 / 应用回复 按钮. 上方再叠一个手动模式 toggle pill.
+ *  Auto: textarea→指令 → 创作 → onSendMessage
+ *  Manual: textarea→粘贴 → 应用回复 → onApplyManualResult */
+function SingleModeComposer({
+  chatInput, onChatInputChange, onSendMessage,
+  manualMode, onToggleManualMode, onApplyManualResult,
+  manifest, ragExcludes, onToggleRagLoader, onSwitchToRagTab,
+}: {
+  chatInput: string;
+  onChatInputChange: (v: string) => void;
+  onSendMessage: () => void;
+  manualMode: boolean;
+  onToggleManualMode?: () => void;
+  onApplyManualResult?: (text: string) => void;
+  manifest: ContextManifest | null;
+  ragExcludes: Set<string>;
+  onToggleRagLoader?: (key: string, items: { id: string }[]) => void;
+  onSwitchToRagTab?: () => void;
+}) {
+  const [focused, setFocused] = useState(false);
+  const [ragExpanded, setRagExpanded] = useState(false);
+  const togglable = (manifest?.rag || []).filter(r => r.items && r.items.length > 0);
+  const isOn = (r: { key: string; items: { id: string }[] }) =>
+    r.items.length > 0 && !r.items.every(it => ragExcludes.has(`${r.key}::${it.id}`));
+  const onCount = togglable.filter(isOn).length;
+
+  const canSubmit = manualMode ? !!chatInput.trim() : true;
+  const handleSubmit = () => {
+    if (!canSubmit) return;
+    if (manualMode) {
+      onApplyManualResult?.(chatInput);
+      onChatInputChange("");
+    } else {
+      onSendMessage();
     }
   };
-  const apply = (text: string) => {
-    const t = text.trim();
-    if (!t) return;
-    onApplyResult(t);
-    setHistory(h => [{ text: t, ts: Date.now() }, ...h].slice(0, 5));
-    setPaste("");
-  };
+  const submitLabel = manualMode ? "应用回复" : "创作";
+
   return (
-    <div style={{
-      border: "1px solid var(--border)",
-      borderRadius: 8,
-      background: open ? "var(--bg-surface)" : "transparent",
-      transition: "background 0.15s",
-    }}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        style={{
-          width: "100%", display: "flex", alignItems: "center", gap: 6,
-          padding: "6px 10px",
-          background: open ? "var(--bg-surface-2)" : "transparent",
-          border: "none",
-          borderBottom: open ? "1px solid var(--border)" : "none",
-          borderRadius: open ? "8px 8px 0 0" : 8,
-          cursor: "pointer", textAlign: "left",
-          color: "var(--text-secondary)", fontSize: 11,
-        }}
-        title="内置 API 不可用 / 想用网页 LLM 时：复制本次 prompt 跑一遍，把回复粘回这里。"
-      >
-        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-          {open ? "▾" : "▸"}
-        </span>
-        <span style={{ flex: 1 }}>网页大模型（手动 paste 回复）</span>
-        {history.length > 0 && (
-          <span style={{
-            padding: "1px 7px", borderRadius: 9,
-            background: "var(--indigo-subtle, var(--bg-surface-2))",
-            color: "var(--indigo, var(--text-tertiary))",
-            fontSize: 10, fontWeight: 600, lineHeight: 1.4,
-          }}>
-            历史 {history.length}
-          </span>
-        )}
-      </button>
-      {open && (
-        <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            <button
-              onClick={copyPrompt} disabled={copying}
-              style={{
-                padding: "4px 10px", borderRadius: 6,
-                background: "var(--accent-subtle)", color: "var(--accent)",
-                border: "1px solid var(--accent)", cursor: "pointer",
-                fontSize: 11, fontWeight: 600,
-              }}
-            >
-              {copying ? "..." : "① 复制 prompt"}
-            </button>
-            {history.length > 0 && (
-              <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>历史回退：</span>
-            )}
-            {history.map((h, i) => (
-              <button
-                key={h.ts} onClick={() => onApplyResult(h.text)}
-                title={`回滚到 v${history.length - i}（${new Date(h.ts).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" })}，${h.text.length} 字）`}
-                style={{
-                  padding: "2px 8px", borderRadius: 10,
-                  background: "var(--bg-surface-2)", color: "var(--text-secondary)",
-                  border: "1px solid var(--border)", cursor: "pointer",
-                  fontSize: 10, lineHeight: 1.4,
-                }}
-              >
-                v{history.length - i}
-              </button>
-            ))}
-          </div>
-          <textarea
-            value={paste}
-            onChange={e => setPaste(e.target.value)}
-            placeholder="② 把网页 LLM 的回复粘到这里…"
-            rows={4}
-            style={{
-              width: "100%", boxSizing: "border-box",
-              padding: "8px 10px", fontSize: 11, lineHeight: 1.55,
-              background: "var(--bg-app)", color: "var(--text-primary)",
-              border: "1px solid var(--border)", borderRadius: 6,
-              resize: "vertical",
-            }}
-          />
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+      {/* Manual mode toggle pill — 居中悬浮在输入卡片正上方 */}
+      {onToggleManualMode && (
+        <div style={{ display: "flex", justifyContent: "center" }}>
           <button
-            onClick={() => apply(paste)} disabled={!paste.trim()}
+            onClick={onToggleManualMode}
+            title={manualMode
+              ? "关闭手动模式 — 回到内置 API 创作"
+              : "打开手动模式 — 用网页大模型手动跑 prompt + 粘回结果"}
             style={{
-              alignSelf: "flex-end",
-              padding: "5px 14px", borderRadius: 6,
-              background: paste.trim() ? "var(--jade)" : "transparent",
-              color: paste.trim() ? "#fff" : "var(--text-disabled)",
-              border: `1px solid ${paste.trim() ? "var(--jade)" : "var(--border)"}`,
-              cursor: paste.trim() ? "pointer" : "not-allowed",
-              fontSize: 12, fontWeight: 600,
+              display: "inline-flex", alignItems: "center", gap: 8,
+              padding: "5px 14px",
+              borderRadius: 999,
+              border: `1px solid ${manualMode ? "var(--indigo)" : "var(--border)"}`,
+              background: manualMode ? "var(--indigo-subtle, var(--bg-surface-2))" : "var(--bg-surface)",
+              color: manualMode ? "var(--indigo)" : "var(--text-secondary)",
+              fontSize: 11, fontWeight: 600, cursor: "pointer",
+              transition: "all 0.15s",
             }}
           >
-            ③ 应用回复
+            <span style={{
+              display: "inline-block", width: 24, height: 12, borderRadius: 6,
+              background: manualMode ? "var(--indigo)" : "var(--border)",
+              position: "relative", transition: "background 0.15s",
+            }}>
+              <span style={{
+                position: "absolute", top: 1, left: manualMode ? 13 : 1,
+                width: 10, height: 10, borderRadius: "50%",
+                background: "#fff",
+                transition: "left 0.15s",
+              }} />
+            </span>
+            <span>手动模式</span>
+            {manualMode && <span style={{ fontSize: 10, opacity: 0.85 }}>· 网页大模型</span>}
           </button>
         </div>
       )}
+
+      {/* Composer card */}
+      <div style={{
+        border: `1px solid ${focused ? "var(--accent)" : "var(--border)"}`,
+        borderRadius: 14,
+        background: "var(--bg-surface)",
+        boxShadow: focused ? "0 0 0 3px var(--accent-glow, rgba(224,85,69,0.12))" : "none",
+        transition: "border-color 0.15s, box-shadow 0.15s",
+        overflow: "hidden",
+      }}>
+        {/* Chip strip — per-message RAG loaders. 文案明确强调"本条" */}
+        {manifest && onToggleRagLoader && togglable.length > 0 && (
+          <div style={{
+            padding: "8px 12px",
+            background: "var(--bg-surface-2)",
+            borderBottom: "1px solid var(--border)",
+            display: "flex", flexDirection: "column", gap: 6,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{
+                fontSize: 10, color: "var(--text-tertiary)", fontWeight: 600,
+                textTransform: "uppercase", letterSpacing: 0.6, flexShrink: 0,
+              }}>本条加载</span>
+              {(ragExpanded ? togglable : togglable.slice(0, 5)).map(r => {
+                const on = isOn(r);
+                return (
+                  <button
+                    key={r.key}
+                    onClick={() => onToggleRagLoader(r.key, r.items)}
+                    title={`${on ? "取消" : "启用"} ${r.label}（本条指令）`}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 4,
+                      padding: "2px 8px", borderRadius: 11,
+                      border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                      background: on ? "var(--accent-subtle)" : "transparent",
+                      color: on ? "var(--accent)" : "var(--text-tertiary)",
+                      fontSize: 10.5, lineHeight: 1.5, cursor: "pointer",
+                      fontWeight: on ? 600 : 400, transition: "all 0.12s",
+                    }}
+                  >
+                    <span style={{
+                      display: "inline-block", width: 6, height: 6, borderRadius: "50%",
+                      background: on ? "var(--accent)" : "var(--text-disabled)",
+                    }} />
+                    {r.label}
+                    {r.items.length > 1 && <span style={{ opacity: 0.7 }}>·{r.items.length}</span>}
+                  </button>
+                );
+              })}
+              {!ragExpanded && togglable.length > 5 && (
+                <button onClick={() => setRagExpanded(true)} style={{
+                  background: "none", border: "none", padding: "2px 6px",
+                  color: "var(--text-tertiary)", fontSize: 10, cursor: "pointer",
+                }}>+{togglable.length - 5} 更多</button>
+              )}
+              {ragExpanded && togglable.length > 5 && (
+                <button onClick={() => setRagExpanded(false)} style={{
+                  background: "none", border: "none", padding: "2px 6px",
+                  color: "var(--text-tertiary)", fontSize: 10, cursor: "pointer",
+                }}>收起</button>
+              )}
+              <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span style={{
+                  fontSize: 9.5, color: "var(--text-tertiary)", lineHeight: 1.4,
+                }}>{onCount}/{togglable.length}</span>
+                {onSwitchToRagTab && (
+                  <button onClick={onSwitchToRagTab} title="到 RAG tab 查看具体注入内容" style={{
+                    background: "none", border: "none", padding: 0,
+                    color: "var(--accent)", cursor: "pointer", fontSize: 10,
+                  }}>详情 →</button>
+                )}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Textarea — Claude-style: no inner border, soft padding */}
+        <textarea
+          value={chatInput}
+          onChange={e => onChatInputChange(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={e => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
+          }}
+          placeholder={manualMode
+            ? "把网页大模型的回复粘到这里…"
+            : "回复或指令 ·  Enter 发送 · Shift+Enter 换行"}
+          rows={3}
+          style={{
+            display: "block", width: "100%", boxSizing: "border-box",
+            border: "none", outline: "none", background: "transparent",
+            color: "var(--text-primary)",
+            fontFamily: "var(--font-sans)",
+            fontSize: 14, lineHeight: 1.6,
+            padding: "14px 16px 8px",
+            minHeight: 80, maxHeight: 240, resize: "vertical",
+          }}
+        />
+
+        {/* Action row — char count + Enter hint + submit */}
+        <div style={{
+          padding: "6px 10px 8px 16px",
+          display: "flex", alignItems: "center", gap: 10,
+          borderTop: "1px solid var(--border)",
+          background: "var(--bg-surface)",
+        }}>
+          <div style={{ fontSize: 10.5, color: "var(--text-tertiary)", display: "flex", gap: 8, alignItems: "center" }}>
+            {manualMode ? (
+              <span>{chatInput.length.toLocaleString()} 字</span>
+            ) : (
+              <>
+                <span>{chatInput.trim() ? chatInput.length.toLocaleString() + " 字" : "留空 = 按大纲创作"}</span>
+              </>
+            )}
+          </div>
+          <span style={{ flex: 1 }} />
+          <button
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            title={manualMode ? "应用粘贴的回复" : "创作（Enter）"}
+            style={{
+              padding: "6px 18px", borderRadius: 8,
+              background: canSubmit ? "var(--accent)" : "var(--bg-surface-2)",
+              color: canSubmit ? "#fff" : "var(--text-disabled)",
+              border: "none", cursor: canSubmit ? "pointer" : "not-allowed",
+              fontSize: 13, fontWeight: 600,
+              transition: "background 0.15s",
+              display: "inline-flex", alignItems: "center", gap: 6,
+            }}
+          >
+            {submitLabel}
+            <span style={{ fontSize: 11, opacity: 0.85 }}>↵</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -4299,8 +4341,9 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
           </div>
         </div>
       )}
-      {/* Chat area */}
-      <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 200, maxHeight: 400, background: "var(--bg-app)" }}>
+      {/* Chat area — flex:1 真正撑满 panel-body 列;
+          单 mode 下手动模式 toggle 开后, 末尾追加 3 步引导卡片 */}
+      <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm, 6px)", padding: 8, marginBottom: 10, minHeight: 0, background: "var(--bg-app)" }}>
         {chatMessages.length === 0 && !generating && (
           <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
             {mode === "cluster"
@@ -4531,6 +4574,11 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
             </div>
           );
         })()}
+        {/* 手动模式 ON 时, 在聊天底部追加 3 步引导卡片 (system-style),
+            不入 chatMessages 状态以避免污染历史. */}
+        {mode === "single" && manualMode && !generating && !waitingForConfirm && onFetchPrompt && (
+          <ManualGuidance fetchPrompt={onFetchPrompt} />
+        )}
         <div ref={chatEndRef} />
       </div>
       {/* Stop / Control bar */}
@@ -4550,56 +4598,50 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
           </button>
         </div>
       )}
-      {/* Single mode input —— Claude-style chat:
-            ┌─── 章节 RAG 注入 (collapsible) ────┐
-            │ ☑ 角色档案 (3)  ☑ 世界书 (5)  …    │  ← per-message loader switches
-            ├──────────────────────────────────────
-            │ 用户的具体指令…           [创作]    │
-            ├──────────────────────────────────────
-            │ ─── 网页大模型 (collapsible) ───    │
-            │ [复制 prompt]  [v1 v2 v3]           │  ← copy / paste / history
-            │ [paste textarea]      [应用回复]    │
-            └──────────────────────────────────────
-          API 可用时直接 Enter 发送即可走"创作"；API 不可用 / 用户希望
-          手动跑时，展开下方的网页大模型面板复制 prompt → 网页 LLM
-          → paste 回 → 应用。回复进 chat 时由 normalizeWebLLMReply 转
-          human-readable 文字。 */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-        {mode === "single" && !generating && !waitingForConfirm && manifest && onToggleRagLoader && (
-          <LoaderSelectorPanel
-            manifest={manifest}
-            ragExcludes={ragExcludes || new Set()}
-            onToggleLoader={onToggleRagLoader}
-            onSwitchToRag={onSwitchToRagTab}
-          />
-        )}
-        <div style={{ display: "flex", gap: 6 }}>
+      {/* Single mode Claude-style composer (auto / manual):
+            [手动模式 toggle pill — 上方居中, 美观]
+            ┌────────────────────────────────────────────┐
+            │ 本条加载  ☑ 角色档案 · ☑ 世界书 · ☐ 灵感   │  ← 章节 RAG
+            │           [▾ 详情→]                        │
+            │ ────────────────────────────────────────── │
+            │                                            │
+            │  [textarea — instruction or paste]         │
+            │                                            │
+            │ ────────────────────────────────────────── │
+            │ ~12K · ⏎ 发送              [创作 ↵]        │
+            └────────────────────────────────────────────┘
+          Auto = textarea→指令, button→创作, Enter 发. Manual = textarea
+          →粘贴回复, button→应用回复, 走 onApplyManualResult. 手动模式
+          的 3 步引导卡 (复制 / 粘贴 / 应用) 渲染在聊天底部. */}
+      {mode === "single" && !generating && !waitingForConfirm && (
+        <SingleModeComposer
+          chatInput={chatInput}
+          onChatInputChange={onChatInputChange}
+          onSendMessage={onSendMessage}
+          manualMode={!!manualMode}
+          onToggleManualMode={onToggleManualMode}
+          onApplyManualResult={onApplyManualResult}
+          manifest={manifest || null}
+          ragExcludes={ragExcludes || new Set()}
+          onToggleRagLoader={onToggleRagLoader}
+          onSwitchToRagTab={onSwitchToRagTab}
+        />
+      )}
+      {/* Cluster + waitingForConfirm fall back to a plain textarea. */}
+      {(mode !== "single" || generating || waitingForConfirm) && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
           <textarea className="input" value={chatInput} onChange={e => onChatInputChange(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSendMessage(); } }}
-            placeholder={
-              waitingForConfirm
-                ? "输入修改意见，或点击确认继续..."
-                : mode === "single"
-                  ? "用户的具体指令… ↵ 发送（留空即按大纲创作）"
-                  : "输入消息与 Agent 对话..."
-            }
-            rows={2}
-            style={{ flex: 1, fontSize: 13, padding: "8px 12px", minHeight: 44, maxHeight: 140, resize: "vertical" }} />
+            placeholder={waitingForConfirm ? "输入修改意见，或点击确认继续..." : "输入消息与 Agent 对话..."}
+            rows={1} style={{ flex: 1, fontSize: 12, padding: "6px 10px", minHeight: 32, maxHeight: 100, resize: "none" }} />
           <button className="btn-primary"
             onClick={onSendMessage}
-            disabled={!chatInput.trim() && !(mode === "single" && !generating && !waitingForConfirm)}
-            title={mode === "single" && !generating && !waitingForConfirm ? "创作（Enter 发送）" : "发送消息"}
-            style={{ fontSize: 13, padding: "6px 20px", flexShrink: 0, alignSelf: "stretch", fontWeight: 600 }}>
-            {mode === "single" && !generating && !waitingForConfirm ? "创作" : "发送"}
+            disabled={!chatInput.trim()}
+            style={{ fontSize: 12, padding: "6px 12px", flexShrink: 0 }}>
+            发送
           </button>
         </div>
-        {mode === "single" && !generating && !waitingForConfirm && onFetchPrompt && onApplyManualResult && (
-          <ManualModePanel
-            fetchPrompt={onFetchPrompt}
-            onApplyResult={onApplyManualResult}
-          />
-        )}
-      </div>
+      )}
       {/* Cluster mode keeps its two big legacy buttons; single mode UI
           is now fully driven by the chat input above — no extra row. */}
       {mode === "cluster" && !generating && !waitingForConfirm && (
