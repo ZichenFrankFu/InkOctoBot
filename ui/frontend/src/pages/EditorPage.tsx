@@ -1503,6 +1503,10 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const [promptEditOriginal, setPromptEditOriginal] = useState("");
   const [promptEditDraft, setPromptEditDraft] = useState("");
   const [promptEditCopyMsgIdx, setPromptEditCopyMsgIdx] = useState<number | null>(null);
+  // Optional callback for tabs that own their own snapshot (rewrite /
+  // eval). Invoked with the edited prompt right after clipboard copy
+  // so they can store the user's edits locally.
+  const promptEditOnCopiedRef = useRef<((text: string) => void) | null>(null);
   const openPromptEdit = useCallback((msgIdx: number) => {
     const msg = chatMessages[msgIdx];
     if (!msg?.promptSent) {
@@ -1518,6 +1522,19 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   const openCopyPromptEdit = useCallback((msgIdx: number, initialPrompt: string) => {
     setPromptEditMode("copy");
     setPromptEditCopyMsgIdx(msgIdx);
+    promptEditOnCopiedRef.current = null;
+    setPromptEditOriginal(initialPrompt);
+    setPromptEditDraft(initialPrompt);
+    setPromptEditOpen(true);
+  }, []);
+  /** Generic "view + edit + copy 提示词" 弹窗 opener for non-chat
+   *  surfaces (rewrite / eval). The optional onCopied callback gets
+   *  the edited text right after clipboard copy so the caller can
+   *  store the user's edits locally. */
+  const openPromptCopyModal = useCallback((initialPrompt: string, onCopied?: (text: string) => void) => {
+    setPromptEditMode("copy");
+    setPromptEditCopyMsgIdx(null);
+    promptEditOnCopiedRef.current = onCopied || null;
     setPromptEditOriginal(initialPrompt);
     setPromptEditDraft(initialPrompt);
     setPromptEditOpen(true);
@@ -1553,6 +1570,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
           : m,
       ));
     }
+    // 非 chat 弹起 (重写 / 评估 tab) 回调本地 snapshot 设置器.
+    promptEditOnCopiedRef.current?.(text);
+    promptEditOnCopiedRef.current = null;
     setPromptEditOpen(false);
   }, [promptEditDraft, promptEditCopyMsgIdx, toast]);
 
@@ -2234,6 +2254,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               selection={selection}
               prompt={rewritePrompt} onPromptChange={setRewritePrompt}
               model={rewriteModel} onModelChange={setRewriteModel}
+              onOpenPromptModal={openPromptCopyModal}
               onApply={(newText) => {
                 if (!selection) return;
                 setContent(prev => prev.slice(0, selection.start) + newText + prev.slice(selection.end));
@@ -2244,7 +2265,8 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId}
               chapterId={activeChId} chapterNum={chapterNum} manifest={manifest} skillSelection={skillSelection} ragExcludes={ragExcludes}
-              onToggleSkill={toggleSkill} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest} />}
+              onToggleSkill={toggleSkill} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest}
+              onOpenPromptModal={openPromptCopyModal} />}
           </div>
         </div>
         ) : (
@@ -4052,14 +4074,11 @@ function InChatManualPasteCard({
       padding: 12,
       display: "flex", flexDirection: "column", gap: 10,
     }}>
-      {/* Header — 标题 + 描述, 不再用带圈数字 */}
+      {/* Header — 标题 + 取消 */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", marginBottom: 3 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
             网页大模型 · 粘贴回复
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-            复制本条提示词进大语言模型网页版中，并将它的回答粘贴在下方。
           </div>
         </div>
         {onCancel && (
@@ -4995,11 +5014,12 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
   );
 }
 
-function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange, onApply }: {
+function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange, onApply, onOpenPromptModal }: {
   selection: { start: number; end: number; text: string } | null;
   prompt: string; onPromptChange: (v: string) => void;
   model: string; onModelChange: (v: string) => void;
   onApply?: (newText: string) => void;
+  onOpenPromptModal?: (initialPrompt: string, onCopied?: (text: string) => void) => void;
 }) {
   const { toast } = useToast();
   const [rewriting, setRewriting] = useState(false);
@@ -5070,14 +5090,20 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange, o
       });
       const p = r.prompt || "";
       setSnapshotPrompt(p);
-      try { await navigator.clipboard.writeText(p); }
-      catch {
-        const ta = document.createElement("textarea");
-        ta.value = p; ta.style.position = "fixed"; ta.style.opacity = "0";
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+      if (onOpenPromptModal) {
+        // 走 EditorPage 同款的提示词弹窗 — 可看 / 可改 / 复制.
+        onOpenPromptModal(p, (edited) => setSnapshotPrompt(edited));
+      } else {
+        // 兜底: 没接 modal 时直接走剪贴板.
+        try { await navigator.clipboard.writeText(p); }
+        catch {
+          const ta = document.createElement("textarea");
+          ta.value = p; ta.style.position = "fixed"; ta.style.opacity = "0";
+          document.body.appendChild(ta); ta.select();
+          try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+        }
+        toast(`已复制 ${p.length.toLocaleString()} 字提示词`, "success");
       }
-      toast(`已复制 ${p.length.toLocaleString()} 字提示词`, "success");
     } catch (e: any) {
       toast(e?.message || "获取提示词失败", "error");
     }
@@ -5125,14 +5151,14 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange, o
 
       {/* 重写指令 */}
       <div className="field">
-        <label className="label">重写指令（可选）</label>
+        <label className="label">重写指令</label>
         <textarea className="input" value={prompt}
           onChange={e => onPromptChange(e.target.value)} rows={3}
-          placeholder="告诉 AI 你想怎么改…例如：更紧张、加入内心描写、换成第一人称" />
+          placeholder="告诉 AI 你想怎么改…" />
         <div style={{
           marginTop: 4, fontSize: 10.5, color: "var(--text-tertiary)",
           display: "flex", alignItems: "center", gap: 6,
-        }} title="本条请求最终交给 LLM 的提示词的近似 token 数。">
+        }}>
           <span>隐藏上下文字符数：</span>
           <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600,
             color: estTokens != null ? "var(--text-secondary)" : "var(--text-disabled)" }}>
@@ -5212,9 +5238,6 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange, o
           borderRadius: 10, padding: 12,
           display: "flex", flexDirection: "column", gap: 10,
         }}>
-          <div style={{ fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-            复制本条提示词到大语言模型网页版中，把它的回答粘到下方。
-          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button onClick={fetchAndCopyPrompt} style={{
               padding: "5px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600,
@@ -5222,7 +5245,7 @@ function RewriteTab({ selection, prompt, onPromptChange, model, onModelChange, o
             }}>复制提示词</button>
             {snapshotPrompt && (
               <span style={{ fontSize: 10.5, color: "var(--text-tertiary)" }}>
-                {snapshotPrompt.length.toLocaleString()} 字 · 已抓取本次提示词
+                {snapshotPrompt.length.toLocaleString()} 字
               </span>
             )}
           </div>
@@ -5507,11 +5530,12 @@ function ScoreDots({ score, max }: { score: number; max: number }) {
 
 /** 评估 tab — evaluate the current chapter text on demand (no need to
  *  generate first), or show the result from a pipeline run. */
-function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefreshManifest }: {
+function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, manifest, skillSelection, ragExcludes, onToggleSkill, onToggleRagItem, onRefreshManifest, onOpenPromptModal }: {
   result: EvalResult | null; chapterContent: string; projectId: string; chapterId: string; chapterNum?: number;
   manifest: ContextManifest | null; skillSelection: Record<string, boolean>; ragExcludes: Set<string>;
   onToggleSkill: (name: string) => void; onToggleRagItem: (key: string) => void;
   onRefreshManifest?: () => void;
+  onOpenPromptModal?: (initialPrompt: string, onCopied?: (text: string) => void) => void;
 }) {
   const { toast } = useToast();
   const [localResult, setLocalResult] = useState<EvalResult | null>(null);
@@ -5538,14 +5562,20 @@ function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, man
       const p = r.prompt || "";
       if (!p) { toast("评估提示词为空", "error"); return; }
       setSnapshotPrompt(p);
-      try { await navigator.clipboard.writeText(p); }
-      catch {
-        const ta = document.createElement("textarea");
-        ta.value = p; ta.style.position = "fixed"; ta.style.opacity = "0";
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+      if (onOpenPromptModal) {
+        // 走 EditorPage 同款的提示词弹窗 — 可看 / 可改 / 复制.
+        onOpenPromptModal(p, (edited) => setSnapshotPrompt(edited));
+      } else {
+        // 兜底: 没接 modal 时直接走剪贴板.
+        try { await navigator.clipboard.writeText(p); }
+        catch {
+          const ta = document.createElement("textarea");
+          ta.value = p; ta.style.position = "fixed"; ta.style.opacity = "0";
+          document.body.appendChild(ta); ta.select();
+          try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+        }
+        toast(`已复制 ${p.length.toLocaleString()} 字提示词`, "success");
       }
-      toast(`已复制 ${p.length.toLocaleString()} 字提示词`, "success");
     } catch (e: any) {
       toast(e?.message || "获取提示词失败", "error");
     } finally { setCopyingPrompt(false); }
@@ -5637,9 +5667,6 @@ function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, man
           borderRadius: 10, padding: 12,
           display: "flex", flexDirection: "column", gap: 10,
         }}>
-          <div style={{ fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-            复制本次评估提示词到大语言模型网页版中，把它返回的 JSON 回复粘到下方。
-          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button
               onClick={fetchAndCopyEvalPrompt} disabled={copyingPrompt}
@@ -5653,7 +5680,7 @@ function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, man
             </button>
             {snapshotPrompt && (
               <span style={{ fontSize: 10.5, color: "var(--text-tertiary)" }}>
-                {snapshotPrompt.length.toLocaleString()} 字 · 已抓取本次提示词
+                {snapshotPrompt.length.toLocaleString()} 字
               </span>
             )}
           </div>
@@ -5698,7 +5725,7 @@ function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, man
         <div>
           <div className="label mb-8" style={{
             fontSize: 11, color: "var(--text-tertiary)", letterSpacing: 1,
-          }}>评估维度（{manualMode ? "粘贴 JSON 后" : "点击「评估当前正文」后"}会按这些维度打分）</div>
+          }}>评估维度</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {EVAL_DIMENSIONS.map(d => (
               <div key={d.id} style={{
