@@ -117,6 +117,10 @@ interface ChatMessage {
    *  an "应用" button. Once applied, the textarea is replaced with a
    *  "✓ 已应用" summary and a Writer message is appended. */
   manualPaste?: { prompt: string; applied?: boolean; pastedLen?: number };
+  /** True when this User message was sent with 手动模式 ON. Renders a
+   *  small "手动" badge next to the agent name so the chat clearly
+   *  distinguishes API runs from network-LLM round-trips. */
+  viaManualMode?: boolean;
 }
 
 /** Format Scene Director JSON output as human-readable screenplay format */
@@ -1311,6 +1315,18 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       };
     } catch { return null; }
   }, [activeChId, fetchGenPrompt]);
+
+  /** Lightweight tokens-only estimator — used by the composer to show
+   *  "隐藏上下文字符数: N" live as user types / toggles loaders. Same
+   *  prompt round-trip as fetchTokenEstimate; returns the approx token
+   *  count only. */
+  const estimateTokens = useCallback(async (): Promise<number | null> => {
+    if (!activeChId) return null;
+    try {
+      const prompt = await fetchGenPrompt();
+      return approxTokens(prompt);
+    } catch { return null; }
+  }, [activeChId, fetchGenPrompt]);
   /** Single-agent run.
    *  Flow (Claude-style chat):
    *    1. push User message (instruction or "按大纲创作本章") with
@@ -1469,23 +1485,72 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
   }, [fetchGenPrompt, toast]);
 
   // Per-message prompt editor modal — User messages carry the rendered
-  // prompt as promptSent; clicking "查看 / 修改 Prompt" opens this with
-  // an editable copy. Submitting re-runs single-agent generation but
-  // passes system_hint = edited prompt so the backend skips RAG
-  // assembly and uses the verbatim string.
+  // prompt as promptSent; clicking "提示词" opens this with an editable
+  // copy. Two modes:
+  //  • "regenerate": submit re-runs single-agent generation via
+  //    quick-generate with system_hint = edited prompt. Used by 提示词
+  //    button under a regular User msg.
+  //  • "copy": submit copies the (possibly edited) prompt to clipboard
+  //    AND syncs the edit back into the ManualPaste card's snapshot.
+  //    Used by 复制提示词 on the in-chat paste card.
   const [promptEditOpen, setPromptEditOpen] = useState(false);
+  const [promptEditMode, setPromptEditMode] = useState<"regenerate" | "copy">("regenerate");
   const [promptEditOriginal, setPromptEditOriginal] = useState("");
   const [promptEditDraft, setPromptEditDraft] = useState("");
+  const [promptEditCopyMsgIdx, setPromptEditCopyMsgIdx] = useState<number | null>(null);
   const openPromptEdit = useCallback((msgIdx: number) => {
     const msg = chatMessages[msgIdx];
     if (!msg?.promptSent) {
-      toast("此消息没有缓存 prompt（旧消息或来源不同）", "error");
+      toast("此消息没有缓存提示词（旧消息或来源不同）", "error");
       return;
     }
+    setPromptEditMode("regenerate");
+    setPromptEditCopyMsgIdx(null);
     setPromptEditOriginal(msg.promptSent);
     setPromptEditDraft(msg.promptSent);
     setPromptEditOpen(true);
   }, [chatMessages, toast]);
+  const openCopyPromptEdit = useCallback((msgIdx: number, initialPrompt: string) => {
+    setPromptEditMode("copy");
+    setPromptEditCopyMsgIdx(msgIdx);
+    setPromptEditOriginal(initialPrompt);
+    setPromptEditDraft(initialPrompt);
+    setPromptEditOpen(true);
+  }, []);
+  const cancelManualPaste = useCallback((msgIdx: number) => {
+    // 移除应答卡 + 紧邻的 User 指令 (一般在 idx-1), 让用户重新发起.
+    setChatMessages(prev => {
+      const target = prev[msgIdx];
+      if (!target?.manualPaste || target.manualPaste.applied) return prev;
+      const removeUserToo = msgIdx > 0 && prev[msgIdx - 1]?.agent === "User";
+      return prev.filter((_, i) => i !== msgIdx && !(removeUserToo && i === msgIdx - 1));
+    });
+  }, []);
+  const submitCopyPrompt = useCallback(async () => {
+    const text = promptEditDraft.trim();
+    if (!text) { toast("提示词不能为空", "error"); return; }
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+    }
+    toast(`已复制 ${text.length.toLocaleString()} 字提示词`, "success");
+    // 同步回 ManualPaste 卡的 prompt snapshot, 让下次再打开看到的是
+    // 用户编辑后的版本.
+    if (promptEditCopyMsgIdx != null) {
+      const idx = promptEditCopyMsgIdx;
+      setChatMessages(prev => prev.map((m, i) =>
+        i === idx && m.manualPaste
+          ? { ...m, manualPaste: { ...m.manualPaste, prompt: text } }
+          : m,
+      ));
+    }
+    setPromptEditOpen(false);
+  }, [promptEditDraft, promptEditCopyMsgIdx, toast]);
+
   const submitEditedPrompt = useCallback(async () => {
     if (!activeCh) return;
     const editedPrompt = promptEditDraft.trim();
@@ -1757,7 +1822,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       if (manualMode) {
         // 手动模式: push User instruction + 把 paste-back UI 嵌进对话框
         // (作为一条 manualPaste system 消息). 不走 API. 用户在 chat
-        // 里复制 prompt → 网页 LLM → 粘贴回复 → 应用 → Writer 消息.
+        // 里复制提示词 → 网页 LLM → 粘贴回复 → 应用 → Writer 消息.
         const est = await fetchTokenEstimate();
         const ts = Date.now();
         setChatMessages(prev => [...prev,
@@ -1767,6 +1832,7 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
             tokenEstimate: est
               ? { inputK: est.inputK, llmCalls: est.llmCalls, usd: est.usd }
               : undefined,
+            viaManualMode: true,
           },
           {
             agent: "System", content: "", status: "done", timestamp: ts + 1,
@@ -2148,6 +2214,9 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               onApplyPaste={applyPlainPaste}
               onApplyManualResult={applyPlainPaste}
               onApplyInChatManualPaste={applyInChatManualPaste}
+              onEstimateTokens={estimateTokens}
+              onCancelManualPaste={cancelManualPaste}
+              onCopyEditPrompt={openCopyPromptEdit}
               onOpenWebLLM={openWebLLMDialog}
               manualMode={manualMode} onToggleManualMode={() => setManualMode(v => !v)}
               manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
@@ -2215,9 +2284,15 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               display: "flex", alignItems: "center", justifyContent: "space-between",
             }}>
               <div>
-                <h3 style={{ margin: 0, fontSize: 15 }}>查看 / 修改 Prompt</h3>
+                <h3 style={{ margin: 0, fontSize: 15 }}>
+                  {promptEditMode === "copy" ? "复制提示词" : "查看 / 修改提示词"}
+                </h3>
                 <p style={{ margin: "2px 0 0", fontSize: 11, color: "var(--text-tertiary)" }}>
-                  {promptEditDraft.length.toLocaleString()} 字 · 编辑后点「重新生成」会用编辑后的 prompt 直接调 LLM（跳过 RAG 重组装）。
+                  {promptEditDraft.length.toLocaleString()} 字 · {
+                    promptEditMode === "copy"
+                      ? "可手动修改后再复制到大语言模型网页版。"
+                      : "编辑后点「重新生成」会用编辑后的提示词直接调 LLM（跳过 RAG 重组装）。"
+                  }
                 </p>
               </div>
               <button
@@ -2276,16 +2351,20 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
                     }}
                   >还原</button>
                   <button
-                    onClick={submitEditedPrompt}
-                    disabled={!promptEditDraft.trim() || generating}
+                    onClick={promptEditMode === "copy" ? submitCopyPrompt : submitEditedPrompt}
+                    disabled={!promptEditDraft.trim() || (promptEditMode === "regenerate" && generating)}
                     style={{
                       padding: "6px 18px", borderRadius: 6, fontSize: 12, fontWeight: 600,
-                      background: promptEditDraft.trim() && !generating ? "var(--accent)" : "transparent",
-                      color: promptEditDraft.trim() && !generating ? "#fff" : "var(--text-disabled)",
-                      border: `1px solid ${promptEditDraft.trim() && !generating ? "var(--accent)" : "var(--border)"}`,
-                      cursor: promptEditDraft.trim() && !generating ? "pointer" : "not-allowed",
+                      background: promptEditDraft.trim() && !(promptEditMode === "regenerate" && generating)
+                        ? (promptEditMode === "copy" ? "var(--indigo)" : "var(--accent)") : "transparent",
+                      color: promptEditDraft.trim() && !(promptEditMode === "regenerate" && generating)
+                        ? "#fff" : "var(--text-disabled)",
+                      border: `1px solid ${promptEditDraft.trim() && !(promptEditMode === "regenerate" && generating)
+                        ? (promptEditMode === "copy" ? "var(--indigo)" : "var(--accent)") : "var(--border)"}`,
+                      cursor: promptEditDraft.trim() && !(promptEditMode === "regenerate" && generating)
+                        ? "pointer" : "not-allowed",
                     }}
-                  >按编辑后的 prompt 重新生成</button>
+                  >{promptEditMode === "copy" ? "复制提示词" : "按编辑后的提示词重新生成"}</button>
                 </div>
               </div>
             </div>
@@ -3887,15 +3966,20 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
  *  state: textarea 文本是 local; 应用后通过 onApply(text) 上报给
  *  EditorPage, 由它给本卡 mark applied + insert Writer message.
  *  Applied 后 textarea 折叠成 "✓ 已应用 · N 字" 摘要, 但消息卡仍留在
- *  对话里, 用户能滚回去看是哪一轮粘的. */
+ *  对话里, 用户能滚回去看是哪一轮粘的.
+ *  onCopyEdit / onCancel 都是可选: 复制提示词时打开 EditorPage 持有
+ *  的编辑弹窗 (可改 prompt + 复制); 取消时移除本卡 + 对应 User 指令. */
 function InChatManualPasteCard({
   prompt, applied, pastedLen, timestamp, onApply,
+  onCopyEdit, onCancel,
 }: {
   prompt: string;
   applied: boolean;
   pastedLen?: number;
   timestamp: number;
   onApply: (text: string) => void;
+  onCopyEdit?: () => void;
+  onCancel?: () => void;
 }) {
   const { toast } = useToast();
   const [paste, setPaste] = useState("");
@@ -3952,28 +4036,35 @@ function InChatManualPasteCard({
       padding: 12,
       display: "flex", flexDirection: "column", gap: 10,
     }}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-          width: 22, height: 22, borderRadius: 6,
-          background: "var(--indigo)", color: "#fff",
-          fontSize: 10, fontWeight: 700, flexShrink: 0,
-        }}>WEB</span>
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
-          网页大模型 · 粘贴回复
-        </span>
-        <span style={{
-          marginLeft: "auto",
-          fontSize: 10, color: "var(--text-tertiary)",
-        }}>
-          ① 复制 prompt → ② 网页 LLM 跑 → ③ 粘回并应用
-        </span>
+      {/* Header — 标题 + 描述, 不再用带圈数字 */}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", marginBottom: 3 }}>
+            网页大模型 · 粘贴回复
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+            复制本条提示词进大语言模型网页版中，并将它的回答粘贴在下方。
+          </div>
+        </div>
+        {onCancel && (
+          <button
+            onClick={onCancel}
+            title="取消本次手动操作（移除指令和应答卡）"
+            style={{
+              flexShrink: 0,
+              width: 22, height: 22, borderRadius: 6,
+              background: "transparent", color: "var(--text-tertiary)",
+              border: "1px solid var(--border)", cursor: "pointer",
+              fontSize: 13, lineHeight: 1, padding: 0,
+            }}
+          >×</button>
+        )}
       </div>
-      {/* Step 1 — copy prompt */}
+      {/* 复制提示词 — 走 EditorPage 共享的提示词编辑弹窗 (允许手动改) */}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button
-          onClick={copyPrompt} disabled={copying || !prompt}
+          onClick={() => (onCopyEdit ? onCopyEdit() : copyPrompt())}
+          disabled={(!onCopyEdit && copying) || !prompt}
           style={{
             padding: "5px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600,
             background: "var(--indigo)", color: "#fff",
@@ -3981,15 +4072,15 @@ function InChatManualPasteCard({
             opacity: prompt ? 1 : 0.5,
           }}
         >
-          {copying ? "复制中…" : "复制 prompt"}
+          {copying ? "复制中…" : "复制提示词"}
         </button>
         <span style={{ fontSize: 10.5, color: "var(--text-tertiary)" }}>
           {prompt
-            ? `${prompt.length.toLocaleString()} 字 · 含本条指令 + 当前 RAG 上下文`
-            : "Prompt 不可用"}
+            ? `${prompt.length.toLocaleString()} 字 · 含本条指令 + 当前上下文`
+            : "提示词不可用"}
         </span>
       </div>
-      {/* Step 2 — paste textarea */}
+      {/* 粘贴回复 textarea */}
       <textarea
         value={paste}
         onChange={e => setPaste(e.target.value)}
@@ -4005,7 +4096,7 @@ function InChatManualPasteCard({
           outline: "none",
         }}
       />
-      {/* Step 3 — apply */}
+      {/* 应用回复 */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
           {paste.trim() ? `${paste.length.toLocaleString()} 字待应用` : "粘贴后启用「应用回复」"}
@@ -4037,6 +4128,7 @@ function SingleModeComposer({
   chatInput, onChatInputChange, onSendMessage,
   manualMode, onToggleManualMode, onApplyManualResult,
   manifest, ragExcludes, onToggleRagLoader, onSwitchToRagTab,
+  onEstimateTokens,
 }: {
   chatInput: string;
   onChatInputChange: (v: string) => void;
@@ -4048,8 +4140,28 @@ function SingleModeComposer({
   ragExcludes: Set<string>;
   onToggleRagLoader?: (key: string, items: { id: string }[]) => void;
   onSwitchToRagTab?: () => void;
+  onEstimateTokens?: () => Promise<number | null>;
 }) {
   const [focused, setFocused] = useState(false);
+  // Live "隐藏上下文字符数" — debounced re-fetch on chatInput / RAG
+  // selection changes. Cancelled in flight when deps change again.
+  const [estimating, setEstimating] = useState(false);
+  const [estTokens, setEstTokens] = useState<number | null>(null);
+  const ragKey = useMemo(() => Array.from(ragExcludes).sort().join("|"), [ragExcludes]);
+  useEffect(() => {
+    if (!onEstimateTokens) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setEstimating(true);
+      try {
+        const n = await onEstimateTokens();
+        if (!cancelled) setEstTokens(n);
+      } finally {
+        if (!cancelled) setEstimating(false);
+      }
+    }, 600);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [chatInput, ragKey, onEstimateTokens]);
   // 创作备注 (user_special_requirements) 不再在 RAG chip strip 里出现 —
   // 该 loader 的语义现在由主输入框承担, 用户在 textarea 里写的就是
   // "本次创作指令", 单独再列一个 chip 既冗余又会让用户误以为需要
@@ -4188,6 +4300,28 @@ function SingleModeComposer({
                 );
               })}
             </div>
+            {/* 实时 token 预估 — 发送前根据用户当前选中的 RAG / 输入
+                的指令文本动态计算 (debounced 600ms). 没用 K, 写出完整
+                数字. */}
+            {onEstimateTokens && (
+              <div style={{
+                marginTop: 4,
+                fontSize: 10.5, color: "var(--text-tertiary)",
+                display: "flex", alignItems: "center", gap: 6,
+              }} title="本条请求最终交给 LLM 的提示词（含 RAG 上下文 / 章节字段 / 用户指令）的近似 token 数。">
+                <span>隐藏上下文字符数：</span>
+                <span style={{
+                  fontFamily: "var(--font-mono)",
+                  color: estTokens != null ? "var(--text-secondary)" : "var(--text-disabled)",
+                  fontWeight: 600,
+                }}>
+                  {estTokens != null ? estTokens.toLocaleString() : "—"}
+                </span>
+                {estimating && (
+                  <span style={{ fontSize: 9.5, color: "var(--text-disabled)" }}>计算中…</span>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -4361,7 +4495,7 @@ function CostEstimateBlock({ mode, projectId, chapterId }: {
   );
 }
 
-function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, chapterNum, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, onOpenWebLLM, manualMode, onToggleManualMode, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onToggleRagLoader, onSwitchToRagTab, onRefreshManifest, onDeleteMessage, onEditPromptForMsg, onApplyManualResult, onApplyInChatManualPaste }: {
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, chapterNum, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, onOpenWebLLM, manualMode, onToggleManualMode, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onToggleRagLoader, onSwitchToRagTab, onRefreshManifest, onDeleteMessage, onEditPromptForMsg, onApplyManualResult, onApplyInChatManualPaste, onEstimateTokens, onCancelManualPaste, onCopyEditPrompt }: {
   mode: "single" | "cluster";
   steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
@@ -4389,6 +4523,17 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
    *  message index). Updates that card to "✓ 已应用" and inserts the
    *  Writer message right after it. */
   onApplyInChatManualPaste?: (msgIdx: number, text: string) => void;
+  /** Live estimator for "隐藏上下文字符数" (approx token count) shown
+   *  under the composer's RAG chip section. Re-fetches the rendered
+   *  prompt; debounced in the composer. */
+  onEstimateTokens?: () => Promise<number | null>;
+  /** Cancel an unapplied ManualPaste card. Removes the card + its
+   *  preceding User instruction so the user can re-issue cleanly. */
+  onCancelManualPaste?: (msgIdx: number) => void;
+  /** Open the prompt edit modal in "copy" mode for a ManualPaste card,
+   *  pre-populated with that card's prompt snapshot. Submit copies the
+   *  edited text and updates the card's snapshot. */
+  onCopyEditPrompt?: (msgIdx: number, initialPrompt: string) => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -4497,6 +4642,19 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
               <div style={{ maxWidth: msg.manualPaste ? "100%" : "80%", minWidth: 0, width: msg.manualPaste ? "100%" : undefined, flex: msg.manualPaste ? 1 : undefined }}>
                 {!msg.manualPaste && <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
                   {msg.agentDisplayName || style.name}
+                  {msg.viaManualMode && (
+                    <span style={{
+                      marginLeft: 5,
+                      display: "inline-block",
+                      padding: "0 6px",
+                      borderRadius: 8,
+                      fontSize: 9, fontWeight: 700, lineHeight: 1.5,
+                      background: "var(--indigo-subtle, var(--bg-surface-2))",
+                      color: "var(--indigo)",
+                      border: "1px solid var(--indigo)",
+                      verticalAlign: 1,
+                    }} title="本条指令在手动模式下发送（提示词需要复制到大语言模型网页版手动跑）">手动</span>
+                  )}
                   {isCharActor && <span style={{ fontSize: 9, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 4 }}>(Actor)</span>}
                   {msg.isWarning && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "var(--gold)" }}>\u26A0</span>}
                   {msg.status === "thinking" && !msg.isCoT && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "#f9ab00" }}>思考中...</span>}
@@ -4611,24 +4769,14 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                       pastedLen={msg.manualPaste.pastedLen}
                       timestamp={msg.timestamp}
                       onApply={(text) => onApplyInChatManualPaste?.(i, text)}
+                      onCopyEdit={onCopyEditPrompt ? () => onCopyEditPrompt(i, msg.manualPaste!.prompt) : undefined}
+                      onCancel={onCancelManualPaste ? () => onCancelManualPaste(i) : undefined}
                     />
                   ) : msg.content}
                 </div>
-                {msg.tokenEstimate && msg.agent === "User" && (
-                  <div style={{
-                    marginTop: 4, display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", gap: 4,
-                  }}>
-                    <span style={{
-                      display: "inline-flex", alignItems: "center", gap: 4,
-                      padding: "2px 8px", borderRadius: 10,
-                      fontSize: 10, lineHeight: 1,
-                      background: "var(--bg-surface-2)", color: "var(--text-tertiary)",
-                      border: "1px solid var(--border-subtle, var(--border))",
-                    }} title="隐藏上下文字符数 — 本条请求最终交给 LLM 的提示词（含 RAG 上下文 / 章节字段 / 用户指令）的近似 token 数。">
-                      ~{msg.tokenEstimate.inputK}K · 隐藏上下文字符数
-                    </span>
-                  </div>
-                )}
+                {/* 旧的每条 token 估算 chip 已搬到 composer 顶端 (本条
+                    加载的 RAG 上下文内容 section 下方), 发送前实时算; 这里
+                    不再渲染. tokenEstimate 字段仍兼容存量数据. */}
                 {msg.status === "done" && !msg.manualPaste && (
                   /* 快捷动作: 全部图标化 + 原生 title tooltip (~0.5s 延迟).
                      视觉占地大幅瘦身; 鼠标悬停才显示中文说明. */
@@ -4778,6 +4926,7 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
           ragExcludes={ragExcludes || new Set()}
           onToggleRagLoader={onToggleRagLoader}
           onSwitchToRagTab={onSwitchToRagTab}
+          onEstimateTokens={onEstimateTokens}
         />
       )}
       {/* Cluster + waitingForConfirm fall back to a plain textarea. */}
