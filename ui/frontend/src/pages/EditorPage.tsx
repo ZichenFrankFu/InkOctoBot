@@ -5520,6 +5520,41 @@ function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, man
   const evalBody = () => ({
     project_id: projectId, chapter_id: chapterId, rag_excludes: Array.from(ragExcludes),
   });
+  // 手动模式 — 跟重写 tab 同款交互: pill toggle 切换 / indigo 卡片三段
+  // (复制提示词 → 粘贴 JSON 回复 → 应用). OFF 时不渲染卡片, 走默认
+  // /api/generation/evaluate 内置 API.
+  const [manualMode, setManualMode] = useState(false);
+  const [snapshotPrompt, setSnapshotPrompt] = useState<string | null>(null);
+  const [pasteText, setPasteText] = useState("");
+  const [copyingPrompt, setCopyingPrompt] = useState(false);
+  const fetchAndCopyEvalPrompt = async () => {
+    const text = (chapterContent || "").trim();
+    if (!text) { toast("当前章节没有正文可评估", "error"); return; }
+    setCopyingPrompt(true);
+    try {
+      const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", {
+        text, prompt_only: true, ...evalBody(),
+      });
+      const p = r.prompt || "";
+      if (!p) { toast("评估提示词为空", "error"); return; }
+      setSnapshotPrompt(p);
+      try { await navigator.clipboard.writeText(p); }
+      catch {
+        const ta = document.createElement("textarea");
+        ta.value = p; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+      }
+      toast(`已复制 ${p.length.toLocaleString()} 字提示词`, "success");
+    } catch (e: any) {
+      toast(e?.message || "获取提示词失败", "error");
+    } finally { setCopyingPrompt(false); }
+  };
+  const applyManualPaste = () => {
+    if (!pasteText.trim()) return;
+    applyPastedEval(pasteText);
+    setPasteText("");
+  };
 
   const runEval = async () => {
     const text = (chapterContent || "").trim();
@@ -5559,11 +5594,103 @@ function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, man
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ marginBottom: 0 }}>
-        <button className="btn-primary" style={{ width: "100%" }} onClick={runEval} disabled={evaluating}>
-          {evaluating ? "评估中…" : "评估当前正文"}
+      {/* 手动模式 toggle pill — 跟重写 tab 同款 */}
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <button
+          onClick={() => setManualMode(m => !m)}
+          title={manualMode
+            ? "关闭手动模式 — 回到内置 API 评估"
+            : "打开手动模式 — 用网页大模型手动跑评估提示词 + 粘回 JSON 结果"}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 8,
+            padding: "5px 14px", borderRadius: 999,
+            border: `1px solid ${manualMode ? "var(--indigo)" : "var(--border)"}`,
+            background: manualMode ? "var(--indigo-subtle, var(--bg-surface-2))" : "var(--bg-surface)",
+            color: manualMode ? "var(--indigo)" : "var(--text-secondary)",
+            fontSize: 11, fontWeight: 600, cursor: "pointer",
+          }}
+        >
+          <span style={{
+            display: "inline-block", width: 24, height: 12, borderRadius: 6,
+            background: manualMode ? "var(--indigo)" : "var(--border)",
+            position: "relative", transition: "background 0.15s",
+          }}>
+            <span style={{
+              position: "absolute", top: 1, left: manualMode ? 13 : 1,
+              width: 10, height: 10, borderRadius: "50%",
+              background: "#fff", transition: "left 0.15s",
+            }} />
+          </span>
+          <span>手动模式</span>
+          {manualMode && <span style={{ fontSize: 10, opacity: 0.85 }}>· 网页大模型</span>}
         </button>
       </div>
+
+      {/* 主操作 — auto: 评估当前正文; manual: 复制提示词 → 粘贴 JSON → 应用 */}
+      {!manualMode ? (
+        <button className="btn-primary" style={{ width: "100%" }} onClick={runEval} disabled={evaluating}>
+          {evaluating ? "评估中…" : displayResult ? "重新评估当前正文" : "评估当前正文"}
+        </button>
+      ) : (
+        <div style={{
+          border: "1px solid var(--indigo)", borderLeft: "3px solid var(--indigo)",
+          borderRadius: 10, padding: 12,
+          display: "flex", flexDirection: "column", gap: 10,
+        }}>
+          <div style={{ fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+            复制本次评估提示词到大语言模型网页版中，把它返回的 JSON 回复粘到下方。
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={fetchAndCopyEvalPrompt} disabled={copyingPrompt}
+              style={{
+                padding: "5px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+                background: "var(--indigo)", color: "#fff", border: "none",
+                cursor: copyingPrompt ? "wait" : "pointer",
+              }}
+            >
+              {copyingPrompt ? "复制中…" : "复制提示词"}
+            </button>
+            {snapshotPrompt && (
+              <span style={{ fontSize: 10.5, color: "var(--text-tertiary)" }}>
+                {snapshotPrompt.length.toLocaleString()} 字 · 已抓取本次提示词
+              </span>
+            )}
+          </div>
+          <textarea
+            value={pasteText}
+            onChange={e => setPasteText(e.target.value)}
+            placeholder="把网页大模型返回的评估 JSON 粘到这里…"
+            rows={4}
+            style={{
+              width: "100%", boxSizing: "border-box",
+              padding: "8px 10px", fontSize: 12, lineHeight: 1.55,
+              background: "var(--bg-app)", color: "var(--text-primary)",
+              border: "1px solid var(--border)", borderRadius: 6,
+              fontFamily: "var(--font-mono)",
+              resize: "vertical", minHeight: 90, maxHeight: 280, outline: "none",
+            }}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+              {pasteText.trim() ? `${pasteText.length.toLocaleString()} 字待应用` : "粘贴 JSON 后启用「应用回复」"}
+            </span>
+            <button
+              onClick={applyManualPaste} disabled={!pasteText.trim()}
+              style={{
+                padding: "6px 18px", borderRadius: 6,
+                background: pasteText.trim() ? "var(--jade)" : "transparent",
+                color: pasteText.trim() ? "#fff" : "var(--text-disabled)",
+                border: `1px solid ${pasteText.trim() ? "var(--jade)" : "var(--border)"}`,
+                fontSize: 12, fontWeight: 600,
+                cursor: pasteText.trim() ? "pointer" : "not-allowed",
+              }}
+            >
+              应用回复
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 评估前: 展示评估会量哪些维度. 跑过有结果后 (displayResult) 不再
           显示, 给 EvalResultView 让位. */}
@@ -5571,7 +5698,7 @@ function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, man
         <div>
           <div className="label mb-8" style={{
             fontSize: 11, color: "var(--text-tertiary)", letterSpacing: 1,
-          }}>评估维度（点击「评估当前正文」后会按这些维度打分）</div>
+          }}>评估维度（{manualMode ? "粘贴 JSON 后" : "点击「评估当前正文」后"}会按这些维度打分）</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {EVAL_DIMENSIONS.map(d => (
               <div key={d.id} style={{
@@ -5592,50 +5719,10 @@ function EvalTab({ result, chapterContent, projectId, chapterId, chapterNum, man
               </div>
             ))}
           </div>
-          <div style={{
-            marginTop: 10, padding: "8px 12px", borderRadius: 8,
-            background: "var(--bg-surface)", border: "1px dashed var(--border)",
-            fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.55,
-          }}>
-            手动模式：复制提示词到大语言模型网页版跑一遍，把 JSON 回复粘到下方。
-          </div>
-          <div style={{ marginTop: 6 }}>
-            <WebLLMPromptPanel
-              title="网页大模型 · 评估提示词"
-              fetchPrompt={async () => {
-                const text = (chapterContent || "").trim();
-                if (!text) throw new Error("当前章节没有正文可评估");
-                const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true, ...evalBody() });
-                return r.prompt || "";
-              }}
-              onApplyResult={applyPastedEval}
-              applyLabel="应用评估结果"
-              resultPlaceholder="把网页大模型返回的评估 JSON 粘到这里"
-            />
-          </div>
         </div>
       )}
 
-      {displayResult && (
-        <>
-          <EvalResultView result={displayResult} />
-          {/* 已有结果时把手动模式入口收到结果下方, 不抢主区域 */}
-          <div style={{ marginTop: 6 }}>
-            <WebLLMPromptPanel
-              title="网页大模型 · 重新评估"
-              fetchPrompt={async () => {
-                const text = (chapterContent || "").trim();
-                if (!text) throw new Error("当前章节没有正文可评估");
-                const r = await apiPost<{ prompt: string }>("/api/generation/evaluate", { text, prompt_only: true, ...evalBody() });
-                return r.prompt || "";
-              }}
-              onApplyResult={applyPastedEval}
-              applyLabel="替换评估结果"
-              resultPlaceholder="把网页大模型返回的评估 JSON 粘到这里"
-            />
-          </div>
-        </>
-      )}
+      {displayResult && <EvalResultView result={displayResult} />}
     </div>
   );
 }
