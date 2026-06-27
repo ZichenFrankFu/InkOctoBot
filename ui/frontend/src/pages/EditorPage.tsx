@@ -1164,6 +1164,21 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     });
   }, []);
 
+  /** Toggle a whole loader (all items). Used by the input-above
+   *  per-message loader selector. When any item is currently included,
+   *  the next press excludes all; otherwise it includes all. */
+  const toggleRagLoader = useCallback((loaderKey: string, items: { id: string }[]) => {
+    if (!items.length) return;
+    setRagExcludes(prev => {
+      const next = new Set(prev);
+      const keys = items.map(it => `${loaderKey}::${it.id}`);
+      const allExcluded = keys.every(k => next.has(k));
+      if (allExcluded) keys.forEach(k => next.delete(k));
+      else keys.forEach(k => next.add(k));
+      return next;
+    });
+  }, []);
+
   const buildGenPayload = useCallback((): Record<string, any> => ({
     project_id: projectId || "default",
     chapter_id: activeChId,
@@ -1229,31 +1244,66 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     setCurrentAgent(null);
   }, [activeCh, buildGenPayload]);
 
-  /** Fetch single-mode cost estimate as a flat snapshot. Used for the
-   *  per-message token chip on every User message + the ETA on the
-   *  System "generating" progress bubble. Returns null on failure
-   *  (the chip just renders nothing). */
+  /** Approximate token count for a CJK-heavy mixed-language prompt.
+   *  - CJK (Han/CJK punct/Kana/Hangul): ≈ 1 token / 1.6 chars
+   *  - ASCII text: ≈ 1 token / 4 chars
+   *  - Other (digits/whitespace/etc.): ≈ 1 token / 3 chars
+   *  Empirically within ±10% of OpenAI/Anthropic tokenizers for Chinese
+   *  novels with English code/labels. Cheap O(n) scan, no extra dep. */
+  const approxTokens = (text: string): number => {
+    if (!text) return 0;
+    let cjk = 0, ascii = 0, other = 0;
+    for (let i = 0; i < text.length; i++) {
+      const cp = text.codePointAt(i)!;
+      // Skip the low surrogate of a surrogate pair if we counted the pair.
+      if (cp > 0xffff) i++;
+      if (
+        (cp >= 0x4e00 && cp <= 0x9fff)     // CJK Unified
+        || (cp >= 0x3000 && cp <= 0x303f)  // CJK Symbols/Punct
+        || (cp >= 0xff00 && cp <= 0xffef)  // Fullwidth
+        || (cp >= 0x3040 && cp <= 0x30ff)  // Kana
+        || (cp >= 0xac00 && cp <= 0xd7af)  // Hangul
+      ) {
+        cjk++;
+      } else if (cp >= 0x20 && cp <= 0x7e) {
+        ascii++;
+      } else {
+        other++;
+      }
+    }
+    return Math.round(cjk / 1.6 + ascii / 4 + other / 3);
+  };
+  /** Per-1K-input USD cost. Defaults are gpt-4o-mini-ish; we only use it
+   *  to put a "$0.0xx" hint on the chip — true accounting still happens
+   *  server-side. Override via /api/data/settings if needed (not wired
+   *  here to keep the chip honest about how rough it is). */
+  const PRICE_PER_1K_INPUT_USD = 0.0008;
+
+  /** Fetch the actual rendered prompt for this chapter (single-agent
+   *  mode) and derive a token / cost estimate from its real length. The
+   *  rendered prompt is cached on the User message (`promptSent`) so
+   *  the per-message "查看 / 修改 Prompt" modal can reuse it without
+   *  another round-trip. */
   const fetchTokenEstimate = useCallback(async (): Promise<{
-    inputK: number; llmCalls: number; usd: number; etaSec: number;
+    inputK: number; tokens: number; llmCalls: number; usd: number; etaSec: number; prompt: string;
   } | null> => {
     if (!activeChId) return null;
     try {
-      const cost = await apiGet<any>(
-        `/api/generation/cost-estimate?mode=single&project_id=${encodeURIComponent(projectId || "default")}&chapter_id=${encodeURIComponent(activeChId)}`,
-      );
-      const r = cost?.requested;
-      if (!r) return null;
-      // 5K input tokens ≈ 1 s wall-clock as a coarse default. Cap to
-      // sensible bounds so the bar doesn't show "8 分钟" on a 50K prompt.
-      const eta = Math.max(8, Math.min(180, Math.round((r.input_tokens || 0) / 5000) + 12));
+      const prompt = await fetchGenPrompt();
+      const tokens = approxTokens(prompt);
+      // 5K tokens ≈ 1 s wall-clock as a coarse default. Cap so the bar
+      // doesn't show "8 分钟" on a 50K prompt or "0 秒" on a tiny one.
+      const eta = Math.max(8, Math.min(180, Math.round(tokens / 5000) + 12));
       return {
-        inputK: Math.round((r.input_tokens || 0) / 1000),
-        llmCalls: r.llm_calls || 1,
-        usd: r.estimated_usd || 0,
+        inputK: Math.round(tokens / 1000),
+        tokens,
+        llmCalls: 1,
+        usd: (tokens / 1000) * PRICE_PER_1K_INPUT_USD,
         etaSec: eta,
+        prompt,
       };
     } catch { return null; }
-  }, [projectId, activeChId]);
+  }, [activeChId, fetchGenPrompt]);
   /** Single-agent run.
    *  Flow (Claude-style chat):
    *    1. push User message (instruction or "按大纲创作本章") with
@@ -1286,11 +1336,26 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       progress: { etaSec, startedAt },
     };
     setChatMessages(prev => {
-      const next = userPreSent ? [...prev] : [...prev, {
-        agent: "User" as const, content: userText, status: "done" as const,
-        timestamp: Date.now(),
-        tokenEstimate: est ? { inputK: est.inputK, llmCalls: est.llmCalls, usd: est.usd } : undefined,
-      }];
+      const next = userPreSent
+        ? prev.map((m, i) => {
+            // Backfill prompt + token estimate on the User msg that
+            // sendChatMessage just pushed (so the message bubble's
+            // "查看 Prompt" modal and the token chip both have data).
+            if (i !== prev.length - 1 || m.agent !== "User") return m;
+            return {
+              ...m,
+              promptSent: m.promptSent ?? est?.prompt,
+              tokenEstimate: m.tokenEstimate ?? (est
+                ? { inputK: est.inputK, llmCalls: est.llmCalls, usd: est.usd }
+                : undefined),
+            };
+          })
+        : [...prev, {
+            agent: "User" as const, content: userText, status: "done" as const,
+            timestamp: Date.now(),
+            promptSent: est?.prompt,
+            tokenEstimate: est ? { inputK: est.inputK, llmCalls: est.llmCalls, usd: est.usd } : undefined,
+          }];
       next.push(progressMsg);
       return next;
     });
@@ -1369,6 +1434,82 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
       toast(e?.message || "获取 prompt 失败", "error");
     }
   }, [fetchGenPrompt, toast]);
+
+  // Per-message prompt editor modal — User messages carry the rendered
+  // prompt as promptSent; clicking "查看 / 修改 Prompt" opens this with
+  // an editable copy. Submitting re-runs single-agent generation but
+  // passes system_hint = edited prompt so the backend skips RAG
+  // assembly and uses the verbatim string.
+  const [promptEditOpen, setPromptEditOpen] = useState(false);
+  const [promptEditOriginal, setPromptEditOriginal] = useState("");
+  const [promptEditDraft, setPromptEditDraft] = useState("");
+  const openPromptEdit = useCallback((msgIdx: number) => {
+    const msg = chatMessages[msgIdx];
+    if (!msg?.promptSent) {
+      toast("此消息没有缓存 prompt（旧消息或来源不同）", "error");
+      return;
+    }
+    setPromptEditOriginal(msg.promptSent);
+    setPromptEditDraft(msg.promptSent);
+    setPromptEditOpen(true);
+  }, [chatMessages, toast]);
+  const submitEditedPrompt = useCallback(async () => {
+    if (!activeCh) return;
+    const editedPrompt = promptEditDraft.trim();
+    if (!editedPrompt) { toast("Prompt 不能为空", "error"); return; }
+    setPromptEditOpen(false);
+    genModeRef.current = "single";
+    setAiTab("single");
+    setGenerating(true);
+    setPipelineSteps([{ step: "Plain Agent", status: "running", detail: "按编辑后的 prompt 重新生成..." }]);
+    const tokens = approxTokens(editedPrompt);
+    const inputK = Math.round(tokens / 1000);
+    const eta = Math.max(8, Math.min(180, Math.round(tokens / 5000) + 12));
+    const startedAt = Date.now();
+    setChatMessages(prev => [
+      ...prev,
+      {
+        agent: "User", content: "（按编辑后的 prompt 重新创作）", status: "done",
+        timestamp: Date.now(),
+        promptSent: editedPrompt,
+        tokenEstimate: { inputK, llmCalls: 1, usd: (tokens / 1000) * PRICE_PER_1K_INPUT_USD },
+      },
+      {
+        agent: "System", content: "生成中", status: "done",
+        timestamp: Date.now() + 1,
+        progress: { etaSec: eta, startedAt },
+      },
+    ]);
+    try {
+      const payload: any = { ...buildGenPayload() };
+      // system_hint = edited prompt -> backend chat-mode branch:
+      // system_prompt = edited, user_content = synopsis. Empty synopsis
+      // means the LLM only sees our verbatim prompt.
+      payload.system_hint = editedPrompt;
+      payload.synopsis = "";
+      const resp = await apiPost<{ text: string; model: string; tokens?: any }>(
+        "/api/generation/quick-generate", payload,
+      );
+      generatedTextRef.current = resp.text;
+      setPipelineSteps([{ step: "Plain Agent", status: "done", detail: "已完成", progress: 100 }]);
+      setChatMessages(prev => {
+        const out: ChatMessage[] = prev.map(m =>
+          m.progress
+            ? { ...m, progress: undefined, content: `生成完成 · ${resp.text.length} 字 · ${resp.model}${resp.tokens ? ` (${resp.tokens.input}+${resp.tokens.output} tk)` : ""}` }
+            : m,
+        );
+        out.push({ agent: "Writer", content: resp.text, status: "done", timestamp: Date.now() });
+        return out;
+      });
+    } catch (e: any) {
+      setChatMessages(prev => prev.map(m =>
+        m.progress
+          ? { ...m, progress: undefined, content: `生成出错：${e?.message || "请检查模型连接"}` }
+          : m,
+      ));
+    }
+    setGenerating(false);
+  }, [activeCh, promptEditDraft, buildGenPayload, toast]);
 
   const startGeneration = useCallback(async (manual = false) => {
     if (!activeCh) return;
@@ -1579,13 +1720,14 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
     }
 
     if (singleIdle) {
-      // Single-mode chat-driven generation. Snapshot the token estimate
-      // onto the User message so it shows up as a chip on the bubble.
-      const est = await fetchTokenEstimate();
+      // Single-mode chat-driven generation. runPlainAgent owns the
+      // token snapshot + prompt cache — sendChatMessage just pushes
+      // the empty-shell User message so the chat shows it instantly
+      // (runPlainAgent backfills promptSent / tokenEstimate after
+      // /quick-generate's prompt-only round-trip completes).
       const userText = msg || "按大纲创作本章";
       setChatMessages(prev => [...prev, {
         agent: "User", content: userText, status: "done", timestamp: Date.now(),
-        tokenEstimate: est ? { inputK: est.inputK, llmCalls: est.llmCalls, usd: est.usd } : undefined,
       }]);
       if (manualMode) {
         openWebLLMDialog();
@@ -1956,11 +2098,14 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
               modelChanged={modelChanged} onDismissModelChange={() => setModelChanged(false)} onRestartWithNewModel={() => { setModelChanged(false); handleStopPipeline(); setTimeout(() => startGeneration(), 500); }}
               onFetchPrompt={fetchGenPrompt}
               onApplyPaste={applyPlainPaste}
+              onApplyManualResult={applyPlainPaste}
               onOpenWebLLM={openWebLLMDialog}
               manualMode={manualMode} onToggleManualMode={() => setManualMode(v => !v)}
               manualPrompt={manualPrompt} onSubmitManual={submitManualResult}
               manifest={manifest} skillSelection={skillSelection} onToggleSkill={toggleSkill}
-              ragExcludes={ragExcludes} onToggleRagItem={toggleRagItem} onRefreshManifest={refreshManifest}
+              ragExcludes={ragExcludes} onToggleRagItem={toggleRagItem} onToggleRagLoader={toggleRagLoader} onRefreshManifest={refreshManifest}
+              onSwitchToRagTab={() => setAiTab("outline")}
+              onEditPromptForMsg={openPromptEdit}
               onDeleteMessage={(idx) => setChatMessages(prev => prev.filter((_, i) => i !== idx))} />}
             {aiTab === "rewrite" && <RewriteTab selection={selection} prompt={rewritePrompt} onPromptChange={setRewritePrompt} model={rewriteModel} onModelChange={setRewriteModel} />}
             {aiTab === "eval" && <EvalTab result={evalResult} chapterContent={content} projectId={projectId}
@@ -1991,6 +2136,113 @@ export default function EditorPage({ projectId, onNavigate }: { projectId: strin
         minChars={80}
         initialMode="manual_only"
       />
+      {/* 单条 User 消息的「查看 / 修改 Prompt」弹窗. 用户可改 prompt,
+          点「按编辑后的 prompt 重新生成」走 system_hint 直发, 跳过
+          RAG 重渲染. */}
+      {promptEditOpen && (
+        <div
+          onClick={() => setPromptEditOpen(false)}
+          style={{
+            position: "fixed", inset: 0, zIndex: 1100,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: "min(900px, 92vw)",
+              height: "min(680px, 88vh)",
+              background: "var(--bg-surface)",
+              borderRadius: 10,
+              border: "1px solid var(--border)",
+              display: "flex", flexDirection: "column",
+              overflow: "hidden",
+            }}
+          >
+            <header style={{
+              padding: "12px 16px",
+              borderBottom: "1px solid var(--border)",
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 15 }}>查看 / 修改 Prompt</h3>
+                <p style={{ margin: "2px 0 0", fontSize: 11, color: "var(--text-tertiary)" }}>
+                  {promptEditDraft.length.toLocaleString()} 字 · 编辑后点「重新生成」会用编辑后的 prompt 直接调 LLM（跳过 RAG 重组装）。
+                </p>
+              </div>
+              <button
+                onClick={() => setPromptEditOpen(false)}
+                style={{
+                  background: "transparent", border: "none",
+                  fontSize: 18, color: "var(--text-tertiary)", cursor: "pointer",
+                  padding: "2px 8px", borderRadius: 4,
+                }}
+              >×</button>
+            </header>
+            <div style={{ flex: 1, padding: 16, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+              <textarea
+                value={promptEditDraft}
+                onChange={e => setPromptEditDraft(e.target.value)}
+                spellCheck={false}
+                style={{
+                  flex: 1, width: "100%", boxSizing: "border-box",
+                  padding: "10px 12px",
+                  background: "var(--bg-app)", color: "var(--text-primary)",
+                  border: "1px solid var(--border)", borderRadius: 6,
+                  fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.6,
+                  resize: "none",
+                }}
+              />
+              <div style={{
+                marginTop: 10, display: "flex", justifyContent: "space-between",
+                alignItems: "center", gap: 10,
+              }}>
+                <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                  {promptEditDraft === promptEditOriginal
+                    ? "未修改"
+                    : `已修改 ${Math.abs(promptEditDraft.length - promptEditOriginal.length)} 字`}
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={async () => {
+                      try { await navigator.clipboard.writeText(promptEditDraft); toast("已复制 prompt", "success"); }
+                      catch { toast("复制失败", "error"); }
+                    }}
+                    style={{
+                      padding: "6px 14px", borderRadius: 6, fontSize: 12,
+                      background: "transparent", color: "var(--text-secondary)",
+                      border: "1px solid var(--border)", cursor: "pointer",
+                    }}
+                  >复制</button>
+                  <button
+                    onClick={() => setPromptEditDraft(promptEditOriginal)}
+                    disabled={promptEditDraft === promptEditOriginal}
+                    style={{
+                      padding: "6px 14px", borderRadius: 6, fontSize: 12,
+                      background: "transparent",
+                      color: promptEditDraft === promptEditOriginal ? "var(--text-disabled)" : "var(--text-secondary)",
+                      border: "1px solid var(--border)",
+                      cursor: promptEditDraft === promptEditOriginal ? "not-allowed" : "pointer",
+                    }}
+                  >还原</button>
+                  <button
+                    onClick={submitEditedPrompt}
+                    disabled={!promptEditDraft.trim() || generating}
+                    style={{
+                      padding: "6px 18px", borderRadius: 6, fontSize: 12, fontWeight: 600,
+                      background: promptEditDraft.trim() && !generating ? "var(--accent)" : "transparent",
+                      color: promptEditDraft.trim() && !generating ? "#fff" : "var(--text-disabled)",
+                      border: `1px solid ${promptEditDraft.trim() && !generating ? "var(--accent)" : "var(--border)"}`,
+                      cursor: promptEditDraft.trim() && !generating ? "pointer" : "not-allowed",
+                    }}
+                  >按编辑后的 prompt 重新生成</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3582,6 +3834,256 @@ function ContextPanel({ manifest, skillSelection, ragExcludes, onToggleSkill, on
   );
 }
 
+/** Per-message RAG-loader selector. Lives directly above the chat input;
+ *  user toggles entire loaders on/off for the NEXT send. Doesn't show
+ *  loader content (that lives on the RAG tab) — only counts and the
+ *  on/off switch + a "在 RAG tab 查看详情" link. */
+function LoaderSelectorPanel({
+  manifest, ragExcludes, onToggleLoader, onSwitchToRag,
+}: {
+  manifest: ContextManifest;
+  ragExcludes: Set<string>;
+  onToggleLoader: (key: string, items: { id: string }[]) => void;
+  onSwitchToRag?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  // present + has items = togglable; presence-only loaders (no items)
+  // get listed as "已注入" with no checkbox.
+  const all = manifest.rag || [];
+  const togglable = all.filter(r => r.items && r.items.length > 0);
+  const isOn = (r: { key: string; items: { id: string }[] }) =>
+    r.items.length > 0 && !r.items.every(it => ragExcludes.has(`${r.key}::${it.id}`));
+  const onCount = togglable.filter(r => isOn(r)).length;
+  return (
+    <div style={{
+      border: "1px solid var(--border)",
+      borderRadius: 8,
+      background: open ? "var(--bg-surface)" : "transparent",
+      transition: "background 0.15s",
+    }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", gap: 6,
+          padding: "6px 10px",
+          background: open ? "var(--bg-surface-2)" : "transparent",
+          border: "none",
+          borderBottom: open ? "1px solid var(--border)" : "none",
+          borderRadius: open ? "8px 8px 0 0" : 8,
+          cursor: "pointer", textAlign: "left",
+          color: "var(--text-secondary)", fontSize: 11,
+        }}
+        title="本次发送将加载的 RAG 上下文（章节级）"
+      >
+        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+          {open ? "▾" : "▸"}
+        </span>
+        <span style={{ flex: 1 }}>章节 RAG 注入</span>
+        <span style={{
+          padding: "1px 7px", borderRadius: 9,
+          background: onCount > 0 ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+          color: onCount > 0 ? "var(--accent)" : "var(--text-tertiary)",
+          fontSize: 10, fontWeight: 600, lineHeight: 1.4,
+        }}>
+          {onCount}/{togglable.length}
+        </span>
+      </button>
+      {open && (
+        <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {togglable.map(r => {
+              const on = isOn(r);
+              const count = r.items.length;
+              return (
+                <label key={r.key} style={{
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  padding: "3px 8px", borderRadius: 12,
+                  border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                  background: on ? "var(--accent-subtle)" : "var(--bg-surface-2)",
+                  color: on ? "var(--accent)" : "var(--text-tertiary)",
+                  cursor: "pointer", fontSize: 11, userSelect: "none",
+                  transition: "all 0.12s",
+                }}>
+                  <input
+                    type="checkbox" checked={on}
+                    onChange={() => onToggleLoader(r.key, r.items)}
+                    style={{ margin: 0, accentColor: "var(--accent)", cursor: "pointer" }}
+                  />
+                  <span style={{ fontWeight: on ? 600 : 400 }}>{r.label}</span>
+                  {count > 1 && <span style={{ fontSize: 9, opacity: 0.7 }}>({count})</span>}
+                </label>
+              );
+            })}
+          </div>
+          {all.some(r => !r.items || !r.items.length) && (
+            <div style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+              未列出的 loader（{all.filter(r => !r.items || !r.items.length).map(r => r.label).join(" / ")}）按当前数据自动注入或跳过。
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+            具体内容{" "}
+            {onSwitchToRag ? (
+              <button onClick={onSwitchToRag} style={{
+                background: "none", border: "none", padding: 0,
+                color: "var(--accent)", cursor: "pointer", fontSize: 10,
+                textDecoration: "underline",
+              }}>到 RAG tab 查看</button>
+            ) : "请到 RAG tab 查看"}
+            。
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Inline manual-mode panel that lives BELOW the chat input.
+ *  Steps:
+ *    1. [复制 prompt] — lazy-fetch the rendered prompt; copy
+ *    2. [paste textarea] — user pastes the web-LLM reply
+ *    3. [应用回复] — pushes the reply into chat as 作家智能体
+ *  Past pastes pile up as version chips [v1 v2 v3 …] — click to roll
+ *  back any previous version into the chat. State is in-memory only;
+ *  switching chapters clears it. */
+function ManualModePanel({
+  fetchPrompt, onApplyResult,
+}: {
+  fetchPrompt: () => Promise<string>;
+  onApplyResult: (text: string) => void;
+}) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [paste, setPaste] = useState("");
+  const [history, setHistory] = useState<{ text: string; ts: number }[]>([]);
+  const [copying, setCopying] = useState(false);
+  const copyPrompt = async () => {
+    setCopying(true);
+    try {
+      const p = await fetchPrompt();
+      if (!p) { toast("Prompt 为空", "error"); return; }
+      try {
+        await navigator.clipboard.writeText(p);
+      } catch {
+        const ta = document.createElement("textarea");
+        ta.value = p; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+      }
+      toast(`已复制 ${p.length.toLocaleString()} 字 prompt`, "success");
+    } catch (e: any) {
+      toast(e?.message || "获取 prompt 失败", "error");
+    } finally {
+      setCopying(false);
+    }
+  };
+  const apply = (text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    onApplyResult(t);
+    setHistory(h => [{ text: t, ts: Date.now() }, ...h].slice(0, 5));
+    setPaste("");
+  };
+  return (
+    <div style={{
+      border: "1px solid var(--border)",
+      borderRadius: 8,
+      background: open ? "var(--bg-surface)" : "transparent",
+      transition: "background 0.15s",
+    }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", gap: 6,
+          padding: "6px 10px",
+          background: open ? "var(--bg-surface-2)" : "transparent",
+          border: "none",
+          borderBottom: open ? "1px solid var(--border)" : "none",
+          borderRadius: open ? "8px 8px 0 0" : 8,
+          cursor: "pointer", textAlign: "left",
+          color: "var(--text-secondary)", fontSize: 11,
+        }}
+        title="内置 API 不可用 / 想用网页 LLM 时：复制本次 prompt 跑一遍，把回复粘回这里。"
+      >
+        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+          {open ? "▾" : "▸"}
+        </span>
+        <span style={{ flex: 1 }}>网页大模型（手动 paste 回复）</span>
+        {history.length > 0 && (
+          <span style={{
+            padding: "1px 7px", borderRadius: 9,
+            background: "var(--indigo-subtle, var(--bg-surface-2))",
+            color: "var(--indigo, var(--text-tertiary))",
+            fontSize: 10, fontWeight: 600, lineHeight: 1.4,
+          }}>
+            历史 {history.length}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              onClick={copyPrompt} disabled={copying}
+              style={{
+                padding: "4px 10px", borderRadius: 6,
+                background: "var(--accent-subtle)", color: "var(--accent)",
+                border: "1px solid var(--accent)", cursor: "pointer",
+                fontSize: 11, fontWeight: 600,
+              }}
+            >
+              {copying ? "..." : "① 复制 prompt"}
+            </button>
+            {history.length > 0 && (
+              <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>历史回退：</span>
+            )}
+            {history.map((h, i) => (
+              <button
+                key={h.ts} onClick={() => onApplyResult(h.text)}
+                title={`回滚到 v${history.length - i}（${new Date(h.ts).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" })}，${h.text.length} 字）`}
+                style={{
+                  padding: "2px 8px", borderRadius: 10,
+                  background: "var(--bg-surface-2)", color: "var(--text-secondary)",
+                  border: "1px solid var(--border)", cursor: "pointer",
+                  fontSize: 10, lineHeight: 1.4,
+                }}
+              >
+                v{history.length - i}
+              </button>
+            ))}
+          </div>
+          <textarea
+            value={paste}
+            onChange={e => setPaste(e.target.value)}
+            placeholder="② 把网页 LLM 的回复粘到这里…"
+            rows={4}
+            style={{
+              width: "100%", boxSizing: "border-box",
+              padding: "8px 10px", fontSize: 11, lineHeight: 1.55,
+              background: "var(--bg-app)", color: "var(--text-primary)",
+              border: "1px solid var(--border)", borderRadius: 6,
+              resize: "vertical",
+            }}
+          />
+          <button
+            onClick={() => apply(paste)} disabled={!paste.trim()}
+            style={{
+              alignSelf: "flex-end",
+              padding: "5px 14px", borderRadius: 6,
+              background: paste.trim() ? "var(--jade)" : "transparent",
+              color: paste.trim() ? "#fff" : "var(--text-disabled)",
+              border: `1px solid ${paste.trim() ? "var(--jade)" : "var(--border)"}`,
+              cursor: paste.trim() ? "pointer" : "not-allowed",
+              fontSize: 12, fontWeight: 600,
+            }}
+          >
+            ③ 应用回复
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Inline progress bubble for an in-flight System status message.
  *  Animated bar fills from 0 → ~95% over `etaSec` so the user gets a
  *  realistic completion feel even though /quick-generate is a single
@@ -3689,7 +4191,7 @@ function CostEstimateBlock({ mode, projectId, chapterId }: {
   );
 }
 
-function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, chapterNum, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, onOpenWebLLM, manualMode, onToggleManualMode, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onRefreshManifest, onDeleteMessage }: {
+function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessages, chatInput, onChatInputChange, onSendMessage, waitingForConfirm, onConfirmContinue, onRollback, onWriteToEditor, onStopPipeline, paused, onPauseResume, projectId, chapterId, chapterNum, modelChanged, onDismissModelChange, onRestartWithNewModel, onFetchPrompt, onApplyPaste, onOpenWebLLM, manualMode, onToggleManualMode, manualPrompt, onSubmitManual, manifest, skillSelection, onToggleSkill, ragExcludes, onToggleRagItem, onToggleRagLoader, onSwitchToRagTab, onRefreshManifest, onDeleteMessage, onEditPromptForMsg, onApplyManualResult }: {
   mode: "single" | "cluster";
   steps: PipelineStatus[]; generating: boolean; onStart: (manual?: boolean) => void; onStartPlain?: () => void; chatMessages: ChatMessage[]; chatInput: string;
   onChatInputChange: (v: string) => void; onSendMessage: () => void; waitingForConfirm: boolean; onConfirmContinue: () => void; onRollback?: (stepIndex: number) => void; onWriteToEditor?: () => void; onStopPipeline?: () => void;
@@ -3702,6 +4204,17 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
   manifest?: ContextManifest | null;
   skillSelection?: Record<string, boolean>; onToggleSkill?: (name: string) => void;
   ragExcludes?: Set<string>; onToggleRagItem?: (key: string) => void; onRefreshManifest?: () => void;
+  /** Toggle ALL items of one loader at once — used by the per-message
+   *  loader selector that lives above the chat input. */
+  onToggleRagLoader?: (loaderKey: string, items: { id: string }[]) => void;
+  /** Jump to the RAG tab — used by the "详情请到 RAG tab 查看" link. */
+  onSwitchToRagTab?: () => void;
+  /** Open the per-message prompt edit modal for a given chat message
+   *  index. EditorPage owns the modal state. */
+  onEditPromptForMsg?: (msgIdx: number) => void;
+  /** Apply a manual-mode pasted web-LLM result to the chat. Same path
+   *  as the inline manual panel below the input. */
+  onApplyManualResult?: (text: string) => void;
 }) {
   const { prompt } = useDialog();
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -3928,7 +4441,14 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                       onClick={() => { navigator.clipboard.writeText(msg.content); }}>
                       复制
                     </button>
-                    {msg.promptSent && (
+                    {msg.promptSent && msg.agent === "User" && onEditPromptForMsg && (
+                      <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
+                        onClick={() => onEditPromptForMsg(i)}
+                        title="弹窗查看本次实际发给 LLM 的 prompt，编辑后可重新生成">
+                        查看 / 修改 Prompt
+                      </button>
+                    )}
+                    {msg.promptSent && msg.agent !== "User" && (
                       <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
                         onClick={() => setExpandedPromptIdx(expandedPromptIdx === i ? null : i)}>
                         {expandedPromptIdx === i ? "隐藏 Prompt" : "查看 Prompt"}
@@ -4030,28 +4550,28 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
           </button>
         </div>
       )}
-      {/* Single mode input (Claude-style):
-            ┌ 手动模式 toggle (上方) ─┐
-            ├ 用户具体指令 textarea ─┤
-            └ 发送按钮 (label: 创作) ┘
-          手动模式勾上后, "创作" 按钮文案不变, 但走 UniversalLLMDialog
-          而不是 API. 留空发送 = "按大纲创作本章". */}
+      {/* Single mode input —— Claude-style chat:
+            ┌─── 章节 RAG 注入 (collapsible) ────┐
+            │ ☑ 角色档案 (3)  ☑ 世界书 (5)  …    │  ← per-message loader switches
+            ├──────────────────────────────────────
+            │ 用户的具体指令…           [创作]    │
+            ├──────────────────────────────────────
+            │ ─── 网页大模型 (collapsible) ───    │
+            │ [复制 prompt]  [v1 v2 v3]           │  ← copy / paste / history
+            │ [paste textarea]      [应用回复]    │
+            └──────────────────────────────────────
+          API 可用时直接 Enter 发送即可走"创作"；API 不可用 / 用户希望
+          手动跑时，展开下方的网页大模型面板复制 prompt → 网页 LLM
+          → paste 回 → 应用。回复进 chat 时由 normalizeWebLLMReply 转
+          human-readable 文字。 */}
       <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-        {mode === "single" && !generating && !waitingForConfirm && onToggleManualMode && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
-              <input type="checkbox" checked={!!manualMode} onChange={onToggleManualMode}
-                style={{ accentColor: "var(--indigo)", cursor: "pointer" }} />
-              <span style={{ color: manualMode ? "var(--indigo)" : "var(--text-tertiary)", fontWeight: manualMode ? 600 : 400 }}>
-                手动模式
-              </span>
-            </label>
-            {manualMode && (
-              <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-                · 发送会打开网页大模型 dialog 让你粘贴回复
-              </span>
-            )}
-          </div>
+        {mode === "single" && !generating && !waitingForConfirm && manifest && onToggleRagLoader && (
+          <LoaderSelectorPanel
+            manifest={manifest}
+            ragExcludes={ragExcludes || new Set()}
+            onToggleLoader={onToggleRagLoader}
+            onSwitchToRag={onSwitchToRagTab}
+          />
         )}
         <div style={{ display: "flex", gap: 6 }}>
           <textarea className="input" value={chatInput} onChange={e => onChatInputChange(e.target.value)}
@@ -4060,19 +4580,25 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
               waitingForConfirm
                 ? "输入修改意见，或点击确认继续..."
                 : mode === "single"
-                  ? "用户的具体指令…"
+                  ? "用户的具体指令… ↵ 发送（留空即按大纲创作）"
                   : "输入消息与 Agent 对话..."
             }
             rows={2}
-            style={{ flex: 1, fontSize: 12, padding: "6px 10px", minHeight: 36, maxHeight: 120, resize: "vertical" }} />
+            style={{ flex: 1, fontSize: 13, padding: "8px 12px", minHeight: 44, maxHeight: 140, resize: "vertical" }} />
           <button className="btn-primary"
             onClick={onSendMessage}
             disabled={!chatInput.trim() && !(mode === "single" && !generating && !waitingForConfirm)}
             title={mode === "single" && !generating && !waitingForConfirm ? "创作（Enter 发送）" : "发送消息"}
-            style={{ fontSize: 13, padding: "6px 18px", flexShrink: 0, alignSelf: "stretch", fontWeight: 600 }}>
+            style={{ fontSize: 13, padding: "6px 20px", flexShrink: 0, alignSelf: "stretch", fontWeight: 600 }}>
             {mode === "single" && !generating && !waitingForConfirm ? "创作" : "发送"}
           </button>
         </div>
+        {mode === "single" && !generating && !waitingForConfirm && onFetchPrompt && onApplyManualResult && (
+          <ManualModePanel
+            fetchPrompt={onFetchPrompt}
+            onApplyResult={onApplyManualResult}
+          />
+        )}
       </div>
       {/* Cluster mode keeps its two big legacy buttons; single mode UI
           is now fully driven by the chat input above — no extra row. */}
