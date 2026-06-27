@@ -4050,7 +4050,13 @@ function SingleModeComposer({
   onSwitchToRagTab?: () => void;
 }) {
   const [focused, setFocused] = useState(false);
-  const togglable = (manifest?.rag || []).filter(r => r.items && r.items.length > 0);
+  // 创作备注 (user_special_requirements) 不再在 RAG chip strip 里出现 —
+  // 该 loader 的语义现在由主输入框承担, 用户在 textarea 里写的就是
+  // "本次创作指令", 单独再列一个 chip 既冗余又会让用户误以为需要
+  // 显式开关.
+  const togglable = (manifest?.rag || []).filter(
+    r => r.items && r.items.length > 0 && r.key !== "user_special_requirements",
+  );
   const isOn = (r: { key: string; items: { id: string }[] }) =>
     r.items.length > 0 && !r.items.every(it => ragExcludes.has(`${r.key}::${it.id}`));
   const onCount = togglable.filter(isOn).length;
@@ -4126,9 +4132,8 @@ function SingleModeComposer({
             {/* Header row */}
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{
-                fontSize: 10, color: "var(--text-tertiary)", fontWeight: 700,
-                textTransform: "uppercase", letterSpacing: 0.8,
-              }}>本条加载</span>
+                fontSize: 11, color: "var(--text-secondary)", fontWeight: 700,
+              }}>本条加载的 RAG 上下文内容</span>
               <span style={{
                 fontSize: 10, color: "var(--text-tertiary)",
                 padding: "1px 7px", borderRadius: 8,
@@ -4484,16 +4489,28 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
           const isCharActor = msg.agent === "Actor Agents" && msg.agentDisplayName && msg.agentDisplayName !== "旁白";
           return (
             <div key={i} style={{ display: "flex", flexDirection: isUser ? "row-reverse" : "row", alignItems: "flex-start", marginBottom: 10, gap: 8 }}>
-              <div style={{ width: 32, height: 32, borderRadius: "50%", background: style.bg, border: `2px solid ${style.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: isCharActor ? 13 : 16, flexShrink: 0, fontWeight: isCharActor ? 700 : 400, color: isCharActor ? style.border : undefined }}>{avatar}</div>
-              <div style={{ maxWidth: msg.manualPaste ? "95%" : "80%", minWidth: 0, width: msg.manualPaste ? "95%" : undefined }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
+              {/* ManualPaste 卡自带 WEB 角标 + 标题, 不画圆 avatar
+                  也不画上方 "系统" header, 卡片直接 = bubble. */}
+              {!msg.manualPaste && (
+                <div style={{ width: 32, height: 32, borderRadius: "50%", background: style.bg, border: `2px solid ${style.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: isCharActor ? 13 : 16, flexShrink: 0, fontWeight: isCharActor ? 700 : 400, color: isCharActor ? style.border : undefined }}>{avatar}</div>
+              )}
+              <div style={{ maxWidth: msg.manualPaste ? "100%" : "80%", minWidth: 0, width: msg.manualPaste ? "100%" : undefined, flex: msg.manualPaste ? 1 : undefined }}>
+                {!msg.manualPaste && <div style={{ fontSize: 11, fontWeight: 600, color: style.border, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
                   {msg.agentDisplayName || style.name}
                   {isCharActor && <span style={{ fontSize: 9, fontWeight: 400, color: "var(--text-tertiary)", marginLeft: 4 }}>(Actor)</span>}
                   {msg.isWarning && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "var(--gold)" }}>\u26A0</span>}
                   {msg.status === "thinking" && !msg.isCoT && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "#f9ab00" }}>思考中...</span>}
                   {msg.isCoT && msg.status === "thinking" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 400, color: "var(--text-tertiary)" }}>思考中</span>}
-                </div>
-                <div style={{
+                </div>}
+                <div style={msg.manualPaste ? {
+                  // ManualPaste 卡有自己的 indigo 描边, 外层 bubble 把所有
+                  // 装饰去掉, 不再"框套框".
+                  padding: 0, background: "transparent", border: "none",
+                  borderRadius: 0,
+                  fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)",
+                  wordBreak: "break-word",
+                  userSelect: "text",
+                } : {
                   padding: "8px 12px", borderRadius: 10,
                   background: msg.isWarning ? "rgba(255,160,0,0.08)" : style.bg,
                   borderLeft: isUser ? "none" : `3px solid ${msg.isWarning ? "var(--gold)" : style.border}`,
@@ -4607,33 +4624,40 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                       fontSize: 10, lineHeight: 1,
                       background: "var(--bg-surface-2)", color: "var(--text-tertiary)",
                       border: "1px solid var(--border-subtle, var(--border))",
-                    }} title="本次请求的 token 估算（cost-estimate）">
-                      ~{msg.tokenEstimate.inputK}K tokens · {msg.tokenEstimate.llmCalls} 次调用
-                      {msg.tokenEstimate.usd > 0 ? ` · $${msg.tokenEstimate.usd.toFixed(3)}` : ""}
+                    }} title="隐藏上下文字符数 — 本条请求最终交给 LLM 的提示词（含 RAG 上下文 / 章节字段 / 用户指令）的近似 token 数。">
+                      ~{msg.tokenEstimate.inputK}K · 隐藏上下文字符数
                     </span>
                   </div>
                 )}
-                {msg.status === "done" && (
-                  <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
-                    <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
-                      onClick={() => { navigator.clipboard.writeText(msg.content); }}>
-                      复制
+                {msg.status === "done" && !msg.manualPaste && (
+                  /* 快捷动作: 全部图标化 + 原生 title tooltip (~0.5s 延迟).
+                     视觉占地大幅瘦身; 鼠标悬停才显示中文说明. */
+                  <div style={{ display: "flex", gap: 2, marginTop: 4 }}>
+                    <button className="btn-ghost"
+                      style={{ fontSize: 13, padding: "2px 6px", color: "var(--text-tertiary)", lineHeight: 1 }}
+                      onClick={() => { navigator.clipboard.writeText(msg.content); }}
+                      title="复制">
+                      ⎘
                     </button>
                     {msg.promptSent && msg.agent === "User" && onEditPromptForMsg && (
-                      <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
+                      <button className="btn-ghost"
+                        style={{ fontSize: 12, padding: "2px 6px", color: "var(--text-tertiary)", lineHeight: 1 }}
                         onClick={() => onEditPromptForMsg(i)}
-                        title="弹窗查看本次实际发给 LLM 的 prompt，编辑后可重新生成">
-                        查看 / 修改 Prompt
+                        title="提示词">
+                        ✎
                       </button>
                     )}
                     {msg.promptSent && msg.agent !== "User" && (
-                      <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
-                        onClick={() => setExpandedPromptIdx(expandedPromptIdx === i ? null : i)}>
-                        {expandedPromptIdx === i ? "隐藏 Prompt" : "查看 Prompt"}
+                      <button className="btn-ghost"
+                        style={{ fontSize: 12, padding: "2px 6px", color: "var(--text-tertiary)", lineHeight: 1 }}
+                        onClick={() => setExpandedPromptIdx(expandedPromptIdx === i ? null : i)}
+                        title="提示词">
+                        ✎
                       </button>
                     )}
                     {msg.agent !== "User" && msg.agent !== "System" && !generating && (
-                      <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
+                      <button className="btn-ghost"
+                        style={{ fontSize: 13, padding: "2px 6px", color: "var(--text-tertiary)", lineHeight: 1 }}
                         onClick={() => {
                           const stepIdx = steps.findIndex(s => s.step === msg.agent);
                           if (stepIdx >= 0 && onRollback) {
@@ -4641,16 +4665,18 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
                           } else {
                             onStart();
                           }
-                        }}>
-                        ↻ 重新生成
+                        }}
+                        title="重新生成">
+                        ↻
                       </button>
                     )}
                     {!generating && onDeleteMessage && (
-                      <button className="btn-ghost" style={{ fontSize: 10, padding: "2px 8px", color: "var(--text-tertiary)" }}
+                      <button className="btn-ghost"
+                        style={{ fontSize: 14, padding: "2px 6px", color: "var(--text-tertiary)", lineHeight: 1 }}
                         onClick={() => onDeleteMessage(i)}
                         onMouseEnter={e => e.currentTarget.style.color = "var(--error)"}
                         onMouseLeave={e => e.currentTarget.style.color = "var(--text-tertiary)"}
-                        title="删除此消息">
+                        title="删除">
                         ×
                       </button>
                     )}
@@ -4711,20 +4737,17 @@ function InspireTab({ mode, steps, generating, onStart, onStartPlain, chatMessag
         })()}
         <div ref={chatEndRef} />
       </div>
-      {/* Stop / Control bar */}
+      {/* Stop bar — 生成中只露一颗终止按钮; 暂停 / 恢复语义在单 Agent
+          模式没意义, 一并去掉. Cluster 也走同一颗按钮, 后端 stop
+          仍兼容. */}
       {generating && (
-        <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-          {onPauseResume && (
-            <button className="btn" style={{
-              fontSize: 11, padding: "3px 10px", flex: 1,
-              color: paused ? "var(--jade)" : "var(--gold)",
-              borderColor: paused ? "var(--jade)" : "var(--gold)",
-            }} onClick={onPauseResume}>
-              {paused ? "恢复" : "暂停"}
-            </button>
-          )}
-          <button className="btn" style={{ fontSize: 11, padding: "3px 10px", color: "var(--error)", borderColor: "var(--error)", flex: 1 }} onClick={onStopPipeline}>
-            终止 Pipeline
+        <div style={{ display: "flex", marginBottom: 6 }}>
+          <button className="btn" style={{
+            fontSize: 11, padding: "3px 10px",
+            color: "var(--error)", borderColor: "var(--error)",
+            flex: 1,
+          }} onClick={onStopPipeline}>
+            终止生成
           </button>
         </div>
       )}
